@@ -329,51 +329,56 @@ def fleming_harrington(t, censored=None, plot=False, cb=False, alpha=0.05):
     # Fleming-Harrington estimation of Reliability function (via cum hazard)
     # Fleming, T. R., and Harrington, D. P. (1984). “Nonparametric Estimation of the Survival Distribution in Censored Data.” 
     # Communications in Statistics—Theory and Methods 13:2469–2486.
-    n = len(t)
-    nn = len(set(t))
+    # Equation taken from http://support.sas.com/documentation/cdl/en/statug/68162...
+    # .../HTML/default/viewer.htm#statug_lifetest_details03.htm
 
-    # Rank computations for:
-    # Items at risk
-    # ni = n(i-1) - d(i-1) - c(i-1)
-    # Hazard Rate
-    # hi = di/ni
-    # Cumulative Hazard Function
-    # Hi = sum(hi)
-    # Reliability Function
-    # Ri = exp(-Hi)
+    # Get the at risk total, Y, from t = 0
+    Y = len(t)
+    
+    order = np.argsort(t)
+    t = t[order]
+    if censored is not None:
+        assert len(t) == len(censored)
+        c = np.array(censored)[order]
 
     if censored is None:
         # Uncensored data
+        # for each time, t, find number of failures, d.
         t, d = np.unique(t, return_counts=True)
-        ni = n - np.cumsum(d) + np.cumsum(d)[0]
-        ni = [float(x) for x in ni]
-        hi = (d/ni)
-        times = t
+        hi = np.zeros_like(t)
+        for i in range(len(t)):
+            # For each event time, divide by the surviving set, Y
+            hi[i] = np.sum([1./(Y-j) for j in range(d[i])])
+            Y -= d[i]
+        ni = np.cumsum(d)[::-1]
     else:
-        counts = {}
-        for x, c in zip(t, censored):
-            a = np.zeros(2)
-            f = counts.get(x, a)
-            f[c] = 1 + f[c]
-            counts[x] = f
-        
-        times = np.array(sorted(counts.keys()))
-        r = np.array([counts[x][1] for x in times])
-        d = np.array([counts[x][0] for x in times])
-        ni = n - np.cumsum(d) - np.cumsum(r) + np.cumsum(d)[0] + np.cumsum(r)[0]
-        ni = [float(x) for x in ni]
-        hi = (d/ni)
+        dhi = np.zeros_like(t)
+        unique_t = np.unique(t)
+        hi = np.zeros_like(unique_t)
+        ni = np.zeros_like(unique_t)
+        for i in range(len(t)):
+            dhi[i] = float(c[i]) / Y
+            Y -= 1
+        for i in range(len(unique_t)):
+            hi[i] = np.sum(dhi[t == unique_t[i]])
+            ni[i] = np.sum(c[t == unique_t[i]])
+        d  = ni
+        ni = np.cumsum(ni)[::-1]
+        t = unique_t
     
     Hi = np.cumsum(hi)
     Ri = np.exp(-Hi)
     
-    R_ll = Ri + qt.ppf(alpha/2, n - 1)*np.sqrt(Ri**2 * np.cumsum((d)/(ni*(ni-(d)))))
-    R_ul = Ri - qt.ppf(alpha/2, n - 1)*np.sqrt(Ri**2 * np.cumsum((d)/(ni*(ni-(d)))))
+    print(d)
+    dR = qt.ppf(alpha/2, ni[0] - 1)*np.sqrt(Ri**2 * np.cumsum(d/(ni*(ni-d))))
+    
+    R_ll = Ri + dR
+    R_ul = Ri - dR
 
     if plot:
-        plt.step(times, Ri, color='k')
+        plt.step(t, Ri, color='k')
         if cb:
-            plt.step(times, R_ll, color='r')
-            plt.step(times, R_ul, color='r')
+            plt.step(t, R_ll, color='r')
+            plt.step(t, R_ul, color='r')
     
     return Ri
