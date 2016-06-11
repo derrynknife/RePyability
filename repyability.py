@@ -241,7 +241,7 @@ def nelson_aalen(t, censored=None, plot=False, cb=False, alpha=0.05):
     # Hazard Rate
     # hi = di/ni
     # Cumulative Hazard Function
-    # Hi = sum(hi)
+    # Hi = cumsum(hi)
     # Reliability Function
     # Ri = exp(-Hi)
 
