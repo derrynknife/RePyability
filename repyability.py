@@ -8,6 +8,8 @@ import nltk
 from collections import Counter
 from scipy.stats import t as qt
 from scipy.optimize import minimize
+import warnings
+
 
 ### Need to ensure that l = -1
 # f = 0, and 
@@ -328,8 +330,7 @@ class NonParametric():
         }    
         return pd.DataFrame(data)
 #--- Parametric Models
-
-### Need to have prob models.
+# LSQ Methods
 def plotting_positions(t, censored=None, formula="Blom"):
     # Numbers from "Effect of Renking Selection on the Weibull Modulus Estimation"
     # Authors: Kirtay, S; Dispinar, D.
@@ -373,6 +374,9 @@ def rank_adjust(t, censored=None):
     # Above reference provides excellent explanation of how this method is derived
     # This function currently assumes good input - Use if you know how
     # 15 Mar 2015
+    idx = np.argsort(t)
+    t = t[idx]
+    censored = censored[idx]
 
     # Total items in test/population
     n = len(t)
@@ -398,133 +402,131 @@ def rank_adjust(t, censored=None):
             ranks[i] = np.nan
     # Return adjusted ranks
     return ranks
-def weibull_lsq(t, censored=None, plotting="Blom"):
+def weibull_lsq(t, censored=None, plotting="Blom", lfp=False, rr='y'):
     # This currently performs only RRY
     # Need to add RRX - simple by only adding np.polyfit(y, x, 1)
     # Fits a Weibull model using cumulative probability and times (or stress) to failure.
+    t = np.array(t)
     if len(t) == 0:
         return None
     if censored is None:
         censored = np.zeros(len(t))
-    t = np.array(t)
-    t = sorted(t)
+    else:
+        censored = np.array(censored)
+    idx = np.argsort(t)
+    t = t[idx]
+    censored = censored[idx]
+    # Get the plotting positions
     f = plotting_positions(t, censored, plotting)
     # Convert data to linearised form
     x = np.log(t[censored == 0])
     y = np.log(np.log(1/(1 - f[censored == 0])))
     
-    # Fit a linear model to the data.
-    model = np.polyfit(x, y, 1)
-    
-    # Compute alpha and beta from linearised least square model
-    beta  = model[0]
-    alpha = np.exp(model[1]/-beta)
-    
-    # Output calculated parameters
-    return alpha, beta
-def weibull_mle(t, censored=None):
-    # Fits a Weibull model using cumulative probability and times (or stress) to failure.
+    if not lfp:
+        # Fit a linear model to the data.
+        if rr == 'y':
+            model = np.polyfit(x, y, 1)
+            beta  = model[0]
+            alpha = np.exp(model[1]/-beta)
+        elif rr == 'x':
+            model = np.polyfit(y, x, 1)
+            beta  = 1./model[0]
+            alpha = np.exp(model[1]/(beta*model[0]))
+        else:
+            return None
+        # Compute alpha and beta from linearised least square model
+        return alpha, beta
+    else:
+        # If RRX is needed, can implement in future
+        if rr == 'x': warnings.warn("RRX only used for lfp = False")
+        fun = lambda x: sum(((x[0] * (1 - np.exp(-(t[censored == 0]/x[1])**x[2]))) - f[censored == 0])**2)
+        # Set bounds for p, alpha, beta
+        bounds = ((0, 1), (0, None), (0, None))
+        # Fit a linear model to the data.
+        res = minimize(fun, (0.95, np.mean(t), 1.0), bounds=bounds)
+        p, alpha, beta = res.x
+        return alpha, beta, p
+    return None    
+def gumbel_lsq(t, censored=None, plotting="Blom", lfp=False, rr='y'):
+    # Fits a linearised Gumbel plot
     t = np.array(t)
-
     if len(t) == 0:
         return None
     if censored is None:
         censored = np.zeros(len(t))
-    
+    else:
+        censored = np.array(censored)
     idx = np.argsort(t)
     t = t[idx]
     censored = censored[idx]
-    # Create anonymous function to use with optimise
-    fun = lambda x: -sum((1-censored)*(np.log(x[1]/x[0]) + 
-        (x[1]-1)*np.log(t/x[0]) - (t/x[0])**(x[1])) - (censored)*((t/x[0])**(x[1])))
-    
-    # Set bounds for alpha, beta
-    bounds = ((0, None), (0, None))
-    
-    # Fit a linear model to the data.
-    res = minimize(fun, (np.mean(t), 1.0), bounds=bounds)
-
-    alpha, beta = res.x
-
-    return alpha, beta
-def weibull_lfp_lsq(f, t, censored=None):
-    # Fits a Weibull model using cumulative probability and times (or stress) to failure.
-    if len(f) == 0 or len(t) == 0:
-        return None
-    if censored is None:
-        censored = np.zeros(len(t))
+    # Get the plotting positions
+    f = plotting_positions(t, censored, plotting)
+    # Convert data to linearised form
         
-    t = t[~np.isnan(f)]
-    f = f[~np.isnan(f)]
-    
-    # Create anonymous function to use with optimise
-    fun = lambda x: sum(((x[0] * (1 - np.exp(-(t/x[1])**x[2]))) - f)**2)
-    
-    # Set bounds for p, alpha, beta
-    bounds = ((0, 1), (0, None), (0, None))
-    
-    # Fit a linear model to the data.
-    res = minimize(fun, (0.95, np.mean(t), 1.0), bounds=bounds)
-    
-    p, alpha, beta = res.x
-    
-    # Output calculated parameters
-    return p, alpha, beta
-def gumbel_lfp_lsq(f, t, censored=None, plot=False):
-    # Fits a Weibull model using cumulative probability and times (or stress) to failure.
-    if len(f) == 0 or len(t) == 0:
-        return None
-    if censored is None:
-        censored = np.zeros(len(t))
-        
-    t = t[~np.isnan(f)]
-    f = f[~np.isnan(f)]
-    
-    # Create anonymous function to use with optimise
-    fun = lambda x : sum(((x[0] * (np.exp(-np.exp(-(t-x[1])/x[2])))) - f)**2)
-    
-    # Set bounds for p, alpha, beta
-    bounds = ((0, 1), (None, None), (0, None))
-    
-    # Fit a linear model to the data.
-    res = minimize(fun, (0.5, np.mean(t), np.std(t)), bounds=bounds)
-    
-    p, mu, beta = res.x
+    x = t[censored == 0]
+    y = -np.log(-np.log(f[censored == 0]))
 
-    # Optional plot display
-    if plot:
-        plt.scatter(t, -np.log(-np.log(f)), color='k', marker='+', s=100)
-        plt.xlim(min(t)*0.99, max(t)*1.01)
-        tt = np.linspace(min(t), max(t), num=100)
-        plt.plot(tt, -np.log(-np.log(p*(np.exp(-np.exp(-(tt-mu)/beta))))), color='blue')
-    
-    # Output calculated parameters
-    return p, mu, beta
-def gumbel_lsq(f, t, censored=None, plot=False):
-    if len(f) == 0 or len(t) == 0:
-        return None
-    if censored is None:
-        censored = np.zeros(len(t))
-        
-    t = t[~np.isnan(f)]
-    f = f[~np.isnan(f)]
-    
-    x = t
-    y = -np.log(-np.log(f))
-    
-    beta, mu = np.polyfit(x, y, 1)
-    model = beta, mu
-    beta = 1 / beta
-    mu = -mu * beta
-
-    if plot:
-        plt.scatter(x, y, color='k', marker='+', s=100)
-        plt.xlim(min(x)*0.99, max(x)*1.01)
-        t = np.linspace(min(x), max(x), num=100)
-        plt.plot(t, model[0] * t + model[1], color='blue')
+    if not lfp:
+        # Fit a linear model to the data.
+        # Using the classic mx + b form
+        if rr == 'y':
+            m, b = np.polyfit(x, y, 1)
+            beta = 1 / m
+            mu = -b * beta
+        elif rr == 'x':
+            m, b = np.polyfit(y, x, 1)
+            beta = m
+            mu = beta * b / m
+        else:
+            # If not doing RRX or RRY.... Then
+            raise Exception('rr must either be \'x\' or \'y\'')
+    else:
+        # If RRX is needed, can implement in future
+        if rr == 'x': warnings.warn("RRX only used for lfp = False")
+        fun = lambda params : sum(((params[0] * (np.exp(-np.exp(-(x-params[1])/params[2])))) - f[censored == 0])**2)
+        # Set bounds for p, mu, beta
+        bounds = ((0, 1), (None, None), (0, None))
+        init = (0.5, np.mean(t), np.std(t))
+        # Fit model to the data.
+        res = minimize(fun, init, bounds=bounds)
+        p, mu, beta = res.x
+        return mu, beta, p
     
     return mu, beta
+# MLE Methods
+def weibull_mle(x, censored=None, lfp=False):
+    # Fits a Weibull model using MLE.
+    # Can work with left and right censoring.
+    # Also works with actual failure data....
+    #-----
+    # Convert t to array
+    x = np.array(x)
 
+    if len(x) == 0:
+        return None
+    if censored is None:
+        censored = np.zeros(len(x))
+    else:
+        censored = np.array(censored)
+    
+    # Create anonymous function to use with optimise
+    if not lfp:
+        fun = lambda params: Weibull.log_like(x, censored, params[0], params[1])
+        bounds = ((0, None), (0, None))
+        init =  (np.mean(x), 1.0)
+    else:
+        fun = lambda params: Weibull.lfp_log_like(x, censored, 
+            params[0], params[1], params[2])
+        # Set boundaries and initial conditions
+        bounds = ((0, None), (0, None), (0, 1))
+        init = (np.mean(x), 1.0, .5)
+    # Find MLE estimate
+    res = minimize(fun, init, bounds=bounds)
+    # Need to change this to return result.
+    return res.x
+
+# Gumbel
+# Gamma
 class Parametric():
     '''
     This is a class used to create an object that can be used to perform a variety 
@@ -607,11 +609,109 @@ class Parametric():
         return pd.DataFrame(data)
 
 ## Distributions
-
-# Weibull
-
 # Gumbel
-
 # Gamma
-
 # Exponential
+
+
+
+class Weibull():
+    @classmethod
+    def pdf(cls, t, alpha, beta):
+        f = np.multiply(np.divide(beta, alpha), np.multiply(np.power(np.divide(t, alpha), beta - 1), np.exp(-np.power(np.divide(t, alpha), beta))))
+        return f
+    @classmethod
+    def cdf(cls, t, alpha, beta):
+        return 1 - np.exp(-np.power(np.divide(t, alpha), beta))
+    @classmethod
+    def rel(cls, t, alpha, beta):
+        return np.exp(-np.power(np.divide(t, alpha), beta))
+    @classmethod
+    def pdf_lfp(cls, t, alpha, beta, p):
+        f = p * np.multiply(np.divide(beta, alpha), np.multiply(np.power(np.divide(t, alpha), beta - 1), np.exp(-np.power(np.divide(t, alpha), beta))))
+        return f
+    @classmethod
+    def cdf_lfp(cls, t, alpha, beta, p):
+        return 1 - p * np.exp(-np.power(np.divide(t, alpha), beta))
+    @classmethod
+    def rel_lfp(cls, t, alpha, beta, p):
+        return p * np.exp(-np.power(np.divide(t, alpha), beta))
+    @classmethod
+    def y_transform(cls, f, alpha, beta):
+        return np.log(np.log(1/(1-f)))
+    @classmethod
+    def y_inverse_transform(cls, pp, alpha, beta):
+        return 1. - 1./np.exp(np.exp(pp))
+    @classmethod
+    def linearised(cls, t, alpha, beta):
+        return beta*(np.log(t) - np.log(alpha))
+    @classmethod
+    def inverse_linearised(cls, f, alpha, beta):
+        return np.exp(f / beta + np.log(alpha))
+    @classmethod
+    def log_like(cls, t, cens, alpha, beta):
+        l_cens = np.sum(np.log(cls.cdf(t[cens == -1], alpha, beta)))
+        fails  = np.sum(np.log(cls.pdf(t[cens == 0], alpha, beta)))
+        r_cens = np.sum(np.log(cls.rel(t[cens == 1], alpha, beta)))
+        return -np.sum([l_cens, fails, r_cens])
+    @classmethod
+    def lfp_log_like(cls, t, cens, alpha, beta, p):
+        l_cens = np.sum(np.log(cls.cdf_lfp(t[cens == -1], alpha, beta, p)))
+        fails  = np.sum(np.log(cls.pdf_lfp(t[cens == 0], alpha, beta, p)))
+        r_cens = np.sum(np.log(cls.rel_lfp(t[cens == 1], alpha, beta, p)))
+        return -np.sum([l_cens, fails, r_cens])
+    @staticmethod
+    def random(N, alpha, beta):
+        return np.random.weibull(beta, N) * alpha
+class Gumbel():
+    @classmethod
+    def pdf(cls, t, mu, beta):
+        z = np.divide(t - mu, beta)
+        return 1./beta * np.exp(-z+np.exp(-z))
+    @classmethod
+    def cdf(cls, t, mu, beta):
+        return np.exp(-np.exp(-np.divide(t-mu, beta)))
+    @classmethod
+    def rel(cls, t, mu, beta):
+        return 1 - np.exp(-np.exp(-np.divide(t-mu, beta)))
+    @classmethod
+    def pdf_lfp(cls, t, mu, beta, p):
+        return p * cls.pdf(t, mu, beta, p)
+    @classmethod
+    def cdf_lfp(cls, t, mu, beta, p):
+        return p * cls.cdf(t, mu, beta, p)
+    @classmethod
+    def rel_lfp(cls, t, mu, beta, p):
+        return 1 - cls.pdf_lfp(t, mu, beta, p)
+    @classmethod
+    def y_transform(cls, f):
+        return -np.log(-np.log(f))
+    @classmethod
+    def y_inverse_transform(cls, y):
+        return 1. - 1./np.exp(np.exp(y))
+    @classmethod
+    def linearised(cls, t, mu, beta):
+        return beta*(np.log(t) - np.log(alpha))
+    @classmethod
+    def inverse_linearised(cls, f, mu, beta):
+        return np.exp(f / beta + np.log(alpha))
+    @classmethod
+    def log_like(cls, t, cens, mu, beta):
+        l_cens = np.sum(np.log(cls.cdf(t[cens == -1], alpha, beta)))
+        fails  = np.sum(np.log(cls.pdf(t[cens == 0], alpha, beta)))
+        r_cens = np.sum(np.log(cls.rel(t[cens == 1], alpha, beta)))
+        return -np.sum([l_cens, fails, r_cens])
+    @classmethod
+    def lfp_log_like(cls, t, cens, mu, beta, p):
+        l_cens = np.sum(np.log(cls.cdf_lfp(t[cens == -1], alpha, beta, p)))
+        fails  = np.sum(np.log(cls.pdf_lfp(t[cens == 0], alpha, beta, p)))
+        r_cens = np.sum(np.log(cls.rel_lfp(t[cens == 1], alpha, beta, p)))
+        return -np.sum([l_cens, fails, r_cens])
+    @staticmethod
+    def random(N, mu, beta):
+        return np.random.weibull(beta, N) * alpha
+
+
+
+
+
