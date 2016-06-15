@@ -213,9 +213,40 @@ def fleming_harrington(x, censored=None, counts=None):
     out.model = "Fleming-Harrington"
     
     return out
-def success_run(t, components=None):
-    # Put in Binomial theory
-    return None
+def turnbull(lower, upper, count=None):
+    lower = np.array(lower)
+    upper = np.array(upper)
+
+    # Component Number, n
+    n = len(lower)
+
+    x = np.append(lower, upper)
+    x = np.unique(x)
+    m = len(x)
+    p = np.repeat(1./m, m)
+    S = 1. - np.cumsum(p)
+
+    d = np.zeros(m)
+
+    alphas = np.zeros((n, m))
+    for j in range(m):
+        for i in range(n):
+            alphas[i, j] = int((lower[i] <= x[j]) and (upper[i] >= x[j]))
+
+    for j in range(m):
+        dd = np.zeros(n)
+        for i in range(n):
+            numerator = alphas[i, j] * p[j]
+            denominator = 0
+            for k in range(m):
+                denominator += alphas[i, k] * p[k]
+            dd[i] = numerator / denominator
+        d[j] = np.sum(dd)
+
+    return alphas, d
+def success_run(n, confidence=0.95, alpha=None):
+    if alpha is None: alpha = 1 - confidence
+    return np.power(alpha, 1./n)
 class NonParametric():
     '''
     This is a class used to create an object that can be used to perform a variety 
@@ -391,15 +422,18 @@ def weibull_lsq(t, censored=None, plotting="Blom"):
     
     # Output calculated parameters
     return alpha, beta
-
 def weibull_mle(t, censored=None):
     # Fits a Weibull model using cumulative probability and times (or stress) to failure.
-    t = sorted(t)
+    t = np.array(t)
+
     if len(t) == 0:
         return None
     if censored is None:
         censored = np.zeros(len(t))
-        
+    
+    idx = np.argsort(t)
+    t = t[idx]
+    censored = censored[idx]
     # Create anonymous function to use with optimise
     fun = lambda x: -sum((1-censored)*(np.log(x[1]/x[0]) + 
         (x[1]-1)*np.log(t/x[0]) - (t/x[0])**(x[1])) - (censored)*((t/x[0])**(x[1])))
@@ -490,3 +524,94 @@ def gumbel_lsq(f, t, censored=None, plot=False):
         plt.plot(t, model[0] * t + model[1], color='blue')
     
     return mu, beta
+
+class Parametric():
+    '''
+    This is a class used to create an object that can be used to perform a variety 
+    of Reliability Engineering tasks.
+
+    The intent is to encapsulate some reliability functions to reduce the complexity.
+    Need to have data for:
+    CDF - F
+    Rel - R
+    PDF - f
+    Haz - h
+    Cumh- H
+    dR  - Reliability Confidence bound.
+    given x and c
+    
+    Model - KM, NA, or FH
+    
+    
+    Need to have functions for:
+    Estimate F, R, f, h, H for any x
+    
+    Confidence Bound Funciton
+    
+    '''
+    def __init__(self):
+        # Need:
+        # F
+        # R
+        # h
+        # H
+        # f
+        # dR
+        self.R = None
+        self.F = None
+        self.h = None
+        self.H = None
+        self.f = None
+        
+        self.d = None
+        self.N = None
+        self.c = None
+        self.x = None
+        
+        
+        self.model = None
+        self._dR = None  
+    def __str__(self):
+        # Used to automate print(NonParametric()) call
+        return "%s Parametric Reliability Model" % self.model
+    def confidence_bounds(self, alpha=0.05):
+        if self._dR is None:
+            self._dR = qt.ppf(alpha/2, self.r[0] - 1)*self._ddR
+        return (self.R + self._dR), (self.R - self._dR)
+    def upper_confidence_bound(self, confidence=0.95, alpha=None):
+        if alpha is None:
+            alpha = 1 - confidence
+        return self.R - qt.ppf(alpha/2, self.n[0] - 1)* self._ddR  
+    def lower_confidence_bound(self, confidence=0.95, alpha=None):
+        if alpha is None:
+            alpha = 1 - confidence
+        return self.R + qt.ppf(alpha/2, self.n[0] - 1)* self._ddR
+    def plot(self, confidence_bounds=False):
+        R = np.append(1, self.R)
+        x = np.append(0, self.x)
+        plt.step(x, R, where='post')
+        plt.ylim(0, 1)
+        plt.xlim(0, max(x))
+        plt.show()
+    def to_dataframe(self):
+        data = {
+            'x' : self.x,
+            'Failures' : self.d,
+            'Failure Prob' : self.F,
+            'Reliability' : self.R,
+            'Censored' : self.c,
+            'Risk Set' : self.r,
+            'Hazard Rate' : self.h,
+            'Cumulative Haz' : self.H
+        }    
+        return pd.DataFrame(data)
+
+## Distributions
+
+# Weibull
+
+# Gumbel
+
+# Gamma
+
+# Exponential
