@@ -8,6 +8,7 @@ import nltk
 from collections import Counter
 from scipy.stats import t as qt
 from scipy.optimize import minimize
+from scipy.stats import norm
 import warnings
 
 
@@ -354,7 +355,7 @@ def plotting_positions(t, censored=None, formula="Blom"):
     elif formula == "Benard":     A, B = 0.3, 0.2
     elif formula == "Beard":      A, B = 0.31, 0.38
     elif formula == "Hazen":      A, B = 0.5, 0.0
-    elif formula == "Filiben":    A, B = 0.3175, 1.635
+    elif formula == "Filiben":    A, B = 0.3175, 1.635 # Need to check this one
     elif formula == "Gringorten": A, B = 0.44, 0.12
     elif formula == "None":       A, B = 0.0, 0.0
     elif formula == "Tukey":      A, B = 1./3., 1./3.
@@ -493,6 +494,52 @@ def gumbel_lsq(t, censored=None, plotting="Blom", lfp=False, rr='y'):
         return mu, beta, p
     
     return mu, beta
+def normal_lsq(t, censored=None, plotting="Blom", lfp=False, rr='y'):
+    # Fits a linearised Gumbel plot
+    t = np.array(t)
+    if len(t) == 0:
+        return None
+    if censored is None:
+        censored = np.zeros(len(t))
+    else:
+        censored = np.array(censored)
+    idx = np.argsort(t)
+    t = t[idx]
+    censored = censored[idx]
+    # Get the plotting positions
+    f = plotting_positions(t, censored, plotting)
+    # Convert data to linearised form
+        
+    x = t[censored == 0]
+    y = norm.ppf(f[censored == 0])
+
+    if not lfp:
+        # Fit a linear model to the data.
+        # Using the classic mx + b form
+        if rr == 'y':
+            m, b = np.polyfit(x, y, 1)
+            sigma = 1 / m
+            mu = -b * sigma
+        elif rr == 'x':
+            m, b = np.polyfit(y, x, 1)
+            sigma = m
+            mu = sigma * b / m
+        else:
+            # If not doing RRX or RRY.... Then
+            raise Exception('rr must either be \'x\' or \'y\'')
+    else:
+        # If RRX is needed, can implement in future
+        if rr == 'x': warnings.warn("RRX only used for lfp = False")
+        # Wrong functions
+        fun = lambda params : sum(((params[0] * norm.cdf(x, params[1], params[2]) - f[censored == 0])**2))
+        # Set bounds for p, mu, beta
+        bounds = ((0, 1), (None, None), (0, None))
+        init = (0.5, np.mean(t), np.std(t))
+        # Fit model to the data.
+        res = minimize(fun, init, bounds=bounds)
+        p, mu, sigma = res.x
+        return mu, sigma, p
+    return mu, sigma
 # MLE Methods
 def weibull_mle(x, censored=None, lfp=False):
     # Fits a Weibull model using MLE.
