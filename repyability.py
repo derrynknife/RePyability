@@ -28,4 +28,4 @@ class NonRepairable():
         bounds = ((0, None),)
         res = minimize(self.cost_rate, init, bounds=bounds)
         self.optimisation_results = res
-        return res.x
+        return res.x[0]
