@@ -23,6 +23,9 @@ class NonRepairable():
         avg_repl_time = self.avg_replacement_time(t)
         return (planned_costs + unplanned_costs) / avg_repl_time
 
+    def _log_cost_rate(self, t):
+        return np.log(self._cost_rate(t))
+
     def find_optimal_replacement(self):
         init = self.dist.mean()
         bounds = ((0, None),)
