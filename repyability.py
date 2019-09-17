@@ -7,6 +7,8 @@ from scipy.stats import norm
 class NonRepairable():
     """
     Class to store the non-repairable information
+
+    Added new comment
     """
     def __init__(self, distribution):
         self.dist = distribution
