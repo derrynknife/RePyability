@@ -12,6 +12,7 @@ class NonRepairable():
         self.cost_rate_single_cycle = np.vectorize(self._cost_rate_single_cycle)
 
     def set_costs_planned_and_unplanned(self, cp, cu):
+        assert cp < cu
         self.cp = cp
         self.cu = cu
 
@@ -39,7 +40,7 @@ class NonRepairable():
 
     def find_optimal_replacement(self):
         if self.dist.dist.name == "Weibull":
-            if self.dist.beta <= 1:
+            if self.dist.params[1] <= 1:
                 return np.inf
         init = self.dist.mean()
         bounds = ((1e-8, None),)
@@ -49,10 +50,8 @@ class NonRepairable():
 
     def find_optimal_replacement_single_cycle(self):
         if self.dist.dist.name == "Weibull":
-            if self.dist.beta <= 1:
+            if self.dist.params[1] <= 1:
                 return np.inf
-            else:
-                return self.dist.alpha * (self.cp/(self.dist.beta * (self.cu - self.cp))) ** (1./self.dist.beta)
         init = self.dist.mean()
         bounds = ((1e-8, None),)
         res = minimize(self._log_cost_rate_single_cycle, init, bounds=bounds, tol=1e-10)
