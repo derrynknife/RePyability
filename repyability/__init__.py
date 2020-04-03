@@ -2,6 +2,24 @@ import numpy as np
 from scipy.integrate import quad
 from scipy.optimize import minimize
 
+class Interference():
+    def __init__(self, stress, strength):
+        self.stress = stress
+        self.strength = strength
+
+    def reliability(self, n=1000):
+        if self.stress.dist.name == "Normal":
+            if self.strength.dist.name == "Normal":
+                print("Normals")
+                mu = self.strength.params[0] - self.stress.params[0]
+                sig = np.sqrt(self.strength.params[1]**2 + 
+                    self.stress.params[1]**2)
+                return 1 - self.stress.dist.ff(0, mu, sig)
+        stress_rvs = self.stress.random(n)
+        strength_rvs = self.strength.random(n)
+        return 1 - np.sum((stress_rvs > strength_rvs).astype(np.float64))/n
+
+
 class NonRepairable():
     """
     Class to store the non-repairable information
