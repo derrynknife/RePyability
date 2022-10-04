@@ -1,2 +1,4 @@
 surpyval
 networkx
+scipy
+numpy
