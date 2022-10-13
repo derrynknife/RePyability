@@ -22,6 +22,24 @@ class PerfectUnreliability:
     def ff(cls, x):
         return np.ones_like(x).astype(float)
 
+class ExactFailureTimeModel:
+
+    def sf(self, x):
+        x = np.atleast_1d(x)
+        return (x < self.T).astype(float)
+
+    def ff(self, x):
+        x = np.atleast_1d(x)
+        return (x >= self.T).astype(float)
+
+class ExactFailureTime:
+
+    @classmethod
+    def from_params(cls, T):
+        out = ExactFailureTimeModel()
+        out.T = T
+        return out
+
 class RBD:
     # TODO: Implement these
     # Finding cut-sets:
