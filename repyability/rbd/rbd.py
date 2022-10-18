@@ -1,44 +1,12 @@
-import numpy as np
-import networkx as nx
 from collections import defaultdict
 from copy import copy
+
+import networkx as nx
+import numpy as np
 import surpyval as surv
 
-class PerfectReliability:
-    @classmethod
-    def sf(cls, x):
-        return np.ones_like(x).astype(float)
+from helper_classes import PerfectReliability, PerfectUnreliability
 
-    @classmethod
-    def ff(cls, x):
-        return np.zeros_like(x).astype(float)
-
-class PerfectUnreliability:
-    @classmethod
-    def sf(cls, x):
-        return np.zeros_like(x).astype(float)
-
-    @classmethod
-    def ff(cls, x):
-        return np.ones_like(x).astype(float)
-
-class ExactFailureTimeModel:
-
-    def sf(self, x):
-        x = np.atleast_1d(x)
-        return (x < self.T).astype(float)
-
-    def ff(self, x):
-        x = np.atleast_1d(x)
-        return (x >= self.T).astype(float)
-
-class ExactFailureTime:
-
-    @classmethod
-    def from_params(cls, T):
-        out = ExactFailureTimeModel()
-        out.T = T
-        return out
 
 class RBD:
     # TODO: Implement these
@@ -62,7 +30,7 @@ class RBD:
             if not G.has_node(node):
                 raise ValueError("Node {} not in edge list".format(node))
             visited_nodes.add(node)
-            if nodes[node] in ['input_node', 'output_node']:
+            if nodes[node] in ["input_node", "output_node"]:
                 setattr(self, nodes[node], node)
                 components[node] = PerfectReliability
 
@@ -83,7 +51,7 @@ class RBD:
                     sim += model.random(mc_samples)
 
                 new_models[k] = surv.KaplanMeier.fit(sim)
-        
+
         # This will override the existing list with Non-Parametric
         # models
         components = {**components, **new_models}
@@ -94,13 +62,24 @@ class RBD:
     def all_path_sets(self):
         # For a very large RBD, this seems expensive; O(n!).....
         # Need to convert to a fault tree using graph algs
-        return nx.all_simple_paths(self.G, source=self.input_node, target=self.output_node)
+        return nx.all_simple_paths(
+            self.G, source=self.input_node, target=self.output_node
+        )
 
-    def sf(self, x, working_nodes=None, broken_nodes=None,
-           working_components=None, broken_components=None):
-        
+    def sf(
+        self,
+        x,
+        working_nodes=None,
+        broken_nodes=None,
+        working_components=None,
+        broken_components=None,
+    ):
+
         if not self.check_rbd_structure():
-            raise ValueError("RBD not correctly structured, add edges or nodes to create correct structure.")
+            raise ValueError(
+                "RBD not correctly structured, add edges or nodes \
+                to create correct structure."
+            )
         if working_nodes is None:
             working_nodes = []
         if broken_nodes is None:
@@ -148,16 +127,20 @@ class RBD:
 
         for edge in self.G.edges:
             source, target = edge
-            node_degrees[source]['out'] += 1
-            node_degrees[target]['in'] += 1
+            node_degrees[source]["out"] += 1
+            node_degrees[target]["in"] += 1
 
-        input_nodes = [n for k, n in node_degrees.items() if n['in'] == 0]
-        output_nodes = [n for k, n in node_degrees.items() if n['out'] == 0]
+        input_nodes = [n for k, n in node_degrees.items() if n["in"] == 0]
+        output_nodes = [n for k, n in node_degrees.items() if n["out"] == 0]
         has_node_with_no_input = len(input_nodes) != 1
         has_node_with_no_output = len(output_nodes) != 1
-        if not any([has_circular_dependency,
-                    has_node_with_no_input,
-                    has_node_with_no_output]):
+        if not any(
+            [
+                has_circular_dependency,
+                has_node_with_no_input,
+                has_node_with_no_output,
+            ]
+        ):
 
             self.rbd_structural_errors = None
             return True
@@ -165,7 +148,7 @@ class RBD:
             self.rbd_structural_errors = {
                 "has_circular_dependency": has_circular_dependency,
                 "has_node_with_no_input": has_node_with_no_input,
-                "has_node_with_no_output": has_node_with_no_output
+                "has_node_with_no_output": has_node_with_no_output,
             }
             return False
 
@@ -213,15 +196,19 @@ class RBD:
             node_importance[node] = I_B[node] * node_ff / (1 - as_is)
         return node_importance
 
-    def fussel_vessely(self, x, fv_type='p'):
-        if fv_type not in ['c', 'p']:
-            raise ValueError("'fv_type' must be either c (cut set) or p (path set)")
+    def fussel_vessely(self, x, fv_type="p"):
+        if fv_type not in ["c", "p"]:
+            raise ValueError(
+                "'fv_type' must be either c (cut set) or p (path set)"
+            )
 
         # TODO: Implement cut set based FV importance.
-        if fv_type == 'c':
-            raise NotImplementedError("cut set type FV importance measure not yet implemented")
+        if fv_type == "c":
+            raise NotImplementedError(
+                "cut set type FV importance measure not yet implemented"
+            )
 
-        system_reliability  = self.sf(x)
+        system_reliability = self.sf(x)
 
         paths = list(self.all_path_sets())
         node_importance = {}
@@ -244,10 +231,10 @@ class RBD:
                         continue
                     path_rel += r_dict[self.nodes[n]]
                 paths_reliabililty.append(path_rel)
-            
+
             paths_sf = np.atleast_2d(paths_reliabililty)
             paths_sf = 1 - np.exp(np.sum(paths_sf, axis=0))
             paths_sf = paths_sf / system_reliability
             node_importance[node] = np.copy(paths_sf)
-        
+
         return node_importance
