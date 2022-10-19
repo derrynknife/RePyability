@@ -5,7 +5,7 @@ import networkx as nx
 import numpy as np
 import surpyval as surv
 
-from helper_classes import PerfectReliability, PerfectUnreliability
+from .helper_classes import PerfectReliability, PerfectUnreliability
 
 
 class RBD:
@@ -196,7 +196,14 @@ class RBD:
             node_importance[node] = I_B[node] * node_ff / (1 - as_is)
         return node_importance
 
-    def fussel_vessely(self, x, fv_type="p"):
+    def fussel_vessely(self, x: int | float, fv_type: str = "p"):
+        """
+        Calculate Fussel-Vesely Importance of all components at time/s x.
+
+        fv_type dictates the method of calculation:
+            "p" - path set
+            "c" - cut set
+        """
         if fv_type not in ["c", "p"]:
             raise ValueError(
                 "'fv_type' must be either c (cut set) or p (path set)"
@@ -216,10 +223,12 @@ class RBD:
         x = np.atleast_1d(x)
         r_dict = {}
         for component in self.components.keys():
+            # Calculating reliability in the log-domain though so the 
+            # components' reliability can be added avoid possible underflow
             r_dict[component] = np.log(self.components[component].sf(x))
 
         for node in self.nodes.keys():
-            paths_reliabililty = []
+            paths_reliability = []
             for path in paths:
                 if node in self.in_or_out:
                     continue
@@ -230,9 +239,9 @@ class RBD:
                     if n in self.in_or_out:
                         continue
                     path_rel += r_dict[self.nodes[n]]
-                paths_reliabililty.append(path_rel)
+                paths_reliability.append(path_rel)
 
-            paths_sf = np.atleast_2d(paths_reliabililty)
+            paths_sf = np.atleast_2d(paths_reliability)
             paths_sf = 1 - np.exp(np.sum(paths_sf, axis=0))
             paths_sf = paths_sf / system_reliability
             node_importance[node] = np.copy(paths_sf)
