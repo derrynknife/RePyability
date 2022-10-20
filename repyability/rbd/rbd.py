@@ -1,11 +1,15 @@
 from collections import defaultdict
 from copy import copy
+from itertools import combinations
+from typing import Any, Hashable, Iterable
 
 import networkx as nx
 import numpy as np
 import surpyval as surv
 
-from .helper_classes import PerfectReliability, PerfectUnreliability
+# TODO: Seek advice from Derryn as to why sf() needs the args it has, may need
+# to import PerfectUnreliability again
+from .helper_classes import PerfectReliability
 
 
 class RBD:
@@ -13,7 +17,37 @@ class RBD:
     # Finding cut-sets:
     # https://www.degruyter.com/document/doi/10.1515/9783110725599-007/html?lang=en
 
-    def __init__(self, nodes, components, edges, mc_samples=10_000):
+    def __init__(
+        self,
+        nodes: dict[Hashable, Hashable],
+        components: dict[Hashable, Any],
+        edges: Iterable[tuple[Hashable, Hashable]],
+        mc_samples: int = 10_000,
+    ):
+        """Create a Reliability Block Diagram
+
+        Parameters
+        ----------
+        nodes : dict[Hashable, Hashable]
+            A dictionary of component names as keys, the values don't matter
+            except for the input and output nodes which need string values
+            `"input_node"` and `"output_node"` respectively
+        components : dict[Hashable, Any]
+            A dictionary of all non-input-output components names as keys
+            with their SurPyval distribution as values
+        edges : Iterable[tuple[Hashable, Hashable]]
+            The collection of edges, e.g. [[1, 2], [2, 3]] would correspond to
+            the edges 1-2 and 2-3
+        mc_samples : int, optional
+            TODO, by default 10_000
+
+        Raises
+        ------
+        ValueError
+            _description_
+        ValueError
+            _description_
+        """
 
         # Create RBD graph
         G = nx.DiGraph()
@@ -68,55 +102,96 @@ class RBD:
 
     def sf(
         self,
-        x,
-        working_nodes=None,
-        broken_nodes=None,
-        working_components=None,
-        broken_components=None,
-    ):
+        x: int | float | Iterable[int | float],
+        working_nodes: Iterable[Hashable] = [],
+        broken_nodes: Iterable[Hashable] = [],
+        working_components: Iterable[Hashable] = [],
+        broken_components: Iterable[Hashable] = [],
+    ) -> np.ndarray[float]:
+        """Returns the system reliability for time/s x
+
+        Parameters
+        ----------
+        x : int | float | Iterable[int  |  float]
+            Time/s as a number or iterable
+        working_nodes : Iterable[Hashable], optional
+            _description_, by default []
+        broken_nodes : Iterable[Hashable], optional
+            _description_, by default []
+        working_components : Iterable[Hashable], optional
+            _description_, by default []
+        broken_components : Iterable[Hashable], optional
+            _description_, by default []
+
+        Returns
+        -------
+        np.ndarray[float]
+            _description_
+
+        Raises
+        ------
+        ValueError
+            _description_
+        """
+
+        # Per Note 3 from "UNIT 16 RELIABILITY EVALUATION OF COMPLEX SYSTEMS"
+        # (https://egyankosh.ac.in/bitstream/123456789/35170/1/Unit-16.pdf),
+        # you should:
+        # - Apply the cut set method with only first order terms if
+        #   marginal error is tolerable, and components have high reliability
+        #   ?TODO: test whether indeed quicker?
+        # - Or if you want to use all terms, then apply either the tie set or
+        #   cut set method depending on which has less sets for the system,
+        #   and thus less calculation
+        #   (typically cut sets)
+        #
+        # At the moment, only the tie set method is implemented.
 
         if not self.check_rbd_structure():
             raise ValueError(
                 "RBD not correctly structured, add edges or nodes \
                 to create correct structure."
             )
-        if working_nodes is None:
-            working_nodes = []
-        if broken_nodes is None:
-            broken_nodes = []
-        if working_components is None:
-            working_components = []
-        if broken_components is None:
-            broken_components = []
 
         x = np.atleast_1d(x)
-        r_dict = {}
-        for component in self.components.keys():
-            if component in working_components:
-                r_dict[component] = np.log(PerfectReliability.sf(x))
-            elif component in broken_components:
-                r_dict[component] = np.log(PerfectUnreliability.sf(x))
-            else:
-                r_dict[component] = np.log(self.components[component].sf(x))
 
-        paths = self.all_path_sets()
-        paths_reliabililty = []
-        for path in paths:
-            path_rel = np.zeros_like(x).astype(float)
-            for node in path:
-                if node in self.in_or_out:
-                    continue
-                if node in working_nodes:
-                    path_rel += np.log(PerfectReliability.sf(x))
-                elif node in broken_nodes:
-                    path_rel += np.log(PerfectUnreliability.sf(x))
-                else:
-                    path_rel += r_dict[self.nodes[node]]
-            paths_reliabililty.append(np.exp(path_rel))
-        paths_ff = 1 - np.atleast_2d(paths_reliabililty)
-        # return 1 - np.prod(paths_ff, axis=0)
-        # Is this really needed?
-        return 1 - np.exp(np.sum(np.log(paths_ff), axis=0))
+        # Get all path sets
+        paths = list(self.all_path_sets())
+        num_paths = len(paths)
+
+        # Perform intersection calculation, which isn't as simple as summating
+        # in the case of mutual non-exclusivity
+        # i is the 'level' of the intersection calc
+        system_rel = np.zeros_like(x)  # Return array
+        for i in range(1, num_paths + 1):
+            # Get tie-set combinations for level i
+            tieset_combs = combinations(paths, i)
+
+            # Calculate the reliability of each level combination
+            # Making sure to not multiply a components' reliability twice
+            level_sum = np.zeros_like(x)
+            for tieset_comb in tieset_combs:
+                # Make a set of components out of the path/tieset
+                s = set()
+                for path in tieset_comb:
+                    s.update(path)
+
+                # Now calculate the tieset reliability
+                tieset_rel = np.ones_like(x)
+                for comp in s:
+                    tieset_rel = tieset_rel * self.components[comp].sf(x)
+
+                # Now add the tieset reliability to the level sum
+                level_sum = level_sum + tieset_rel
+
+            # Finally add/subtract the level sum to/from the system_rel if the
+            # level is even/odd
+            if i % 2 == 1:
+                system_rel = system_rel + level_sum
+            else:
+                system_rel = system_rel - level_sum
+
+        return system_rel
 
     def ff(self, x):
         return 1 - self.sf(x)
@@ -223,7 +298,7 @@ class RBD:
         x = np.atleast_1d(x)
         r_dict = {}
         for component in self.components.keys():
-            # Calculating reliability in the log-domain though so the 
+            # Calculating reliability in the log-domain though so the
             # components' reliability can be added avoid possible underflow
             r_dict[component] = np.log(self.components[component].sf(x))
 

@@ -24,16 +24,54 @@ class FixedProbabilityFitter:
 
 # Test RBDs as pytest fixtures
 @pytest.fixture
+def rbd_series():
+    """A simple RBD with three intermediate nodes in series."""
+    nodes = {1: "input_node", 2: 2, 3: 3, 4: 4, 5: "output_node"}
+    edges = [[1, 2], [2, 3], [3, 4], [4, 5]]
+    components = {
+        2: surv.Weibull.from_params([20, 2]),
+        3: surv.Weibull.from_params([100, 3]),
+        4: surv.Weibull.from_params([50, 20]),
+    }
+    return RBD(nodes, components, edges)
+
+
+@pytest.fixture
+def rbd_parallel():
+    """A simple RBD with three intermediate nodes in parallel."""
+    nodes = {1: "input_node", 2: 2, 3: 3, 4: 4, 5: "output_node"}
+    edges = [[1, 2], [1, 3], [1, 4], [2, 5], [3, 5], [4, 5]]
+    components = {
+        2: FixedProbabilityFitter.from_params(0.8),
+        3: FixedProbabilityFitter.from_params(0.9),
+        4: FixedProbabilityFitter.from_params(0.85),
+    }
+    return RBD(nodes, components, edges)
+
+
+@pytest.fixture
 def rbd1():
     """Example 6.10 from Modarres & Kaminskiy."""
     qp = 0.03
     qv = 0.01
-    nodes = {1: "input_node", 2: 2, 3: 3, 4: 4, 5: "output_node"}
-    edges = [[1, 2], [1, 3], [2, 4], [3, 4], [4, 5]]
+    nodes = {
+        "source": "input_node",
+        "pump1": 2,
+        "pump2": 3,
+        "valve": 4,
+        "sink": "output_node",
+    }
+    edges = [
+        ["source", "pump1"],
+        ["source", "pump2"],
+        ["pump1", "valve"],
+        ["pump2", "valve"],
+        ["valve", "sink"],
+    ]
     components = {
-        2: FixedProbabilityFitter.from_params(1 - qp),
-        3: FixedProbabilityFitter.from_params(1 - qp),
-        4: FixedProbabilityFitter.from_params(1 - qv),
+        "pump1": FixedProbabilityFitter.from_params(1 - qp),
+        "pump2": FixedProbabilityFitter.from_params(1 - qp),
+        "valve": FixedProbabilityFitter.from_params(1 - qv),
     }
 
     return RBD(nodes=nodes, components=components, edges=edges)
@@ -69,27 +107,30 @@ def rbd2():
 
 
 @pytest.fixture
-def rbd_series():
-    """A simple RBD with three intermediate nodes in series."""
-    nodes = {1: "input_node", 2: 2, 3: 3, 4: 4, 5: "output_node"}
-    edges = [[1, 2], [2, 3], [3, 4], [4, 5]]
+def rbd3():
+    """
+    Fig. 16.1 from "UNIT 16 RELIABILITY EVALUATION OF COMPLEX SYSTEMS" by
+    ignou (https://egyankosh.ac.in/bitstream/123456789/35170/1/Unit-16.pdf).
+    """
+    nodes = {0: "input_node", 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: "output_node"}
+    edges = [
+        [0, 1],
+        [0, 3],
+        [1, 2],
+        [3, 4],
+        [1, 5],
+        [3, 5],
+        [5, 2],
+        [5, 4],
+        [2, 6],
+        [4, 6],
+    ]
     components = {
-        2: surv.Weibull.from_params([20, 2]),
-        3: surv.Weibull.from_params([100, 3]),
-        4: surv.Weibull.from_params([50, 20]),
-    }
-    return RBD(nodes, components, edges)
-
-
-@pytest.fixture
-def rbd_parallel():
-    """A simple RBD with three intermediate nodes in parallel."""
-    nodes = {1: "input_node", 2: 2, 3: 3, 4: 4, 5: "output_node"}
-    edges = [[1, 2], [1, 3], [1, 4], [2, 5], [3, 5], [4, 5]]
-    components = {
-        2: FixedProbabilityFitter.from_params(0.8),
-        3: FixedProbabilityFitter.from_params(0.9),
-        4: FixedProbabilityFitter.from_params(0.85),
+        1: FixedProbabilityFitter.from_params(0.95),
+        2: FixedProbabilityFitter.from_params(0.95),
+        3: FixedProbabilityFitter.from_params(0.95),
+        4: FixedProbabilityFitter.from_params(0.95),
+        5: FixedProbabilityFitter.from_params(0.95),
     }
     return RBD(nodes, components, edges)
 
@@ -102,7 +143,10 @@ def test_rbd_components(rbd1, rbd2):
 
 
 def test_rbd_all_path_sets(rbd1, rbd2):
-    assert list(rbd1.all_path_sets()) == [[1, 2, 4, 5], [1, 3, 4, 5]]
+    assert list(rbd1.all_path_sets()) == [
+        ["source", "pump1", "valve", "sink"],
+        ["source", "pump2", "valve", "sink"],
+    ]
     assert list(rbd2.all_path_sets()) == [
         [1, 2, 3, 5, 6, 7, 8],
         [1, 2, 4, 7, 8],
@@ -111,29 +155,47 @@ def test_rbd_all_path_sets(rbd1, rbd2):
 
 def test_rbd_sf_series(rbd_series):
     t = 5
-    assert pytest.approx(
-        rbd_series.components[2].sf(t)
-        * rbd_series.components[3].sf(t)
-        * rbd_series.components[4].sf(t)
-    ) == rbd_series.sf(t)
+    assert (
+        pytest.approx(
+            rbd_series.components[2].sf(t)
+            * rbd_series.components[3].sf(t)
+            * rbd_series.components[4].sf(t)
+        )
+        == rbd_series.sf(t)[0]
+    )
 
 
 def test_rbd_sf_parallel(rbd_parallel):
     t = 2
-    assert pytest.approx(
-        (1 - rbd_parallel.components[2].sf(t))
-        * (1 - rbd_parallel.components[3].sf(t))
-        * (1 - rbd_parallel.components[4].sf(t))
-    ) == 1 - rbd_parallel.sf(t)
+    assert (
+        pytest.approx(
+            (1 - rbd_parallel.components[2].sf(t))
+            * (1 - rbd_parallel.components[3].sf(t))
+            * (1 - rbd_parallel.components[4].sf(t))
+        )
+        == 1 - rbd_parallel.sf(t)[0]
+    )
 
 
 def test_rbd_sf_composite(rbd1):
     """Tests with an RBD with both parallel and series components."""
     t = 2
-    assert pytest.approx(
-        (1 - (1 - rbd1.components[2].sf(t)) * (1 - rbd1.components[3].sf(t)))
-        * rbd1.components[4].sf(t)
-    ) == rbd1.sf(t)
+    assert (
+        pytest.approx(
+            (
+                1
+                - (1 - rbd1.components["pump1"].sf(t))
+                * (1 - rbd1.components["pump2"].sf(t))
+            )
+            * rbd1.components["valve"].sf(t)
+        )
+        == rbd1.sf(t)[0]
+    )
+
+
+def test_rbd_sf_complex(rbd3):
+    """Tests with an RBD that cannot be reduced to parallel or series."""
+    assert pytest.approx(0.994780625) == rbd3.sf(1000)[0]
 
 
 # TODO: Test importance calcs, need to fix survival function first though
