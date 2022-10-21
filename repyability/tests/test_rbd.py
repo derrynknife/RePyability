@@ -1,7 +1,9 @@
-import surpyval as surv
-import pytest
-from repyability.rbd.rbd import RBD
 import numpy as np
+import pytest
+import surpyval as surv
+from repyability.rbd.rbd import RBD
+
+# TODO: add array x's
 
 
 # Fixed probability distributions
@@ -24,7 +26,7 @@ class FixedProbabilityFitter:
 
 # Test RBDs as pytest fixtures
 @pytest.fixture
-def rbd_series():
+def rbd_series() -> RBD:
     """A simple RBD with three intermediate nodes in series."""
     nodes = {1: "input_node", 2: 2, 3: 3, 4: 4, 5: "output_node"}
     edges = [[1, 2], [2, 3], [3, 4], [4, 5]]
@@ -37,7 +39,7 @@ def rbd_series():
 
 
 @pytest.fixture
-def rbd_parallel():
+def rbd_parallel() -> RBD:
     """A simple RBD with three intermediate nodes in parallel."""
     nodes = {1: "input_node", 2: 2, 3: 3, 4: 4, 5: "output_node"}
     edges = [[1, 2], [1, 3], [1, 4], [2, 5], [3, 5], [4, 5]]
@@ -50,15 +52,15 @@ def rbd_parallel():
 
 
 @pytest.fixture
-def rbd1():
+def rbd1() -> RBD:
     """Example 6.10 from Modarres & Kaminskiy."""
     qp = 0.03
     qv = 0.01
     nodes = {
         "source": "input_node",
-        "pump1": 2,
-        "pump2": 3,
-        "valve": 4,
+        "pump1": "pump1",
+        "pump2": "pump2",
+        "valve": "valve",
         "sink": "output_node",
     }
     edges = [
@@ -78,7 +80,7 @@ def rbd1():
 
 
 @pytest.fixture
-def rbd2():
+def rbd2() -> RBD:
     edges = [[1, 2], [2, 3], [2, 4], [4, 7], [3, 5], [5, 6], [6, 7], [7, 8]]
     nodes = {
         1: "input_node",
@@ -107,7 +109,7 @@ def rbd2():
 
 
 @pytest.fixture
-def rbd3():
+def rbd3() -> RBD:
     """
     Fig. 16.1 from "UNIT 16 RELIABILITY EVALUATION OF COMPLEX SYSTEMS" by
     ignou (https://egyankosh.ac.in/bitstream/123456789/35170/1/Unit-16.pdf).
@@ -135,14 +137,41 @@ def rbd3():
     return RBD(nodes, components, edges)
 
 
+@pytest.fixture
+def rbd_repeated_component_parallel() -> RBD:
+    """Basically rbd_parallel with a repeated component (component 2)."""
+    nodes = {1: "input_node", 2: 2, 3: 3, 4: 4, 5: 2, 6: "output_node"}
+    edges = [[1, 2], [1, 3], [1, 4], [1, 5], [2, 6], [3, 6], [4, 6], [5, 6]]
+    components = {
+        2: FixedProbabilityFitter.from_params(0.8),
+        3: FixedProbabilityFitter.from_params(0.9),
+        4: FixedProbabilityFitter.from_params(0.85),
+    }
+    return RBD(nodes, components, edges)
+
+
+@pytest.fixture
+def rbd_repeated_component_series() -> RBD:
+    """A simple RBD with three intermediate nodes in series."""
+    nodes = {1: "input_node", 2: 2, 3: 3, 4: 2, 5: "output_node"}
+    edges = [[1, 2], [2, 3], [3, 4], [4, 5]]
+    components = {
+        2: surv.Weibull.from_params([20, 2]),
+        3: surv.Weibull.from_params([100, 3]),
+    }
+    return RBD(nodes, components, edges)
+
+
 # Tests
-def test_rbd_components(rbd1, rbd2):
-    # Check components are correct lengths
+
+# Check components are correct lengths
+def test_rbd_components(rbd1: RBD, rbd2: RBD):
     assert len(rbd1.components) == 5
     assert len(rbd2.components) == 8
 
 
-def test_rbd_all_path_sets(rbd1, rbd2):
+# Test all_path_sets()
+def test_rbd_all_path_sets(rbd1: RBD, rbd2: RBD):
     assert list(rbd1.all_path_sets()) == [
         ["source", "pump1", "valve", "sink"],
         ["source", "pump2", "valve", "sink"],
@@ -153,7 +182,8 @@ def test_rbd_all_path_sets(rbd1, rbd2):
     ]
 
 
-def test_rbd_sf_series(rbd_series):
+# Test sf() w/ simple series RBD
+def test_rbd_sf_series(rbd_series: RBD):
     t = 5
     assert (
         pytest.approx(
@@ -165,7 +195,8 @@ def test_rbd_sf_series(rbd_series):
     )
 
 
-def test_rbd_sf_parallel(rbd_parallel):
+# Test sf() w/ simple series RBD
+def test_rbd_sf_parallel(rbd_parallel: RBD):
     t = 2
     assert (
         pytest.approx(
@@ -177,7 +208,8 @@ def test_rbd_sf_parallel(rbd_parallel):
     )
 
 
-def test_rbd_sf_composite(rbd1):
+# Test sf() w/ a simple RBD with both parallel and series components
+def test_rbd_sf_composite(rbd1: RBD):
     """Tests with an RBD with both parallel and series components."""
     t = 2
     assert (
@@ -193,9 +225,97 @@ def test_rbd_sf_composite(rbd1):
     )
 
 
-def test_rbd_sf_complex(rbd3):
-    """Tests with an RBD that cannot be reduced to parallel or series."""
+# Test sf() w/ an RBD that cannot be reduced to parallel or series
+def test_rbd_sf_complex(rbd3: RBD):
     assert pytest.approx(0.994780625) == rbd3.sf(1000)[0]
+
+
+# Test sf() w/ repeated component
+# i.e. Two nodes correspond to one node
+def test_rbd_sf_repeated_component(rbd_repeated_component_parallel: RBD):
+    t = 2
+    assert (
+        pytest.approx(
+            (1 - rbd_repeated_component_parallel.components[2].sf(t))
+            * (1 - rbd_repeated_component_parallel.components[3].sf(t))
+            * (1 - rbd_repeated_component_parallel.components[4].sf(t))
+            # Not 'component 5' as nodes 2 and 5 are both component 2
+        )
+        == 1 - rbd_repeated_component_parallel.sf(t)[0]
+    )
+
+
+# Test sf() w/ broken node
+def test_rbd_sf_broken_node(rbd_parallel: RBD):
+    t = 2
+    assert (
+        pytest.approx(
+            (1 - rbd_parallel.components[2].sf(t))
+            * (1 - rbd_parallel.components[4].sf(t))
+        )
+        == 1 - rbd_parallel.sf(t, broken_nodes=[3])[0]
+    )
+
+
+# Test sf() w/ broken component
+def test_rbd_sf_broken_component(rbd_repeated_component_parallel: RBD):
+    t = 2
+    assert (
+        pytest.approx(
+            (1 - rbd_repeated_component_parallel.components[2].sf(t))
+            * (1 - rbd_repeated_component_parallel.components[4].sf(t))
+        )
+        == 1 - rbd_repeated_component_parallel.sf(t, broken_components=[3])[0]
+    )
+    assert (
+        pytest.approx(
+            (1 - rbd_repeated_component_parallel.components[3].sf(t))
+            * (1 - rbd_repeated_component_parallel.components[4].sf(t))
+        )
+        == 1 - rbd_repeated_component_parallel.sf(t, broken_components=[2])[0]
+    )
+
+
+# Test sf() w/ working node
+def test_rbd_sf_working_node(rbd_series: RBD):
+    t = 2
+    assert (
+        pytest.approx(
+            rbd_series.components[2].sf(t) * rbd_series.components[4].sf(t)
+        )
+        == rbd_series.sf(t, working_nodes=[3])[0]
+    )
+
+
+# Test sf() w/ working component
+def test_rbd_sf_working_component(rbd_repeated_component_parallel: RBD):
+    t = 2
+    assert (
+        pytest.approx(1)
+        == rbd_repeated_component_parallel.sf(t, working_components=[2])[0]
+    )
+    assert (
+        pytest.approx(1)
+        == rbd_repeated_component_parallel.sf(t, working_components=[3])[0]
+    )
+
+
+# Test ff(), can just test parallel as ff() just calls 1 - sf()
+def test_rbd_ff(rbd_parallel):
+    t = 5
+    assert (
+        pytest.approx(
+            (1 - rbd_parallel.components[2].sf(t))
+            * (1 - rbd_parallel.components[3].sf(t))
+            * (1 - rbd_parallel.components[4].sf(t))
+        )
+        == rbd_parallel.ff(t)[0]
+    )
+
+
+# Test birnbaum_importance() w/ parallel RBD
+# def test_rbd_birnbaum_importance(rbd_parallel):
+#     assert pytest.approx()
 
 
 # TODO: Test importance calcs, need to fix survival function first though

@@ -7,9 +7,7 @@ import networkx as nx
 import numpy as np
 import surpyval as surv
 
-# TODO: Seek advice from Derryn as to why sf() needs the args it has, may need
-# to import PerfectUnreliability again
-from .helper_classes import PerfectReliability
+from .helper_classes import PerfectReliability, PerfectUnreliability
 
 
 class RBD:
@@ -24,29 +22,28 @@ class RBD:
         edges: Iterable[tuple[Hashable, Hashable]],
         mc_samples: int = 10_000,
     ):
-        """Create a Reliability Block Diagram
+        """Create a Reliability Block Diagram object
 
         Parameters
         ----------
         nodes : dict[Hashable, Hashable]
-            A dictionary of component names as keys, the values don't matter
-            except for the input and output nodes which need string values
-            `"input_node"` and `"output_node"` respectively
+            A dictionary of node names as keys and their respective component
+            names as values (which map to the components in the components
+            dict), except for the the input and output nodes which need string
+            values `"input_node"` and `"output_node"` respectively
         components : dict[Hashable, Any]
             A dictionary of all non-input-output components names as keys
             with their SurPyval distribution as values
         edges : Iterable[tuple[Hashable, Hashable]]
-            The collection of edges, e.g. [[1, 2], [2, 3]] would correspond to
-            the edges 1-2 and 2-3
+            The collection of node edges, e.g. [[1, 2], [2, 3]] would
+            correspond to the edges 1-2 and 2-3
         mc_samples : int, optional
             TODO, by default 10_000
 
         Raises
         ------
         ValueError
-            _description_
-        ValueError
-            _description_
+            A node is not in the node list or edge list
         """
 
         # Create RBD graph
@@ -71,6 +68,11 @@ class RBD:
         nodes.pop(self.input_node)
         nodes.pop(self.output_node)
         self.in_or_out = [self.input_node, self.output_node]
+
+        # Create a components to nodes dictionary for efficient sf() lookup
+        self.components_to_nodes: dict[Hashable, set] = defaultdict(set)
+        for node, component in nodes.items():
+            self.components_to_nodes[component].add(node)
 
         # Check that all nodes in graph were in the nodes list.
         for n in G.nodes:
@@ -107,7 +109,7 @@ class RBD:
         broken_nodes: Iterable[Hashable] = [],
         working_components: Iterable[Hashable] = [],
         broken_components: Iterable[Hashable] = [],
-    ) -> np.ndarray[float]:
+    ) -> np.ndarray:
         """Returns the system reliability for time/s x
 
         Parameters
@@ -115,24 +117,27 @@ class RBD:
         x : int | float | Iterable[int  |  float]
             Time/s as a number or iterable
         working_nodes : Iterable[Hashable], optional
-            _description_, by default []
+            Marks these nodes as perfectly reliable, by default []
         broken_nodes : Iterable[Hashable], optional
-            _description_, by default []
+            Marks these nodes as perfectly unreliable, by default []
         working_components : Iterable[Hashable], optional
-            _description_, by default []
+            Marks these components as perfectly reliable, by default []
         broken_components : Iterable[Hashable], optional
-            _description_, by default []
+            Marks these components as perfectly unreliable, by default []
 
         Returns
         -------
-        np.ndarray[float]
-            _description_
+        np.ndarray
+            Reliability values for all nodes at all times x
 
         Raises
         ------
         ValueError
-            _description_
+            RBD not correctly structured
         """
+        # Turn node iterables into sets for O(1) lookup later
+        working_nodes = set(working_nodes)
+        broken_nodes = set(broken_nodes)
 
         # Per Note 3 from "UNIT 16 RELIABILITY EVALUATION OF COMPLEX SYSTEMS"
         # (https://egyankosh.ac.in/bitstream/123456789/35170/1/Unit-16.pdf),
@@ -171,15 +176,38 @@ class RBD:
             # Making sure to not multiply a components' reliability twice
             level_sum = np.zeros_like(x)
             for tieset_comb in tieset_combs:
-                # Make a set of components out of the path/tieset
+                # Make a set of components out of the node path/tieset
                 s = set()
                 for path in tieset_comb:
-                    s.update(path)
+                    for node in path:
+                        if node not in self.in_or_out:
+                            s.add(self.nodes[node])  # Add component name
 
                 # Now calculate the tieset reliability
                 tieset_rel = np.ones_like(x)
                 for comp in s:
-                    tieset_rel = tieset_rel * self.components[comp].sf(x)
+                    # If component is in working_components, or if any of its
+                    # nodes are in working_nodes, then make PerfectReliability
+                    if (
+                        comp in working_components
+                        or not self.components_to_nodes[comp].isdisjoint(
+                            working_nodes
+                        )
+                    ):
+                        comp_rel = PerfectReliability.sf(x)
+                    elif (
+                        # If component is in broken_components or any of its
+                        # nodes are in broken_nodes, then make
+                        # PerfectUnreliability
+                        comp in broken_components
+                        or not self.components_to_nodes[comp].isdisjoint(
+                            broken_nodes
+                        )
+                    ):
+                        comp_rel = PerfectUnreliability.sf(x)
+                    else:
+                        comp_rel = self.components[comp].sf(x)
+                    tieset_rel = tieset_rel * comp_rel
 
                 # Now add the tieset reliability to the level sum
                 level_sum = level_sum + tieset_rel
@@ -229,7 +257,24 @@ class RBD:
 
     # Importance measures
     # https://www.ntnu.edu/documents/624876/1277590549/chapt05.pdf/82cd565f-fa2f-43e4-a81a-095d95d39272
-    def birnbaum_importance(self, x):
+    def birnbaum_importance(
+        self, x: int | float | Iterable[int | float]
+    ) -> dict[Hashable, float]:
+        """
+        Returns the Birnbaum Measure of Importance for all nodes.
+
+
+        Parameters
+        ----------
+        x : int | float | Iterable[int  |  float]
+            Time/s as a number or iterable
+
+        Returns
+        -------
+        dict[Hashable, float]
+            Dictionary with component names as labels and Birnbaum importance
+            as values
+        """
         node_importance = {}
         for node in self.nodes.keys():
             working = self.sf(x, working_nodes=[node])
