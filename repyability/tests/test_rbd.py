@@ -348,10 +348,133 @@ def test_rbd_birnbaum_importance_dependence_warning(
         rbd_repeated_component_series.birnbaum_importance(2)
 
 
-# Test
+# Test improvement_potential()
+def test_rbd_improvement_potential(rbd1: RBD):
+    t = 2
+    improvement_potential = rbd1.improvement_potential(t)
+    assert len(improvement_potential) == 3
+    assert (
+        pytest.approx(rbd1.components["valve"].sf(t) - rbd1.sf(t))
+        == improvement_potential["pump1"]
+    )
+    assert (
+        pytest.approx(rbd1.components["valve"].sf(t) - rbd1.sf(t))
+        == improvement_potential["pump2"]
+    )
+    assert (
+        pytest.approx(
+            (
+                1
+                - rbd1.components["pump1"].ff(t)
+                * rbd1.components["pump2"].ff(t)
+            )
+            - rbd1.sf(t)
+        )
+        == improvement_potential["valve"]
+    )
 
-# TODO: Test improvement_potential, risk_achievement_worth,
-# risk_reduction_worth, criticality_importance, fussel_vessely
+
+# Test risk_achievement_worth()
+def test_rbd_risk_achievement_worth(rbd1: RBD):
+    t = 2
+    raw = rbd1.risk_achievement_worth(t)
+    assert len(raw) == 3
+    assert (
+        pytest.approx(
+            (
+                1
+                - rbd1.components["pump2"].sf(t)
+                * rbd1.components["valve"].sf(t)
+            )
+            / rbd1.ff(t)
+        )
+        == raw["pump1"]
+    )
+    assert (
+        pytest.approx(
+            (
+                1
+                - rbd1.components["pump1"].sf(t)
+                * rbd1.components["valve"].sf(t)
+            )
+            / rbd1.ff(t)
+        )
+        == raw["pump2"]
+    )
+    assert pytest.approx(1 / rbd1.ff(t)) == raw["valve"]
+
+
+# Test risk_reduction_worth()
+def test_rbd_risk_reduction_worth(rbd1: RBD):
+    t = 2
+    rrw = rbd1.risk_reduction_worth(t)
+    assert len(rrw) == 3
+    assert (
+        pytest.approx(rbd1.ff(t) / rbd1.components["valve"].ff(t))
+        == rrw["pump1"]
+    )
+    assert (
+        pytest.approx(
+            pytest.approx(rbd1.ff(t) / rbd1.components["valve"].ff(t))
+        )
+        == rrw["pump2"]
+    )
+    assert (
+        pytest.approx(
+            rbd1.ff(t)
+            / (rbd1.components["pump1"].ff(t) * rbd1.components["pump2"].ff(t))
+        )
+        == rrw["valve"]
+    )
+
+
+# Test criticality_importance()
+def test_rbd_criticality_importance(rbd1: RBD):
+    t = 2
+    criticality_importance = rbd1.criticality_importance(t)
+    assert len(criticality_importance) == 3
+    assert (
+        pytest.approx(
+            # Birnbaum importance:
+            (
+                rbd1.components["valve"].sf(t)
+                - rbd1.components["pump2"].sf(t)
+                * rbd1.components["valve"].sf(t)
+            )
+            # Correction factor:
+            * (rbd1.components["pump1"].sf(t) / rbd1.sf(t))
+        )
+        == criticality_importance["pump1"]
+    )
+    assert (
+        pytest.approx(
+            # Birnbaum importance:
+            (
+                rbd1.components["valve"].sf(t)
+                - rbd1.components["pump1"].sf(t)
+                * rbd1.components["valve"].sf(t)
+            )
+            # Correction factor:
+            * (rbd1.components["pump2"].sf(t) / rbd1.sf(t))
+        )
+        == criticality_importance["pump2"]
+    )
+    assert (
+        pytest.approx(
+            # Birnbaum importance:
+            (
+                1
+                - rbd1.components["pump1"].ff(t)
+                * rbd1.components["pump2"].ff(t)
+            )
+            # Correction factor:
+            * (rbd1.components["valve"].sf(t) / rbd1.sf(t))
+        )
+        == criticality_importance["valve"]
+    )
+
+
+# TODO: Test fussel_vessely
 
 
 # TODO: Test importance calcs, need to fix survival function first though
