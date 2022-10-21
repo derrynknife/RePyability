@@ -1,26 +1,28 @@
 import numpy as np
-from surpyval.parametric import Parametric
-from surpyval.nonparametric import NonParametric
-
 from scipy.integrate import quad
 from scipy.optimize import minimize
+from surpyval.nonparametric import NonParametric
+from surpyval.parametric import Parametric
 
 
-class NonRepairable():
+class NonRepairable:
     """
     Class to store the non-repairable information
     """
+
     def __init__(self, distribution):
         self.dist = distribution
         if type(distribution) == Parametric:
-            self.model_parameterization = 'parametric'
+            self.model_parameterization = "parametric"
         elif type(distribution) == NonParametric:
-            self.model_parameterization = 'non_parametric'
+            self.model_parameterization = "non_parametric"
         else:
             raise ValueError("Unknown TTF Model")
 
         self.cost_rate = np.vectorize(self._cost_rate)
-        self.cost_rate_single_cycle = np.vectorize(self._cost_rate_single_cycle)
+        self.cost_rate_single_cycle = np.vectorize(
+            self._cost_rate_single_cycle
+        )
 
     def set_costs_planned_and_unplanned(self, cp, cu):
         assert cp < cu
@@ -32,7 +34,9 @@ class NonRepairable():
         return out[0]
 
     def avg_replacement_time_non_parametric(self, t, interp):
-        func = lambda x : self.dist.sf(x, interp=interp)
+        def func(x):
+            return self.dist.sf(x, interp=interp)
+
         out = quad(func, 0, t, limit=200)
         return out[0]
 
@@ -44,18 +48,21 @@ class NonRepairable():
 
     def _cost_rate_single_cycle(self, t):
         planned_costs = self.dist.sf(t) * self.cp / t
-        f = lambda x : self.dist.df(x) / x
+
+        def f(x):
+            return self.dist.df(x) / x
+
         unplanned_costs = self.cu * quad(f, 0, t)[0]
         return planned_costs + unplanned_costs
 
     def _log_cost_rate(self, t):
         return np.log(self._cost_rate(t))
-    
+
     def _log_cost_rate_single_cycle(self, t):
         return np.log(self._cost_rate_single_cycle(t))
 
     def _cost_rate_non_parametric(self, t, interp):
-        R = self.dist.sf(t, interp=interp) 
+        R = self.dist.sf(t, interp=interp)
         planned_costs = R * self.cp
         unplanned_costs = (1 - R) * self.cu
 
@@ -66,11 +73,11 @@ class NonRepairable():
         return np.log(self._cost_rate_non_parametric(t, interp=interp))
 
     def find_optimal_replacement(self, interp=None):
-        if self.model_parameterization == 'parametric':
+        if self.model_parameterization == "parametric":
             if self.dist.dist.name == "Weibull":
                 if self.dist.params[1] <= 1:
                     return np.inf
-        
+
             init = self.dist.mean()
             bounds = ((1e-8, None),)
             res = minimize(self._log_cost_rate, init, bounds=bounds, tol=1e-10)
@@ -78,17 +85,25 @@ class NonRepairable():
             return res.x[0]
         else:
             if interp is None:
-                raise ValueError("When using Non-Parametric model must select interpolation method.")
-            elif interp == 'step':
+                raise ValueError(
+                    "When using Non-Parametric model must select \
+                    interpolation method."
+                )
+            elif interp == "step":
                 x = self.dist.x
                 RUL = (np.diff(x, prepend=0) * self.dist.sf(x)).cumsum()
-                cput = (self.cp * self.dist.sf(x) + self.cu * self.dist.ff(x)) / RUL
+                cput = (
+                    self.cp * self.dist.sf(x) + self.cu * self.dist.ff(x)
+                ) / RUL
                 self.cput = cput
                 return x[np.argmin(cput)]
-            elif interp == 'linear':
+            elif interp == "linear":
                 init = self.dist.x.mean()
                 bounds = ((self.dist.x.min(), self.dist.x.max()),)
-                func = lambda x : self._cost_rate_non_parametric(x, interp)
+
+                def func(x):
+                    return self._cost_rate_non_parametric(x, interp)
+
                 res = minimize(func, init, bounds=bounds, tol=1e-10)
                 self.optimisation_results = res
                 return res.x[0]
@@ -103,6 +118,8 @@ class NonRepairable():
                 return np.inf
         init = self.dist.mean()
         bounds = ((1e-8, None),)
-        res = minimize(self._log_cost_rate_single_cycle, init, bounds=bounds, tol=1e-10)
+        res = minimize(
+            self._log_cost_rate_single_cycle, init, bounds=bounds, tol=1e-10
+        )
         self.optimisation_results = res
         return res.x[0]
