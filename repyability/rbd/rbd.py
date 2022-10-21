@@ -23,7 +23,7 @@ class RBD:
         edges: Iterable[tuple[Hashable, Hashable]],
         mc_samples: int = 10_000,
     ):
-        """Create a Reliability Block Diagram object
+        """Creates and returns a Reliability Block Diagram object.
 
         Parameters
         ----------
@@ -111,7 +111,7 @@ class RBD:
         working_components: Iterable[Hashable] = [],
         broken_components: Iterable[Hashable] = [],
     ) -> np.ndarray:
-        """Returns the system reliability for time/s x
+        """Returns the system reliability for time/s x.
 
         Parameters
         ----------
@@ -275,7 +275,8 @@ class RBD:
         Returns
         -------
         dict[Hashable, float]
-            Dictionary with node names as labels and Birnbaum importance
+            Dictionary with node names as keys and Birnbaum importances as
+            values
         """
         for component, node_set in self.components_to_nodes.items():
             if len(node_set) > 1:
@@ -293,7 +294,22 @@ class RBD:
         return node_importance
 
     # TODO: update all importance measures to allow for component as well
-    def improvement_potential(self, x):
+    def improvement_potential(
+        self, x: int | float | Iterable[int | float]
+    ) -> dict[Hashable, float]:
+        """Returns the improvement potential of all nodes.
+
+        Parameters
+        ----------
+        x : int | float | Iterable[int  |  float]
+            Time/s as a number or iterable
+
+        Returns
+        -------
+        dict[Hashable, float]
+            Dictionary with node names as keys and improvement potentials as
+            values
+        """
         node_importance = {}
         for node in self.nodes.keys():
             working = self.sf(x, working_nodes=[node])
@@ -301,29 +317,78 @@ class RBD:
             node_importance[node] = working - as_is
         return node_importance
 
-    def risk_achievement_worth(self, x):
+    def risk_achievement_worth(
+        self, x: int | float | Iterable[int | float]
+    ) -> dict[Hashable, float]:
+        """Returns the RAW importance per Modarres & Kaminskiy. That is RAW_i =
+        (unreliability of system given i failed) /
+        (nominal system unreliability).
+
+        Parameters
+        ----------
+        x : int | float | Iterable[int  |  float]
+            Time/s as a number or iterable
+
+        Returns
+        -------
+        dict[Hashable, float]
+            Dictionary with node names as keys and RAW importances as values
+        """
         node_importance = {}
+        system_ff = self.ff(x)
         for node in self.nodes.keys():
-            failing = self.sf(x, broken_nodes=[node])
-            as_is = self.sf(x)
-            node_importance[node] = ((1 - failing) / (1 - as_is)) - 1
+            failing = self.ff(x, broken_nodes=[node])
+            node_importance[node] = failing / system_ff
         return node_importance
 
-    def risk_reduction_worth(self, x):
+    def risk_reduction_worth(
+        self, x: int | float | Iterable[int | float]
+    ) -> dict[Hashable, float]:
+        """Returns the RRW importance per Modarres & Kaminskiy. That is RRW_i =
+        (nominal unreliability of system) /
+        (unreliability of system given i is working).
+
+        Parameters
+        ----------
+        x : int | float | Iterable[int  |  float]
+            Time/s as a number or iterable
+
+        Returns
+        -------
+        dict[Hashable, float]
+            Dictionary with node names as keys and RRW importances as values
+        """
         node_importance = {}
+        system_ff = self.ff(x)
+        print(f"system_ff = {system_ff}")
         for node in self.nodes.keys():
-            working = self.sf(x, working_nodes=[node])
-            as_is = self.sf(x)
-            node_importance[node] = ((1 - as_is) / (1 - working)) - 1
+            working = self.ff(x, working_nodes=[node])
+            print(f"node {node} when working has system ff = {working}")
+            node_importance[node] = system_ff / working
         return node_importance
 
-    def criticality_importance(self, x):
-        I_B = self.birnbaum_importance(x)
+    def criticality_importance(
+        self, x: int | float | Iterable[int | float]
+    ) -> dict[Hashable, float]:
+        """Returns the criticality imporatnce of all nodes at time/s x.
+
+        Parameters
+        ----------
+        x : int | float | Iterable[int  |  float]
+            Time/s as a number or iterable
+
+        Returns
+        -------
+        dict[Hashable, float]
+            Dictionary with node names as keys and criticality importances as
+            values
+        """
+        bi = self.birnbaum_importance(x)
         node_importance = {}
+        system_sf = self.sf(x)
         for node in self.nodes.keys():
-            as_is = self.sf(x)
-            node_ff = self.components[self.nodes[node]].ff(x)
-            node_importance[node] = I_B[node] * node_ff / (1 - as_is)
+            node_sf = self.components[self.nodes[node]].sf(x)
+            node_importance[node] = bi[node] * node_sf / system_sf
         return node_importance
 
     def fussel_vessely(self, x: int | float, fv_type: str = "p"):
