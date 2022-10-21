@@ -2,3 +2,4 @@ surpyval
 networkx
 scipy
 numpy
+pytest
