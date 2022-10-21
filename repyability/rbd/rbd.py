@@ -2,6 +2,7 @@ from collections import defaultdict
 from copy import copy
 from itertools import combinations
 from typing import Any, Hashable, Iterable
+from warnings import warn
 
 import networkx as nx
 import numpy as np
@@ -221,8 +222,8 @@ class RBD:
 
         return system_rel
 
-    def ff(self, x):
-        return 1 - self.sf(x)
+    def ff(self, x, *args, **kwargs):
+        return 1 - self.sf(x, *args, **kwargs)
 
     def check_rbd_structure(self):
         has_circular_dependency = not nx.is_directed_acyclic_graph(self.G)
@@ -260,9 +261,11 @@ class RBD:
     def birnbaum_importance(
         self, x: int | float | Iterable[int | float]
     ) -> dict[Hashable, float]:
-        """
-        Returns the Birnbaum Measure of Importance for all nodes.
+        """Returns the Birnbaum measure of importance for all nodes.
 
+        Note: Birnbaum's measure of importance assumes all nodes are
+        independent. If the RBD called on has two or more nodes associated
+        with the same component then a UserWarning is raised.
 
         Parameters
         ----------
@@ -272,9 +275,16 @@ class RBD:
         Returns
         -------
         dict[Hashable, float]
-            Dictionary with component names as labels and Birnbaum importance
-            as values
+            Dictionary with node names as labels and Birnbaum importance
         """
+        for component, node_set in self.components_to_nodes.items():
+            if len(node_set) > 1:
+                warn(
+                    f"Birnbaum's measure of importance assumes nodes are \
+                     dependent, but nodes {node_set} all depend on the same \
+                     component '{component}."
+                )
+
         node_importance = {}
         for node in self.nodes.keys():
             working = self.sf(x, working_nodes=[node])

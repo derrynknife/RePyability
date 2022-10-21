@@ -301,7 +301,7 @@ def test_rbd_sf_working_component(rbd_repeated_component_parallel: RBD):
 
 
 # Test ff(), can just test parallel as ff() just calls 1 - sf()
-def test_rbd_ff(rbd_parallel):
+def test_rbd_ff(rbd_parallel: RBD):
     t = 5
     assert (
         pytest.approx(
@@ -313,9 +313,45 @@ def test_rbd_ff(rbd_parallel):
     )
 
 
-# Test birnbaum_importance() w/ parallel RBD
-# def test_rbd_birnbaum_importance(rbd_parallel):
-#     assert pytest.approx()
+# Test birnbaum_importance() w/ composite RBD
+def test_rbd_birnbaum_importance(rbd1: RBD):
+    t = 2
+    birnbaum_importance_dict = rbd1.birnbaum_importance(t)
+    assert len(birnbaum_importance_dict) == 3
+    assert (
+        pytest.approx(
+            rbd1.components["valve"].sf(t)
+            - rbd1.components["pump2"].sf(t) * rbd1.components["valve"].sf(t)
+        )
+        == birnbaum_importance_dict["pump1"]
+    )
+    assert (
+        pytest.approx(
+            rbd1.components["valve"].sf(t)
+            - rbd1.components["pump1"].sf(t) * rbd1.components["valve"].sf(t)
+        )
+        == birnbaum_importance_dict["pump2"]
+    )
+    assert (
+        pytest.approx(
+            1 - rbd1.components["pump1"].ff(t) * rbd1.components["pump2"].ff(t)
+        )
+        == birnbaum_importance_dict["valve"]
+    )
+
+
+# Test birnbaum_importance() raises warning when dependence is found
+def test_rbd_birnbaum_importance_dependence_warning(
+    rbd_repeated_component_series: RBD,
+):
+    with pytest.warns(UserWarning):
+        rbd_repeated_component_series.birnbaum_importance(2)
+
+
+# Test
+
+# TODO: Test improvement_potential, risk_achievement_worth,
+# risk_reduction_worth, criticality_importance, fussel_vessely
 
 
 # TODO: Test importance calcs, need to fix survival function first though
