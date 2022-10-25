@@ -15,6 +15,12 @@ To run the testing suite:
 ```bash
 python -m pytest
 ```
+or use coverage to get a coverage report:
+```bash
+coverage run -m pytest  # Run pytest under coverage's watch
+coverage report         # Print coverage report
+coverage html           # Make a html coverage report (really useful), open htmlcov/index.html
+```
 
 ## Pre-commit
 ### TL;DR
