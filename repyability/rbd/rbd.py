@@ -165,6 +165,11 @@ class RBD:
         paths = list(self.all_path_sets())
         num_paths = len(paths)
 
+        # Cache all component reliabilities for efficiency
+        comp_rel_cache_dict: dict[Hashable, np.ndarray] = {
+            comp: self.components[comp].sf(x) for comp in self.components
+        }
+
         # Perform intersection calculation, which isn't as simple as summating
         # in the case of mutual non-exclusivity
         # i is the 'level' of the intersection calc
@@ -207,7 +212,7 @@ class RBD:
                     ):
                         comp_rel = PerfectUnreliability.sf(x)
                     else:
-                        comp_rel = self.components[comp].sf(x)
+                        comp_rel = comp_rel_cache_dict[comp]
                     tieset_rel = tieset_rel * comp_rel
 
                 # Now add the tieset reliability to the level sum
