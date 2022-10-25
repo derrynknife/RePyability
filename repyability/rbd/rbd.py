@@ -134,8 +134,54 @@ class RBD:
         Raises
         ------
         ValueError
-            RBD not correctly structured
+            - RBD not correctly structured
+            - Working/broken node/component inconsistency (a component or node
+              is supplied more than once to any of working_nodes, broken_nodes,
+              working_components, broken_components)
         """
+
+        if not self.check_rbd_structure():
+            raise ValueError(
+                "RBD not correctly structured, add edges or nodes \
+                to create correct structure."
+            )
+
+        # Check for any node/component argument inconsistency
+        argument_nodes = set()
+        argument_nodes.update(working_nodes)
+        argument_nodes.update(broken_nodes)
+        number_of_arg_comp_nodes = 0
+        for comp in working_components:
+            argument_nodes.update(self.components_to_nodes[comp])
+            number_of_arg_comp_nodes += len(self.components_to_nodes[comp])
+        for comp in broken_components:
+            argument_nodes.update(self.components_to_nodes[comp])
+            number_of_arg_comp_nodes += len(self.components_to_nodes[comp])
+        if len(argument_nodes) != (
+            len(working_nodes)
+            + len(broken_nodes)
+            + number_of_arg_comp_nodes
+        ):
+            working_comps_nodes = [
+                (comp, self.components_to_nodes[comp])
+                for comp in working_components
+            ]
+            broken_comps_nodes = [
+                (comp, self.components_to_nodes[comp])
+                for comp in broken_components
+            ]
+
+            raise ValueError(
+                f"Node/component inconsistency provided. i.e. you have \
+                provided sf() with working/broken nodes (or respective \
+                components) more than once in the arguments.\n \
+                Supplied:\n\
+                working_nodes: {working_nodes}\n\
+                broken_nodes: {broken_nodes}\n\
+                (working_components, their_nodes): {working_comps_nodes}\n\
+                (broken_components, their_nodes): {broken_comps_nodes}\n"
+            )
+
         # Turn node iterables into sets for O(1) lookup later
         working_nodes = set(working_nodes)
         broken_nodes = set(broken_nodes)
@@ -153,12 +199,6 @@ class RBD:
         #
         # At the moment, only the tie set method is implemented.
 
-        if not self.check_rbd_structure():
-            raise ValueError(
-                "RBD not correctly structured, add edges or nodes \
-                to create correct structure."
-            )
-
         x = np.atleast_1d(x)
 
         # Get all path sets
@@ -166,9 +206,20 @@ class RBD:
         num_paths = len(paths)
 
         # Cache all component reliabilities for efficiency
-        comp_rel_cache_dict: dict[Hashable, np.ndarray] = {
-            comp: self.components[comp].sf(x) for comp in self.components
-        }
+        comp_rel_cache_dict: dict[Hashable, np.ndarray] = {}
+        for comp in self.components:
+            if comp in working_components:
+                comp_rel_cache_dict[comp] = PerfectReliability().sf(x)
+            elif comp in broken_components:
+                comp_rel_cache_dict[comp] = PerfectUnreliability().sf(x)
+            else:
+                comp_rel_cache_dict[comp] = self.components[comp].sf(x)
+        # We'll just add the two 'perfect components' to this dict while
+        # we're at it, since they'll be used in lookup later
+        comp_rel_cache_dict["PerfectReliability"] = PerfectReliability().sf(x)
+        comp_rel_cache_dict[
+            "PerfectUnreliability"
+        ] = PerfectUnreliability().sf(x)
 
         # Perform intersection calculation, which isn't as simple as summating
         # in the case of mutual non-exclusivity
@@ -186,33 +237,21 @@ class RBD:
                 s = set()
                 for path in tieset_comb:
                     for node in path:
-                        if node not in self.in_or_out:
+                        if node in self.in_or_out:
+                            continue
+                        # Node working/broken takes precedence over
+                        # the components reliability
+                        if node in working_nodes:
+                            s.add("PerfectReliability")
+                        elif node in broken_nodes:
+                            s.add("PerfectUnreliability")
+                        else:
                             s.add(self.nodes[node])  # Add component name
 
                 # Now calculate the tieset reliability
                 tieset_rel = np.ones_like(x)
                 for comp in s:
-                    # If component is in working_components, or if any of its
-                    # nodes are in working_nodes, then make PerfectReliability
-                    if (
-                        comp in working_components
-                        or not self.components_to_nodes[comp].isdisjoint(
-                            working_nodes
-                        )
-                    ):
-                        comp_rel = PerfectReliability.sf(x)
-                    elif (
-                        # If component is in broken_components or any of its
-                        # nodes are in broken_nodes, then make
-                        # PerfectUnreliability
-                        comp in broken_components
-                        or not self.components_to_nodes[comp].isdisjoint(
-                            broken_nodes
-                        )
-                    ):
-                        comp_rel = PerfectUnreliability.sf(x)
-                    else:
-                        comp_rel = comp_rel_cache_dict[comp]
+                    comp_rel = comp_rel_cache_dict[comp]
                     tieset_rel = tieset_rel * comp_rel
 
                 # Now add the tieset reliability to the level sum
@@ -365,10 +404,8 @@ class RBD:
         """
         node_importance = {}
         system_ff = self.ff(x)
-        print(f"system_ff = {system_ff}")
         for node in self.nodes.keys():
             working = self.ff(x, working_nodes=[node])
-            print(f"node {node} when working has system ff = {working}")
             node_importance[node] = system_ff / working
         return node_importance
 
