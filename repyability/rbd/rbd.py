@@ -7,6 +7,7 @@ from warnings import warn
 import networkx as nx
 import numpy as np
 import surpyval as surv
+from numpy.typing import ArrayLike
 
 from .helper_classes import PerfectReliability, PerfectUnreliability
 
@@ -18,8 +19,8 @@ class RBD:
 
     def __init__(
         self,
-        nodes: dict[Hashable, Hashable],
-        components: dict[Hashable, Any],
+        nodes: dict[Any, Any],
+        components: dict[Any, Any],
         edges: Iterable[tuple[Hashable, Hashable]],
         mc_samples: int = 10_000,
     ):
@@ -27,16 +28,16 @@ class RBD:
 
         Parameters
         ----------
-        nodes : dict[Hashable, Hashable]
+        nodes : dict[Any, Any]
             A dictionary of node names as keys and their respective component
             names as values (which map to the components in the components
             dict), except for the the input and output nodes which need string
             values `"input_node"` and `"output_node"` respectively
-        components : dict[Hashable, Any]
+        components : dict[Any, Any]
             A dictionary of all non-input-output components names as keys
             with their SurPyval distribution as values
         edges : Iterable[tuple[Hashable, Hashable]]
-            The collection of node edges, e.g. [[1, 2], [2, 3]] would
+            The collection of node edges, e.g. [(1, 2), (2, 3)] would
             correspond to the edges 1-2 and 2-3
         mc_samples : int, optional
             TODO, by default 10_000
@@ -62,8 +63,11 @@ class RBD:
             if not G.has_node(node):
                 raise ValueError("Node {} not in edge list".format(node))
             visited_nodes.add(node)
-            if nodes[node] in ["input_node", "output_node"]:
-                setattr(self, nodes[node], node)
+            if nodes[node] == "input_node":
+                self.input_node = node
+                components[node] = PerfectReliability
+            elif nodes[node] == "output_node":
+                self.output_node = node
                 components[node] = PerfectReliability
 
         nodes.pop(self.input_node)
@@ -71,7 +75,7 @@ class RBD:
         self.in_or_out = [self.input_node, self.output_node]
 
         # Create a components to nodes dictionary for efficient sf() lookup
-        self.components_to_nodes: dict[Hashable, set] = defaultdict(set)
+        self.components_to_nodes: dict[Any, set] = defaultdict(set)
         for node, component in nodes.items():
             self.components_to_nodes[component].add(node)
 
@@ -105,7 +109,7 @@ class RBD:
 
     def sf(
         self,
-        x: int | float | Iterable[int | float],
+        x: ArrayLike,
         working_nodes: Iterable[Hashable] = [],
         broken_nodes: Iterable[Hashable] = [],
         working_components: Iterable[Hashable] = [],
@@ -115,7 +119,7 @@ class RBD:
 
         Parameters
         ----------
-        x : int | float | Iterable[int  |  float]
+        x : ArrayLike
             Time/s as a number or iterable
         working_nodes : Iterable[Hashable], optional
             Marks these nodes as perfectly reliable, by default []
@@ -266,7 +270,21 @@ class RBD:
 
         return system_rel
 
-    def ff(self, x, *args, **kwargs):
+    def ff(self, x: ArrayLike, *args, **kwargs) -> np.ndarray:
+        """Returns the system unreliability for time/s x.
+
+        Parameters
+        ----------
+        x : ArrayLike
+            Time/s as a number or iterable
+        *args, **kwargs :
+            Any sf() arguments
+
+        Returns
+        -------
+        np.ndarray
+            Uneliability values for all nodes at all times x
+        """
         return 1 - self.sf(x, *args, **kwargs)
 
     def check_rbd_structure(self):
@@ -302,9 +320,7 @@ class RBD:
 
     # Importance measures
     # https://www.ntnu.edu/documents/624876/1277590549/chapt05.pdf/82cd565f-fa2f-43e4-a81a-095d95d39272
-    def birnbaum_importance(
-        self, x: int | float | Iterable[int | float]
-    ) -> dict[Hashable, float]:
+    def birnbaum_importance(self, x: ArrayLike) -> dict[Any, float]:
         """Returns the Birnbaum measure of importance for all nodes.
 
         Note: Birnbaum's measure of importance assumes all nodes are
@@ -313,12 +329,12 @@ class RBD:
 
         Parameters
         ----------
-        x : int | float | Iterable[int  |  float]
+        x : ArrayLike
             Time/s as a number or iterable
 
         Returns
         -------
-        dict[Hashable, float]
+        dict[Any, float]
             Dictionary with node names as keys and Birnbaum importances as
             values
         """
@@ -338,19 +354,17 @@ class RBD:
         return node_importance
 
     # TODO: update all importance measures to allow for component as well
-    def improvement_potential(
-        self, x: int | float | Iterable[int | float]
-    ) -> dict[Hashable, float]:
+    def improvement_potential(self, x: ArrayLike) -> dict[Any, float]:
         """Returns the improvement potential of all nodes.
 
         Parameters
         ----------
-        x : int | float | Iterable[int  |  float]
+        x : ArrayLike
             Time/s as a number or iterable
 
         Returns
         -------
-        dict[Hashable, float]
+        dict[Any, float]
             Dictionary with node names as keys and improvement potentials as
             values
         """
@@ -361,21 +375,19 @@ class RBD:
             node_importance[node] = working - as_is
         return node_importance
 
-    def risk_achievement_worth(
-        self, x: int | float | Iterable[int | float]
-    ) -> dict[Hashable, float]:
+    def risk_achievement_worth(self, x: ArrayLike) -> dict[Any, float]:
         """Returns the RAW importance per Modarres & Kaminskiy. That is RAW_i =
         (unreliability of system given i failed) /
         (nominal system unreliability).
 
         Parameters
         ----------
-        x : int | float | Iterable[int  |  float]
+        x : ArrayLike
             Time/s as a number or iterable
 
         Returns
         -------
-        dict[Hashable, float]
+        dict[Any, float]
             Dictionary with node names as keys and RAW importances as values
         """
         node_importance = {}
@@ -385,21 +397,19 @@ class RBD:
             node_importance[node] = failing / system_ff
         return node_importance
 
-    def risk_reduction_worth(
-        self, x: int | float | Iterable[int | float]
-    ) -> dict[Hashable, float]:
+    def risk_reduction_worth(self, x: ArrayLike) -> dict[Any, float]:
         """Returns the RRW importance per Modarres & Kaminskiy. That is RRW_i =
         (nominal unreliability of system) /
         (unreliability of system given i is working).
 
         Parameters
         ----------
-        x : int | float | Iterable[int  |  float]
+        x : ArrayLike
             Time/s as a number or iterable
 
         Returns
         -------
-        dict[Hashable, float]
+        dict[Any, float]
             Dictionary with node names as keys and RRW importances as values
         """
         node_importance = {}
@@ -409,10 +419,8 @@ class RBD:
             node_importance[node] = system_ff / working
         return node_importance
 
-    def criticality_importance(
-        self, x: int | float | Iterable[int | float]
-    ) -> dict[Hashable, float]:
-        """Returns the criticality imporatnce of all nodes at time/s x.
+    def criticality_importance(self, x: ArrayLike) -> dict[Any, float]:
+        """Returns the criticality importance of all nodes at time/s x.
 
         Parameters
         ----------
@@ -421,7 +429,7 @@ class RBD:
 
         Returns
         -------
-        dict[Hashable, float]
+        dict[Any, float]
             Dictionary with node names as keys and criticality importances as
             values
         """
@@ -433,13 +441,33 @@ class RBD:
             node_importance[node] = bi[node] * node_sf / system_sf
         return node_importance
 
-    def fussel_vessely(self, x: int | float, fv_type: str = "p"):
-        """
-        Calculate Fussel-Vesely Importance of all components at time/s x.
+    def fussel_vessely(self, x: ArrayLike, fv_type: str = "p") -> np.ndarray:
+        """Calculate Fussel-Vesely Importance of all components at time/s x.
 
         fv_type dictates the method of calculation:
             "p" - path set
             "c" - cut set
+
+        Parameters
+        ----------
+        x : ArrayLike
+            Time/s as a number or iterable
+        fv_type : str, optional
+            Dictates the method of calculation, 'p' = path set, and 'c' = cut
+            set, by default "p"
+
+        Returns
+        -------
+        np.ndarray
+            Dictionary with node names as keys and fussel-vessely importances
+            as values
+
+        Raises
+        ------
+        ValueError
+            _description_
+        NotImplementedError
+            _description_
         """
         if fv_type not in ["c", "p"]:
             raise ValueError(

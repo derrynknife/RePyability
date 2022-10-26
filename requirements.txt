@@ -1,5 +1,7 @@
-surpyval
+coverage
 networkx
-scipy
 numpy
+pre-commit
 pytest
+scipy
+surpyval

@@ -1,21 +1,19 @@
-import numpy as np
-from surpyval.parametric import Parametric
-from surpyval.nonparametric import NonParametric
-
-from scipy.integrate import quad
 from scipy.optimize import minimize
 
 
-class Repairable():
+class Repairable:
     """
     Class to store the non-repairable information
     """
+
     def __init__(self, distribution):
         self.dist = distribution
 
     def set_repair_and_overhaul_costs(self, cr, co):
         if cr >= co:
-            raise ValueError("repair cost, cr, must be less than overhaul cost, co.")
+            raise ValueError(
+                "repair cost, cr, must be less than overhaul cost, co."
+            )
         self.cr = cr
         self.co = co
 
@@ -27,4 +25,4 @@ class Repairable():
 
     def find_optimal_overhaul_interval(self):
 
-        return minimize(self.cost_rate, 1.)
+        return minimize(self.cost_rate, 1.0)
