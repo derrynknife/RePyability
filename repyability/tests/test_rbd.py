@@ -162,6 +162,20 @@ def rbd_repeated_component_series() -> RBD:
     return RBD(nodes, components, edges)
 
 
+@pytest.fixture
+def rbd_repeated_component_composite() -> RBD:
+    """
+    An RBD with three intermediate nodes, two of them a repeated component.
+    """
+    nodes = {1: "input_node", 2: 2, 3: 2, 4: 3, 5: "output_node"}
+    edges = [[1, 2], [1, 3], [2, 5], [3, 4], [4, 5]]
+    components = {
+        2: FixedProbabilityFitter.from_params(0.8),
+        3: FixedProbabilityFitter.from_params(0.5),
+    }
+    return RBD(nodes, components, edges)
+
+
 # Tests
 
 # Check components are correct lengths
@@ -181,6 +195,8 @@ def test_rbd_all_path_sets(rbd1: RBD, rbd2: RBD):
         [1, 2, 4, 7, 8],
     ]
 
+
+# sf()
 
 # Test sf() w/ simple series RBD
 def test_rbd_sf_series(rbd_series: RBD):
@@ -300,6 +316,21 @@ def test_rbd_sf_working_component(rbd_repeated_component_parallel: RBD):
     )
 
 
+# Test sf() w/ working node with repeated component
+def test_rbd_sf_working_node_repeated_component(
+    rbd_repeated_component_composite: RBD,
+):
+    rbd = rbd_repeated_component_composite
+    t = 2
+    assert (
+        pytest.approx(1 - rbd.components[2].ff(t) * rbd.components[3].ff(t))
+        == rbd.sf(t, working_nodes=[3])[0]
+    )
+    print(rbd.components[2].sf(t))
+
+
+# ff()
+
 # Test ff(), can just test parallel as ff() just calls 1 - sf()
 def test_rbd_ff(rbd_parallel: RBD):
     t = 5
@@ -312,6 +343,8 @@ def test_rbd_ff(rbd_parallel: RBD):
         == rbd_parallel.ff(t)[0]
     )
 
+
+# Importance calcs
 
 # Test birnbaum_importance() w/ composite RBD
 def test_rbd_birnbaum_importance(rbd1: RBD):
