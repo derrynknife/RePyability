@@ -7,6 +7,7 @@ from warnings import warn
 import networkx as nx
 import numpy as np
 import surpyval as surv
+from numpy.typing import ArrayLike
 
 from .helper_classes import PerfectReliability, PerfectUnreliability
 
@@ -18,8 +19,8 @@ class RBD:
 
     def __init__(
         self,
-        nodes: dict[Hashable, Hashable],
-        components: dict[Hashable, Any],
+        nodes: dict[Any, Any],
+        components: dict[Any, Any],
         edges: Iterable[tuple[Hashable, Hashable]],
         mc_samples: int = 10_000,
     ):
@@ -27,16 +28,16 @@ class RBD:
 
         Parameters
         ----------
-        nodes : dict[Hashable, Hashable]
+        nodes : dict[Any, Any]
             A dictionary of node names as keys and their respective component
             names as values (which map to the components in the components
             dict), except for the the input and output nodes which need string
             values `"input_node"` and `"output_node"` respectively
-        components : dict[Hashable, Any]
+        components : dict[Any, Any]
             A dictionary of all non-input-output components names as keys
             with their SurPyval distribution as values
         edges : Iterable[tuple[Hashable, Hashable]]
-            The collection of node edges, e.g. [[1, 2], [2, 3]] would
+            The collection of node edges, e.g. [(1, 2), (2, 3)] would
             correspond to the edges 1-2 and 2-3
         mc_samples : int, optional
             TODO, by default 10_000
@@ -62,8 +63,11 @@ class RBD:
             if not G.has_node(node):
                 raise ValueError("Node {} not in edge list".format(node))
             visited_nodes.add(node)
-            if nodes[node] in ["input_node", "output_node"]:
-                setattr(self, nodes[node], node)
+            if nodes[node] == "input_node":
+                self.input_node = node
+                components[node] = PerfectReliability
+            elif nodes[node] == "output_node":
+                self.output_node = node
                 components[node] = PerfectReliability
 
         nodes.pop(self.input_node)
@@ -71,7 +75,7 @@ class RBD:
         self.in_or_out = [self.input_node, self.output_node]
 
         # Create a components to nodes dictionary for efficient sf() lookup
-        self.components_to_nodes: dict[Hashable, set] = defaultdict(set)
+        self.components_to_nodes: dict[Any, set] = defaultdict(set)
         for node, component in nodes.items():
             self.components_to_nodes[component].add(node)
 
@@ -105,7 +109,7 @@ class RBD:
 
     def sf(
         self,
-        x: int | float | Iterable[int | float],
+        x: ArrayLike,
         working_nodes: Iterable[Hashable] = [],
         broken_nodes: Iterable[Hashable] = [],
         working_components: Iterable[Hashable] = [],
@@ -115,7 +119,7 @@ class RBD:
 
         Parameters
         ----------
-        x : int | float | Iterable[int  |  float]
+        x : ArrayLike
             Time/s as a number or iterable
         working_nodes : Iterable[Hashable], optional
             Marks these nodes as perfectly reliable, by default []
@@ -134,8 +138,54 @@ class RBD:
         Raises
         ------
         ValueError
-            RBD not correctly structured
+            - RBD not correctly structured
+            - Working/broken node/component inconsistency (a component or node
+              is supplied more than once to any of working_nodes, broken_nodes,
+              working_components, broken_components)
         """
+
+        if not self.check_rbd_structure():
+            raise ValueError(
+                "RBD not correctly structured, add edges or nodes \
+                to create correct structure."
+            )
+
+        # Check for any node/component argument inconsistency
+        argument_nodes = set()
+        argument_nodes.update(working_nodes)
+        argument_nodes.update(broken_nodes)
+        number_of_arg_comp_nodes = 0
+        for comp in working_components:
+            argument_nodes.update(self.components_to_nodes[comp])
+            number_of_arg_comp_nodes += len(self.components_to_nodes[comp])
+        for comp in broken_components:
+            argument_nodes.update(self.components_to_nodes[comp])
+            number_of_arg_comp_nodes += len(self.components_to_nodes[comp])
+        if len(argument_nodes) != (
+            len(working_nodes)
+            + len(broken_nodes)
+            + number_of_arg_comp_nodes
+        ):
+            working_comps_nodes = [
+                (comp, self.components_to_nodes[comp])
+                for comp in working_components
+            ]
+            broken_comps_nodes = [
+                (comp, self.components_to_nodes[comp])
+                for comp in broken_components
+            ]
+
+            raise ValueError(
+                f"Node/component inconsistency provided. i.e. you have \
+                provided sf() with working/broken nodes (or respective \
+                components) more than once in the arguments.\n \
+                Supplied:\n\
+                working_nodes: {working_nodes}\n\
+                broken_nodes: {broken_nodes}\n\
+                (working_components, their_nodes): {working_comps_nodes}\n\
+                (broken_components, their_nodes): {broken_comps_nodes}\n"
+            )
+
         # Turn node iterables into sets for O(1) lookup later
         working_nodes = set(working_nodes)
         broken_nodes = set(broken_nodes)
@@ -153,17 +203,27 @@ class RBD:
         #
         # At the moment, only the tie set method is implemented.
 
-        if not self.check_rbd_structure():
-            raise ValueError(
-                "RBD not correctly structured, add edges or nodes \
-                to create correct structure."
-            )
-
         x = np.atleast_1d(x)
 
         # Get all path sets
         paths = list(self.all_path_sets())
         num_paths = len(paths)
+
+        # Cache all component reliabilities for efficiency
+        comp_rel_cache_dict: dict[Hashable, np.ndarray] = {}
+        for comp in self.components:
+            if comp in working_components:
+                comp_rel_cache_dict[comp] = PerfectReliability().sf(x)
+            elif comp in broken_components:
+                comp_rel_cache_dict[comp] = PerfectUnreliability().sf(x)
+            else:
+                comp_rel_cache_dict[comp] = self.components[comp].sf(x)
+        # We'll just add the two 'perfect components' to this dict while
+        # we're at it, since they'll be used in lookup later
+        comp_rel_cache_dict["PerfectReliability"] = PerfectReliability().sf(x)
+        comp_rel_cache_dict[
+            "PerfectUnreliability"
+        ] = PerfectUnreliability().sf(x)
 
         # Perform intersection calculation, which isn't as simple as summating
         # in the case of mutual non-exclusivity
@@ -181,33 +241,21 @@ class RBD:
                 s = set()
                 for path in tieset_comb:
                     for node in path:
-                        if node not in self.in_or_out:
+                        if node in self.in_or_out:
+                            continue
+                        # Node working/broken takes precedence over
+                        # the components reliability
+                        if node in working_nodes:
+                            s.add("PerfectReliability")
+                        elif node in broken_nodes:
+                            s.add("PerfectUnreliability")
+                        else:
                             s.add(self.nodes[node])  # Add component name
 
                 # Now calculate the tieset reliability
                 tieset_rel = np.ones_like(x)
                 for comp in s:
-                    # If component is in working_components, or if any of its
-                    # nodes are in working_nodes, then make PerfectReliability
-                    if (
-                        comp in working_components
-                        or not self.components_to_nodes[comp].isdisjoint(
-                            working_nodes
-                        )
-                    ):
-                        comp_rel = PerfectReliability.sf(x)
-                    elif (
-                        # If component is in broken_components or any of its
-                        # nodes are in broken_nodes, then make
-                        # PerfectUnreliability
-                        comp in broken_components
-                        or not self.components_to_nodes[comp].isdisjoint(
-                            broken_nodes
-                        )
-                    ):
-                        comp_rel = PerfectUnreliability.sf(x)
-                    else:
-                        comp_rel = self.components[comp].sf(x)
+                    comp_rel = comp_rel_cache_dict[comp]
                     tieset_rel = tieset_rel * comp_rel
 
                 # Now add the tieset reliability to the level sum
@@ -222,7 +270,21 @@ class RBD:
 
         return system_rel
 
-    def ff(self, x, *args, **kwargs):
+    def ff(self, x: ArrayLike, *args, **kwargs) -> np.ndarray:
+        """Returns the system unreliability for time/s x.
+
+        Parameters
+        ----------
+        x : ArrayLike
+            Time/s as a number or iterable
+        *args, **kwargs :
+            Any sf() arguments
+
+        Returns
+        -------
+        np.ndarray
+            Uneliability values for all nodes at all times x
+        """
         return 1 - self.sf(x, *args, **kwargs)
 
     def check_rbd_structure(self):
@@ -258,9 +320,7 @@ class RBD:
 
     # Importance measures
     # https://www.ntnu.edu/documents/624876/1277590549/chapt05.pdf/82cd565f-fa2f-43e4-a81a-095d95d39272
-    def birnbaum_importance(
-        self, x: int | float | Iterable[int | float]
-    ) -> dict[Hashable, float]:
+    def birnbaum_importance(self, x: ArrayLike) -> dict[Any, float]:
         """Returns the Birnbaum measure of importance for all nodes.
 
         Note: Birnbaum's measure of importance assumes all nodes are
@@ -269,12 +329,12 @@ class RBD:
 
         Parameters
         ----------
-        x : int | float | Iterable[int  |  float]
+        x : ArrayLike
             Time/s as a number or iterable
 
         Returns
         -------
-        dict[Hashable, float]
+        dict[Any, float]
             Dictionary with node names as keys and Birnbaum importances as
             values
         """
@@ -294,19 +354,17 @@ class RBD:
         return node_importance
 
     # TODO: update all importance measures to allow for component as well
-    def improvement_potential(
-        self, x: int | float | Iterable[int | float]
-    ) -> dict[Hashable, float]:
+    def improvement_potential(self, x: ArrayLike) -> dict[Any, float]:
         """Returns the improvement potential of all nodes.
 
         Parameters
         ----------
-        x : int | float | Iterable[int  |  float]
+        x : ArrayLike
             Time/s as a number or iterable
 
         Returns
         -------
-        dict[Hashable, float]
+        dict[Any, float]
             Dictionary with node names as keys and improvement potentials as
             values
         """
@@ -317,21 +375,19 @@ class RBD:
             node_importance[node] = working - as_is
         return node_importance
 
-    def risk_achievement_worth(
-        self, x: int | float | Iterable[int | float]
-    ) -> dict[Hashable, float]:
+    def risk_achievement_worth(self, x: ArrayLike) -> dict[Any, float]:
         """Returns the RAW importance per Modarres & Kaminskiy. That is RAW_i =
         (unreliability of system given i failed) /
         (nominal system unreliability).
 
         Parameters
         ----------
-        x : int | float | Iterable[int  |  float]
+        x : ArrayLike
             Time/s as a number or iterable
 
         Returns
         -------
-        dict[Hashable, float]
+        dict[Any, float]
             Dictionary with node names as keys and RAW importances as values
         """
         node_importance = {}
@@ -341,36 +397,30 @@ class RBD:
             node_importance[node] = failing / system_ff
         return node_importance
 
-    def risk_reduction_worth(
-        self, x: int | float | Iterable[int | float]
-    ) -> dict[Hashable, float]:
+    def risk_reduction_worth(self, x: ArrayLike) -> dict[Any, float]:
         """Returns the RRW importance per Modarres & Kaminskiy. That is RRW_i =
         (nominal unreliability of system) /
         (unreliability of system given i is working).
 
         Parameters
         ----------
-        x : int | float | Iterable[int  |  float]
+        x : ArrayLike
             Time/s as a number or iterable
 
         Returns
         -------
-        dict[Hashable, float]
+        dict[Any, float]
             Dictionary with node names as keys and RRW importances as values
         """
         node_importance = {}
         system_ff = self.ff(x)
-        print(f"system_ff = {system_ff}")
         for node in self.nodes.keys():
             working = self.ff(x, working_nodes=[node])
-            print(f"node {node} when working has system ff = {working}")
             node_importance[node] = system_ff / working
         return node_importance
 
-    def criticality_importance(
-        self, x: int | float | Iterable[int | float]
-    ) -> dict[Hashable, float]:
-        """Returns the criticality imporatnce of all nodes at time/s x.
+    def criticality_importance(self, x: ArrayLike) -> dict[Any, float]:
+        """Returns the criticality importance of all nodes at time/s x.
 
         Parameters
         ----------
@@ -379,7 +429,7 @@ class RBD:
 
         Returns
         -------
-        dict[Hashable, float]
+        dict[Any, float]
             Dictionary with node names as keys and criticality importances as
             values
         """
@@ -391,13 +441,33 @@ class RBD:
             node_importance[node] = bi[node] * node_sf / system_sf
         return node_importance
 
-    def fussel_vessely(self, x: int | float, fv_type: str = "p"):
-        """
-        Calculate Fussel-Vesely Importance of all components at time/s x.
+    def fussel_vessely(self, x: ArrayLike, fv_type: str = "p") -> np.ndarray:
+        """Calculate Fussel-Vesely Importance of all components at time/s x.
 
         fv_type dictates the method of calculation:
             "p" - path set
             "c" - cut set
+
+        Parameters
+        ----------
+        x : ArrayLike
+            Time/s as a number or iterable
+        fv_type : str, optional
+            Dictates the method of calculation, 'p' = path set, and 'c' = cut
+            set, by default "p"
+
+        Returns
+        -------
+        np.ndarray
+            Dictionary with node names as keys and fussel-vessely importances
+            as values
+
+        Raises
+        ------
+        ValueError
+            _description_
+        NotImplementedError
+            _description_
         """
         if fv_type not in ["c", "p"]:
             raise ValueError(
