@@ -162,9 +162,7 @@ class RBD:
             argument_nodes.update(self.components_to_nodes[comp])
             number_of_arg_comp_nodes += len(self.components_to_nodes[comp])
         if len(argument_nodes) != (
-            len(working_nodes)
-            + len(broken_nodes)
-            + number_of_arg_comp_nodes
+            len(working_nodes) + len(broken_nodes) + number_of_arg_comp_nodes
         ):
             working_comps_nodes = [
                 (comp, self.components_to_nodes[comp])
