@@ -10,6 +10,7 @@ import surpyval as surv
 from numpy.typing import ArrayLike
 
 from .helper_classes import PerfectReliability, PerfectUnreliability
+from .min_cut_sets import min_cut_sets
 
 
 class RBD:
@@ -113,8 +114,7 @@ class RBD:
         set contains the frozenset of nodes. frozensets were used so the inner
         set elements could be hashable.
         """
-        # Just to show test asserts work (for test_rbd_min_cut_sets_rbd_series)
-        return set({frozenset([2]), frozenset([3]), frozenset([4])})
+        return min_cut_sets(self.G, self.input_node, self.output_node)
 
     def sf(
         self,
