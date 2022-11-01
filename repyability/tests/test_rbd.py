@@ -169,7 +169,7 @@ def rbd_repeated_component_composite() -> RBD:
     An RBD with three intermediate nodes, two of them a repeated component.
     """
     nodes = {1: "input_node", 2: 2, 3: 2, 4: 3, 5: "output_node"}
-    edges = [[1, 2], [1, 3], [2, 5], [3, 4], [4, 5]]
+    edges = [(1, 2), (1, 3), (2, 5), (3, 4), (4, 5)]
     components = {
         2: FixedProbabilityFitter.from_params(0.8),
         3: FixedProbabilityFitter.from_params(0.5),
@@ -210,6 +210,47 @@ def test_rbd_sf_series(rbd_series: RBD):
         )
         == rbd_series.sf(t)[0]
     )
+
+
+# Test get_min_cut_sets()
+
+
+def test_rbd_get_min_cut_sets_rbd_series(rbd_series: RBD):
+    assert {
+        frozenset([2]),
+        frozenset([3]),
+        frozenset([4]),
+    } == rbd_series.get_min_cut_sets()
+
+
+def test_rbd_get_min_cut_sets_rbd_parallel(rbd_parallel: RBD):
+    assert {frozenset([2, 3, 4])} == rbd_parallel.get_min_cut_sets()
+
+
+def test_rbd_get_min_cut_sets_rbd1(rbd1: RBD):
+    assert {
+        frozenset(["pump1", "pump2"]),
+        frozenset(["valve"]),
+    } == rbd1.get_min_cut_sets()
+
+
+def test_rbd_get_min_cut_sets_rbd2(rbd2: RBD):
+    assert {
+        frozenset([2]),
+        frozenset([3, 4]),
+        frozenset([4, 5]),
+        frozenset([4, 6]),
+        frozenset([7]),
+    } == rbd2.get_min_cut_sets()
+
+
+def test_rbd_get_min_cut_sets_rbd3(rbd3: RBD):
+    assert {
+        frozenset([1, 3]),
+        frozenset([2, 4]),
+        frozenset([1, 4, 5]),
+        frozenset([2, 3, 5]),
+    } == rbd3.get_min_cut_sets()
 
 
 # Test sf() w/ simple series RBD
