@@ -1,1 +1,1 @@
-from .rbd.rbd import RBD
+from .rbd.rbd import RBD  # noqa: F401
