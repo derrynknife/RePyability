@@ -108,6 +108,9 @@ class RBD:
             self.G, source=self.input_node, target=self.output_node
         )
 
+    def get_min_path_sets(self):
+        return "TODO"
+
     def get_min_cut_sets(self) -> set[frozenset[Hashable]]:
         """
         Returns the set of frozensets of minimal cut sets of the RBD. The outer
@@ -448,74 +451,91 @@ class RBD:
             node_importance[node] = bi[node] * node_sf / system_sf
         return node_importance
 
-    def fussel_vessely(self, x: ArrayLike, fv_type: str = "p") -> np.ndarray:
-        """Calculate Fussel-Vesely Importance of all components at time/s x.
+    def fussel_vesely(
+        self, x: ArrayLike, fv_type: str = "c"
+    ) -> dict[Any, np.ndarray]:
+        """Calculate Fussel-Vesely importance of all components at time/s x.
 
-        fv_type dictates the method of calculation:
-            "p" - path set
-            "c" - cut set
+        Briefly, the Fussel-Vesely importance measure for node i =
+        (sum of probabilities of cut-sets including node i occuring/failing) /
+        (the probability of the system failing).
+
+        Typically this measure is implemented using cut-sets as mentioned
+        above, although the measure can be implemented using path-sets. Both
+        are implemented here.
+
+        fv_type dictates the method:
+            "c" - cut-set
+            "p" - path-set
 
         Parameters
         ----------
         x : ArrayLike
             Time/s as a number or iterable
         fv_type : str, optional
-            Dictates the method of calculation, 'p' = path set, and 'c' = cut
-            set, by default "p"
+            Dictates the method of calculation, 'c' = cut-set and
+            'p' = path-set, by default "c"
 
         Returns
         -------
-        np.ndarray
+        dict[Any, np.ndarray]
             Dictionary with node names as keys and fussel-vessely importances
             as values
 
         Raises
         ------
         ValueError
-            _description_
+            TODO
         NotImplementedError
-            _description_
+            TODO
         """
-        if fv_type not in ["c", "p"]:
-            raise ValueError(
-                "'fv_type' must be either c (cut set) or p (path set)"
-            )
-
-        # TODO: Implement cut set based FV importance.
+        # Get node-sets based on what method was requested
         if fv_type == "c":
-            raise NotImplementedError(
-                "cut set type FV importance measure not yet implemented"
+            node_sets = self.get_min_cut_sets()
+        elif fv_type == "p":
+            node_sets = self.get_min_path_sets()
+        else:
+            raise ValueError(
+                f"fv_type must be either 'c' (cut-set) or 'p' (path-set), \
+                fv_type={fv_type} was given."
             )
 
-        system_reliability = self.sf(x)
-
-        paths = list(self.all_path_sets())
-        node_importance = {}
-
+        # Ensure time is a numpy array
         x = np.atleast_1d(x)
-        r_dict = {}
+
+        # Get system unreliability, this will be the denominator for all node
+        # importance calcs
+        system_unreliability = self.ff(x)
+
+        # The return dict
+        node_importance: dict[Any, np.ndarray] = {}
+
+        # Cache the component reliabilities for efficiency
+        rel_dict = {}
         for component in self.components.keys():
+            # TODO: make log
             # Calculating reliability in the log-domain though so the
             # components' reliability can be added avoid possible underflow
-            r_dict[component] = np.log(self.components[component].sf(x))
+            rel_dict[component] = self.components[component].ff(x)
 
+        # For each node,
         for node in self.nodes.keys():
-            paths_reliability = []
-            for path in paths:
-                if node in self.in_or_out:
+            # Sum up the probabilities of the node_sets containing the node
+            # from failing
+            node_fv_numerator = 0
+            for node_set in node_sets:
+                if node not in node_set:
                     continue
-                elif node not in path:
-                    continue
-                path_rel = np.zeros_like(x).astype(float)
-                for n in path:
-                    if n in self.in_or_out:
-                        continue
-                    path_rel += r_dict[self.nodes[n]]
-                paths_reliability.append(path_rel)
+                node_set_fail_prob = 1
+                # Take only the independent components in that node-set, i.e.
+                # don't multiply the same component twice in a node-set
+                components_in_node_set = {
+                    self.nodes[fail_node] for fail_node in node_set
+                }
+                for component in components_in_node_set:
+                    node_set_fail_prob *= rel_dict[component]
+                node_fv_numerator += node_set_fail_prob
 
-            paths_sf = np.atleast_2d(paths_reliability)
-            paths_sf = 1 - np.exp(np.sum(paths_sf, axis=0))
-            paths_sf = paths_sf / system_reliability
-            node_importance[node] = np.copy(paths_sf)
+            node_importance[node] = node_fv_numerator / system_unreliability
 
         return node_importance

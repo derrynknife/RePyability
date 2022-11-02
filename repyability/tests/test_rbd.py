@@ -549,27 +549,167 @@ def test_rbd_criticality_importance(rbd1: RBD):
     )
 
 
-# TODO: Test fussel_vessely
+# Test fussel_vesely() w/ cut-set method
 
 
-# TODO: Test importance calcs, need to fix survival function first though
-# def test_rbd_fussel_vessely_path_set(rbd1):
-#     # PS = Path Set
-#     # PS1 = [1, 2, 4, 5]
-#     # PS2 = [1, 3, 4, 5]
-#     # Q(PS1) = Q(PS2) = Q23 * Q4
-#     # Note Q2 = Q3 = Q23
+def test_fussel_vesely_c_rbd1(rbd1: RBD):
+    t = 2
+    fv_importance = rbd1.fussel_vesely(t)
+    assert (
+        pytest.approx(
+            rbd1.components["pump1"].ff(t)
+            * rbd1.components["pump2"].ff(t)
+            / rbd1.ff(t)
+        )
+        == fv_importance["pump1"]
+    )
+    assert (
+        pytest.approx(
+            rbd1.components["pump1"].ff(t)
+            * rbd1.components["pump2"].ff(t)
+            / rbd1.ff(t)
+        )
+        == fv_importance["pump2"]
+    )
+    assert (
+        pytest.approx(rbd1.components["valve"].ff(t) / rbd1.ff(t))
+        == fv_importance["valve"]
+    )
 
-#     Q_
 
-#     # Path set unreliability
-#     Q_PS = (1 - rbd1.components[2].sf(1)) * (1 - rbd1.components[4].sf(1))
+def test_fussel_vesely_c_series(rbd_series: RBD):
+    t = 2
+    fv_importance = rbd_series.fussel_vesely(t)
+    assert (
+        pytest.approx(rbd_series.components[2].ff(t) / rbd_series.ff(t))
+        == fv_importance[2]
+    )
+    assert (
+        pytest.approx(rbd_series.components[3].ff(t) / rbd_series.ff(t))
+        == fv_importance[3]
+    )
+    assert (
+        pytest.approx(rbd_series.components[4].ff(t) / rbd_series.ff(t))
+        == fv_importance[4]
+    )
 
-#     # System unreliability
-#     Q_sys =
 
-#     # Fussel-Vessely importance of components 2 and 3
-#     I_FV_23 = Q_PS / Q_sys
+def test_fussel_vesely_parallel(rbd_parallel: RBD):
+    t = 2
+    fv_importance = rbd_parallel.fussel_vesely(t)
+    fv_expected = (
+        rbd_parallel.components[2].ff(t)
+        * rbd_parallel.components[3].ff(t)
+        * rbd_parallel.components[4].ff(t)
+        / rbd_parallel.ff(t)
+    )
+    assert pytest.approx(fv_expected) == fv_importance[2]
+    assert pytest.approx(fv_expected) == fv_importance[3]
+    assert pytest.approx(fv_expected) == fv_importance[4]
 
-#     # Fussel-Vessely importance of comonent 4
-#     rbd1.fussel_vessely()
+
+def test_fussel_vesely_rbd2(rbd2: RBD):
+    t = 2
+    fv_importance = rbd2.fussel_vesely(t)
+    assert (
+        pytest.approx(rbd2.components[2].ff(t) / rbd2.ff(t))
+        == fv_importance[2]
+    )
+    assert (
+        pytest.approx(
+            rbd2.components[3].ff(t) * rbd2.components[4].ff(t) / rbd2.ff(t)
+        )
+        == fv_importance[3]
+    )
+    assert (
+        pytest.approx(
+            (
+                rbd2.components[4].ff(t) * rbd2.components[5].ff(t)
+                + rbd2.components[3].ff(t) * rbd2.components[4].ff(t)
+                + rbd2.components[4].ff(t) * rbd2.components[6].ff(t)
+            )
+            / rbd2.ff(t)
+        )
+        == fv_importance[4]
+    )
+    assert (
+        pytest.approx(
+            rbd2.components[4].ff(t) * rbd2.components[5].ff(t) / rbd2.ff(t)
+        )
+        == fv_importance[5]
+    )
+    assert (
+        pytest.approx(
+            rbd2.components[4].ff(t) * rbd2.components[6].ff(t) / rbd2.ff(t)
+        )
+        == fv_importance[6]
+    )
+    assert (
+        pytest.approx(rbd2.components[7].ff(t) / rbd2.ff(t))
+        == fv_importance[7]
+    )
+
+
+def test_fussel_vesely_rbd3(rbd3: RBD):
+    t = 2
+    fv_importance = rbd3.fussel_vesely(t)
+    assert (
+        pytest.approx(
+            (
+                rbd3.components[1].ff(t) * rbd3.components[3].ff(t)
+                + rbd3.components[1].ff(t)
+                * rbd3.components[4].ff(t)
+                * rbd3.components[5].ff(t)
+            )
+            / rbd3.ff(t)
+        )
+        == fv_importance[1]
+    )
+    assert (
+        pytest.approx(
+            (
+                rbd3.components[2].ff(t) * rbd3.components[4].ff(t)
+                + rbd3.components[2].ff(t)
+                * rbd3.components[3].ff(t)
+                * rbd3.components[5].ff(t)
+            )
+            / rbd3.ff(t)
+        )
+        == fv_importance[2]
+    )
+    assert (
+        pytest.approx(
+            (
+                rbd3.components[1].ff(t) * rbd3.components[3].ff(t)
+                + rbd3.components[2].ff(t)
+                * rbd3.components[3].ff(t)
+                * rbd3.components[5].ff(t)
+            )
+            / rbd3.ff(t)
+        )
+        == fv_importance[3]
+    )
+    assert (
+        pytest.approx(
+            rbd3.components[2].ff(t) * rbd3.components[4].ff(t)
+            + rbd3.components[1].ff(t)
+            * rbd3.components[4].ff(t)
+            * rbd3.components[5].ff(t)
+            / rbd3.ff(t)
+        )
+        == fv_importance[4]
+    )
+    assert (
+        pytest.approx(
+            (
+                rbd3.components[1].ff(t)
+                * rbd3.components[4].ff(t)
+                * rbd3.components[5].ff(t)
+                + rbd3.components[2].ff(t)
+                * rbd3.components[3].ff(t)
+                * rbd3.components[5].ff(t)
+            )
+            / rbd3.ff(t)
+        )
+        == fv_importance[5]
+    )
