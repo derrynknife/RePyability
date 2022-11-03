@@ -212,7 +212,40 @@ def test_rbd_sf_series(rbd_series: RBD):
     )
 
 
-# Test
+# Test get_min_path_sets()
+
+
+def test_rbd_get_min_path_sets_rbd_series(rbd_series: RBD):
+    assert {(1, 2, 3, 4, 5)} == rbd_series.get_min_path_sets()
+
+
+def test_rbd_get_min_path_sets_rbd_parallel(rbd_parallel: RBD):
+    assert {
+        (1, 2, 5),
+        (1, 3, 5),
+        (1, 4, 5),
+    } == rbd_parallel.get_min_path_sets()
+
+
+def test_rbd_get_min_path_sets_rbd1(rbd1: RBD):
+    assert {
+        ("source", "pump1", "valve", "sink"),
+        ("source", "pump2", "valve", "sink"),
+    } == rbd1.get_min_path_sets()
+
+
+def test_rbd_get_min_path_sets_rbd2(rbd2: RBD):
+    assert {(1, 2, 3, 5, 6, 7, 8), (1, 2, 4, 7, 8)} == rbd2.get_min_path_sets()
+
+
+def test_rbd_get_min_path_sets_rbd3(rbd3: RBD):
+    assert {
+        (0, 1, 2, 6),
+        (0, 1, 5, 4, 6),
+        (0, 3, 4, 6),
+        (0, 3, 5, 2, 6),
+    } == rbd3.get_min_path_sets()
+
 
 # Test get_min_cut_sets()
 
