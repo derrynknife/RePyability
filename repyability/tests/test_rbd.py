@@ -554,7 +554,7 @@ def test_rbd_criticality_importance(rbd1: RBD):
 
 def test_fussel_vesely_c_rbd1(rbd1: RBD):
     t = 2
-    fv_importance = rbd1.fussel_vesely(t)
+    fv_importance = rbd1.fussel_vesely(t, fv_type="c")
     assert (
         pytest.approx(
             rbd1.components["pump1"].ff(t)
@@ -579,7 +579,7 @@ def test_fussel_vesely_c_rbd1(rbd1: RBD):
 
 def test_fussel_vesely_c_series(rbd_series: RBD):
     t = 2
-    fv_importance = rbd_series.fussel_vesely(t)
+    fv_importance = rbd_series.fussel_vesely(t, fv_type="c")
     assert (
         pytest.approx(rbd_series.components[2].ff(t) / rbd_series.ff(t))
         == fv_importance[2]
@@ -596,7 +596,7 @@ def test_fussel_vesely_c_series(rbd_series: RBD):
 
 def test_fussel_vesely_c_parallel(rbd_parallel: RBD):
     t = 2
-    fv_importance = rbd_parallel.fussel_vesely(t)
+    fv_importance = rbd_parallel.fussel_vesely(t, fv_type="c")
     fv_expected = (
         rbd_parallel.components[2].ff(t)
         * rbd_parallel.components[3].ff(t)
@@ -610,7 +610,7 @@ def test_fussel_vesely_c_parallel(rbd_parallel: RBD):
 
 def test_fussel_vesely_c_rbd2(rbd2: RBD):
     t = 2
-    fv_importance = rbd2.fussel_vesely(t)
+    fv_importance = rbd2.fussel_vesely(t, fv_type="c")
     assert (
         pytest.approx(rbd2.components[2].ff(t) / rbd2.ff(t))
         == fv_importance[2]
@@ -652,7 +652,7 @@ def test_fussel_vesely_c_rbd2(rbd2: RBD):
 
 def test_fussel_vesely_c_rbd3(rbd3: RBD):
     t = 2
-    fv_importance = rbd3.fussel_vesely(t)
+    fv_importance = rbd3.fussel_vesely(t, fv_type="c")
     assert (
         pytest.approx(
             (
@@ -722,7 +722,7 @@ def test_fussel_vesely_c_repeated_component_parallel(
 ):
     rbd = rbd_repeated_component_parallel
     t = 2
-    fv_importance = rbd.fussel_vesely(t)
+    fv_importance = rbd.fussel_vesely(t, fv_type="c")
     fv_expected = (
         rbd.components[2].ff(t)
         * rbd.components[3].ff(t)
@@ -740,7 +740,7 @@ def test_fussel_vesely_c_rbd_repeated_component_series(
 ):
     rbd = rbd_repeated_component_series
     t = 2
-    fv_importance = rbd.fussel_vesely(t)
+    fv_importance = rbd.fussel_vesely(t, fv_type="c")
     assert (
         pytest.approx(rbd.components[2].ff(t) / rbd.ff(t)) == fv_importance[2]
     )
@@ -757,7 +757,7 @@ def test_fussel_vesely_c_rbd_repeated_component_composite(
 ):
     rbd = rbd_repeated_component_composite
     t = 2
-    fv_importance = rbd.fussel_vesely(t)
+    fv_importance = rbd.fussel_vesely(t, fv_type="c")
     assert (
         pytest.approx(
             (
