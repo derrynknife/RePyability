@@ -185,13 +185,13 @@ def test_rbd_components(rbd1: RBD, rbd2: RBD):
     assert len(rbd2.components) == 8
 
 
-# Test all_path_sets()
-def test_rbd_all_path_sets(rbd1: RBD, rbd2: RBD):
-    assert list(rbd1.all_path_sets()) == [
+# Test get_all_path_sets()
+def test_rbd_get_all_path_sets(rbd1: RBD, rbd2: RBD):
+    assert list(rbd1.get_all_path_sets()) == [
         ["source", "pump1", "valve", "sink"],
         ["source", "pump2", "valve", "sink"],
     ]
-    assert list(rbd2.all_path_sets()) == [
+    assert list(rbd2.get_all_path_sets()) == [
         [1, 2, 3, 5, 6, 7, 8],
         [1, 2, 4, 7, 8],
     ]
@@ -211,6 +211,8 @@ def test_rbd_sf_series(rbd_series: RBD):
         == rbd_series.sf(t)[0]
     )
 
+
+# Test
 
 # Test get_min_cut_sets()
 

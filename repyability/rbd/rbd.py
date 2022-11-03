@@ -1,7 +1,7 @@
 from collections import defaultdict
 from copy import copy
 from itertools import combinations
-from typing import Any, Collection, Hashable, Iterable
+from typing import Any, Collection, Hashable, Iterable, Iterator
 from warnings import warn
 
 import networkx as nx
@@ -101,9 +101,17 @@ class RBD:
         self.components = components
         self.nodes = nodes
 
-    def all_path_sets(self):
-        # For a very large RBD, this seems expensive; O(n!).....
-        # Need to convert to a fault tree using graph algs
+    def get_all_path_sets(self) -> Iterator[list[Hashable]]:
+        """Gets all path sets from input_node to output_node
+
+        Really just wraps networkx.all_simple_paths(). This is an expensive
+        operation, so be careful using for very large RBDs.
+
+        Returns
+        -------
+        Iterator[list[Hashable]]
+            The iterator of paths
+        """
         return nx.all_simple_paths(
             self.G, source=self.input_node, target=self.output_node
         )
@@ -216,7 +224,7 @@ class RBD:
         x = np.atleast_1d(x)
 
         # Get all path sets
-        paths = list(self.all_path_sets())
+        paths = list(self.get_all_path_sets())
         num_paths = len(paths)
 
         # Cache all component reliabilities for efficiency
