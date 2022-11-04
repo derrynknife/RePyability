@@ -9,6 +9,8 @@ import numpy as np
 import surpyval as surv
 from numpy.typing import ArrayLike
 
+from repyability.rbd.rbd_graph import RBDGraph
+
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .min_cut_sets import min_cut_sets
 
@@ -23,6 +25,7 @@ class RBD:
         nodes: dict[Any, Any],
         components: dict[Any, Any],
         edges: Iterable[tuple[Hashable, Hashable]],
+        k: dict[Any, int] = {},
         mc_samples: int = 10_000,
     ):
         """Creates and returns a Reliability Block Diagram object.
@@ -40,6 +43,9 @@ class RBD:
         edges : Iterable[tuple[Hashable, Hashable]]
             The collection of node edges, e.g. [(1, 2), (2, 3)] would
             correspond to the edges 1-2 and 2-3
+        components : dict[Any, Any]
+            A dictionary of all non-input-output components names as keys
+            with their SurPyval distribution as values
         mc_samples : int, optional
             TODO, by default 10_000
 
@@ -50,9 +56,14 @@ class RBD:
         """
 
         # Create RBD graph
-        G = nx.DiGraph()
+        G = RBDGraph()
         G.add_edges_from(edges)
         self.G = G
+
+        # Set the node k values (k-out-of-n)
+        for node, k_val in k.items():
+            print(G[node])
+            G[node]["k"] = k_val
 
         # Copy the components and nodes
         components = copy(components)

@@ -1,28 +1,8 @@
-import numpy as np
 import pytest
 import surpyval as surv
 
 from repyability.rbd.rbd import RBD
-
-# TODO: add array x's
-
-
-# Fixed probability distributions
-# TODO: move this to SurPyval
-class FixedProbability:
-    def sf(self, x):
-        return np.ones_like(x) * self.p
-
-    def ff(self, x):
-        return 1 - (np.ones_like(x) * self.p)
-
-
-class FixedProbabilityFitter:
-    @classmethod
-    def from_params(cls, p):
-        out = FixedProbability()
-        out.p = p
-        return out
+from repyability.tests.fixed_probability import FixedProbabilityFitter
 
 
 # Test RBDs as pytest fixtures
