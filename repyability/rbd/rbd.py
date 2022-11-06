@@ -1,7 +1,7 @@
 from collections import defaultdict
 from copy import copy
 from itertools import combinations
-from typing import Any, Collection, Hashable, Iterable
+from typing import Any, Collection, Hashable, Iterable, Iterator
 from warnings import warn
 
 import networkx as nx
@@ -101,12 +101,98 @@ class RBD:
         self.components = components
         self.nodes = nodes
 
-    def all_path_sets(self):
-        # For a very large RBD, this seems expensive; O(n!).....
-        # Need to convert to a fault tree using graph algs
+    def get_all_path_sets(self) -> Iterator[list[Hashable]]:
+        """Gets all path sets from input_node to output_node
+
+        Really just wraps networkx.all_simple_paths(). This is an expensive
+        operation, so be careful using for very large RBDs.
+
+        Returns
+        -------
+        Iterator[list[Hashable]]
+            The iterator of paths
+        """
         return nx.all_simple_paths(
             self.G, source=self.input_node, target=self.output_node
         )
+
+    def get_min_path_sets(
+        self, include_in_out_nodes=True
+    ) -> set[tuple[Hashable, ...]]:
+        """Gets the minimal path-sets of the RBD
+
+        Parameters
+        ----------
+        include_in_out_nodes : bool, optional
+            If false, excludes the input and output nodes
+            in the path tuples, by default True
+
+        Returns
+        -------
+        set[tuple[Hashable, ...]]
+            The set of minimal path-sets
+        """
+        # What differentiates all path sets and minimal path sets is
+        # minimal path sets cannot be further reduced by removing components
+        # from path. Recall a path set is a set of components (really a path)
+        # which if working ensure the system is working.
+
+        # So (brute-force) strategy could be just get all the simple paths from
+        # get_all_path_sets() that cannot be reduced.
+
+        # Get all path sets as a list
+        all_path_sets = list(self.get_all_path_sets())
+
+        # A path can be reduced when the system is still working after removing
+        # any node on that path.
+        # Ultimately, every non-minimal path set has a subset that is a minimal
+        # path set, so we can just check for every path set if it has a subset,
+        # if it doesn't then it is a minimal path-set.
+
+        ret_set: set[tuple[Hashable, ...]] = set()
+
+        # We're not done until all_path_sets is completely empty
+        # since every iteration we're either finding a path-set to be minimal,
+        # thereby adding it to ret_set and removing it from all_path_sets,
+        # OR we're finding the path-set to be non-minimal and removing it
+        # from all_path_sets
+        while all_path_sets:
+            # Get first path-set in all_path_sets
+            path_set = all_path_sets[0]
+
+            # Assume it is a minimal path-set
+            is_minimal_path_set = True
+
+            # Compare to all other path-sets
+            for other_path_set in all_path_sets.copy()[1:]:
+                # If path_set is a subset of other_path_set then other_path_set
+                # is not a minimal path-set, so we can remove it from
+                # all_path_sets and prevent any further consideration of it
+                if set(path_set).issubset(set(other_path_set)):
+                    all_path_sets.remove(other_path_set)
+
+                # If path_set is a superset of other_path_set then path_set
+                # is not a minimal path-set so we can remove it from
+                # all_path_sets and move on to the next iteration
+                elif set(path_set).issuperset(set(other_path_set)):
+                    all_path_sets.remove(path_set)
+                    is_minimal_path_set = False
+                    break
+
+            # If is_minimal_path_set is still True then we can add path_set
+            # to ret_set, and remove it from path_set
+            if is_minimal_path_set:
+                # If include_in_out_nodes is set to false, remove the input
+                # and output nodes
+                if not include_in_out_nodes:
+                    path_set.remove(self.input_node)
+                    path_set.remove(self.output_node)
+
+                # Finally add the path_set as a tuple to the return set
+                ret_set.add(tuple(path_set))
+                all_path_sets.remove(path_set)
+
+        return ret_set
 
     def get_min_cut_sets(self) -> set[frozenset[Hashable]]:
         """
@@ -213,7 +299,7 @@ class RBD:
         x = np.atleast_1d(x)
 
         # Get all path sets
-        paths = list(self.all_path_sets())
+        paths = list(self.get_all_path_sets())
         num_paths = len(paths)
 
         # Cache all component reliabilities for efficiency
@@ -448,74 +534,96 @@ class RBD:
             node_importance[node] = bi[node] * node_sf / system_sf
         return node_importance
 
-    def fussel_vessely(self, x: ArrayLike, fv_type: str = "p") -> np.ndarray:
-        """Calculate Fussel-Vesely Importance of all components at time/s x.
+    def fussel_vesely(
+        self, x: ArrayLike, fv_type: str = "c"
+    ) -> dict[Any, np.ndarray]:
+        """Calculate Fussel-Vesely importance of all components at time/s x.
 
-        fv_type dictates the method of calculation:
-            "p" - path set
-            "c" - cut set
+        Briefly, the Fussel-Vesely importance measure for node i =
+        (sum of probabilities of cut-sets including node i occuring/failing) /
+        (the probability of the system failing).
+
+        Typically this measure is implemented using cut-sets as mentioned
+        above, although the measure can be implemented using path-sets. Both
+        are implemented here.
+
+        fv_type dictates the method:
+            "c" - cut-set
+            "p" - path-set
 
         Parameters
         ----------
         x : ArrayLike
             Time/s as a number or iterable
         fv_type : str, optional
-            Dictates the method of calculation, 'p' = path set, and 'c' = cut
-            set, by default "p"
+            Dictates the method of calculation, 'c' = cut-set and
+            'p' = path-set, by default "c"
 
         Returns
         -------
-        np.ndarray
+        dict[Any, np.ndarray]
             Dictionary with node names as keys and fussel-vessely importances
             as values
 
         Raises
         ------
         ValueError
-            _description_
+            TODO
         NotImplementedError
-            _description_
+            TODO
         """
-        if fv_type not in ["c", "p"]:
-            raise ValueError(
-                "'fv_type' must be either c (cut set) or p (path set)"
-            )
-
-        # TODO: Implement cut set based FV importance.
+        # Get node-sets based on what method was requested
         if fv_type == "c":
-            raise NotImplementedError(
-                "cut set type FV importance measure not yet implemented"
+            node_sets = self.get_min_cut_sets()
+        elif fv_type == "p":
+            node_sets = {
+                frozenset(path_set)
+                for path_set in self.get_min_path_sets(
+                    include_in_out_nodes=False
+                )
+            }
+        else:
+            raise ValueError(
+                f"fv_type must be either 'c' (cut-set) or 'p' (path-set), \
+                fv_type={fv_type} was given."
             )
 
-        system_reliability = self.sf(x)
-
-        paths = list(self.all_path_sets())
-        node_importance = {}
-
+        # Ensure time is a numpy array
         x = np.atleast_1d(x)
-        r_dict = {}
+
+        # Get system unreliability, this will be the denominator for all node
+        # importance calcs
+        system_unreliability = self.ff(x)
+
+        # The return dict
+        node_importance: dict[Any, np.ndarray] = {}
+
+        # Cache the component reliabilities for efficiency
+        rel_dict = {}
         for component in self.components.keys():
+            # TODO: make log
             # Calculating reliability in the log-domain though so the
             # components' reliability can be added avoid possible underflow
-            r_dict[component] = np.log(self.components[component].sf(x))
+            rel_dict[component] = self.components[component].ff(x)
 
+        # For each node,
         for node in self.nodes.keys():
-            paths_reliability = []
-            for path in paths:
-                if node in self.in_or_out:
+            # Sum up the probabilities of the node_sets containing the node
+            # from failing
+            node_fv_numerator = 0
+            for node_set in node_sets:
+                if node not in node_set:
                     continue
-                elif node not in path:
-                    continue
-                path_rel = np.zeros_like(x).astype(float)
-                for n in path:
-                    if n in self.in_or_out:
-                        continue
-                    path_rel += r_dict[self.nodes[n]]
-                paths_reliability.append(path_rel)
+                node_set_fail_prob = 1
+                # Take only the independent components in that node-set, i.e.
+                # don't multiply the same component twice in a node-set
+                components_in_node_set = {
+                    self.nodes[fail_node] for fail_node in node_set
+                }
+                for component in components_in_node_set:
+                    node_set_fail_prob *= rel_dict[component]
+                node_fv_numerator += node_set_fail_prob
 
-            paths_sf = np.atleast_2d(paths_reliability)
-            paths_sf = 1 - np.exp(np.sum(paths_sf, axis=0))
-            paths_sf = paths_sf / system_reliability
-            node_importance[node] = np.copy(paths_sf)
+            node_importance[node] = node_fv_numerator / system_unreliability
 
         return node_importance
