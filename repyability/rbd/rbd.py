@@ -128,18 +128,18 @@ class RBD:
 
     def get_min_path_sets(
         self, include_in_out_nodes=True
-    ) -> set[tuple[Hashable, ...]]:
+    ) -> set[frozenset[Hashable]]:
         """Gets the minimal path-sets of the RBD
 
         Parameters
         ----------
         include_in_out_nodes : bool, optional
             If false, excludes the input and output nodes
-            in the path tuples, by default True
+            in the return, by default True
 
         Returns
         -------
-        set[tuple[Hashable, ...]]
+        set[frozenset[Hashable]]
             The set of minimal path-sets
         """
         # What differentiates all path sets and minimal path sets is
@@ -159,7 +159,7 @@ class RBD:
         # path set, so we can just check for every path set if it has a subset,
         # if it doesn't then it is a minimal path-set.
 
-        ret_set: set[tuple[Hashable, ...]] = set()
+        ret_set: set[frozenset[Hashable]] = set()
 
         # We're not done until all_path_sets is completely empty
         # since every iteration we're either finding a path-set to be minimal,
@@ -199,7 +199,7 @@ class RBD:
                     path_set.remove(self.output_node)
 
                 # Finally add the path_set as a tuple to the return set
-                ret_set.add(tuple(path_set))
+                ret_set.add(frozenset(path_set))
                 all_path_sets.remove(path_set)
 
         return ret_set
