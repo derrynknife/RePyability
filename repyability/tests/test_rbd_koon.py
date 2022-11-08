@@ -1,35 +1,10 @@
-import pytest
+"""
+Tests many of the RBD class methods.
+
+Uses pytest fixtures located in conftest.py in the tests/ directory.
+"""
 
 from repyability.rbd.rbd import RBD
-from repyability.tests.fixed_probability import FixedProbabilityFitter
-
-
-# koon RBD pytest fixtures
-@pytest.fixture
-def rbd_koon1() -> RBD:
-    qp = 0.03
-    qv = 0.01
-    nodes = {
-        "source": "input_node",
-        "pump1": "pump1",
-        "pump2": "pump2",
-        "valve": "valve",
-        "sink": "output_node",
-    }
-    edges = [
-        ("source", "pump1"),
-        ("source", "pump2"),
-        ("pump1", "valve"),
-        ("pump2", "valve"),
-        ("valve", "sink"),
-    ]
-    components = {
-        "pump1": FixedProbabilityFitter.from_params(1 - qp),
-        "pump2": FixedProbabilityFitter.from_params(1 - qp),
-        "valve": FixedProbabilityFitter.from_params(1 - qv),
-    }
-    k = {"valve": 2}
-    return RBD(nodes, components, edges, k)
 
 
 def test_rbd_koon_default_k(rbd_series: RBD):
