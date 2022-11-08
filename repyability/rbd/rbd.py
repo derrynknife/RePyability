@@ -62,8 +62,7 @@ class RBD:
 
         # Set the node k values (k-out-of-n)
         for node, k_val in k.items():
-            print(G[node])
-            G[node]["k"] = k_val
+            G.nodes[node]["k"] = k_val
 
         # Copy the components and nodes
         components = copy(components)
