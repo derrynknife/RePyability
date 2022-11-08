@@ -295,3 +295,67 @@ def rbd3_koon3() -> RBD:
     nodes, edges, components = rbd3_nodes_edges_components()
     k = {2: 2, 5: 2}
     return RBD(nodes, components, edges, k)
+
+
+@pytest.fixture
+def rbd_koon_parallel_args() -> dict:
+    """
+    A s-3-1-t RBD.
+    Returns the {nodes, edges, components} dict, useful so k(4) can be changed.
+    """
+    nodes = {"s": "input_node", 1: 1, 2: 2, 3: 3, "v": 4, "t": "output_node"}
+    edges = [
+        ("s", 1),
+        ("s", 2),
+        ("s", 3),
+        (1, "v"),
+        (2, "v"),
+        (3, "v"),
+        ("v", "t"),
+    ]
+    components = {
+        1: FixedProbabilityFitter.from_params(0.85),
+        2: FixedProbabilityFitter.from_params(0.8),
+        3: FixedProbabilityFitter.from_params(0.9),
+        4: FixedProbabilityFitter.from_params(0.85),
+    }
+    return {"nodes": nodes, "edges": edges, "components": components}
+
+
+@pytest.fixture
+def rbd_koon_composite_args() -> dict:
+    """
+    A s-2-1-2-1-t RBD.
+    Returns the {nodes, edges, components} dict, useful so k("v1") and k("v2")
+    can be changed.
+    """
+    nodes = {
+        "s": "input_node",
+        "a1": 1,
+        "a2": 2,
+        "v1": 3,
+        "b1": 4,
+        "b2": 5,
+        "v2": 6,
+        "t": "output_node",
+    }
+    edges = [
+        ("s", "a1"),
+        ("s", "a2"),
+        ("a1", "v1"),
+        ("a2", "v1"),
+        ("v1", "b1"),
+        ("v1", "b2"),
+        ("b1", "v2"),
+        ("b2", "v2"),
+        ("v2", "t"),
+    ]
+    components = {
+        1: FixedProbabilityFitter.from_params(0.85),
+        2: FixedProbabilityFitter.from_params(0.8),
+        3: FixedProbabilityFitter.from_params(0.9),
+        4: FixedProbabilityFitter.from_params(0.85),
+        5: FixedProbabilityFitter.from_params(0.85),
+        6: FixedProbabilityFitter.from_params(0.8),
+    }
+    return {"nodes": nodes, "edges": edges, "components": components}

@@ -58,3 +58,89 @@ def test_rbd_get_min_path_sets_rbd3_koon2(rbd3_koon2: RBD):
 
 def test_rbd_get_min_path_sets_rbd3_koon3(rbd3_koon3: RBD):
     assert {frozenset([0, 1, 2, 3, 5, 6])} == rbd3_koon3.get_min_path_sets()
+
+
+def test_rbd_get_min_path_sets_rbd_koon_parallel_k1(rbd_koon_parallel_args):
+    rbd = RBD(**rbd_koon_parallel_args, k={"v": 1})
+    assert {
+        frozenset(["s", 1, "v", "t"]),
+        frozenset(["s", 2, "v", "t"]),
+        frozenset(["s", 3, "v", "t"]),
+    } == rbd.get_min_path_sets()
+
+
+def test_rbd_get_min_path_sets_rbd_koon_parallel_k2(rbd_koon_parallel_args):
+    rbd = RBD(**rbd_koon_parallel_args, k={"v": 2})
+    assert {
+        frozenset(["s", 1, 2, "v", "t"]),
+        frozenset(["s", 1, 3, "v", "t"]),
+        frozenset(["s", 2, 3, "v", "t"]),
+    } == rbd.get_min_path_sets()
+
+
+def test_rbd_get_min_path_sets_rbd_koon_parallel_k3(rbd_koon_parallel_args):
+    rbd = RBD(**rbd_koon_parallel_args, k={"v": 3})
+    assert {
+        frozenset(["s", 1, 2, 3, "v", "t"]),
+    } == rbd.get_min_path_sets()
+
+
+# There are 4 combinations of (k("v1"), k("v2")) for the rbd_koon_composite
+# RBD, let's test all of them...
+def test_rbd_get_min_path_sets_rbd_koon_composite_k11(rbd_koon_composite_args):
+    rbd = RBD(**rbd_koon_composite_args, k={"v1": 1, "v2": 1})
+    assert {
+        frozenset(["s", "a1", "v1", "b1", "v2", "t"]),
+        frozenset(["s", "a1", "v1", "b2", "v2", "t"]),
+        frozenset(["s", "a2", "v1", "b1", "v2", "t"]),
+        frozenset(["s", "a2", "v1", "b2", "v2", "t"]),
+    } == rbd.get_min_path_sets()
+
+
+def test_rbd_get_min_path_sets_rbd_koon_composite_k12(rbd_koon_composite_args):
+    rbd = RBD(**rbd_koon_composite_args, k={"v1": 1, "v2": 2})
+    assert {
+        frozenset(["s", "a1", "v1", "b1", "b2", "v2", "t"]),
+        frozenset(["s", "a2", "v1", "b1", "b2", "v2", "t"]),
+    } == rbd.get_min_path_sets()
+
+
+def test_rbd_get_min_path_sets_rbd_koon_composite_k21(rbd_koon_composite_args):
+    rbd = RBD(**rbd_koon_composite_args, k={"v1": 2, "v2": 1})
+    assert {
+        frozenset(["s", "a1", "a2", "v1", "b1", "v2", "t"]),
+        frozenset(["s", "a1", "a2", "v1", "b2", "v2", "t"]),
+    } == rbd.get_min_path_sets()
+
+
+def test_rbd_get_min_path_sets_rbd_koon_composite_k22(rbd_koon_composite_args):
+    rbd = RBD(**rbd_koon_composite_args, k={"v1": 2, "v2": 2})
+    assert {
+        frozenset(["s", "a1", "a2", "v1", "b1", "b2", "v2", "t"]),
+    } == rbd.get_min_path_sets()
+
+
+# And test impossible cases!
+
+
+def test_rbd_get_min_path_sets_rbd_koon_composite_nonfunctioning(
+    rbd_koon_composite_args,
+):
+    assert (
+        {}
+        == RBD(
+            **rbd_koon_composite_args, k={"v1": 2, "v2": 3}
+        ).get_min_path_sets()
+    )
+    assert (
+        {}
+        == RBD(
+            **rbd_koon_composite_args, k={"v1": 3, "v2": 2}
+        ).get_min_path_sets()
+    )
+    assert (
+        {}
+        == RBD(
+            **rbd_koon_composite_args, k={"v1": 3, "v2": 3}
+        ).get_min_path_sets()
+    )
