@@ -9,6 +9,7 @@ import numpy as np
 import surpyval as surv
 from numpy.typing import ArrayLike
 
+from repyability.rbd.min_path_sets import min_path_sets
 from repyability.rbd.rbd_graph import RBDGraph
 
 from .helper_classes import PerfectReliability, PerfectUnreliability
@@ -74,11 +75,17 @@ class RBD:
             if not G.has_node(node):
                 raise ValueError("Node {} not in edge list".format(node))
             visited_nodes.add(node)
+
+            # Set node attribute dict types if input/output
+            # (if neither input/output no need to do anything, RBDGraph
+            # defaults the type to "node")
             if nodes[node] == "input_node":
                 self.input_node = node
+                self.G.nodes[node]["type"] = "input_node"
                 components[node] = PerfectReliability
             elif nodes[node] == "output_node":
                 self.output_node = node
+                self.G.nodes[node]["type"] = "output_node"
                 components[node] = PerfectReliability
 
         nodes.pop(self.input_node)
@@ -142,65 +149,19 @@ class RBD:
         set[frozenset[Hashable]]
             The set of minimal path-sets
         """
-        # What differentiates all path sets and minimal path sets is
-        # minimal path sets cannot be further reduced by removing components
-        # from path. Recall a path set is a set of components (really a path)
-        # which if working ensure the system is working.
+        # Run min_path_sets() but convert all the inner sets to frozensets
+        # and remove the input/output nodes if requested
+        ret_set = set()
 
-        # So (brute-force) strategy could be just get all the simple paths from
-        # get_all_path_sets() that cannot be reduced.
-
-        # Get all path sets as a list
-        all_path_sets = list(self.get_all_path_sets())
-
-        # A path can be reduced when the system is still working after removing
-        # any node on that path.
-        # Ultimately, every non-minimal path set has a subset that is a minimal
-        # path set, so we can just check for every path set if it has a subset,
-        # if it doesn't then it is a minimal path-set.
-
-        ret_set: set[frozenset[Hashable]] = set()
-
-        # We're not done until all_path_sets is completely empty
-        # since every iteration we're either finding a path-set to be minimal,
-        # thereby adding it to ret_set and removing it from all_path_sets,
-        # OR we're finding the path-set to be non-minimal and removing it
-        # from all_path_sets
-        while all_path_sets:
-            # Get first path-set in all_path_sets
-            path_set = all_path_sets[0]
-
-            # Assume it is a minimal path-set
-            is_minimal_path_set = True
-
-            # Compare to all other path-sets
-            for other_path_set in all_path_sets.copy()[1:]:
-                # If path_set is a subset of other_path_set then other_path_set
-                # is not a minimal path-set, so we can remove it from
-                # all_path_sets and prevent any further consideration of it
-                if set(path_set).issubset(set(other_path_set)):
-                    all_path_sets.remove(other_path_set)
-
-                # If path_set is a superset of other_path_set then path_set
-                # is not a minimal path-set so we can remove it from
-                # all_path_sets and move on to the next iteration
-                elif set(path_set).issuperset(set(other_path_set)):
-                    all_path_sets.remove(path_set)
-                    is_minimal_path_set = False
-                    break
-
-            # If is_minimal_path_set is still True then we can add path_set
-            # to ret_set, and remove it from path_set
-            if is_minimal_path_set:
-                # If include_in_out_nodes is set to false, remove the input
-                # and output nodes
-                if not include_in_out_nodes:
-                    path_set.remove(self.input_node)
-                    path_set.remove(self.output_node)
-
-                # Finally add the path_set as a tuple to the return set
-                ret_set.add(frozenset(path_set))
-                all_path_sets.remove(path_set)
+        for min_path_set in min_path_sets(
+            rbd_graph=self.G,
+            curr_node=self.output_node,
+            solns={},
+        ):
+            if not include_in_out_nodes:
+                min_path_set.remove(self.input_node)
+                min_path_set.remove(self.output_node)
+            ret_set.add(frozenset(min_path_set))
 
         return ret_set
 

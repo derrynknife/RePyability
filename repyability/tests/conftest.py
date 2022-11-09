@@ -359,3 +359,38 @@ def rbd_koon_composite_args() -> dict:
         6: FixedProbabilityFitter.from_params(0.8),
     }
     return {"nodes": nodes, "edges": edges, "components": components}
+
+
+@pytest.fixture
+def rbd_koon_simple() -> RBD:
+    nodes = {"s": "input_node", 1: 1, 2: 2, "t": "output_node"}
+    edges = [("s", 1), (1, 2), ("s", 2), (2, "t")]
+    components = {
+        1: FixedProbabilityFitter.from_params(0.85),
+        2: FixedProbabilityFitter.from_params(0.8),
+    }
+    return RBD(nodes, components, edges, {2: 2})
+
+
+@pytest.fixture
+def rbd_koon_nonminimal_args() -> dict:
+    """RBD that can easily trap an algorithm into including a non-minimal
+    path-set."""
+    nodes = {
+        "s": "input_node",
+        1: 1,
+        2: 2,
+        3: 3,
+        4: 4,
+        5: 5,
+        "t": "output_node",
+    }
+    edges = [("s", 1), (1, 2), (2, "t"), (1, 3), (3, 4), (4, 5), (5, 2)]
+    components = {
+        1: FixedProbabilityFitter.from_params(0.85),
+        2: FixedProbabilityFitter.from_params(0.8),
+        3: FixedProbabilityFitter.from_params(0.9),
+        4: FixedProbabilityFitter.from_params(0.85),
+        5: FixedProbabilityFitter.from_params(0.85),
+    }
+    return {"nodes": nodes, "edges": edges, "components": components}

@@ -11,14 +11,15 @@ class RBDGraph(nx.DiGraph):
 
     Default node attribute dict:
     {
-        "k": 1
+        "k": 1,
+        "type": "node"  # Can be "node"/"input_node"/"output_node"
     }
 
     """
 
     # Function that returns the default node attribute dict
     def default_node_attr_dict(self):
-        return {"k": 1}
+        return {"k": 1, "type": "node"}
 
     # networkx relies on the subclass (RBDGraph) to set the variable
     # `node_attr_dict_factory` to the default node attribute dict function.

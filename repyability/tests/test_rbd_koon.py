@@ -24,7 +24,7 @@ def test_rbd_koon_k_given(rbd1_koon: RBD):
 
 
 def test_rbd_get_min_path_sets_rbd_series_koon(rbd_series_koon: RBD):
-    assert {} == rbd_series_koon.get_min_path_sets()
+    assert set() == rbd_series_koon.get_min_path_sets()
 
 
 def test_rbd_get_min_path_sets_rbd1_koon(rbd1_koon: RBD):
@@ -48,16 +48,23 @@ def test_rbd_get_min_path_sets_rbd2_koon(rbd2_koon: RBD):
 def test_rbd_get_min_path_sets_rbd3_koon1(rbd3_koon1: RBD):
     assert {
         frozenset([0, 1, 2, 6]),
-        frozenset([0, 1, 4, 6]),
+        frozenset([0, 3, 4, 6]),
     } == rbd3_koon1.get_min_path_sets()
 
 
 def test_rbd_get_min_path_sets_rbd3_koon2(rbd3_koon2: RBD):
-    assert {frozenset([0, 1, 2, 5, 6])} == rbd3_koon2.get_min_path_sets()
+    assert {
+        frozenset([0, 1, 2, 5, 6]),
+        frozenset([0, 1, 5, 4, 6]),
+        frozenset([0, 3, 4, 6]),
+    } == rbd3_koon2.get_min_path_sets()
 
 
 def test_rbd_get_min_path_sets_rbd3_koon3(rbd3_koon3: RBD):
-    assert {frozenset([0, 1, 2, 3, 5, 6])} == rbd3_koon3.get_min_path_sets()
+    assert {
+        frozenset([0, 1, 2, 3, 5, 6]),
+        frozenset({0, 3, 4, 6}),
+    } == rbd3_koon3.get_min_path_sets()
 
 
 def test_rbd_get_min_path_sets_rbd_koon_parallel_k1(rbd_koon_parallel_args):
@@ -127,20 +134,34 @@ def test_rbd_get_min_path_sets_rbd_koon_composite_nonfunctioning(
     rbd_koon_composite_args,
 ):
     assert (
-        {}
+        set()
         == RBD(
             **rbd_koon_composite_args, k={"v1": 2, "v2": 3}
         ).get_min_path_sets()
     )
     assert (
-        {}
+        set()
         == RBD(
             **rbd_koon_composite_args, k={"v1": 3, "v2": 2}
         ).get_min_path_sets()
     )
     assert (
-        {}
+        set()
         == RBD(
             **rbd_koon_composite_args, k={"v1": 3, "v2": 3}
         ).get_min_path_sets()
     )
+
+
+def test_rbd_get_min_path_sets_rbd_koon_simple(rbd_koon_simple: RBD):
+    assert {frozenset(["s", 1, 2, "t"])} == rbd_koon_simple.get_min_path_sets()
+
+
+def test_rbd_get_min_path_sets_rbd_koon_nonminimal(
+    rbd_koon_nonminimal_args: dict,
+):
+    rbd_k1 = RBD(**rbd_koon_nonminimal_args, k={2: 1})
+    assert {frozenset(["s", 1, 2, "t"])} == rbd_k1.get_min_path_sets()
+
+    rbd_k2 = RBD(**rbd_koon_nonminimal_args, k={2: 2})
+    assert {frozenset(["s", 1, 2, 3, 4, 5, "t"])} == rbd_k2.get_min_path_sets()

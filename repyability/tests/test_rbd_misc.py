@@ -23,3 +23,10 @@ def test_rbd_get_all_path_sets(rbd1: RBD, rbd2: RBD):
         [1, 2, 3, 5, 6, 7, 8],
         [1, 2, 4, 7, 8],
     ]
+
+
+def test_rbd_node_type_dict(rbd1: RBD):
+    assert rbd1.G.nodes["source"]["type"] == "input_node"
+    assert rbd1.G.nodes["pump1"]["type"] == "node"
+    assert rbd1.G.nodes["pump2"]["type"] == "node"
+    assert rbd1.G.nodes["sink"]["type"] == "output_node"

@@ -136,7 +136,6 @@ def test_rbd_sf_working_node_repeated_component(
         pytest.approx(1 - rbd.components[2].ff(t) * rbd.components[3].ff(t))
         == rbd.sf(t, working_nodes=[3])[0]
     )
-    print(rbd.components[2].sf(t))
 
 
 # Test ff(), can just test parallel as ff() just calls 1 - sf()
