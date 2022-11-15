@@ -1,6 +1,9 @@
 from collections import defaultdict
 from copy import copy
+from dataclasses import dataclass, field
 from itertools import combinations
+
+# from queue import PriorityQueue
 from typing import Any, Collection, Hashable, Iterable, Iterator
 from warnings import warn
 
@@ -11,17 +14,13 @@ from numpy.typing import ArrayLike
 
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .min_cut_sets import min_cut_sets
-from collections import defaultdict
-from queue import PriorityQueue
 
-from dataclasses import dataclass, field
-from typing import Any
 
 # Event class for simulation
 @dataclass(order=True)
 class Event:
     time: float
-    node: Any=field(compare=False)
+    node: Any = field(compare=False)
     status: int
 
 
@@ -33,7 +32,7 @@ class RBD:
     def __init__(
         self,
         nodes: dict[Any, Any],
-        components: dict[Any, Any],
+        reliability: dict[Any, Any],
         edges: Iterable[tuple[Hashable, Hashable]],
         mc_samples: int = 10_000,
     ):
@@ -42,13 +41,13 @@ class RBD:
         Parameters
         ----------
         nodes : dict[Any, Any]
-            A dictionary of node names as keys and their respective component
-            names as values (which map to the components in the components
+            A dictionary of node names as keys and their component
+            names as values (which map to the keys in the reliability
             dict), except for the the input and output nodes which need string
             values `"input_node"` and `"output_node"` respectively
-        components : dict[Any, Any]
+        reliability : dict[Any, Any]
             A dictionary of all non-input-output components names as keys
-            with their SurPyval distribution as values
+            with their SurPyval reliability distributions as values
         edges : Iterable[tuple[Hashable, Hashable]]
             The collection of node edges, e.g. [(1, 2), (2, 3)] would
             correspond to the edges 1-2 and 2-3
@@ -67,7 +66,7 @@ class RBD:
         self.G = G
 
         # Copy the components and nodes
-        components = copy(components)
+        reliability = copy(reliability)
         nodes = copy(nodes)
 
         # Look through all the nodes.
@@ -78,10 +77,10 @@ class RBD:
             visited_nodes.add(node)
             if nodes[node] == "input_node":
                 self.input_node = node
-                components[node] = PerfectReliability
+                reliability[node] = PerfectReliability
             elif nodes[node] == "output_node":
                 self.output_node = node
-                components[node] = PerfectReliability
+                reliability[node] = PerfectReliability
 
         nodes.pop(self.input_node)
         nodes.pop(self.output_node)
@@ -98,7 +97,7 @@ class RBD:
                 raise ValueError("Node {} not in nodes list".format(n))
 
         new_models = {}
-        for k, v in components.items():
+        for k, v in reliability.items():
             if type(v) == list:
                 sim = 0
                 for model in v:
@@ -108,9 +107,9 @@ class RBD:
 
         # This will override the existing list with Non-Parametric
         # models
-        components = {**components, **new_models}
+        reliability = {**reliability, **new_models}
 
-        self.components = components
+        self.reliability = reliability
         self.nodes = nodes
 
     def get_all_path_sets(self) -> Iterator[list[Hashable]]:
@@ -316,15 +315,15 @@ class RBD:
 
         # Cache all component reliabilities for efficiency
         comp_rel_cache_dict: dict[Hashable, np.ndarray] = {}
-        for comp in self.components:
+        for comp in self.reliability:
             if comp in working_components:
                 comp_rel_cache_dict[comp] = PerfectReliability().sf(x)
             elif comp in broken_components:
                 comp_rel_cache_dict[comp] = PerfectUnreliability().sf(x)
             else:
-                comp_rel_cache_dict[comp] = self.components[comp].sf(x)
-        # We'll just add the two 'perfect components' to this dict while
-        # we're at it, since they'll be used in lookup later
+                comp_rel_cache_dict[comp] = self.reliability[comp].sf(x)
+        # We'll just add the two 'perfect component reliabilities' to this dict
+        # while we're at it, since they'll be used in lookup later
         comp_rel_cache_dict["PerfectReliability"] = PerfectReliability().sf(x)
         comp_rel_cache_dict[
             "PerfectUnreliability"
@@ -542,7 +541,7 @@ class RBD:
         node_importance = {}
         system_sf = self.sf(x)
         for node in self.nodes.keys():
-            node_sf = self.components[self.nodes[node]].sf(x)
+            node_sf = self.reliability[self.nodes[node]].sf(x)
             node_importance[node] = bi[node] * node_sf / system_sf
         return node_importance
 
@@ -612,11 +611,11 @@ class RBD:
 
         # Cache the component reliabilities for efficiency
         rel_dict = {}
-        for component in self.components.keys():
+        for component in self.reliability.keys():
             # TODO: make log
             # Calculating reliability in the log-domain though so the
             # components' reliability can be added avoid possible underflow
-            rel_dict[component] = self.components[component].ff(x)
+            rel_dict[component] = self.reliability[component].ff(x)
 
         # For each node,
         for node in self.nodes.keys():
@@ -641,119 +640,123 @@ class RBD:
         return node_importance
 
 
-class RepairableRBD(RBD):
-    def __init__(
-        self,
-        nodes: dict[Any, Any],
-        reliability: dict[Any, Any],
-        repair: dict[Any, Any],
-        edges: Iterable[tuple[Hashable, Hashable]],
-        mc_samples: int = 10_000,
-    ):
-        super().__init__(nodes, reliability, edges, mc_samples)
-        self.repair = copy(repair)
+# class RepairableRBD(RBD):
+#     def __init__(
+#         self,
+#         nodes: dict[Any, Any],
+#         reliability: dict[Any, Any],
+#         repair: dict[Any, Any],
+#         edges: Iterable[tuple[Hashable, Hashable]],
+#         mc_samples: int = 10_000,
+#     ):
+#         super().__init__(nodes, reliability, edges, mc_samples)
+#         self.repair = copy(repair)
 
-    def compile_bdd(self) -> dict:
-        # Need to create the bdd from min path sets
+#     def compile_bdd(self) -> dict:
+#         # Need to create the bdd from min path sets
 
-        # Format for BDD
-        # Find first node using:
-        # - Most common node?
-        # - Least common node?
-        # - most "bisecting" node?...
-        """
-        bdd = {
-            1: {1: 2, 0: False},
-            2: {1: True, 0: False}
-        }
-        """
+#         # Format for BDD
+#         # Find first node using:
+#         # - Most common node?
+#         # - Least common node?
+#         # - most "bisecting" node?...
+#         """
+#         bdd = {
+#             1: {1: 2, 0: False},
+#             2: {1: True, 0: False}
+#         }
+#         """
 
-        # Need to set the first node of the BDD
-        self.first_bdd_node = 0
-        # Pretend output
-        self.bdd = {0: True}
-        return {}
+#         # Need to set the first node of the BDD
+#         self.first_bdd_node = 0
+#         # Pretend output
+#         self.bdd = {0: True}
+#         return {}
 
-    def working(self, status: dict[Any, int]) -> bool:
-        """Returns a boolean as to whether the system is working given the 
-        status of the nodes given by `status`
+#     # def working(self, status: dict[Any, int]) -> bool:
+#     #     """Returns a boolean as to whether the system is working given the
+#     #     status of the nodes given by `status`
 
-        Parameters
-        ----------
-        status : dict[Any, int]
-            Dictionary of node designator with an int value of it's stauts. 0 
-            for broken, 1 for working.
+#     #     Parameters
+#     #     ----------
+#     #     status : dict[Any, int]
+#     #         Dictionary of node designator with an int value of it's stauts.
+#               0 for broken, 1 for working.
 
-        Returns
-        -------
-        bool
-            boolean of whether the system is functioning or not.
-        """
-        return self.is_working_from_node(self.first_bdd_node, status)
+#     #     Returns
+#     #     -------
+#     #     bool
+#     #         boolean of whether the system is functioning or not.
+#     #     """
+#     #     return self.is_working_from_node(self.first_bdd_node, status)
 
-    def is_working_from_node(self, node, status):
-        val = self.bdd[node][status[node]]
-        if type(val) == bool:
-            return val
-        else:
-            return is_working(val, status)
+# def is_working_from_node(self, node, status):
+#     val = self.bdd[node][status[node]]
+#     if type(val) == bool:
+#         return val
+#     else:
+#         return is_working(val, status)
 
-    def availability(self, T, N=10_000)  -> tuple:
+# def availability(self, T, N=10_000) -> tuple:
 
-        agg_timeline = defaultdict(lambda: 0)
-        for i in range(N):
-            pq = PriorityQueue()
-            t = 0
-            node_status = {}
-            # Set system condition at zero to working
-            agg_timeline[0] += 1
-            system_status = 1
+#     agg_timeline = defaultdict(lambda: 0)
+#     for i in range(N):
+#         pq = PriorityQueue()
+#         t = 0
+#         node_status = {}
+#         # Set system condition at zero to working
+#         agg_timeline[0] += 1
+#         system_status = 1
 
-            for k in self.components.keys():
-                node_status[k] = 0
-                node = Event(self.components[k].random(1).item(), k, 0)
-                pq.put(node)
+#         for k in self.reliability.keys():
+#             node_status[k] = 0
+#             node = Event(self.reliability[k].random(1).item(), k, 0)
+#             pq.put(node)
 
-            while not pq.empty():
-                event = pq.get()
-                new_t = event.time
+#         while not pq.empty():
+#             event = pq.get()
+#             new_t = event.time
 
-                if new_t > T:
-                    # Add zero since nothing will have changed since last event
-                    agg_timeline[T] += 0
-                    break
-                else:
-                    # Replace with BDD solution commented out below
-                    new_system_status = 1 - system_status
-                    # Uncomment the below when working
-                    # new_system_status = self.working(node_status)
-                    if new_system_status != system_status:
-                        if new_system_status == 0:
-                            agg_timeline[new_t] -= 1
-                        else:
-                            agg_timeline[new_t] += 1
-                        
-                        system_status = new_system_status
+#             if new_t > T:
+#                 # Add zero since nothing will have changed since last event
+#                 agg_timeline[T] += 0
+#                 break
+#             else:
+#                 # Replace with BDD solution commented out below
+#                 new_system_status = 1 - system_status
+#                 # Uncomment the below when working
+#                 # new_system_status = self.working(node_status)
+#                 if new_system_status != system_status:
+#                     if new_system_status == 0:
+#                         agg_timeline[new_t] -= 1
+#                     else:
+#                         agg_timeline[new_t] += 1
 
-                    # set_node to new status
-                    node_status[event.node] = event.status
+#                     system_status = new_system_status
 
-                    if event.status == 0:
-                        dist = self.repair[event.node]
-                    elif event.status == 1:
-                        dist = self.components[event.node]
-                    
-                    # Create a new event an put it into the queue
-                    new_event = Event(new_t + dist.random(1).item(), event.node, 1 - event.status)
-                    pq.put(new_event)
-                    # Update simulation time
-                    t = new_t
+#                 # set_node to new status
+#                 node_status[event.node] = event.status
 
-        tl = np.array(list(agg_timeline.items()))
-        tl = tl[tl[:, 0].argsort()]
-        tl[:, 1] = tl[:, 1].cumsum()
-        tl[:, 1] = tl[:, 1] / tl[0, 1]
+#                 if event.status == 0:
+#                     dist = self.repair[event.node]
+#                 elif event.status == 1:
+#                     dist = self.reliability[event.node]
 
-        x, a = tl[:, 0], tl[:, 1]
+#                 # Create a new event an put it into the queue
+#                 new_event = Event(
+#                     new_t + dist.random(1).item(),
+#                     event.node,
+#                     1 - event.status,
+#                 )
+#                 pq.put(new_event)
+#                 # Update simulation time
+#                 t = new_t
 
-        return x, a
+#     tl = np.array(list(agg_timeline.items()))
+#     tl = tl[tl[:, 0].argsort()]
+#     tl[:, 1] = tl[:, 1].cumsum()
+#     tl[:, 1] = tl[:, 1] / tl[0, 1]
+
+#     x, a = tl[:, 0], tl[:, 1]
+
+#     return x, a
