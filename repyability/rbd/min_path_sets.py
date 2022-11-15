@@ -81,15 +81,44 @@ def min_path_sets(
     #   i.e. if there's 2 subproblems, each with 2 minimal path-sets
     #        (aa, ab, ba, bb) then merge the sets (aa+ba, aa+bb, ab+ba, ab+bb)
 
-    # First get the node-in combinations
-    combs = itertools.combinations(range(len(all_subproblem_solns)), k)
+    # Get all the necessary path-set combinations
+    merged_soln = merge_subproblem_solns(all_subproblem_solns, k)
 
-    # Then form the path-set combinations (or additions rather)
-    merged_soln: list[set[Hashable]] = []
+    # Remove all non-minimal path-sets
+    merged_and_minimal_soln = minimalise_path_sets(merged_soln)
+
+    # Finally, memoise the solution to this curr_node problem, and return
+    solns[curr_node] = copy.deepcopy(merged_and_minimal_soln)
+    return merged_and_minimal_soln
+
+
+def get_node_in_combinations(n_in: int, k: int) -> list[tuple[int, ...]]:
+    """Returns all the indexed-0 node combinations for a k k-out-of-n node with
+    n_in predecessors
+
+    e.g. If the k-out-of-n node has k=2, and has 4 predecessors, this will
+    return [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)].
+    """
+    return list(itertools.combinations(range(n_in), k))
+
+
+def merge_subproblem_solns(
+    all_subproblem_solns: list[list[set[Hashable]]], curr_node_k: int
+) -> list[set[Hashable]]:
+    """Returns k-wise path-set combinations for the current node"""
+    # First get the node-in combinations
+    n_in = len(all_subproblem_solns)
+    combs = get_node_in_combinations(n_in, curr_node_k)
+
+    # Then form the path-set combinations (or set-additions rather)
+
+    merged_soln: list[set] = []
     for comb in combs:
-        # product_candidates are all the subproblems we're considering for
-        # this comb
-        product_candidates = [all_subproblem_solns[i] for i in comb]
+        # product_candidates are all the subproblem solns we're considering for
+        # this combination
+        product_candidates: list[list[set]] = [
+            all_subproblem_solns[i] for i in comb
+        ]
 
         # itertools.product() performs all the magic for us, basically
         # getting us the '(aa, ab, ba, bb)' we need
@@ -102,20 +131,32 @@ def min_path_sets(
             # And add it to the merged_soln list
             merged_soln.append(s)
 
-    # Only take the minimal path-sets, this is achieved by only taking the
-    # sets that aren't a superset of any other sets in the merged_soln list
-    merged_and_minimal_soln = []
-    for path_set in merged_soln:
-        for other_path_set in merged_soln:
-            is_path_set_minimal = True
+    return merged_soln
+
+
+def minimalise_path_sets(path_sets: list[set]) -> list[set]:
+    """Returns only the minimal path-sets
+
+    i.e. Discards all path-sets that are a superset of any of the other
+    path-sets.
+
+    Parameters
+    ----------
+    path_sets : list[set]
+        All path-sets to minimalise
+    """
+    minimal_path_sets = []
+    for path_set in path_sets:
+        is_path_set_minimal = True  # Assume path-set is minimal
+        for other_path_set in path_sets:
             if path_set == other_path_set:
+                # Don't consider the same path-set
                 continue
             if path_set.issuperset(other_path_set):
+                # Discard path_set as it's non-minimal (other_path_set is a
+                # subset of this path_set)
                 is_path_set_minimal = False
                 break
         if is_path_set_minimal:
-            merged_and_minimal_soln.append(path_set)
-
-    # Finally, memoise the solution to this curr_node problem, and return
-    solns[curr_node] = copy.deepcopy(merged_and_minimal_soln)
-    return merged_and_minimal_soln
+            minimal_path_sets.append(path_set)
+    return minimal_path_sets
