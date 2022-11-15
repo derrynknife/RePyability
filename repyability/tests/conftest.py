@@ -394,3 +394,35 @@ def rbd_koon_nonminimal_args() -> dict:
         5: FixedProbabilityFitter.from_params(0.85),
     }
     return {"nodes": nodes, "edges": edges, "components": components}
+
+
+@pytest.fixture
+def rbd_double_parallel_args() -> dict:
+    """RBD arguments that make for a 1-2-1-2-1 RBD."""
+    nodes = {
+        "s": "input_node",
+        1: 1,
+        2: 2,
+        3: 3,
+        4: 4,
+        5: 5,
+        "t": "output_node",
+    }
+    edges = [
+        ("s", 1),
+        ("s", 2),
+        (1, 3),
+        (2, 3),
+        (3, 4),
+        (3, 5),
+        (4, "t"),
+        (5, "t"),
+    ]
+    components = {
+        1: FixedProbabilityFitter.from_params(0.85),
+        2: FixedProbabilityFitter.from_params(0.8),
+        3: FixedProbabilityFitter.from_params(0.9),
+        4: FixedProbabilityFitter.from_params(0.85),
+        5: FixedProbabilityFitter.from_params(0.85),
+    }
+    return {"nodes": nodes, "edges": edges, "components": components}

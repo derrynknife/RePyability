@@ -165,3 +165,13 @@ def test_rbd_get_min_path_sets_rbd_koon_nonminimal(
 
     rbd_k2 = RBD(**rbd_koon_nonminimal_args, k={2: 2})
     assert {frozenset(["s", 1, 2, 3, 4, 5, "t"])} == rbd_k2.get_min_path_sets()
+
+
+def test_rbd_get_min_path_sets_rbd_double_parallel_koon(
+    rbd_double_parallel_args: dict,
+):
+    rbd = RBD(**rbd_double_parallel_args, k={3: 2})
+    assert {
+        frozenset(["s", 1, 2, 3, 4, "t"]),
+        frozenset(["s", 1, 2, 3, 5, "t"]),
+    } == rbd.get_min_path_sets()

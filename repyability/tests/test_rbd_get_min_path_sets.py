@@ -47,3 +47,15 @@ def test_rbd_get_min_path_sets_rbd3(rbd3: RBD):
         frozenset([0, 3, 4, 6]),
         frozenset([0, 3, 5, 2, 6]),
     } == rbd3.get_min_path_sets()
+
+
+def test_rbd_get_min_path_sets_rbd_double_parallel(
+    rbd_double_parallel_args: dict,
+):
+    rbd = RBD(**rbd_double_parallel_args)
+    assert {
+        frozenset(["s", 1, 3, 4, "t"]),
+        frozenset(["s", 2, 3, 4, "t"]),
+        frozenset(["s", 1, 3, 5, "t"]),
+        frozenset(["s", 2, 3, 5, "t"]),
+    } == rbd.get_min_path_sets()
