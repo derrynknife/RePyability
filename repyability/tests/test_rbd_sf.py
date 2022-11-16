@@ -6,6 +6,7 @@ Uses pytest fixtures located in conftest.py in the tests/ directory.
 import pytest
 
 from repyability.rbd.rbd import RBD
+from repyability.tests.fixed_probability import FixedProbabilityFitter
 
 
 # Test sf() w/ simple series RBD
@@ -157,3 +158,26 @@ def test_rbd_ff(rbd_parallel: RBD):
 def test_rbd_sf_arg_inconsistency(rbd1: RBD):
     with pytest.raises(ValueError):
         rbd1.sf(2, working_nodes=["pump1"], broken_components=["pump1"])
+
+
+# Test sf() w/ an RBD as a node
+def test_rbd_sf_RBD_as_node(rbd1: RBD):
+    """rbd_parallel but node 3 is rbd1."""
+    nodes = {1: "input_node", 2: 2, 3: "RBD", 4: 4, 5: "output_node"}
+    edges = [(1, 2), (1, 3), (1, 4), (2, 5), (3, 5), (4, 5)]
+    components = {
+        2: FixedProbabilityFitter.from_params(0.8),
+        "RBD": rbd1,
+        4: FixedProbabilityFitter.from_params(0.85),
+    }
+    rbd = RBD(nodes, components, edges)
+    t = 2
+    assert pytest.approx(rbd1.sf(t)) == rbd.components["RBD"].sf(t)
+    assert (
+        pytest.approx(
+            rbd.components[2].ff(t)
+            * rbd.components["RBD"].ff(t)
+            * rbd.components[4].ff(t)
+        )
+        == rbd.ff(t)[0]
+    )
