@@ -88,7 +88,9 @@ def min_path_sets(
     merged_and_minimal_soln = minimalise_path_sets(merged_soln)
 
     # Finally, memoise the solution to this curr_node problem, and return
-    solns[curr_node] = copy.deepcopy(merged_and_minimal_soln)
+    if rbd_graph.out_degree(curr_node) > 1:
+        solns[curr_node] = copy.deepcopy(merged_and_minimal_soln)
+
     return merged_and_minimal_soln
 
 
