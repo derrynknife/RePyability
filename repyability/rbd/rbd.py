@@ -698,7 +698,7 @@ class RepairableRBD(RBD):
         else:
             return is_working(val, status)
 
-    def availability(self, T, N=10_000)  -> tuple:
+    def availability(self, T, N=10_000) -> tuple:
 
         agg_timeline = defaultdict(lambda: 0)
         for i in range(N):
@@ -711,8 +711,13 @@ class RepairableRBD(RBD):
 
             for k in self.components.keys():
                 node_status[k] = 0
-                node = Event(self.components[k].random(1).item(), k, 0)
-                pq.put(node)
+                # Take random event for failure from each node.
+                t_initial = self.components[k].random(1).item()
+                # Only add to priority queue if necessary
+                # i.e. if the event will happen in the simulation window
+                if t_initial < T:
+                    node = Event(t_initial, k, 0)
+                    pq.put(node)
 
             while not pq.empty():
                 event = pq.get()
@@ -746,13 +751,12 @@ class RepairableRBD(RBD):
                     # Create a new event an put it into the queue
                     new_event = Event(new_t + dist.random(1).item(), event.node, 1 - event.status)
                     pq.put(new_event)
-                    # Update simulation time
-                    t = new_t
 
         tl = np.array(list(agg_timeline.items()))
         tl = tl[tl[:, 0].argsort()]
         tl[:, 1] = tl[:, 1].cumsum()
-        tl[:, 1] = tl[:, 1] / tl[0, 1]
+        # Get tha availability by dividing the cumsum by the number of sims.
+        tl[:, 1] = tl[:, 1] / N
 
         x, a = tl[:, 0], tl[:, 1]
 
