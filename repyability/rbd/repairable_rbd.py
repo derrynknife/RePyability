@@ -90,8 +90,13 @@ class RepairableRBD(RBD):
 
             for k in self.reliability.keys():
                 node_status[k] = 0
-                node = Event(self.reliability[k].random(1).item(), k, 0)
-                pq.put(node)
+                # Take random event for failure from each node.
+                t_initial = self.reliability[k].random(1).item()
+                # Only add to priority queue if necessary
+                # i.e. if the event will happen in the simulation window
+                if t_initial < T:
+                    node = Event(t_initial, k, 0)
+                    pq.put(node)
 
             while not pq.empty():
                 event = pq.get()
@@ -135,7 +140,7 @@ class RepairableRBD(RBD):
         tl: np.ndarray = np.array(list(agg_timeline.items()))
         tl = tl[tl[:, 0].argsort()]
         tl[:, 1] = tl[:, 1].cumsum()
-        tl[:, 1] = tl[:, 1] / tl[0, 1]
+        tl[:, 1] = tl[:, 1] / N
 
         x, a = tl[:, 0], tl[:, 1]
 
