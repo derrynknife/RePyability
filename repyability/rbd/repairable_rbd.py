@@ -135,7 +135,6 @@ class RepairableRBD(RBD):
                     )
                     pq.put(new_event)
                     # Update simulation time
-                    t = new_t
 
         tl: np.ndarray = np.array(list(agg_timeline.items()))
         tl = tl[tl[:, 0].argsort()]
