@@ -360,8 +360,8 @@ class RBD:
             node_degrees[source]["out"] += 1
             node_degrees[target]["in"] += 1
 
-        input_nodes = [n for k, n in node_degrees.items() if n["in"] == 0]
-        output_nodes = [n for k, n in node_degrees.items() if n["out"] == 0]
+        input_nodes = [n for n in node_degrees.values() if n["in"] == 0]
+        output_nodes = [n for n in node_degrees.values() if n["out"] == 0]
         has_node_with_no_input = len(input_nodes) != 1
         has_node_with_no_output = len(output_nodes) != 1
         if not any(

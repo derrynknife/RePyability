@@ -149,3 +149,11 @@ def test_rbd_ff(rbd_parallel: RBD):
         )
         == rbd_parallel.ff(t)[0]
     )
+
+
+# Test ValueError
+
+
+def test_rbd_sf_arg_inconsistency(rbd1: RBD):
+    with pytest.raises(ValueError):
+        rbd1.sf(2, working_nodes=["pump1"], broken_components=["pump1"])

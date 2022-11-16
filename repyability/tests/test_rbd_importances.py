@@ -172,6 +172,12 @@ def test_rbd_criticality_importance(rbd1: RBD):
 # Test fussel_vesely() w/ cut-set method
 
 
+def test_fussel_vesely_incorrect_fv_type(rbd1: RBD):
+    t = 2
+    with pytest.raises(ValueError):
+        rbd1.fussel_vesely(t, fv_type="a")
+
+
 def test_fussel_vesely_c_rbd1(rbd1: RBD):
     t = 2
     fv_importance = rbd1.fussel_vesely(t, fv_type="c")
