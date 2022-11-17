@@ -118,6 +118,14 @@ class RBD:
         self.components = components
         self.nodes = nodes
 
+        # Finally, check valid RBD structure
+        if not self.is_valid_RBD_structure():
+            raise ValueError(
+                f"RBD not correctly structured, add edges or nodes \
+                to create correct structure. See errors: \
+                {self.rbd_structural_errors}"
+            )
+
     def get_all_path_sets(self) -> Iterator[list[Hashable]]:
         """Gets all path sets from input_node to output_node
 
@@ -204,18 +212,10 @@ class RBD:
         Raises
         ------
         ValueError
-            - RBD not correctly structured
             - Working/broken node/component inconsistency (a component or node
               is supplied more than once to any of working_nodes, broken_nodes,
               working_components, broken_components)
         """
-
-        if not self.check_rbd_structure():
-            raise ValueError(
-                "RBD not correctly structured, add edges or nodes \
-                to create correct structure."
-            )
-
         # Check for any node/component argument inconsistency
         argument_nodes: set[object] = set()
         argument_nodes.update(working_nodes)
@@ -351,9 +351,20 @@ class RBD:
         """
         return 1 - self.sf(x, *args, **kwargs)
 
-    def check_rbd_structure(self):
+    def is_valid_RBD_structure(self) -> bool:
+        """Returns False if invalid RBD structure
+
+        Invalid RBD structure includes:
+        - having cycles present
+        - a non-input/output node having no in/out-nodes
+
+        Returns
+        -------
+        bool
+            True
+        """
         has_circular_dependency = not nx.is_directed_acyclic_graph(self.G)
-        node_degrees = defaultdict(lambda: defaultdict(int))
+        node_degrees: dict = defaultdict(lambda: defaultdict(int))
 
         for edge in self.G.edges:
             source, target = edge
