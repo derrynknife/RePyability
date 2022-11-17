@@ -11,8 +11,8 @@ from repyability.tests.fixed_probability import FixedProbabilityFitter
 
 # Check components are correct lengths
 def test_rbd_components(rbd1: RBD, rbd2: RBD):
-    assert len(rbd1.components) == 5
-    assert len(rbd2.components) == 8
+    assert len(rbd1.reliability) == 5
+    assert len(rbd2.reliability) == 8
 
 
 # Test get_all_path_sets()

@@ -24,7 +24,7 @@ class RBD:
     def __init__(
         self,
         nodes: dict[Any, Any],
-        components: dict[Any, Any],
+        reliability: dict[Any, Any],
         edges: Iterable[tuple[Hashable, Hashable]],
         k: dict[Any, int] = {},
         mc_samples: int = 10_000,
@@ -35,10 +35,10 @@ class RBD:
         ----------
         nodes : dict[Any, Any]
             A dictionary of node names as keys and their respective component
-            names as values (which map to the components in the components
+            names as values (which map to the components in the reliability
             dict), except for the the input and output nodes which need string
             values `"input_node"` and `"output_node"` respectively
-        components : dict[Any, Any]
+        reliability : dict[Any, Any]
             A dictionary of all non-input-output components names as keys
             with their SurPyval distribution as values
         edges : Iterable[tuple[Hashable, Hashable]]
@@ -66,7 +66,7 @@ class RBD:
             G.nodes[node]["k"] = k_val
 
         # Copy the components and nodes
-        components = copy(components)
+        reliability = copy(reliability)
         nodes = copy(nodes)
 
         # Look through all the nodes.
@@ -82,11 +82,11 @@ class RBD:
             if nodes[node] == "input_node":
                 self.input_node = node
                 self.G.nodes[node]["type"] = "input_node"
-                components[node] = PerfectReliability
+                reliability[node] = PerfectReliability
             elif nodes[node] == "output_node":
                 self.output_node = node
                 self.G.nodes[node]["type"] = "output_node"
-                components[node] = PerfectReliability
+                reliability[node] = PerfectReliability
 
         nodes.pop(self.input_node)
         nodes.pop(self.output_node)
@@ -103,7 +103,7 @@ class RBD:
                 raise ValueError("Node {} not in nodes list".format(n))
 
         new_models = {}
-        for k, v in components.items():
+        for k, v in reliability.items():
             if type(v) == list:
                 sim = 0
                 for model in v:
@@ -113,9 +113,9 @@ class RBD:
 
         # This will override the existing list with Non-Parametric
         # models
-        components = {**components, **new_models}
+        reliability = {**reliability, **new_models}
 
-        self.components = components
+        self.reliability = reliability
         self.nodes = nodes
 
         # Finally, check valid RBD structure
@@ -275,13 +275,13 @@ class RBD:
 
         # Cache all component reliabilities for efficiency
         comp_rel_cache_dict: dict[Hashable, np.ndarray] = {}
-        for comp in self.components:
+        for comp in self.reliability:
             if comp in working_components:
                 comp_rel_cache_dict[comp] = PerfectReliability().sf(x)
             elif comp in broken_components:
                 comp_rel_cache_dict[comp] = PerfectUnreliability().sf(x)
             else:
-                comp_rel_cache_dict[comp] = self.components[comp].sf(x)
+                comp_rel_cache_dict[comp] = self.reliability[comp].sf(x)
         # We'll just add the two 'perfect components' to this dict while
         # we're at it, since they'll be used in lookup later
         comp_rel_cache_dict["PerfectReliability"] = PerfectReliability().sf(x)
@@ -512,7 +512,7 @@ class RBD:
         node_importance = {}
         system_sf = self.sf(x)
         for node in self.nodes.keys():
-            node_sf = self.components[self.nodes[node]].sf(x)
+            node_sf = self.reliability[self.nodes[node]].sf(x)
             node_importance[node] = bi[node] * node_sf / system_sf
         return node_importance
 
@@ -582,11 +582,11 @@ class RBD:
 
         # Cache the component reliabilities for efficiency
         rel_dict = {}
-        for component in self.components.keys():
+        for component in self.reliability.keys():
             # TODO: make log
             # Calculating reliability in the log-domain though so the
             # components' reliability can be added avoid possible underflow
-            rel_dict[component] = self.components[component].ff(x)
+            rel_dict[component] = self.reliability[component].ff(x)
 
         # For each node,
         for node in self.nodes.keys():
