@@ -23,9 +23,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       
-      - name: pytest
+      - name: pytest and coverage
         run:
-          python -m pytest
+          coverage run -m pytest
+      
+      - name: Upload coverage html report artifact
+        - uses: actions/upload-artifact@v3
+        with:
+          name: coverage-html-report
+          path: htmlcov/
       
       - name: flake8
         run: flake8 $SRC
