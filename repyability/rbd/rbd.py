@@ -14,6 +14,7 @@ from repyability.rbd.rbd_graph import RBDGraph
 
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .min_cut_sets import min_cut_sets
+from .rbd_args_check import check_rbd_node_args_complete
 
 
 class RBD:
@@ -24,7 +25,7 @@ class RBD:
     def __init__(
         self,
         nodes: dict[Any, Any],
-        components: dict[Any, Any],
+        reliability: dict[Any, Any],
         edges: Iterable[tuple[Hashable, Hashable]],
         k: dict[Any, int] = {},
         mc_samples: int = 10_000,
@@ -35,10 +36,10 @@ class RBD:
         ----------
         nodes : dict[Any, Any]
             A dictionary of node names as keys and their respective component
-            names as values (which map to the components in the components
+            names as values (which map to the components in the reliability
             dict), except for the the input and output nodes which need string
             values `"input_node"` and `"output_node"` respectively
-        components : dict[Any, Any]
+        reliability : dict[Any, Any]
             A dictionary of all non-input-output components names as keys
             with their SurPyval distribution as values
         edges : Iterable[tuple[Hashable, Hashable]]
@@ -56,6 +57,9 @@ class RBD:
             A node is not in the node list or edge list
         """
 
+        # Check args are complete, will raise ValueError if not
+        check_rbd_node_args_complete(nodes, reliability, edges)
+
         # Create RBD graph
         G = RBDGraph()
         G.add_edges_from(edges)
@@ -66,14 +70,12 @@ class RBD:
             G.nodes[node]["k"] = k_val
 
         # Copy the components and nodes
-        components = copy(components)
+        reliability = copy(reliability)
         nodes = copy(nodes)
 
         # Look through all the nodes.
         visited_nodes = set()
         for node in nodes.keys():
-            if not G.has_node(node):
-                raise ValueError("Node {} not in edge list".format(node))
             visited_nodes.add(node)
 
             # Set node attribute dict types if input/output
@@ -82,11 +84,11 @@ class RBD:
             if nodes[node] == "input_node":
                 self.input_node = node
                 self.G.nodes[node]["type"] = "input_node"
-                components[node] = PerfectReliability
+                reliability[node] = PerfectReliability
             elif nodes[node] == "output_node":
                 self.output_node = node
                 self.G.nodes[node]["type"] = "output_node"
-                components[node] = PerfectReliability
+                reliability[node] = PerfectReliability
 
         nodes.pop(self.input_node)
         nodes.pop(self.output_node)
@@ -103,7 +105,7 @@ class RBD:
                 raise ValueError("Node {} not in nodes list".format(n))
 
         new_models = {}
-        for k, v in components.items():
+        for k, v in reliability.items():
             if type(v) == list:
                 sim = 0
                 for model in v:
@@ -113,10 +115,18 @@ class RBD:
 
         # This will override the existing list with Non-Parametric
         # models
-        components = {**components, **new_models}
+        reliability = {**reliability, **new_models}
 
-        self.components = components
+        self.reliability = reliability
         self.nodes = nodes
+
+        # Finally, check valid RBD structure
+        if not self.is_valid_RBD_structure():
+            raise ValueError(
+                f"RBD not correctly structured, add edges or nodes \
+                to create correct structure. See errors: \
+                {self.rbd_structural_errors}"
+            )
 
     def get_all_path_sets(self) -> Iterator[list[Hashable]]:
         """Gets all path sets from input_node to output_node
@@ -204,18 +214,10 @@ class RBD:
         Raises
         ------
         ValueError
-            - RBD not correctly structured
             - Working/broken node/component inconsistency (a component or node
               is supplied more than once to any of working_nodes, broken_nodes,
               working_components, broken_components)
         """
-
-        if not self.check_rbd_structure():
-            raise ValueError(
-                "RBD not correctly structured, add edges or nodes \
-                to create correct structure."
-            )
-
         # Check for any node/component argument inconsistency
         argument_nodes: set[object] = set()
         argument_nodes.update(working_nodes)
@@ -275,13 +277,13 @@ class RBD:
 
         # Cache all component reliabilities for efficiency
         comp_rel_cache_dict: dict[Hashable, np.ndarray] = {}
-        for comp in self.components:
+        for comp in self.reliability:
             if comp in working_components:
                 comp_rel_cache_dict[comp] = PerfectReliability().sf(x)
             elif comp in broken_components:
                 comp_rel_cache_dict[comp] = PerfectUnreliability().sf(x)
             else:
-                comp_rel_cache_dict[comp] = self.components[comp].sf(x)
+                comp_rel_cache_dict[comp] = self.reliability[comp].sf(x)
         # We'll just add the two 'perfect components' to this dict while
         # we're at it, since they'll be used in lookup later
         comp_rel_cache_dict["PerfectReliability"] = PerfectReliability().sf(x)
@@ -351,9 +353,20 @@ class RBD:
         """
         return 1 - self.sf(x, *args, **kwargs)
 
-    def check_rbd_structure(self):
+    def is_valid_RBD_structure(self) -> bool:
+        """Returns False if invalid RBD structure
+
+        Invalid RBD structure includes:
+        - having cycles present
+        - a non-input/output node having no in/out-nodes
+
+        Returns
+        -------
+        bool
+            True
+        """
         has_circular_dependency = not nx.is_directed_acyclic_graph(self.G)
-        node_degrees = defaultdict(lambda: defaultdict(int))
+        node_degrees: dict = defaultdict(lambda: defaultdict(int))
 
         for edge in self.G.edges:
             source, target = edge
@@ -501,7 +514,7 @@ class RBD:
         node_importance = {}
         system_sf = self.sf(x)
         for node in self.nodes.keys():
-            node_sf = self.components[self.nodes[node]].sf(x)
+            node_sf = self.reliability[self.nodes[node]].sf(x)
             node_importance[node] = bi[node] * node_sf / system_sf
         return node_importance
 
@@ -571,11 +584,11 @@ class RBD:
 
         # Cache the component reliabilities for efficiency
         rel_dict = {}
-        for component in self.components.keys():
+        for component in self.reliability.keys():
             # TODO: make log
             # Calculating reliability in the log-domain though so the
             # components' reliability can be added avoid possible underflow
-            rel_dict[component] = self.components[component].ff(x)
+            rel_dict[component] = self.reliability[component].ff(x)
 
         # For each node,
         for node in self.nodes.keys():

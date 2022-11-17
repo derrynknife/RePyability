@@ -14,9 +14,9 @@ def test_rbd_sf_series(rbd_series: RBD):
     t = 5
     assert (
         pytest.approx(
-            rbd_series.components[2].sf(t)
-            * rbd_series.components[3].sf(t)
-            * rbd_series.components[4].sf(t)
+            rbd_series.reliability[2].sf(t)
+            * rbd_series.reliability[3].sf(t)
+            * rbd_series.reliability[4].sf(t)
         )
         == rbd_series.sf(t)[0]
     )
@@ -27,9 +27,9 @@ def test_rbd_sf_parallel(rbd_parallel: RBD):
     t = 2
     assert (
         pytest.approx(
-            (1 - rbd_parallel.components[2].sf(t))
-            * (1 - rbd_parallel.components[3].sf(t))
-            * (1 - rbd_parallel.components[4].sf(t))
+            (1 - rbd_parallel.reliability[2].sf(t))
+            * (1 - rbd_parallel.reliability[3].sf(t))
+            * (1 - rbd_parallel.reliability[4].sf(t))
         )
         == 1 - rbd_parallel.sf(t)[0]
     )
@@ -43,10 +43,10 @@ def test_rbd_sf_composite(rbd1: RBD):
         pytest.approx(
             (
                 1
-                - (1 - rbd1.components["pump1"].sf(t))
-                * (1 - rbd1.components["pump2"].sf(t))
+                - (1 - rbd1.reliability["pump1"].sf(t))
+                * (1 - rbd1.reliability["pump2"].sf(t))
             )
-            * rbd1.components["valve"].sf(t)
+            * rbd1.reliability["valve"].sf(t)
         )
         == rbd1.sf(t)[0]
     )
@@ -63,9 +63,9 @@ def test_rbd_sf_repeated_component(rbd_repeated_component_parallel: RBD):
     t = 2
     assert (
         pytest.approx(
-            (1 - rbd_repeated_component_parallel.components[2].sf(t))
-            * (1 - rbd_repeated_component_parallel.components[3].sf(t))
-            * (1 - rbd_repeated_component_parallel.components[4].sf(t))
+            (1 - rbd_repeated_component_parallel.reliability[2].sf(t))
+            * (1 - rbd_repeated_component_parallel.reliability[3].sf(t))
+            * (1 - rbd_repeated_component_parallel.reliability[4].sf(t))
             # Not 'component 5' as nodes 2 and 5 are both component 2
         )
         == 1 - rbd_repeated_component_parallel.sf(t)[0]
@@ -77,8 +77,8 @@ def test_rbd_sf_broken_node(rbd_parallel: RBD):
     t = 2
     assert (
         pytest.approx(
-            (1 - rbd_parallel.components[2].sf(t))
-            * (1 - rbd_parallel.components[4].sf(t))
+            (1 - rbd_parallel.reliability[2].sf(t))
+            * (1 - rbd_parallel.reliability[4].sf(t))
         )
         == 1 - rbd_parallel.sf(t, broken_nodes=[3])[0]
     )
@@ -89,15 +89,15 @@ def test_rbd_sf_broken_component(rbd_repeated_component_parallel: RBD):
     t = 2
     assert (
         pytest.approx(
-            (1 - rbd_repeated_component_parallel.components[2].sf(t))
-            * (1 - rbd_repeated_component_parallel.components[4].sf(t))
+            (1 - rbd_repeated_component_parallel.reliability[2].sf(t))
+            * (1 - rbd_repeated_component_parallel.reliability[4].sf(t))
         )
         == 1 - rbd_repeated_component_parallel.sf(t, broken_components=[3])[0]
     )
     assert (
         pytest.approx(
-            (1 - rbd_repeated_component_parallel.components[3].sf(t))
-            * (1 - rbd_repeated_component_parallel.components[4].sf(t))
+            (1 - rbd_repeated_component_parallel.reliability[3].sf(t))
+            * (1 - rbd_repeated_component_parallel.reliability[4].sf(t))
         )
         == 1 - rbd_repeated_component_parallel.sf(t, broken_components=[2])[0]
     )
@@ -108,7 +108,7 @@ def test_rbd_sf_working_node(rbd_series: RBD):
     t = 2
     assert (
         pytest.approx(
-            rbd_series.components[2].sf(t) * rbd_series.components[4].sf(t)
+            rbd_series.reliability[2].sf(t) * rbd_series.reliability[4].sf(t)
         )
         == rbd_series.sf(t, working_nodes=[3])[0]
     )
@@ -134,7 +134,7 @@ def test_rbd_sf_working_node_repeated_component(
     rbd = rbd_repeated_component_composite
     t = 2
     assert (
-        pytest.approx(1 - rbd.components[2].ff(t) * rbd.components[3].ff(t))
+        pytest.approx(1 - rbd.reliability[2].ff(t) * rbd.reliability[3].ff(t))
         == rbd.sf(t, working_nodes=[3])[0]
     )
 
@@ -144,9 +144,9 @@ def test_rbd_ff(rbd_parallel: RBD):
     t = 5
     assert (
         pytest.approx(
-            (1 - rbd_parallel.components[2].sf(t))
-            * (1 - rbd_parallel.components[3].sf(t))
-            * (1 - rbd_parallel.components[4].sf(t))
+            (1 - rbd_parallel.reliability[2].sf(t))
+            * (1 - rbd_parallel.reliability[3].sf(t))
+            * (1 - rbd_parallel.reliability[4].sf(t))
         )
         == rbd_parallel.ff(t)[0]
     )
@@ -172,12 +172,12 @@ def test_rbd_sf_RBD_as_node(rbd1: RBD):
     }
     rbd = RBD(nodes, components, edges)
     t = 2
-    assert pytest.approx(rbd1.sf(t)) == rbd.components["RBD"].sf(t)
+    assert pytest.approx(rbd1.sf(t)) == rbd.reliability["RBD"].sf(t)
     assert (
         pytest.approx(
-            rbd.components[2].ff(t)
-            * rbd.components["RBD"].ff(t)
-            * rbd.components[4].ff(t)
+            rbd.reliability[2].ff(t)
+            * rbd.reliability["RBD"].ff(t)
+            * rbd.reliability[4].ff(t)
         )
         == rbd.ff(t)[0]
     )

@@ -11,8 +11,8 @@ from repyability.tests.fixed_probability import FixedProbabilityFitter
 
 # Check components are correct lengths
 def test_rbd_components(rbd1: RBD, rbd2: RBD):
-    assert len(rbd1.components) == 5
-    assert len(rbd2.components) == 8
+    assert len(rbd1.reliability) == 5
+    assert len(rbd2.reliability) == 8
 
 
 # Test get_all_path_sets()
@@ -45,6 +45,14 @@ def test_rbd_node_not_in_edge_list():
         RBD(nodes, components, edges)
 
 
+def test_rbd_component_not_in_reliability_dict():
+    with pytest.raises(ValueError):
+        nodes = {1: "input_node", 2: 2, 3: "output_node"}
+        edges = [(1, 2), (2, 3)]
+        components = {}
+        RBD(nodes, components, edges)
+
+
 def test_rbd_node_not_in_node_list():
     with pytest.raises(ValueError):
         nodes = {1: "input_node", 3: "output_node"}
@@ -58,7 +66,7 @@ def test_rbd_node_with_no_output():
         nodes = {1: "input_node", 2: 2, 4: 2, 3: "output_node"}
         edges = [(1, 2), (2, 3), (2, 4)]
         components = {2: FixedProbabilityFitter.from_params(0.8)}
-        RBD(nodes, components, edges).sf(2)
+        RBD(nodes, components, edges)
 
 
 def test_rbd_node_with_no_input():
@@ -66,7 +74,7 @@ def test_rbd_node_with_no_input():
         nodes = {1: "input_node", 2: 2, 4: 2, 3: "output_node"}
         edges = [(1, 2), (2, 3), (4, 2)]
         components = {2: FixedProbabilityFitter.from_params(0.8)}
-        RBD(nodes, components, edges).sf(2)
+        RBD(nodes, components, edges)
 
 
 def test_rbd_circular_dependency():
@@ -74,4 +82,4 @@ def test_rbd_circular_dependency():
         nodes = {"s": "input_node", 2: 2, 3: 2, 4: 2, "t": "output_node"}
         edges = [("s", 2), (2, 3), (3, 4), (4, 2), (4, "t")]
         components = {2: FixedProbabilityFitter.from_params(0.8)}
-        RBD(nodes, components, edges).sf(2)
+        RBD(nodes, components, edges)
