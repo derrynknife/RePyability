@@ -1,0 +1,35 @@
+name: actions
+
+run-name: triggered by ${{ github.actor }}
+
+on: [push]
+
+env:
+  SRC: repyability # Source directory to run jobs on
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Set-up Python 3.x
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.x'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: pytest
+        run:
+          python -m pytest
+      
+      - name: flake8
+        run: flake8 $SRC
+      
+      - name: black
+        run:
+          black $SRC
