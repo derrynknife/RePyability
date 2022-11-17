@@ -1,8 +1,8 @@
-import numpy as np
 import pytest
 import surpyval as surv
 
 from repyability.rbd.repairable_rbd import RepairableRBD
+
 
 # Test RBDs as pytest fixtures
 @pytest.fixture
@@ -24,14 +24,13 @@ def repairable_rbd1() -> RepairableRBD:
     ]
     reliability = {
         "pump1": surv.Weibull.from_params([30, 2]),
-        "pump2": surv.Weibull.from_params([21, 3.]),
-        "valve": surv.Weibull.from_params([25, 2.7])
+        "pump2": surv.Weibull.from_params([21, 3.0]),
+        "valve": surv.Weibull.from_params([25, 2.7]),
     }
 
     repair = {
-        "pump1": surv.LogNormal.from_params([0.1, .2]),
-        "pump2": surv.LogNormal.from_params([0.1, .3]),
-        "valve": surv.LogNormal.from_params([0.2, .2])
+        "pump1": surv.LogNormal.from_params([0.1, 0.2]),
+        "pump2": surv.LogNormal.from_params([0.1, 0.3]),
+        "valve": surv.LogNormal.from_params([0.2, 0.2]),
     }
     return RepairableRBD(nodes, reliability, repair, edges)
-

@@ -9,8 +9,12 @@ import numpy as np
 import surpyval as surv
 from numpy.typing import ArrayLike
 
+from repyability.rbd.min_path_sets import min_path_sets
+from repyability.rbd.rbd_graph import RBDGraph
+
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .min_cut_sets import min_cut_sets
+from .rbd_args_check import check_rbd_node_args_complete
 
 
 class RBD:
@@ -23,6 +27,7 @@ class RBD:
         nodes: dict[Any, Any],
         reliability: dict[Any, Any],
         edges: Iterable[tuple[Hashable, Hashable]],
+        k: dict[Any, int] = {},
         mc_samples: int = 10_000,
     ):
         """Creates and returns a Reliability Block Diagram object.
@@ -30,8 +35,8 @@ class RBD:
         Parameters
         ----------
         nodes : dict[Any, Any]
-            A dictionary of node names as keys and their component
-            names as values (which map to the keys in the reliability
+            A dictionary of node names as keys and their respective component
+            names as values (which map to the components in the reliability
             dict), except for the the input and output nodes which need string
             values `"input_node"` and `"output_node"` respectively
         reliability : dict[Any, Any]
@@ -40,6 +45,9 @@ class RBD:
         edges : Iterable[tuple[Hashable, Hashable]]
             The collection of node edges, e.g. [(1, 2), (2, 3)] would
             correspond to the edges 1-2 and 2-3
+        components : dict[Any, Any]
+            A dictionary of all non-input-output components names as keys
+            with their SurPyval distribution as values
         mc_samples : int, optional
             TODO, by default 10_000
 
@@ -49,10 +57,17 @@ class RBD:
             A node is not in the node list or edge list
         """
 
+        # Check args are complete, will raise ValueError if not
+        check_rbd_node_args_complete(nodes, reliability, edges)
+
         # Create RBD graph
-        G = nx.DiGraph()
+        G = RBDGraph()
         G.add_edges_from(edges)
         self.G = G
+
+        # Set the node k values (k-out-of-n)
+        for node, k_val in k.items():
+            G.nodes[node]["k"] = k_val
 
         # Copy the components and nodes
         reliability = copy(reliability)
@@ -61,14 +76,18 @@ class RBD:
         # Look through all the nodes.
         visited_nodes = set()
         for node in nodes.keys():
-            if not G.has_node(node):
-                raise ValueError("Node {} not in edge list".format(node))
             visited_nodes.add(node)
+
+            # Set node attribute dict types if input/output
+            # (if neither input/output no need to do anything, RBDGraph
+            # defaults the type to "node")
             if nodes[node] == "input_node":
                 self.input_node = node
+                self.G.nodes[node]["type"] = "input_node"
                 reliability[node] = PerfectReliability
             elif nodes[node] == "output_node":
                 self.output_node = node
+                self.G.nodes[node]["type"] = "output_node"
                 reliability[node] = PerfectReliability
 
         nodes.pop(self.input_node)
@@ -101,6 +120,14 @@ class RBD:
         self.reliability = reliability
         self.nodes = nodes
 
+        # Finally, check valid RBD structure
+        if not self.is_valid_RBD_structure():
+            raise ValueError(
+                f"RBD not correctly structured, add edges or nodes \
+                to create correct structure. See errors: \
+                {self.rbd_structural_errors}"
+            )
+
     def get_all_path_sets(self) -> Iterator[list[Hashable]]:
         """Gets all path sets from input_node to output_node
 
@@ -118,79 +145,33 @@ class RBD:
 
     def get_min_path_sets(
         self, include_in_out_nodes=True
-    ) -> set[tuple[Hashable, ...]]:
+    ) -> set[frozenset[Hashable]]:
         """Gets the minimal path-sets of the RBD
 
         Parameters
         ----------
         include_in_out_nodes : bool, optional
             If false, excludes the input and output nodes
-            in the path tuples, by default True
+            in the return, by default True
 
         Returns
         -------
-        set[tuple[Hashable, ...]]
+        set[frozenset[Hashable]]
             The set of minimal path-sets
         """
-        # What differentiates all path sets and minimal path sets is
-        # minimal path sets cannot be further reduced by removing components
-        # from path. Recall a path set is a set of components (really a path)
-        # which if working ensure the system is working.
+        # Run min_path_sets() but convert all the inner sets to frozensets
+        # and remove the input/output nodes if requested
+        ret_set = set()
 
-        # So (brute-force) strategy could be just get all the simple paths from
-        # get_all_path_sets() that cannot be reduced.
-
-        # Get all path sets as a list
-        all_path_sets = list(self.get_all_path_sets())
-
-        # A path can be reduced when the system is still working after removing
-        # any node on that path.
-        # Ultimately, every non-minimal path set has a subset that is a minimal
-        # path set, so we can just check for every path set if it has a subset,
-        # if it doesn't then it is a minimal path-set.
-
-        ret_set: set[tuple[Hashable, ...]] = set()
-
-        # We're not done until all_path_sets is completely empty
-        # since every iteration we're either finding a path-set to be minimal,
-        # thereby adding it to ret_set and removing it from all_path_sets,
-        # OR we're finding the path-set to be non-minimal and removing it
-        # from all_path_sets
-        while all_path_sets:
-            # Get first path-set in all_path_sets
-            path_set = all_path_sets[0]
-
-            # Assume it is a minimal path-set
-            is_minimal_path_set = True
-
-            # Compare to all other path-sets
-            for other_path_set in all_path_sets.copy()[1:]:
-                # If path_set is a subset of other_path_set then other_path_set
-                # is not a minimal path-set, so we can remove it from
-                # all_path_sets and prevent any further consideration of it
-                if set(path_set).issubset(set(other_path_set)):
-                    all_path_sets.remove(other_path_set)
-
-                # If path_set is a superset of other_path_set then path_set
-                # is not a minimal path-set so we can remove it from
-                # all_path_sets and move on to the next iteration
-                elif set(path_set).issuperset(set(other_path_set)):
-                    all_path_sets.remove(path_set)
-                    is_minimal_path_set = False
-                    break
-
-            # If is_minimal_path_set is still True then we can add path_set
-            # to ret_set, and remove it from path_set
-            if is_minimal_path_set:
-                # If include_in_out_nodes is set to false, remove the input
-                # and output nodes
-                if not include_in_out_nodes:
-                    path_set.remove(self.input_node)
-                    path_set.remove(self.output_node)
-
-                # Finally add the path_set as a tuple to the return set
-                ret_set.add(tuple(path_set))
-                all_path_sets.remove(path_set)
+        for min_path_set in min_path_sets(
+            rbd_graph=self.G,
+            curr_node=self.output_node,
+            solns={},
+        ):
+            if not include_in_out_nodes:
+                min_path_set.remove(self.input_node)
+                min_path_set.remove(self.output_node)
+            ret_set.add(frozenset(min_path_set))
 
         return ret_set
 
@@ -233,18 +214,10 @@ class RBD:
         Raises
         ------
         ValueError
-            - RBD not correctly structured
             - Working/broken node/component inconsistency (a component or node
               is supplied more than once to any of working_nodes, broken_nodes,
               working_components, broken_components)
         """
-
-        if not self.check_rbd_structure():
-            raise ValueError(
-                "RBD not correctly structured, add edges or nodes \
-                to create correct structure."
-            )
-
         # Check for any node/component argument inconsistency
         argument_nodes: set[object] = set()
         argument_nodes.update(working_nodes)
@@ -380,17 +353,28 @@ class RBD:
         """
         return 1 - self.sf(x, *args, **kwargs)
 
-    def check_rbd_structure(self):
+    def is_valid_RBD_structure(self) -> bool:
+        """Returns False if invalid RBD structure
+
+        Invalid RBD structure includes:
+        - having cycles present
+        - a non-input/output node having no in/out-nodes
+
+        Returns
+        -------
+        bool
+            True
+        """
         has_circular_dependency = not nx.is_directed_acyclic_graph(self.G)
-        node_degrees = defaultdict(lambda: defaultdict(int))
+        node_degrees: dict = defaultdict(lambda: defaultdict(int))
 
         for edge in self.G.edges:
             source, target = edge
             node_degrees[source]["out"] += 1
             node_degrees[target]["in"] += 1
 
-        input_nodes = [n for k, n in node_degrees.items() if n["in"] == 0]
-        output_nodes = [n for k, n in node_degrees.items() if n["out"] == 0]
+        input_nodes = [n for n in node_degrees.values() if n["in"] == 0]
+        output_nodes = [n for n in node_degrees.values() if n["out"] == 0]
         has_node_with_no_input = len(input_nodes) != 1
         has_node_with_no_output = len(output_nodes) != 1
         if not any(

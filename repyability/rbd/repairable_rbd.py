@@ -27,9 +27,10 @@ class RepairableRBD(RBD):
         reliability: dict[Any, Any],
         repair: dict[Any, Any],
         edges: Iterable[tuple[Hashable, Hashable]],
+        k: dict[Any, int] = {},
         mc_samples: int = 10_000,
     ):
-        super().__init__(nodes, reliability, edges, mc_samples)
+        super().__init__(nodes, reliability, edges, k, mc_samples)
         self.repair = copy(repair)
 
     def compile_bdd(self) -> dict:
@@ -82,7 +83,6 @@ class RepairableRBD(RBD):
         agg_timeline: dict[float, int] = defaultdict(lambda: 0)
         for i in range(N):
             pq: PriorityQueue = PriorityQueue()
-            t = 0
             node_status = {}
             # Set system condition at zero to working
             agg_timeline[0] += 1
