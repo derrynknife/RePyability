@@ -14,6 +14,7 @@ from repyability.rbd.rbd_graph import RBDGraph
 
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .min_cut_sets import min_cut_sets
+from .rbd_args_check import check_rbd_node_args_complete
 
 
 class RBD:
@@ -56,6 +57,9 @@ class RBD:
             A node is not in the node list or edge list
         """
 
+        # Check args are complete, will raise ValueError if not
+        check_rbd_node_args_complete(nodes, reliability, edges)
+
         # Create RBD graph
         G = RBDGraph()
         G.add_edges_from(edges)
@@ -72,8 +76,6 @@ class RBD:
         # Look through all the nodes.
         visited_nodes = set()
         for node in nodes.keys():
-            if not G.has_node(node):
-                raise ValueError("Node {} not in edge list".format(node))
             visited_nodes.add(node)
 
             # Set node attribute dict types if input/output

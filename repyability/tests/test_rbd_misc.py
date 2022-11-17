@@ -45,6 +45,14 @@ def test_rbd_node_not_in_edge_list():
         RBD(nodes, components, edges)
 
 
+def test_rbd_component_not_in_reliability_dict():
+    with pytest.raises(ValueError):
+        nodes = {1: "input_node", 2: 2, 3: "output_node"}
+        edges = [(1, 2), (2, 3)]
+        components = {}
+        RBD(nodes, components, edges)
+
+
 def test_rbd_node_not_in_node_list():
     with pytest.raises(ValueError):
         nodes = {1: "input_node", 3: "output_node"}
