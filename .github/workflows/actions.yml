@@ -1,6 +1,6 @@
 name: actions
 
-run-name: triggered by ${{ github.actor }}
+run-name: RePyability CI
 
 on: [push]
 
@@ -8,7 +8,7 @@ env:
   SRC: repyability # Source directory to run jobs on
 
 jobs:
-  build-test-lint-format:
+  repyability_ci:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -29,6 +29,10 @@ jobs:
       
       - name: flake8
         run: flake8 $SRC
+      
+      - name: mypy
+        # Ignore untyped libraries scipy, networkx, and surpyval
+        run: mypy --ignore-missing-imports $SRC
       
       - name: black
         run:

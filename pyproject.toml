@@ -16,10 +16,6 @@ profile = "black"
 [mypy]
 plugins = "numpy.typing.mypy_plugin"
 
-# Ignore untyped libraries scipy, networkx, and surpyval
-[tool.mypy]
-ignore_missing_imports = true
-
 # Coverage
 [tool.coverage.run]
 source = ["repyability"]
