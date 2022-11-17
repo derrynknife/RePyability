@@ -8,7 +8,7 @@ env:
   SRC: repyability # Source directory to run jobs on
 
 jobs:
-  build:
+  build-test-lint-format:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
