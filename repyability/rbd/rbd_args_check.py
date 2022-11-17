@@ -11,7 +11,7 @@ def check_rbd_node_args_complete(
     nodes: dict,
     reliability: dict,
     edges: Iterable[tuple[Hashable, Hashable]],
-    repairability: dict = None,
+    repairability: dict | None = None,
 ) -> None:
     """Checks if the RBD args are complete
 
