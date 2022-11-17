@@ -26,7 +26,7 @@ jobs:
       - name: pytest and coverage
         run:
           coverage run -m pytest
-      
+          
       - name: Upload coverage html report artifact
         - uses: actions/upload-artifact@v3
         with:
