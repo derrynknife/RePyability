@@ -1,4 +1,5 @@
 coverage
+flake8
 networkx
 numpy
 pre-commit
