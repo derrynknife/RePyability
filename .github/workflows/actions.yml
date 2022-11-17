@@ -23,10 +23,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       
-      - name: pytest and coverage
+      - name: pytest
         run:
           coverage run -m pytest
       
+      - name: coverage
+        run: |
+          coverage report
+          coverage html
+
       - name: Upload coverage html report artifact
         uses: actions/upload-artifact@v3
         with:
