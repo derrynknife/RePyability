@@ -7,6 +7,7 @@ from typing import Any, Hashable, Iterable
 import numpy as np
 
 from repyability.rbd.rbd import RBD
+from repyability.rbd.rbd_args_check import check_rbd_node_args_complete
 
 
 # Event class for simulation
@@ -25,13 +26,14 @@ class RepairableRBD(RBD):
         self,
         nodes: dict[Any, Any],
         reliability: dict[Any, Any],
-        repair: dict[Any, Any],
+        repairability: dict[Any, Any],
         edges: Iterable[tuple[Hashable, Hashable]],
         k: dict[Any, int] = {},
         mc_samples: int = 10_000,
     ):
+        check_rbd_node_args_complete(nodes, reliability, edges, repairability)
         super().__init__(nodes, reliability, edges, k, mc_samples)
-        self.repair = copy(repair)
+        self.repairability = copy(repairability)
 
     def compile_bdd(self) -> dict:
         """Returns a BDD dict for quick ~O(log(n)) lookup of if the system is
@@ -159,7 +161,8 @@ class RepairableRBD(RBD):
                     # Component just failed, need its repair event
                     next_event = Event(
                         # Current time (t_event) + time to repair
-                        t_event + self.repair[event.component].random(1)[0],
+                        t_event
+                        + self.repairability[event.component].random(1)[0],
                         event.component,
                         True,  # This is a component repair event
                     )

@@ -45,7 +45,7 @@ def check_rbd_node_args_complete(
 
         # And if repairability is provided, that a repairability distribution
         # (or RBD) is provided for that component
-        if repairability and component_name not in repairability:
+        if repairability is not None and component_name not in repairability:
             raise ValueError(
                 f"No repairability value provided for component\
                 {component_name} (this component corresponds to node\
