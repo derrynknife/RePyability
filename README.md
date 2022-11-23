@@ -11,9 +11,9 @@ pip install repyability
 ```
 
 ## Testing
-To run the testing suite:
+Run the testing suite by simply executing:
 ```bash
-python -m pytest
+pytest
 ```
 or use coverage to get a coverage report:
 ```bash
