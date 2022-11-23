@@ -74,7 +74,15 @@ class RepairableRBD(RBD):
         bool
             True if the system is working, otherwise False.
         """
-        return self.is_working_from_node(self.first_bdd_node, component_status)
+        # Current super simple inefficient implementation uses .sf() ==/!= 0
+        if self.sf(
+            1,
+            broken_nodes=[
+                comp for comp in component_status if not component_status[comp]
+            ],
+        ):
+            return True
+        return False
 
     def is_working_from_node(self, node, status):
         val = self.bdd[node][status[node]]
@@ -151,8 +159,8 @@ class RepairableRBD(RBD):
                 if event.status:
                     # Component just got repaired, need next failure event
                     next_event = Event(
-                        # Current time (t_event) + time to next failure
-                        t_event
+                        # Current time (event.time) + time to next failure
+                        event.time
                         + self.reliability[event.component].random(1)[0],
                         event.component,
                         False,  # This is a component failure event
@@ -160,8 +168,8 @@ class RepairableRBD(RBD):
                 else:
                     # Component just failed, need its repair event
                     next_event = Event(
-                        # Current time (t_event) + time to repair
-                        t_event
+                        # Current time (event.time) + time to repair
+                        event.time
                         + self.repairability[event.component].random(1)[0],
                         event.component,
                         True,  # This is a component repair event
