@@ -1,9 +1,3 @@
-# Per pytest docs recommendation
-[tool.pytest.ini_options]
-addopts = [
-    "--import-mode=importlib",
-]
-
 # For Black pre-commit hook
 [tool.black]
 line-length = 79
