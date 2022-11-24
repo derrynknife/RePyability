@@ -59,7 +59,6 @@ def test_repairable_rbd_missing_repairability_component():
         RepairableRBD(nodes, reliability, repairability, edges)
 
 
-# TODO: Parameterise the distribution parameters 2/3 times
 def test_repairable_rbd_availability_1N():
     """
     The goal here is to, for only one simulation, test if the availability
@@ -67,6 +66,9 @@ def test_repairable_rbd_availability_1N():
     random number generator. NOTE: This of course means that this test is
     coupled to surpyval's .random() implementation!
     """
+    # Get a random seed
+    seed = np.random.randint(0, 100)
+
     # Make a Repairable RBD which has only one non-input/output component
     # This component has an exponential distribution for both it's
     # reliability and repairability
@@ -88,7 +90,7 @@ def test_repairable_rbd_availability_1N():
     )
 
     # Before anything, set the numpy seed
-    np.random.seed(1)
+    np.random.seed(seed)
 
     # Let's run the sim for 50 units of time
     t_simulation = 50
@@ -123,7 +125,7 @@ def test_repairable_rbd_availability_1N():
             t_next_event += reliability_dist.random(1)[0]
 
     # Now check if expected == actual, remembering to reset the seed
-    np.random.seed(1)
+    np.random.seed(seed)
     actual_t, actual_availability = rbd.availability(
         t_simulation=t_simulation, N=1
     )
