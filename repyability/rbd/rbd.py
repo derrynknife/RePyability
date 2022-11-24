@@ -18,10 +18,6 @@ from .rbd_args_check import check_rbd_node_args_complete
 
 
 class RBD:
-    # TODO: Implement these
-    # Finding cut-sets:
-    # https://www.degruyter.com/document/doi/10.1515/9783110725599-007/html?lang=en
-
     def __init__(
         self,
         nodes: dict[Any, Any],
