@@ -35,28 +35,31 @@ class RepairableRBD(RBD):
         super().__init__(nodes, reliability, edges, k, mc_samples)
         self.repairability = copy(repairability)
 
-    def compile_bdd(self) -> dict:
-        """Returns a BDD dict for quick ~O(log(n)) lookup of if the system is
-        working given the working/broken nodes."""
-        # Need to create the bdd from min path sets
+        # Will initialise on first self.availability() call
+        self.min_cut_sets: set[frozenset] | None = None
 
-        # Format for BDD
-        # Find first node using:
-        # - Most common node?
-        # - Least common node?
-        # - most "bisecting" node?...
-        """
-        bdd = {
-            1: {1: 2, 0: False},
-            2: {1: True, 0: False}
-        }
-        """
+    # def compile_bdd(self) -> dict:
+    #     """Returns a BDD dict for quick ~O(log(n)) lookup of if the system is
+    #     working given the working/broken nodes."""
+    #     # Need to create the bdd from min path sets
 
-        # Need to set the first node of the BDD
-        self.first_bdd_node = 0
-        # Pretend output
-        self.bdd = {0: True}
-        return {}
+    #     # Format for BDD
+    #     # Find first node using:
+    #     # - Most common node?
+    #     # - Least common node?
+    #     # - most "bisecting" node?...
+    #     """
+    #     bdd = {
+    #         1: {1: 2, 0: False},
+    #         2: {1: True, 0: False}
+    #     }
+    #     """
+
+    #     # Need to set the first node of the BDD
+    #     self.first_bdd_node = 0
+    #     # Pretend output
+    #     self.bdd = {0: True}
+    #     return {}
 
     def is_system_working(self, component_status: dict[Any, bool]) -> bool:
         """Returns a boolean as to whether the system is working given the
@@ -74,22 +77,28 @@ class RepairableRBD(RBD):
         bool
             True if the system is working, otherwise False.
         """
-        # Current super simple inefficient implementation uses .sf() ==/!= 0
-        if self.sf(
-            1,
-            broken_nodes=[
-                comp for comp in component_status if not component_status[comp]
-            ],
-        ):
-            return True
-        return False
 
-    def is_working_from_node(self, node, status):
-        val = self.bdd[node][status[node]]
-        if type(val) == bool:
-            return val
-        else:
-            return self.is_working_from_node(val, status)
+        # If the minimal cut sets have not yet been calculated
+        if self.min_cut_sets is None:
+            self.min_cut_sets = super().get_min_cut_sets()
+
+        # Make a set out of the failed components
+        failed_components = {
+            comp
+            for comp, comp_state in component_status.items()
+            if not comp_state
+        }
+
+        # See if current set of failed components is a superset of any minimal
+        # cut-sets
+        for cut_set in self.min_cut_sets:
+            if failed_components >= cut_set:
+                # failed_components is a superset of a minimal cut-set, thereby
+                # causing the system to fail
+                return False
+
+        # If we've gotten to here then the system is still working
+        return True
 
     def availability(
         self, t_simulation: float, N: int = 10_000
