@@ -39,7 +39,6 @@ class NonRepairable:
     def _log_cost_rate(self, t):
         return np.log(self._cost_rate(t))
 
-
     def find_optimal_replacement(self, interp=None):
         if self.dist.dist.name == "Weibull":
             if self.dist.params[1] <= 1:
