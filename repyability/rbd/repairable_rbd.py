@@ -228,8 +228,15 @@ class RepairableRBD(RBD):
         Wraps bdd.dump(). The file type is inferred from the extension
         (case insensitive).
 
+        Note: bdd.dump() depends on the python library `pydot` being installed
+        (via pip) and the graphviz' `dot` program being in your PATH.
+        Install pydot just with pip: `pip install pydot`,
+        and install graphviz, at least on Mac, with `brew install graphviz`.
+        Installing with brew will at least make sure `dot` is added to your
+        PATH.
+
         Supported extensions:
-        '..p' for Pickle
+        '.p' for Pickle
         '.pdf' for PDF
         '.png' for PNG
         '.svg' for SVG
