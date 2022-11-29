@@ -103,7 +103,7 @@ class RepairableRBD(RBD):
     def availability(
         self, t_simulation: float, N: int = 10_000
     ) -> tuple[np.ndarray, np.ndarray]:
-        """Returns the times, and availability% for those times, as numpy
+        """Returns the times, and availability for those times, as numpy
         arrays."""
 
         # aggregate_timeline keeps track of how many systems turn on and off
