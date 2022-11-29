@@ -607,3 +607,7 @@ class RBD:
             node_importance[node] = node_fv_numerator / system_unreliability
 
         return node_importance
+
+    def get_component_names(self) -> list[Hashable]:
+        """Simply returns the list component names of the RBD."""
+        return list(self.reliability.keys())

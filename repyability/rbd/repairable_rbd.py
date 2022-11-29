@@ -5,6 +5,7 @@ from queue import PriorityQueue
 from typing import Any, Hashable, Iterable
 
 import numpy as np
+from dd import autoref as _bdd
 
 from repyability.rbd.rbd import RBD
 from repyability.rbd.rbd_args_check import check_rbd_node_args_complete
@@ -35,31 +36,9 @@ class RepairableRBD(RBD):
         super().__init__(nodes, reliability, edges, k, mc_samples)
         self.repairability = copy(repairability)
 
-        # Will initialise on first self.availability() call
-        self.min_cut_sets: set[frozenset] | None = None
-
-    # def compile_bdd(self) -> dict:
-    #     """Returns a BDD dict for quick ~O(log(n)) lookup of if the system is
-    #     working given the working/broken nodes."""
-    #     # Need to create the bdd from min path sets
-
-    #     # Format for BDD
-    #     # Find first node using:
-    #     # - Most common node?
-    #     # - Least common node?
-    #     # - most "bisecting" node?...
-    #     """
-    #     bdd = {
-    #         1: {1: 2, 0: False},
-    #         2: {1: True, 0: False}
-    #     }
-    #     """
-
-    #     # Need to set the first node of the BDD
-    #     self.first_bdd_node = 0
-    #     # Pretend output
-    #     self.bdd = {0: True}
-    #     return {}
+        # Compile BDD, sets self.bdd and self.bdd_system_ref. See compile_bdd()
+        # docstring for more info.
+        self.compile_bdd()
 
     def is_system_working(self, component_status: dict[Any, bool]) -> bool:
         """Returns a boolean as to whether the system is working given the
@@ -77,28 +56,23 @@ class RepairableRBD(RBD):
         bool
             True if the system is working, otherwise False.
         """
+        # This function uses a Binary Decision Diagram (BDD) to enable
+        # efficient component_status -> is_system_working lookup. Something
+        # very much required given the rate at which this function is called
+        # in the N simulations in availability().
 
-        # If the minimal cut sets have not yet been calculated
-        if self.min_cut_sets is None:
-            self.min_cut_sets = super().get_min_cut_sets()
+        # Now evaluate the BDD given the component status'
+        system_given_component_status = self.bdd.let(
+            component_status, self.bdd_system_ref
+        )
 
-        # Make a set out of the failed components
-        failed_components = {
-            comp
-            for comp, comp_state in component_status.items()
-            if not comp_state
-        }
+        system_state = self.bdd.to_expr(system_given_component_status)
 
-        # See if current set of failed components is a superset of any minimal
-        # cut-sets
-        for cut_set in self.min_cut_sets:
-            if failed_components >= cut_set:
-                # failed_components is a superset of a minimal cut-set, thereby
-                # causing the system to fail
-                return False
+        if system_state == "TRUE":
+            return True
 
-        # If we've gotten to here then the system is still working
-        return True
+        # Else False
+        return False
 
     def availability(
         self, t_simulation: float, N: int = 10_000
@@ -116,7 +90,10 @@ class RepairableRBD(RBD):
         aggregate_timeline: dict[float, int] = defaultdict(lambda: 0)
 
         # Perform N simulations
-        for _ in range(N):
+        for i in range(N):
+            # Log progress
+            print(f"Running simulation {i}/{N}")
+
             # 'Turn on' this simulation's system at time t=0
             aggregate_timeline[0] += 1
             curr_system_state = True
@@ -206,3 +183,56 @@ class RepairableRBD(RBD):
         system_availability = timeline_arr[:, 1].cumsum() / N
 
         return time, system_availability
+
+    def compile_bdd(self):
+        """
+        Compiles the BDD, setting self.bdd to the BDD manager, and
+        self.bdd_system_ref to the BDD variable reference for the system state.
+        """
+        # Instantiate the manager
+        bdd = _bdd.BDD()
+
+        # Enable Dynamic Reordering (Rudell's Sifting Algorithm)
+        bdd.configure(reordering=True)
+
+        # For all components, declare the BDD variable,
+        # and get the BDD variable reference
+        bdd_vars = {}
+        for component in self.get_component_names():
+            bdd.declare(component)
+            bdd_vars[component] = bdd.var(component)
+
+        # Make path expressions
+        path_expressions: list[_bdd.Function] = []
+        for min_path_set in self.get_min_path_sets(include_in_out_nodes=False):
+            min_path_set_as_list = list(min_path_set)
+            path_function = bdd_vars[min_path_set_as_list[0]]
+            for component in min_path_set_as_list[1:]:
+                path_function &= bdd_vars[component]
+            path_expressions.append(path_function)
+
+        system: _bdd.Function = path_expressions[0]
+        for path_expression in path_expressions[1:]:
+            system |= path_expression
+
+        self.bdd = bdd
+        self.bdd_system_ref = system
+
+    # Debugging Functions - these help to understand the BDD structure
+    def bdd_to_string(self, filename: str) -> str:
+        """Returns the BDD as a string. Simply wraps bdd.to_expr()"""
+        return self.bdd.to_expr(self.bdd_system_ref)
+
+    def bdd_to_file(self, filename: str):
+        """
+        Wraps bdd.dump(). The file type is inferred from the extension
+        (case insensitive).
+
+        Supported extensions:
+        '..p' for Pickle
+        '.pdf' for PDF
+        '.png' for PNG
+        '.svg' for SVG
+        '.json' for JSON
+        """
+        self.bdd.dump(filename, roots=[self.bdd_system_ref])
