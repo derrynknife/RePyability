@@ -75,6 +75,38 @@ class RepairableRBD(RBD):
         # Else False
         return False
 
+    def get_components_next_failure(self, component: Hashable) -> float:
+        # If component is a RepairableRBD, we need to calculate that system's
+        # next failure
+        if isinstance(
+            repairable_rbd := self.reliability[component], RepairableRBD
+        ):
+            return repairable_rbd.get_next_system_failure()
+
+        # Otherwise return as normal
+        return self.reliability[component].random(1)[0]
+
+    def get_next_system_failure(self) -> float:
+        # Gets the next time the system will fail
+        # TODO
+        return 1
+
+    def get_components_next_repair(self, component: Hashable) -> float:
+        # If component is a RepairableRBD, we need to calculate that system's
+        # next repair
+        if isinstance(
+            repairable_rbd := self.repairability[component], RepairableRBD
+        ):
+            return repairable_rbd.get_next_system_repair()
+
+        # Otherwise return as normal
+        return self.reliability[component].random(1)[0]
+
+    def get_next_system_repair(self) -> float:
+        # Gets the next time the system will fail
+        # TODO
+        return 1
+
     def availability(
         self, t_simulation: float, N: int = 10_000, verbose: bool = False
     ) -> tuple[np.ndarray, np.ndarray]:
@@ -125,7 +157,7 @@ class RepairableRBD(RBD):
 
             # Get the first failure event for each component
             for component in self.reliability.keys():
-                t_event = self.reliability[component].random(1)[0]
+                t_event = self.get_components_next_failure(component)
 
                 # Only consider it if it occurs within the simulation window
                 if t_event < t_simulation:
@@ -163,7 +195,7 @@ class RepairableRBD(RBD):
                     next_event = Event(
                         # Current time (event.time) + time to next failure
                         event.time
-                        + self.reliability[event.component].random(1)[0],
+                        + self.get_components_next_failure(event.component),
                         event.component,
                         False,  # This is a component failure event
                     )
@@ -172,7 +204,7 @@ class RepairableRBD(RBD):
                     next_event = Event(
                         # Current time (event.time) + time to repair
                         event.time
-                        + self.repairability[event.component].random(1)[0],
+                        + self.get_components_next_repair(event.component),
                         event.component,
                         True,  # This is a component repair event
                     )
