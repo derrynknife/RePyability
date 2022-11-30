@@ -10,6 +10,10 @@ class PerfectReliability:
     def ff(cls, x):
         return np.zeros_like(x).astype(float)
 
+    @classmethod
+    def random(cls, size):
+        return np.ones(size) * np.inf
+
 
 class PerfectUnreliability:
     @classmethod
@@ -20,6 +24,9 @@ class PerfectUnreliability:
     def ff(cls, x):
         return np.ones_like(x).astype(float)
 
+    def random(self, size):
+        return np.zeros_like(size)
+
 
 class ExactFailureTimeModel:
     def sf(self, x):
@@ -29,6 +36,9 @@ class ExactFailureTimeModel:
     def ff(self, x):
         x = np.atleast_1d(x)
         return (x >= self.T).astype(float)
+
+    def random(self, size):
+        return np.ones_like(size) * self.T
 
 
 class ExactFailureTime:

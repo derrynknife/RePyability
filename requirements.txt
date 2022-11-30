@@ -1,5 +1,6 @@
 black
 coverage
+dd
 flake8
 mypy
 networkx
@@ -8,3 +9,4 @@ pre-commit
 pytest
 scipy
 surpyval
+tqdm

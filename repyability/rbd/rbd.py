@@ -18,10 +18,6 @@ from .rbd_args_check import check_rbd_node_args_complete
 
 
 class RBD:
-    # TODO: Implement these
-    # Finding cut-sets:
-    # https://www.degruyter.com/document/doi/10.1515/9783110725599-007/html?lang=en
-
     def __init__(
         self,
         nodes: dict[Any, Any],
@@ -41,7 +37,7 @@ class RBD:
             values `"input_node"` and `"output_node"` respectively
         reliability : dict[Any, Any]
             A dictionary of all non-input-output components names as keys
-            with their SurPyval distribution as values
+            with their SurPyval reliability distributions as values
         edges : Iterable[tuple[Hashable, Hashable]]
             The collection of node edges, e.g. [(1, 2), (2, 3)] would
             correspond to the edges 1-2 and 2-3
@@ -284,8 +280,8 @@ class RBD:
                 comp_rel_cache_dict[comp] = PerfectUnreliability().sf(x)
             else:
                 comp_rel_cache_dict[comp] = self.reliability[comp].sf(x)
-        # We'll just add the two 'perfect components' to this dict while
-        # we're at it, since they'll be used in lookup later
+        # We'll just add the two 'perfect component reliabilities' to this dict
+        # while we're at it, since they'll be used in lookup later
         comp_rel_cache_dict["PerfectReliability"] = PerfectReliability().sf(x)
         comp_rel_cache_dict[
             "PerfectUnreliability"
@@ -611,3 +607,7 @@ class RBD:
             node_importance[node] = node_fv_numerator / system_unreliability
 
         return node_importance
+
+    def get_component_names(self) -> list[Hashable]:
+        """Simply returns the list component names of the RBD."""
+        return list(self.reliability.keys())
