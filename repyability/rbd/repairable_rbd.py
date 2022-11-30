@@ -79,7 +79,22 @@ class RepairableRBD(RBD):
         self, t_simulation: float, N: int = 10_000, verbose: bool = False
     ) -> tuple[np.ndarray, np.ndarray]:
         """Returns the times, and availability for those times, as numpy
-        arrays."""
+        arrays
+
+        Parameters
+        ----------
+        t_simulation : float
+            Units of time to run each simulation for
+        N : int, optional
+            Number of simulations, by default 10_000
+        verbose : bool, optional
+            If True, displays progress bar of simulations, by default False
+
+        Returns
+        -------
+        tuple[np.ndarray, np.ndarray]
+            times, availabilities
+        """
 
         # aggregate_timeline keeps track of how many systems turn on and off
         # at time t.
