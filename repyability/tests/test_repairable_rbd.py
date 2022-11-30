@@ -451,3 +451,150 @@ def test_repairable_rbd_availability_two_series_components_1N():
 
     assert pytest.approx(exp_t) == actual_t
     assert pytest.approx(exp_availability) == actual_availability
+
+
+# RepairableRBD as a node to a RepairableRBD
+def test_repairable_rbd_as_repairable_rbd_node():
+    # The reliability/repairability distributions will be identical for
+    # simplicity
+    reliability_dist = surv.Exponential.from_params([0.25])
+    repairability_dist = surv.Exponential.from_params([0.5])
+
+    # Make the inner RepairableRBD, it contains one-component and is identical
+    # to the one in test_repairable_rbd_availability_one_component_1N()
+    inner_rbd = RepairableRBD(
+        nodes={
+            "s": "input_node",
+            "inner_c": "inner_c",
+            "t": "output_node",
+        },
+        edges=[
+            ("s", "inner_c"),
+            ("inner_c", "t"),
+        ],
+        reliability={"inner_c": reliability_dist},
+        repairability={"inner_c": repairability_dist},
+    )
+
+    # Make outer RepairableRBD, with RepairableRBD as a node
+    # This is a two-component series RBD, with the second component being the
+    # inner RepairableRBD
+    outer_rbd = RepairableRBD(
+        nodes={
+            "s": "input_node",
+            "outer_c": "outer_c",
+            "inner_rbd": "inner_rbd",
+            "t": "output_node",
+        },
+        edges=[
+            ("s", "outer_c"),
+            ("outer_c", "inner_rbd"),
+            ("inner_rbd", "t"),
+        ],
+        reliability={"outer_c": reliability_dist, "inner_rbd": inner_rbd},
+        repairability={"outer_c": repairability_dist, "inner_rbd": inner_rbd},
+    )
+
+    # Now to get on with the testing of availability(), it's much like
+    # test_repairable_rbd_availability_two_series_components_1N.
+    # We just need to get the order of getting the random numbers right.
+
+    # Before anything, set the numpy seed randomly
+    seed = np.random.randint(0, 100)
+    np.random.seed(seed)
+
+    # Get the first failure event for each component
+    next_component_events = {
+        "outer_c": {
+            "component": "outer_c",
+            "type": "failure",
+            "time": reliability_dist.random(1)[0],
+        },
+        "inner_c": {
+            "component": "inner_c",
+            "type": "failure",
+            "time": reliability_dist.random(1)[0],
+        },
+    }
+
+    # Keep track of component states, they both start working
+    component_states = {"outer_c": True, "inner_c": True}
+
+    # Helper function to determine from component_states if system is working
+    def is_system_working():
+        return component_states["outer_c"] and component_states["inner_c"]
+
+    # Helper function to get the next event from next_component_events
+    def get_next_event():
+        if (
+            next_component_events["outer_c"]["time"]
+            < next_component_events["inner_c"]["time"]
+        ):
+            return next_component_events["outer_c"]
+        else:
+            return next_component_events["inner_c"]
+
+    # Let's run the sim for 50 units of time
+    t_simulation = 50
+
+    # Keep track of the system's state, it starts off working
+    prev_system_state = True
+
+    # Form expected availability
+    # At t=0, availability=1 (it starts working)
+    exp_t = [0]
+    exp_availability = [1]
+
+    # Get the first failure event
+    next_event = get_next_event()
+
+    # While the next event's time is in the simulation
+    while next_event["time"] < t_simulation:
+        # This event's component
+        component = next_event["component"]
+
+        # If the next event is a failure, set the component's state to not
+        # working, and if the system was previously working, but is now
+        # not working, record this in exp_availability, and add a new
+        # repair event to next_component_states
+        if next_event["type"] == "failure":
+            component_states[component] = False
+            if prev_system_state and not is_system_working():
+                exp_t.append(next_event["time"])
+                exp_availability.append(0)
+                prev_system_state = False
+
+            next_component_events[component] = {
+                "component": component,
+                "type": "repair",
+                "time": next_event["time"] + repairability_dist.random(1)[0],
+            }
+
+        # Else, the next event is a repair, set the component's state to
+        # working, and if the system was previously not working, but is now
+        # working, record this in exp_availability, and add a new
+        # failure event to next_component_states
+        else:
+            component_states[component] = True
+            if not prev_system_state and is_system_working():
+                exp_t.append(next_event["time"])
+                exp_availability.append(1)
+                prev_system_state = True
+
+            next_component_events[component] = {
+                "component": component,
+                "type": "failure",
+                "time": next_event["time"] + reliability_dist.random(1)[0],
+            }
+
+        # Get next event
+        next_event = get_next_event()
+
+    # Now check if expected == actual, remembering to reset the seed
+    np.random.seed(seed)
+    actual_t, actual_availability = outer_rbd.availability(
+        t_simulation=t_simulation, N=1
+    )
+
+    assert pytest.approx(exp_t) == actual_t
+    assert pytest.approx(exp_availability) == actual_availability
