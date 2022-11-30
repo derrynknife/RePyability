@@ -6,6 +6,7 @@ from typing import Any, Hashable, Iterable
 
 import numpy as np
 from dd import autoref as _bdd
+from tqdm import tqdm
 
 from repyability.rbd.rbd import RBD
 from repyability.rbd.rbd_args_check import check_rbd_node_args_complete
@@ -75,7 +76,7 @@ class RepairableRBD(RBD):
         return False
 
     def availability(
-        self, t_simulation: float, N: int = 10_000
+        self, t_simulation: float, N: int = 10_000, verbose: bool = False
     ) -> tuple[np.ndarray, np.ndarray]:
         """Returns the times, and availability for those times, as numpy
         arrays."""
@@ -90,9 +91,9 @@ class RepairableRBD(RBD):
         aggregate_timeline: dict[float, int] = defaultdict(lambda: 0)
 
         # Perform N simulations
-        for i in range(N):
-            # Log progress
-            print(f"Running simulation {i}/{N}")
+        for _ in tqdm(
+            range(N), disable=not verbose, desc="Running simulations"
+        ):
 
             # 'Turn on' this simulation's system at time t=0
             aggregate_timeline[0] += 1
