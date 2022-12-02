@@ -104,6 +104,7 @@ class RepairableRBD(RBD):
         # One might expect that due to the majority of distributions being
         # CDFs that generally aggregate_timeline[t] would be only -1 or +1.
         aggregate_timeline: dict[float, int] = defaultdict(lambda: 0)
+        aggregate_timeline[t_simulation] = 0
 
         # Perform N simulations
         for _ in tqdm(
@@ -112,7 +113,6 @@ class RepairableRBD(RBD):
 
             # 'Turn on' this simulation's system at time t=0
             aggregate_timeline[0] += 1
-            aggregate_timeline[t_simulation] += 0
             curr_system_state = True
 
             # Keep record of component status', initially they're all working
