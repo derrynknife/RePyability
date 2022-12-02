@@ -112,6 +112,7 @@ class RepairableRBD(RBD):
 
             # 'Turn on' this simulation's system at time t=0
             aggregate_timeline[0] += 1
+            aggregate_timeline[t_simulation] += 0
             curr_system_state = True
 
             # Keep record of component status', initially they're all working
