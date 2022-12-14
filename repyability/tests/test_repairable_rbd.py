@@ -101,8 +101,8 @@ def test_repairable_rbd_availability_one_component_1N():
         t_simulation=t_simulation, N=1
     )
 
-    assert pytest.approx(exp_t) == actual_t
-    assert pytest.approx(exp_availability) == actual_availability
+    assert pytest.approx(exp_t) == actual_t[:-1]
+    assert pytest.approx(exp_availability) == actual_availability[:-1]
 
 
 # One component, ten simulations, tests the 0:N simulation loop
@@ -185,8 +185,9 @@ def test_repairable_rbd_availability_one_component_10N():
         t_simulation=t_simulation, N=n_simulations
     )
 
-    assert pytest.approx(exp_t) == actual_t
-    assert pytest.approx(exp_availability) == actual_availability
+    # Remove last element, which is the same as the second last
+    assert pytest.approx(exp_t) == actual_t[:-1]
+    assert pytest.approx(exp_availability) == actual_availability[:-1]
 
 
 # Two parallel components, one simulation, tests the triaging of component
@@ -318,8 +319,8 @@ def test_repairable_rbd_availability_two_parallel_components_1N():
         t_simulation=t_simulation, N=1
     )
 
-    assert pytest.approx(exp_t) == actual_t
-    assert pytest.approx(exp_availability) == actual_availability
+    assert pytest.approx(exp_t) == actual_t[:-1]
+    assert pytest.approx(exp_availability) == actual_availability[:-1]
 
 
 # Two series components, one simulation, tests the triaging of component events
@@ -449,8 +450,8 @@ def test_repairable_rbd_availability_two_series_components_1N():
         t_simulation=t_simulation, N=1
     )
 
-    assert pytest.approx(exp_t) == actual_t
-    assert pytest.approx(exp_availability) == actual_availability
+    assert pytest.approx(exp_t) == actual_t[:-1]
+    assert pytest.approx(exp_availability) == actual_availability[:-1]
 
 
 # RepairableRBD as a node to a RepairableRBD
