@@ -100,7 +100,7 @@ class RepairableRBD(RBD):
             return repairable_rbd.get_next_system_repair()
 
         # Otherwise return as normal
-        return self.reliability[component].random(1)[0]
+        return self.repairability[component].random(1)[0]
 
     def get_next_system_repair(self) -> float:
         # Gets the next time the system will fail
