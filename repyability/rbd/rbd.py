@@ -186,6 +186,7 @@ class RBD:
         broken_nodes: Collection[Hashable] = [],
         working_components: Collection[Hashable] = [],
         broken_components: Collection[Hashable] = [],
+        using: str = "p",
     ) -> np.ndarray:
         """Returns the system reliability for time/s x.
 
@@ -201,6 +202,9 @@ class RBD:
             Marks these components as perfectly reliable, by default []
         broken_components : Collection[Hashable], optional
             Marks these components as perfectly unreliable, by default []
+        using: str, optional
+            Input either "c" or "p" for the function to use cut sets or path
+            sets respectively. Defaults to path sets.
 
         Returns
         -------
@@ -266,9 +270,9 @@ class RBD:
         # At the moment, only the tie set method is implemented.
 
         x = np.atleast_1d(x)
-
+        # TODO: Create cut set logic
         # Get all path sets
-        paths = list(self.get_all_path_sets())
+        paths = self.get_min_path_sets()
         num_paths = len(paths)
 
         # Cache all component reliabilities for efficiency
