@@ -26,24 +26,3 @@ class PerfectUnreliability:
 
     def random(self, size):
         return np.zeros_like(size)
-
-
-class ExactFailureTimeModel:
-    def sf(self, x):
-        x = np.atleast_1d(x)
-        return (x < self.T).astype(float)
-
-    def ff(self, x):
-        x = np.atleast_1d(x)
-        return (x >= self.T).astype(float)
-
-    def random(self, size):
-        return np.ones_like(size) * self.T
-
-
-class ExactFailureTime:
-    @classmethod
-    def from_params(cls, T):
-        out = ExactFailureTimeModel()
-        out.T = T
-        return out
