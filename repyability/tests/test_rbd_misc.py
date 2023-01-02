@@ -4,9 +4,9 @@ Tests miscellaneous cases for the RBD class.
 Uses pytest fixtures located in conftest.py in the tests/ directory.
 """
 import pytest
+from surpyval import FixedEventProbability
 
 from repyability.rbd.rbd import RBD
-from repyability.tests.fixed_probability import FixedProbabilityFitter
 
 
 # Check components are correct lengths
@@ -41,7 +41,7 @@ def test_rbd_node_not_in_edge_list():
     with pytest.raises(ValueError):
         nodes = {1: "input_node", 2: 2, 3: "output_node"}
         edges = [(1, 3)]
-        components = {2: FixedProbabilityFitter.from_params(0.8)}
+        components = {2: FixedEventProbability.from_params(1 - 0.8)}
         RBD(nodes, components, edges)
 
 
@@ -57,7 +57,7 @@ def test_rbd_node_not_in_node_list():
     with pytest.raises(ValueError):
         nodes = {1: "input_node", 3: "output_node"}
         edges = [(1, 2), (2, 3)]
-        components = {2: FixedProbabilityFitter.from_params(0.8)}
+        components = {2: FixedEventProbability.from_params(1 - 0.8)}
         RBD(nodes, components, edges)
 
 
@@ -65,7 +65,7 @@ def test_rbd_node_with_no_output():
     with pytest.raises(ValueError):
         nodes = {1: "input_node", 2: 2, 4: 2, 3: "output_node"}
         edges = [(1, 2), (2, 3), (2, 4)]
-        components = {2: FixedProbabilityFitter.from_params(0.8)}
+        components = {2: FixedEventProbability.from_params(1 - 0.8)}
         RBD(nodes, components, edges)
 
 
@@ -73,7 +73,7 @@ def test_rbd_node_with_no_input():
     with pytest.raises(ValueError):
         nodes = {1: "input_node", 2: 2, 4: 2, 3: "output_node"}
         edges = [(1, 2), (2, 3), (4, 2)]
-        components = {2: FixedProbabilityFitter.from_params(0.8)}
+        components = {2: FixedEventProbability.from_params(1 - 0.8)}
         RBD(nodes, components, edges)
 
 
@@ -81,5 +81,5 @@ def test_rbd_circular_dependency():
     with pytest.raises(ValueError):
         nodes = {"s": "input_node", 2: 2, 3: 2, 4: 2, "t": "output_node"}
         edges = [("s", 2), (2, 3), (3, 4), (4, 2), (4, "t")]
-        components = {2: FixedProbabilityFitter.from_params(0.8)}
+        components = {2: FixedEventProbability.from_params(1 - 0.8)}
         RBD(nodes, components, edges)

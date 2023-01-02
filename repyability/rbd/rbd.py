@@ -119,9 +119,8 @@ class RBD:
         # Finally, check valid RBD structure
         if not self.is_valid_RBD_structure():
             raise ValueError(
-                f"RBD not correctly structured, add edges or nodes \
-                to create correct structure. See errors: \
-                {self.rbd_structural_errors}"
+                "RBD not correctly structured. Errors: \n"
+                + f"{self.rbd_structural_errors}"
             )
 
     def get_all_path_sets(self) -> Iterator[list[Hashable]]:
@@ -388,11 +387,14 @@ class RBD:
             self.rbd_structural_errors = None
             return True
         else:
-            self.rbd_structural_errors = {
-                "has_circular_dependency": has_circular_dependency,
-                "has_node_with_no_input": has_node_with_no_input,
-                "has_node_with_no_output": has_node_with_no_output,
-            }
+            errors = ""
+            if has_circular_dependency:
+                errors += "- Has circular logic \n"
+            if has_node_with_no_input:
+                errors += "- Has nodes with no predecessor\n"
+            if has_node_with_no_output:
+                errors += "- Has nodes with no successor\n"
+            self.rbd_structural_errors = errors
             return False
 
     # Importance measures

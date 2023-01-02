@@ -4,9 +4,9 @@ Tests RBD's sf() method (and the briefly the ff() method).
 Uses pytest fixtures located in conftest.py in the tests/ directory.
 """
 import pytest
+from surpyval import FixedEventProbability
 
 from repyability.rbd.rbd import RBD
-from repyability.tests.fixed_probability import FixedProbabilityFitter
 
 
 # Test sf() w/ simple series RBD
@@ -166,9 +166,9 @@ def test_rbd_sf_RBD_as_node(rbd1: RBD):
     nodes = {1: "input_node", 2: 2, 3: "RBD", 4: 4, 5: "output_node"}
     edges = [(1, 2), (1, 3), (1, 4), (2, 5), (3, 5), (4, 5)]
     components = {
-        2: FixedProbabilityFitter.from_params(0.8),
+        2: FixedEventProbability.from_params(1 - 0.8),
         "RBD": rbd1,
-        4: FixedProbabilityFitter.from_params(0.85),
+        4: FixedEventProbability.from_params(1 - 0.85),
     }
     rbd = RBD(nodes, components, edges)
     t = 2

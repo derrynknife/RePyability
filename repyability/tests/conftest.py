@@ -5,9 +5,9 @@ and return RBDs.
 
 import pytest
 import surpyval as surv
+from surpyval import FixedEventProbability
 
 from repyability.rbd.rbd import RBD
-from repyability.tests.fixed_probability import FixedProbabilityFitter
 
 
 @pytest.fixture
@@ -29,9 +29,9 @@ def rbd_parallel() -> RBD:
     nodes = {1: "input_node", 2: 2, 3: 3, 4: 4, 5: "output_node"}
     edges = [(1, 2), (1, 3), (1, 4), (2, 5), (3, 5), (4, 5)]
     reliability = {
-        2: FixedProbabilityFitter.from_params(0.8),
-        3: FixedProbabilityFitter.from_params(0.9),
-        4: FixedProbabilityFitter.from_params(0.85),
+        2: FixedEventProbability.from_params(1 - 0.8),
+        3: FixedEventProbability.from_params(1 - 0.9),
+        4: FixedEventProbability.from_params(1 - 0.85),
     }
     return RBD(nodes, reliability, edges)
 
@@ -56,9 +56,9 @@ def rbd1() -> RBD:
         ("valve", "sink"),
     ]
     reliability = {
-        "pump1": FixedProbabilityFitter.from_params(1 - qp),
-        "pump2": FixedProbabilityFitter.from_params(1 - qp),
-        "valve": FixedProbabilityFitter.from_params(1 - qv),
+        "pump1": FixedEventProbability.from_params(qp),
+        "pump2": FixedEventProbability.from_params(qp),
+        "valve": FixedEventProbability.from_params(qv),
     }
 
     return RBD(nodes, reliability, edges)
@@ -113,11 +113,11 @@ def rbd3() -> RBD:
         (4, 6),
     ]
     reliability = {
-        1: FixedProbabilityFitter.from_params(0.95),
-        2: FixedProbabilityFitter.from_params(0.95),
-        3: FixedProbabilityFitter.from_params(0.95),
-        4: FixedProbabilityFitter.from_params(0.95),
-        5: FixedProbabilityFitter.from_params(0.95),
+        1: FixedEventProbability.from_params(1 - 0.95),
+        2: FixedEventProbability.from_params(1 - 0.95),
+        3: FixedEventProbability.from_params(1 - 0.95),
+        4: FixedEventProbability.from_params(1 - 0.95),
+        5: FixedEventProbability.from_params(1 - 0.95),
     }
     return RBD(nodes, reliability, edges)
 
@@ -128,9 +128,9 @@ def rbd_repeated_component_parallel() -> RBD:
     nodes = {1: "input_node", 2: 2, 3: 3, 4: 4, 5: 2, 6: "output_node"}
     edges = [(1, 2), (1, 3), (1, 4), (1, 5), (2, 6), (3, 6), (4, 6), (5, 6)]
     reliability = {
-        2: FixedProbabilityFitter.from_params(0.8),
-        3: FixedProbabilityFitter.from_params(0.9),
-        4: FixedProbabilityFitter.from_params(0.85),
+        2: FixedEventProbability.from_params(1 - 0.8),
+        3: FixedEventProbability.from_params(1 - 0.9),
+        4: FixedEventProbability.from_params(1 - 0.85),
     }
     return RBD(nodes, reliability, edges)
 
@@ -155,8 +155,8 @@ def rbd_repeated_component_composite() -> RBD:
     nodes = {1: "input_node", 2: 2, 3: 2, 4: 3, 5: "output_node"}
     edges = [(1, 2), (1, 3), (2, 5), (3, 4), (4, 5)]
     reliability = {
-        2: FixedProbabilityFitter.from_params(0.8),
-        3: FixedProbabilityFitter.from_params(0.5),
+        2: FixedEventProbability.from_params(1 - 0.8),
+        3: FixedEventProbability.from_params(1 - 0.5),
     }
     return RBD(nodes, reliability, edges)
 
@@ -198,9 +198,9 @@ def rbd1_koon() -> RBD:
         ("valve", "sink"),
     ]
     reliability = {
-        "pump1": FixedProbabilityFitter.from_params(1 - qp),
-        "pump2": FixedProbabilityFitter.from_params(1 - qp),
-        "valve": FixedProbabilityFitter.from_params(1 - qv),
+        "pump1": FixedEventProbability.from_params(qp),
+        "pump2": FixedEventProbability.from_params(qp),
+        "valve": FixedEventProbability.from_params(qv),
     }
     k = {"valve": 2}
     return RBD(nodes, reliability, edges, k)
@@ -252,11 +252,11 @@ def rbd3_nodes_edges_components():
         (4, 6),
     ]
     reliability = {
-        1: FixedProbabilityFitter.from_params(0.95),
-        2: FixedProbabilityFitter.from_params(0.95),
-        3: FixedProbabilityFitter.from_params(0.95),
-        4: FixedProbabilityFitter.from_params(0.95),
-        5: FixedProbabilityFitter.from_params(0.95),
+        1: FixedEventProbability.from_params(1 - 0.95),
+        2: FixedEventProbability.from_params(1 - 0.95),
+        3: FixedEventProbability.from_params(1 - 0.95),
+        4: FixedEventProbability.from_params(1 - 0.95),
+        5: FixedEventProbability.from_params(1 - 0.95),
     }
     return nodes, edges, reliability
 
@@ -315,10 +315,10 @@ def rbd_koon_parallel_args() -> dict:
         ("v", "t"),
     ]
     reliability = {
-        1: FixedProbabilityFitter.from_params(0.85),
-        2: FixedProbabilityFitter.from_params(0.8),
-        3: FixedProbabilityFitter.from_params(0.9),
-        4: FixedProbabilityFitter.from_params(0.85),
+        1: FixedEventProbability.from_params(1 - 0.85),
+        2: FixedEventProbability.from_params(1 - 0.8),
+        3: FixedEventProbability.from_params(1 - 0.9),
+        4: FixedEventProbability.from_params(1 - 0.85),
     }
     return {"nodes": nodes, "edges": edges, "reliability": reliability}
 
@@ -352,12 +352,12 @@ def rbd_koon_composite_args() -> dict:
         ("v2", "t"),
     ]
     reliability = {
-        1: FixedProbabilityFitter.from_params(0.85),
-        2: FixedProbabilityFitter.from_params(0.8),
-        3: FixedProbabilityFitter.from_params(0.9),
-        4: FixedProbabilityFitter.from_params(0.85),
-        5: FixedProbabilityFitter.from_params(0.85),
-        6: FixedProbabilityFitter.from_params(0.8),
+        1: FixedEventProbability.from_params(1 - 0.85),
+        2: FixedEventProbability.from_params(1 - 0.8),
+        3: FixedEventProbability.from_params(1 - 0.9),
+        4: FixedEventProbability.from_params(1 - 0.85),
+        5: FixedEventProbability.from_params(1 - 0.85),
+        6: FixedEventProbability.from_params(1 - 0.8),
     }
     return {"nodes": nodes, "edges": edges, "reliability": reliability}
 
@@ -367,8 +367,8 @@ def rbd_koon_simple() -> RBD:
     nodes = {"s": "input_node", 1: 1, 2: 2, "t": "output_node"}
     edges = [("s", 1), (1, 2), ("s", 2), (2, "t")]
     reliability = {
-        1: FixedProbabilityFitter.from_params(0.85),
-        2: FixedProbabilityFitter.from_params(0.8),
+        1: FixedEventProbability.from_params(1 - 0.85),
+        2: FixedEventProbability.from_params(1 - 0.8),
     }
     return RBD(nodes, reliability, edges, {2: 2})
 
@@ -388,11 +388,11 @@ def rbd_koon_nonminimal_args() -> dict:
     }
     edges = [("s", 1), (1, 2), (2, "t"), (1, 3), (3, 4), (4, 5), (5, 2)]
     reliability = {
-        1: FixedProbabilityFitter.from_params(0.85),
-        2: FixedProbabilityFitter.from_params(0.8),
-        3: FixedProbabilityFitter.from_params(0.9),
-        4: FixedProbabilityFitter.from_params(0.85),
-        5: FixedProbabilityFitter.from_params(0.85),
+        1: FixedEventProbability.from_params(1 - 0.85),
+        2: FixedEventProbability.from_params(1 - 0.8),
+        3: FixedEventProbability.from_params(1 - 0.9),
+        4: FixedEventProbability.from_params(1 - 0.85),
+        5: FixedEventProbability.from_params(1 - 0.85),
     }
     return {"nodes": nodes, "edges": edges, "reliability": reliability}
 
@@ -420,10 +420,10 @@ def rbd_double_parallel_args() -> dict:
         (5, "t"),
     ]
     reliability = {
-        1: FixedProbabilityFitter.from_params(0.85),
-        2: FixedProbabilityFitter.from_params(0.8),
-        3: FixedProbabilityFitter.from_params(0.9),
-        4: FixedProbabilityFitter.from_params(0.85),
-        5: FixedProbabilityFitter.from_params(0.85),
+        1: FixedEventProbability.from_params(1 - 0.85),
+        2: FixedEventProbability.from_params(1 - 0.8),
+        3: FixedEventProbability.from_params(1 - 0.9),
+        4: FixedEventProbability.from_params(1 - 0.85),
+        5: FixedEventProbability.from_params(1 - 0.85),
     }
     return {"nodes": nodes, "edges": edges, "reliability": reliability}
