@@ -8,6 +8,7 @@ import numpy as np
 from dd import autoref as _bdd
 from tqdm import tqdm
 
+from repyability.non_repairable import NonRepairable
 from repyability.rbd.rbd import RBD
 from repyability.rbd.rbd_args_check import check_rbd_node_args_complete
 
@@ -36,6 +37,15 @@ class RepairableRBD(RBD):
         check_rbd_node_args_complete(nodes, reliability, edges, repairability)
         super().__init__(nodes, reliability, edges, k, mc_samples)
         self.repairability = copy(repairability)
+
+        components = {}
+        for node, node_type in nodes.items():
+            if (node_type != "input_node") and (node_type != "output_node"):
+                components[node] = NonRepairable(
+                    self.reliability[node], self.repairability[node]
+                )
+
+        self.components = components
 
         # Compile BDD, sets self.bdd and self.bdd_system_ref. See compile_bdd()
         # docstring for more info.
@@ -69,11 +79,67 @@ class RepairableRBD(RBD):
 
         system_state = self.bdd.to_expr(system_given_component_status)
 
-        if system_state == "TRUE":
-            return True
+        return system_state == "TRUE"
 
-        # Else False
-        return False
+    def initialize_event_queue(self, t_simulation):
+        # Keep record of component status', initially they're all working
+        component_status: dict[Any, bool] = {
+            component: True for component in self.reliability.keys()
+        }
+
+        # PriorityQueue supplies failure/repair events in chronological
+        event_queue: PriorityQueue[Event] = PriorityQueue()
+
+        # For each component add in the initial failure
+        for component in self.components.keys():
+            t_event, event = self.components[component].next_event()
+
+            # Only consider it if it occurs within the simulation window
+            if t_event < t_simulation:
+                # Event status is False => event is a component failure
+                event_queue.put(Event(t_event, component, event))
+        self._event_queue = event_queue
+        self.system_state = True
+        self.t_simulation = t_simulation
+        self.component_status = component_status
+
+    def next_event(self):
+        # This method allows a user to extract the next system status
+        # changing event. The intent of this is so that it has the same api
+        # as the NonRepairable class so that a RepairableRBD can be used in
+        # a RepairableRBD/
+        if not hasattr(self, "_event_queue"):
+            raise ValueError("Need to initialize the event queue")
+        new_system_state = copy(self.system_state)
+
+        # Use a while loop to find the next time/event at which the system
+        # status changes.
+        while new_system_state == self.system_state:
+            if self._event_queue.qsize() == 0:
+                del self._event_queue
+                return self.t_simulation, self.system_state
+
+            event = self._event_queue.get()
+            self.component_status[event.component] = event.status
+            new_system_state = self.is_system_working(self.component_status)
+
+            next_event_t, next_event_type = self.components[
+                event.component
+            ].next_event()
+            next_event = Event(
+                # Current time (event.time) + time to next failure
+                event.time + next_event_t,
+                event.component,
+                next_event_type,  # This is a component failure event
+            )
+            # But only queue up the event if it occurs before the end
+            # of the simulation
+            if next_event.time < self.t_simulation:
+                self._event_queue.put(next_event)
+
+        self.system_state = new_system_state
+
+        return event.time, self.system_state
 
     def availability(
         self, t_simulation: float, N: int = 10_000, verbose: bool = False
@@ -96,95 +162,77 @@ class RepairableRBD(RBD):
             times, availabilities
         """
 
-        # aggregate_timeline keeps track of how many systems turn on and off
-        # at time t.
-        # e.g. aggregate_timeline[t] = +2 means two out of the N systems began
-        # working again at time t, while aggregate_timeline[t] = -1 means one
-        # out of the N systems stopped working at time t.
-        # One might expect that due to the majority of distributions being
-        # CDFs that generally aggregate_timeline[t] would be only -1 or +1.
+        # aggregate_timeline keeps track of how many of the simulated systems
+        # turn on and off at time t.
+        # e.g. aggregate_timeline[t] = +2 means two out of the N simulated
+        # systems began working again at time t, while
+        # aggregate_timeline[t] = -1 means one out of the N simulated systems
+        # stopped working at time t.
+        # There is a very strong expectation that due to the random sampling
+        # that the generall aggregate_timeline[t] would be only -1 or +1.
         aggregate_timeline: dict[float, int] = defaultdict(lambda: 0)
+        # The below two assigments ensure the results have data at 0 and time
+        # t_simulation regardless of whether it was sampled at these times.
+        # Set the end of the timeline to be 0 (i.e. unchanged if no event
+        # falls) exactly at time t_simulation.
         aggregate_timeline[t_simulation] = 0
+        # Set all systems working at time 0
+        aggregate_timeline[0] = N
 
         # Perform N simulations
         for _ in tqdm(
             range(N), disable=not verbose, desc="Running simulations"
         ):
+            # Initialize the event queue and the system/component statuses
+            self.initialize_event_queue(t_simulation)
 
-            # 'Turn on' this simulation's system at time t=0
-            aggregate_timeline[0] += 1
-            curr_system_state = True
-
-            # Keep record of component status', initially they're all working
-            component_status: dict[Any, bool] = {
-                component: True for component in self.reliability.keys()
-            }
-
-            # PriorityQueue supplies failure/repair events in chronological
-            # order
-            event_queue: PriorityQueue[Event] = PriorityQueue()
-
-            # Get the first failure event for each component
-            for component in self.reliability.keys():
-                t_event = self.reliability[component].random(1)[0]
-
-                # Only consider it if it occurs within the simulation window
-                if t_event < t_simulation:
-                    # Event status is False => event is a component failure
-                    event_queue.put(Event(t_event, component, False))
-
-            # It is implemented such that no events that occur after the
-            # end-time of the simulation are added to the queue, so we just
+            # Implemented ensure that no events that occur after the
+            # end-time of the simulation are added to the queue; so we just
             # need to keep going through the queue until it's empty
-            while not event_queue.empty():
+            while not self._event_queue.empty():
                 # Get the next event and update the component's status
-                event = event_queue.get()
-                component_status[event.component] = event.status
+                event = self._event_queue.get()
+                # Update the component's status
+                self.component_status[event.component] = event.status
 
                 # Record new system state, it could still be the same as
-                # curr_system_state in which case we don't bother changing
+                # system_state in which case we don't bother changing
                 # aggregate_timeline, but if it is different, we need to +/-1
-                # if the system has gone on/off-line
-                new_system_state = self.is_system_working(component_status)
-                if new_system_state != curr_system_state:
+                # to aggregate_timeline if the system has gone on/off-line
+                new_system_state = self.is_system_working(
+                    self.component_status
+                )
+                if new_system_state != self.system_state:
                     if new_system_state:
                         aggregate_timeline[event.time] += 1
                     else:
                         aggregate_timeline[event.time] -= 1
 
-                # Set the curr_system_state
-                curr_system_state = new_system_state
+                    # Set the system_state to the new state
+                    self.system_state = new_system_state
 
                 # Now we need to get the component's next event
                 # If the component just got repaired then we need it's next
                 # failure event, otherwise it just broke and we need it's
                 # repair event
-                if event.status:
-                    # Component just got repaired, need next failure event
-                    next_event = Event(
-                        # Current time (event.time) + time to next failure
-                        event.time
-                        + self.reliability[event.component].random(1)[0],
-                        event.component,
-                        False,  # This is a component failure event
-                    )
-                else:
-                    # Component just failed, need its repair event
-                    next_event = Event(
-                        # Current time (event.time) + time to repair
-                        event.time
-                        + self.repairability[event.component].random(1)[0],
-                        event.component,
-                        True,  # This is a component repair event
-                    )
+                next_event_t, next_event_type = self.components[
+                    event.component
+                ].next_event()
 
+                next_event = Event(
+                    # The next event time is the current time [event.time]
+                    # plus the time to next event
+                    event.time + next_event_t,
+                    event.component,
+                    next_event_type,
+                )
                 # But only queue up the event if it occurs before the end
                 # of the simulation
                 if next_event.time < t_simulation:
-                    event_queue.put(next_event)
+                    self._event_queue.put(next_event)
 
                 # Then move on to the next event... until there's no more
-                # events before t_simulation
+                # events in the queue
 
         # Now we need to return the system availability from t=0..t_simulation
         # Using numpy arrays for efficiency
@@ -198,6 +246,12 @@ class RepairableRBD(RBD):
         # t just how many systems are working, and divide by N to get
         # availability the as a percentage
         system_availability = timeline_arr[:, 1].cumsum() / N
+
+        # Clean up the interim results of the simulation
+        del self._event_queue
+        del self.system_state
+        del self.t_simulation
+        del self.component_status
 
         return time, system_availability
 
