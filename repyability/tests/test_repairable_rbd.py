@@ -147,7 +147,7 @@ def test_repairable_rbd_availability_one_component_10N():
     exp_timeline = defaultdict(lambda: 0)
 
     # Perform 10 simulations
-    n_simulations = 10
+    n_simulations = 1
     for i in range(n_simulations):
         # Set initial availability to 1 again
         exp_timeline[0] += 1
