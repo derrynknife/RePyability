@@ -6,6 +6,8 @@ from surpyval.nonparametric import NonParametric
 from surpyval.parametric import Parametric
 from surpyval.parametric.exact_event_time import ExactEventTime
 
+from repyability.rbd.standby_node import StandbyModel
+
 
 class NonRepairable:
     """
@@ -23,6 +25,13 @@ class NonRepairable:
             self.model_parameterization = "non-parametric"
             self.reliability_function = interp1d(
                 reliability.x, 1 - reliability.F, fill_value="extrapolate"
+            )
+        elif type(reliability) == StandbyModel:
+            self.model_parameterization = "non-parametric"
+            self.reliability_function = interp1d(
+                reliability.model.x,
+                1 - reliability.model.F,
+                fill_value="extrapolate",
             )
         else:
             raise ValueError("Unknown reliability function")
