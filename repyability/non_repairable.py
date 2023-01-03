@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.integrate import quad
+from scipy.interpolate import interp1d
 from scipy.optimize import minimize
 from surpyval.nonparametric import NonParametric
 from surpyval.parametric import Parametric
@@ -16,10 +17,15 @@ class NonRepairable:
     ):
         if type(reliability) == Parametric:
             self.model_parameterization = "parametric"
+            self.reliability_function = reliability.sf
         elif type(reliability) == NonParametric:
-            raise NotImplementedError("Non-Parametric Models not implemented")
+            # TODO: Allow non-interpolated?
+            self.model_parameterization = "non-parametric"
+            self.reliability_function = interp1d(
+                reliability.x, 1 - reliability.F, fill_value="extrapolate"
+            )
         else:
-            raise ValueError("Unknown TTF Model")
+            raise ValueError("Unknown reliability function")
 
         self.reliability = reliability
         self.time_to_replace = time_to_replace
@@ -27,33 +33,73 @@ class NonRepairable:
         self.__next_event_type = "failure"
 
     def set_costs_planned_and_unplanned(self, cp, cu):
-        assert cp < cu
+        if cp >= cu:
+            raise ValueError("Planned costs must be less than unplanned costs")
         self.cp = cp
         self.cu = cu
 
     def avg_replacement_time(self, t):
-        out = quad(self.reliability.sf, 0, t)
-        return out[0]
+        if self.model_parameterization == "parametric":
+            out = quad(self.reliability_function, 0, t)[0]
+        else:
+            mask = self.reliability.x < t
+            x_less_than_t = self.reliability.x[mask]
+            dt = np.diff(x_less_than_t)
+            F = self.reliability_function(x_less_than_t[1:])
+            out = (dt * F).sum()
+
+        return out
 
     def _cost_rate(self, t):
-        planned_costs = self.reliability.sf(t) * self.cp
-        unplanned_costs = (1 - self.reliability.sf(t)) * self.cu
+        planned_costs = self.reliability_function(t) * self.cp
+        unplanned_costs = (1 - self.reliability_function(t)) * self.cu
         avg_repl_time = self.avg_replacement_time(t)
         return (planned_costs + unplanned_costs) / avg_repl_time
 
     def _log_cost_rate(self, t):
         return np.log(self._cost_rate(t))
 
-    def find_optimal_replacement(self, interp=None):
-        if self.reliability.dist.name == "Weibull":
-            if self.reliability.params[1] <= 1:
-                return np.inf
+    def q(self, t):
+        return np.log(self._cost_rate(t))
 
-        init = self.reliability.mean()
-        bounds = ((1e-8, None),)
-        res = minimize(self._log_cost_rate, init, bounds=bounds, tol=1e-10)
-        self.optimisation_results = res
-        return res.x[0]
+    def find_optimal_replacement(self, options=None):
+        if self.model_parameterization == "parametric":
+            if self.reliability.dist.name == "Weibull":
+                if self.reliability.offset:
+                    pass
+                elif self.reliability.zi:
+                    pass
+                elif self.reliability.lfp:
+                    pass
+                elif self.reliability.params[1] <= 1:
+                    return np.inf
+            # When using a parametric distribution the optimisation is
+            # straight forward. Simply find the point in the support where
+            # the cost rate is minimised. Uses quadrature to integrate!
+            init = self.reliability.mean()
+            bounds = (self.reliability.support,)
+            res = minimize(self._log_cost_rate, init, bounds=bounds, tol=1e-10)
+            self.optimisation_results = res
+            optimal = res.x[0]
+        else:
+            # When using non-parametric estimations, it can also be straight
+            # forward. Simply find the cost rate at a number of places
+            # from the min to the max support of the model and return the
+            # value of x which has the minimum cost rate.
+            # TODO: Instead of finding the average_replacement_time each
+            # iteration we could create a cumulative sum up to x.max()!
+            # will need to distinguish between interpolated and non-interp..
+            x_search = np.linspace(
+                self.reliability.x.min(), self.reliability.x.max(), 1000
+            )
+
+            old_err_state = np.seterr(all="ignore")
+            costs = self.cost_rate(x_search)
+            np.seterr(**old_err_state)
+
+            optimal_idx = np.argmin(costs)
+            optimal = x_search[optimal_idx]
+        return optimal
 
     def next_event(self):
         if self.__next_event_type == "failure":
