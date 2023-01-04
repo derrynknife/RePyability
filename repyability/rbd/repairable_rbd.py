@@ -28,24 +28,37 @@ class RepairableRBD(RBD):
     def __init__(
         self,
         nodes: dict[Any, Any],
-        reliability: dict[Any, Any],
-        repairability: dict[Any, Any],
+        components: dict[Any, Any],
         edges: Iterable[tuple[Hashable, Hashable]],
         k: dict[Any, int] = {},
         mc_samples: int = 10_000,
     ):
-        check_rbd_node_args_complete(nodes, reliability, edges, repairability)
-        super().__init__(nodes, reliability, edges, k, mc_samples)
-        self.repairability = copy(repairability)
+        components = copy(components)
+        # reliability: dict[Any, Any]
+        # repairability: dict[Any, Any]
 
-        components = {}
+        # super().__init__(nodes, reliability, edges, k, mc_samples)
+
+        reliability = {}
+        repairability = {}
         for node, node_type in nodes.items():
             if (node_type != "input_node") and (node_type != "output_node"):
-                components[node] = NonRepairable(
-                    self.reliability[node], self.repairability[node]
-                )
+                component = components[node]
+                if isinstance(component, dict):
+                    components[node] = NonRepairable(
+                        component["reliability"], component["repairability"]
+                    )
+                    reliability[node] = component["reliability"]
+                    repairability[node] = component["repairability"]
+                elif isinstance(component, RepairableRBD):
+                    reliability[node] = component
+                    repairability[node] = None
+
+        check_rbd_node_args_complete(nodes, reliability, edges, repairability)
+        super().__init__(nodes, reliability, edges, k, mc_samples)
 
         self.components = components
+        self.repairability = copy(repairability)
 
         # Compile BDD, sets self.bdd and self.bdd_system_ref. See compile_bdd()
         # docstring for more info.
@@ -84,20 +97,23 @@ class RepairableRBD(RBD):
     def initialize_event_queue(self, t_simulation):
         # Keep record of component status', initially they're all working
         component_status: dict[Any, bool] = {
-            component: True for component in self.reliability.keys()
+            component: True for component in self.components.keys()
         }
 
         # PriorityQueue supplies failure/repair events in chronological
         event_queue: PriorityQueue[Event] = PriorityQueue()
 
         # For each component add in the initial failure
-        for component in self.components.keys():
-            t_event, event = self.components[component].next_event()
+        for component_id in self.components.keys():
+            component = self.components[component_id]
+            if isinstance(component, RepairableRBD):
+                component.initialize_event_queue(t_simulation)
+            t_event, event = component.next_event()
 
             # Only consider it if it occurs within the simulation window
             if t_event < t_simulation:
                 # Event status is False => event is a component failure
-                event_queue.put(Event(t_event, component, event))
+                event_queue.put(Event(t_event, component_id, event))
         self._event_queue = event_queue
         self.system_state = True
         self.t_simulation = t_simulation

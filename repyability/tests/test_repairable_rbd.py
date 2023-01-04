@@ -56,8 +56,12 @@ def test_repairable_rbd_availability_one_component_1N():
             ("s", "c"),
             ("c", "t"),
         ],
-        reliability={"c": reliability_dist},
-        repairability={"c": repairability_dist},
+        components={
+            "c": {
+                "reliability": reliability_dist,
+                "repairability": repairability_dist,
+            }
+        },
     )
 
     # Before anything, set the numpy seed
@@ -132,8 +136,12 @@ def test_repairable_rbd_availability_one_component_10N():
             ("s", "c"),
             ("c", "t"),
         ],
-        reliability={"c": reliability_dist},
-        repairability={"c": repairability_dist},
+        components={
+            "c": {
+                "reliability": reliability_dist,
+                "repairability": repairability_dist,
+            }
+        },
     )
 
     # Before anything, set the numpy seed
@@ -218,8 +226,16 @@ def test_repairable_rbd_availability_two_parallel_components_1N():
             ("s", "c2"),
             ("c2", "t"),
         ],
-        reliability={"c1": reliability_dist, "c2": reliability_dist},
-        repairability={"c1": repairability_dist, "c2": repairability_dist},
+        components={
+            "c1": {
+                "reliability": reliability_dist,
+                "repairability": repairability_dist,
+            },
+            "c2": {
+                "reliability": reliability_dist,
+                "repairability": repairability_dist,
+            },
+        },
     )
 
     # Before anything, set the numpy seed randomly
@@ -349,8 +365,16 @@ def test_repairable_rbd_availability_two_series_components_1N():
             ("c1", "c2"),
             ("c2", "t"),
         ],
-        reliability={"c1": reliability_dist, "c2": reliability_dist},
-        repairability={"c1": repairability_dist, "c2": repairability_dist},
+        components={
+            "c1": {
+                "reliability": reliability_dist,
+                "repairability": repairability_dist,
+            },
+            "c2": {
+                "reliability": reliability_dist,
+                "repairability": repairability_dist,
+            },
+        },
     )
 
     # Before anything, set the numpy seed randomly
