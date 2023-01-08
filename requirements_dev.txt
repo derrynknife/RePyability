@@ -1,0 +1,10 @@
+# Include production requirements
+-r requirements.txt
+
+# Dev requirements
+black
+flake8
+mypy
+pytest
+coverage
+pre-commit

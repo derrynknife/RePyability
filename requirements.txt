@@ -1,12 +1,7 @@
-black
-coverage
-dd
-flake8
-mypy
-networkx
-numpy
-pre-commit
-pytest
-scipy
-surpyval
-tqdm
+# Production requirements
+# For development, use requirements_dev.txt instead
+dd==0.5.7
+networkx==3.0
+numpy==1.23.5
+surpyval==0.10.10
+tqdm==4.64.1
