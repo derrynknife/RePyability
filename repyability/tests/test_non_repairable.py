@@ -16,7 +16,7 @@ from repyability.non_repairable import NonRepairable
 
 #     nr_model.set_costs_planned_and_unplanned(1, 5)
 
-#     assert 493 == pytest.approx(nr_model.find_optimal_replacement(), abs=1e-1)
+#    assert 493 == pytest.approx(nr_model.find_optimal_replacement(), abs=1e-1)
 
 
 def test_weibull_no_optimal_replacement():
