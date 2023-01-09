@@ -4,7 +4,7 @@ See function docstring for more info.
 """
 
 
-from typing import Hashable, Iterable
+from typing import Collection, Hashable, Iterable
 
 
 def check_rbd_node_args_complete(
@@ -51,3 +51,42 @@ def check_rbd_node_args_complete(
                 {component_name} (this component corresponds to node\
                 {node_name})."
             )
+
+
+def check_sf_node_component_args_consistency(
+    working_nodes: Collection[Hashable],
+    broken_nodes: Collection[Hashable],
+    working_components: Collection[Hashable],
+    broken_components: Collection[Hashable],
+    rbd_components_to_nodes: dict[Hashable, set],
+):
+    argument_nodes: set[object] = set()
+    argument_nodes.update(working_nodes)
+    argument_nodes.update(broken_nodes)
+    number_of_arg_comp_nodes = 0
+    for comp in working_components:
+        argument_nodes.update(rbd_components_to_nodes)
+        number_of_arg_comp_nodes += len(rbd_components_to_nodes)
+    for comp in broken_components:
+        argument_nodes.update(rbd_components_to_nodes)
+        number_of_arg_comp_nodes += len(rbd_components_to_nodes)
+    if len(argument_nodes) != (
+        len(working_nodes) + len(broken_nodes) + number_of_arg_comp_nodes
+    ):
+        working_comps_nodes = [
+            (comp, rbd_components_to_nodes) for comp in working_components
+        ]
+        broken_comps_nodes = [
+            (comp, rbd_components_to_nodes) for comp in broken_components
+        ]
+
+        raise ValueError(
+            f"Node/component inconsistency provided. i.e. you have \
+            provided sf() with working/broken nodes (or respective \
+            components) more than once in the arguments.\n \
+            Supplied:\n\
+            working_nodes: {working_nodes}\n\
+            broken_nodes: {broken_nodes}\n\
+            (working_components, their_nodes): {working_comps_nodes}\n\
+            (broken_components, their_nodes): {broken_comps_nodes}\n"
+        )
