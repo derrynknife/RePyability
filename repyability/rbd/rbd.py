@@ -1,7 +1,7 @@
 from collections import defaultdict
 from copy import copy
 from itertools import combinations
-from typing import Any, Collection, Hashable, Iterable, Iterator
+from typing import Any, Callable, Collection, Hashable, Iterable, Iterator
 from warnings import warn
 
 import networkx as nx
@@ -188,7 +188,8 @@ class RBD:
         broken_nodes: Collection[Hashable] = [],
         working_components: Collection[Hashable] = [],
         broken_components: Collection[Hashable] = [],
-        using: str = "p",
+        method: str = "c",
+        approx: bool = False,
     ) -> np.ndarray:
         """Returns the system reliability for time/s x.
 
@@ -204,9 +205,17 @@ class RBD:
             Marks these components as perfectly reliable, by default []
         broken_components : Collection[Hashable], optional
             Marks these components as perfectly unreliable, by default []
-        using: str, optional
-            Input either "c" or "p" for the function to use cut sets or path
-            sets respectively. Defaults to path sets.
+        method: str, optional
+            Input either "c" or "p" for the function to use the cut set or
+            path set methods respectively, by default "c". Both methods
+            ultimately return the same results though.
+        approx: bool, optional
+            If true, only considers the first-order terms (w.r.t. the
+            inclusion-exclusion principle), thereby reducing computation time.
+            This approximation is only applicable to the cut set method
+            (method="c"), a ValueError exception is raised if method="p" and
+            approx=True. This approximation is typically sufficient for most
+            use cases where reliabilities are close to 1. By default, False.
 
         Returns
         -------
@@ -219,6 +228,8 @@ class RBD:
             - Working/broken node/component inconsistency (a component or node
               is supplied more than once to any of working_nodes, broken_nodes,
               working_components, broken_components)
+            - The path set method must not be used with approx=True, see approx
+              arg description above
         """
         # Check for any node/component argument inconsistency
         check_sf_node_component_args_consistency(
@@ -229,6 +240,14 @@ class RBD:
             self.components_to_nodes,
         )
 
+        # Check that path set method and approximation are not used together
+        # (The approximation is only applicable to the cutset method)
+        if method == "p" and approx:
+            raise ValueError(
+                "The path set method must not be used with \
+                approx=True, see approx arg description in docstring."
+            )
+
         # Turn node iterables into sets for O(1) lookup later
         working_nodes = set(working_nodes)
         broken_nodes = set(broken_nodes)
@@ -238,51 +257,85 @@ class RBD:
         # you should:
         # - Apply the cut set method with only first order terms if
         #   marginal error is tolerable, and components have high reliability
-        #   ?TODO: test whether indeed quicker?
         # - Or if you want to use all terms, then apply either the tie set or
         #   cut set method depending on which has less sets for the system,
         #   and thus less calculation
         #   (typically cut sets)
-        #
-        # At the moment, only the tie set method is implemented.
 
         x = np.atleast_1d(x)
-        # TODO: Create cut set logic
-        # Get all path sets
-        paths = self.get_min_path_sets()
-        num_paths = len(paths)
 
-        # Cache all component reliabilities for efficiency
-        comp_rel_cache_dict: dict[Hashable, np.ndarray] = {}
+        # To use the same code for both the tieset and cutset methods, the
+        # reliability/unreliability is abstracted away to just probability()
+        # Also, note path/cut sets are no longer mentioned, but rather referred
+        # to as 'node sets'
+        # This is because for the path set method: R = P(MPS1 U MPS2 U ...)
+        # (where MPS = minimal path set), whilst for the cut set method:
+        # Q = 1 - R = P(MCS1 U MCS2 U ...), so the inclusion-exclusion
+        # principle is the same for both, it's just that for the cut set method
+        # we have to return = 1 - (result from inclusion-exclusion procedure)
+
+        probability: Callable
+        if method == "p":
+
+            def probability(distribution):
+                return distribution.sf(x)
+
+        else:
+            # method == "c"
+            def probability(distribution):
+                return distribution.ff(x)
+
+        # Get all node sets (path sets for method="p" and cut sets for
+        # method="c")
+        node_sets: set[frozenset]
+        if method == "p":
+            node_sets = self.get_min_path_sets()
+        else:
+            # method == "c"
+            node_sets = self.get_min_cut_sets()
+
+        num_node_sets = len(node_sets)
+
+        # Cache all component probabilities for efficiency
+        comp_prob_cache_dict: dict[Hashable, np.ndarray] = {}
         for comp in self.reliability:
             if comp in working_components:
-                comp_rel_cache_dict[comp] = PerfectReliability().sf(x)
+                comp_prob_cache_dict[comp] = probability(PerfectReliability())
             elif comp in broken_components:
-                comp_rel_cache_dict[comp] = PerfectUnreliability().sf(x)
+                comp_prob_cache_dict[comp] = probability(
+                    PerfectUnreliability()
+                )
             else:
-                comp_rel_cache_dict[comp] = self.reliability[comp].sf(x)
-        # We'll just add the two 'perfect component reliabilities' to this dict
+                comp_prob_cache_dict[comp] = probability(
+                    self.reliability[comp]
+                )
+
+        # We'll just add the two 'perfect component probabilities' to this dict
         # while we're at it, since they'll be used in lookup later
-        comp_rel_cache_dict["PerfectReliability"] = PerfectReliability().sf(x)
-        comp_rel_cache_dict[
-            "PerfectUnreliability"
-        ] = PerfectUnreliability().sf(x)
+        comp_prob_cache_dict["PerfectReliability"] = probability(
+            PerfectReliability()
+        )
+        comp_prob_cache_dict["PerfectUnreliability"] = probability(
+            PerfectUnreliability()
+        )
 
         # Perform intersection calculation, which isn't as simple as summating
         # in the case of mutual non-exclusivity
         # i is the 'level' of the intersection calc
-        system_rel = np.zeros_like(x)  # Return array
-        for i in range(1, num_paths + 1):
-            # Get tie-set combinations for level i
-            tieset_combs = combinations(paths, i)
+        # This is really just applying the inclusion-exclusion principle
+        system_prob = np.zeros_like(x)  # Return array
 
-            # Calculate the reliability of each level combination
-            # Making sure to not multiply a components' reliability twice
+        for i in range(1, num_node_sets + 1):
+            # Get node set combinations for level i
+            node_set_combs = combinations(node_sets, i)
+
+            # Calculate the probability of each level combination
+            # Making sure to not multiply a components' probability twice
             level_sum = np.zeros_like(x)
-            for tieset_comb in tieset_combs:
+            for node_set_comb in node_set_combs:
                 # Make a set of components out of the node path/tieset
                 s = set()
-                for path in tieset_comb:
+                for path in node_set_comb:
                     for node in path:
                         if node in self.in_or_out:
                             continue
@@ -295,23 +348,34 @@ class RBD:
                         else:
                             s.add(self.nodes[node])  # Add component name
 
-                # Now calculate the tieset reliability
-                tieset_rel = np.ones_like(x)
+                # Now calculate the node set probability
+                node_set_prob = np.ones_like(x)
                 for comp in s:
-                    comp_rel = comp_rel_cache_dict[comp]
-                    tieset_rel = tieset_rel * comp_rel
+                    comp_prob = comp_prob_cache_dict[comp]
+                    node_set_prob = node_set_prob * comp_prob
 
-                # Now add the tieset reliability to the level sum
-                level_sum = level_sum + tieset_rel
+                # Now add the node set probability to the level sum
+                level_sum = level_sum + node_set_prob
 
-            # Finally add/subtract the level sum to/from the system_rel if the
+            # Finally add/subtract the level sum to/from the system_prob if the
             # level is even/odd
             if i % 2 == 1:
-                system_rel = system_rel + level_sum
-            else:
-                system_rel = system_rel - level_sum
+                system_prob = system_prob + level_sum
 
-        return system_rel
+                # If the approximation is requested, just break from the
+                # inclusion-exclusion principle procedure after the first level
+                if approx:
+                    break
+            else:
+                system_prob = system_prob - level_sum
+
+        # If cutset method is used, the above returns the unreliability,
+        # so we just have to return = 1 - system_prob
+        if method == "c":
+            return 1 - system_prob
+
+        # Otherwise for the pathset method it's already the reliability
+        return system_prob
 
     def ff(self, x: ArrayLike, *args, **kwargs) -> np.ndarray:
         """Returns the system unreliability for time/s x.
