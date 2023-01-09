@@ -14,7 +14,10 @@ from repyability.rbd.rbd_graph import RBDGraph
 
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .min_cut_sets import min_cut_sets
-from .rbd_args_check import check_rbd_node_args_complete
+from .rbd_args_check import (
+    check_rbd_node_args_complete,
+    check_sf_node_component_args_consistency,
+)
 
 
 class RBD:
@@ -218,38 +221,13 @@ class RBD:
               working_components, broken_components)
         """
         # Check for any node/component argument inconsistency
-        argument_nodes: set[object] = set()
-        argument_nodes.update(working_nodes)
-        argument_nodes.update(broken_nodes)
-        number_of_arg_comp_nodes = 0
-        for comp in working_components:
-            argument_nodes.update(self.components_to_nodes[comp])
-            number_of_arg_comp_nodes += len(self.components_to_nodes[comp])
-        for comp in broken_components:
-            argument_nodes.update(self.components_to_nodes[comp])
-            number_of_arg_comp_nodes += len(self.components_to_nodes[comp])
-        if len(argument_nodes) != (
-            len(working_nodes) + len(broken_nodes) + number_of_arg_comp_nodes
-        ):
-            working_comps_nodes = [
-                (comp, self.components_to_nodes[comp])
-                for comp in working_components
-            ]
-            broken_comps_nodes = [
-                (comp, self.components_to_nodes[comp])
-                for comp in broken_components
-            ]
-
-            raise ValueError(
-                f"Node/component inconsistency provided. i.e. you have \
-                provided sf() with working/broken nodes (or respective \
-                components) more than once in the arguments.\n \
-                Supplied:\n\
-                working_nodes: {working_nodes}\n\
-                broken_nodes: {broken_nodes}\n\
-                (working_components, their_nodes): {working_comps_nodes}\n\
-                (broken_components, their_nodes): {broken_comps_nodes}\n"
-            )
+        check_sf_node_component_args_consistency(
+            working_nodes,
+            broken_nodes,
+            working_components,
+            broken_components,
+            self.components_to_nodes,
+        )
 
         # Turn node iterables into sets for O(1) lookup later
         working_nodes = set(working_nodes)
