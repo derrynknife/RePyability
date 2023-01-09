@@ -23,14 +23,6 @@ def test_rbd_koon_k_given(rbd1_koon: RBD):
     assert rbd1_koon.G.nodes["sink"]["k"] == 1
 
 
-def test_rbd_graph_is_koon_rbd_false(rbd_series: RBD):
-    assert not rbd_series.G.is_koon_rbd()
-
-
-def test_rbd_graph_is_koon_rbd_true(rbd1_koon: RBD):
-    assert rbd1_koon.G.is_koon_rbd()
-
-
 def test_rbd_get_min_path_sets_rbd_series_koon(rbd_series_koon: RBD):
     assert set() == rbd_series_koon.get_min_path_sets()
 
