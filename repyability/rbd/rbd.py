@@ -1,6 +1,6 @@
 from collections import defaultdict
 from copy import copy
-from itertools import combinations
+from itertools import combinations, product
 from typing import Any, Callable, Collection, Hashable, Iterable, Iterator
 from warnings import warn
 
@@ -13,7 +13,6 @@ from repyability.rbd.min_path_sets import min_path_sets
 from repyability.rbd.rbd_graph import RBDGraph
 
 from .helper_classes import PerfectReliability, PerfectUnreliability
-from .min_cut_sets import min_cut_sets
 from .rbd_args_check import (
     check_rbd_node_args_complete,
     check_sf_node_component_args_consistency,
@@ -47,6 +46,9 @@ class RBD:
         components : dict[Any, Any]
             A dictionary of all non-input-output components names as keys
             with their SurPyval distribution as values
+        k : dict[Any, int]
+            A dictionary mapping nodes to k-out-of-n (koon) values, by default
+            {}, by default all nodes koon values are 1
         mc_samples : int, optional
             TODO, by default 10_000
 
@@ -179,7 +181,32 @@ class RBD:
         set contains the frozenset of nodes. frozensets were used so the inner
         set elements could be hashable.
         """
-        return min_cut_sets(self.G, self.input_node, self.output_node)
+        path_sets = self.get_min_path_sets(include_in_out_nodes=False)
+
+        # Gets the cartesian product across pathsets
+        prods = product(*path_sets)
+
+        # We need to remove duplicate nodes in the products to get the cutsets,
+        # and discard empty products
+        cut_sets = [frozenset(prod) for prod in prods if prod]
+
+        min_cut_sets: list[frozenset] = []
+
+        # Now only insert if minimal, removing any superset (non-minimal)
+        # cutsets are encountered
+        for cut_set in cut_sets:
+            is_minimal_cut_set = True
+            for other_cut_set in min_cut_sets.copy():
+                if cut_set.issuperset(other_cut_set):
+                    is_minimal_cut_set = False
+                    break
+                if cut_set.issubset(other_cut_set):
+                    min_cut_sets.remove(other_cut_set)
+
+            if is_minimal_cut_set:
+                min_cut_sets.append(cut_set)
+
+        return set(min_cut_sets)
 
     def sf(
         self,

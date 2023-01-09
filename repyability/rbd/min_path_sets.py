@@ -81,11 +81,10 @@ def min_path_sets(
     #   i.e. if there's 2 subproblems, each with 2 minimal path-sets
     #        (aa, ab, ba, bb) then merge the sets (aa+ba, aa+bb, ab+ba, ab+bb)
 
-    # Get all the necessary path-set combinations
-    merged_soln = merge_subproblem_solns(all_subproblem_solns, k)
-
-    # Remove all non-minimal path-sets
-    merged_and_minimal_soln = minimalise_path_sets(merged_soln)
+    # Get all the necessary path-set combinations and discard non-minimal solns
+    merged_and_minimal_soln = merge_and_minimalise_subproblem_solns(
+        all_subproblem_solns, k
+    )
 
     # Finally, memoise the solution to this curr_node problem, and return
     if rbd_graph.out_degree(curr_node) > 1:
@@ -104,7 +103,7 @@ def get_node_in_combinations(n_in: int, k: int) -> list[tuple[int, ...]]:
     return list(itertools.combinations(range(n_in), k))
 
 
-def merge_subproblem_solns(
+def merge_and_minimalise_subproblem_solns(
     all_subproblem_solns: list[list[set[Hashable]]], curr_node_k: int
 ) -> list[set[Hashable]]:
     """Returns k-wise path-set combinations for the current node"""
@@ -114,7 +113,7 @@ def merge_subproblem_solns(
 
     # Then form the path-set combinations (or set-additions rather)
 
-    merged_soln: list[set] = []
+    merged_and_minimal_soln: list[set] = []
     for comb in combs:
         # product_candidates are all the subproblem solns we're considering for
         # this combination
@@ -130,35 +129,19 @@ def merge_subproblem_solns(
             for i in range(1, len(product_tup)):
                 s |= product_tup[i]
 
-            # And add it to the merged_soln list
-            merged_soln.append(s)
+            # Minimalise, that is go through the merged_and_minimal_soln
+            # and discard any supersets of this s, and if s is a superset
+            # of any other set then continue (s is not minimal)
+            is_path_set_minimal = True  # Assume path-set is minimal
+            for other_s in merged_and_minimal_soln.copy():
+                if s.issuperset(other_s):
+                    is_path_set_minimal = False
+                    break
+                if s.issubset(other_s):
+                    merged_and_minimal_soln.remove(other_s)
 
-    return merged_soln
+            # And add it to the merged_and_minimal_soln list
+            if is_path_set_minimal:
+                merged_and_minimal_soln.append(s)
 
-
-def minimalise_path_sets(path_sets: list[set]) -> list[set]:
-    """Returns only the minimal path-sets
-
-    i.e. Discards all path-sets that are a superset of any of the other
-    path-sets.
-
-    Parameters
-    ----------
-    path_sets : list[set]
-        All path-sets to minimalise
-    """
-    minimal_path_sets = []
-    for path_set in path_sets:
-        is_path_set_minimal = True  # Assume path-set is minimal
-        for other_path_set in path_sets:
-            if path_set == other_path_set:
-                # Don't consider the same path-set
-                continue
-            if path_set.issuperset(other_path_set):
-                # Discard path_set as it's non-minimal (other_path_set is a
-                # subset of this path_set)
-                is_path_set_minimal = False
-                break
-        if is_path_set_minimal:
-            minimal_path_sets.append(path_set)
-    return minimal_path_sets
+    return merged_and_minimal_soln
