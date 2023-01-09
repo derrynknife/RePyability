@@ -188,7 +188,7 @@ def test_rbd_get_min_path_sets_rbd_double_parallel_koon(
 def test_rbd_get_min_cut_sets_rbd_series_koon(rbd_series_koon: RBD):
     # It's a series RBD with the middle node k=2 so the system doesn't work
     # at all
-    assert {} == rbd_series_koon.get_min_cut_sets()
+    assert set() == rbd_series_koon.get_min_cut_sets()
 
 
 def test_rbd_get_min_cut_sets_rbd1_koon(rbd1_koon: RBD):
@@ -212,9 +212,10 @@ def test_rbd_get_min_cut_sets_rbd2_koon(rbd2_koon: RBD):
 
 def test_rbd_get_min_cut_sets_rbd3_koon1(rbd3_koon1: RBD):
     assert {
-        frozenset([2, 4]),
         frozenset([1, 4]),
-        frozenset([2, 3]),
+        frozenset([3, 2]),
+        frozenset([2, 4]),
+        frozenset([1, 3]),
     } == rbd3_koon1.get_min_cut_sets()
 
 
@@ -226,14 +227,12 @@ def test_rbd_get_min_cut_sets_rbd3_koon2(rbd3_koon2: RBD):
         frozenset([5, 4]),
         frozenset([1, 3]),
         frozenset([5, 3]),
-        frozenset([2, 3]),
     } == rbd3_koon2.get_min_cut_sets()
 
 
 def test_rbd_get_min_cut_sets_rbd3_koon3(rbd3_koon3: RBD):
     assert {
         frozenset([2, 4]),
-        frozenset([2, 1]),
         frozenset([3]),
         frozenset([1, 4]),
         frozenset([4, 5]),

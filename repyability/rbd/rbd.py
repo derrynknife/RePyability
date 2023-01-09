@@ -1,6 +1,6 @@
 from collections import defaultdict
 from copy import copy
-from itertools import combinations
+from itertools import combinations, product
 from typing import Any, Collection, Hashable, Iterable, Iterator
 from warnings import warn
 
@@ -9,11 +9,10 @@ import numpy as np
 import surpyval as surv
 from numpy.typing import ArrayLike
 
-from repyability.rbd.min_path_sets import min_path_sets
+from repyability.rbd.min_path_sets import min_path_sets, minimalise_path_sets
 from repyability.rbd.rbd_graph import RBDGraph
 
 from .helper_classes import PerfectReliability, PerfectUnreliability
-from .min_cut_sets import min_cut_sets, min_cut_sets_koon
 from .rbd_args_check import check_rbd_node_args_complete
 
 
@@ -179,9 +178,18 @@ class RBD:
         set contains the frozenset of nodes. frozensets were used so the inner
         set elements could be hashable.
         """
-        if self.G.is_koon_rbd():
-            return min_cut_sets_koon(self.G)
-        return min_cut_sets(self.G, self.input_node, self.output_node)
+        path_sets = self.get_min_path_sets(include_in_out_nodes=False)
+
+        prods = product(*path_sets)
+
+        cut_sets = [set(prod) for prod in prods if prod]
+
+        min_cut_sets = {
+            frozenset(min_cut_set)
+            for min_cut_set in minimalise_path_sets(cut_sets)
+        }
+
+        return min_cut_sets
 
     def sf(
         self,
