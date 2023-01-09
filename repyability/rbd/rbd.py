@@ -9,7 +9,7 @@ import numpy as np
 import surpyval as surv
 from numpy.typing import ArrayLike
 
-from repyability.rbd.min_path_sets import min_path_sets, minimalise_path_sets
+from repyability.rbd.min_path_sets import min_path_sets
 from repyability.rbd.rbd_graph import RBDGraph
 
 from .helper_classes import PerfectReliability, PerfectUnreliability
@@ -180,16 +180,30 @@ class RBD:
         """
         path_sets = self.get_min_path_sets(include_in_out_nodes=False)
 
+        # Gets the cartesian product across pathsets
         prods = product(*path_sets)
 
-        cut_sets = [set(prod) for prod in prods if prod]
+        # We need to remove duplicate nodes in the products to get the cutsets,
+        # and discard empty products
+        cut_sets = [frozenset(prod) for prod in prods if prod]
 
-        min_cut_sets = {
-            frozenset(min_cut_set)
-            for min_cut_set in minimalise_path_sets(cut_sets)
-        }
+        min_cut_sets: list[frozenset] = []
 
-        return min_cut_sets
+        # Now only insert if minimal, removing any superset (non-minimal)
+        # cutsets are encountered
+        for cut_set in cut_sets:
+            is_minimal_cut_set = True
+            for other_cut_set in min_cut_sets.copy():
+                if cut_set.issuperset(other_cut_set):
+                    is_minimal_cut_set = False
+                    break
+                if cut_set.issubset(other_cut_set):
+                    min_cut_sets.remove(other_cut_set)
+
+            if is_minimal_cut_set:
+                min_cut_sets.append(cut_set)
+
+        return set(min_cut_sets)
 
     def sf(
         self,
