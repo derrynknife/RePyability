@@ -13,7 +13,7 @@ from repyability.rbd.min_path_sets import min_path_sets
 from repyability.rbd.rbd_graph import RBDGraph
 
 from .helper_classes import PerfectReliability, PerfectUnreliability
-from .min_cut_sets import min_cut_sets
+from .min_cut_sets import min_cut_sets, min_cut_sets_koon
 from .rbd_args_check import check_rbd_node_args_complete
 
 
@@ -44,6 +44,9 @@ class RBD:
         components : dict[Any, Any]
             A dictionary of all non-input-output components names as keys
             with their SurPyval distribution as values
+        k : dict[Any, int]
+            A dictionary mapping nodes to k-out-of-n (koon) values, by default
+            {}, by default all nodes koon values are 1
         mc_samples : int, optional
             TODO, by default 10_000
 
@@ -176,6 +179,8 @@ class RBD:
         set contains the frozenset of nodes. frozensets were used so the inner
         set elements could be hashable.
         """
+        if self.G.is_koon_rbd():
+            return min_cut_sets_koon(self.G)
         return min_cut_sets(self.G, self.input_node, self.output_node)
 
     def sf(

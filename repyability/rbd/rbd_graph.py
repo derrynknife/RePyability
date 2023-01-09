@@ -24,3 +24,10 @@ class RBDGraph(nx.DiGraph):
     # networkx relies on the subclass (RBDGraph) to set the variable
     # `node_attr_dict_factory` to the default node attribute dict function.
     node_attr_dict_factory = default_node_attr_dict
+
+    def is_koon_rbd(self) -> bool:
+        """Returns True if self has a node with a k != 1, else False."""
+        for _, k in self.nodes.data("k"):
+            if k != 1:
+                return True
+        return False

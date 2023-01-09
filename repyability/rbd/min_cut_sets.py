@@ -3,9 +3,11 @@ from typing import Hashable
 
 import networkx as nx
 
+from repyability.rbd.rbd_graph import RBDGraph
+
 
 def min_cut_sets(
-    G: nx.DiGraph, input_node: Hashable, output_node: Hashable
+    G: RBDGraph, input_node: Hashable, output_node: Hashable
 ) -> set[frozenset[Hashable]]:
     """Returns the set of minimal cut-sets of a graph
 
@@ -13,7 +15,7 @@ def min_cut_sets(
 
     Parameters
     ----------
-    G : nx.DiGraph
+    G : RBDGraph
         The graph in question
     input_node : Hashable
         The input/source node
@@ -69,3 +71,20 @@ def get_all_node_subsets(nodes: set[Hashable]) -> list[frozenset[Hashable]]:
         for comb in list(combinations(nodes, i)):
             node_subsets.append(frozenset(comb))
     return node_subsets
+
+
+def min_cut_sets_koon(G: RBDGraph):
+    """Returns the set of minimal cuts of a koon RBDGraph
+
+    Parameters
+    ----------
+    G : RBDGraph
+        The graph in question
+
+    Returns
+    -------
+    set[frozenset[Hashable]]
+        The set of minimal nodal cut-sets, i.e. if any of these node-sets
+        fail, then the system fails
+    """
+    pass
