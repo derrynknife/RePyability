@@ -65,6 +65,9 @@ class StandbyModel:
                 x_random[i] = pq.get()
         return x_random
 
+    def mean(self, N=10_000):
+        return self.random(N).mean()
+
     def sf(self, *args, **kwargs):
         return self.model.sf(*args, **kwargs)
 
