@@ -71,6 +71,15 @@ class NonRepairable:
     def q(self, t):
         return np.log(self._cost_rate(t))
 
+    def mean_availability(self):
+        if isinstance(self.reliability, NonParametric):
+            raise ValueError(
+                "Mean Availability requires a parametric reliability model"
+            )
+        mttf = self.reliability.mean()
+        mttr = self.time_to_replace.mean()
+        return mttf / (mttr + mttf)
+
     def find_optimal_replacement(self, options=None):
         if self.model_parameterization == "parametric":
             if self.reliability.dist.name == "Weibull":
