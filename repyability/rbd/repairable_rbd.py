@@ -1,8 +1,9 @@
 from collections import defaultdict
 from copy import copy
 from dataclasses import dataclass, field
+from itertools import combinations
 from queue import PriorityQueue
-from typing import Any, Hashable, Iterable
+from typing import Any, Collection, Hashable, Iterable
 
 import numpy as np
 from dd import autoref as _bdd
@@ -118,6 +119,159 @@ class RepairableRBD(RBD):
         self.system_state = True
         self.t_simulation = t_simulation
         self.component_status = component_status
+
+    def mean_availability(
+        self,
+        working_nodes: Collection[Hashable] = [],
+        broken_nodes: Collection[Hashable] = [],
+        working_components: Collection[Hashable] = [],
+        broken_components: Collection[Hashable] = [],
+        using: str = "p",
+    ) -> np.ndarray:
+        """Returns the system long run availability
+
+        Parameters
+        ----------
+        working_nodes : Collection[Hashable], optional
+            Marks these nodes as perfectly reliable, by default []
+        broken_nodes : Collection[Hashable], optional
+            Marks these nodes as perfectly unreliable, by default []
+        working_components : Collection[Hashable], optional
+            Marks these components as perfectly reliable, by default []
+        broken_components : Collection[Hashable], optional
+            Marks these components as perfectly unreliable, by default []
+        using: str, optional
+            Input either "c" or "p" for the function to use cut sets or path
+            sets respectively. Defaults to path sets.
+
+        Returns
+        -------
+        np.float64
+            Long run availability estimate
+
+        Raises
+        ------
+        ValueError
+            - Working/broken node/component inconsistency (a component or node
+              is supplied more than once to any of working_nodes, broken_nodes,
+              working_components, broken_components)
+        """
+        # Check for any node/component argument inconsistency
+        argument_nodes: set[object] = set()
+        argument_nodes.update(working_nodes)
+        argument_nodes.update(broken_nodes)
+        number_of_arg_comp_nodes = 0
+        for comp in working_components:
+            argument_nodes.update(self.components_to_nodes[comp])
+            number_of_arg_comp_nodes += len(self.components_to_nodes[comp])
+        for comp in broken_components:
+            argument_nodes.update(self.components_to_nodes[comp])
+            number_of_arg_comp_nodes += len(self.components_to_nodes[comp])
+        if len(argument_nodes) != (
+            len(working_nodes) + len(broken_nodes) + number_of_arg_comp_nodes
+        ):
+            working_comps_nodes = [
+                (comp, self.components_to_nodes[comp])
+                for comp in working_components
+            ]
+            broken_comps_nodes = [
+                (comp, self.components_to_nodes[comp])
+                for comp in broken_components
+            ]
+
+            raise ValueError(
+                f"Node/component inconsistency provided. i.e. you have \
+                provided sf() with working/broken nodes (or respective \
+                components) more than once in the arguments.\n \
+                Supplied:\n\
+                working_nodes: {working_nodes}\n\
+                broken_nodes: {broken_nodes}\n\
+                (working_components, their_nodes): {working_comps_nodes}\n\
+                (broken_components, their_nodes): {broken_comps_nodes}\n"
+            )
+
+        # Turn node iterables into sets for O(1) lookup later
+        working_nodes = set(working_nodes)
+        broken_nodes = set(broken_nodes)
+
+        # Per Note 3 from "UNIT 16 RELIABILITY EVALUATION OF COMPLEX SYSTEMS"
+        # (https://egyankosh.ac.in/bitstream/123456789/35170/1/Unit-16.pdf),
+        # you should:
+        # - Apply the cut set method with only first order terms if
+        #   marginal error is tolerable, and components have high reliability
+        #   ?TODO: test whether indeed quicker?
+        # - Or if you want to use all terms, then apply either the tie set or
+        #   cut set method depending on which has less sets for the system,
+        #   and thus less calculation
+        #   (typically cut sets)
+        #
+        # At the moment, only the tie set method is implemented.
+
+        # TODO: Create cut set logic
+        # Get all path sets
+        paths = self.get_min_path_sets()
+        num_paths = len(paths)
+
+        # Cache all component reliabilities for efficiency
+        comp_av_cache_dict: dict[Hashable, np.ndarray] = {}
+        for comp in self.components:
+            if comp in working_components:
+                comp_av_cache_dict[comp] = np.float64(1.0)
+            elif comp in broken_components:
+                comp_av_cache_dict[comp] = np.float64(0.0)
+            else:
+                comp_av_cache_dict[comp] = self.components[
+                    comp
+                ].mean_availability()
+        # We'll just add the two 'perfect component reliabilities' to this dict
+        # while we're at it, since they'll be used in lookup later
+        comp_av_cache_dict["PerfectAvailability"] = np.float64(1.0)
+        comp_av_cache_dict["PerfectUnavailability"] = np.float64(0.0)
+
+        # Perform intersection calculation, which isn't as simple as summating
+        # in the case of mutual non-exclusivity
+        # i is the 'level' of the intersection calc
+        system_av = np.float64(0.0)  # Return array
+        for i in range(1, num_paths + 1):
+            # Get tie-set combinations for level i
+            tieset_combs = combinations(paths, i)
+
+            # Calculate the reliability of each level combination
+            # Making sure to not multiply a components' reliability twice
+            level_sum = np.float64(0.0)
+            for tieset_comb in tieset_combs:
+                # Make a set of components out of the node path/tieset
+                s = set()
+                for path in tieset_comb:
+                    for node in path:
+                        if node in self.in_or_out:
+                            continue
+                        # Node working/broken takes precedence over
+                        # the components reliability
+                        if node in working_nodes:
+                            s.add("PerfectAvailability")
+                        elif node in broken_nodes:
+                            s.add("PerfectUnavailability")
+                        else:
+                            s.add(self.nodes[node])  # Add component name
+
+                # Now calculate the tieset reliability
+                tieset_rel = np.float64(1.0)
+                for comp in s:
+                    comp_av = comp_av_cache_dict[comp]
+                    tieset_rel *= comp_av
+
+                # Now add the tieset reliability to the level sum
+                level_sum += tieset_rel
+
+            # Finally add/subtract the level sum to/from the system_av if the
+            # level is even/odd
+            if i % 2 == 1:
+                system_av += level_sum
+            else:
+                system_av -= level_sum
+
+        return system_av
 
     def next_event(self):
         # This method allows a user to extract the next system status
