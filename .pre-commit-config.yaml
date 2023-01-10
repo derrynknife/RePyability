@@ -26,6 +26,7 @@ repos:
     rev: '3.9.2'
     hooks:
     -   id: flake8
+        args: ['--per-file-ignores=**/__init__.py:F401']
 
 # Static type check with mypy
 -   repo: https://github.com/pre-commit/mirrors-mypy
