@@ -24,7 +24,7 @@ coverage html           # Make a html coverage report (really useful), open html
 
 ## Pre-commit
 ### TL;DR
-- Pip install `pre-commit` (it's in `requirements.txt` anyways)
+- Pip install `pre-commit` (it's in `requirements_dev.txt` anyways)
 - Run `pre-commit install` which sets up the git hook scripts
 - If you'd like, run `pre-commit run --all-files` to run the hooks on all files
 - When you go to commit, it will only proceed after all the hooks succeed

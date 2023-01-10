@@ -13,3 +13,10 @@ plugins = "numpy.typing.mypy_plugin"
 # Coverage
 [tool.coverage.run]
 source = ["repyability"]
+
+# Flake8
+[tool.flake8]
+ignore = ['E203', 'W503']
+per-file-ignores = [
+    '*/__init__.py:F401',
+]
