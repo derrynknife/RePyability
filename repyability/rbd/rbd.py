@@ -175,13 +175,17 @@ class RBD:
 
         return ret_set
 
-    def get_min_cut_sets(self) -> set[frozenset[Hashable]]:
+    def get_min_cut_sets(
+        self, include_in_out_nodes=False
+    ) -> set[frozenset[Hashable]]:
         """
         Returns the set of frozensets of minimal cut sets of the RBD. The outer
         set contains the frozenset of nodes. frozensets were used so the inner
         set elements could be hashable.
         """
-        path_sets = self.get_min_path_sets(include_in_out_nodes=False)
+        path_sets = self.get_min_path_sets(
+            include_in_out_nodes=include_in_out_nodes
+        )
 
         # Gets the cartesian product across pathsets
         prods = product(*path_sets)

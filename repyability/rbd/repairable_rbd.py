@@ -35,11 +35,6 @@ class RepairableRBD(RBD):
         mc_samples: int = 10_000,
     ):
         components = copy(components)
-        # reliability: dict[Any, Any]
-        # repairability: dict[Any, Any]
-
-        # super().__init__(nodes, reliability, edges, k, mc_samples)
-
         reliability = {}
         repairability = {}
         for node, node_type in nodes.items():
@@ -65,7 +60,9 @@ class RepairableRBD(RBD):
         # docstring for more info.
         self.compile_bdd()
 
-    def is_system_working(self, component_status: dict[Any, bool]) -> bool:
+    def is_system_working(
+        self, component_status: dict[Any, bool], method: str
+    ) -> bool:
         """Returns a boolean as to whether the system is working given the
         status of the components
 
@@ -86,20 +83,37 @@ class RepairableRBD(RBD):
         # very much required given the rate at which this function is called
         # in the N simulations in availability().
 
-        # Now evaluate the BDD given the component status'
-        system_given_component_status = self.bdd.let(
-            component_status, self.bdd_system_ref
-        )
+        # Now evaluate the BDD given the component status
+        if method == "c":
+            system_given_component_status = self.bdd_c.let(
+                component_status, self.bdd_system_c_ref
+            )
 
-        system_state = self.bdd.to_expr(system_given_component_status)
+            system_state = self.bdd_c.to_expr(system_given_component_status)
+        elif method == "p":
+            system_given_component_status = self.bdd.let(
+                component_status, self.bdd_system_ref
+            )
+
+            system_state = self.bdd.to_expr(system_given_component_status)
+        else:
+            raise ValueError("`method` must be either 'p' or 'c'")
 
         return system_state == "TRUE"
 
-    def initialize_event_queue(self, t_simulation):
+    def initialize_event_queue(
+        self,
+        t_simulation,
+        working_components: Collection[Hashable] = [],
+        broken_components: Collection[Hashable] = [],
+    ):
         # Keep record of component status', initially they're all working
         component_status: dict[Any, bool] = {
             component: True for component in self.components.keys()
         }
+
+        for working_component in broken_components:
+            component_status[working_component] = False
 
         # PriorityQueue supplies failure/repair events in chronological
         event_queue: PriorityQueue[Event] = PriorityQueue()
@@ -107,10 +121,14 @@ class RepairableRBD(RBD):
         # For each component add in the initial failure
         for component_id in self.components.keys():
             component = self.components[component_id]
+            if component_id in working_components:
+                continue
+            elif component_id in broken_components:
+                continue
+            # If status not known, then continue
             if isinstance(component, RepairableRBD):
                 component.initialize_event_queue(t_simulation)
             t_event, event = component.next_event()
-
             # Only consider it if it occurs within the simulation window
             if t_event < t_simulation:
                 # Event status is False => event is a component failure
@@ -120,14 +138,29 @@ class RepairableRBD(RBD):
         self.t_simulation = t_simulation
         self.component_status = component_status
 
+    def mean_unavailability(self, *args, **kwargs) -> np.float64:
+        """Returns the system long run UNavailability
+
+        Parameters
+        ----------
+        *args, **kwargs :
+            Any mean_availability() arguments
+
+        Returns
+        -------
+        np.float64
+            Long run unavailability of the system
+        """
+        return 1 - self.mean_availability(*args, **kwargs)
+
     def mean_availability(
         self,
         working_nodes: Collection[Hashable] = [],
         broken_nodes: Collection[Hashable] = [],
         working_components: Collection[Hashable] = [],
         broken_components: Collection[Hashable] = [],
-        using: str = "p",
-    ) -> np.ndarray:
+        method: str = "p",
+    ) -> np.float64:
         """Returns the system long run availability
 
         Parameters
@@ -147,7 +180,7 @@ class RepairableRBD(RBD):
         Returns
         -------
         np.float64
-            Long run availability estimate
+            Long run availability of the system
 
         Raises
         ------
@@ -194,23 +227,17 @@ class RepairableRBD(RBD):
         working_nodes = set(working_nodes)
         broken_nodes = set(broken_nodes)
 
-        # Per Note 3 from "UNIT 16 RELIABILITY EVALUATION OF COMPLEX SYSTEMS"
-        # (https://egyankosh.ac.in/bitstream/123456789/35170/1/Unit-16.pdf),
-        # you should:
-        # - Apply the cut set method with only first order terms if
-        #   marginal error is tolerable, and components have high reliability
-        #   ?TODO: test whether indeed quicker?
-        # - Or if you want to use all terms, then apply either the tie set or
-        #   cut set method depending on which has less sets for the system,
-        #   and thus less calculation
-        #   (typically cut sets)
-        #
-        # At the moment, only the tie set method is implemented.
+        # Good reference on the Availability of a system
+        # https://www.diva-portal.org/smash/get/diva2:986067/FULLTEXT01.pdf
 
         # TODO: Create cut set logic
         # Get all path sets
-        paths = self.get_min_path_sets()
-        num_paths = len(paths)
+        if method == "p":
+            node_sets = self.get_min_path_sets()
+        elif method == "c":
+            node_sets = self.get_min_cut_sets()
+
+        num_node_sets = len(node_sets)
 
         # Cache all component reliabilities for efficiency
         comp_av_cache_dict: dict[Hashable, np.ndarray] = {}
@@ -220,9 +247,12 @@ class RepairableRBD(RBD):
             elif comp in broken_components:
                 comp_av_cache_dict[comp] = np.float64(0.0)
             else:
-                comp_av_cache_dict[comp] = self.components[
-                    comp
-                ].mean_availability()
+                Av_c = self.components[comp].mean_availability()
+                if method == "c":
+                    comp_av_cache_dict[comp] = 1 - Av_c
+                else:
+                    comp_av_cache_dict[comp] = Av_c
+
         # We'll just add the two 'perfect component reliabilities' to this dict
         # while we're at it, since they'll be used in lookup later
         comp_av_cache_dict["PerfectAvailability"] = np.float64(1.0)
@@ -231,18 +261,18 @@ class RepairableRBD(RBD):
         # Perform intersection calculation, which isn't as simple as summating
         # in the case of mutual non-exclusivity
         # i is the 'level' of the intersection calc
-        system_av = np.float64(0.0)  # Return array
-        for i in range(1, num_paths + 1):
+        system_prob = np.float64(0.0)  # Return array
+        for i in range(1, num_node_sets + 1):
             # Get tie-set combinations for level i
-            tieset_combs = combinations(paths, i)
+            nodeset_combs = combinations(node_sets, i)
 
             # Calculate the reliability of each level combination
             # Making sure to not multiply a components' reliability twice
             level_sum = np.float64(0.0)
-            for tieset_comb in tieset_combs:
+            for nodeset_comb in nodeset_combs:
                 # Make a set of components out of the node path/tieset
                 s = set()
-                for path in tieset_comb:
+                for path in nodeset_comb:
                     for node in path:
                         if node in self.in_or_out:
                             continue
@@ -256,24 +286,29 @@ class RepairableRBD(RBD):
                             s.add(self.nodes[node])  # Add component name
 
                 # Now calculate the tieset reliability
-                tieset_rel = np.float64(1.0)
+                nodeset_comb_prob = np.float64(1.0)
                 for comp in s:
-                    comp_av = comp_av_cache_dict[comp]
-                    tieset_rel *= comp_av
+                    comp_prob = comp_av_cache_dict[comp]
+                    nodeset_comb_prob *= comp_prob
 
                 # Now add the tieset reliability to the level sum
-                level_sum += tieset_rel
+                level_sum += nodeset_comb_prob
 
             # Finally add/subtract the level sum to/from the system_av if the
             # level is even/odd
             if i % 2 == 1:
-                system_av += level_sum
+                system_prob += level_sum
             else:
-                system_av -= level_sum
+                system_prob -= level_sum
 
-        return system_av
+        # If cutset method is used, the above returns the unavailability,
+        # so we just have to return = 1 - system_prob
+        if method == "c":
+            return 1 - system_prob
 
-    def next_event(self):
+        return system_prob
+
+    def next_event(self, method="p"):
         # This method allows a user to extract the next system status
         # changing event. The intent of this is so that it has the same api
         # as the NonRepairable class so that a RepairableRBD can be used in
@@ -291,7 +326,9 @@ class RepairableRBD(RBD):
 
             event = self._event_queue.get()
             self.component_status[event.component] = event.status
-            new_system_state = self.is_system_working(self.component_status)
+            new_system_state = self.is_system_working(
+                self.component_status, method
+            )
 
             next_event_t, next_event_type = self.components[
                 event.component
@@ -312,7 +349,15 @@ class RepairableRBD(RBD):
         return event.time, self.system_state
 
     def availability(
-        self, t_simulation: float, N: int = 10_000, verbose: bool = False
+        self,
+        t_simulation: float,
+        working_nodes: Collection[Hashable] = [],
+        broken_nodes: Collection[Hashable] = [],
+        working_components: Collection[Hashable] = [],
+        broken_components: Collection[Hashable] = [],
+        method: str = "p",
+        N: int = 10_000,
+        verbose: bool = False,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Returns the times, and availability for those times, as numpy
         arrays
@@ -354,13 +399,18 @@ class RepairableRBD(RBD):
             range(N), disable=not verbose, desc="Running simulations"
         ):
             # Initialize the event queue and the system/component statuses
-            self.initialize_event_queue(t_simulation)
+            self.initialize_event_queue(
+                t_simulation,
+                working_components,
+                broken_components,
+            )
 
             # Implemented ensure that no events that occur after the
             # end-time of the simulation are added to the queue; so we just
             # need to keep going through the queue until it's empty
             while not self._event_queue.empty():
                 # Get the next event and update the component's status
+
                 event = self._event_queue.get()
                 # Update the component's status
                 self.component_status[event.component] = event.status
@@ -370,7 +420,7 @@ class RepairableRBD(RBD):
                 # aggregate_timeline, but if it is different, we need to +/-1
                 # to aggregate_timeline if the system has gone on/off-line
                 new_system_state = self.is_system_working(
-                    self.component_status
+                    self.component_status, method
                 )
                 if new_system_state != self.system_state:
                     if new_system_state:
@@ -432,16 +482,21 @@ class RepairableRBD(RBD):
         """
         # Instantiate the manager
         bdd = _bdd.BDD()
+        bdd_c = _bdd.BDD()
 
         # Enable Dynamic Reordering (Rudell's Sifting Algorithm)
         bdd.configure(reordering=True)
+        bdd_c.configure(reordering=True)
 
         # For all components, declare the BDD variable,
         # and get the BDD variable reference
         bdd_vars = {}
+        bdd_c_vars = {}
         for component in self.get_component_names():
             bdd.declare(component)
             bdd_vars[component] = bdd.var(component)
+            bdd_c.declare(component)
+            bdd_c_vars[component] = bdd_c.var(component)
 
         # Make path expressions
         path_expressions: list[_bdd.Function] = []
@@ -452,12 +507,27 @@ class RepairableRBD(RBD):
                 path_function &= bdd_vars[component]
             path_expressions.append(path_function)
 
+        # Make cut expressions
+        cut_expressions: list[_bdd.Function] = []
+        for min_cut_set in self.get_min_cut_sets(include_in_out_nodes=False):
+            min_cut_set_as_list = list(min_cut_set)
+            cut_function = bdd_c_vars[min_cut_set_as_list[0]]
+            for component in min_cut_set_as_list[1:]:
+                cut_function |= bdd_c_vars[component]
+            cut_expressions.append(cut_function)
+
         system: _bdd.Function = path_expressions[0]
         for path_expression in path_expressions[1:]:
             system |= path_expression
 
+        system_c: _bdd.Function = cut_expressions[0]
+        for cut_expression in cut_expressions[1:]:
+            system_c &= cut_expression
+
         self.bdd = bdd
+        self.bdd_c = bdd_c
         self.bdd_system_ref = system
+        self.bdd_system_c_ref = system_c
 
     # Debugging Functions - these help to understand the BDD structure
     def bdd_to_string(self, filename: str) -> str:
