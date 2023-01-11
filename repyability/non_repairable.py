@@ -71,6 +71,9 @@ class NonRepairable:
     def q(self, t):
         return np.log(self._cost_rate(t))
 
+    def mean_unavailability(self):
+        return 1 - self.mean_availability()
+
     def mean_availability(self):
         if isinstance(self.reliability, NonParametric):
             raise ValueError(

@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from itertools import combinations
 from queue import PriorityQueue
 from typing import Any, Collection, Hashable, Iterable
+from warnings import warn
 
 import numpy as np
 from dd import autoref as _bdd
@@ -554,3 +555,188 @@ class RepairableRBD(RBD):
         '.json' for JSON
         """
         self.bdd.dump(filename, roots=[self.bdd_system_ref])
+
+    def av_birnbaum_importance(self) -> dict[Any, float]:
+        """Returns the Birnbaum measure of importance for all nodes.
+
+        Note: Birnbaum's measure of importance assumes all nodes are
+        independent. If the RBD called on has two or more nodes associated
+        with the same component then a UserWarning is raised.
+
+        Returns
+        -------
+        dict[Any, float]
+            Dictionary with node names as keys and Birnbaum importances as
+            values
+        """
+        for component, node_set in self.components_to_nodes.items():
+            if len(node_set) > 1:
+                warn(
+                    f"Birnbaum's measure of importance assumes nodes are \
+                     dependent, but nodes {node_set} all depend on the same \
+                     component '{component}."
+                )
+
+        node_importance = {}
+        for node in self.nodes.keys():
+            working = self.mean_availability(working_nodes=[node])
+            failing = self.mean_availability(broken_nodes=[node])
+            node_importance[node] = working - failing
+        return node_importance
+
+    # TODO: update all importance measures to allow for component as well
+    def av_improvement_potential(self) -> dict[Any, float]:
+        """Returns the improvement potential of all nodes.
+
+        Returns
+        -------
+        dict[Any, float]
+            Dictionary with node names as keys and improvement potentials as
+            values
+        """
+        node_importance = {}
+        for node in self.nodes.keys():
+            working = self.mean_availability(working_nodes=[node])
+            as_is = self.mean_availability()
+            node_importance[node] = working - as_is
+        return node_importance
+
+    def av_risk_achievement_worth(self) -> dict[Any, float]:
+        """Returns the RAW importance per Modarres & Kaminskiy. That is RAW_i =
+        (unreliability of system given i failed) /
+        (nominal system unreliability).
+
+        Returns
+        -------
+        dict[Any, float]
+            Dictionary with node names as keys and RAW importances as values
+        """
+        node_importance = {}
+        system_unavailability = self.mean_unavailability()
+        for node in self.nodes.keys():
+            failing = self.mean_unavailability(broken_nodes=[node])
+            node_importance[node] = failing / system_unavailability
+        return node_importance
+
+    def av_risk_reduction_worth(self) -> dict[Any, float]:
+        """Returns the RRW importance per Modarres & Kaminskiy. That is RRW_i =
+        (nominal unreliability of system) /
+        (unreliability of system given i is working).
+
+        Returns
+        -------
+        dict[Any, float]
+            Dictionary with node names as keys and RRW importances as values
+        """
+        node_importance = {}
+        system_unavailability = self.mean_unavailability()
+        for node in self.nodes.keys():
+            working = self.mean_unavailability(working_nodes=[node])
+            node_importance[node] = system_unavailability / working
+        return node_importance
+
+    def av_criticality_importance(self) -> dict[Any, float]:
+        """Returns the criticality importance of all nodes at time/s x.
+
+        Returns
+        -------
+        dict[Any, float]
+            Dictionary with node names as keys and criticality importances as
+            values
+        """
+        bi = self.av_birnbaum_importance()
+        node_importance = {}
+        system_availability = self.mean_availability()
+        for node in self.nodes.keys():
+            node_av = self.components[self.nodes[node]].mean_availability()
+            node_importance[node] = bi[node] * node_av / system_availability
+        return node_importance
+
+    def av_fussel_vesely(self, fv_type: str = "c") -> dict[Any, np.ndarray]:
+        """Calculate Fussel-Vesely importance of all components at time/s x.
+
+        Briefly, the Fussel-Vesely importance measure for node i =
+        (sum of probabilities of cut-sets including node i occuring/failing) /
+        (the probability of the system failing).
+
+        Typically this measure is implemented using cut-sets as mentioned
+        above, although the measure can be implemented using path-sets. Both
+        are implemented here.
+
+        fv_type dictates the method:
+            "c" - cut-set
+            "p" - path-set
+
+        Parameters
+        ----------
+        fv_type : str, optional
+            Dictates the method of calculation, 'c' = cut-set and
+            'p' = path-set, by default "c"
+
+        Returns
+        -------
+        dict[Any, np.ndarray]
+            Dictionary with node names as keys and fussel-vessely importances
+            as values
+
+        Raises
+        ------
+        ValueError
+            TODO
+        NotImplementedError
+            TODO
+        """
+        # Get node-sets based on what method was requested
+        if fv_type == "c":
+            node_sets = self.get_min_cut_sets()
+        elif fv_type == "p":
+            node_sets = {
+                frozenset(path_set)
+                for path_set in self.get_min_path_sets(
+                    include_in_out_nodes=False
+                )
+            }
+        else:
+            raise ValueError(
+                f"fv_type must be either 'c' (cut-set) or 'p' (path-set), \
+                fv_type={fv_type} was given."
+            )
+
+        # Get system unreliability, this will be the denominator for all node
+        # importance calcs
+        system_unavailability = self.mean_unavailability()
+
+        # The return dict
+        node_importance: dict[Any, np.ndarray] = {}
+
+        # Cache the component reliabilities for efficiency
+        av_dict = {}
+        for component in self.components.keys():
+            # TODO: make log
+            # Calculating reliability in the log-domain though so the
+            # components' reliability can be added avoid possible underflow
+            av_dict[component] = self.components[
+                component
+            ].mean_unavailability()
+
+        # For each node,
+        for node in self.nodes.keys():
+            # Sum up the probabilities of the node_sets containing the node
+            # from failing
+            node_fv_numerator = 0
+            for node_set in node_sets:
+                if node not in node_set:
+                    continue
+                node_set_fail_prob = 1
+                # Take only the independent components in that node-set, i.e.
+                # don't multiply the same component twice in a node-set
+                components_in_node_set = {
+                    self.nodes[fail_node] for fail_node in node_set
+                }
+                for component in components_in_node_set:
+                    node_set_fail_prob *= av_dict[component]
+                node_fv_numerator += node_set_fail_prob
+
+            node_importance[node] = node_fv_numerator / system_unavailability
+
+        return node_importance
