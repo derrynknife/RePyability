@@ -3,11 +3,41 @@ from warnings import warn
 
 import numpy as np
 from numpy.typing import ArrayLike
+from surpyval import NonParametric
 
 from .rbd import RBD
 
 
 class NonRepairableRBD(RBD):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        is_fixed = []
+        for component in self.components_to_nodes:
+            this_component = self.reliability[component]
+            if isinstance(this_component, NonParametric):
+                is_fixed.append(False)
+            elif isinstance(this_component, NonRepairableRBD):
+                is_fixed.append(this_component.__fixed_probs)
+            else:
+                this_fixed = this_component.dist.name in [
+                    "FixedEventProbability",
+                    "Bernoulli",
+                ]
+                is_fixed.append(this_fixed)
+        if all(is_fixed):
+            self.__fixed_probs = True
+        else:
+            self.__fixed_probs = False
+
+    def sf(self, x: ArrayLike = None, *args, **kwargs):
+        if self.__fixed_probs:
+            return super().sf(1.0, *args, **kwargs).item()
+        else:
+            return super().sf(x, *args, **kwargs)
+
+    def ff(self, x: ArrayLike = None, *args, **kwargs):
+        return 1 - self.sf(x, *args, **kwargs)
+
     # Importance measures
     # https://www.ntnu.edu/documents/624876/1277590549/chapt05.pdf/82cd565f-fa2f-43e4-a81a-095d95d39272
     def birnbaum_importance(self, x: ArrayLike) -> dict[Any, float]:
