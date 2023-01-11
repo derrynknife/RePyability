@@ -556,7 +556,7 @@ class RepairableRBD(RBD):
         """
         self.bdd.dump(filename, roots=[self.bdd_system_ref])
 
-    def av_birnbaum_importance(self) -> dict[Any, float]:
+    def birnbaum_importance(self) -> dict[Any, float]:
         """Returns the Birnbaum measure of importance for all nodes.
 
         Note: Birnbaum's measure of importance assumes all nodes are
@@ -585,7 +585,7 @@ class RepairableRBD(RBD):
         return node_importance
 
     # TODO: update all importance measures to allow for component as well
-    def av_improvement_potential(self) -> dict[Any, float]:
+    def improvement_potential(self) -> dict[Any, float]:
         """Returns the improvement potential of all nodes.
 
         Returns
@@ -601,7 +601,7 @@ class RepairableRBD(RBD):
             node_importance[node] = working - as_is
         return node_importance
 
-    def av_risk_achievement_worth(self) -> dict[Any, float]:
+    def risk_achievement_worth(self) -> dict[Any, float]:
         """Returns the RAW importance per Modarres & Kaminskiy. That is RAW_i =
         (unreliability of system given i failed) /
         (nominal system unreliability).
@@ -618,7 +618,7 @@ class RepairableRBD(RBD):
             node_importance[node] = failing / system_unavailability
         return node_importance
 
-    def av_risk_reduction_worth(self) -> dict[Any, float]:
+    def risk_reduction_worth(self) -> dict[Any, float]:
         """Returns the RRW importance per Modarres & Kaminskiy. That is RRW_i =
         (nominal unreliability of system) /
         (unreliability of system given i is working).
@@ -635,7 +635,7 @@ class RepairableRBD(RBD):
             node_importance[node] = system_unavailability / working
         return node_importance
 
-    def av_criticality_importance(self) -> dict[Any, float]:
+    def criticality_importance(self) -> dict[Any, float]:
         """Returns the criticality importance of all nodes at time/s x.
 
         Returns
@@ -644,7 +644,7 @@ class RepairableRBD(RBD):
             Dictionary with node names as keys and criticality importances as
             values
         """
-        bi = self.av_birnbaum_importance()
+        bi = self.birnbaum_importance()
         node_importance = {}
         system_availability = self.mean_availability()
         for node in self.nodes.keys():
@@ -652,7 +652,7 @@ class RepairableRBD(RBD):
             node_importance[node] = bi[node] * node_av / system_availability
         return node_importance
 
-    def av_fussel_vesely(self, fv_type: str = "c") -> dict[Any, np.ndarray]:
+    def fussel_vesely(self, fv_type: str = "c") -> dict[Any, np.ndarray]:
         """Calculate Fussel-Vesely importance of all components at time/s x.
 
         Briefly, the Fussel-Vesely importance measure for node i =

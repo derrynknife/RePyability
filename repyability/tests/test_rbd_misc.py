@@ -1,22 +1,22 @@
 """
-Tests miscellaneous cases for the RBD class.
+Tests miscellaneous cases for the NonRepairableRBD class.
 
 Uses pytest fixtures located in conftest.py in the tests/ directory.
 """
 import pytest
 from surpyval import FixedEventProbability
 
-from repyability.rbd.rbd import RBD
+from repyability.rbd.non_repairable_rbd import NonRepairableRBD
 
 
 # Check components are correct lengths
-def test_rbd_components(rbd1: RBD, rbd2: RBD):
+def test_rbd_components(rbd1: NonRepairableRBD, rbd2: NonRepairableRBD):
     assert len(rbd1.reliability) == 5
     assert len(rbd2.reliability) == 8
 
 
 # Test get_all_path_sets()
-def test_rbd_get_all_path_sets(rbd1: RBD, rbd2: RBD):
+def test_rbd_get_all_path_sets(rbd1: NonRepairableRBD, rbd2: NonRepairableRBD):
     assert list(rbd1.get_all_path_sets()) == [
         ["source", "pump1", "valve", "sink"],
         ["source", "pump2", "valve", "sink"],
@@ -27,7 +27,7 @@ def test_rbd_get_all_path_sets(rbd1: RBD, rbd2: RBD):
     ]
 
 
-def test_rbd_node_type_dict(rbd1: RBD):
+def test_rbd_node_type_dict(rbd1: NonRepairableRBD):
     assert rbd1.G.nodes["source"]["type"] == "input_node"
     assert rbd1.G.nodes["pump1"]["type"] == "node"
     assert rbd1.G.nodes["pump2"]["type"] == "node"
@@ -42,7 +42,7 @@ def test_rbd_node_not_in_edge_list():
         nodes = {1: "input_node", 2: 2, 3: "output_node"}
         edges = [(1, 3)]
         components = {2: FixedEventProbability.from_params(1 - 0.8)}
-        RBD(nodes, components, edges)
+        NonRepairableRBD(nodes, components, edges)
 
 
 def test_rbd_component_not_in_reliability_dict():
@@ -50,7 +50,7 @@ def test_rbd_component_not_in_reliability_dict():
         nodes = {1: "input_node", 2: 2, 3: "output_node"}
         edges = [(1, 2), (2, 3)]
         components = {}
-        RBD(nodes, components, edges)
+        NonRepairableRBD(nodes, components, edges)
 
 
 def test_rbd_node_not_in_node_list():
@@ -58,7 +58,7 @@ def test_rbd_node_not_in_node_list():
         nodes = {1: "input_node", 3: "output_node"}
         edges = [(1, 2), (2, 3)]
         components = {2: FixedEventProbability.from_params(1 - 0.8)}
-        RBD(nodes, components, edges)
+        NonRepairableRBD(nodes, components, edges)
 
 
 def test_rbd_node_with_no_output():
@@ -66,7 +66,7 @@ def test_rbd_node_with_no_output():
         nodes = {1: "input_node", 2: 2, 4: 2, 3: "output_node"}
         edges = [(1, 2), (2, 3), (2, 4)]
         components = {2: FixedEventProbability.from_params(1 - 0.8)}
-        RBD(nodes, components, edges)
+        NonRepairableRBD(nodes, components, edges)
 
 
 def test_rbd_node_with_no_input():
@@ -74,7 +74,7 @@ def test_rbd_node_with_no_input():
         nodes = {1: "input_node", 2: 2, 4: 2, 3: "output_node"}
         edges = [(1, 2), (2, 3), (4, 2)]
         components = {2: FixedEventProbability.from_params(1 - 0.8)}
-        RBD(nodes, components, edges)
+        NonRepairableRBD(nodes, components, edges)
 
 
 def test_rbd_circular_dependency():
@@ -82,4 +82,4 @@ def test_rbd_circular_dependency():
         nodes = {"s": "input_node", 2: 2, 3: 2, 4: 2, "t": "output_node"}
         edges = [("s", 2), (2, 3), (3, 4), (4, 2), (4, "t")]
         components = {2: FixedEventProbability.from_params(1 - 0.8)}
-        RBD(nodes, components, edges)
+        NonRepairableRBD(nodes, components, edges)

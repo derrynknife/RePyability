@@ -1,15 +1,15 @@
 """
-Tests RBD's importance methods.
+Tests NonRepairableRBD's importance methods.
 
 Uses pytest fixtures located in conftest.py in the tests/ directory.
 """
 import pytest
 
-from repyability.rbd.rbd import RBD
+from repyability.rbd.non_repairable_rbd import NonRepairableRBD
 
 
-# Test birnbaum_importance() w/ composite RBD
-def test_rbd_birnbaum_importance(rbd1: RBD):
+# Test birnbaum_importance() w/ composite NonRepairableRBD
+def test_rbd_birnbaum_importance(rbd1: NonRepairableRBD):
     t = 2
     birnbaum_importance_dict = rbd1.birnbaum_importance(t)
     assert len(birnbaum_importance_dict) == 3
@@ -38,14 +38,14 @@ def test_rbd_birnbaum_importance(rbd1: RBD):
 
 # Test birnbaum_importance() raises warning when dependence is found
 def test_rbd_birnbaum_importance_dependence_warning(
-    rbd_repeated_component_series: RBD,
+    rbd_repeated_component_series: NonRepairableRBD,
 ):
     with pytest.warns(UserWarning):
         rbd_repeated_component_series.birnbaum_importance(2)
 
 
 # Test improvement_potential()
-def test_rbd_improvement_potential(rbd1: RBD):
+def test_rbd_improvement_potential(rbd1: NonRepairableRBD):
     t = 2
     improvement_potential = rbd1.improvement_potential(t)
     assert len(improvement_potential) == 3
@@ -71,7 +71,7 @@ def test_rbd_improvement_potential(rbd1: RBD):
 
 
 # Test risk_achievement_worth()
-def test_rbd_risk_achievement_worth(rbd1: RBD):
+def test_rbd_risk_achievement_worth(rbd1: NonRepairableRBD):
     t = 2
     raw = rbd1.risk_achievement_worth(t)
     assert len(raw) == 3
@@ -101,7 +101,7 @@ def test_rbd_risk_achievement_worth(rbd1: RBD):
 
 
 # Test risk_reduction_worth()
-def test_rbd_risk_reduction_worth(rbd1: RBD):
+def test_rbd_risk_reduction_worth(rbd1: NonRepairableRBD):
     t = 2
     rrw = rbd1.risk_reduction_worth(t)
     assert len(rrw) == 3
@@ -128,7 +128,7 @@ def test_rbd_risk_reduction_worth(rbd1: RBD):
 
 
 # Test criticality_importance()
-def test_rbd_criticality_importance(rbd1: RBD):
+def test_rbd_criticality_importance(rbd1: NonRepairableRBD):
     t = 2
     criticality_importance = rbd1.criticality_importance(t)
     assert len(criticality_importance) == 3
@@ -176,13 +176,13 @@ def test_rbd_criticality_importance(rbd1: RBD):
 # Test fussel_vesely() w/ cut-set method
 
 
-def test_fussel_vesely_incorrect_fv_type(rbd1: RBD):
+def test_fussel_vesely_incorrect_fv_type(rbd1: NonRepairableRBD):
     t = 2
     with pytest.raises(ValueError):
         rbd1.fussel_vesely(t, fv_type="a")
 
 
-def test_fussel_vesely_c_rbd1(rbd1: RBD):
+def test_fussel_vesely_c_rbd1(rbd1: NonRepairableRBD):
     t = 2
     fv_importance = rbd1.fussel_vesely(t, fv_type="c")
     assert (
@@ -207,7 +207,7 @@ def test_fussel_vesely_c_rbd1(rbd1: RBD):
     )
 
 
-def test_fussel_vesely_c_series(rbd_series: RBD):
+def test_fussel_vesely_c_series(rbd_series: NonRepairableRBD):
     t = 2
     fv_importance = rbd_series.fussel_vesely(t, fv_type="c")
     assert (
@@ -224,7 +224,7 @@ def test_fussel_vesely_c_series(rbd_series: RBD):
     )
 
 
-def test_fussel_vesely_c_parallel(rbd_parallel: RBD):
+def test_fussel_vesely_c_parallel(rbd_parallel: NonRepairableRBD):
     t = 2
     fv_importance = rbd_parallel.fussel_vesely(t, fv_type="c")
     fv_expected = (
@@ -238,7 +238,7 @@ def test_fussel_vesely_c_parallel(rbd_parallel: RBD):
     assert pytest.approx(fv_expected) == fv_importance[4]
 
 
-def test_fussel_vesely_c_rbd2(rbd2: RBD):
+def test_fussel_vesely_c_rbd2(rbd2: NonRepairableRBD):
     t = 2
     fv_importance = rbd2.fussel_vesely(t, fv_type="c")
     assert (
@@ -280,7 +280,7 @@ def test_fussel_vesely_c_rbd2(rbd2: RBD):
     )
 
 
-def test_fussel_vesely_c_rbd3(rbd3: RBD):
+def test_fussel_vesely_c_rbd3(rbd3: NonRepairableRBD):
     t = 2
     fv_importance = rbd3.fussel_vesely(t, fv_type="c")
     assert (
@@ -348,7 +348,7 @@ def test_fussel_vesely_c_rbd3(rbd3: RBD):
 
 
 def test_fussel_vesely_c_repeated_component_parallel(
-    rbd_repeated_component_parallel: RBD,
+    rbd_repeated_component_parallel: NonRepairableRBD,
 ):
     rbd = rbd_repeated_component_parallel
     t = 2
@@ -366,7 +366,7 @@ def test_fussel_vesely_c_repeated_component_parallel(
 
 
 def test_fussel_vesely_c_rbd_repeated_component_series(
-    rbd_repeated_component_series: RBD,
+    rbd_repeated_component_series: NonRepairableRBD,
 ):
     rbd = rbd_repeated_component_series
     t = 2
@@ -383,7 +383,7 @@ def test_fussel_vesely_c_rbd_repeated_component_series(
 
 
 def test_fussel_vesely_c_rbd_repeated_component_composite(
-    rbd_repeated_component_composite: RBD,
+    rbd_repeated_component_composite: NonRepairableRBD,
 ):
     rbd = rbd_repeated_component_composite
     t = 2
@@ -412,7 +412,7 @@ def test_fussel_vesely_c_rbd_repeated_component_composite(
 # Test fussel_vesely() w/ path-set method
 
 
-def test_fussel_vesely_p_rbd1(rbd1: RBD):
+def test_fussel_vesely_p_rbd1(rbd1: NonRepairableRBD):
     t = 2
     fv_importance = rbd1.fussel_vesely(t, fv_type="p")
     assert (
@@ -445,7 +445,7 @@ def test_fussel_vesely_p_rbd1(rbd1: RBD):
     )
 
 
-def test_fussel_vesely_p_series(rbd_series: RBD):
+def test_fussel_vesely_p_series(rbd_series: NonRepairableRBD):
     t = 2
     fv_importance = rbd_series.fussel_vesely(t, fv_type="p")
     expected_fv_importance = (
@@ -459,7 +459,7 @@ def test_fussel_vesely_p_series(rbd_series: RBD):
     assert pytest.approx(expected_fv_importance) == fv_importance[4]
 
 
-def test_fussel_vesely_p_parallel(rbd_parallel: RBD):
+def test_fussel_vesely_p_parallel(rbd_parallel: NonRepairableRBD):
     t = 2
     fv_importance = rbd_parallel.fussel_vesely(t, fv_type="p")
     assert (
@@ -476,7 +476,7 @@ def test_fussel_vesely_p_parallel(rbd_parallel: RBD):
     )
 
 
-def test_fussel_vesely_p_rbd2(rbd2: RBD):
+def test_fussel_vesely_p_rbd2(rbd2: NonRepairableRBD):
     t = 2
     fv_importance = rbd2.fussel_vesely(t, fv_type="p")
     assert (
@@ -570,7 +570,7 @@ def test_fussel_vesely_p_rbd2(rbd2: RBD):
     ) == fv_importance[7]
 
 
-def test_fussel_vesely_p_rbd3(rbd3: RBD):
+def test_fussel_vesely_p_rbd3(rbd3: NonRepairableRBD):
     t = 2
     fv_importance = rbd3.fussel_vesely(t, fv_type="p")
     assert (
@@ -644,7 +644,7 @@ def test_fussel_vesely_p_rbd3(rbd3: RBD):
 
 
 def test_fussel_vesely_p_repeated_component_parallel(
-    rbd_repeated_component_parallel: RBD,
+    rbd_repeated_component_parallel: NonRepairableRBD,
 ):
     rbd = rbd_repeated_component_parallel
     t = 2
@@ -664,7 +664,7 @@ def test_fussel_vesely_p_repeated_component_parallel(
 
 
 def test_fussel_vesely_p_rbd_repeated_component_series(
-    rbd_repeated_component_series: RBD,
+    rbd_repeated_component_series: NonRepairableRBD,
 ):
     rbd = rbd_repeated_component_series
     t = 2
