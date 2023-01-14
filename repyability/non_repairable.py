@@ -121,7 +121,7 @@ class NonRepairable:
             # from the min to the max support of the model and return the
             # value of x which has the minimum cost rate.
             x_search = np.linspace(
-                self.reliability.x.min(), self.reliability.x.max(), 1000
+                self.reliability.x.min(), self.reliability.x.max(), 10000
             )
 
             dt = np.diff(x_search, prepend=0)
