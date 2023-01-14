@@ -6,6 +6,7 @@ from numpy.typing import ArrayLike
 from surpyval import NonParametric
 
 from .rbd import RBD
+from .standby_node import StandbyModel
 
 
 class NonRepairableRBD(RBD):
@@ -19,11 +20,15 @@ class NonRepairableRBD(RBD):
             elif isinstance(this_component, NonRepairableRBD):
                 is_fixed.append(this_component.__fixed_probs)
             else:
-                this_fixed = this_component.dist.name in [
-                    "FixedEventProbability",
-                    "Bernoulli",
-                ]
-                is_fixed.append(this_fixed)
+                if isinstance(this_component, StandbyModel):
+                    this_fixed = [False]
+                    break
+                else:
+                    this_fixed = this_component.dist.name in [
+                        "FixedEventProbability",
+                        "Bernoulli",
+                    ]
+                    is_fixed.append(this_fixed)
         if all(is_fixed):
             self.__fixed_probs = True
         else:
@@ -38,9 +43,16 @@ class NonRepairableRBD(RBD):
     def ff(self, x: ArrayLike = None, *args, **kwargs):
         return 1 - self.sf(x, *args, **kwargs)
 
+    def sf_by_node(self, x: ArrayLike = None, *args, **kwargs):
+        if self.__fixed_probs:
+            x = np.array([1.0])
+        else:
+            x = np.atleast_1d(x)
+        return super().sf_by_node(x, *args, **kwargs)
+
     # Importance measures
     # https://www.ntnu.edu/documents/624876/1277590549/chapt05.pdf/82cd565f-fa2f-43e4-a81a-095d95d39272
-    def birnbaum_importance(self, x: ArrayLike) -> dict[Any, float]:
+    def birnbaum_importance(self, x: ArrayLike = None) -> dict[Any, float]:
         """Returns the Birnbaum measure of importance for all nodes.
 
         Note: Birnbaum's measure of importance assumes all nodes are
@@ -58,6 +70,10 @@ class NonRepairableRBD(RBD):
             Dictionary with node names as keys and Birnbaum importances as
             values
         """
+        if self.__fixed_probs:
+            x = np.array([1.0])
+        else:
+            x = np.atleast_1d(x)
         for component, node_set in self.components_to_nodes.items():
             if len(node_set) > 1:
                 warn(
@@ -74,7 +90,7 @@ class NonRepairableRBD(RBD):
         return node_importance
 
     # TODO: update all importance measures to allow for component as well
-    def improvement_potential(self, x: ArrayLike) -> dict[Any, float]:
+    def improvement_potential(self, x: ArrayLike = None) -> dict[Any, float]:
         """Returns the improvement potential of all nodes.
 
         Parameters
@@ -88,6 +104,11 @@ class NonRepairableRBD(RBD):
             Dictionary with node names as keys and improvement potentials as
             values
         """
+        if self.__fixed_probs:
+            x = np.array([1.0])
+        else:
+            x = np.atleast_1d(x)
+
         node_importance = {}
         for node in self.nodes.keys():
             working = self.sf(x, working_nodes=[node])
@@ -95,7 +116,7 @@ class NonRepairableRBD(RBD):
             node_importance[node] = working - as_is
         return node_importance
 
-    def risk_achievement_worth(self, x: ArrayLike) -> dict[Any, float]:
+    def risk_achievement_worth(self, x: ArrayLike = None) -> dict[Any, float]:
         """Returns the RAW importance per Modarres & Kaminskiy. That is RAW_i =
         (unreliability of system given i failed) /
         (nominal system unreliability).
@@ -110,6 +131,11 @@ class NonRepairableRBD(RBD):
         dict[Any, float]
             Dictionary with node names as keys and RAW importances as values
         """
+        if self.__fixed_probs:
+            x = np.array([1.0])
+        else:
+            x = np.atleast_1d(x)
+
         node_importance = {}
         system_ff = self.ff(x)
         for node in self.nodes.keys():
@@ -117,7 +143,7 @@ class NonRepairableRBD(RBD):
             node_importance[node] = failing / system_ff
         return node_importance
 
-    def risk_reduction_worth(self, x: ArrayLike) -> dict[Any, float]:
+    def risk_reduction_worth(self, x: ArrayLike = None) -> dict[Any, float]:
         """Returns the RRW importance per Modarres & Kaminskiy. That is RRW_i =
         (nominal unreliability of system) /
         (unreliability of system given i is working).
@@ -132,6 +158,11 @@ class NonRepairableRBD(RBD):
         dict[Any, float]
             Dictionary with node names as keys and RRW importances as values
         """
+        if self.__fixed_probs:
+            x = np.array([1.0])
+        else:
+            x = np.atleast_1d(x)
+
         node_importance = {}
         system_ff = self.ff(x)
         for node in self.nodes.keys():
@@ -139,7 +170,7 @@ class NonRepairableRBD(RBD):
             node_importance[node] = system_ff / working
         return node_importance
 
-    def criticality_importance(self, x: ArrayLike) -> dict[Any, float]:
+    def criticality_importance(self, x: ArrayLike = None) -> dict[Any, float]:
         """Returns the criticality importance of all nodes at time/s x.
 
         Parameters
@@ -153,6 +184,11 @@ class NonRepairableRBD(RBD):
             Dictionary with node names as keys and criticality importances as
             values
         """
+        if self.__fixed_probs:
+            x = np.array([1.0])
+        else:
+            x = np.atleast_1d(x)
+
         bi = self.birnbaum_importance(x)
         node_importance = {}
         system_sf = self.sf(x)
@@ -162,7 +198,7 @@ class NonRepairableRBD(RBD):
         return node_importance
 
     def fussel_vesely(
-        self, x: ArrayLike, fv_type: str = "c"
+        self, x: ArrayLike = None, fv_type: str = "c"
     ) -> dict[Any, np.ndarray]:
         """Calculate Fussel-Vesely importance of all components at time/s x.
 
@@ -199,6 +235,11 @@ class NonRepairableRBD(RBD):
         NotImplementedError
             TODO
         """
+        if self.__fixed_probs:
+            x = np.array([1.0])
+        else:
+            x = np.atleast_1d(x)
+
         # Get node-sets based on what method was requested
         if fv_type == "c":
             node_sets = self.get_min_cut_sets()
