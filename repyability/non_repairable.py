@@ -104,7 +104,7 @@ class NonRepairable:
             init = cost_rates[idx]
             bounds = (self.reliability.support,)
             old_err_state = np.seterr(all="ignore")
-            res = minimize(self._log_cost_rate, init, bounds=bounds, tol=1e-10)
+            res = minimize(self._cost_rate, init, bounds=bounds, tol=1e-10)
             np.seterr(**old_err_state)
             self.optimisation_results = res
             optimal = res.x[0]
