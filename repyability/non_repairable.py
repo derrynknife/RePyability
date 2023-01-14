@@ -120,16 +120,18 @@ class NonRepairable:
             # forward. Simply find the cost rate at a number of places
             # from the min to the max support of the model and return the
             # value of x which has the minimum cost rate.
-            # TODO: Instead of finding the average_replacement_time each
-            # iteration we could create a cumulative sum up to x.max()!
-            # will need to distinguish between interpolated and non-interp..
             x_search = np.linspace(
                 self.reliability.x.min(), self.reliability.x.max(), 1000
             )
 
-            old_err_state = np.seterr(all="ignore")
-            costs = self.cost_rate(x_search)
-            np.seterr(**old_err_state)
+            dt = np.diff(x_search, prepend=0)
+            R = self.reliability_function(x_search)
+            avg_replacement_times = (dt * R).cumsum()
+
+            planned_costs = R * self.cp
+            unplanned_costs = (1 - R) * self.cu
+
+            costs = (planned_costs + unplanned_costs) / avg_replacement_times
 
             optimal_idx = np.argmin(costs)
             optimal = x_search[optimal_idx]
