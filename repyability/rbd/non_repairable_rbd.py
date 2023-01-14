@@ -21,7 +21,7 @@ class NonRepairableRBD(RBD):
                 is_fixed.append(this_component.__fixed_probs)
             else:
                 if isinstance(this_component, StandbyModel):
-                    this_fixed = [False]
+                    is_fixed = [False]
                     break
                 else:
                     this_fixed = this_component.dist.name in [
