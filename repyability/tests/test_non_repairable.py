@@ -10,7 +10,41 @@ from surpyval import KaplanMeier, LogNormal, Weibull
 from repyability.non_repairable import NonRepairable
 
 
+def test_optimal_replacement1():
+    # https://www.weibull.com/hotwire/issue156/hottopics156.htm
+    for beta, alpha, cu, cp, answer in [
+        [6, 10000, 30, 5000, 3263.16],
+        [2, 80000, 700, 4000, 37509.26],
+        [2.5, 80000, 800, 4500, 37170.26],
+        [3, 15000, 25, 1500, 3059.266],
+        [1.5, 30000, 80, 250, 33029.446],
+        [3, 30000, 70, 800, 10920.36],
+    ]:
+        surv_model = Weibull.from_params((alpha, beta))
+        nr_model = NonRepairable(surv_model)
+        nr_model.set_costs_planned_and_unplanned(cu, cp)
+
+        assert answer == pytest.approx(
+            nr_model.find_optimal_replacement(), rel=1e-2
+        )
+
+
+def test_optimal_replacement_across_scales():
+    # If the characteristic life is 10x greater
+    # then the optimal replacement time should be 10x
+    answer = 0.3263162540188295
+    for i in range(1, 10):
+        surv_model = Weibull.from_params(((10 ** (i - 1)), 6))
+        nr_model = NonRepairable(surv_model)
+
+        nr_model.set_costs_planned_and_unplanned(30, 5000)
+        answer_i = answer * (10 ** (i - 1))
+        optimal = nr_model.find_optimal_replacement()
+        assert answer_i == pytest.approx(optimal, rel=1e-1)
+
+
 def test_optimal_replacement():
+    # https://reliawiki.org/index.php/Optimum_Replacement_Time_Example
     surv_model = Weibull.from_params((1000, 2.5))
     nr_model = NonRepairable(surv_model)
 

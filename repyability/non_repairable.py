@@ -83,6 +83,12 @@ class NonRepairable:
         mttr = self.time_to_replace.mean()
         return mttf / (mttr + mttf)
 
+    def _cost_rate_with_log_x(self, x):
+        return self._cost_rate(np.exp(x))
+
+    def _log_cost_rate_with_log_x(self, x):
+        return self._cost_rate(np.exp(x))
+
     def find_optimal_replacement(self, options=None):
         if self.model_parameterization == "parametric":
             if self.reliability.dist.name == "Weibull":
@@ -98,16 +104,17 @@ class NonRepairable:
             # straight forward. Simply find the point in the support where
             # the cost rate is minimised. Uses quadrature to integrate!
             mean = self.reliability.mean()
-            x_init = np.linspace(mean / 10, mean, 10)
-            cost_rates = self.cost_rate(x_init)
-            idx = np.argmin(cost_rates)
-            init = cost_rates[idx]
-            bounds = (self.reliability.support,)
             old_err_state = np.seterr(all="ignore")
-            res = minimize(self._cost_rate, init, bounds=bounds, tol=1e-10)
+            res = minimize(self._cost_rate_with_log_x, np.log(mean), tol=1e-10)
+            res_log = minimize(
+                self._log_cost_rate_with_log_x, np.log(mean), tol=1e-10
+            )
             np.seterr(**old_err_state)
             self.optimisation_results = res
-            optimal = res.x[0]
+            if res["fun"] < np.exp(res_log["fun"]):
+                optimal = np.exp(res.x[0])
+            else:
+                optimal = np.exp(res_log.x[0])
         else:
             # When using non-parametric estimations, it can also be straight
             # forward. Simply find the cost rate at a number of places
