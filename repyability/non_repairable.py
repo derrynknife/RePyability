@@ -97,7 +97,11 @@ class NonRepairable:
             # When using a parametric distribution the optimisation is
             # straight forward. Simply find the point in the support where
             # the cost rate is minimised. Uses quadrature to integrate!
-            init = self.reliability.mean()
+            mean = self.reliability.mean()
+            x_init = np.linspace(mean / 10, mean, 10)
+            cost_rates = self.cost_rate(x_init)
+            idx = np.argmin(cost_rates)
+            init = cost_rates[idx]
             bounds = (self.reliability.support,)
             old_err_state = np.seterr(all="ignore")
             res = minimize(self._log_cost_rate, init, bounds=bounds, tol=1e-10)
