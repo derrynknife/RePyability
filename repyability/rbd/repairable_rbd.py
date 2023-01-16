@@ -29,30 +29,29 @@ class Event:
 class RepairableRBD(RBD):
     def __init__(
         self,
-        nodes: dict[Any, Any],
-        components: dict[Any, Any],
         edges: Iterable[tuple[Hashable, Hashable]],
+        components: dict[Any, Any],
         k: dict[Any, int] = {},
-        mc_samples: int = 10_000,
     ):
         components = copy(components)
         reliability = {}
         repairability = {}
-        for node, node_type in nodes.items():
-            if (node_type != "input_node") and (node_type != "output_node"):
-                component = components[node]
-                if isinstance(component, dict):
-                    components[node] = NonRepairable(
-                        component["reliability"], component["repairability"]
-                    )
-                    reliability[node] = component["reliability"]
-                    repairability[node] = component["repairability"]
-                elif isinstance(component, RepairableRBD):
-                    reliability[node] = component
-                    repairability[node] = None
+        for name, component in components.items():
+            if isinstance(component, dict):
+                components[name] = NonRepairable(
+                    component["reliability"], component["repairability"]
+                )
+                reliability[name] = component["reliability"]
+                repairability[name] = component["repairability"]
+            elif isinstance(component, RepairableRBD):
+                reliability[name] = component
+                repairability[name] = None
+            elif isinstance(component, NonRepairable):
+                reliability[name] = component.reliability
+                repairability[name] = component.time_to_replace
 
-        check_rbd_node_args_complete(nodes, reliability, edges, repairability)
-        super().__init__(nodes, reliability, edges, k, mc_samples)
+        # check_rbd_node_args_complete(nodes, reliability, edges, repairability)
+        super().__init__(edges, k)
 
         self.components = components
         self.repairability = copy(repairability)
@@ -156,8 +155,6 @@ class RepairableRBD(RBD):
 
     def mean_availability(
         self,
-        working_nodes: Collection[Hashable] = [],
-        broken_nodes: Collection[Hashable] = [],
         working_components: Collection[Hashable] = [],
         broken_components: Collection[Hashable] = [],
         method: str = "p",
@@ -166,10 +163,6 @@ class RepairableRBD(RBD):
 
         Parameters
         ----------
-        working_nodes : Collection[Hashable], optional
-            Marks these nodes as perfectly reliable, by default []
-        broken_nodes : Collection[Hashable], optional
-            Marks these nodes as perfectly unreliable, by default []
         working_components : Collection[Hashable], optional
             Marks these components as perfectly reliable, by default []
         broken_components : Collection[Hashable], optional
@@ -190,44 +183,6 @@ class RepairableRBD(RBD):
               is supplied more than once to any of working_nodes, broken_nodes,
               working_components, broken_components)
         """
-        # Check for any node/component argument inconsistency
-        argument_nodes: set[object] = set()
-        argument_nodes.update(working_nodes)
-        argument_nodes.update(broken_nodes)
-        number_of_arg_comp_nodes = 0
-        for comp in working_components:
-            argument_nodes.update(self.components_to_nodes[comp])
-            number_of_arg_comp_nodes += len(self.components_to_nodes[comp])
-        for comp in broken_components:
-            argument_nodes.update(self.components_to_nodes[comp])
-            number_of_arg_comp_nodes += len(self.components_to_nodes[comp])
-        if len(argument_nodes) != (
-            len(working_nodes) + len(broken_nodes) + number_of_arg_comp_nodes
-        ):
-            working_comps_nodes = [
-                (comp, self.components_to_nodes[comp])
-                for comp in working_components
-            ]
-            broken_comps_nodes = [
-                (comp, self.components_to_nodes[comp])
-                for comp in broken_components
-            ]
-
-            raise ValueError(
-                f"Node/component inconsistency provided. i.e. you have \
-                provided sf() with working/broken nodes (or respective \
-                components) more than once in the arguments.\n \
-                Supplied:\n\
-                working_nodes: {working_nodes}\n\
-                broken_nodes: {broken_nodes}\n\
-                (working_components, their_nodes): {working_comps_nodes}\n\
-                (broken_components, their_nodes): {broken_comps_nodes}\n"
-            )
-
-        # Turn node iterables into sets for O(1) lookup later
-        working_nodes = set(working_nodes)
-        broken_nodes = set(broken_nodes)
-
         # Good reference on the Availability of a system
         # https://www.diva-portal.org/smash/get/diva2:986067/FULLTEXT01.pdf
 
@@ -241,73 +196,23 @@ class RepairableRBD(RBD):
         num_node_sets = len(node_sets)
 
         # Cache all component reliabilities for efficiency
-        comp_av_cache_dict: dict[Hashable, np.ndarray] = {}
+        component_availability: dict[Hashable, np.ndarray] = {}
         for comp in self.components:
             if comp in working_components:
-                comp_av_cache_dict[comp] = np.float64(1.0)
+                component_availability[comp] = np.float64(1.0)
             elif comp in broken_components:
-                comp_av_cache_dict[comp] = np.float64(0.0)
+                component_availability[comp] = np.float64(0.0)
             else:
                 Av_c = self.components[comp].mean_availability()
-                if method == "c":
-                    comp_av_cache_dict[comp] = 1 - Av_c
-                else:
-                    comp_av_cache_dict[comp] = Av_c
+                Av_c = Av_c if method == "p" else 1 - Av_c
+                component_availability[comp] = Av_c
 
-        # We'll just add the two 'perfect component reliabilities' to this dict
-        # while we're at it, since they'll be used in lookup later
-        comp_av_cache_dict["PerfectAvailability"] = np.float64(1.0)
-        comp_av_cache_dict["PerfectUnavailability"] = np.float64(0.0)
+        for comp in self.in_or_out:
+            Av_c = np.float64(1.0)
+            Av_c = Av_c if method == "p" else 1 - Av_c
+            component_availability[comp] = Av_c
 
-        # Perform intersection calculation, which isn't as simple as summating
-        # in the case of mutual non-exclusivity
-        # i is the 'level' of the intersection calc
-        system_prob = np.float64(0.0)  # Return array
-        for i in range(1, num_node_sets + 1):
-            # Get tie-set combinations for level i
-            nodeset_combs = combinations(node_sets, i)
-
-            # Calculate the reliability of each level combination
-            # Making sure to not multiply a components' reliability twice
-            level_sum = np.float64(0.0)
-            for nodeset_comb in nodeset_combs:
-                # Make a set of components out of the node path/tieset
-                s = set()
-                for path in nodeset_comb:
-                    for node in path:
-                        if node in self.in_or_out:
-                            continue
-                        # Node working/broken takes precedence over
-                        # the components reliability
-                        if node in working_nodes:
-                            s.add("PerfectAvailability")
-                        elif node in broken_nodes:
-                            s.add("PerfectUnavailability")
-                        else:
-                            s.add(self.nodes[node])  # Add component name
-
-                # Now calculate the tieset reliability
-                nodeset_comb_prob = np.float64(1.0)
-                for comp in s:
-                    comp_prob = comp_av_cache_dict[comp]
-                    nodeset_comb_prob *= comp_prob
-
-                # Now add the tieset reliability to the level sum
-                level_sum += nodeset_comb_prob
-
-            # Finally add/subtract the level sum to/from the system_av if the
-            # level is even/odd
-            if i % 2 == 1:
-                system_prob += level_sum
-            else:
-                system_prob -= level_sum
-
-        # If cutset method is used, the above returns the unavailability,
-        # so we just have to return = 1 - system_prob
-        if method == "c":
-            return 1 - system_prob
-
-        return system_prob
+        return self.system_probability(component_availability)
 
     def next_event(self, method="p"):
         # This method allows a user to extract the next system status
@@ -556,6 +461,16 @@ class RepairableRBD(RBD):
         """
         self.bdd.dump(filename, roots=[self.bdd_system_ref])
 
+    def node_availability(self):
+        node_av: dict = {}
+        for node_name, component in self.components.items():
+            node_av[node_name] = component.mean_availability()
+
+        for node_name in self.in_or_out:
+            node_av[node_name] = np.float64(1.0)
+
+        return node_av
+
     def birnbaum_importance(self) -> dict[Any, float]:
         """Returns the Birnbaum measure of importance for all nodes.
 
@@ -569,20 +484,9 @@ class RepairableRBD(RBD):
             Dictionary with node names as keys and Birnbaum importances as
             values
         """
-        for component, node_set in self.components_to_nodes.items():
-            if len(node_set) > 1:
-                warn(
-                    f"Birnbaum's measure of importance assumes nodes are \
-                     dependent, but nodes {node_set} all depend on the same \
-                     component '{component}."
-                )
+        node_probabilities = self.node_availability()
+        return super()._birnbaum_importance(node_probabilities)
 
-        node_importance = {}
-        for node in self.nodes.keys():
-            working = self.mean_availability(working_nodes=[node])
-            failing = self.mean_availability(broken_nodes=[node])
-            node_importance[node] = working - failing
-        return node_importance
 
     # TODO: update all importance measures to allow for component as well
     def improvement_potential(self) -> dict[Any, float]:
@@ -594,12 +498,8 @@ class RepairableRBD(RBD):
             Dictionary with node names as keys and improvement potentials as
             values
         """
-        node_importance = {}
-        for node in self.nodes.keys():
-            working = self.mean_availability(working_nodes=[node])
-            as_is = self.mean_availability()
-            node_importance[node] = working - as_is
-        return node_importance
+        node_probabilities = self.node_availability()
+        return super()._improvement_potential(node_probabilities)
 
     def risk_achievement_worth(self) -> dict[Any, float]:
         """Returns the RAW importance per Modarres & Kaminskiy. That is RAW_i =
@@ -611,12 +511,8 @@ class RepairableRBD(RBD):
         dict[Any, float]
             Dictionary with node names as keys and RAW importances as values
         """
-        node_importance = {}
-        system_unavailability = self.mean_unavailability()
-        for node in self.nodes.keys():
-            failing = self.mean_unavailability(broken_nodes=[node])
-            node_importance[node] = failing / system_unavailability
-        return node_importance
+        node_probabilities = self.node_availability()
+        return super()._risk_achievement_worth(node_probabilities)
 
     def risk_reduction_worth(self) -> dict[Any, float]:
         """Returns the RRW importance per Modarres & Kaminskiy. That is RRW_i =
@@ -628,12 +524,8 @@ class RepairableRBD(RBD):
         dict[Any, float]
             Dictionary with node names as keys and RRW importances as values
         """
-        node_importance = {}
-        system_unavailability = self.mean_unavailability()
-        for node in self.nodes.keys():
-            working = self.mean_unavailability(working_nodes=[node])
-            node_importance[node] = system_unavailability / working
-        return node_importance
+        node_probabilities = self.node_availability()
+        return super()._risk_reduction_worth(node_probabilities)
 
     def criticality_importance(self) -> dict[Any, float]:
         """Returns the criticality importance of all nodes at time/s x.
@@ -644,13 +536,8 @@ class RepairableRBD(RBD):
             Dictionary with node names as keys and criticality importances as
             values
         """
-        bi = self.birnbaum_importance()
-        node_importance = {}
-        system_availability = self.mean_availability()
-        for node in self.nodes.keys():
-            node_av = self.components[self.nodes[node]].mean_availability()
-            node_importance[node] = bi[node] * node_av / system_availability
-        return node_importance
+        node_probabilities = self.node_availability()
+        return super()._criticality_importance(node_probabilities)
 
     def fussel_vesely(self, fv_type: str = "c") -> dict[Any, np.ndarray]:
         """Calculate Fussel-Vesely importance of all components at time/s x.
@@ -686,57 +573,5 @@ class RepairableRBD(RBD):
         NotImplementedError
             TODO
         """
-        # Get node-sets based on what method was requested
-        if fv_type == "c":
-            node_sets = self.get_min_cut_sets()
-        elif fv_type == "p":
-            node_sets = {
-                frozenset(path_set)
-                for path_set in self.get_min_path_sets(
-                    include_in_out_nodes=False
-                )
-            }
-        else:
-            raise ValueError(
-                f"fv_type must be either 'c' (cut-set) or 'p' (path-set), \
-                fv_type={fv_type} was given."
-            )
-
-        # Get system unreliability, this will be the denominator for all node
-        # importance calcs
-        system_unavailability = self.mean_unavailability()
-
-        # The return dict
-        node_importance: dict[Any, np.ndarray] = {}
-
-        # Cache the component reliabilities for efficiency
-        av_dict = {}
-        for component in self.components.keys():
-            # TODO: make log
-            # Calculating reliability in the log-domain though so the
-            # components' reliability can be added avoid possible underflow
-            av_dict[component] = self.components[
-                component
-            ].mean_unavailability()
-
-        # For each node,
-        for node in self.nodes.keys():
-            # Sum up the probabilities of the node_sets containing the node
-            # from failing
-            node_fv_numerator = 0
-            for node_set in node_sets:
-                if node not in node_set:
-                    continue
-                node_set_fail_prob = 1
-                # Take only the independent components in that node-set, i.e.
-                # don't multiply the same component twice in a node-set
-                components_in_node_set = {
-                    self.nodes[fail_node] for fail_node in node_set
-                }
-                for component in components_in_node_set:
-                    node_set_fail_prob *= av_dict[component]
-                node_fv_numerator += node_set_fail_prob
-
-            node_importance[node] = node_fv_numerator / system_unavailability
-
-        return node_importance
+        node_probabilities = self.node_availability()
+        return super()._fussel_vesely(node_probabilities, fv_type)

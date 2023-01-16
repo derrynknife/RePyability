@@ -12,21 +12,17 @@ def test_repairable_rbd_missing_repairability_component():
     Checks that a ValueError is raised when a component isn't provided
     with a repairability distribution.
     """
-    nodes = {
-        "input_node": "input_node",
-        "no_repairability": "no_repairability",
-        "output_node": "output_node",
-    }
-    reliability = {
-        "no_repairability": surv.LogNormal.from_params([0.1, 0.2]),
+    components = {
+        "no_repairability": {
+            "reliability": surv.LogNormal.from_params([0.1, 0.2])
+        }
     }
     edges = [
         ("input_node", "no_repairability"),
         ("no_repairability", "output_node"),
     ]
-    repairability = {}
-    with pytest.raises(ValueError):
-        RepairableRBD(nodes, reliability, repairability, edges)
+    with pytest.raises(KeyError):
+        RepairableRBD(edges, components)
 
 
 # One component, one simulation, tests simple case
@@ -47,11 +43,6 @@ def test_repairable_rbd_availability_one_component_1N():
     repairability_dist = surv.Exponential.from_params([0.5])
 
     rbd = RepairableRBD(
-        nodes={
-            "s": "input_node",
-            "c": "c",
-            "t": "output_node",
-        },
         edges=[
             ("s", "c"),
             ("c", "t"),
@@ -127,11 +118,6 @@ def test_repairable_rbd_availability_one_component_10N():
     repairability_dist = surv.Exponential.from_params([0.5])
 
     rbd = RepairableRBD(
-        nodes={
-            "s": "input_node",
-            "c": "c",
-            "t": "output_node",
-        },
         edges=[
             ("s", "c"),
             ("c", "t"),
@@ -214,12 +200,6 @@ def test_repairable_rbd_availability_two_parallel_components_1N():
     reliability_dist = surv.Exponential.from_params([0.25])
     repairability_dist = surv.Exponential.from_params([0.5])
     rbd = RepairableRBD(
-        nodes={
-            "s": "input_node",
-            "c1": "c1",
-            "c2": "c2",
-            "t": "output_node",
-        },
         edges=[
             ("s", "c1"),
             ("c1", "t"),
@@ -354,12 +334,6 @@ def test_repairable_rbd_availability_two_series_components_1N():
     reliability_dist = surv.Exponential.from_params([0.25])
     repairability_dist = surv.Exponential.from_params([0.5])
     rbd = RepairableRBD(
-        nodes={
-            "s": "input_node",
-            "c1": "c1",
-            "c2": "c2",
-            "t": "output_node",
-        },
         edges=[
             ("s", "c1"),
             ("c1", "c2"),
