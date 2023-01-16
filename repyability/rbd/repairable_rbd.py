@@ -1,10 +1,8 @@
 from collections import defaultdict
 from copy import copy
 from dataclasses import dataclass, field
-from itertools import combinations
 from queue import PriorityQueue
 from typing import Any, Collection, Hashable, Iterable
-from warnings import warn
 
 import numpy as np
 from dd import autoref as _bdd
@@ -12,7 +10,6 @@ from tqdm import tqdm
 
 from repyability.non_repairable import NonRepairable
 from repyability.rbd.rbd import RBD
-from repyability.rbd.rbd_args_check import check_rbd_node_args_complete
 
 
 # Event class for simulation
@@ -50,7 +47,6 @@ class RepairableRBD(RBD):
                 reliability[name] = component.reliability
                 repairability[name] = component.time_to_replace
 
-        # check_rbd_node_args_complete(nodes, reliability, edges, repairability)
         super().__init__(edges, k)
 
         self.components = components
@@ -185,15 +181,6 @@ class RepairableRBD(RBD):
         """
         # Good reference on the Availability of a system
         # https://www.diva-portal.org/smash/get/diva2:986067/FULLTEXT01.pdf
-
-        # TODO: Create cut set logic
-        # Get all path sets
-        if method == "p":
-            node_sets = self.get_min_path_sets()
-        elif method == "c":
-            node_sets = self.get_min_cut_sets()
-
-        num_node_sets = len(node_sets)
 
         # Cache all component reliabilities for efficiency
         component_availability: dict[Hashable, np.ndarray] = {}
@@ -486,7 +473,6 @@ class RepairableRBD(RBD):
         """
         node_probabilities = self.node_availability()
         return super()._birnbaum_importance(node_probabilities)
-
 
     # TODO: update all importance measures to allow for component as well
     def improvement_potential(self) -> dict[Any, float]:

@@ -7,7 +7,6 @@ from surpyval import NonParametric
 
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .rbd import RBD
-
 from .standby_node import StandbyModel
 
 
