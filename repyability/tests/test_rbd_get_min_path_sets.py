@@ -4,6 +4,7 @@ Tests many of the RBD class methods.
 Uses pytest fixtures located in conftest.py in the tests/ directory.
 """
 
+from repyability.rbd.non_repairable_rbd import NonRepairableRBD
 from repyability.rbd.rbd import RBD
 
 
@@ -52,7 +53,7 @@ def test_rbd_get_min_path_sets_rbd3(rbd3: RBD):
 def test_rbd_get_min_path_sets_rbd_double_parallel(
     rbd_double_parallel_args: dict,
 ):
-    rbd = RBD(**rbd_double_parallel_args)
+    rbd = NonRepairableRBD(**rbd_double_parallel_args)
     assert {
         frozenset(["s", 1, 3, 4, "t"]),
         frozenset(["s", 2, 3, 4, "t"]),

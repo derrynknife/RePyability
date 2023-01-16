@@ -9,3 +9,4 @@ mypy
 pytest
 coverage
 pre-commit
+git+https://github.com/derrynknife/SurPyval.git

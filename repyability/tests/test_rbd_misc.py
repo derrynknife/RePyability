@@ -11,8 +11,8 @@ from repyability.rbd.non_repairable_rbd import NonRepairableRBD
 
 # Check components are correct lengths
 def test_rbd_components(rbd1: NonRepairableRBD, rbd2: NonRepairableRBD):
-    assert len(rbd1.reliability) == 5
-    assert len(rbd2.reliability) == 8
+    assert len(rbd1.nodes) == 3
+    assert len(rbd2.nodes) == 6
 
 
 # Test get_all_path_sets()
@@ -27,13 +27,6 @@ def test_rbd_get_all_path_sets(rbd1: NonRepairableRBD, rbd2: NonRepairableRBD):
     ]
 
 
-def test_rbd_node_type_dict(rbd1: NonRepairableRBD):
-    assert rbd1.G.nodes["source"]["type"] == "input_node"
-    assert rbd1.G.nodes["pump1"]["type"] == "node"
-    assert rbd1.G.nodes["pump2"]["type"] == "node"
-    assert rbd1.G.nodes["sink"]["type"] == "output_node"
-
-
 # Check ValueError's
 
 
@@ -42,7 +35,7 @@ def test_rbd_node_not_in_edge_list():
         nodes = {1: "input_node", 2: 2, 3: "output_node"}
         edges = [(1, 3)]
         components = {2: FixedEventProbability.from_params(1 - 0.8)}
-        NonRepairableRBD(nodes, components, edges)
+        NonRepairableRBD(edges, nodes, components)
 
 
 def test_rbd_component_not_in_reliability_dict():
@@ -50,7 +43,7 @@ def test_rbd_component_not_in_reliability_dict():
         nodes = {1: "input_node", 2: 2, 3: "output_node"}
         edges = [(1, 2), (2, 3)]
         components = {}
-        NonRepairableRBD(nodes, components, edges)
+        NonRepairableRBD(edges, nodes, components)
 
 
 def test_rbd_node_not_in_node_list():
@@ -58,7 +51,7 @@ def test_rbd_node_not_in_node_list():
         nodes = {1: "input_node", 3: "output_node"}
         edges = [(1, 2), (2, 3)]
         components = {2: FixedEventProbability.from_params(1 - 0.8)}
-        NonRepairableRBD(nodes, components, edges)
+        NonRepairableRBD(edges, nodes, components)
 
 
 def test_rbd_node_with_no_output():
@@ -66,7 +59,7 @@ def test_rbd_node_with_no_output():
         nodes = {1: "input_node", 2: 2, 4: 2, 3: "output_node"}
         edges = [(1, 2), (2, 3), (2, 4)]
         components = {2: FixedEventProbability.from_params(1 - 0.8)}
-        NonRepairableRBD(nodes, components, edges)
+        NonRepairableRBD(edges, nodes, components)
 
 
 def test_rbd_node_with_no_input():
@@ -74,7 +67,7 @@ def test_rbd_node_with_no_input():
         nodes = {1: "input_node", 2: 2, 4: 2, 3: "output_node"}
         edges = [(1, 2), (2, 3), (4, 2)]
         components = {2: FixedEventProbability.from_params(1 - 0.8)}
-        NonRepairableRBD(nodes, components, edges)
+        NonRepairableRBD(edges, nodes, components)
 
 
 def test_rbd_circular_dependency():
@@ -82,4 +75,4 @@ def test_rbd_circular_dependency():
         nodes = {"s": "input_node", 2: 2, 3: 2, 4: 2, "t": "output_node"}
         edges = [("s", 2), (2, 3), (3, 4), (4, 2), (4, "t")]
         components = {2: FixedEventProbability.from_params(1 - 0.8)}
-        NonRepairableRBD(nodes, components, edges)
+        NonRepairableRBD(edges, nodes, components)

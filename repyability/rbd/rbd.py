@@ -1,55 +1,46 @@
-from collections import defaultdict
 from copy import copy
 from itertools import combinations, product
-from typing import Any, Callable, Collection, Hashable, Iterable, Iterator
+from typing import Any, Dict, Hashable, Iterable, Iterator, Optional
 
 import networkx as nx
 import numpy as np
-import surpyval as surv
 from numpy.typing import ArrayLike
+from scipy.optimize import minimize
 
 from repyability.rbd.min_path_sets import min_path_sets
 from repyability.rbd.rbd_graph import RBDGraph
 
-from .helper_classes import PerfectReliability, PerfectUnreliability
-from .rbd_args_check import (
-    check_rbd_node_args_complete,
-    check_sf_node_component_args_consistency,
-)
+
+def log_linearly_scale_probabilities(p, x):
+    if p == 1.0:
+        return np.atleast_1d(1.0)
+    else:
+        return np.atleast_1d(1 - np.exp(-(-np.log(1 - p) + x)))
+
+
+def scale_probability_dict(node_probabilities, x):
+    out = {}
+    for k, p in node_probabilities.items():
+        out[k] = log_linearly_scale_probabilities(p, x)
+    return out
 
 
 class RBD:
     def __init__(
         self,
-        nodes: dict[Any, Any],
-        reliability: dict[Any, Any],
         edges: Iterable[tuple[Hashable, Hashable]],
-        k: dict[Any, int] = {},
-        mc_samples: int = 10_000,
+        k: Optional[dict[Any, int]] = {},
     ):
         """Creates and returns a Reliability Block Diagram object.
 
         Parameters
         ----------
-        nodes : dict[Any, Any]
-            A dictionary of node names as keys and their respective component
-            names as values (which map to the components in the reliability
-            dict), except for the the input and output nodes which need string
-            values `"input_node"` and `"output_node"` respectively
-        reliability : dict[Any, Any]
-            A dictionary of all non-input-output components names as keys
-            with their SurPyval reliability distributions as values
         edges : Iterable[tuple[Hashable, Hashable]]
             The collection of node edges, e.g. [(1, 2), (2, 3)] would
             correspond to the edges 1-2 and 2-3
-        components : dict[Any, Any]
-            A dictionary of all non-input-output components names as keys
-            with their SurPyval distribution as values
         k : dict[Any, int]
             A dictionary mapping nodes to k-out-of-n (koon) values, by default
             {}, by default all nodes koon values are 1
-        mc_samples : int, optional
-            TODO, by default 10_000
 
         Raises
         ------
@@ -57,75 +48,27 @@ class RBD:
             A node is not in the node list or edge list
         """
 
-        # Check args are complete, will raise ValueError if not
-        check_rbd_node_args_complete(nodes, reliability, edges)
-
         # Create RBD graph
         G = RBDGraph()
         G.add_edges_from(edges)
         self.G = G
 
-        # Set the node k values (k-out-of-n)
-        for node, k_val in k.items():
-            G.nodes[node]["k"] = k_val
-
-        # Copy the components and nodes
-        reliability = copy(reliability)
-        nodes = copy(nodes)
-
-        # Look through all the nodes.
-        visited_nodes = set()
-        for node in nodes.keys():
-            visited_nodes.add(node)
-
-            # Set node attribute dict types if input/output
-            # (if neither input/output no need to do anything, RBDGraph
-            # defaults the type to "node")
-            if nodes[node] == "input_node":
-                self.input_node = node
-                self.G.nodes[node]["type"] = "input_node"
-                reliability[node] = PerfectReliability
-            elif nodes[node] == "output_node":
-                self.output_node = node
-                self.G.nodes[node]["type"] = "output_node"
-                reliability[node] = PerfectReliability
-
-        nodes.pop(self.input_node)
-        nodes.pop(self.output_node)
-        self.in_or_out = [self.input_node, self.output_node]
-
-        # Create a components to nodes dictionary for efficient sf() lookup
-        self.components_to_nodes: dict[Any, set] = defaultdict(set)
-        for node, component in nodes.items():
-            self.components_to_nodes[component].add(node)
-
-        # Check that all nodes in graph were in the nodes list.
-        for n in G.nodes:
-            if n not in visited_nodes:
-                raise ValueError("Node {} not in nodes list".format(n))
-
-        new_models = {}
-        for k, v in reliability.items():
-            if type(v) == list:
-                sim = 0
-                for model in v:
-                    sim += model.random(mc_samples)
-
-                new_models[k] = surv.KaplanMeier.fit(sim)
-
-        # This will override the existing list with Non-Parametric
-        # models
-        reliability = {**reliability, **new_models}
-
-        self.reliability = reliability
-        self.nodes = nodes
-
         # Finally, check valid RBD structure
-        if not self.is_valid_RBD_structure():
+        if not self.G.is_valid_RBD_structure():
             raise ValueError(
                 "RBD not correctly structured. Errors: \n"
-                + f"{self.rbd_structural_errors}"
+                + f"{self.G.rbd_structural_errors}"
             )
+
+        # Set the input and output node references
+        for node in self.G.nodes:
+            if self.G.out_degree(node) == 0:
+                self.output_node = node
+            elif self.G.in_degree(node) == 0:
+                self.input_node = node
+
+        self.in_or_out = [self.input_node, self.output_node]
+        self.nodes = [n for n in self.G.nodes if n not in self.in_or_out]
 
     def get_all_path_sets(self) -> Iterator[list[Hashable]]:
         """Gets all path sets from input_node to output_node
@@ -211,30 +154,21 @@ class RBD:
 
         return set(min_cut_sets)
 
-    def sf(
+    def system_probability(
         self,
-        x: ArrayLike,
-        working_nodes: Collection[Hashable] = [],
-        broken_nodes: Collection[Hashable] = [],
-        working_components: Collection[Hashable] = [],
-        broken_components: Collection[Hashable] = [],
+        node_probabilities: Dict,
         method: str = "c",
         approx: bool = False,
     ) -> np.ndarray:
-        """Returns the system reliability for time/s x.
+        """Returns the system probability/ies given the probability of each
+        node.
 
         Parameters
         ----------
-        x : ArrayLike
-            Time/s as a number or iterable
-        working_nodes : Collection[Hashable], optional
-            Marks these nodes as perfectly reliable, by default []
-        broken_nodes : Collection[Hashable], optional
-            Marks these nodes as perfectly unreliable, by default []
-        working_components : Collection[Hashable], optional
-            Marks these components as perfectly reliable, by default []
-        broken_components : Collection[Hashable], optional
-            Marks these components as perfectly unreliable, by default []
+        node_probabilities: Dict
+            Dictionary containing the probabilities of the event for every node
+            in the RBDGraph. Probability is to be either the reliability or the
+            availability (or some other probability that I can't conceive).
         method: str, optional
             Input either "c" or "p" for the function to use the cut set or
             path set methods respectively, by default "c". Both methods
@@ -250,7 +184,7 @@ class RBD:
         Returns
         -------
         np.ndarray
-            Reliability values for all nodes at all times x
+            Probability values for all events in nodes_probabilities
 
         Raises
         ------
@@ -261,14 +195,21 @@ class RBD:
             - The path set method must not be used with approx=True, see approx
               arg description above
         """
-        # Check for any node/component argument inconsistency
-        check_sf_node_component_args_consistency(
-            working_nodes,
-            broken_nodes,
-            working_components,
-            broken_components,
-            self.components_to_nodes,
-        )
+
+        node_probabilities = copy(node_probabilities)
+        lengths = []
+        for node in self.G.nodes:
+            node_array = np.array(node_probabilities[node])
+            node_probabilities[node] = node_array
+            lengths.append(node_array.shape)
+        lengths = np.array(lengths)
+        if (lengths[0] != lengths[1:]).any():
+            raise ValueError("Probability arrays must be same length")
+        else:
+            # get shape of input array
+            array_shape = lengths[0]
+        # Return array
+        system_prob = np.zeros(array_shape)
 
         # Check that path set method and approximation are not used together
         # (The approximation is only applicable to the cutset method)
@@ -277,44 +218,6 @@ class RBD:
                 "The path set method must not be used with \
                 approx=True, see approx arg description in docstring."
             )
-
-        # Turn node iterables into sets for O(1) lookup later
-        working_nodes = set(working_nodes)
-        broken_nodes = set(broken_nodes)
-
-        # Per Note 3 from "UNIT 16 RELIABILITY EVALUATION OF COMPLEX SYSTEMS"
-        # (https://egyankosh.ac.in/bitstream/123456789/35170/1/Unit-16.pdf),
-        # you should:
-        # - Apply the cut set method with only first order terms if
-        #   marginal error is tolerable, and components have high reliability
-        # - Or if you want to use all terms, then apply either the tie set or
-        #   cut set method depending on which has less sets for the system,
-        #   and thus less calculation
-        #   (typically cut sets)
-
-        x = np.atleast_1d(x)
-
-        # To use the same code for both the tieset and cutset methods, the
-        # reliability/unreliability is abstracted away to just probability()
-        # Also, note path/cut sets are no longer mentioned, but rather referred
-        # to as 'node sets'
-        # This is because for the path set method: R = P(MPS1 U MPS2 U ...)
-        # (where MPS = minimal path set), whilst for the cut set method:
-        # Q = 1 - R = P(MCS1 U MCS2 U ...), so the inclusion-exclusion
-        # principle is the same for both, it's just that for the cut set method
-        # we have to return = 1 - (result from inclusion-exclusion procedure)
-
-        probability: Callable
-        if method == "p":
-
-            def probability(distribution):
-                return distribution.sf(x)
-
-        else:
-            # method == "c"
-            def probability(distribution):
-                return distribution.ff(x)
-
         # Get all node sets (path sets for method="p" and cut sets for
         # method="c")
         node_sets: set[frozenset]
@@ -323,45 +226,22 @@ class RBD:
         else:
             # method == "c"
             node_sets = self.get_min_cut_sets()
+            node_probabilities = {
+                k: 1 - v for k, v in node_probabilities.items()
+            }
 
         num_node_sets = len(node_sets)
-
-        # Cache all component probabilities for efficiency
-        comp_prob_cache_dict: dict[Hashable, np.ndarray] = {}
-        for comp in self.reliability:
-            if comp in working_components:
-                comp_prob_cache_dict[comp] = probability(PerfectReliability())
-            elif comp in broken_components:
-                comp_prob_cache_dict[comp] = probability(
-                    PerfectUnreliability()
-                )
-            else:
-                comp_prob_cache_dict[comp] = probability(
-                    self.reliability[comp]
-                )
-
-        # We'll just add the two 'perfect component probabilities' to this dict
-        # while we're at it, since they'll be used in lookup later
-        comp_prob_cache_dict["PerfectReliability"] = probability(
-            PerfectReliability()
-        )
-        comp_prob_cache_dict["PerfectUnreliability"] = probability(
-            PerfectUnreliability()
-        )
-
         # Perform intersection calculation, which isn't as simple as summating
         # in the case of mutual non-exclusivity
         # i is the 'level' of the intersection calc
         # This is really just applying the inclusion-exclusion principle
-        system_prob = np.zeros_like(x)  # Return array
-
         for i in range(1, num_node_sets + 1):
             # Get node set combinations for level i
             node_set_combs = combinations(node_sets, i)
 
             # Calculate the probability of each level combination
             # Making sure to not multiply a components' probability twice
-            level_sum = np.zeros_like(x)
+            level_sum = np.zeros(array_shape)
             for node_set_comb in node_set_combs:
                 # Make a set of components out of the node path/tieset
                 s = set()
@@ -369,19 +249,14 @@ class RBD:
                     for node in path:
                         if node in self.in_or_out:
                             continue
-                        # Node working/broken takes precedence over
-                        # the components reliability
-                        if node in working_nodes:
-                            s.add("PerfectReliability")
-                        elif node in broken_nodes:
-                            s.add("PerfectUnreliability")
                         else:
-                            s.add(self.nodes[node])  # Add component name
+                            # Add node to combination list
+                            s.add(node)
 
                 # Now calculate the node set probability
-                node_set_prob = np.ones_like(x)
+                node_set_prob = np.ones(array_shape)
                 for comp in s:
-                    comp_prob = comp_prob_cache_dict[comp]
+                    comp_prob = node_probabilities[comp]
                     node_set_prob = node_set_prob * comp_prob
 
                 # Now add the node set probability to the level sum
@@ -407,68 +282,271 @@ class RBD:
         # Otherwise for the pathset method it's already the reliability
         return system_prob
 
-    def ff(self, x: ArrayLike, *args, **kwargs) -> np.ndarray:
-        """Returns the system unreliability for time/s x.
+    def allocate_probability(
+        self, target: float, node_probabilities: Dict = None
+    ):
+
+        if node_probabilities is None:
+            node_probabilities = {}
+            for node in self.nodes:
+                node_probabilities[node] = 0.5
+            for node in self.in_or_out:
+                node_probabilities[node] = 1.0
+
+        def func(x):
+            scaled_probabilities = scale_probability_dict(
+                node_probabilities, x
+            )
+            current = self.system_probability(scaled_probabilities, method="p")
+            return (current - target) ** 2
+
+        res = minimize(func, 1.0, tol=1e-10)
+        out = scale_probability_dict(node_probabilities, res["x"].item())
+        out = {k: v.item() for k, v in out.items()}
+        return out
+
+    def get_nodes_names(self) -> list[Hashable]:
+        """Simply returns the list component names of the RBD."""
+        return list(self.nodes)
+
+    def _birnbaum_importance(
+        self, node_probabilities: dict[Any, ArrayLike]
+    ) -> dict[Any, ArrayLike]:
+        """Returns the Birnbaum measure of importance for all nodes.
+
+        Note: Birnbaum's measure of importance assumes all nodes are
+        independent.
+
+        Parameters
+        ----------
+        node_probabilities: Dict
+            Dictionary containing the probability arrays of the event for every
+            node in the RBDGraph. Probability is to be either the reliability
+            or the availability (or some other probability that I can't
+            conceive).
+
+        Returns
+        -------
+        dict[Any, ArrayLike]
+            Dictionary with node names as keys and Birnbaum importances as
+            values
+        """
+
+        node_importance = {}
+        for node in self.nodes:
+            node_probabilities_i = {
+                **node_probabilities,
+                **{node: np.ones_like(node_probabilities[node])},
+            }
+            guaranteed = self.system_probability(node_probabilities_i)
+            node_probabilities_i = {
+                **node_probabilities,
+                **{node: np.zeros_like(node_probabilities[node])},
+            }
+            guaranteed_not = self.system_probability(node_probabilities_i)
+            node_importance[node] = guaranteed - guaranteed_not
+        return node_importance
+
+    def _improvement_potential(
+        self, node_probabilities: dict[Any, ArrayLike]
+    ) -> dict[Any, float]:
+        """Returns the improvement potential of all nodes.
 
         Parameters
         ----------
         x : ArrayLike
             Time/s as a number or iterable
-        *args, **kwargs :
-            Any sf() arguments
 
         Returns
         -------
-        np.ndarray
-            Uneliability values for all nodes at all times x
+        dict[Any, float]
+            Dictionary with node names as keys and improvement potentials as
+            values
         """
-        return 1 - self.sf(x, *args, **kwargs)
+        node_importance = {}
+        for node in self.nodes:
+            node_probabilities_i = {
+                **node_probabilities,
+                **{node: np.ones_like(node_probabilities[node])},
+            }
+            when_working = self.system_probability(node_probabilities_i)
+            as_is = self.system_probability(node_probabilities)
+            node_importance[node] = when_working - as_is
+        return node_importance
 
-    def is_valid_RBD_structure(self) -> bool:
-        """Returns False if invalid RBD structure
+    def _risk_achievement_worth(
+        self, node_probabilities: dict[Any, ArrayLike]
+    ) -> dict[Any, float]:
+        """Returns the RAW importance per Modarres & Kaminskiy. That is RAW_i =
+        (unreliability of system given i failed) /
+        (nominal system unreliability).
 
-        Invalid RBD structure includes:
-        - having cycles present
-        - a non-input/output node having no in/out-nodes
+        Parameters
+        ----------
+        x : ArrayLike
+            Time/s as a number or iterable
 
         Returns
         -------
-        bool
-            True
+        dict[Any, float]
+            Dictionary with node names as keys and RAW importances as values
         """
-        has_circular_dependency = not nx.is_directed_acyclic_graph(self.G)
-        node_degrees: dict = defaultdict(lambda: defaultdict(int))
+        node_importance = {}
+        as_is = 1 - self.system_probability(node_probabilities)
+        for node in self.nodes:
+            node_probabilities_i = {
+                **node_probabilities,
+                **{node: np.zeros_like(node_probabilities[node])},
+            }
+            when_failed = 1 - self.system_probability(node_probabilities_i)
+            node_importance[node] = when_failed / as_is
+        return node_importance
 
-        for edge in self.G.edges:
-            source, target = edge
-            node_degrees[source]["out"] += 1
-            node_degrees[target]["in"] += 1
+    def _risk_reduction_worth(
+        self, node_probabilities: dict[Any, ArrayLike]
+    ) -> dict[Any, float]:
+        """Returns the RRW importance per Modarres & Kaminskiy. That is RRW_i =
+        (nominal unreliability of system) /
+        (unreliability of system given i is working).
 
-        input_nodes = [n for n in node_degrees.values() if n["in"] == 0]
-        output_nodes = [n for n in node_degrees.values() if n["out"] == 0]
-        has_node_with_no_input = len(input_nodes) != 1
-        has_node_with_no_output = len(output_nodes) != 1
-        if not any(
-            [
-                has_circular_dependency,
-                has_node_with_no_input,
-                has_node_with_no_output,
-            ]
-        ):
+        Parameters
+        ----------
+        x : ArrayLike
+            Time/s as a number or iterable
 
-            self.rbd_structural_errors = None
-            return True
+        Returns
+        -------
+        dict[Any, float]
+            Dictionary with node names as keys and RRW importances as values
+        """
+        node_importance = {}
+        as_is = 1 - self.system_probability(node_probabilities)
+        for node in self.nodes:
+            node_probabilities_i = {
+                **node_probabilities,
+                **{node: np.ones_like(node_probabilities[node])},
+            }
+            working = 1 - self.system_probability(node_probabilities_i)
+            node_importance[node] = as_is / working
+        return node_importance
+
+    def _criticality_importance(
+        self, node_probabilities: dict[Any, ArrayLike]
+    ) -> dict[Any, float]:
+        """Returns the criticality importance of all nodes at time/s x.
+
+        Parameters
+        ----------
+        x : int | float | Iterable[int  |  float]
+            Time/s as a number or iterable
+
+        Returns
+        -------
+        dict[Any, float]
+            Dictionary with node names as keys and criticality importances as
+            values
+        """
+        bi = self._birnbaum_importance(node_probabilities)
+        node_importance = {}
+        system_sf = self.system_probability(node_probabilities)
+        for node in self.nodes:
+            node_importance[node] = (
+                bi[node] * node_probabilities[node] / system_sf
+            )
+        return node_importance
+
+    def _fussel_vesely(
+        self,
+        node_probabilities: dict[Any, ArrayLike],
+        fv_type: str = "c",
+        approx: bool = True,
+    ) -> dict[Any, np.ndarray]:
+        """Calculate Fussel-Vesely importance of all components at time/s x.
+
+        Briefly, the Fussel-Vesely importance measure for node i =
+        (sum of probabilities of cut-sets including node i occuring/failing) /
+        (the probability of the system failing).
+
+        Typically this measure is implemented using cut-sets as mentioned
+        above, although the measure can be implemented using path-sets. Both
+        are implemented here.
+
+        fv_type dictates the method:
+            "c" - cut-set
+            "p" - path-set
+
+        Parameters
+        ----------
+        x : ArrayLike
+            Time/s as a number or iterable
+        fv_type : str, optional
+            Dictates the method of calculation, 'c' = cut-set and
+            'p' = path-set, by default "c"
+        approx: bool, optional
+            If True uses the sum of failure probabilities as the approximate
+            solution to the (1 - PI(1 - Q)) product, by default True
+
+        Returns
+        -------
+        dict[Any, np.ndarray]
+            Dictionary with node names as keys and fussel-vessely importances
+            as values
+
+        Raises
+        ------
+        ValueError
+            TODO
+        NotImplementedError
+            TODO
+        """
+        # Get node-sets based on what method was requested
+        if fv_type == "c":
+            node_sets = self.get_min_cut_sets()
+        elif fv_type == "p":
+            node_sets = {
+                frozenset(path_set)
+                for path_set in self.get_min_path_sets(
+                    include_in_out_nodes=False
+                )
+            }
         else:
-            errors = ""
-            if has_circular_dependency:
-                errors += "- Has circular logic \n"
-            if has_node_with_no_input:
-                errors += "- Has nodes with no predecessor\n"
-            if has_node_with_no_output:
-                errors += "- Has nodes with no successor\n"
-            self.rbd_structural_errors = errors
-            return False
+            raise ValueError(
+                f"fv_type must be either 'c' (cut-set) or 'p' (path-set), \
+                fv_type={fv_type} was given."
+            )
 
-    def get_component_names(self) -> list[Hashable]:
-        """Simply returns the list component names of the RBD."""
-        return list(self.reliability.keys())
+        # Get system unreliability, this will be the denominator for all node
+        # importance calcs
+        system_probability_complement = 1 - self.system_probability(
+            node_probabilities
+        )
+
+        # The return dict
+        node_importance: dict[Any, np.ndarray] = {}
+
+        # For each node,
+        for this_node in self.nodes:
+            # Sum up the probabilities of the node_sets containing the node
+            # from failing
+            node_fv_numerator = 0 if approx else 1
+            for node_set in node_sets:
+                node_set_fail_prob = 1
+                if this_node not in node_set:
+                    continue
+                else:
+                    for other_node in node_set:
+                        node_set_fail_prob *= (
+                            1 - node_probabilities[other_node]
+                        )
+                if approx:
+                    node_fv_numerator += node_set_fail_prob
+                else:
+                    node_fv_numerator *= 1 - node_set_fail_prob
+
+            node_fv_numerator = (
+                node_fv_numerator if approx else 1 - node_fv_numerator
+            )
+            node_importance[this_node] = (
+                node_fv_numerator / system_probability_complement
+            )
+        return node_importance

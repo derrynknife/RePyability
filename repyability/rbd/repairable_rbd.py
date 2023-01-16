@@ -493,7 +493,7 @@ class RepairableRBD(RBD):
         # and get the BDD variable reference
         bdd_vars = {}
         bdd_c_vars = {}
-        for component in self.get_component_names():
+        for component in self.get_nodes_names():
             bdd.declare(component)
             bdd_vars[component] = bdd.var(component)
             bdd_c.declare(component)
