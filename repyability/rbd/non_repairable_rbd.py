@@ -1,6 +1,7 @@
 from copy import copy
 from typing import Any, Collection, Dict, Hashable, Iterable
 
+import networkx as nx
 import numpy as np
 from numpy.typing import ArrayLike
 from surpyval import NonParametric
@@ -28,8 +29,7 @@ class NonRepairableRBD(RBD):
     def __init__(
         self,
         edges: Iterable[tuple[Hashable, Hashable]],
-        reliabilities: dict[Any, Any] = {},
-        # nodes: dict[Any, Any],
+        reliabilities: dict[Any, Any],
         k: dict[Any, int] = {},
     ):
         reliabilities = copy(reliabilities)
@@ -53,28 +53,30 @@ class NonRepairableRBD(RBD):
                 if stop in repeated:
                     stop = repeated[stop]
                 new_edges.append((start, stop))
+            if list(nx.simple_cycles(nx.DiGraph(new_edges))) != []:
+                raise ValueError("Cycle due to repeated components")
             super().__init__(new_edges)
 
         reliabilities[self.input_node] = PerfectReliability
         reliabilities[self.output_node] = PerfectReliability
 
-        # Check args are complete, will raise ValueError if not
-        # check_rbd_node_args_complete(nodes, reliability, edges)
-
         # Set the node k values (k-out-of-n)
-        print(repeated)
         for node, k_val in k.items():
             if node in repeated:
                 raise ValueError("Repated node cannot be a K-out-of-N node")
             self.G.nodes[node]["k"] = k_val
 
-        # Copy the components and nodes
-        # nodes = copy(nodes)
-
-        # Check that all nodes in graph were in the nodes list.
+        # Check that all nodes in graph were in the reliabilities dict and
+        # vice versa
+        node_set = set(reliabilities.keys())
         for n in self.G.nodes:
             if n not in reliabilities:
                 raise ValueError("Node {} not in reliabilities dict".format(n))
+            else:
+                node_set.remove(n)
+
+        if len(node_set) > 0:
+            raise ValueError("Nodes {} not in edge list".format(node_set))
 
         self.reliabilities = reliabilities
         self.repeated = repeated
@@ -90,7 +92,7 @@ class NonRepairableRBD(RBD):
             elif node == PerfectUnreliability:
                 continue
             else:
-                # when Parametric
+                # when node is a Parametric model
                 if isinstance(node, StandbyModel):
                     is_fixed = [False]
                     break
