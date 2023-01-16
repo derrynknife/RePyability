@@ -32,7 +32,7 @@ def min_path_sets(
     """
 
     # Base case: if curr_node is the input_node then return the input_node
-    if rbd_graph.nodes[curr_node]["type"] == "input_node":
+    if rbd_graph.in_degree(curr_node) == 0:
         ret_list = [{curr_node}]
         # Store in the solns dict, and return
         solns[curr_node] = copy.deepcopy(ret_list)
