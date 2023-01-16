@@ -190,16 +190,14 @@ class RepairableRBD(RBD):
             elif comp in broken_components:
                 component_availability[comp] = np.float64(0.0)
             else:
-                Av_c = self.components[comp].mean_availability()
-                Av_c = Av_c if method == "p" else 1 - Av_c
-                component_availability[comp] = Av_c
+                component_availability[comp] = self.components[
+                    comp
+                ].mean_availability()
 
         for comp in self.in_or_out:
-            Av_c = np.float64(1.0)
-            Av_c = Av_c if method == "p" else 1 - Av_c
-            component_availability[comp] = Av_c
+            component_availability[comp] = np.float64(1.0)
 
-        return self.system_probability(component_availability)
+        return self.system_probability(component_availability, method=method)
 
     def next_event(self, method="p"):
         # This method allows a user to extract the next system status

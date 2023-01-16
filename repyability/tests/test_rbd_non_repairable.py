@@ -1,6 +1,3 @@
-from collections import defaultdict
-
-import numpy as np
 import pytest
 import surpyval as surv
 
@@ -32,6 +29,7 @@ def test_excess_nodes():
     except Exception as e:
         assert str(e) == "Node 5 not in reliabilities dict"
 
+
 def test_excess_reliabilities():
     """
     Checks that a ValueError is raised when a component isn't provided
@@ -57,8 +55,9 @@ def test_excess_reliabilities():
 
     try:
         NonRepairableRBD(edges, reliabilities)
-    except Exception as e:
+    except Exception as e:  # noqa
         assert str(e) == "Nodes {7} not in edge list"
+
 
 def test_matching_inputs():
     """

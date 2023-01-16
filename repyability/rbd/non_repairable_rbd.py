@@ -12,7 +12,7 @@ from .standby_node import StandbyModel
 
 
 def check_x(func):
-    """Decorator that reports the execution time."""
+    """Handles a none or ArrayLike x value"""
 
     def wrap(obj, x=None, *args, **kwargs):
         if not obj.time_varying_rbd():
