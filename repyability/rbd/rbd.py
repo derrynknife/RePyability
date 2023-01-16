@@ -283,25 +283,49 @@ class RBD:
         return system_prob
 
     def allocate_probability(
-        self, target: float, node_probabilities: Dict = None
+        self, target: float, node_probabilities: Dict = None, fixed: list = []
     ):
 
         if node_probabilities is None:
             node_probabilities = {}
             for node in self.nodes:
-                node_probabilities[node] = 0.5
+                node_probabilities[node] = np.atleast_1d(0.5)
             for node in self.in_or_out:
-                node_probabilities[node] = 1.0
+                node_probabilities[node] = np.atleast_1d(1.0)
+        else:
+            for n, v in node_probabilities.items():
+                node_probabilities[n] = np.atleast_1d(v)
+
+            for n in self.nodes:
+                if n not in node_probabilities:
+                    node_probabilities[n] = np.atleast_1d(0.5)
+
+            for node in self.in_or_out:
+                node_probabilities[node] = np.atleast_1d(1.0)
 
         def func(x):
             scaled_probabilities = scale_probability_dict(
-                node_probabilities, x
+                {
+                    k: v
+                    for k, v in node_probabilities.items()
+                    if k not in fixed
+                },
+                x,
             )
+            scaled_probabilities = {
+                **node_probabilities,
+                **scaled_probabilities,
+            }
+
             current = self.system_probability(scaled_probabilities, method="p")
             return (current - target) ** 2
 
         res = minimize(func, 1.0, tol=1e-10)
-        out = scale_probability_dict(node_probabilities, res["x"].item())
+        out = scale_probability_dict(
+            {k: v for k, v in node_probabilities.items() if k not in fixed},
+            res["x"].item(),
+        )
+        out = {**node_probabilities, **out}
         out = {k: v.item() for k, v in out.items()}
         return out
 
