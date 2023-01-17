@@ -1,3 +1,4 @@
+from collections import defaultdict
 from copy import copy
 from itertools import combinations, product
 from typing import Any, Dict, Hashable, Iterable, Iterator, Optional
@@ -18,10 +19,12 @@ def log_linearly_scale_probabilities(p, x):
         return np.atleast_1d(1 - np.exp(-(-np.log(1 - p) + x)))
 
 
-def scale_probability_dict(node_probabilities, x):
+def scale_probability_dict(node_probabilities, x, weights=None):
     out = {}
+    if weights is None:
+        weights = defaultdict(lambda: 1.0)
     for k, p in node_probabilities.items():
-        out[k] = log_linearly_scale_probabilities(p, x)
+        out[k] = log_linearly_scale_probabilities(p, x*weights[k])
     return out
 
 
@@ -283,7 +286,11 @@ class RBD:
         return system_prob
 
     def allocate_probability(
-        self, target: float, node_probabilities: Dict = None, fixed: list = []
+        self,
+        target: float,
+        node_probabilities: Dict = None,
+        fixed: list = [],
+        weights=None,
     ):
 
         if node_probabilities is None:
@@ -311,6 +318,7 @@ class RBD:
                     if k not in fixed
                 },
                 x,
+                weights,
             )
             scaled_probabilities = {
                 **node_probabilities,
@@ -324,6 +332,7 @@ class RBD:
         out = scale_probability_dict(
             {k: v for k, v in node_probabilities.items() if k not in fixed},
             res["x"].item(),
+            weights,
         )
         out = {**node_probabilities, **out}
         out = {k: v.item() for k, v in out.items()}
