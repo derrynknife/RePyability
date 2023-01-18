@@ -6,10 +6,32 @@ from typing import Any, Dict, Hashable, Iterable, Iterator, Optional
 import networkx as nx
 import numpy as np
 from numpy.typing import ArrayLike
-from scipy.optimize import minimize
+from scipy.optimize import minimize, root
 
 from repyability.rbd.min_path_sets import min_path_sets
 from repyability.rbd.rbd_graph import RBDGraph
+
+
+def sigmoid(x):
+    return 1 / (1 + np.exp(-x))
+
+
+def sigmoid_inv(x):
+    return np.log(x / (1.0 - x))
+
+
+def check_probability(func):
+    """checks probability is between 0 and 1"""
+
+    def wrap(obj, target: float, *args, **kwargs):
+        if target > 1:
+            raise ValueError("target cannot be above 1.")
+        elif target < 0:
+            raise ValueError("target cannot be below 0.")
+        else:
+            return func(obj, target, *args, **kwargs)
+
+    return wrap
 
 
 def log_linearly_scale_probabilities(p, x):
@@ -24,7 +46,7 @@ def scale_probability_dict(node_probabilities, x, weights=None):
     if weights is None:
         weights = defaultdict(lambda: 1.0)
     for k, p in node_probabilities.items():
-        out[k] = log_linearly_scale_probabilities(p, x*weights[k])
+        out[k] = log_linearly_scale_probabilities(p, x * weights[k])
     return out
 
 
@@ -157,6 +179,16 @@ class RBD:
 
         return set(min_cut_sets)
 
+    def path_set_probabilities(self, node_probabilities):
+        path_sets = self.get_min_path_sets(include_in_out_nodes=False)
+        out = []
+        for path in path_sets:
+            path_prob = 1
+            for node in path:
+                path_prob *= node_probabilities[node]
+            out.append(path_prob)
+        return np.array(out)
+
     def system_probability(
         self,
         node_probabilities: Dict,
@@ -201,7 +233,7 @@ class RBD:
 
         node_probabilities = copy(node_probabilities)
         lengths = []
-        for node in self.G.nodes:
+        for node in self.nodes:
             node_array = np.array(node_probabilities[node])
             node_probabilities[node] = node_array
             lengths.append(node_array.shape)
@@ -225,10 +257,10 @@ class RBD:
         # method="c")
         node_sets: set[frozenset]
         if method == "p":
-            node_sets = self.get_min_path_sets()
+            node_sets = self.get_min_path_sets(include_in_out_nodes=False)
         else:
             # method == "c"
-            node_sets = self.get_min_cut_sets()
+            node_sets = self.get_min_cut_sets(include_in_out_nodes=False)
             node_probabilities = {
                 k: 1 - v for k, v in node_probabilities.items()
             }
@@ -285,30 +317,25 @@ class RBD:
         # Otherwise for the pathset method it's already the reliability
         return system_prob
 
-    def allocate_probability(
+    @check_probability
+    def improvement_allocation(
         self,
         target: float,
-        node_probabilities: Dict = None,
+        node_probabilities: Dict,
         fixed: list = [],
         weights=None,
     ):
+        node_probabilities = copy(node_probabilities)
 
-        if node_probabilities is None:
-            node_probabilities = {}
-            for node in self.nodes:
-                node_probabilities[node] = np.atleast_1d(0.5)
-            for node in self.in_or_out:
-                node_probabilities[node] = np.atleast_1d(1.0)
-        else:
-            for n, v in node_probabilities.items():
-                node_probabilities[n] = np.atleast_1d(v)
+        for n, v in node_probabilities.items():
+            node_probabilities[n] = np.atleast_1d(v)
 
-            for n in self.nodes:
-                if n not in node_probabilities:
-                    node_probabilities[n] = np.atleast_1d(0.5)
+        for n in self.nodes:
+            if n not in node_probabilities:
+                node_probabilities[n] = np.atleast_1d(0.5)
 
-            for node in self.in_or_out:
-                node_probabilities[node] = np.atleast_1d(1.0)
+        # for node in self.in_or_out:
+        # node_probabilities[node] = np.atleast_1d(1.0)
 
         def func(x):
             scaled_probabilities = scale_probability_dict(
@@ -326,9 +353,11 @@ class RBD:
             }
 
             current = self.system_probability(scaled_probabilities, method="p")
-            return (current - target) ** 2
+            return current - target
 
-        res = minimize(func, 1.0, tol=1e-10)
+        # Using root
+        res = root(func, 1.0, tol=1e-10, method="lm")
+        self.res = res
         out = scale_probability_dict(
             {k: v for k, v in node_probabilities.items() if k not in fixed},
             res["x"].item(),
@@ -337,6 +366,46 @@ class RBD:
         out = {**node_probabilities, **out}
         out = {k: v.item() for k, v in out.items()}
         return out
+
+    @check_probability
+    def equal_allocation(self, target: float):
+        node_probabilities = {}
+        for node in self.nodes:
+            node_probabilities[node] = np.atleast_1d(0.5)
+
+        return self.improvement_allocation(target, node_probabilities)
+
+    @check_probability
+    def simple_allocation(
+        self,
+        target: float,
+        weights=None,
+    ):
+        node_array_indices = {k: i for i, k in enumerate(self.nodes)}
+
+        if weights is None:
+            weights = {n: 1.0 for n in self.nodes}
+
+        def func(node_probabilities_array):
+            node_probabilities = {
+                node: sigmoid(
+                    1 * node_probabilities_array[node_array_indices[node]]
+                )
+                for node in self.nodes
+            }
+            system_probability = self.system_probability(node_probabilities)
+            system_loss = target - system_probability
+            return system_loss**2
+
+        res = minimize(func, np.zeros(len(self.nodes)), tol=1e-20)
+
+        node_probabilities = {
+            node: sigmoid(1 * res["x"][node_array_indices[node]])
+            for node in self.nodes
+        }
+
+        self.res = res
+        return node_probabilities
 
     def get_nodes_names(self) -> list[Hashable]:
         """Simply returns the list component names of the RBD."""
