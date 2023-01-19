@@ -42,8 +42,7 @@ jobs:
         run: flake8 $SRC
       
       - name: mypy
-        # Ignore untyped libraries scipy, networkx, and surpyval
-        run: mypy --ignore-missing-imports $SRC
+        run: mypy $SRC
       
       - name: black
         run:
