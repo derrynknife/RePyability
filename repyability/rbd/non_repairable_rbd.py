@@ -1,5 +1,5 @@
 from copy import copy
-from typing import Any, Collection, Dict, Hashable, Iterable
+from typing import Any, Collection, Dict, Hashable, Iterable, Optional
 
 import networkx as nx
 import numpy as np
@@ -112,7 +112,7 @@ class NonRepairableRBD(RBD):
     @check_x
     def sf(
         self,
-        x: ArrayLike = None,
+        x: Optional[ArrayLike] = None,
         working_nodes: Collection[Hashable] = [],
         broken_nodes: Collection[Hashable] = [],
         method: str = "c",
@@ -203,7 +203,7 @@ class NonRepairableRBD(RBD):
 
         return self.system_probability(node_probabilities, method=method)
 
-    def ff(self, x: ArrayLike = None, *args, **kwargs):
+    def ff(self, x: Optional[ArrayLike] = None, *args, **kwargs):
         """Returns the system unreliability for time/s x.
 
         Parameters
@@ -220,7 +220,7 @@ class NonRepairableRBD(RBD):
         """
         return 1 - self.sf(x, *args, **kwargs)
 
-    def unreliability(self, x: ArrayLike = None, *args, **kwargs):
+    def unreliability(self, x: Optional[ArrayLike] = None, *args, **kwargs):
         """Returns the system unreliability for time/s x.
 
         Parameters
@@ -237,7 +237,7 @@ class NonRepairableRBD(RBD):
         """
         return 1 - self.sf(x, *args, **kwargs)
 
-    def reliability(self, x: ArrayLike = None, *args, **kwargs):
+    def reliability(self, x: Optional[ArrayLike] = None, *args, **kwargs):
         """Returns the system reliability for time/s x.
 
         Parameters
@@ -256,7 +256,7 @@ class NonRepairableRBD(RBD):
 
     @check_x
     def sf_by_node(
-        self, x: ArrayLike = None, *args, **kwargs
+        self, x: Optional[ArrayLike] = None, *args, **kwargs
     ) -> Dict[Any, np.ndarray]:
 
         # The return dict
@@ -271,7 +271,7 @@ class NonRepairableRBD(RBD):
         return node_sf
 
     def ff_by_node(
-        self, x: ArrayLike = None, *args, **kwargs
+        self, x: Optional[ArrayLike] = None, *args, **kwargs
     ) -> Dict[Any, np.ndarray]:
 
         # The return dict
@@ -289,7 +289,9 @@ class NonRepairableRBD(RBD):
     # Importance measures
     # https://www.ntnu.edu/documents/624876/1277590549/chapt05.pdf/82cd565f-fa2f-43e4-a81a-095d95d39272
     @check_x
-    def birnbaum_importance(self, x: ArrayLike = None) -> dict[Any, float]:
+    def birnbaum_importance(
+        self, x: Optional[ArrayLike] = None
+    ) -> dict[Any, float]:
         """Returns the Birnbaum measure of importance for all nodes.
 
         Note: Birnbaum's measure of importance assumes all nodes are
@@ -313,7 +315,9 @@ class NonRepairableRBD(RBD):
 
     # TODO: update all importance measures to allow for component as well
     @check_x
-    def improvement_potential(self, x: ArrayLike = None) -> dict[Any, float]:
+    def improvement_potential(
+        self, x: Optional[ArrayLike] = None
+    ) -> dict[Any, float]:
         """Returns the improvement potential of all nodes.
 
         Parameters
@@ -331,7 +335,9 @@ class NonRepairableRBD(RBD):
         return super()._improvement_potential(node_probabilities)
 
     @check_x
-    def risk_achievement_worth(self, x: ArrayLike = None) -> dict[Any, float]:
+    def risk_achievement_worth(
+        self, x: Optional[ArrayLike] = None
+    ) -> dict[Any, float]:
         """Returns the RAW importance per Modarres & Kaminskiy. That is RAW_i =
         (unreliability of system given i failed) /
         (nominal system unreliability).
@@ -350,7 +356,9 @@ class NonRepairableRBD(RBD):
         return super()._risk_achievement_worth(node_probabilities)
 
     @check_x
-    def risk_reduction_worth(self, x: ArrayLike = None) -> dict[Any, float]:
+    def risk_reduction_worth(
+        self, x: Optional[ArrayLike] = None
+    ) -> dict[Any, float]:
         """Returns the RRW importance per Modarres & Kaminskiy. That is RRW_i =
         (nominal unreliability of system) /
         (unreliability of system given i is working).
@@ -369,7 +377,9 @@ class NonRepairableRBD(RBD):
         return super()._risk_reduction_worth(node_probabilities)
 
     @check_x
-    def criticality_importance(self, x: ArrayLike = None) -> dict[Any, float]:
+    def criticality_importance(
+        self, x: Optional[ArrayLike] = None
+    ) -> dict[Any, float]:
         """Returns the criticality importance of all nodes at time/s x.
 
         Parameters
@@ -388,7 +398,7 @@ class NonRepairableRBD(RBD):
 
     @check_x
     def fussel_vesely(
-        self, x: ArrayLike = None, fv_type: str = "c"
+        self, x: Optional[ArrayLike] = None, fv_type: str = "c"
     ) -> dict[Any, np.ndarray]:
         """Calculate Fussel-Vesely importance of all components at time/s x.
 
