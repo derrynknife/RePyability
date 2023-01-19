@@ -30,7 +30,7 @@ Uses pytest fixtures located in conftest.py in the tests/ directory.
 #     for i in range(10):
 #         target = rand()
 #         allocated_probs = rbd.allocate_probability(target)
-#         assert pytest.approx(allocated_probs[1], rel=1e-3) == target ** (1 / 6)
+#       assert pytest.approx(allocated_probs[1], rel=1e-3) == target ** (1 / 6)
 
 
 # Test that allocation to a parallel system works.
