@@ -8,6 +8,13 @@ profile = "black"
 
 # mypy
 [tool.mypy]
+
+[[tool.mypy.overrides]]
+module = [
+    'scipy.*',
+    'networkx',
+    'dd'
+]
 ignore_missing_imports = true
 
 # Coverage
