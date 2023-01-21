@@ -232,13 +232,12 @@ class RBD:
         """
 
         node_probabilities = copy(node_probabilities)
-        lengths = []
+        lengths = np.array([])
         for node in self.nodes:
             node_array = np.array(node_probabilities[node])
             node_probabilities[node] = node_array
-            lengths.append(node_array.shape)
-        lengths = np.array(lengths)
-        if (lengths[0] != lengths[1:]).any():
+            lengths = np.append(lengths, node_array.shape)
+        if np.any(lengths[0] != lengths[1:]):
             raise ValueError("Probability arrays must be same length")
         else:
             # get shape of input array
@@ -413,7 +412,7 @@ class RBD:
 
     def _birnbaum_importance(
         self, node_probabilities: dict[Any, ArrayLike]
-    ) -> dict[Any, ArrayLike]:
+    ) -> dict[Any, np.ndarray]:
         """Returns the Birnbaum measure of importance for all nodes.
 
         Note: Birnbaum's measure of importance assumes all nodes are
@@ -434,7 +433,7 @@ class RBD:
             values
         """
 
-        node_importance = {}
+        node_importance: dict[Any, np.ndarray] = {}
         for node in self.nodes:
             node_probabilities_i = {
                 **node_probabilities,
@@ -445,13 +444,15 @@ class RBD:
                 **node_probabilities,
                 **{node: np.zeros_like(node_probabilities[node])},
             }
-            guaranteed_not = self.system_probability(node_probabilities_i)
+            guaranteed_not: np.ndarray = self.system_probability(
+                node_probabilities_i
+            )
             node_importance[node] = guaranteed - guaranteed_not
         return node_importance
 
     def _improvement_potential(
         self, node_probabilities: dict[Any, ArrayLike]
-    ) -> dict[Any, float]:
+    ) -> dict[Any, np.ndarray]:
         """Returns the improvement potential of all nodes.
 
         Parameters
@@ -465,20 +466,20 @@ class RBD:
             Dictionary with node names as keys and improvement potentials as
             values
         """
-        node_importance = {}
+        node_importance: dict[Any, np.ndarray] = {}
         for node in self.nodes:
             node_probabilities_i = {
                 **node_probabilities,
                 **{node: np.ones_like(node_probabilities[node])},
             }
             when_working = self.system_probability(node_probabilities_i)
-            as_is = self.system_probability(node_probabilities)
+            as_is: np.ndarray = self.system_probability(node_probabilities)
             node_importance[node] = when_working - as_is
         return node_importance
 
     def _risk_achievement_worth(
         self, node_probabilities: dict[Any, ArrayLike]
-    ) -> dict[Any, float]:
+    ) -> dict[Any, np.ndarray]:
         """Returns the RAW importance per Modarres & Kaminskiy. That is RAW_i =
         (unreliability of system given i failed) /
         (nominal system unreliability).
@@ -493,8 +494,8 @@ class RBD:
         dict[Any, float]
             Dictionary with node names as keys and RAW importances as values
         """
-        node_importance = {}
-        as_is = 1 - self.system_probability(node_probabilities)
+        node_importance: dict[Any, np.ndarray] = {}
+        as_is: np.ndarray = 1 - self.system_probability(node_probabilities)
         for node in self.nodes:
             node_probabilities_i = {
                 **node_probabilities,
@@ -506,7 +507,7 @@ class RBD:
 
     def _risk_reduction_worth(
         self, node_probabilities: dict[Any, ArrayLike]
-    ) -> dict[Any, float]:
+    ) -> dict[Any, np.ndarray]:
         """Returns the RRW importance per Modarres & Kaminskiy. That is RRW_i =
         (nominal unreliability of system) /
         (unreliability of system given i is working).
@@ -521,8 +522,8 @@ class RBD:
         dict[Any, float]
             Dictionary with node names as keys and RRW importances as values
         """
-        node_importance = {}
-        as_is = 1 - self.system_probability(node_probabilities)
+        node_importance: dict[Any, np.ndarray] = {}
+        as_is: np.ndarray = 1 - self.system_probability(node_probabilities)
         for node in self.nodes:
             node_probabilities_i = {
                 **node_probabilities,
@@ -534,7 +535,7 @@ class RBD:
 
     def _criticality_importance(
         self, node_probabilities: dict[Any, ArrayLike]
-    ) -> dict[Any, float]:
+    ) -> dict[Any, np.ndarray]:
         """Returns the criticality importance of all nodes at time/s x.
 
         Parameters
@@ -548,9 +549,11 @@ class RBD:
             Dictionary with node names as keys and criticality importances as
             values
         """
-        bi = self._birnbaum_importance(node_probabilities)
-        node_importance = {}
-        system_sf = self.system_probability(node_probabilities)
+        bi: dict[Any, np.ndarray] = self._birnbaum_importance(
+            node_probabilities
+        )
+        node_importance: dict[Any, np.ndarray] = {}
+        system_sf: np.ndarray = self.system_probability(node_probabilities)
         for node in self.nodes:
             node_importance[node] = (
                 bi[node] * node_probabilities[node] / system_sf
@@ -601,6 +604,18 @@ class RBD:
         NotImplementedError
             TODO
         """
+        node_probabilities_new: dict[Any, np.ndarray] = {}
+        lengths = np.array([])
+        for k, v in node_probabilities.items():
+            node_probabilities_new[k] = np.atleast_1d(v)
+            lengths = np.append(lengths, len(node_probabilities_new[k]))
+
+        if np.any(lengths[0] != lengths[1:]):
+            raise ValueError("Probability arrays must be same length")
+        else:
+            # get shape of input array
+            array_shape = lengths[0]
+
         # Get node-sets based on what method was requested
         if fv_type == "c":
             node_sets = self.get_min_cut_sets()
@@ -619,9 +634,9 @@ class RBD:
 
         # Get system unreliability, this will be the denominator for all node
         # importance calcs
-        system_probability_complement = 1 - self.system_probability(
-            node_probabilities
-        )
+        system_probability_complement = np.float64(
+            1.0
+        ) - self.system_probability(node_probabilities_new)
 
         # The return dict
         node_importance: dict[Any, np.ndarray] = {}
@@ -630,20 +645,25 @@ class RBD:
         for this_node in self.nodes:
             # Sum up the probabilities of the node_sets containing the node
             # from failing
-            node_fv_numerator = 0 if approx else 1
+            node_fv_numerator = (
+                np.zeros(array_shape) if approx else np.ones(array_shape)
+            )
             for node_set in node_sets:
-                node_set_fail_prob = 1
+                node_set_fail_prob = np.ones(array_shape)
                 if this_node not in node_set:
                     continue
                 else:
                     for other_node in node_set:
                         node_set_fail_prob *= (
-                            1 - node_probabilities[other_node]
+                            np.ones(array_shape)
+                            - node_probabilities_new[other_node]
                         )
                 if approx:
                     node_fv_numerator += node_set_fail_prob
                 else:
-                    node_fv_numerator *= 1 - node_set_fail_prob
+                    node_fv_numerator *= (
+                        np.ones(array_shape) - node_set_fail_prob
+                    )
 
             node_fv_numerator = (
                 node_fv_numerator if approx else 1 - node_fv_numerator

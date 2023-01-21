@@ -203,7 +203,7 @@ class NonRepairableRBD(RBD):
 
         return self.system_probability(node_probabilities, method=method)
 
-    def ff(self, x: Optional[ArrayLike] = None, *args, **kwargs):
+    def ff(self, x: Optional[ArrayLike] = None, *args, **kwargs) -> np.ndarray:
         """Returns the system unreliability for time/s x.
 
         Parameters
@@ -291,7 +291,7 @@ class NonRepairableRBD(RBD):
     @check_x
     def birnbaum_importance(
         self, x: Optional[ArrayLike] = None
-    ) -> dict[Any, float]:
+    ) -> dict[Any, np.ndarray]:
         """Returns the Birnbaum measure of importance for all nodes.
 
         Note: Birnbaum's measure of importance assumes all nodes are
@@ -317,7 +317,7 @@ class NonRepairableRBD(RBD):
     @check_x
     def improvement_potential(
         self, x: Optional[ArrayLike] = None
-    ) -> dict[Any, float]:
+    ) -> dict[Any, np.ndarray]:
         """Returns the improvement potential of all nodes.
 
         Parameters
@@ -337,7 +337,7 @@ class NonRepairableRBD(RBD):
     @check_x
     def risk_achievement_worth(
         self, x: Optional[ArrayLike] = None
-    ) -> dict[Any, float]:
+    ) -> dict[Any, np.ndarray]:
         """Returns the RAW importance per Modarres & Kaminskiy. That is RAW_i =
         (unreliability of system given i failed) /
         (nominal system unreliability).
@@ -358,7 +358,7 @@ class NonRepairableRBD(RBD):
     @check_x
     def risk_reduction_worth(
         self, x: Optional[ArrayLike] = None
-    ) -> dict[Any, float]:
+    ) -> dict[Any, np.ndarray]:
         """Returns the RRW importance per Modarres & Kaminskiy. That is RRW_i =
         (nominal unreliability of system) /
         (unreliability of system given i is working).
@@ -379,7 +379,7 @@ class NonRepairableRBD(RBD):
     @check_x
     def criticality_importance(
         self, x: Optional[ArrayLike] = None
-    ) -> dict[Any, float]:
+    ) -> dict[Any, np.ndarray]:
         """Returns the criticality importance of all nodes at time/s x.
 
         Parameters

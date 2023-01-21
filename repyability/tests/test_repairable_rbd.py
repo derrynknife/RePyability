@@ -138,7 +138,7 @@ def test_repairable_rbd_availability_one_component_10N():
 
     # Form expected availability
     # At t=0, availability=1 (it starts working)
-    exp_timeline = defaultdict(lambda: 0)
+    exp_timeline: defaultdict = defaultdict(lambda: 0)
 
     # Perform 10 simulations
     n_simulations = 1

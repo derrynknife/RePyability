@@ -13,7 +13,9 @@ profile = "black"
 module = [
     'scipy.*',
     'networkx',
-    'dd'
+    'dd',
+    'surpyval.*',
+    'tqdm',
 ]
 ignore_missing_imports = true
 

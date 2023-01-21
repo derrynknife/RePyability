@@ -183,7 +183,7 @@ class RepairableRBD(RBD):
         # https://www.diva-portal.org/smash/get/diva2:986067/FULLTEXT01.pdf
 
         # Cache all component reliabilities for efficiency
-        component_availability: dict[Hashable, np.ndarray] = {}
+        component_availability: dict[Hashable, np.float64] = {}
         for comp in self.components:
             if comp in working_components:
                 component_availability[comp] = np.float64(1.0)
@@ -197,7 +197,10 @@ class RepairableRBD(RBD):
         for comp in self.in_or_out:
             component_availability[comp] = np.float64(1.0)
 
-        return self.system_probability(component_availability, method=method)
+        mean_availability = self.system_probability(
+            component_availability, method=method
+        )
+        return mean_availability.item()
 
     def next_event(self, method="p"):
         # This method allows a user to extract the next system status
@@ -456,7 +459,7 @@ class RepairableRBD(RBD):
 
         return node_av
 
-    def birnbaum_importance(self) -> dict[Any, float]:
+    def birnbaum_importance(self) -> dict[Any, np.ndarray]:
         """Returns the Birnbaum measure of importance for all nodes.
 
         Note: Birnbaum's measure of importance assumes all nodes are
@@ -465,15 +468,14 @@ class RepairableRBD(RBD):
 
         Returns
         -------
-        dict[Any, float]
+        dict[Any, np.ndarray]
             Dictionary with node names as keys and Birnbaum importances as
             values
         """
         node_probabilities = self.node_availability()
         return super()._birnbaum_importance(node_probabilities)
 
-    # TODO: update all importance measures to allow for component as well
-    def improvement_potential(self) -> dict[Any, float]:
+    def improvement_potential(self) -> dict[Any, np.ndarray]:
         """Returns the improvement potential of all nodes.
 
         Returns
@@ -485,7 +487,7 @@ class RepairableRBD(RBD):
         node_probabilities = self.node_availability()
         return super()._improvement_potential(node_probabilities)
 
-    def risk_achievement_worth(self) -> dict[Any, float]:
+    def risk_achievement_worth(self) -> dict[Any, np.ndarray]:
         """Returns the RAW importance per Modarres & Kaminskiy. That is RAW_i =
         (unreliability of system given i failed) /
         (nominal system unreliability).
@@ -498,7 +500,7 @@ class RepairableRBD(RBD):
         node_probabilities = self.node_availability()
         return super()._risk_achievement_worth(node_probabilities)
 
-    def risk_reduction_worth(self) -> dict[Any, float]:
+    def risk_reduction_worth(self) -> dict[Any, np.ndarray]:
         """Returns the RRW importance per Modarres & Kaminskiy. That is RRW_i =
         (nominal unreliability of system) /
         (unreliability of system given i is working).
@@ -511,7 +513,7 @@ class RepairableRBD(RBD):
         node_probabilities = self.node_availability()
         return super()._risk_reduction_worth(node_probabilities)
 
-    def criticality_importance(self) -> dict[Any, float]:
+    def criticality_importance(self) -> dict[Any, np.ndarray]:
         """Returns the criticality importance of all nodes at time/s x.
 
         Returns

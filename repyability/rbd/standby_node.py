@@ -29,7 +29,7 @@ class StandbyModel:
             # reliability can be estimated from the sum
             # of each of the components in the node.
             # i.e. it will fail after all of them fail.
-            x_random = 0
+            x_random = np.zeros(size)
             for model in self.reliabilities:
                 x_random += model.random(size)
 
@@ -51,7 +51,7 @@ class StandbyModel:
             # with a non parametric estimate.
             x_random = np.zeros(size)
             for i in range(size):
-                pq = PriorityQueue()
+                pq: PriorityQueue = PriorityQueue()
                 # start k streams:
                 for node in self.reliabilities[: self.k]:
                     pq.put(node.random(1).item())

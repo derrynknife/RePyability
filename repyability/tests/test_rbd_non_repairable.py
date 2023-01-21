@@ -10,11 +10,11 @@ def test_excess_nodes():
     with a repairability distribution.
     """
     edges = [
-        [1, 2],
-        [2, 3],
-        [3, 4],
-        [4, 5],
-        [5, 6],
+        (1, 2),
+        (2, 3),
+        (3, 4),
+        (4, 5),
+        (5, 6),
     ]
     reliabilities = {
         2: surv.Weibull.from_params([10, 2]),
@@ -36,11 +36,11 @@ def test_excess_reliabilities():
     with a repairability distribution.
     """
     edges = [
-        [1, 2],
-        [2, 3],
-        [3, 4],
-        [4, 5],
-        [5, 6],
+        (1, 2),
+        (2, 3),
+        (3, 4),
+        (4, 5),
+        (5, 6),
     ]
     reliabilities = {
         2: surv.Weibull.from_params([10, 2]),
@@ -65,11 +65,11 @@ def test_matching_inputs():
     with a repairability distribution.
     """
     edges = [
-        [1, 2],
-        [2, 3],
-        [3, 4],
-        [4, 5],
-        [5, 6],
+        (1, 2),
+        (2, 3),
+        (3, 4),
+        (4, 5),
+        (5, 6),
     ]
     reliabilities = {
         2: surv.Weibull.from_params([10, 2]),
