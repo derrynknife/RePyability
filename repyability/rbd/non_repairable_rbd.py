@@ -1,14 +1,16 @@
 from copy import copy
+import json
 from typing import Any, Collection, Dict, Hashable, Iterable, Optional
 
 import networkx as nx
 import numpy as np
 from numpy.typing import ArrayLike
-from surpyval import NonParametric
+from surpyval import NonParametric, Distribution
 
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .rbd import RBD
 from .standby_node import StandbyModel
+from repyability import __version__
 
 
 def check_x(func):
@@ -29,7 +31,7 @@ class NonRepairableRBD(RBD):
     def __init__(
         self,
         edges: Iterable[tuple[Hashable, Hashable]],
-        reliabilities: dict[Any, Any],
+        reliabilities: dict[Any, Distribution],
         k: dict[Any, int] = {},
     ):
         reliabilities = copy(reliabilities)
@@ -445,3 +447,21 @@ class NonRepairableRBD(RBD):
             rel_dict[node_name] = node.sf(x)
 
         return super()._fussel_vesely(rel_dict, fv_type)
+
+    def save_to_json(self, filename: str):
+        # Construct reliabilities dict
+        # Really just {node_name: node_distribution.__}
+        reliabilities_dict = {
+            node: reliability.to_dict()
+            for node, reliability in self.reliabilities.items()
+        }
+
+        rbd_dict = {
+            "repyability_version": __version__,
+            "edges": list(self.G.edges()),
+            "reliabilities": reliabilities_dict,
+            # "k": TODO
+        }
+
+        with open(filename, "w") as f:
+            json.dump(rbd_dict, f)

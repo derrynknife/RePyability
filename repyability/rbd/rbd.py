@@ -1,3 +1,4 @@
+from abc import ABC, abstractmethod
 from collections import defaultdict
 from copy import copy
 from itertools import combinations, product
@@ -50,7 +51,7 @@ def scale_probability_dict(node_probabilities, x, weights=None):
     return out
 
 
-class RBD:
+class RBD(ABC):
     def __init__(
         self,
         edges: Iterable[tuple[Hashable, Hashable]],
@@ -94,6 +95,10 @@ class RBD:
 
         self.in_or_out = [self.input_node, self.output_node]
         self.nodes = [n for n in self.G.nodes if n not in self.in_or_out]
+
+    @abstractmethod
+    def save_to_json(self, filename: str):
+        pass
 
     def get_all_path_sets(self) -> Iterator[list[Hashable]]:
         """Gets all path sets from input_node to output_node

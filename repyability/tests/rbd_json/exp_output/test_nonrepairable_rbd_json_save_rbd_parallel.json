@@ -1,0 +1,15 @@
+{
+    "edges": [
+        [1, 2],
+        [1, 3],
+        [1, 4],
+        [2, 5],
+        [3, 5],
+        [4, 5]
+    ],
+    "reliabilities": {
+        "2": "FixedEventProbability.from_params(1 - 0.8)",
+        "3": "FixedEventProbability.from_params(1 - 0.9)",
+        "4": "FixedEventProbability.from_params(1 - 0.85)"
+    }
+}

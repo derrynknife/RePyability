@@ -1,0 +1,15 @@
+{
+    "edges": [
+        [1, 2],
+        [2, 3],
+        [3, 4],
+        [4, 5],
+        [5, 6]
+    ],
+    "reliabilities": {
+        "2": "Weibull.from_params([10, 2])",
+        "3": "Weibull.from_params([10, 2])",
+        "4": "Weibull.from_params([10, 2])",
+        "5": "Weibull.from_params([10, 2])"
+    }
+}
