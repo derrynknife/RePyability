@@ -232,11 +232,12 @@ class RBD:
         """
 
         node_probabilities = copy(node_probabilities)
-        lengths = np.array([])
+        lengths = np.array([], dtype=np.int64)
         for node in self.nodes:
-            node_array = np.array(node_probabilities[node])
+            node_array = np.atleast_1d(node_probabilities[node])
             node_probabilities[node] = node_array
-            lengths = np.append(lengths, node_array.shape)
+            lengths = np.append(lengths, len(node_array))
+
         if np.any(lengths[0] != lengths[1:]):
             raise ValueError("Probability arrays must be same length")
         else:
@@ -605,7 +606,7 @@ class RBD:
             TODO
         """
         node_probabilities_new: dict[Any, np.ndarray] = {}
-        lengths = np.array([])
+        lengths = np.array([], dtype=np.int64)
         for k, v in node_probabilities.items():
             node_probabilities_new[k] = np.atleast_1d(v)
             lengths = np.append(lengths, len(node_probabilities_new[k]))
