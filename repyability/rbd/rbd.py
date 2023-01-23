@@ -502,18 +502,19 @@ class RBD:
         def func(node_probabilities_array):
             node_probabilities = {
                 node: sigmoid(
-                    1 * node_probabilities_array[node_array_indices[node]]
+                    weights[node]
+                    * node_probabilities_array[node_array_indices[node]]
                 )
                 for node in self.nodes
             }
             system_probability = self.system_probability(node_probabilities)
-            system_loss = target - system_probability
-            return system_loss**2
+            loss = target - system_probability
+            return loss**2
 
         res = minimize(func, np.zeros(len(self.nodes)), tol=1e-20)
 
         node_probabilities = {
-            node: sigmoid(1 * res["x"][node_array_indices[node]])
+            node: sigmoid(weights[node] * res["x"][node_array_indices[node]])
             for node in self.nodes
         }
 
