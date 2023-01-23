@@ -32,46 +32,34 @@ def test_rbd_get_all_path_sets(rbd1: NonRepairableRBD, rbd2: NonRepairableRBD):
 
 def test_rbd_node_not_in_edge_list():
     with pytest.raises(ValueError):
-        nodes = {1: "input_node", 2: 2, 3: "output_node"}
         edges = [(1, 3)]
-        components = {2: FixedEventProbability.from_params(1 - 0.8)}
-        NonRepairableRBD(edges, nodes, components)
+        reliabilities = {2: FixedEventProbability.from_params(1 - 0.8)}
+        NonRepairableRBD(edges, reliabilities)
 
 
 def test_rbd_component_not_in_reliability_dict():
     with pytest.raises(ValueError):
-        nodes = {1: "input_node", 2: 2, 3: "output_node"}
-        edges = [(1, 2), (2, 3)]
-        NonRepairableRBD(edges, nodes)
-
-
-def test_rbd_node_not_in_node_list():
-    with pytest.raises(ValueError):
-        nodes = {1: "input_node", 3: "output_node"}
-        edges = [(1, 2), (2, 3)]
-        components = {2: FixedEventProbability.from_params(1 - 0.8)}
-        NonRepairableRBD(edges, nodes, components)
+        reliabilities = {2: FixedEventProbability.from_params(1 - 0.8)}
+        edges = [(1, 2), (2, 3), (3, 4)]
+        NonRepairableRBD(edges, reliabilities)
 
 
 def test_rbd_node_with_no_output():
     with pytest.raises(ValueError):
-        nodes = {1: "input_node", 2: 2, 4: 2, 3: "output_node"}
         edges = [(1, 2), (2, 3), (2, 4)]
-        components = {2: FixedEventProbability.from_params(1 - 0.8)}
-        NonRepairableRBD(edges, nodes, components)
+        reliabilities = {2: FixedEventProbability.from_params(1 - 0.8)}
+        NonRepairableRBD(edges, reliabilities)
 
 
 def test_rbd_node_with_no_input():
     with pytest.raises(ValueError):
-        nodes = {1: "input_node", 2: 2, 4: 2, 3: "output_node"}
         edges = [(1, 2), (2, 3), (4, 2)]
-        components = {2: FixedEventProbability.from_params(1 - 0.8)}
-        NonRepairableRBD(edges, nodes, components)
+        reliabilities = {2: FixedEventProbability.from_params(1 - 0.8)}
+        NonRepairableRBD(edges, reliabilities)
 
 
 def test_rbd_circular_dependency():
     with pytest.raises(ValueError):
-        nodes = {"s": "input_node", 2: 2, 3: 2, 4: 2, "t": "output_node"}
         edges = [("s", 2), (2, 3), (3, 4), (4, 2), (4, "t")]
-        components = {2: FixedEventProbability.from_params(1 - 0.8)}
-        NonRepairableRBD(edges, nodes, components)
+        reliabilities = {2: FixedEventProbability.from_params(1 - 0.8)}
+        NonRepairableRBD(edges, reliabilities)

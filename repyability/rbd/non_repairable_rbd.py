@@ -69,6 +69,8 @@ class NonRepairableRBD(RBD):
         # Check that all nodes in graph were in the reliabilities dict
         for n in self.G.nodes:
             if n not in reliabilities:
+                if n in repeated:
+                    continue
                 raise ValueError(
                     "Node in edges list but not reliabilities dictionary"
                 )
