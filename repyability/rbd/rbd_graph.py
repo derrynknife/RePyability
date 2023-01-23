@@ -1,5 +1,3 @@
-from collections import defaultdict
-
 import networkx as nx
 
 
@@ -32,17 +30,11 @@ class RBDGraph(nx.DiGraph):
             True
         """
         has_circular_dependency = not nx.is_directed_acyclic_graph(self)
-        node_degrees: dict = defaultdict(lambda: defaultdict(int))
-
-        for edge in self.edges:
-            source, target = edge
-            node_degrees[source]["out"] += 1
-            node_degrees[target]["in"] += 1
-
-        input_nodes = [n for n in node_degrees.values() if n["in"] == 0]
-        output_nodes = [n for n in node_degrees.values() if n["out"] == 0]
+        input_nodes = [n for n, id in self.in_degree(self.nodes) if id == 0]
+        output_nodes = [n for n, od in self.out_degree(self.nodes) if od == 0]
         has_node_with_no_input = len(input_nodes) != 1
         has_node_with_no_output = len(output_nodes) != 1
+
         if not any(
             [
                 has_circular_dependency,
