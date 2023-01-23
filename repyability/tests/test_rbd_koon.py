@@ -4,6 +4,9 @@ Tests many of the NonRepairableRBD class methods.
 Uses pytest fixtures located in conftest.py in the tests/ directory.
 """
 
+import pytest
+from surpyval import Weibull
+
 from repyability.rbd.non_repairable_rbd import NonRepairableRBD
 
 
@@ -23,10 +26,16 @@ def test_rbd_koon_k_given(rbd1_koon: NonRepairableRBD):
     assert rbd1_koon.G.nodes["sink"]["k"] == 1
 
 
-def test_rbd_get_min_path_sets_rbd_series_koon(
-    rbd_series_koon: NonRepairableRBD,
-):
-    assert set() == rbd_series_koon.get_min_path_sets()
+def test_rbd_get_min_path_sets_rbd_series_koon():
+    edges = [(1, 2), (2, 3), (3, 4), (4, 5)]
+    reliabilities = {
+        2: Weibull.from_params([20, 2]),
+        3: Weibull.from_params([100, 3]),
+        4: Weibull.from_params([50, 20]),
+    }
+    k = {3: 2}
+    with pytest.raises(ValueError):
+        NonRepairableRBD(edges, reliabilities, k)
 
 
 def test_rbd_get_min_path_sets_rbd1_koon(rbd1_koon: NonRepairableRBD):
@@ -137,24 +146,27 @@ def test_rbd_get_min_path_sets_rbd_koon_composite_k22(rbd_koon_composite_args):
 def test_rbd_get_min_path_sets_rbd_koon_composite_nonfunctioning(
     rbd_koon_composite_args,
 ):
-    assert (
-        set()
-        == NonRepairableRBD(
-            **rbd_koon_composite_args, k={"v1": 2, "v2": 3}
-        ).get_min_path_sets()
-    )
-    assert (
-        set()
-        == NonRepairableRBD(
-            **rbd_koon_composite_args, k={"v1": 3, "v2": 2}
-        ).get_min_path_sets()
-    )
-    assert (
-        set()
-        == NonRepairableRBD(
-            **rbd_koon_composite_args, k={"v1": 3, "v2": 3}
-        ).get_min_path_sets()
-    )
+    with pytest.raises(ValueError):
+        assert (
+            set()
+            == NonRepairableRBD(
+                **rbd_koon_composite_args, k={"v1": 2, "v2": 3}
+            ).get_min_path_sets()
+        )
+    with pytest.raises(ValueError):
+        assert (
+            set()
+            == NonRepairableRBD(
+                **rbd_koon_composite_args, k={"v1": 3, "v2": 2}
+            ).get_min_path_sets()
+        )
+    with pytest.raises(ValueError):
+        assert (
+            set()
+            == NonRepairableRBD(
+                **rbd_koon_composite_args, k={"v1": 3, "v2": 3}
+            ).get_min_path_sets()
+        )
 
 
 def test_rbd_get_min_path_sets_rbd_koon_simple(
@@ -181,14 +193,6 @@ def test_rbd_get_min_path_sets_rbd_double_parallel_koon(
         frozenset(["s", 1, 2, 3, 4, "t"]),
         frozenset(["s", 1, 2, 3, 5, "t"]),
     } == rbd.get_min_path_sets()
-
-
-def test_rbd_get_min_cut_sets_rbd_series_koon(
-    rbd_series_koon: NonRepairableRBD,
-):
-    # It's a series NonRepairableRBD with the middle node k=2 so the system
-    # doesn't work at all
-    assert set() == rbd_series_koon.get_min_cut_sets()
 
 
 def test_rbd_get_min_cut_sets_rbd1_koon(rbd1_koon: NonRepairableRBD):

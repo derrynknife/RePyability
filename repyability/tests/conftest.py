@@ -128,22 +128,6 @@ def rbd_repeated_component_parallel() -> NonRepairableRBD:
 
 
 @pytest.fixture
-def rbd_series_koon() -> NonRepairableRBD:
-    """
-    Series NonRepairableRBD w/ three intermediate nodes, the middle
-    one with k=2. i.e. this system doesn't work at all.
-    """
-    edges = [(1, 2), (2, 3), (3, 4), (4, 5)]
-    reliabilities = {
-        2: surv.Weibull.from_params([20, 2]),
-        3: surv.Weibull.from_params([100, 3]),
-        4: surv.Weibull.from_params([50, 20]),
-    }
-    k = {3: 2}
-    return NonRepairableRBD(edges, reliabilities, k)
-
-
-@pytest.fixture
 def rbd1_koon() -> NonRepairableRBD:
     """Example 6.10 from Modarres & Kaminskiy, w/ valve k=2."""
     qp = 0.03

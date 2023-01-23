@@ -5,10 +5,11 @@ from typing import Any, Dict, Hashable, Iterable, Iterator, Optional
 
 import networkx as nx
 import numpy as np
+from dd import autoref as _bdd
 from numpy.typing import ArrayLike
 from scipy.optimize import minimize, root
 
-from repyability.rbd.min_path_sets import min_path_sets
+from repyability.rbd.min_path_sets import min_path_sets as find_min_path_sets
 from repyability.rbd.rbd_graph import RBDGraph
 
 
@@ -54,7 +55,7 @@ class RBD:
     def __init__(
         self,
         edges: Iterable[tuple[Hashable, Hashable]],
-        k: Optional[dict[Any, int]] = {},
+        k: Optional[dict[Any, int]] = None,
     ):
         """Creates and returns a Reliability Block Diagram object.
 
@@ -95,6 +96,12 @@ class RBD:
         self.in_or_out = [self.input_node, self.output_node]
         self.nodes = [n for n in self.G.nodes if n not in self.in_or_out]
 
+        if k is not None:
+            for node, k_val in k.items():
+                self.G.nodes[node]["k"] = k_val
+
+        self.get_min_path_sets()
+
     def get_all_path_sets(self) -> Iterator[list[Hashable]]:
         """Gets all path sets from input_node to output_node
 
@@ -128,19 +135,125 @@ class RBD:
         """
         # Run min_path_sets() but convert all the inner sets to frozensets
         # and remove the input/output nodes if requested
-        ret_set = set()
+        if hasattr(self, "_min_path_sets"):
+            min_path_sets = self._min_path_sets
+        else:
+            min_path_sets = find_min_path_sets(
+                rbd_graph=self.G,
+                curr_node=self.output_node,
+                solns={},
+            )
+            self._min_path_sets: list[set[Hashable]] = min_path_sets
 
-        for min_path_set in min_path_sets(
-            rbd_graph=self.G,
-            curr_node=self.output_node,
-            solns={},
-        ):
+        if min_path_sets == []:
+            raise ValueError(
+                "RBD has no paths through! Need to re-evaluate the KooN nodes."
+            )
+
+        ret_set = set()
+        for min_path_set in min_path_sets:
+            min_path_set = set(min_path_set)
             if not include_in_out_nodes:
                 min_path_set.remove(self.input_node)
                 min_path_set.remove(self.output_node)
             ret_set.add(frozenset(min_path_set))
 
         return ret_set
+
+    def compile_bdd(self):
+        """
+        Compiles the BDD, setting self.bdd to the BDD manager, and
+        self.bdd_system_ref to the BDD variable reference for the system state.
+        """
+        # Instantiate the manager
+        bdd = _bdd.BDD()
+        bdd_c = _bdd.BDD()
+
+        # Enable Dynamic Reordering (Rudell's Sifting Algorithm)
+        bdd.configure(reordering=True)
+        bdd_c.configure(reordering=True)
+
+        # For all components, declare the BDD variable,
+        # and get the BDD variable reference
+        bdd_vars = {}
+        bdd_c_vars = {}
+        for component in self.G.nodes():
+            bdd.declare(component)
+            bdd_vars[component] = bdd.var(component)
+            bdd_c.declare(component)
+            bdd_c_vars[component] = bdd_c.var(component)
+
+        # Make path expressions
+        path_expressions: list[_bdd.Function] = []
+        for min_path_set in self.get_min_path_sets(include_in_out_nodes=False):
+            min_path_set_as_list = list(min_path_set)
+            path_function = bdd_vars[min_path_set_as_list[0]]
+            for component in min_path_set_as_list[1:]:
+                path_function &= bdd_vars[component]
+            path_expressions.append(path_function)
+
+        # Make cut expressions
+        cut_expressions: list[_bdd.Function] = []
+        for min_cut_set in self.get_min_cut_sets(include_in_out_nodes=False):
+            min_cut_set_as_list = list(min_cut_set)
+            cut_function = bdd_c_vars[min_cut_set_as_list[0]]
+            for component in min_cut_set_as_list[1:]:
+                cut_function |= bdd_c_vars[component]
+            cut_expressions.append(cut_function)
+
+        system: _bdd.Function = path_expressions[0]
+        for path_expression in path_expressions[1:]:
+            system |= path_expression
+
+        system_c: _bdd.Function = cut_expressions[0]
+        for cut_expression in cut_expressions[1:]:
+            system_c &= cut_expression
+
+        self.bdd = bdd
+        self.bdd_c = bdd_c
+        self.bdd_system_ref = system
+        self.bdd_system_c_ref = system_c
+
+    def is_system_working(
+        self, component_status: dict[Any, bool], method: str
+    ) -> bool:
+        """Returns a boolean as to whether the system is working given the
+        status of the components
+
+        Parameters
+        ----------
+        component_status : dict[Any, bool]
+            Dictionary with all components where
+            component_status[component] = True only if the component is
+            working, and = False if not working.
+
+        Returns
+        -------
+        bool
+            True if the system is working, otherwise False.
+        """
+        # This function uses a Binary Decision Diagram (BDD) to enable
+        # efficient component_status -> is_system_working lookup. Something
+        # very much required given the rate at which this function is called
+        # in the N simulations in availability().
+
+        # Now evaluate the BDD given the component status
+        if method == "c":
+            system_given_component_status = self.bdd_c.let(
+                component_status, self.bdd_system_c_ref
+            )
+
+            system_state = self.bdd_c.to_expr(system_given_component_status)
+        elif method == "p":
+            system_given_component_status = self.bdd.let(
+                component_status, self.bdd_system_ref
+            )
+
+            system_state = self.bdd.to_expr(system_given_component_status)
+        else:
+            raise ValueError("`method` must be either 'p' or 'c'")
+
+        return system_state == "TRUE"
 
     def get_min_cut_sets(
         self, include_in_out_nodes=False

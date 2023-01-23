@@ -1,4 +1,6 @@
 from copy import copy
+from dataclasses import dataclass, field
+from queue import PriorityQueue
 from typing import Any, Collection, Dict, Hashable, Iterable, Optional
 
 import networkx as nx
@@ -9,6 +11,16 @@ from surpyval import NonParametric
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .rbd import RBD
 from .standby_node import StandbyModel
+
+
+# Event class for simulation
+@dataclass(order=True)
+class NodeFailure:
+    """Dataclass to hold an event's information. Comparisons are performed
+    by time. status=False means the event is a node failure."""
+
+    time: float
+    node: Hashable = field(compare=False)
 
 
 def check_x(func):
@@ -44,7 +56,7 @@ class NonRepairableRBD(RBD):
         }
 
         if repeated == {}:
-            super().__init__(edges)
+            super().__init__(edges, k)
         else:
             new_edges = []
             for (start, stop) in edges:
@@ -55,7 +67,7 @@ class NonRepairableRBD(RBD):
                 new_edges.append((start, stop))
             if list(nx.simple_cycles(nx.DiGraph(new_edges))) != []:
                 raise ValueError("Cycle due to repeated components")
-            super().__init__(new_edges)
+            super().__init__(new_edges, k)
 
         reliabilities[self.input_node] = PerfectReliability
         reliabilities[self.output_node] = PerfectReliability
@@ -111,6 +123,8 @@ class NonRepairableRBD(RBD):
             self.__fixed_probs = True
         else:
             self.__fixed_probs = False
+
+        self.compile_bdd()
 
     @check_x
     def sf(
@@ -288,6 +302,49 @@ class NonRepairableRBD(RBD):
 
     def time_varying_rbd(self):
         return not self.__fixed_probs
+
+    def random(self, size):
+        out = np.zeros(size)
+        for i in range(size):
+            event_queue: PriorityQueue = PriorityQueue()
+            for node in self.G.nodes:
+                time = self.reliabilities[node].random(1)
+                event_queue.put(NodeFailure(time, node))
+
+            working_nodes = {k: True for k in self.G.nodes}
+            system_working = True
+            while system_working:
+                failure = event_queue.get()
+                time = failure.time
+                working_nodes[failure.node] = False
+                system_working = self.is_system_working(
+                    working_nodes, method="p"
+                )
+            out[i] = time
+
+        return out
+
+    def mean(self, mc_samples: int = 10_000):
+        """Returns the Mean Time To Failure of the RBD
+        This is necessary for recursive calls which will only use the `mean`
+        """
+        return self.random(mc_samples).mean().item()
+
+    def mean_time_to_failure(self, mc_samples: int = 10_000):
+        """
+        User friendly way to get MTTF
+        """
+        return self.mean(mc_samples)
+
+    def node_mttf(self, mc_samples: int = 10_000):
+        out = {}
+        for node in self.nodes:
+            model = self.reliabilities[node]
+            if isinstance(model, StandbyModel):
+                out[node] = model.mean(mc_samples)
+            else:
+                out[node] = model.mean()
+        return out
 
     # Importance measures
     # https://www.ntnu.edu/documents/624876/1277590549/chapt05.pdf/82cd565f-fa2f-43e4-a81a-095d95d39272
