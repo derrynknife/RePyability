@@ -66,17 +66,18 @@ class NonRepairableRBD(RBD):
                 raise ValueError("Repated node cannot be a K-out-of-N node")
             self.G.nodes[node]["k"] = k_val
 
-        # Check that all nodes in graph were in the reliabilities dict and
-        # vice versa
-        node_set = set(reliabilities.keys())
+        # Check that all nodes in graph were in the reliabilities dict
         for n in self.G.nodes:
             if n not in reliabilities:
-                raise ValueError("Node {} not in reliabilities dict".format(n))
-            else:
-                node_set.remove(n)
+                raise ValueError(
+                    "Node in edges list but not reliabilities dictionary"
+                )
 
-        if len(node_set) > 0:
-            raise ValueError("Nodes {} not in edge list".format(node_set))
+        for n in reliabilities.keys():
+            if n not in self.G.nodes:
+                raise ValueError(
+                    "Node in reliabilities dict but not in edges list"
+                )
 
         self.reliabilities = reliabilities
         self.repeated = repeated

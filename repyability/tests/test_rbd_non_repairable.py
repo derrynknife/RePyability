@@ -27,7 +27,7 @@ def test_excess_nodes():
     try:
         NonRepairableRBD(edges, reliabilities)
     except Exception as e:
-        assert str(e) == "Node 5 not in reliabilities dict"
+        assert str(e).startswith("Node in edges")
 
 
 def test_excess_reliabilities():
@@ -56,7 +56,7 @@ def test_excess_reliabilities():
     try:
         NonRepairableRBD(edges, reliabilities)
     except Exception as e:  # noqa
-        assert str(e) == "Nodes {7} not in edge list"
+        assert str(e).startswith("Node in reliabilities")
 
 
 def test_matching_inputs():
