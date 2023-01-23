@@ -281,9 +281,6 @@ class NonRepairableRBD(RBD):
 
         # Cache the component reliabilities for efficiency
         for node_name, node in self.reliabilities.items():
-            # TODO: make log
-            # Calculating reliability in the log-domain though so the
-            # components' reliability can be added avoid possible underflow
             node_sf[node_name] = node.sf(x)
         return node_sf
 
@@ -341,6 +338,8 @@ class NonRepairableRBD(RBD):
         for node in self.nodes:
             model = self.reliabilities[node]
             if isinstance(model, StandbyModel):
+                out[node] = model.mean(mc_samples)
+            elif isinstance(model, NonRepairableRBD):
                 out[node] = model.mean(mc_samples)
             else:
                 out[node] = model.mean()
