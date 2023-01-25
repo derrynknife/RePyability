@@ -71,3 +71,17 @@ def test_bridge_edges():
     ]
     # Test no exception raised
     RBD(bridge_structure)
+
+
+def test_irrelevant_components():
+    rbd = RBD(
+        edges=[(1, 2), (2, 3), (1, 2), (2, 4), (4, 3)],
+    )
+    assert rbd.find_irrelevant_components() == {4}
+
+
+def test_irrelevant_components_2():
+    rbd = RBD(
+        edges=[(1, 2), (2, 3), (1, 2), (2, 4), (4, 5), (5, 6), (6, 7), (7, 3)],
+    )
+    assert rbd.find_irrelevant_components() == {4, 5, 6, 7}

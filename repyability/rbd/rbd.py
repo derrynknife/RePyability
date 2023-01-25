@@ -1,6 +1,6 @@
 from collections import defaultdict
 from copy import copy
-from itertools import combinations, product
+from itertools import chain, combinations, product
 from typing import Any, Dict, Hashable, Iterable, Iterator, Optional
 
 import networkx as nx
@@ -101,6 +101,10 @@ class RBD:
                 self.G.nodes[node]["k"] = k_val
 
         self.get_min_path_sets()
+
+    def find_irrelevant_components(self) -> set:
+        combined_nodes: set = set(chain(*self.get_min_path_sets()))
+        return set(self.G.nodes).symmetric_difference(combined_nodes)
 
     def get_all_path_sets(self) -> Iterator[list[Hashable]]:
         """Gets all path sets from input_node to output_node
