@@ -2,7 +2,7 @@ from collections import defaultdict
 from copy import copy
 from dataclasses import dataclass, field
 from queue import PriorityQueue
-from typing import Any, Collection, Hashable, Iterable
+from typing import Any, Collection, Hashable, Iterable, List, Tuple
 
 import numpy as np
 from dd import autoref as _bdd
@@ -12,7 +12,6 @@ from repyability.non_repairable import NonRepairable
 from repyability.rbd.rbd import RBD
 
 
-# Event class for simulation
 @dataclass(order=True)
 class Event:
     """Dataclass to hold an event's information. Comparisons are performed
@@ -21,6 +20,95 @@ class Event:
     time: float
     component: Hashable = field(compare=False)
     status: bool = field(compare=False)
+
+
+def combined_timeline(
+    timeline_1: List[Tuple[float, int]], timeline_2: List[Tuple[float, int]]
+):
+    joint_timeline: defaultdict = defaultdict(lambda: 0)
+    for t, e in timeline_1 + timeline_2:
+        joint_timeline[t] += e
+    events: np.ndarray = np.fromiter(joint_timeline.values(), dtype=np.int8)
+    timeline: np.ndarray = np.fromiter(joint_timeline.keys(), dtype=np.float64)
+    idx = np.argsort(timeline)
+    timeline = timeline[idx]
+    events = events[idx]
+    events = events.cumsum()
+    return timeline, events
+
+
+def intersection(timeline, event_cumsum):
+    from_idx = np.where(event_cumsum[:-1] == 2)[0]
+    to_idx = from_idx + 1
+    intersection = timeline[to_idx] - timeline[from_idx]
+    return intersection.sum()
+
+
+def union(timeline, event_cumsum):
+    from_idx = np.where(event_cumsum[:-1] > 0)[0]
+    to_idx = from_idx + 1
+    union = timeline[to_idx] - timeline[from_idx]
+    return union.sum()
+
+
+def intersection_over_union(
+    node_timeline: List[Tuple[float, int]],
+    system_timeline: List[Tuple[float, int]],
+):
+    timeline, event_cumsum = combined_timeline(node_timeline, system_timeline)
+    return intersection(timeline, event_cumsum) / union(timeline, event_cumsum)
+
+
+def time_at_status(timeline, status):
+    t = np.array([a for a, _ in timeline])
+    events = np.array([b for _, b in timeline])
+    from_idx = np.where(events[:-1] == status)[0]
+    to_idx = from_idx + 1
+    union = t[to_idx] - t[from_idx]
+    return union.sum()
+
+
+def failure_criticality_index_per_system_failures(FCI, system_failures):
+    fci = {}
+    for node in FCI.keys():
+        fci[node] = FCI[node]["system_failures"] / system_failures
+    return fci
+
+
+def failure_criticality_index_per_component_failures(FCI):
+    fci = {}
+    for node in FCI.keys():
+        try:
+            fci[node] = (
+                FCI[node]["system_failures"] / FCI[node]["component_failures"]
+            )
+        except ZeroDivisionError:
+            # If there were no component failures then there were no
+            # system failures caused by that node
+            fci[node] = 0
+    return fci
+
+
+def restoration_criticality_index_by_system(RCI, system_restorations):
+    rci = {}
+    for node in RCI.keys():
+        rci[node] = RCI[node]["system_restorations"] / system_restorations
+    return rci
+
+
+def restoration_criticality_index_by_component(RCI):
+    rci = {}
+    for node in RCI.keys():
+        try:
+            rci[node] = (
+                RCI[node]["system_restorations"]
+                / RCI[node]["component_restorations"]
+            )
+        except ZeroDivisionError:
+            # If there were no component restorations then there were no
+            # times the system was restored by restoring this node.
+            rci[node] = 0
+    return rci
 
 
 class RepairableRBD(RBD):
@@ -108,8 +196,8 @@ class RepairableRBD(RBD):
             component: True for component in self.components.keys()
         }
 
-        for working_component in broken_components:
-            component_status[working_component] = False
+        for component in broken_components:
+            component_status[component] = False
 
         # PriorityQueue supplies failure/repair events in chronological
         event_queue: PriorityQueue[Event] = PriorityQueue()
@@ -124,7 +212,11 @@ class RepairableRBD(RBD):
             # If status not known, then continue
             if isinstance(component, RepairableRBD):
                 component.initialize_event_queue(t_simulation)
-            t_event, event = component.next_event()
+                t_event, event = component.next_event()
+            elif isinstance(component, NonRepairable):
+                component.reset()
+                t_event, event = component.next_event()
+
             # Only consider it if it occurs within the simulation window
             if t_event < t_simulation:
                 # Event status is False => event is a component failure
@@ -151,17 +243,17 @@ class RepairableRBD(RBD):
 
     def mean_availability(
         self,
-        working_components: Collection[Hashable] = [],
-        broken_components: Collection[Hashable] = [],
+        working_nodes: Collection[Hashable] = [],
+        broken_nodes: Collection[Hashable] = [],
         method: str = "p",
     ) -> np.float64:
         """Returns the system long run availability
 
         Parameters
         ----------
-        working_components : Collection[Hashable], optional
+        working_nodes : Collection[Hashable], optional
             Marks these components as perfectly reliable, by default []
-        broken_components : Collection[Hashable], optional
+        broken_nodes : Collection[Hashable], optional
             Marks these components as perfectly unreliable, by default []
         using: str, optional
             Input either "c" or "p" for the function to use cut sets or path
@@ -175,9 +267,6 @@ class RepairableRBD(RBD):
         Raises
         ------
         ValueError
-            - Working/broken node/component inconsistency (a component or node
-              is supplied more than once to any of working_nodes, broken_nodes,
-              working_components, broken_components)
         """
         # Good reference on the Availability of a system
         # https://www.diva-portal.org/smash/get/diva2:986067/FULLTEXT01.pdf
@@ -185,9 +274,9 @@ class RepairableRBD(RBD):
         # Cache all component reliabilities for efficiency
         component_availability: dict[Hashable, np.float64] = {}
         for comp in self.components:
-            if comp in working_components:
+            if comp in working_nodes:
                 component_availability[comp] = np.float64(1.0)
-            elif comp in broken_components:
+            elif comp in broken_nodes:
                 component_availability[comp] = np.float64(0.0)
             else:
                 component_availability[comp] = self.components[
@@ -247,12 +336,10 @@ class RepairableRBD(RBD):
         t_simulation: float,
         working_nodes: Collection[Hashable] = [],
         broken_nodes: Collection[Hashable] = [],
-        working_components: Collection[Hashable] = [],
-        broken_components: Collection[Hashable] = [],
         method: str = "p",
         N: int = 10_000,
         verbose: bool = False,
-    ) -> tuple[np.ndarray, np.ndarray]:
+    ) -> dict:
         """Returns the times, and availability for those times, as numpy
         arrays
 
@@ -288,6 +375,21 @@ class RepairableRBD(RBD):
         # Set all systems working at time 0
         aggregate_timeline[0] = N
 
+        # Restoration Criticality Index
+        RCI: defaultdict = defaultdict(lambda: defaultdict(lambda: 0))
+        system_restorations = 0
+        system_downtime = 0
+
+        # Failure Criticality Index
+        FCI: defaultdict = defaultdict(lambda: defaultdict(lambda: 0))
+        system_failures = 0
+        system_uptime = 0
+
+        components_downtime: defaultdict = defaultdict(lambda: 0)
+        components_uptime: defaultdict = defaultdict(lambda: 0)
+        intersection_uptime: defaultdict = defaultdict(lambda: 0)
+        intersection_downtime: defaultdict = defaultdict(lambda: 0)
+
         # Perform N simulations
         for _ in tqdm(
             range(N), disable=not verbose, desc="Running simulations"
@@ -295,9 +397,12 @@ class RepairableRBD(RBD):
             # Initialize the event queue and the system/component statuses
             self.initialize_event_queue(
                 t_simulation,
-                working_components,
-                broken_components,
+                working_nodes,
+                broken_nodes,
             )
+
+            component_timelines: defaultdict = defaultdict(lambda: [(0.0, 1)])
+            system_timeline = [(0.0, 1)]
 
             # Implemented ensure that no events that occur after the
             # end-time of the simulation are added to the queue; so we just
@@ -308,6 +413,15 @@ class RepairableRBD(RBD):
                 event = self._event_queue.get()
                 # Update the component's status
                 self.component_status[event.component] = event.status
+                if event.status:
+                    RCI[event.component]["component_restorations"] += 1
+                else:
+                    FCI[event.component]["component_failures"] += 1
+
+                status = 1 if event.status else -1
+                component_timelines[event.component].append(
+                    (event.time, status)
+                )
 
                 # Record new system state, it could still be the same as
                 # system_state in which case we don't bother changing
@@ -317,10 +431,17 @@ class RepairableRBD(RBD):
                     self.component_status, method
                 )
                 if new_system_state != self.system_state:
+                    status = 1 if new_system_state else -1
+                    system_timeline.append((event.time, status))
                     if new_system_state:
+                        # System restored
                         aggregate_timeline[event.time] += 1
+                        system_restorations += 1
+                        RCI[event.component]["system_restorations"] += 1
                     else:
                         aggregate_timeline[event.time] -= 1
+                        system_failures += 1
+                        FCI[event.component]["system_failures"] += 1
 
                     # Set the system_state to the new state
                     self.system_state = new_system_state
@@ -348,6 +469,59 @@ class RepairableRBD(RBD):
                 # Then move on to the next event... until there's no more
                 # events in the queue
 
+            system_timeline.append((t_simulation, 0))
+
+            for component in self.components.keys():
+                component_timelines[component].append((t_simulation, 0))
+                components_uptime[component] += time_at_status(
+                    component_timelines[component], 1
+                )
+                components_downtime[component] += (
+                    t_simulation - components_uptime[component]
+                )
+                joint_t, joint_events = combined_timeline(
+                    component_timelines[component], system_timeline
+                )
+                intersection_uptime[component] += intersection(
+                    joint_t, joint_events
+                )
+                intersection_downtime[component] += intersection(
+                    joint_t, 2 - joint_events
+                )
+
+            simulation_system_ut = time_at_status(system_timeline, 1)
+            system_uptime += simulation_system_ut
+            system_downtime += t_simulation - simulation_system_ut
+
+        criticalities = {}
+        oci_down = {
+            k: v / system_downtime
+            for k, v in dict(intersection_downtime).items()
+        }
+        oci_up = {
+            k: v / system_uptime for k, v in dict(intersection_uptime).items()
+        }
+        criticalities["operational_criticality_index_up"] = oci_up
+        criticalities["operational_criticality_index_down"] = oci_down
+
+        fci_sys = failure_criticality_index_per_system_failures(
+            FCI, system_failures
+        )
+        criticalities[
+            "failure_criticality_index_per_system_failures"
+        ] = fci_sys
+        fci_comp = failure_criticality_index_per_component_failures(FCI)
+        criticalities[
+            "failure_criticality_index_per_component_failures"
+        ] = fci_comp
+
+        rci_sys = restoration_criticality_index_by_system(
+            RCI, system_restorations
+        )
+        criticalities["restoration_criticality_index_by_system"] = rci_sys
+        rci_comp = restoration_criticality_index_by_component(RCI)
+        criticalities["restoration_criticality_index_by_component"] = rci_comp
+
         # Now we need to return the system availability from t=0..t_simulation
         # Using numpy arrays for efficiency
         timeline_arr: np.ndarray = np.array(list(aggregate_timeline.items()))
@@ -361,13 +535,23 @@ class RepairableRBD(RBD):
         # availability the as a percentage
         system_availability = timeline_arr[:, 1].cumsum() / N
 
-        # Clean up the interim results of the simulation
+        # Clean up the interim variables of the simulation
         del self._event_queue
         del self.system_state
         del self.t_simulation
         del self.component_status
 
-        return time, system_availability
+        simulation_results = {
+            "timeline": time,
+            "availability": system_availability,
+            "system_uptime": system_uptime,
+            "time_simulated_to": t_simulation,
+            "criticalities": criticalities,
+            "components_uptime": dict(components_uptime),
+            "components_downtime": dict(components_downtime),
+        }
+
+        return simulation_results
 
     def compile_bdd(self):
         """

@@ -92,9 +92,9 @@ def test_repairable_rbd_availability_one_component_1N():
 
     # Now check if expected == actual, remembering to reset the seed
     np.random.seed(seed)
-    actual_t, actual_availability = rbd.availability(
-        t_simulation=t_simulation, N=1
-    )
+    simulation_results = rbd.availability(t_simulation=t_simulation, N=1)
+    actual_t = simulation_results["timeline"]
+    actual_availability = simulation_results["availability"]
 
     assert pytest.approx(exp_t) == actual_t[:-1]
     assert pytest.approx(exp_availability) == actual_availability[:-1]
@@ -141,7 +141,7 @@ def test_repairable_rbd_availability_one_component_10N():
     exp_timeline: defaultdict = defaultdict(lambda: 0)
 
     # Perform 10 simulations
-    n_simulations = 1
+    n_simulations = 10
     for i in range(n_simulations):
         # Set initial availability to 1 again
         exp_timeline[0] += 1
@@ -175,9 +175,11 @@ def test_repairable_rbd_availability_one_component_10N():
 
     # Now check if expected == actual, remembering to reset the seed
     np.random.seed(seed)
-    actual_t, actual_availability = rbd.availability(
+    simulation_results = rbd.availability(
         t_simulation=t_simulation, N=n_simulations
     )
+    actual_t = simulation_results["timeline"]
+    actual_availability = simulation_results["availability"]
 
     # Remove last element, which is the same as the second last
     assert pytest.approx(exp_t) == actual_t[:-1]
@@ -311,9 +313,9 @@ def test_repairable_rbd_availability_two_parallel_components_1N():
 
     # Now check if expected == actual, remembering to reset the seed
     np.random.seed(seed)
-    actual_t, actual_availability = rbd.availability(
-        t_simulation=t_simulation, N=1
-    )
+    simulation_results = rbd.availability(t_simulation=t_simulation, N=1)
+    actual_t = simulation_results["timeline"]
+    actual_availability = simulation_results["availability"]
 
     assert pytest.approx(exp_t) == actual_t[:-1]
     assert pytest.approx(exp_availability) == actual_availability[:-1]
@@ -444,9 +446,9 @@ def test_repairable_rbd_availability_two_series_components_1N():
 
     # Now check if expected == actual, remembering to reset the seed
     np.random.seed(seed)
-    actual_t, actual_availability = rbd.availability(
-        t_simulation=t_simulation, N=1
-    )
+    simulation_results = rbd.availability(t_simulation=t_simulation, N=1)
+    actual_t = simulation_results["timeline"]
+    actual_availability = simulation_results["availability"]
 
     assert pytest.approx(exp_t) == actual_t[:-1]
     assert pytest.approx(exp_availability) == actual_availability[:-1]
