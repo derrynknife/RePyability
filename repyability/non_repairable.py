@@ -8,6 +8,9 @@ from surpyval.parametric.exact_event_time import ExactEventTime
 
 from repyability.rbd.standby_node import StandbyModel
 
+FAILURE = 1
+REPLACE = 0
+
 
 class NonRepairable:
     """
@@ -39,7 +42,7 @@ class NonRepairable:
         self.reliability = reliability
         self.time_to_replace = time_to_replace
         self.cost_rate = np.vectorize(self._cost_rate)
-        self.__next_event_type = "failure"
+        self.__next_event_type = FAILURE
 
     def set_costs_planned_and_unplanned(self, cp, cu):
         if cp >= cu:
@@ -137,10 +140,13 @@ class NonRepairable:
             optimal = x_search[optimal_idx]
         return optimal
 
+    def reset(self):
+        self.__next_event_type = FAILURE
+
     def next_event(self):
-        if self.__next_event_type == "failure":
-            self.__next_event_type = "replace"
+        if self.__next_event_type == FAILURE:
+            self.__next_event_type = REPLACE
             return self.reliability.random(1).item(), False
-        elif self.__next_event_type == "replace":
-            self.__next_event_type = "failure"
+        elif self.__next_event_type == REPLACE:
+            self.__next_event_type = FAILURE
             return self.time_to_replace.random(1).item(), True
