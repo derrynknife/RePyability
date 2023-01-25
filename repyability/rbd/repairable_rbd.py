@@ -389,6 +389,8 @@ class RepairableRBD(RBD):
         components_uptime: defaultdict = defaultdict(lambda: 0)
         intersection_uptime: defaultdict = defaultdict(lambda: 0)
         intersection_downtime: defaultdict = defaultdict(lambda: 0)
+        union_uptime: defaultdict = defaultdict(lambda: 0)
+        union_downtime: defaultdict = defaultdict(lambda: 0)
 
         # Perform N simulations
         for _ in tqdm(
@@ -488,12 +490,17 @@ class RepairableRBD(RBD):
                 intersection_downtime[component] += intersection(
                     joint_t, 2 - joint_events
                 )
+                union_uptime[component] += union(joint_t, joint_events)
+                union_downtime[component] += union(joint_t, 2 - joint_events)
 
             simulation_system_ut = time_at_status(system_timeline, 1)
             system_uptime += simulation_system_ut
             system_downtime += t_simulation - simulation_system_ut
 
+        # Collect Importance/Criticality measures from the simulation
+        # reference: https://www.weibull.com/pubs/2004rm_05B_02.pdf
         criticalities = {}
+        # Operational Criticality Index
         oci_down = {
             k: v / system_downtime
             for k, v in dict(intersection_downtime).items()
@@ -501,26 +508,38 @@ class RepairableRBD(RBD):
         oci_up = {
             k: v / system_uptime for k, v in dict(intersection_uptime).items()
         }
-        criticalities["operational_criticality_index_up"] = oci_up
-        criticalities["operational_criticality_index_down"] = oci_down
-
+        criticalities["operational_criticality_index"] = {
+            "up": oci_up,
+            "down": oci_down,
+        }
+        # Intersection Over Union Importance
+        iou_up = {
+            k: intersection_uptime[k] / union_uptime[k]
+            for k in dict(intersection_uptime).keys()
+        }
+        iou_down = {
+            k: intersection_downtime[k] / union_downtime[k]
+            for k in dict(intersection_downtime).keys()
+        }
+        criticalities["iou"] = {"up": iou_up, "down": iou_down}
+        # Failure Criticality Index Importance
         fci_sys = failure_criticality_index_per_system_failures(
             FCI, system_failures
         )
-        criticalities[
-            "failure_criticality_index_per_system_failures"
-        ] = fci_sys
         fci_comp = failure_criticality_index_per_component_failures(FCI)
-        criticalities[
-            "failure_criticality_index_per_component_failures"
-        ] = fci_comp
-
+        criticalities["failure_criticality_index"] = {
+            "per_system_failure": fci_sys,
+            "per_component_failure": fci_comp,
+        }
+        # Restoration Criticality Index Importance
         rci_sys = restoration_criticality_index_by_system(
             RCI, system_restorations
         )
-        criticalities["restoration_criticality_index_by_system"] = rci_sys
         rci_comp = restoration_criticality_index_by_component(RCI)
-        criticalities["restoration_criticality_index_by_component"] = rci_comp
+        criticalities["restoration_criticality_index"] = {
+            "by_system": rci_sys,
+            "by_component": rci_comp,
+        }
 
         # Now we need to return the system availability from t=0..t_simulation
         # Using numpy arrays for efficiency
