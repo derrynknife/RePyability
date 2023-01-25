@@ -85,3 +85,10 @@ def test_irrelevant_components_2():
         edges=[(1, 2), (2, 3), (1, 2), (2, 4), (4, 5), (5, 6), (6, 7), (7, 3)],
     )
     assert rbd.find_irrelevant_components() == {4, 5, 6, 7}
+
+
+def test_irrelevant_components_3():
+    rbd = RBD(
+        edges=[(1, 2), (2, 3), (1, 2), (2, 4), (4, 3), (1, 2), (2, 5), (5, 3)],
+    )
+    assert rbd.find_irrelevant_components() == {4, 5}
