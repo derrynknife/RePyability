@@ -73,22 +73,44 @@ def test_bridge_edges():
     RBD(bridge_structure)
 
 
-def test_irrelevant_components():
+def test_irrelevant_components_simple():
     rbd = RBD(
         edges=[(1, 2), (2, 3), (1, 2), (2, 4), (4, 3)],
     )
     assert rbd.find_irrelevant_components() == {4}
 
 
-def test_irrelevant_components_2():
+def test_irrelevant_components_series():
     rbd = RBD(
         edges=[(1, 2), (2, 3), (1, 2), (2, 4), (4, 5), (5, 6), (6, 7), (7, 3)],
     )
     assert rbd.find_irrelevant_components() == {4, 5, 6, 7}
 
 
-def test_irrelevant_components_3():
+def test_irrelevant_components_parallel():
     rbd = RBD(
         edges=[(1, 2), (2, 3), (1, 2), (2, 4), (4, 3), (1, 2), (2, 5), (5, 3)],
+    )
+    assert rbd.find_irrelevant_components() == {4, 5}
+
+
+def test_irrelevant_components_multiple_path_sets():
+    rbd = RBD(
+        edges=[
+            (1, 2),
+            (2, 3),
+            (1, 2),
+            (2, 4),
+            (4, 3),
+            (1, 2),
+            (2, 5),
+            (5, 3),
+            (1, 6),
+            (6, 3),
+            (1, 7),
+            (7, 3),
+            (1, 8),
+            (8, 3),
+        ],
     )
     assert rbd.find_irrelevant_components() == {4, 5}
