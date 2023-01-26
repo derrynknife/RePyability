@@ -116,8 +116,6 @@ class NonRepairableRBD(RBD):
                     "nodes_with_no_reliability_distribution"
                 ].append(n)
 
-        pprint.pprint(self.structure_check)
-
         if not self.structure_check["is_valid"]:
             if on_infeasible_rbd == "warn":
                 warnings.warn(
