@@ -69,12 +69,6 @@ def min_path_sets(
     # Get the curr_node's k value
     k = rbd_graph.nodes[curr_node]["k"]
 
-    # If there's no way of satisfying the k requirements of curr_node,
-    # just skip all the funny business and return the empty list
-    if len(all_subproblem_solns) < k:
-        solns[curr_node] = []
-        return []
-
     # Merge the subproblem solns to satisfy the curr_node's k requirement
     # e.g. k = 1, just add all the sets to the ret_list
     # e.g. k = 2, add all possible pairs across subproblems
