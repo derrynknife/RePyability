@@ -71,9 +71,6 @@ class NonRepairable:
     def _log_cost_rate(self, t):
         return np.log(self._cost_rate(t))
 
-    def q(self, t):
-        return np.log(self._cost_rate(t))
-
     def mean_unavailability(self):
         return 1 - self.mean_availability()
 

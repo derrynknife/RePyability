@@ -47,9 +47,19 @@ def test_optimal_replacement():
     # https://reliawiki.org/index.php/Optimum_Replacement_Time_Example
     surv_model = Weibull.from_params((1000, 2.5))
     nr_model = NonRepairable(surv_model)
-
     nr_model.set_costs_planned_and_unplanned(1, 5)
+
     assert 493 == pytest.approx(nr_model.find_optimal_replacement(), abs=1e-1)
+
+
+def test_non_parametric_optimal_replacement():
+    # https://reliawiki.org/index.php/Optimum_Replacement_Time_Example
+    surv_model = Weibull.from_params((1000, 2.5))
+    non_p_model = KaplanMeier.fit(surv_model.random(10000))
+    nr_model = NonRepairable(non_p_model)
+    nr_model.set_costs_planned_and_unplanned(1, 5)
+
+    assert 493 == pytest.approx(nr_model.find_optimal_replacement(), rel=1e-1)
 
 
 def test_weibull_no_optimal_replacement():
@@ -59,6 +69,25 @@ def test_weibull_no_optimal_replacement():
     nr_model.set_costs_planned_and_unplanned(1, 5)
 
     assert nr_model.find_optimal_replacement() == np.inf
+
+    surv_model = Weibull.from_params((1000, 0.5), gamma=1)
+    nr_model = NonRepairable(surv_model)
+    nr_model.set_costs_planned_and_unplanned(1, 5)
+
+    with pytest.warns():
+        assert nr_model.find_optimal_replacement() != np.inf
+
+    surv_model = Weibull.from_params((1000, 0.5), p=0.9)
+    nr_model = NonRepairable(surv_model)
+    nr_model.set_costs_planned_and_unplanned(1, 5)
+
+    assert nr_model.find_optimal_replacement() != np.inf
+
+    surv_model = Weibull.from_params((1000, 0.5), f0=0.1)
+    nr_model = NonRepairable(surv_model)
+    nr_model.set_costs_planned_and_unplanned(1, 5)
+
+    assert nr_model.find_optimal_replacement() != np.inf
 
 
 def test_incorrect_args():
@@ -71,8 +100,38 @@ def test_mean_availability():
     ttr_model = LogNormal.from_params((1.5, 0.1))
     nr_model = NonRepairable(surv_model, ttr_model)
     assert pytest.approx(nr_model.mean_availability()) == 0.9949491865865466
+    assert (
+        pytest.approx(nr_model.mean_unavailability()) == 1 - 0.9949491865865466
+    )
 
     non_p = KaplanMeier.fit([1, 2, 3, 4, 5, 6])
     model = NonRepairable(non_p, non_p)
     with pytest.raises(ValueError):
         model.mean_availability()
+
+
+def test_error_when_cp_gt_cu():
+    surv_model = Weibull.from_params((1000, 2.5))
+    nr_model = NonRepairable(surv_model)
+    with pytest.raises(ValueError):
+        nr_model.set_costs_planned_and_unplanned(10, 1)
+
+
+def test_non_parametric_mean():
+    surv_model = Weibull.from_params((1000, 2.5))
+    x = surv_model.random(10000)
+    non_para_model = KaplanMeier.fit(x)
+    np_nr_model = NonRepairable(non_para_model)
+    p_nr_model = NonRepairable(surv_model)
+    assert pytest.approx(
+        np_nr_model.avg_replacement_time(1000), rel=1e-1
+    ) == p_nr_model.avg_replacement_time(1000)
+
+
+def test_cost_rates():
+    surv_model = Weibull.from_params((1000, 2.5))
+    nr_model = NonRepairable(surv_model)
+    nr_model.set_costs_planned_and_unplanned(1, 10)
+    assert pytest.approx(nr_model._log_cost_rate(1000)) == np.log(
+        nr_model.cost_rate(1000)
+    )
