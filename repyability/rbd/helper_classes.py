@@ -24,5 +24,6 @@ class PerfectUnreliability:
     def ff(cls, x):
         return np.ones_like(x).astype(float)
 
+    @classmethod
     def random(self, size):
-        return np.zeros_like(size)
+        return np.zeros(size)
