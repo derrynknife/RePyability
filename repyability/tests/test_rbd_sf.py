@@ -10,6 +10,21 @@ from surpyval import FixedEventProbability
 from repyability.rbd.non_repairable_rbd import NonRepairableRBD
 
 
+def test_rbd_sf_ff_by_node(rbd_series: NonRepairableRBD):
+    t = 5
+    node_sf = rbd_series.sf_by_node(t)
+    node_ff = rbd_series.ff_by_node(t)
+    for k in node_sf.keys():
+        assert node_ff[k] == 1 - node_sf[k]
+
+
+def test_rel_unrel(rbd_series: NonRepairableRBD):
+    t = 5
+    rel = rbd_series.reliability(t)
+    unrel = rbd_series.unreliability(t)
+    assert unrel == 1 - rel
+
+
 # Test sf() w/ simple series NonRepairableRBD
 @pytest.mark.parametrize("method", ["c", "p"])
 def test_rbd_sf_series(rbd_series: NonRepairableRBD, method: str):

@@ -1,6 +1,8 @@
 import pytest
 import surpyval as surv
 
+from repyability.rbd.helper_classes import PerfectReliability as PR
+from repyability.rbd.helper_classes import PerfectUnreliability as PU
 from repyability.rbd.non_repairable_rbd import NonRepairableRBD
 
 
@@ -132,7 +134,16 @@ def test_cycle_errors():
     )
 
 
-# Check components are correct lengths
+def test_incorrect_infeasible_option():
+    two_inputs_edges = [(0, 1), (1, 3)]
+    reliabilities = {1: PR}
+
+    with pytest.raises(ValueError):
+        NonRepairableRBD(
+            two_inputs_edges, reliabilities, on_infeasible_rbd="foo"
+        )
+
+
 def test_self_reference():
     two_inputs_edges = [(0, 1), (1, 3)]
     reliabilities = {1: 1}
@@ -140,3 +151,77 @@ def test_self_reference():
     # Test error is raised when input not provided
     with pytest.raises(ValueError):
         NonRepairableRBD(two_inputs_edges, reliabilities)
+
+
+def test_repeated_koon_nodes():
+    two_inputs_edges = [
+        (0, 1),
+        (1, 3),
+        (0, 2),
+        (2, 3),
+        (0, 4),
+        (4, 6),
+        (0, 5),
+        (5, 6),
+        (3, 7),
+        (6, 7),
+    ]
+    reliabilities = {
+        1: surv.Weibull.from_params([10, 2]),
+        2: surv.Weibull.from_params([10, 2]),
+        3: surv.Weibull.from_params([10, 2]),
+        4: surv.Weibull.from_params([10, 2]),
+        5: surv.Weibull.from_params([10, 2]),
+        6: 3,
+        7: surv.Weibull.from_params([10, 2]),
+    }
+
+    k = {3: 2, 6: 2}
+
+    with pytest.raises(ValueError):
+        NonRepairableRBD(two_inputs_edges, reliabilities, k=k)
+
+
+def test_repeated_nodes():
+    two_inputs_edges = [
+        (0, 1),
+        (1, 3),
+        (0, 2),
+        (2, 3),
+    ]
+    reliabilities = {
+        1: surv.Weibull.from_params([10, 2]),
+        2: 1,
+    }
+
+    NonRepairableRBD(two_inputs_edges, reliabilities)
+
+
+def test_perfect_rel_and_unrel():
+    two_inputs_edges = [
+        (0, 1),
+        (1, 3),
+        (0, 2),
+        (2, 3),
+    ]
+    reliabilities = {
+        1: PR,
+        2: PU,
+    }
+
+    NonRepairableRBD(two_inputs_edges, reliabilities)
+
+
+def test_nonparametric_node():
+    two_inputs_edges = [
+        (0, 1),
+        (1, 3),
+        (0, 2),
+        (2, 3),
+    ]
+    reliabilities = {
+        1: surv.KaplanMeier.fit([1, 2, 3, 4, 5]),
+        2: PU,
+    }
+
+    NonRepairableRBD(two_inputs_edges, reliabilities)

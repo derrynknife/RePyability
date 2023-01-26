@@ -48,6 +48,11 @@ class NonRepairableRBD(RBD):
         output_node: Optional[Any] = None,
         on_infeasible_rbd: str = "raise",
     ):
+        if on_infeasible_rbd not in ["raise", "warn", "ignore"]:
+            raise ValueError(
+                "'on_infeasible_rbd' must be one of"
+                + " {'raise', 'warn', 'ignore'}"
+            )
         reliabilities = copy(reliabilities)
         for key, value in reliabilities.items():
             if key == value:
@@ -58,6 +63,7 @@ class NonRepairableRBD(RBD):
         repeated = {
             k: v for k, v in reliabilities.items() if v in reliabilities.keys()
         }
+
         reliabilities = {
             k: v
             for k, v in reliabilities.items()
@@ -96,36 +102,19 @@ class NonRepairableRBD(RBD):
         if self.structure_check["has_unique_output_node"]:
             reliabilities[self.output_node] = PerfectReliability
 
-        # Set the node k values (k-out-of-n)
-        self.structure_check["has_repeated_koon_nodes"] = False
-        repeated_koon_nodes = []
-        for node, k_val in k.items():
-            if node in repeated:
-                self.structure_check["has_repeated_koon_nodes"] = True
-                repeated_koon_nodes.append(node)
-
-        self.structure_check["repeated_koon_nodes"] = repeated_koon_nodes
-
         # Check that all nodes in graph were in the reliabilities dict
+        # Checking that all in the reliabilities dict are in the graph
+        # is done in RBD initialisation since the RBD adds nodes from the
+        # reliabilities dict and checks if they are connected.
         self.structure_check["is_missing_distributions"] = False
         self.structure_check["nodes_with_no_reliability_distribution"] = []
         for n in self.G.nodes:
             if n not in reliabilities:
-                if n in repeated:
-                    continue
                 self.structure_check["is_valid"] = False
                 self.structure_check["is_missing_distributions"] = True
                 self.structure_check[
                     "nodes_with_no_reliability_distribution"
                 ].append(n)
-
-        self.structure_check["has_excess_distributions"] = False
-        self.structure_check["nodes_not_in_rbd"] = []
-        for n in reliabilities.keys():
-            if n not in self.G.nodes:
-                self.structure_check["is_valid"] = False
-                self.structure_check["has_excess_distributions"] = True
-                self.structure_check["nodes_not_in_rbd"].append(n)
 
         pprint.pprint(self.structure_check)
 
@@ -140,11 +129,6 @@ class NonRepairableRBD(RBD):
                 raise ValueError("RBD not correctly structured")
             elif on_infeasible_rbd == "ignore":
                 pass
-            else:
-                raise ValueError(
-                    "'on_infeasible_rbd' must be one of"
-                    + " {'raise', 'warn', 'ignore'}"
-                )
 
         self.reliabilities = reliabilities
         self.repeated = repeated

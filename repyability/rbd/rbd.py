@@ -107,23 +107,32 @@ class RBD:
                 self.output_node = output_node
 
         # Set whether k for KooN nodes
+        has_excess_koon_nodes = False
+        excess_koon_nodes = []
+        valid_rbd = True
         if k is not None:
             for node, k_val in k.items():
-                self.G.nodes[node]["k"] = k_val
-
-        # What are the errors that might arise?
-        # - in edges list but not reliabilities
-        # - in reliabilities but not edges list
-        # - KooN incorrect - structural
-        # - too many outputs
-        # - too many inputs
-        # - cycles
-        # - cycles from repeated components
+                if node in self.G.nodes:
+                    self.G.nodes[node]["k"] = k_val
+                else:
+                    valid_rbd = False
+                    has_excess_koon_nodes = True
+                    excess_koon_nodes.append(node)
 
         # Finally, check valid RBD structure
         structure_check = self.G.is_valid_RBD_structure(
             nodes=nodes, input_node=input_node, output_node=output_node
         )
+
+        structure_check["excess_koon_nodes"] = excess_koon_nodes
+        structure_check["has_excess_koon_nodes"] = has_excess_koon_nodes
+        if structure_check["is_valid"]:
+            structure_check["is_valid"] = valid_rbd
+
+        if has_excess_koon_nodes:
+            structure_check["koon_errors"].append(
+                "Check if you have repeated KooN nodes"
+            )
 
         if not structure_check["is_valid"]:
             if on_infeasible_rbd == "warn":
