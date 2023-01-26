@@ -14,7 +14,6 @@ from repyability.rbd.standby_node import StandbyModel
 @pytest.fixture
 def rbd_series() -> NonRepairableRBD:
     """A simple NonRepairableRBD with three intermediate nodes in series."""
-    # nodes = {1: "input_node", 2: 2, 3: 3, 4: 4, 5: "output_node"}
     edges = [(1, 2), (2, 3), (3, 4), (4, 5)]
     reliabilities = {
         2: surv.Weibull.from_params([20, 2]),
@@ -27,7 +26,6 @@ def rbd_series() -> NonRepairableRBD:
 @pytest.fixture
 def rbd_parallel() -> NonRepairableRBD:
     """A simple NonRepairableRBD with three intermediate nodes in parallel."""
-    # nodes = {1: "input_node", 2: 2, 3: 3, 4: 4, 5: "output_node"}
     edges = [(1, 2), (1, 3), (1, 4), (2, 5), (3, 5), (4, 5)]
     reliabilities = {
         2: FixedEventProbability.from_params(1 - 0.8),
@@ -42,13 +40,6 @@ def rbd1() -> NonRepairableRBD:
     """Example 6.10 from Modarres & Kaminskiy."""
     qp = 0.03
     qv = 0.01
-    # nodes = {
-    #     "source": "input_node",
-    #     "pump1": "pump1",
-    #     "pump2": "pump2",
-    #     "valve": "valve",
-    #     "sink": "output_node",
-    # }
     edges = [
         ("source", "pump1"),
         ("source", "pump2"),

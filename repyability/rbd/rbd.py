@@ -1,3 +1,5 @@
+import pprint
+import warnings
 from collections import defaultdict
 from copy import copy
 from itertools import combinations, product
@@ -56,6 +58,10 @@ class RBD:
         self,
         edges: Iterable[tuple[Hashable, Hashable]],
         k: Optional[dict[Any, int]] = None,
+        nodes: Optional[Iterable] = None,
+        input_node: Optional[Any] = None,
+        output_node: Optional[Any] = None,
+        on_infeasible_rbd: str = "raise",
     ):
         """Creates and returns a Reliability Block Diagram object.
 
@@ -67,6 +73,14 @@ class RBD:
         k : dict[Any, int]
             A dictionary mapping nodes to k-out-of-n (koon) values, by default
             {}, by default all nodes koon values are 1
+        on_infeasible_rbd : {{'raise', 'warn', 'ignore'}}, default 'raise'
+            Specifies what to do upon encountering a bad line (a line with too
+            many fields). Allowed values are :
+                - 'raise', raise an Exception when an infeasible RBD is
+                detected.
+                - 'warn', raise a warning when an infeasible RBD is detected,
+                but return RBD anyway.
+                - 'ignore', return the RBD without raising any warnings.
 
         Raises
         ------
@@ -75,32 +89,70 @@ class RBD:
         """
 
         # Create RBD graph
-        G = RBDGraph()
-        G.add_edges_from(edges)
-        self.G = G
+        self.G = RBDGraph()
+        self.G.add_edges_from(edges)
+        if nodes is not None:
+            self.G.add_nodes_from(nodes)
 
-        # Finally, check valid RBD structure
-        if not self.G.is_valid_RBD_structure():
-            raise ValueError(
-                "RBD not correctly structured. Errors: \n"
-                + f"{self.G.rbd_structural_errors}"
-            )
+        if input_node is not None:
+            if input_node not in self.G.nodes:
+                raise ValueError("'input_node' not in RBD structure.")
+            else:
+                self.input_node = input_node
 
-        # Set the input and output node references
-        for node in self.G.nodes:
-            if self.G.out_degree(node) == 0:
-                self.output_node = node
-            elif self.G.in_degree(node) == 0:
-                self.input_node = node
+        if output_node is not None:
+            if output_node not in self.G.nodes:
+                raise ValueError("'output_node' not in RBD structure.")
+            else:
+                self.output_node = output_node
 
-        self.in_or_out = [self.input_node, self.output_node]
-        self.nodes = [n for n in self.G.nodes if n not in self.in_or_out]
-
+        # Set whether k for KooN nodes
         if k is not None:
             for node, k_val in k.items():
                 self.G.nodes[node]["k"] = k_val
 
-        self.get_min_path_sets()
+        # What are the errors that might arise?
+        # - in edges list but not reliabilities
+        # - in reliabilities but not edges list
+        # - KooN incorrect - structural
+        # - too many outputs
+        # - too many inputs
+        # - cycles
+        # - cycles from repeated components
+
+        # Finally, check valid RBD structure
+        structure_check = self.G.is_valid_RBD_structure(
+            nodes=nodes, input_node=input_node, output_node=output_node
+        )
+
+        if not structure_check["is_valid"]:
+            if on_infeasible_rbd == "warn":
+                warnings.warn(
+                    "Strucutral Errors in RBD:\n"
+                    + pprint.pformat(structure_check),
+                    stacklevel=2,
+                )
+            elif on_infeasible_rbd == "raise":
+                raise ValueError("RBD not correctly structured")
+            elif on_infeasible_rbd == "ignore":
+                pass
+            else:
+                raise ValueError(
+                    "'on_infeasible_rbd' must be one of"
+                    + " {'raise', 'warn', 'ignore'}"
+                )
+
+        self.structure_check = structure_check
+        self.input_node = structure_check["input_node"]
+        self.output_node = structure_check["output_node"]
+        self.in_or_out = [self.input_node, self.output_node]
+        self.nodes = [n for n in self.G.nodes if n not in self.in_or_out]
+
+        if (
+            not structure_check["has_cycles"]
+            and not structure_check["has_nodes_with_no_successor"]
+        ):
+            self.get_min_path_sets()
 
     def find_irrelevant_components(self) -> set:
         combined_nodes: set = set().union(*self.get_min_path_sets())

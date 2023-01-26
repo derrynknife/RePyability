@@ -1,9 +1,10 @@
+import pprint
+import warnings
 from copy import copy
 from dataclasses import dataclass, field
 from queue import PriorityQueue
 from typing import Any, Collection, Dict, Hashable, Iterable, Optional
 
-import networkx as nx
 import numpy as np
 from numpy.typing import ArrayLike
 from surpyval import NonParametric
@@ -43,8 +44,16 @@ class NonRepairableRBD(RBD):
         edges: Iterable[tuple[Hashable, Hashable]],
         reliabilities: dict[Any, Any],
         k: dict[Any, int] = {},
+        input_node: Optional[Any] = None,
+        output_node: Optional[Any] = None,
+        on_infeasible_rbd: str = "raise",
     ):
         reliabilities = copy(reliabilities)
+        for key, value in reliabilities.items():
+            if key == value:
+                raise ValueError(
+                    "Reliability dict cannot point to a node to itself"
+                )
         # repeated checks if something was referenced from another node
         repeated = {
             k: v for k, v in reliabilities.items() if v in reliabilities.keys()
@@ -56,7 +65,14 @@ class NonRepairableRBD(RBD):
         }
 
         if repeated == {}:
-            super().__init__(edges, k)
+            super().__init__(
+                edges,
+                k,
+                set(reliabilities.keys()),
+                input_node,
+                output_node,
+                on_infeasible_rbd,
+            )
         else:
             new_edges = []
             for (start, stop) in edges:
@@ -65,32 +81,69 @@ class NonRepairableRBD(RBD):
                 if stop in repeated:
                     stop = repeated[stop]
                 new_edges.append((start, stop))
-            if list(nx.simple_cycles(nx.DiGraph(new_edges))) != []:
-                raise ValueError("Cycle due to repeated components")
-            super().__init__(new_edges, k)
+            super().__init__(
+                new_edges,
+                k,
+                set(reliabilities.keys()),
+                input_node,
+                output_node,
+                on_infeasible_rbd,
+            )
 
-        reliabilities[self.input_node] = PerfectReliability
-        reliabilities[self.output_node] = PerfectReliability
+        # Check for repeated cycles or non-repeated cycles
+        if self.structure_check["has_unique_input_node"]:
+            reliabilities[self.input_node] = PerfectReliability
+        if self.structure_check["has_unique_output_node"]:
+            reliabilities[self.output_node] = PerfectReliability
 
         # Set the node k values (k-out-of-n)
+        self.structure_check["has_repeated_koon_nodes"] = False
+        repeated_koon_nodes = []
         for node, k_val in k.items():
             if node in repeated:
-                raise ValueError("Repated node cannot be a K-out-of-N node")
-            self.G.nodes[node]["k"] = k_val
+                self.structure_check["has_repeated_koon_nodes"] = True
+                repeated_koon_nodes.append(node)
+
+        self.structure_check["repeated_koon_nodes"] = repeated_koon_nodes
 
         # Check that all nodes in graph were in the reliabilities dict
+        self.structure_check["is_missing_distributions"] = False
+        self.structure_check["nodes_with_no_reliability_distribution"] = []
         for n in self.G.nodes:
             if n not in reliabilities:
                 if n in repeated:
                     continue
-                raise ValueError(
-                    "Node in edges list but not reliabilities dictionary"
-                )
+                self.structure_check["is_valid"] = False
+                self.structure_check["is_missing_distributions"] = True
+                self.structure_check[
+                    "nodes_with_no_reliability_distribution"
+                ].append(n)
 
+        self.structure_check["has_excess_distributions"] = False
+        self.structure_check["nodes_not_in_rbd"] = []
         for n in reliabilities.keys():
             if n not in self.G.nodes:
+                self.structure_check["is_valid"] = False
+                self.structure_check["has_excess_distributions"] = True
+                self.structure_check["nodes_not_in_rbd"].append(n)
+
+        pprint.pprint(self.structure_check)
+
+        if not self.structure_check["is_valid"]:
+            if on_infeasible_rbd == "warn":
+                warnings.warn(
+                    "Strucutral Errors in RBD:\n"
+                    + pprint.pformat(self.structure_check),
+                    stacklevel=2,
+                )
+            elif on_infeasible_rbd == "raise":
+                raise ValueError("RBD not correctly structured")
+            elif on_infeasible_rbd == "ignore":
+                pass
+            else:
                 raise ValueError(
-                    "Node in reliabilities dict but not in edges list"
+                    "'on_infeasible_rbd' must be one of"
+                    + " {'raise', 'warn', 'ignore'}"
                 )
 
         self.reliabilities = reliabilities
@@ -99,7 +152,8 @@ class NonRepairableRBD(RBD):
         is_fixed = []
         for _, node in self.reliabilities.items():
             if isinstance(node, NonParametric):
-                is_fixed.append(False)
+                is_fixed = [False]
+                break
             elif isinstance(node, NonRepairableRBD):
                 is_fixed.append(node.__fixed_probs)
             elif node == PerfectReliability:
@@ -124,7 +178,8 @@ class NonRepairableRBD(RBD):
         else:
             self.__fixed_probs = False
 
-        self.compile_bdd()
+        if self.structure_check["is_valid"]:
+            self.compile_bdd()
 
     @check_x
     def sf(

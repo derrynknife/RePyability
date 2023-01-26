@@ -11,14 +11,32 @@ from repyability.rbd.rbd import RBD
 # Check components are correct lengths
 def test_input_errors():
     two_inputs_edges = [(0, 1), (2, 1), (1, 3), (3, 4)]
+
+    # Test warning raised when asked
+    with pytest.warns():
+        RBD(two_inputs_edges, on_infeasible_rbd="warn")
+
+    # Test error is raised when input not provided
     with pytest.raises(ValueError):
         RBD(two_inputs_edges)
+
+    # Test ignore error when asked
+    RBD(two_inputs_edges, on_infeasible_rbd="ignore")
 
 
 def test_output_errors():
     two_outputs_edges = [(0, 1), (1, 2), (2, 3), (2, 4)]
+
+    # Test warning raised when asked
+    with pytest.warns():
+        RBD(two_outputs_edges, on_infeasible_rbd="warn")
+
+    # Test error is raised when input not provided
     with pytest.raises(ValueError):
         RBD(two_outputs_edges)
+
+    # Test ignore error when asked
+    RBD(two_outputs_edges, on_infeasible_rbd="ignore")
 
 
 def test_cycle_errors():
@@ -29,8 +47,17 @@ def test_cycle_errors():
         (3, 1),
         (3, 4),
     ]
+
+    # Test warning raised when asked
+    with pytest.warns():
+        RBD(edges_with_cycle, on_infeasible_rbd="warn")
+
+    # Test error is raised when input not provided
     with pytest.raises(ValueError):
         RBD(edges_with_cycle)
+
+    # Test ignore error when asked
+    RBD(edges_with_cycle, on_infeasible_rbd="ignore")
 
 
 def test_series_edges():
