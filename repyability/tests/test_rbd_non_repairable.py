@@ -135,26 +135,24 @@ def test_cycle_errors():
 
 
 def test_incorrect_infeasible_option():
-    two_inputs_edges = [(0, 1), (1, 3)]
+    edges = [(0, 1), (1, 3)]
     reliabilities = {1: PR}
 
     with pytest.raises(ValueError):
-        NonRepairableRBD(
-            two_inputs_edges, reliabilities, on_infeasible_rbd="foo"
-        )
+        NonRepairableRBD(edges, reliabilities, on_infeasible_rbd="foo")
 
 
 def test_self_reference():
-    two_inputs_edges = [(0, 1), (1, 3)]
+    edges = [(0, 1), (1, 3)]
     reliabilities = {1: 1}
 
     # Test error is raised when input not provided
     with pytest.raises(ValueError):
-        NonRepairableRBD(two_inputs_edges, reliabilities)
+        NonRepairableRBD(edges, reliabilities)
 
 
 def test_repeated_koon_nodes():
-    two_inputs_edges = [
+    edges = [
         (0, 1),
         (1, 3),
         (0, 2),
@@ -179,11 +177,11 @@ def test_repeated_koon_nodes():
     k = {3: 2, 6: 2}
 
     with pytest.raises(ValueError):
-        NonRepairableRBD(two_inputs_edges, reliabilities, k=k)
+        NonRepairableRBD(edges, reliabilities, k=k)
 
 
 def test_repeated_nodes():
-    two_inputs_edges = [
+    edges = [
         (0, 1),
         (1, 3),
         (0, 2),
@@ -194,11 +192,11 @@ def test_repeated_nodes():
         2: 1,
     }
 
-    NonRepairableRBD(two_inputs_edges, reliabilities)
+    NonRepairableRBD(edges, reliabilities)
 
 
 def test_perfect_rel_and_unrel():
-    two_inputs_edges = [
+    edges = [
         (0, 1),
         (1, 3),
         (0, 2),
@@ -209,19 +207,38 @@ def test_perfect_rel_and_unrel():
         2: PU,
     }
 
-    NonRepairableRBD(two_inputs_edges, reliabilities)
+    NonRepairableRBD(edges, reliabilities)
 
 
 def test_nonparametric_node():
-    two_inputs_edges = [
+    edges = [
         (0, 1),
         (1, 3),
         (0, 2),
         (2, 3),
     ]
+
     reliabilities = {
         1: surv.KaplanMeier.fit([1, 2, 3, 4, 5]),
         2: PU,
     }
 
-    NonRepairableRBD(two_inputs_edges, reliabilities)
+    NonRepairableRBD(edges, reliabilities)
+
+
+def test_repeated_node_in_cycle():
+    edges = [
+        (0, 1),
+        (1, 2),
+        (2, 3),
+        (3, 4),
+    ]
+
+    reliabilities = {
+        1: PR,
+        2: PR,
+        3: 1,
+    }
+
+    with pytest.raises(ValueError):
+        NonRepairableRBD(edges, reliabilities)

@@ -156,12 +156,19 @@ class RBD:
         self.output_node = structure_check["output_node"]
         self.in_or_out = [self.input_node, self.output_node]
         self.nodes = [n for n in self.G.nodes if n not in self.in_or_out]
+        self.structure_check["has_irrelevant_nodes"] = False
+        self.structure_check["irrelevant_nodes"] = set()
 
         if (
             not structure_check["has_cycles"]
             and not structure_check["has_nodes_with_no_successor"]
         ):
             self.get_min_path_sets()
+            irrelevant_nodes = self.find_irrelevant_components()
+            if len(irrelevant_nodes) != 0:
+                self.structure_check["has_irrelevant_nodes"] = True
+
+            self.structure_check["irrelevant_nodes"] = irrelevant_nodes
 
     def find_irrelevant_components(self) -> set:
         combined_nodes: set = set().union(*self.get_min_path_sets())

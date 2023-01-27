@@ -80,6 +80,7 @@ class NonRepairableRBD(RBD):
                 output_node,
                 on_infeasible_rbd,
             )
+            self.structure_check["has_repeated_node_in_cycle"] = False
         else:
             new_edges = []
             for (start, stop) in edges:
@@ -98,11 +99,24 @@ class NonRepairableRBD(RBD):
             )
             self.structure_check["has_repeated_node_in_cycle"] = False
             if self.structure_check["has_cycles"]:
+                # Need to find if cycles are due to repeated components.
                 G = nx.DiGraph()
                 G.add_edges_from(edges)
-                cycles = list(nx.simple_cycles(G))
-                if cycles != []:
-                    self.structure_check["has_repeated_node_in_cycle"] = True
+                cycles = {
+                    frozenset(cycle) for cycle in list(nx.simple_cycles(G))
+                }
+                non_repeated_node_cycles = copy(self.structure_check["cycles"])
+                print(non_repeated_node_cycles)
+                for cycle in self.structure_check["cycles"]:
+                    if cycle not in cycles:
+                        non_repeated_node_cycles.remove(cycle)
+                        self.structure_check[
+                            "has_repeated_node_in_cycle"
+                        ] = True
+                if len(non_repeated_node_cycles) == 0:
+                    self.structure_check["has_cycles"] = False
+                print(non_repeated_node_cycles)
+                self.structure_check["cycles"] = non_repeated_node_cycles
 
         # Check for repeated cycles or non-repeated cycles
         if self.structure_check["has_unique_input_node"]:

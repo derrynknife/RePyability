@@ -42,7 +42,9 @@ class RBDGraph(DiGraph):
         else:
             results["has_cycles"] = False
 
-        results["cycles"] = cycles
+        cycles_set = {frozenset(cycle) for cycle in cycles}
+
+        results["cycles"] = cycles_set
 
         input_nodes = [n for n, id in self.in_degree(self.nodes) if (id == 0)]
         output_nodes = [
