@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from queue import PriorityQueue
 from typing import Any, Collection, Dict, Hashable, Iterable, Optional
 
+import networkx as nx
 import numpy as np
 from numpy.typing import ArrayLike
 from surpyval import NonParametric
@@ -95,6 +96,13 @@ class NonRepairableRBD(RBD):
                 output_node,
                 on_infeasible_rbd,
             )
+            self.structure_check["has_repeated_node_in_cycle"] = False
+            if self.structure_check["has_cycles"]:
+                G = nx.DiGraph()
+                G.add_edges_from(edges)
+                cycles = list(nx.simple_cycles(G))
+                if cycles != []:
+                    self.structure_check["has_repeated_node_in_cycle"] = True
 
         # Check for repeated cycles or non-repeated cycles
         if self.structure_check["has_unique_input_node"]:
@@ -157,8 +165,10 @@ class NonRepairableRBD(RBD):
         self.__fixed_probs: bool
         if all(is_fixed):
             self.__fixed_probs = True
+            self.structure_check["all_distributions_fixed"] = True
         else:
             self.__fixed_probs = False
+            self.structure_check["all_distributions_fixed"] = False
 
         if self.structure_check["is_valid"]:
             self.compile_bdd()
