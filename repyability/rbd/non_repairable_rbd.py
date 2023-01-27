@@ -12,6 +12,7 @@ from surpyval import NonParametric
 
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .rbd import RBD
+from .repeated_node import RepeatedNode
 from .standby_node import StandbyModel
 
 
@@ -106,7 +107,6 @@ class NonRepairableRBD(RBD):
                     frozenset(cycle) for cycle in list(nx.simple_cycles(G))
                 }
                 non_repeated_node_cycles = copy(self.structure_check["cycles"])
-                print(non_repeated_node_cycles)
                 for cycle in self.structure_check["cycles"]:
                     if cycle not in cycles:
                         non_repeated_node_cycles.remove(cycle)
@@ -382,25 +382,25 @@ class NonRepairableRBD(RBD):
 
         return out
 
-    def mean(self, mc_samples: int = 10_000):
+    def mean(self, mc_samples: int = 100_000):
         """Returns the Mean Time To Failure of the RBD
         This is necessary for recursive calls which will only use the `mean`
         """
         return self.random(mc_samples).mean().item()
 
-    def mean_time_to_failure(self, mc_samples: int = 10_000):
+    def mean_time_to_failure(self, mc_samples: int = 100_000):
         """
         User friendly way to get MTTF
         """
         return self.mean(mc_samples)
 
-    def node_mttf(self, mc_samples: int = 10_000):
+    def node_mttf(self, mc_samples: int = 100_000):
         out = {}
         for node in self.nodes:
             model = self.reliabilities[node]
-            if isinstance(model, StandbyModel):
-                out[node] = model.mean(mc_samples)
-            elif isinstance(model, NonRepairableRBD):
+            if isinstance(
+                model, (StandbyModel, NonRepairableRBD, RepeatedNode)
+            ):
                 out[node] = model.mean(mc_samples)
             else:
                 out[node] = model.mean()
