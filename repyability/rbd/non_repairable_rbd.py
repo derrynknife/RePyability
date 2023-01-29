@@ -395,10 +395,12 @@ class NonRepairableRBD(RBD):
         return self.mean(mc_samples)
 
     def node_mttf(self, mc_samples: int = 100_000):
-        out = {}
+        out: dict = {}
         for node in self.nodes:
             model = self.reliabilities[node]
-            if isinstance(
+            if model.name == "FixedEventProbability":
+                out[node] = 0
+            elif isinstance(
                 model, (StandbyModel, NonRepairableRBD, RepeatedNode)
             ):
                 out[node] = model.mean(mc_samples)
