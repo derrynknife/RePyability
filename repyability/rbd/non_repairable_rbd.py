@@ -115,7 +115,6 @@ class NonRepairableRBD(RBD):
                         ] = True
                 if len(non_repeated_node_cycles) == 0:
                     self.structure_check["has_cycles"] = False
-                print(non_repeated_node_cycles)
                 self.structure_check["cycles"] = non_repeated_node_cycles
 
         # Check for repeated cycles or non-repeated cycles
