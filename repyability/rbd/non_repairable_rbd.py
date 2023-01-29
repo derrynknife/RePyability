@@ -168,6 +168,12 @@ class NonRepairableRBD(RBD):
                 if isinstance(node, StandbyModel):
                     is_fixed = [False]
                     break
+                elif isinstance(node, RepeatedNode):
+                    this_fixed = node.model.dist.name in [
+                        "FixedEventProbability",
+                        "Bernoulli",
+                    ]
+                    is_fixed.append(this_fixed)
                 else:
                     this_fixed = node.dist.name in [
                         "FixedEventProbability",
