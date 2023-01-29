@@ -398,7 +398,7 @@ class NonRepairableRBD(RBD):
         out: dict = {}
         for node in self.nodes:
             model = self.reliabilities[node]
-            if model.name == "FixedEventProbability":
+            if model.dist.name == "FixedEventProbability":
                 out[node] = 0
             elif isinstance(
                 model, (StandbyModel, NonRepairableRBD, RepeatedNode)
