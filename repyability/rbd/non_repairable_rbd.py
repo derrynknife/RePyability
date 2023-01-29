@@ -397,12 +397,12 @@ class NonRepairableRBD(RBD):
         out: dict = {}
         for node in self.nodes:
             model = self.reliabilities[node]
-            if model.dist.name in ["FixedEventProbability", "Bernoulli"]:
-                out[node] = 0
-            elif isinstance(
+            if isinstance(
                 model, (StandbyModel, NonRepairableRBD, RepeatedNode)
             ):
                 out[node] = model.mean(mc_samples)
+            elif model.dist.name in ["FixedEventProbability", "Bernoulli"]:
+                out[node] = 0
             else:
                 out[node] = model.mean()
         return out
