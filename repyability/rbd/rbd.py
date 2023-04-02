@@ -17,19 +17,57 @@ from repyability.rbd.rbd_graph import RBDGraph
 from repyability.utils.wrappers import check_probability
 
 
-def log_linearly_scale_probabilities(p, x):
+def log_linearly_scale_probabilities(p: float, x: float) -> np.ndarray:
+    """
+    Log-linearly scale probabilities.
+
+    Parameters:
+        p (float): Probability value.
+        x (float): Input value.
+
+    Returns:
+        np.ndarray: Log-linearly scaled probabilities.
+    """
     if p == 1.0:
         return np.atleast_1d(1.0)
     else:
         return np.atleast_1d(1 - np.exp(-(-np.log(1 - p) + x)))
 
 
-def scale_probability_dict(node_probabilities, x, weights=None):
+def scale_probability_dict(
+    node_probabilities: Dict[str, float],
+    x: float,
+    weights: Optional[Dict[str, float]] = None,
+) -> Dict[str, np.ndarray]:
+    """
+    Scale a dictionary of node probabilities using log-linear scaling.
+
+    Parameters
+    ----------
+    node_probabilities : Dict[str, float]
+        The dictionary of node probabilities to be scaled.
+    x : float
+        The scaling factor.
+    weights : Optional[Dict[str, float]], optional
+        The dictionary of weights for each node, by default None.
+        If None, a weight of 1.0 is used for all nodes.
+
+    Returns
+    -------
+    Dict[str, np.ndarray]
+        A dictionary of the scaled probability values.
+
+    """
     out = {}
     if weights is None:
         weights = defaultdict(lambda: 1.0)
+
+    # Iterate through the input dictionary of node probabilities
     for k, p in node_probabilities.items():
+        # Apply log-linear scaling to the node probability value using the
+        # scaling factor and weight for the node
         out[k] = log_linearly_scale_probabilities(p, x * weights[k])
+
     return out
 
 
