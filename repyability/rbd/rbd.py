@@ -10,31 +10,11 @@ import numpy as np
 from dd import autoref as _bdd
 from numpy.typing import ArrayLike
 from scipy.optimize import minimize, root
+from scipy.special import expit as sigmoid
 
 from repyability.rbd.min_path_sets import min_path_sets as find_min_path_sets
 from repyability.rbd.rbd_graph import RBDGraph
-
-
-def sigmoid(x):
-    return 1 / (1 + np.exp(-x))
-
-
-def sigmoid_inv(x):
-    return np.log(x / (1.0 - x))
-
-
-def check_probability(func):
-    """checks probability is between 0 and 1"""
-
-    def wrap(obj, target: float, *args, **kwargs):
-        if target > 1:
-            raise ValueError("target cannot be above 1.")
-        elif target < 0:
-            raise ValueError("target cannot be below 0.")
-        else:
-            return func(obj, target, *args, **kwargs)
-
-    return wrap
+from repyability.utils.wrappers import check_probability
 
 
 def log_linearly_scale_probabilities(p, x):
@@ -548,6 +528,7 @@ class RBD:
             res["x"].item(),
             weights,
         )
+        print(out)
         out = {**node_probabilities, **out}
         out = {k: v.item() for k, v in out.items()}
         return out
