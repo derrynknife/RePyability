@@ -205,7 +205,7 @@ class NonRepairableRBD(RBD):
         x: Optional[ArrayLike] = None,
         working_nodes: Collection[Hashable] = [],
         broken_nodes: Collection[Hashable] = [],
-        method: str = "c",
+        method: Optional[str] = None,
         approx: bool = False,
     ) -> np.ndarray:
         """Returns the system reliability for time/s x.
@@ -224,8 +224,11 @@ class NonRepairableRBD(RBD):
             Marks these components as perfectly unreliable, by default []
         method: str, optional
             Input either "c" or "p" for the function to use the cut set or
-            path set methods respectively, by default "c". Both methods
-            ultimately return the same results though.
+            path set methods respectively. Both methods ultimately return the
+            same results. By default (None) the path set method ("p") is used,
+            as it avoids deriving the cut sets; if approx=True is requested the
+            cut set method ("c") is used instead, as the approximation only
+            applies to cut sets.
         approx: bool, optional
             If true, only considers the first-order terms (w.r.t. the
             inclusion-exclusion principle), thereby reducing computation time.
@@ -266,6 +269,13 @@ class NonRepairableRBD(RBD):
                         + "it is not a repeated node."
                     ).format(node, self.repeated[node])
                 )
+
+        # Resolve the default method. Path sets are used by default (they
+        # avoid deriving the cut sets); the cut set method is used when the
+        # first-order approximation is requested, as approx only applies to
+        # cut sets.
+        if method is None:
+            method = "c" if approx else "p"
 
         # Check that path set method and approximation are not used together
         # (The approximation is only applicable to the cutset method)

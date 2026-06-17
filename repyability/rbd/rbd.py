@@ -2,7 +2,6 @@ import pprint
 import warnings
 from collections import defaultdict
 from copy import copy
-from itertools import product
 from typing import Any, Dict, Hashable, Iterable, Iterator, Optional
 
 import networkx as nx
@@ -144,6 +143,66 @@ def probability_any_set_satisfied(
         return result
 
     return recurse(frozenset(sets))
+
+
+def _keep_minimal_sets(sets: Iterable[frozenset]) -> list[frozenset]:
+    """Return only the inclusion-minimal sets.
+
+    Discards any set that is a superset of another (and de-duplicates).
+    """
+    minimal: list[frozenset] = []
+    # Consider smaller sets first so that a kept set can prune its supersets.
+    for candidate in sorted(set(sets), key=len):
+        if not any(kept <= candidate for kept in minimal):
+            minimal.append(candidate)
+    return minimal
+
+
+def minimal_cut_sets_from_path_sets(
+    path_sets: Iterable[frozenset],
+) -> set[frozenset]:
+    """Return the minimal cut sets given the minimal path sets.
+
+    A minimal cut set is a minimal "transversal" (hitting set) of the path
+    sets: a smallest set of components that intersects every path set, so that
+    failing those components breaks every path through the system.
+
+    This uses Berge's algorithm: it builds the minimal transversals
+    incrementally, one path set at a time, discarding non-minimal candidates at
+    every step. Unlike taking the full Cartesian product of the path sets and
+    filtering once at the end, it never materialises the (potentially enormous)
+    product, which makes it dramatically faster in practice. Because it works
+    directly from the path sets, it stays correct for k-out-of-n structures,
+    whose k-of-n behaviour is already encoded in the path sets.
+
+    Parameters
+    ----------
+    path_sets : Iterable[frozenset]
+        The minimal path sets (each a set of components).
+
+    Returns
+    -------
+    set[frozenset]
+        The minimal cut sets.
+    """
+    # Start with the single empty transversal and extend it to hit each path
+    # set in turn.
+    transversals: list[frozenset] = [frozenset()]
+    for path_set in path_sets:
+        path_set = frozenset(path_set)
+        candidates: list[frozenset] = []
+        for transversal in transversals:
+            if transversal & path_set:
+                # Already hits this path set; keep it unchanged.
+                candidates.append(transversal)
+            else:
+                # Must be extended to hit this path set, by one of its
+                # components.
+                for component in path_set:
+                    candidates.append(transversal | {component})
+        # Prune non-minimal candidates now so the working set stays small.
+        transversals = _keep_minimal_sets(candidates)
+    return set(transversals)
 
 
 class RBD:
@@ -392,35 +451,15 @@ class RBD:
         Returns the set of frozensets of minimal cut sets of the RBD. The outer
         set contains the frozenset of nodes. frozensets were used so the inner
         set elements could be hashable.
+
+        The minimal cut sets are the minimal transversals (hitting sets) of the
+        minimal path sets, computed with Berge's algorithm. See
+        minimal_cut_sets_from_path_sets() for details.
         """
         path_sets = self.get_min_path_sets(
             include_in_out_nodes=include_in_out_nodes
         )
-
-        # Gets the cartesian product across pathsets
-        prods = product(*path_sets)
-
-        # We need to remove duplicate nodes in the products to get the cutsets,
-        # and discard empty products
-        cut_sets = [frozenset(prod) for prod in prods if prod]
-
-        min_cut_sets: list[frozenset] = []
-
-        # Now only insert if minimal, removing any superset (non-minimal)
-        # cutsets are encountered
-        for cut_set in cut_sets:
-            is_minimal_cut_set = True
-            for other_cut_set in min_cut_sets.copy():
-                if cut_set.issuperset(other_cut_set):
-                    is_minimal_cut_set = False
-                    break
-                if cut_set.issubset(other_cut_set):
-                    min_cut_sets.remove(other_cut_set)
-
-            if is_minimal_cut_set:
-                min_cut_sets.append(cut_set)
-
-        return set(min_cut_sets)
+        return minimal_cut_sets_from_path_sets(path_sets)
 
     def path_set_probabilities(self, node_probabilities):
         path_sets = self.get_min_path_sets(include_in_out_nodes=False)
@@ -435,7 +474,7 @@ class RBD:
     def system_probability(
         self,
         node_probabilities: Dict,
-        method: str = "c",
+        method: str = "p",
         approx: bool = False,
     ) -> np.ndarray:
         """Returns the system probability/ies given the probability of each
@@ -449,8 +488,10 @@ class RBD:
             availability (or some other probability that I can't conceive).
         method: str, optional
             Input either "c" or "p" for the function to use the cut set or
-            path set methods respectively, by default "c". Both methods
-            ultimately return the same results though.
+            path set methods respectively, by default "p". Both methods
+            ultimately return the same results though; the path set method is
+            the default as it avoids deriving the cut sets. The cut set method
+            (method="c") is required for the approx option below.
         approx: bool, optional
             If true, only considers the first-order terms (w.r.t. the
             inclusion-exclusion principle), thereby reducing computation time.
