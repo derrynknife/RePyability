@@ -120,18 +120,7 @@ def test_cut_sets_are_minimal_transversals(fixture_name, request):
 
 
 def test_sf_default_method_is_path_set(rbd3: NonRepairableRBD):
-    # The default (method=None) must match the explicit path-set method, and
-    # both methods agree.
+    # The default method must match the explicit path-set method, and both
+    # methods agree.
     assert rbd3.sf(1) == pytest.approx(rbd3.sf(1, method="p"))
     assert rbd3.sf(1) == pytest.approx(rbd3.sf(1, method="c"))
-
-
-def test_sf_default_with_approx_does_not_raise(rbd1: NonRepairableRBD):
-    # approx=True with the default method must route to cut sets, not raise.
-    value = rbd1.sf(1, approx=True)
-    assert value == pytest.approx(rbd1.sf(1, method="c"))
-
-
-def test_sf_explicit_path_with_approx_raises(rbd1: NonRepairableRBD):
-    with pytest.raises(ValueError):
-        rbd1.sf(1, method="p", approx=True)

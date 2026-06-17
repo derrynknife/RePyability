@@ -475,7 +475,6 @@ class RBD:
         self,
         node_probabilities: Dict,
         method: str = "p",
-        approx: bool = False,
     ) -> np.ndarray:
         """Returns the system probability/ies given the probability of each
         node.
@@ -489,16 +488,8 @@ class RBD:
         method: str, optional
             Input either "c" or "p" for the function to use the cut set or
             path set methods respectively, by default "p". Both methods
-            ultimately return the same results though; the path set method is
-            the default as it avoids deriving the cut sets. The cut set method
-            (method="c") is required for the approx option below.
-        approx: bool, optional
-            If true, only considers the first-order terms (w.r.t. the
-            inclusion-exclusion principle), thereby reducing computation time.
-            This approximation is only applicable to the cut set method
-            (method="c"), a ValueError exception is raised if method="p" and
-            approx=True. This approximation is typically sufficient for most
-            use cases where reliabilities are close to 1. By default, False.
+            return the same (exact) result; the path set method is the default
+            as it avoids deriving the cut sets.
 
         Returns
         -------
@@ -508,11 +499,7 @@ class RBD:
         Raises
         ------
         ValueError
-            - Working/broken node/component inconsistency (a component or node
-              is supplied more than once to any of working_nodes, broken_nodes,
-              working_components, broken_components)
-            - The path set method must not be used with approx=True, see approx
-              arg description above
+            Probability arrays of differing lengths
         """
 
         node_probabilities = copy(node_probabilities)
@@ -527,14 +514,6 @@ class RBD:
         else:
             # get shape of input array
             array_shape = lengths[0]
-
-        # Check that path set method and approximation are not used together
-        # (The approximation is only applicable to the cutset method)
-        if method == "p" and approx:
-            raise ValueError(
-                "The path set method must not be used with \
-                approx=True, see approx arg description in docstring."
-            )
 
         if method == "p":
             # The system reliability is the probability that at least one
@@ -551,24 +530,6 @@ class RBD:
         node_unreliability = {
             k: 1 - v for k, v in node_probabilities.items()
         }
-
-        if approx:
-            # First-order (rare-event) approximation: sum the probabilities of
-            # each cut set failing. This is the first term of the
-            # inclusion-exclusion principle, an upper bound on unreliability
-            # that is typically sufficient when reliabilities are close to 1.
-            system_unreliability = np.zeros(array_shape)
-            for cut_set in cut_sets:
-                cut_set_fail_prob = np.ones(array_shape)
-                for comp in cut_set:
-                    cut_set_fail_prob = cut_set_fail_prob * (
-                        node_unreliability[comp]
-                    )
-                system_unreliability = (
-                    system_unreliability + cut_set_fail_prob
-                )
-            return 1 - system_unreliability
-
         system_unreliability = probability_any_set_satisfied(
             cut_sets, node_unreliability, array_shape
         )

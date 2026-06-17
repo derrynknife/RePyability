@@ -205,8 +205,7 @@ class NonRepairableRBD(RBD):
         x: Optional[ArrayLike] = None,
         working_nodes: Collection[Hashable] = [],
         broken_nodes: Collection[Hashable] = [],
-        method: Optional[str] = None,
-        approx: bool = False,
+        method: str = "p",
     ) -> np.ndarray:
         """Returns the system reliability for time/s x.
 
@@ -224,18 +223,9 @@ class NonRepairableRBD(RBD):
             Marks these components as perfectly unreliable, by default []
         method: str, optional
             Input either "c" or "p" for the function to use the cut set or
-            path set methods respectively. Both methods ultimately return the
-            same results. By default (None) the path set method ("p") is used,
-            as it avoids deriving the cut sets; if approx=True is requested the
-            cut set method ("c") is used instead, as the approximation only
-            applies to cut sets.
-        approx: bool, optional
-            If true, only considers the first-order terms (w.r.t. the
-            inclusion-exclusion principle), thereby reducing computation time.
-            This approximation is only applicable to the cut set method
-            (method="c"), a ValueError exception is raised if method="p" and
-            approx=True. This approximation is typically sufficient for most
-            use cases where reliabilities are close to 1. By default, False.
+            path set methods respectively. Both methods return the same
+            (exact) result. By default the path set method ("p") is used, as
+            it avoids deriving the cut sets.
 
         Returns
         -------
@@ -245,11 +235,9 @@ class NonRepairableRBD(RBD):
         Raises
         ------
         ValueError
-            - Working/broken node/component inconsistency (a component or node
-              is supplied more than once to any of working_nodes, broken_nodes,
-              working_components, broken_components)
-            - The path set method must not be used with approx=True, see approx
-              arg description above
+            Working/broken node/component inconsistency (a component or node
+            is supplied more than once to any of working_nodes, broken_nodes,
+            working_components, broken_components)
         """
         # Check for any node/component argument inconsistency
         # check_sf_node_component_args_consistency(
@@ -269,21 +257,6 @@ class NonRepairableRBD(RBD):
                         + "it is not a repeated node."
                     ).format(node, self.repeated[node])
                 )
-
-        # Resolve the default method. Path sets are used by default (they
-        # avoid deriving the cut sets); the cut set method is used when the
-        # first-order approximation is requested, as approx only applies to
-        # cut sets.
-        if method is None:
-            method = "c" if approx else "p"
-
-        # Check that path set method and approximation are not used together
-        # (The approximation is only applicable to the cutset method)
-        if method == "p" and approx:
-            raise ValueError(
-                "The path set method must not be used with \
-                approx=True, see approx arg description in docstring."
-            )
 
         # Turn node iterables into sets for O(1) lookup later
         working_nodes = set(working_nodes)
