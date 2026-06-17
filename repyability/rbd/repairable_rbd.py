@@ -5,7 +5,6 @@ from queue import PriorityQueue
 from typing import Any, Collection, Hashable, Iterable, List, Tuple
 
 import numpy as np
-from dd import autoref as _bdd
 from tqdm import tqdm
 
 from repyability.non_repairable import NonRepairable
@@ -139,51 +138,6 @@ class RepairableRBD(RBD):
 
         self.components = components
         self.repairability = copy(repairability)
-
-        # Compile BDD, sets self.bdd and self.bdd_system_ref. See compile_bdd()
-        # docstring for more info.
-        self.compile_bdd()
-
-    def is_system_working(
-        self, component_status: dict[Any, bool], method: str
-    ) -> bool:
-        """Returns a boolean as to whether the system is working given the
-        status of the components
-
-        Parameters
-        ----------
-        component_status : dict[Any, bool]
-            Dictionary with all components where
-            component_status[component] = True only if the component is
-            working, and = False if not working.
-
-        Returns
-        -------
-        bool
-            True if the system is working, otherwise False.
-        """
-        # This function uses a Binary Decision Diagram (BDD) to enable
-        # efficient component_status -> is_system_working lookup. Something
-        # very much required given the rate at which this function is called
-        # in the N simulations in availability().
-
-        # Now evaluate the BDD given the component status
-        if method == "c":
-            system_given_component_status = self.bdd_c.let(
-                component_status, self.bdd_system_c_ref
-            )
-
-            system_state = self.bdd_c.to_expr(system_given_component_status)
-        elif method == "p":
-            system_given_component_status = self.bdd.let(
-                component_status, self.bdd_system_ref
-            )
-
-            system_state = self.bdd.to_expr(system_given_component_status)
-        else:
-            raise ValueError("`method` must be either 'p' or 'c'")
-
-        return system_state == "TRUE"
 
     def initialize_event_queue(
         self,
@@ -571,86 +525,6 @@ class RepairableRBD(RBD):
         }
 
         return simulation_results
-
-    def compile_bdd(self):
-        """
-        Compiles the BDD, setting self.bdd to the BDD manager, and
-        self.bdd_system_ref to the BDD variable reference for the system state.
-        """
-        # Instantiate the manager
-        bdd = _bdd.BDD()
-        bdd_c = _bdd.BDD()
-
-        # Enable Dynamic Reordering (Rudell's Sifting Algorithm)
-        bdd.configure(reordering=True)
-        bdd_c.configure(reordering=True)
-
-        # For all components, declare the BDD variable,
-        # and get the BDD variable reference
-        bdd_vars = {}
-        bdd_c_vars = {}
-        for component in self.get_nodes_names():
-            bdd.declare(component)
-            bdd_vars[component] = bdd.var(component)
-            bdd_c.declare(component)
-            bdd_c_vars[component] = bdd_c.var(component)
-
-        # Make path expressions
-        path_expressions: list[_bdd.Function] = []
-        for min_path_set in self.get_min_path_sets(include_in_out_nodes=False):
-            min_path_set_as_list = list(min_path_set)
-            path_function = bdd_vars[min_path_set_as_list[0]]
-            for component in min_path_set_as_list[1:]:
-                path_function &= bdd_vars[component]
-            path_expressions.append(path_function)
-
-        # Make cut expressions
-        cut_expressions: list[_bdd.Function] = []
-        for min_cut_set in self.get_min_cut_sets(include_in_out_nodes=False):
-            min_cut_set_as_list = list(min_cut_set)
-            cut_function = bdd_c_vars[min_cut_set_as_list[0]]
-            for component in min_cut_set_as_list[1:]:
-                cut_function |= bdd_c_vars[component]
-            cut_expressions.append(cut_function)
-
-        system: _bdd.Function = path_expressions[0]
-        for path_expression in path_expressions[1:]:
-            system |= path_expression
-
-        system_c: _bdd.Function = cut_expressions[0]
-        for cut_expression in cut_expressions[1:]:
-            system_c &= cut_expression
-
-        self.bdd = bdd
-        self.bdd_c = bdd_c
-        self.bdd_system_ref = system
-        self.bdd_system_c_ref = system_c
-
-    # Debugging Functions - these help to understand the BDD structure
-    def bdd_to_string(self, filename: str) -> str:
-        """Returns the BDD as a string. Simply wraps bdd.to_expr()"""
-        return self.bdd.to_expr(self.bdd_system_ref)
-
-    def bdd_to_file(self, filename: str):
-        """
-        Wraps bdd.dump(). The file type is inferred from the extension
-        (case insensitive).
-
-        Note: bdd.dump() depends on the python library `pydot` being installed
-        (via pip) and the graphviz' `dot` program being in your PATH.
-        Install pydot just with pip: `pip install pydot`,
-        and install graphviz, at least on Mac, with `brew install graphviz`.
-        Installing with brew will at least make sure `dot` is added to your
-        PATH.
-
-        Supported extensions:
-        '.p' for Pickle
-        '.pdf' for PDF
-        '.png' for PNG
-        '.svg' for SVG
-        '.json' for JSON
-        """
-        self.bdd.dump(filename, roots=[self.bdd_system_ref])
 
     def node_availability(self):
         node_av: dict = {}

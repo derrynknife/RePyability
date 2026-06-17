@@ -13,7 +13,6 @@ profile = "black"
 module = [
     'scipy.*',
     'networkx',
-    'dd',
     'surpyval.*',
     'tqdm',
 ]

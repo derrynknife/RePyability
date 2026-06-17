@@ -199,9 +199,6 @@ class NonRepairableRBD(RBD):
         )
         self.structure_check["non_analytic_nodes"] = non_analytic_nodes
 
-        if self.structure_check["is_valid"]:
-            self.compile_bdd()
-
     @check_x
     def sf(
         self,
