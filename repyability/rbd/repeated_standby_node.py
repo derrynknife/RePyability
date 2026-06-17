@@ -1,15 +1,21 @@
 import numpy as np
 from surpyval import KaplanMeier
 
+from .numerical_convolution import ConvolvedSurvival
+
 
 class RepeatedStandbyNode:
     def __init__(self, model, repeats, N=10_000, lower=-np.inf):
         self.model = model
         self.repeats = repeats
-        x_random = self.random(N)
 
-        # Create an approximation of the standby arrangement with
-        # a Kaplan-Meier estimation.
+        # Repeated cold standby: the lifetime is the sum of `repeats`
+        # independent copies of `model`. Its survival function is their
+        # convolution, computed deterministically here.
+        self._sf_model = ConvolvedSurvival([model] * repeats)
+
+        # A Kaplan-Meier fit is retained only for random()/mean().
+        x_random = self.random(N)
         self.model = KaplanMeier.fit(x_random, set_lower_limit=lower)
 
     def random(self, size):
@@ -20,7 +26,7 @@ class RepeatedStandbyNode:
         return self.random(N).mean()
 
     def sf(self, *args, **kwargs):
-        return self.model.sf(*args, **kwargs)
+        return self._sf_model.sf(*args, **kwargs)
 
     def ff(self, *args, **kwargs):
-        return self.model.ff(*args, **kwargs)
+        return self._sf_model.ff(*args, **kwargs)

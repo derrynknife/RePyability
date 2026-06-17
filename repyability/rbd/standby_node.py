@@ -3,6 +3,8 @@ from queue import PriorityQueue
 import numpy as np
 from surpyval import KaplanMeier
 
+from .numerical_convolution import ConvolvedSurvival
+
 
 class StandbyModel:
     def __init__(self, reliabilities, k=1, n_sims=10_000, lower=-np.inf):
@@ -16,12 +18,20 @@ class StandbyModel:
         self.N = len(reliabilities)
         self.n_sims = n_sims
 
-        # Create n_sims samples of survival times using the random method
-        x_random = self.random(n_sims)
-
-        # Create an approximation of the standby arrangement with
-        # a Kaplan-Meier estimation.
-        self.model = KaplanMeier.fit(x_random, set_lower_limit=lower)
+        if k == 1:
+            # Cold standby (k=1): the lifetime is the sum of the components'
+            # lifetimes, whose survival function is their convolution. Compute
+            # it deterministically by numerical convolution rather than
+            # fitting a Kaplan-Meier to Monte-Carlo samples.
+            self._sf_model = ConvolvedSurvival(reliabilities)
+            self.model = None
+        else:
+            # For k >= 2 the lifetime is not a simple sum (it depends on the
+            # order in which components fail), so fall back to the
+            # Monte-Carlo + Kaplan-Meier approximation.
+            x_random = self.random(n_sims)
+            self.model = KaplanMeier.fit(x_random, set_lower_limit=lower)
+            self._sf_model = None
 
     def random(self, size):
         if self.k == 1:
@@ -69,7 +79,11 @@ class StandbyModel:
         return self.random(N).mean()
 
     def sf(self, *args, **kwargs):
+        if self._sf_model is not None:
+            return self._sf_model.sf(*args, **kwargs)
         return self.model.sf(*args, **kwargs)
 
     def ff(self, *args, **kwargs):
+        if self._sf_model is not None:
+            return self._sf_model.ff(*args, **kwargs)
         return self.model.ff(*args, **kwargs)
