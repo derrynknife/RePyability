@@ -15,7 +15,9 @@ def test_rbd_sf_ff_by_node(rbd_series: NonRepairableRBD):
     node_sf = rbd_series.sf_by_node(t)
     node_ff = rbd_series.ff_by_node(t)
     for k in node_sf.keys():
-        assert node_ff[k] == 1 - node_sf[k]
+        # surpyval >= 0.11 computes ff(t) directly (more precisely than
+        # 1 - sf(t)), so the two can differ by a floating-point ULP.
+        assert node_ff[k] == pytest.approx(1 - node_sf[k])
 
 
 def test_rel_unrel(rbd_series: NonRepairableRBD):

@@ -3,10 +3,26 @@ Tests miscellaneous cases for the NonRepairableRBD class.
 
 Uses pytest fixtures located in conftest.py in the tests/ directory.
 """
+import numpy as np
 import pytest
-from surpyval import FixedEventProbability
+from surpyval import Exponential, FixedEventProbability
 
 from repyability.rbd.non_repairable_rbd import NonRepairableRBD
+
+
+def test_rbd_mean_time_to_failure_series():
+    # Two exponential components in series fail at the first failure, so the
+    # system MTTF is 1 / (lambda_1 + lambda_2). Exercises the Monte-Carlo
+    # random()/mean() path.
+    rbd = NonRepairableRBD(
+        [("input", "a"), ("a", "b"), ("b", "output")],
+        {
+            "a": Exponential.from_params([0.01]),
+            "b": Exponential.from_params([0.02]),
+        },
+    )
+    np.random.seed(0)
+    assert rbd.mean(mc_samples=20_000) == pytest.approx(1 / 0.03, rel=5e-2)
 
 
 # Check components are correct lengths

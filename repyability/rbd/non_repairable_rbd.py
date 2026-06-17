@@ -340,11 +340,10 @@ class NonRepairableRBD(RBD):
             node_sf[node_name] = node.sf(x)
         return node_sf
 
+    @check_x
     def ff_by_node(
         self, x: Optional[ArrayLike] = None, *args, **kwargs
     ) -> Dict[Any, np.ndarray]:
-
-        # The return dict
         node_ff: Dict[Any, np.ndarray] = {}
 
         # Cache the component reliabilities for efficiency
@@ -437,7 +436,11 @@ class NonRepairableRBD(RBD):
         for i in range(size):
             event_queue: PriorityQueue = PriorityQueue()
             for node in self.G.nodes:
-                time = self.reliabilities[node].random(1)
+                # .random(1) returns a 1-element array; take the scalar so the
+                # event time orders the PriorityQueue and assigns into ``out``
+                # (NumPy >= 2 rejects assigning a 1-element array to a scalar).
+                draw = np.asarray(self.reliabilities[node].random(1))
+                time = float(draw.reshape(-1)[0])
                 event_queue.put(NodeFailure(time, node))
 
             working_nodes = {k: True for k in self.G.nodes}
