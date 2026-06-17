@@ -179,3 +179,9 @@ class StandbyModel:
         if self._sf_model is not None:
             return self._sf_model.ff(*args, **kwargs)
         return self.model.ff(*args, **kwargs)
+
+    def cs(self, x, X):
+        """Conditional survival ``R(x | X) = sf(X + x) / sf(X)``."""
+        from repyability.utils.wrappers import conditional_survival
+
+        return conditional_survival(self, x, X)

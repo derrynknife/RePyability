@@ -10,6 +10,8 @@ import numpy as np
 from numpy.typing import ArrayLike
 from surpyval import NonParametric
 
+from repyability.utils.wrappers import conditional_survival
+
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .rbd import RBD
 from .repeated_node import RepeatedNode
@@ -326,6 +328,28 @@ class NonRepairableRBD(RBD):
             Reliability values for all nodes at all times x
         """
         return self.sf(x, *args, **kwargs)
+
+    def cs(self, x: ArrayLike, X: ArrayLike, *args, **kwargs) -> np.ndarray:
+        """Returns the conditional survival of the system.
+
+        That is, the probability the system survives a *further* ``x`` given it
+        has already survived to ``X``: ``R(x | X) = sf(X + x) / sf(X)``.
+
+        Parameters
+        ----------
+        x : ArrayLike
+            The further duration/s at which conditional survival is evaluated.
+        X : ArrayLike
+            The age/s the system is known to have survived to.
+        *args, **kwargs :
+            Any sf() arguments (e.g. working_nodes, broken_nodes, method).
+
+        Returns
+        -------
+        np.ndarray
+            The conditional survival probability/ies.
+        """
+        return conditional_survival(self, x, X, *args, **kwargs)
 
     @check_x
     def sf_by_node(
