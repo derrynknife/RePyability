@@ -13,6 +13,7 @@ from surpyval import NonParametric
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .rbd import RBD
 from .repeated_node import RepeatedNode
+from .repeated_standby_node import RepeatedStandbyNode
 from .standby_node import StandbyModel
 
 
@@ -188,6 +189,15 @@ class NonRepairableRBD(RBD):
         else:
             self.__fixed_probs = False
             self.structure_check["all_distributions_fixed"] = False
+
+        # Record whether the system reliability can be solved analytically
+        # (equivalently with the BDD), or whether it requires simulation
+        # because one or more nodes are simulation-based (e.g. standby nodes).
+        non_analytic_nodes = self.get_non_analytic_nodes()
+        self.structure_check["is_analytically_solvable"] = (
+            len(non_analytic_nodes) == 0
+        )
+        self.structure_check["non_analytic_nodes"] = non_analytic_nodes
 
         if self.structure_check["is_valid"]:
             self.compile_bdd()
@@ -365,6 +375,82 @@ class NonRepairableRBD(RBD):
 
     def time_varying_rbd(self):
         return not self.__fixed_probs
+
+    # Node model types whose reliability is obtained by Monte-Carlo simulation
+    # (a Kaplan-Meier fit to simulated samples) rather than in closed form. A
+    # standby arrangement is sequence-dependent (dynamic), so its sf(t) cannot
+    # be expressed analytically and is instead estimated by simulation. Such
+    # nodes therefore prevent a purely analytic / BDD solution of the system.
+    _SIMULATION_NODE_TYPES = (StandbyModel, RepeatedStandbyNode)
+
+    def _node_is_analytic(self, model) -> bool:
+        """Returns True if a node's reliability is available without
+        Monte-Carlo simulation (i.e. in closed form or from data), and so can
+        be consumed directly by the analytic / BDD system probability.
+
+        The check recurses through RepeatedNodes (analytic iff their underlying
+        model is) and nested NonRepairableRBDs (analytic iff they are
+        themselves analytically solvable).
+        """
+        # Perfect reliability / unreliability are constants
+        if model is PerfectReliability or model is PerfectUnreliability:
+            return True
+        # Standby arrangements are simulation-based (KM fit) -> non-analytic
+        if isinstance(model, self._SIMULATION_NODE_TYPES):
+            return False
+        # A repeated node is analytic iff its underlying model is
+        if isinstance(model, RepeatedNode):
+            return self._node_is_analytic(model.model)
+        # A nested RBD is analytic iff it is itself analytically solvable
+        if isinstance(model, NonRepairableRBD):
+            return model.is_analytically_solvable()
+        # Otherwise it is a surpyval parametric/non-parametric distribution
+        # (incl. FixedEventProbability), all of which expose a usable sf(t)
+        # without simulation.
+        return True
+
+    def get_non_analytic_nodes(self) -> dict[Any, str]:
+        """Returns the nodes that prevent an analytic / BDD solution.
+
+        Returns
+        -------
+        dict[Any, str]
+            A mapping of node name -> the offending model's type name for
+            every node whose reliability requires Monte-Carlo simulation (e.g.
+            a StandbyModel). Empty if the RBD is analytically solvable.
+        """
+        non_analytic: dict[Any, str] = {}
+        for node_name, model in self.reliabilities.items():
+            if not self._node_is_analytic(model):
+                non_analytic[node_name] = type(model).__name__
+        return non_analytic
+
+    def is_analytically_solvable(self) -> bool:
+        """Returns whether the system reliability can be solved analytically.
+
+        The analytic methods (the inclusion-exclusion in system_probability(),
+        and equivalently a BDD evaluation) require every node to expose a
+        reliability sf(t) that does not itself depend on Monte-Carlo
+        simulation. This holds for parametric and non-parametric distributions,
+        fixed-probability nodes, repeated nodes of such models, and nested RBDs
+        that are themselves analytically solvable.
+
+        It does NOT hold when any node is a standby arrangement (StandbyModel
+        or RepeatedStandbyNode): a standby node is sequence-dependent and its
+        sf(t) is estimated by simulation, so while sf()/system_probability()
+        will still return a value, that value is only as good as the underlying
+        Monte-Carlo + Kaplan-Meier fit (a step function bounded by the sampled
+        support) rather than a closed-form result. Such systems are better
+        evaluated by simulation (e.g. random()/mean()).
+
+        Returns
+        -------
+        bool
+            True if the RBD can be solved analytically / with a BDD, False if
+            it requires simulation. Use get_non_analytic_nodes() to see which
+            nodes are responsible.
+        """
+        return len(self.get_non_analytic_nodes()) == 0
 
     def random(self, size):
         out = np.zeros(size)
