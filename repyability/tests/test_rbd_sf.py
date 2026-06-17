@@ -144,38 +144,3 @@ def test_rbd_sf_NonRepairableRBD_as_node(rbd1: NonRepairableRBD, method: str):
         * rbd.reliabilities["NonRepairableRBD"].ff(t)
         * rbd.reliabilities[4].ff(t)
     ) == rbd.ff(t, method=method)
-
-
-# Test approx
-
-
-def test_rbd_sf_series_approx(rbd_series: NonRepairableRBD):
-    t = 5
-    assert pytest.approx(
-        rbd_series.reliabilities[2].sf(t)
-        * rbd_series.reliabilities[3].sf(t)
-        * rbd_series.reliabilities[4].sf(t),
-        abs=0.001,
-    ) == rbd_series.sf(t, approx=True)
-
-
-def test_rbd_sf_composite_approx(rbd1: NonRepairableRBD):
-    t = 2
-    assert pytest.approx(
-        (
-            1
-            - (1 - rbd1.reliabilities["pump1"].sf(t))
-            * (1 - rbd1.reliabilities["pump2"].sf(t))
-        )
-        * rbd1.reliabilities["valve"].sf(t),
-        abs=0.001,
-    ) == rbd1.sf(t, approx=True)
-
-
-def test_rbd_sf_complex_approx(rbd3: NonRepairableRBD):
-    assert pytest.approx(0.994780625, abs=0.001) == rbd3.sf(1000, approx=True)
-
-
-def test_rbd_sf_path_set_method_and_approx_error(rbd1: NonRepairableRBD):
-    with pytest.raises(ValueError):
-        rbd1.sf(1, method="p", approx=True)

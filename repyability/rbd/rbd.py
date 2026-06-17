@@ -2,12 +2,10 @@ import pprint
 import warnings
 from collections import defaultdict
 from copy import copy
-from itertools import combinations, product
 from typing import Any, Dict, Hashable, Iterable, Iterator, Optional
 
 import networkx as nx
 import numpy as np
-from dd import autoref as _bdd
 from numpy.typing import ArrayLike
 from scipy.optimize import minimize, root
 from scipy.special import expit as sigmoid
@@ -69,6 +67,142 @@ def scale_probability_dict(
         out[k] = log_linearly_scale_probabilities(p, x * weights[k])
 
     return out
+
+
+def probability_any_set_satisfied(
+    sets: Iterable[frozenset],
+    element_probabilities: Dict[Any, np.ndarray],
+    array_shape,
+) -> np.ndarray:
+    """Exact probability that at least one of the given sets is fully active.
+
+    Each "set" is a collection of elements (e.g. a minimal path set of
+    components); the set is "satisfied" when *all* of its elements are active.
+    Given the per-element probability of being active, this returns the
+    probability that *at least one* set is satisfied.
+
+    With path sets and node reliabilities this is the system reliability; with
+    cut sets and node unreliabilities it is the system unreliability.
+
+    The computation is an exact Shannon decomposition of the structure
+    function: it repeatedly conditions on a single element being active or
+    inactive,
+
+        P(S) = p_e * P(S | e active) + (1 - p_e) * P(S | e inactive),
+
+    and memoises sub-problems. Because shared sub-functions are only solved
+    once, this avoids the 2^(#sets) blow-up of the inclusion-exclusion
+    principle while returning the identical exact result.
+
+    Parameters
+    ----------
+    sets : Iterable[frozenset]
+        The collection of sets (e.g. minimal path sets or cut sets).
+    element_probabilities : Dict[Any, np.ndarray]
+        Maps each element to its probability array of being active.
+    array_shape :
+        The shape of the probability arrays, used to seed the 0/1 base cases.
+
+    Returns
+    -------
+    np.ndarray
+        The probability that at least one set is fully active.
+    """
+    sets = [frozenset(s) for s in sets]
+    memo: Dict[frozenset, np.ndarray] = {}
+
+    def recurse(state: frozenset) -> np.ndarray:
+        # state is a frozenset of frozensets: the sets still to be satisfied,
+        # with already-active elements removed.
+        if not state:
+            # No set can be satisfied any more -> probability 0.
+            return np.zeros(array_shape)
+        if frozenset() in state:
+            # A set has had all its elements satisfied -> probability 1.
+            return np.ones(array_shape)
+        if state in memo:
+            return memo[state]
+
+        # Pivot on the element appearing in the most sets, which tends to
+        # collapse the problem (and the memo table) fastest.
+        counts: Dict[Any, int] = {}
+        for s in state:
+            for element in s:
+                counts[element] = counts.get(element, 0) + 1
+        pivot = max(counts, key=lambda e: counts[e])
+        p = element_probabilities[pivot]
+
+        # Pivot active: it satisfies its requirement, so drop it from every
+        # set that contained it (other sets are unaffected).
+        state_active = frozenset(s - {pivot} for s in state)
+        # Pivot inactive: any set needing it can never be satisfied -> drop it.
+        state_inactive = frozenset(s for s in state if pivot not in s)
+
+        result = p * recurse(state_active) + (1 - p) * recurse(state_inactive)
+        memo[state] = result
+        return result
+
+    return recurse(frozenset(sets))
+
+
+def _keep_minimal_sets(sets: Iterable[frozenset]) -> list[frozenset]:
+    """Return only the inclusion-minimal sets.
+
+    Discards any set that is a superset of another (and de-duplicates).
+    """
+    minimal: list[frozenset] = []
+    # Consider smaller sets first so that a kept set can prune its supersets.
+    for candidate in sorted(set(sets), key=len):
+        if not any(kept <= candidate for kept in minimal):
+            minimal.append(candidate)
+    return minimal
+
+
+def minimal_cut_sets_from_path_sets(
+    path_sets: Iterable[frozenset],
+) -> set[frozenset]:
+    """Return the minimal cut sets given the minimal path sets.
+
+    A minimal cut set is a minimal "transversal" (hitting set) of the path
+    sets: a smallest set of components that intersects every path set, so that
+    failing those components breaks every path through the system.
+
+    This uses Berge's algorithm: it builds the minimal transversals
+    incrementally, one path set at a time, discarding non-minimal candidates at
+    every step. Unlike taking the full Cartesian product of the path sets and
+    filtering once at the end, it never materialises the (potentially enormous)
+    product, which makes it dramatically faster in practice. Because it works
+    directly from the path sets, it stays correct for k-out-of-n structures,
+    whose k-of-n behaviour is already encoded in the path sets.
+
+    Parameters
+    ----------
+    path_sets : Iterable[frozenset]
+        The minimal path sets (each a set of components).
+
+    Returns
+    -------
+    set[frozenset]
+        The minimal cut sets.
+    """
+    # Start with the single empty transversal and extend it to hit each path
+    # set in turn.
+    transversals: list[frozenset] = [frozenset()]
+    for path_set in path_sets:
+        path_set = frozenset(path_set)
+        candidates: list[frozenset] = []
+        for transversal in transversals:
+            if transversal & path_set:
+                # Already hits this path set; keep it unchanged.
+                candidates.append(transversal)
+            else:
+                # Must be extended to hit this path set, by one of its
+                # components.
+                for component in path_set:
+                    candidates.append(transversal | {component})
+        # Prune non-minimal candidates now so the working set stays small.
+        transversals = _keep_minimal_sets(candidates)
+    return set(transversals)
 
 
 class RBD:
@@ -250,60 +384,6 @@ class RBD:
 
         return ret_set
 
-    def compile_bdd(self):
-        """
-        Compiles the BDD, setting self.bdd to the BDD manager, and
-        self.bdd_system_ref to the BDD variable reference for the system state.
-        """
-        # Instantiate the manager
-        bdd = _bdd.BDD()
-        bdd_c = _bdd.BDD()
-
-        # Enable Dynamic Reordering (Rudell's Sifting Algorithm)
-        bdd.configure(reordering=True)
-        bdd_c.configure(reordering=True)
-
-        # For all components, declare the BDD variable,
-        # and get the BDD variable reference
-        bdd_vars = {}
-        bdd_c_vars = {}
-        for component in self.G.nodes():
-            bdd.declare(component)
-            bdd_vars[component] = bdd.var(component)
-            bdd_c.declare(component)
-            bdd_c_vars[component] = bdd_c.var(component)
-
-        # Make path expressions
-        path_expressions: list[_bdd.Function] = []
-        for min_path_set in self.get_min_path_sets(include_in_out_nodes=False):
-            min_path_set_as_list = list(min_path_set)
-            path_function = bdd_vars[min_path_set_as_list[0]]
-            for component in min_path_set_as_list[1:]:
-                path_function &= bdd_vars[component]
-            path_expressions.append(path_function)
-
-        # Make cut expressions
-        cut_expressions: list[_bdd.Function] = []
-        for min_cut_set in self.get_min_cut_sets(include_in_out_nodes=False):
-            min_cut_set_as_list = list(min_cut_set)
-            cut_function = bdd_c_vars[min_cut_set_as_list[0]]
-            for component in min_cut_set_as_list[1:]:
-                cut_function |= bdd_c_vars[component]
-            cut_expressions.append(cut_function)
-
-        system: _bdd.Function = path_expressions[0]
-        for path_expression in path_expressions[1:]:
-            system |= path_expression
-
-        system_c: _bdd.Function = cut_expressions[0]
-        for cut_expression in cut_expressions[1:]:
-            system_c &= cut_expression
-
-        self.bdd = bdd
-        self.bdd_c = bdd_c
-        self.bdd_system_ref = system
-        self.bdd_system_c_ref = system_c
-
     def is_system_working(
         self, component_status: dict[Any, bool], method: str
     ) -> bool:
@@ -316,34 +396,53 @@ class RBD:
             Dictionary with all components where
             component_status[component] = True only if the component is
             working, and = False if not working.
+        method : str
+            Either "p" (path-set) or "c" (cut-set). Both return the same
+            result; "p" is typically faster as it avoids deriving the cut
+            sets.
 
         Returns
         -------
         bool
             True if the system is working, otherwise False.
         """
-        # This function uses a Binary Decision Diagram (BDD) to enable
-        # efficient component_status -> is_system_working lookup. Something
-        # very much required given the rate at which this function is called
-        # in the N simulations in availability().
-
-        # Now evaluate the BDD given the component status
-        if method == "c":
-            system_given_component_status = self.bdd_c.let(
-                component_status, self.bdd_system_c_ref
+        # The system structure function is evaluated directly from the minimal
+        # path/cut sets, which is plenty fast for the rate at which this is
+        # called in the simulations (no Binary Decision Diagram required).
+        #
+        # - path-set ("p"): the system works iff at least one minimal path set
+        #   has all of its components working.
+        # - cut-set ("c"): the system works iff every minimal cut set has at
+        #   least one of its components working.
+        #
+        # The path/cut sets (excluding the input/output nodes) are cached on
+        # first use so repeated calls during a simulation are cheap.
+        if method == "p":
+            if not hasattr(self, "_eval_path_sets"):
+                self._eval_path_sets = [
+                    tuple(path_set)
+                    for path_set in self.get_min_path_sets(
+                        include_in_out_nodes=False
+                    )
+                ]
+            return any(
+                all(component_status[component] for component in path_set)
+                for path_set in self._eval_path_sets
             )
-
-            system_state = self.bdd_c.to_expr(system_given_component_status)
-        elif method == "p":
-            system_given_component_status = self.bdd.let(
-                component_status, self.bdd_system_ref
+        elif method == "c":
+            if not hasattr(self, "_eval_cut_sets"):
+                self._eval_cut_sets = [
+                    tuple(cut_set)
+                    for cut_set in self.get_min_cut_sets(
+                        include_in_out_nodes=False
+                    )
+                ]
+            return all(
+                any(component_status[component] for component in cut_set)
+                for cut_set in self._eval_cut_sets
             )
-
-            system_state = self.bdd.to_expr(system_given_component_status)
         else:
             raise ValueError("`method` must be either 'p' or 'c'")
-
-        return system_state == "TRUE"
 
     def get_min_cut_sets(
         self, include_in_out_nodes=False
@@ -352,35 +451,15 @@ class RBD:
         Returns the set of frozensets of minimal cut sets of the RBD. The outer
         set contains the frozenset of nodes. frozensets were used so the inner
         set elements could be hashable.
+
+        The minimal cut sets are the minimal transversals (hitting sets) of the
+        minimal path sets, computed with Berge's algorithm. See
+        minimal_cut_sets_from_path_sets() for details.
         """
         path_sets = self.get_min_path_sets(
             include_in_out_nodes=include_in_out_nodes
         )
-
-        # Gets the cartesian product across pathsets
-        prods = product(*path_sets)
-
-        # We need to remove duplicate nodes in the products to get the cutsets,
-        # and discard empty products
-        cut_sets = [frozenset(prod) for prod in prods if prod]
-
-        min_cut_sets: list[frozenset] = []
-
-        # Now only insert if minimal, removing any superset (non-minimal)
-        # cutsets are encountered
-        for cut_set in cut_sets:
-            is_minimal_cut_set = True
-            for other_cut_set in min_cut_sets.copy():
-                if cut_set.issuperset(other_cut_set):
-                    is_minimal_cut_set = False
-                    break
-                if cut_set.issubset(other_cut_set):
-                    min_cut_sets.remove(other_cut_set)
-
-            if is_minimal_cut_set:
-                min_cut_sets.append(cut_set)
-
-        return set(min_cut_sets)
+        return minimal_cut_sets_from_path_sets(path_sets)
 
     def path_set_probabilities(self, node_probabilities):
         path_sets = self.get_min_path_sets(include_in_out_nodes=False)
@@ -395,8 +474,7 @@ class RBD:
     def system_probability(
         self,
         node_probabilities: Dict,
-        method: str = "c",
-        approx: bool = False,
+        method: str = "p",
     ) -> np.ndarray:
         """Returns the system probability/ies given the probability of each
         node.
@@ -409,15 +487,9 @@ class RBD:
             availability (or some other probability that I can't conceive).
         method: str, optional
             Input either "c" or "p" for the function to use the cut set or
-            path set methods respectively, by default "c". Both methods
-            ultimately return the same results though.
-        approx: bool, optional
-            If true, only considers the first-order terms (w.r.t. the
-            inclusion-exclusion principle), thereby reducing computation time.
-            This approximation is only applicable to the cut set method
-            (method="c"), a ValueError exception is raised if method="p" and
-            approx=True. This approximation is typically sufficient for most
-            use cases where reliabilities are close to 1. By default, False.
+            path set methods respectively, by default "p". Both methods
+            return the same (exact) result; the path set method is the default
+            as it avoids deriving the cut sets.
 
         Returns
         -------
@@ -427,11 +499,7 @@ class RBD:
         Raises
         ------
         ValueError
-            - Working/broken node/component inconsistency (a component or node
-              is supplied more than once to any of working_nodes, broken_nodes,
-              working_components, broken_components)
-            - The path set method must not be used with approx=True, see approx
-              arg description above
+            Probability arrays of differing lengths
         """
 
         node_probabilities = copy(node_probabilities)
@@ -446,79 +514,26 @@ class RBD:
         else:
             # get shape of input array
             array_shape = lengths[0]
-        # Return array
-        system_prob = np.zeros(array_shape)
 
-        # Check that path set method and approximation are not used together
-        # (The approximation is only applicable to the cutset method)
-        if method == "p" and approx:
-            raise ValueError(
-                "The path set method must not be used with \
-                approx=True, see approx arg description in docstring."
-            )
-        # Get all node sets (path sets for method="p" and cut sets for
-        # method="c")
-        node_sets: set[frozenset]
         if method == "p":
-            node_sets = self.get_min_path_sets(include_in_out_nodes=False)
-        else:
-            # method == "c"
-            node_sets = self.get_min_cut_sets(include_in_out_nodes=False)
-            node_probabilities = {
-                k: 1 - v for k, v in node_probabilities.items()
-            }
+            # The system reliability is the probability that at least one
+            # minimal path set has all of its components working.
+            path_sets = self.get_min_path_sets(include_in_out_nodes=False)
+            return probability_any_set_satisfied(
+                path_sets, node_probabilities, array_shape
+            )
 
-        num_node_sets = len(node_sets)
-        # Perform intersection calculation, which isn't as simple as summating
-        # in the case of mutual non-exclusivity
-        # i is the 'level' of the intersection calc
-        # This is really just applying the inclusion-exclusion principle
-        for i in range(1, num_node_sets + 1):
-            # Get node set combinations for level i
-            node_set_combs = combinations(node_sets, i)
-
-            # Calculate the probability of each level combination
-            # Making sure to not multiply a components' probability twice
-            level_sum = np.zeros(array_shape)
-            for node_set_comb in node_set_combs:
-                # Make a set of components out of the node path/tieset
-                s = set()
-                for path in node_set_comb:
-                    for node in path:
-                        if node in self.in_or_out:
-                            continue
-                        else:
-                            # Add node to combination list
-                            s.add(node)
-
-                # Now calculate the node set probability
-                node_set_prob = np.ones(array_shape)
-                for comp in s:
-                    comp_prob = node_probabilities[comp]
-                    node_set_prob = node_set_prob * comp_prob
-
-                # Now add the node set probability to the level sum
-                level_sum = level_sum + node_set_prob
-
-            # Finally add/subtract the level sum to/from the system_prob if the
-            # level is even/odd
-            if i % 2 == 1:
-                system_prob = system_prob + level_sum
-
-                # If the approximation is requested, just break from the
-                # inclusion-exclusion principle procedure after the first level
-                if approx:
-                    break
-            else:
-                system_prob = system_prob - level_sum
-
-        # If cutset method is used, the above returns the unreliability,
-        # so we just have to return = 1 - system_prob
-        if method == "c":
-            return 1 - system_prob
-
-        # Otherwise for the pathset method it's already the reliability
-        return system_prob
+        # method == "c": work with cut sets and node unreliabilities. The
+        # system unreliability is the probability that at least one minimal
+        # cut set has all of its components failed.
+        cut_sets = self.get_min_cut_sets(include_in_out_nodes=False)
+        node_unreliability = {
+            k: 1 - v for k, v in node_probabilities.items()
+        }
+        system_unreliability = probability_any_set_satisfied(
+            cut_sets, node_unreliability, array_shape
+        )
+        return 1 - system_unreliability
 
     @check_probability
     def improvement_allocation(
