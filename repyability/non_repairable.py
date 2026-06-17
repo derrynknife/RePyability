@@ -2,9 +2,7 @@ import numpy as np
 from scipy.integrate import quad
 from scipy.interpolate import interp1d
 from scipy.optimize import minimize
-from surpyval.nonparametric import NonParametric
-from surpyval.parametric import Parametric
-from surpyval.parametric.exact_event_time import ExactEventTime
+from surpyval import ExactEventTime, NonParametric, Parametric
 
 from repyability.rbd.standby_node import StandbyModel
 
