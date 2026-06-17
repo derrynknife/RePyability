@@ -27,9 +27,9 @@ def test_random():
 
 
 def test_mean():
+    # Cold standby of 3 iid Exp(1): mean is the sum of the means = 3.
     node = RepeatedStandbyNode(exp_model, 3, N=20_000)
-    mean = node.mean()
-    assert pytest.approx(mean, rel=1e-1) == 3 * 3
+    assert pytest.approx(node.mean(), rel=1e-2) == 3
 
 
 def test_sf():
