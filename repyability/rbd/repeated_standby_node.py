@@ -5,14 +5,26 @@ from .numerical_convolution import ConvolvedSurvival
 
 
 class RepeatedStandbyNode:
-    def __init__(self, model, repeats, N=10_000, lower=-np.inf):
+    def __init__(
+        self,
+        model,
+        repeats,
+        N=10_000,
+        lower=-np.inf,
+        switching_probability=1.0,
+    ):
         self.model = model
         self.repeats = repeats
+        self.switching_probability = switching_probability
 
         # Repeated cold standby: the lifetime is the sum of `repeats`
-        # independent copies of `model`. Its survival function is their
-        # convolution, computed deterministically here.
-        self._sf_model = ConvolvedSurvival([model] * repeats)
+        # independent copies of `model` (a mixture of partial sums under
+        # imperfect switching). Its survival function is computed
+        # deterministically here. Note: random()/mean() below still reflect
+        # perfect switching.
+        self._sf_model = ConvolvedSurvival(
+            [model] * repeats, switching_probability=switching_probability
+        )
 
         # A Kaplan-Meier fit is retained only for random()/mean().
         x_random = self.random(N)
