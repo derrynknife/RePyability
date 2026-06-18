@@ -44,3 +44,9 @@ class RepeatedNode:
         else:
             ff = self.model.ff(x) ** self.repeats
         return ff
+
+    def cs(self, x, X):
+        """Conditional survival ``R(x | X) = sf(X + x) / sf(X)``."""
+        from repyability.utils.wrappers import conditional_survival
+
+        return conditional_survival(self, x, X)

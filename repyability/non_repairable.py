@@ -2,9 +2,7 @@ import numpy as np
 from scipy.integrate import quad
 from scipy.interpolate import interp1d
 from scipy.optimize import minimize
-from surpyval.nonparametric import NonParametric
-from surpyval.parametric import Parametric
-from surpyval.parametric.exact_event_time import ExactEventTime
+from surpyval import ExactEventTime, NonParametric, Parametric
 
 from repyability.rbd.standby_node import StandbyModel
 
@@ -63,6 +61,11 @@ class NonRepairable:
         return out
 
     def _cost_rate(self, t):
+        # surpyval >= 0.11 returns 1-element arrays from sf/mean/qf, and t can
+        # arrive as a 1-element array from scipy.optimize.minimize. Coerce to a
+        # plain float so the quadrature bound in avg_replacement_time() is a
+        # scalar (scipy.integrate.quad rejects array bounds).
+        t = float(np.asarray(t).item())
         planned_costs = self.reliability_function(t) * self.cp
         unplanned_costs = (1 - self.reliability_function(t)) * self.cu
         avg_repl_time = self.avg_replacement_time(t)

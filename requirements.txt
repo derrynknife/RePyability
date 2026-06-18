@@ -1,6 +1,6 @@
 # Production requirements
 # For development, use requirements_dev.txt instead
-networkx==3.0
-numpy==1.23.5
-surpyval==0.10.10
-tqdm==4.64.1
+networkx>=3.0
+numpy>=2.0,<3
+surpyval==0.11.1
+tqdm>=4.64

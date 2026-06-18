@@ -10,6 +10,8 @@ import numpy as np
 from numpy.typing import ArrayLike
 from surpyval import NonParametric
 
+from repyability.utils.wrappers import conditional_survival
+
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .rbd import RBD
 from .repeated_node import RepeatedNode
@@ -327,6 +329,28 @@ class NonRepairableRBD(RBD):
         """
         return self.sf(x, *args, **kwargs)
 
+    def cs(self, x: ArrayLike, X: ArrayLike, *args, **kwargs) -> np.ndarray:
+        """Returns the conditional survival of the system.
+
+        That is, the probability the system survives a *further* ``x`` given it
+        has already survived to ``X``: ``R(x | X) = sf(X + x) / sf(X)``.
+
+        Parameters
+        ----------
+        x : ArrayLike
+            The further duration/s at which conditional survival is evaluated.
+        X : ArrayLike
+            The age/s the system is known to have survived to.
+        *args, **kwargs :
+            Any sf() arguments (e.g. working_nodes, broken_nodes, method).
+
+        Returns
+        -------
+        np.ndarray
+            The conditional survival probability/ies.
+        """
+        return conditional_survival(self, x, X, *args, **kwargs)
+
     @check_x
     def sf_by_node(
         self, x: Optional[ArrayLike] = None, *args, **kwargs
@@ -340,11 +364,10 @@ class NonRepairableRBD(RBD):
             node_sf[node_name] = node.sf(x)
         return node_sf
 
+    @check_x
     def ff_by_node(
         self, x: Optional[ArrayLike] = None, *args, **kwargs
     ) -> Dict[Any, np.ndarray]:
-
-        # The return dict
         node_ff: Dict[Any, np.ndarray] = {}
 
         # Cache the component reliabilities for efficiency
@@ -437,7 +460,11 @@ class NonRepairableRBD(RBD):
         for i in range(size):
             event_queue: PriorityQueue = PriorityQueue()
             for node in self.G.nodes:
-                time = self.reliabilities[node].random(1)
+                # .random(1) returns a 1-element array; take the scalar so the
+                # event time orders the PriorityQueue and assigns into ``out``
+                # (NumPy >= 2 rejects assigning a 1-element array to a scalar).
+                draw = np.asarray(self.reliabilities[node].random(1))
+                time = float(draw.reshape(-1)[0])
                 event_queue.put(NodeFailure(time, node))
 
             working_nodes = {k: True for k in self.G.nodes}

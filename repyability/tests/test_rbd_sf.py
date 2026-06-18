@@ -15,7 +15,9 @@ def test_rbd_sf_ff_by_node(rbd_series: NonRepairableRBD):
     node_sf = rbd_series.sf_by_node(t)
     node_ff = rbd_series.ff_by_node(t)
     for k in node_sf.keys():
-        assert node_ff[k] == 1 - node_sf[k]
+        # surpyval >= 0.11 computes ff(t) directly (more precisely than
+        # 1 - sf(t)), so the two can differ by a floating-point ULP.
+        assert node_ff[k] == pytest.approx(1 - node_sf[k])
 
 
 def test_rel_unrel(rbd_series: NonRepairableRBD):
@@ -144,3 +146,23 @@ def test_rbd_sf_NonRepairableRBD_as_node(rbd1: NonRepairableRBD, method: str):
         * rbd.reliabilities["NonRepairableRBD"].ff(t)
         * rbd.reliabilities[4].ff(t)
     ) == rbd.ff(t, method=method)
+
+
+def test_rbd_conditional_survival():
+    """cs(x, X) returns sf(X + x) / sf(X), clipped to [0, 1]."""
+    import numpy as np
+    from surpyval import Exponential, Weibull
+
+    rbd = NonRepairableRBD(
+        [("input", "c1"), ("c1", "c2"), ("c2", "output")],
+        {
+            "c1": Weibull.from_params([100, 2]),
+            "c2": Exponential.from_params([0.01]),
+        },
+    )
+    x = np.array([10.0, 20.0, 50.0])
+    X = 30.0
+    expected = rbd.sf(x + X) / rbd.sf(X)
+    assert np.allclose(rbd.cs(x, X), expected)
+    # Surviving zero further time is certain.
+    assert rbd.cs(0.0, X)[0] == 1.0
