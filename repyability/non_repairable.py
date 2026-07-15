@@ -4,6 +4,7 @@ from scipy.interpolate import interp1d
 from scipy.optimize import minimize
 from surpyval import ExactEventTime, NonParametric, Parametric
 
+from repyability.rbd._model_utils import distribution_name
 from repyability.rbd.standby_node import StandbyModel
 
 FAILURE = 1
@@ -18,16 +19,16 @@ class NonRepairable:
     def __init__(
         self, reliability, time_to_replace=ExactEventTime.from_params(0)
     ):
-        if type(reliability) == Parametric:
+        if isinstance(reliability, Parametric):
             self.model_parameterization = "parametric"
             self.reliability_function = reliability.sf
-        elif type(reliability) == NonParametric:
+        elif isinstance(reliability, NonParametric):
             # TODO: Allow non-interpolated?
             self.model_parameterization = "non-parametric"
             self.reliability_function = interp1d(
                 reliability.x, 1 - reliability.F, fill_value="extrapolate"
             )
-        elif type(reliability) == StandbyModel:
+        elif isinstance(reliability, StandbyModel):
             self.model_parameterization = "non-parametric"
             self.reliability_function = interp1d(
                 reliability.model.x,
@@ -94,7 +95,7 @@ class NonRepairable:
 
     def find_optimal_replacement(self, options=None):
         if self.model_parameterization == "parametric":
-            if self.reliability.dist.name == "Weibull":
+            if distribution_name(self.reliability) == "Weibull":
                 if self.reliability.offset:
                     pass
                 elif self.reliability.zi:

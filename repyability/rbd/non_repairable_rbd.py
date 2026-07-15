@@ -10,8 +10,9 @@ import numpy as np
 from numpy.typing import ArrayLike
 from surpyval import NonParametric
 
-from repyability.utils.wrappers import conditional_survival
+from repyability.utils.wrappers import conditional_survival, numpy_seed
 
+from ._model_utils import is_fixed_probability
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .rbd import RBD
 from .repeated_node import RepeatedNode
@@ -48,7 +49,7 @@ class NonRepairableRBD(RBD):
         self,
         edges: Iterable[tuple[Hashable, Hashable]],
         reliabilities: dict[Any, Any],
-        k: dict[Any, int] = {},
+        k: Optional[dict[Any, int]] = None,
         input_node: Optional[Any] = None,
         output_node: Optional[Any] = None,
         on_infeasible_rbd: str = "raise",
@@ -87,7 +88,7 @@ class NonRepairableRBD(RBD):
             self.structure_check["has_repeated_node_in_cycle"] = False
         else:
             new_edges = []
-            for (start, stop) in edges:
+            for start, stop in edges:
                 if start in repeated:
                     start = repeated[start]
                 if stop in repeated:
@@ -113,9 +114,9 @@ class NonRepairableRBD(RBD):
                 for cycle in self.structure_check["cycles"]:
                     if cycle not in cycles:
                         non_repeated_node_cycles.remove(cycle)
-                        self.structure_check[
-                            "has_repeated_node_in_cycle"
-                        ] = True
+                        self.structure_check["has_repeated_node_in_cycle"] = (
+                            True
+                        )
                 if len(non_repeated_node_cycles) == 0:
                     self.structure_check["has_cycles"] = False
                 self.structure_check["cycles"] = non_repeated_node_cycles
@@ -155,13 +156,13 @@ class NonRepairableRBD(RBD):
         self.reliabilities = reliabilities
         self.repeated = repeated
 
-        is_fixed = []
+        fixed_flags = []
         for _, node in self.reliabilities.items():
             if isinstance(node, NonParametric):
-                is_fixed = [False]
+                fixed_flags = [False]
                 break
             elif isinstance(node, NonRepairableRBD):
-                is_fixed.append(node.__fixed_probs)
+                fixed_flags.append(node.is_fixed)
             elif node == PerfectReliability:
                 continue
             elif node == PerfectUnreliability:
@@ -169,28 +170,15 @@ class NonRepairableRBD(RBD):
             else:
                 # when node is a Parametric model
                 if isinstance(node, StandbyModel):
-                    is_fixed = [False]
+                    fixed_flags = [False]
                     break
                 elif isinstance(node, RepeatedNode):
-                    this_fixed = node.model.dist.name in [
-                        "FixedEventProbability",
-                        "Bernoulli",
-                    ]
-                    is_fixed.append(this_fixed)
+                    fixed_flags.append(is_fixed_probability(node.model))
                 else:
-                    this_fixed = node.dist.name in [
-                        "FixedEventProbability",
-                        "Bernoulli",
-                    ]
-                    is_fixed.append(this_fixed)
+                    fixed_flags.append(is_fixed_probability(node))
 
-        self.__fixed_probs: bool
-        if all(is_fixed):
-            self.__fixed_probs = True
-            self.structure_check["all_distributions_fixed"] = True
-        else:
-            self.__fixed_probs = False
-            self.structure_check["all_distributions_fixed"] = False
+        self._fixed_probs: bool = all(fixed_flags)
+        self.structure_check["all_distributions_fixed"] = self._fixed_probs
 
         # Record whether the system reliability can be solved analytically
         # (equivalently with the BDD), or whether it requires simulation
@@ -205,8 +193,8 @@ class NonRepairableRBD(RBD):
     def sf(
         self,
         x: Optional[ArrayLike] = None,
-        working_nodes: Collection[Hashable] = [],
-        broken_nodes: Collection[Hashable] = [],
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
         method: str = "p",
     ) -> np.ndarray:
         """Returns the system reliability for time/s x.
@@ -216,13 +204,9 @@ class NonRepairableRBD(RBD):
         x : ArrayLike
             Time/s as a number or iterable
         working_nodes : Collection[Hashable], optional
-            Marks these nodes as perfectly reliable, by default []
+            Marks these nodes as perfectly reliable, by default None
         broken_nodes : Collection[Hashable], optional
-            Marks these nodes as perfectly unreliable, by default []
-        working_components : Collection[Hashable], optional
-            Marks these components as perfectly reliable, by default []
-        broken_components : Collection[Hashable], optional
-            Marks these components as perfectly unreliable, by default []
+            Marks these nodes as perfectly unreliable, by default None
         method: str, optional
             Input either "c" or "p" for the function to use the cut set or
             path set methods respectively. Both methods return the same
@@ -237,18 +221,12 @@ class NonRepairableRBD(RBD):
         Raises
         ------
         ValueError
-            Working/broken node/component inconsistency (a component or node
-            is supplied more than once to any of working_nodes, broken_nodes,
-            working_components, broken_components)
+            If a node in ``working_nodes`` is a repeat of another node (such a
+            node cannot be independently set to working).
         """
-        # Check for any node/component argument inconsistency
-        # check_sf_node_component_args_consistency(
-        #     working_nodes,
-        #     broken_nodes,
-        #     working_components,
-        #     broken_components,
-        #     self.components_to_nodes,
-        # )
+        # Normalise the (optional) node overrides into sets for O(1) lookup.
+        working_nodes = set() if working_nodes is None else set(working_nodes)
+        broken_nodes = set() if broken_nodes is None else set(broken_nodes)
 
         for node in working_nodes:
             if node in self.repeated:
@@ -259,10 +237,6 @@ class NonRepairableRBD(RBD):
                         + "it is not a repeated node."
                     ).format(node, self.repeated[node])
                 )
-
-        # Turn node iterables into sets for O(1) lookup later
-        working_nodes = set(working_nodes)
-        broken_nodes = set(broken_nodes)
 
         # Collect node probabilities to pass to RBD class
         node_probabilities: dict[Any, np.ndarray] = {}
@@ -352,6 +326,82 @@ class NonRepairableRBD(RBD):
         return conditional_survival(self, x, X, *args, **kwargs)
 
     @check_x
+    def Hf(self, x: Optional[ArrayLike] = None, **kwargs) -> np.ndarray:
+        """Returns the system cumulative hazard function H(x) = -ln R(x).
+
+        This is exact given the (exact) system reliability R(x); it is +inf
+        wherever the system reliability has reached zero.
+
+        Parameters
+        ----------
+        x : ArrayLike
+            Time/s as a number or iterable.
+        **kwargs :
+            Any sf() arguments (e.g. working_nodes, broken_nodes, method).
+        """
+        sf = np.asarray(self.sf(x, **kwargs), dtype=float)
+        with np.errstate(divide="ignore"):
+            return -np.log(sf)
+
+    @check_x
+    def df(
+        self, x: Optional[ArrayLike] = None, dx: float = 1e-6, **kwargs
+    ) -> np.ndarray:
+        """Returns the system failure density f(x) = -dR/dx.
+
+        Computed by central finite differences of the system reliability
+        (which is composed of the nodes' reliabilities, so it is smooth in x);
+        ``dx`` sets the relative step size. The step never crosses into
+        negative time.
+
+        Parameters
+        ----------
+        x : ArrayLike
+            Time/s as a number or iterable.
+        dx : float, optional
+            Relative finite-difference step, by default 1e-6.
+        **kwargs :
+            Any sf() arguments (e.g. working_nodes, broken_nodes, method).
+        """
+        x = np.atleast_1d(np.asarray(x, dtype=float))
+        h = dx * np.maximum(np.abs(x), 1.0)
+        x_hi = x + h
+        x_lo = np.maximum(x - h, 0.0)
+        density = (
+            np.asarray(self.sf(x_lo, **kwargs), dtype=float)
+            - np.asarray(self.sf(x_hi, **kwargs), dtype=float)
+        ) / (x_hi - x_lo)
+        return np.clip(density, 0.0, None)
+
+    @check_x
+    def hf(
+        self, x: Optional[ArrayLike] = None, dx: float = 1e-6, **kwargs
+    ) -> np.ndarray:
+        """Returns the system hazard rate h(x) = f(x) / R(x).
+
+        Uses the (numerical) failure density df() over the (exact) system
+        reliability. It is +inf wherever the system reliability has reached
+        zero.
+
+        Parameters
+        ----------
+        x : ArrayLike
+            Time/s as a number or iterable.
+        dx : float, optional
+            Relative finite-difference step passed to df(), by default 1e-6.
+        **kwargs :
+            Any sf() arguments (e.g. working_nodes, broken_nodes, method).
+        """
+        sf = np.asarray(self.sf(x, **kwargs), dtype=float)
+        density = self.df(x, dx=dx, **kwargs)
+        return np.divide(
+            density,
+            sf,
+            out=np.full_like(density, np.inf),
+            where=sf > 0,
+        )
+
+    @check_x
     def sf_by_node(
         self, x: Optional[ArrayLike] = None, *args, **kwargs
     ) -> Dict[Any, np.ndarray]:
@@ -376,8 +426,14 @@ class NonRepairableRBD(RBD):
 
         return node_ff
 
+    @property
+    def is_fixed(self) -> bool:
+        """True if every node's reliability is a fixed (time-invariant)
+        probability, so the system reliability does not vary with time."""
+        return self._fixed_probs
+
     def time_varying_rbd(self):
-        return not self.__fixed_probs
+        return not self._fixed_probs
 
     # Node model types whose reliability is obtained by Monte-Carlo simulation
     # (a Kaplan-Meier fit to simulated samples) rather than in closed form. A
@@ -455,55 +511,70 @@ class NonRepairableRBD(RBD):
         """
         return len(self.get_non_analytic_nodes()) == 0
 
-    def random(self, size):
-        out = np.zeros(size)
-        for i in range(size):
-            event_queue: PriorityQueue = PriorityQueue()
-            for node in self.G.nodes:
-                # .random(1) returns a 1-element array; take the scalar so the
-                # event time orders the PriorityQueue and assigns into ``out``
-                # (NumPy >= 2 rejects assigning a 1-element array to a scalar).
-                draw = np.asarray(self.reliabilities[node].random(1))
-                time = float(draw.reshape(-1)[0])
-                event_queue.put(NodeFailure(time, node))
+    def random(self, size, seed=None):
+        """Monte-Carlo simulate ``size`` system failure times.
 
-            working_nodes = {k: True for k in self.G.nodes}
-            system_working = True
-            while system_working:
-                failure = event_queue.get()
-                time = failure.time
-                working_nodes[failure.node] = False
-                system_working = self.is_system_working(
-                    working_nodes, method="p"
-                )
-            out[i] = time
+        Parameters
+        ----------
+        size : int
+            Number of system-lifetime samples to draw.
+        seed : int or None, optional
+            If given, seeds numpy's global RNG for the duration of the draw so
+            the result is reproducible (surpyval's ``.random`` uses the global
+            RNG); the caller's RNG state is restored afterwards. By default
+            None (non-reproducible).
+        """
+        out = np.zeros(size)
+        with numpy_seed(seed):
+            for i in range(size):
+                event_queue: PriorityQueue = PriorityQueue()
+                for node in self.G.nodes:
+                    # .random(1) returns a 1-element array; take the scalar so
+                    # the event time orders the PriorityQueue and assigns into
+                    # ``out`` (NumPy >= 2 rejects assigning a 1-element array
+                    # to a scalar).
+                    draw = np.asarray(self.reliabilities[node].random(1))
+                    time = float(draw.reshape(-1)[0])
+                    event_queue.put(NodeFailure(time, node))
+
+                working_nodes = {k: True for k in self.G.nodes}
+                system_working = True
+                while system_working:
+                    failure = event_queue.get()
+                    time = failure.time
+                    working_nodes[failure.node] = False
+                    system_working = self.is_system_working(
+                        working_nodes, method="p"
+                    )
+                out[i] = time
 
         return out
 
-    def mean(self, mc_samples: int = 100_000):
+    def mean(self, mc_samples: int = 100_000, seed=None):
         """Returns the Mean Time To Failure of the RBD
         This is necessary for recursive calls which will only use the `mean`
         """
-        return self.random(mc_samples).mean().item()
+        return self.random(mc_samples, seed=seed).mean().item()
 
-    def mean_time_to_failure(self, mc_samples: int = 100_000):
+    def mean_time_to_failure(self, mc_samples: int = 100_000, seed=None):
         """
         User friendly way to get MTTF
         """
-        return self.mean(mc_samples)
+        return self.mean(mc_samples, seed=seed)
 
-    def node_mttf(self, mc_samples: int = 100_000):
+    def node_mttf(self, mc_samples: int = 100_000, seed=None):
         out: dict = {}
-        for node in self.nodes:
-            model = self.reliabilities[node]
-            if isinstance(
-                model, (StandbyModel, NonRepairableRBD, RepeatedNode)
-            ):
-                out[node] = model.mean(mc_samples)
-            elif model.dist.name in ["FixedEventProbability", "Bernoulli"]:
-                out[node] = 0
-            else:
-                out[node] = model.mean()
+        with numpy_seed(seed):
+            for node in self.nodes:
+                model = self.reliabilities[node]
+                if isinstance(
+                    model, (StandbyModel, NonRepairableRBD, RepeatedNode)
+                ):
+                    out[node] = model.mean(mc_samples)
+                elif is_fixed_probability(model):
+                    out[node] = 0
+                else:
+                    out[node] = model.mean()
         return out
 
     # Importance measures
@@ -617,12 +688,12 @@ class NonRepairableRBD(RBD):
         return super()._criticality_importance(node_probabilities)
 
     @check_x
-    def fussel_vesely(
+    def fussell_vesely(
         self, x: Optional[ArrayLike] = None, fv_type: str = "c"
     ) -> dict[Any, np.ndarray]:
-        """Calculate Fussel-Vesely importance of all components at time/s x.
+        """Calculate Fussell-Vesely importance of all components at time/s x.
 
-        Briefly, the Fussel-Vesely importance measure for node i =
+        Briefly, the Fussell-Vesely importance measure for node i =
         (sum of probabilities of cut-sets including node i occuring/failing) /
         (the probability of the system failing).
 
@@ -645,23 +716,31 @@ class NonRepairableRBD(RBD):
         Returns
         -------
         dict[Any, np.ndarray]
-            Dictionary with node names as keys and fussel-vessely importances
+            Dictionary with node names as keys and Fussell-Vesely importances
             as values
 
         Raises
         ------
         ValueError
-            TODO
-        NotImplementedError
-            TODO
+            If ``fv_type`` is not 'c' (cut-set) or 'p' (path-set).
         """
 
         # Cache the component reliabilities for efficiency
         rel_dict = {}
         for node_name, node in self.reliabilities.items():
-            # TODO: make log
-            # Calculating reliability in the log-domain though so the
-            # components' reliability can be added avoid possible underflow
             rel_dict[node_name] = node.sf(x)
 
-        return super()._fussel_vesely(rel_dict, fv_type)
+        return super()._fussell_vesely(rel_dict, fv_type)
+
+    def fussel_vesely(
+        self, x: Optional[ArrayLike] = None, fv_type: str = "c"
+    ) -> dict[Any, np.ndarray]:
+        """Deprecated alias for :meth:`fussell_vesely` (corrected spelling)."""
+        warnings.warn(
+            "fussel_vesely() is deprecated; use fussell_vesely() "
+            "(Fussell-Vesely). This alias will be removed in a future "
+            "release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.fussell_vesely(x, fv_type)

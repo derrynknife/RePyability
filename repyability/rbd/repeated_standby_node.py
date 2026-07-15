@@ -1,5 +1,7 @@
 import numpy as np
 
+from repyability.utils.wrappers import numpy_seed
+
 from .numerical_convolution import (
     ConvolvedSurvival,
     is_perfect_switching,
@@ -30,24 +32,25 @@ class RepeatedStandbyNode:
             [model] * repeats, switching_probability=switching_probability
         )
 
-    def random(self, size):
+    def random(self, size, seed=None):
         # Sum of `repeats` independent draws from the base model. Under
         # imperfect switching a spare only contributes if every switch up to
         # and including its own has succeeded.
-        x_random = np.asarray(self.model.random(size), dtype=float)
-        if is_perfect_switching(self.switching_probability):
-            for _ in range(self.repeats - 1):
-                x_random = x_random + self.model.random(size)
-        else:
-            probs = switch_success_probs(
-                self.switching_probability, self.repeats
-            )
-            running = np.ones(size, dtype=bool)
-            for p in probs:
-                running = running & (np.random.random(size) < p)
-                x_random = x_random + np.where(
-                    running, self.model.random(size), 0.0
+        with numpy_seed(seed):
+            x_random = np.asarray(self.model.random(size), dtype=float)
+            if is_perfect_switching(self.switching_probability):
+                for _ in range(self.repeats - 1):
+                    x_random = x_random + self.model.random(size)
+            else:
+                probs = switch_success_probs(
+                    self.switching_probability, self.repeats
                 )
+                running = np.ones(size, dtype=bool)
+                for p in probs:
+                    running = running & (np.random.random(size) < p)
+                    x_random = x_random + np.where(
+                        running, self.model.random(size), 0.0
+                    )
         return x_random
 
     def mean(self, *args, **kwargs):

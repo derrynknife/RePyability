@@ -1,8 +1,9 @@
+import warnings
 from collections import defaultdict
 from copy import copy
 from dataclasses import dataclass, field
 from queue import PriorityQueue
-from typing import Any, Collection, Hashable, Iterable, List, Tuple
+from typing import Any, Collection, Hashable, Iterable, List, Optional, Tuple
 
 import numpy as np
 from tqdm import tqdm
@@ -115,7 +116,7 @@ class RepairableRBD(RBD):
         self,
         edges: Iterable[tuple[Hashable, Hashable]],
         components: dict[Any, Any],
-        k: dict[Any, int] = {},
+        k: Optional[dict[Any, int]] = None,
     ):
         components = copy(components)
         reliability = {}
@@ -142,9 +143,16 @@ class RepairableRBD(RBD):
     def initialize_event_queue(
         self,
         t_simulation,
-        working_components: Collection[Hashable] = [],
-        broken_components: Collection[Hashable] = [],
+        working_components: Optional[Collection[Hashable]] = None,
+        broken_components: Optional[Collection[Hashable]] = None,
     ):
+        working_components = (
+            set() if working_components is None else set(working_components)
+        )
+        broken_components = (
+            set() if broken_components is None else set(broken_components)
+        )
+
         # Keep record of component status', initially they're all working
         component_status: dict[Any, bool] = {
             component: True for component in self.components.keys()
@@ -197,8 +205,8 @@ class RepairableRBD(RBD):
 
     def mean_availability(
         self,
-        working_nodes: Collection[Hashable] = [],
-        broken_nodes: Collection[Hashable] = [],
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
         method: str = "p",
     ) -> np.float64:
         """Returns the system long run availability
@@ -224,6 +232,8 @@ class RepairableRBD(RBD):
         """
         # Good reference on the Availability of a system
         # https://www.diva-portal.org/smash/get/diva2:986067/FULLTEXT01.pdf
+        working_nodes = set() if working_nodes is None else set(working_nodes)
+        broken_nodes = set() if broken_nodes is None else set(broken_nodes)
 
         # Cache all component reliabilities for efficiency
         component_availability: dict[Hashable, np.float64] = {}
@@ -288,11 +298,12 @@ class RepairableRBD(RBD):
     def availability(
         self,
         t_simulation: float,
-        working_nodes: Collection[Hashable] = [],
-        broken_nodes: Collection[Hashable] = [],
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
         method: str = "p",
         N: int = 10_000,
         verbose: bool = False,
+        seed: Optional[int] = None,
     ) -> dict:
         """Returns the times, and availability for those times, as numpy
         arrays
@@ -346,7 +357,15 @@ class RepairableRBD(RBD):
         union_uptime: defaultdict = defaultdict(lambda: 0)
         union_downtime: defaultdict = defaultdict(lambda: 0)
 
-        # Perform N simulations
+        # Perform N simulations. surpyval's ``.random`` draws from numpy's
+        # global RNG, so seed it here (if a seed was given) to make the run
+        # reproducible, restoring the caller's RNG state once the randomised
+        # simulations below have finished.
+        _rng_state = None
+        if seed is not None:
+            _rng_state = np.random.get_state()
+            np.random.seed(seed)
+
         for _ in tqdm(
             range(N), disable=not verbose, desc="Running simulations"
         ):
@@ -450,6 +469,10 @@ class RepairableRBD(RBD):
             simulation_system_ut = time_at_status(system_timeline, 1)
             system_uptime += simulation_system_ut
             system_downtime += t_simulation - simulation_system_ut
+
+        # Randomised simulations are done; restore the caller's RNG state.
+        if _rng_state is not None:
+            np.random.set_state(_rng_state)
 
         # Collect Importance/Criticality measures from the simulation
         # reference: https://www.weibull.com/pubs/2004rm_05B_02.pdf
@@ -602,10 +625,10 @@ class RepairableRBD(RBD):
         node_probabilities = self.node_availability()
         return super()._criticality_importance(node_probabilities)
 
-    def fussel_vesely(self, fv_type: str = "c") -> dict[Any, np.ndarray]:
-        """Calculate Fussel-Vesely importance of all components at time/s x.
+    def fussell_vesely(self, fv_type: str = "c") -> dict[Any, np.ndarray]:
+        """Calculate Fussell-Vesely importance of all components.
 
-        Briefly, the Fussel-Vesely importance measure for node i =
+        Briefly, the Fussell-Vesely importance measure for node i =
         (sum of probabilities of cut-sets including node i occuring/failing) /
         (the probability of the system failing).
 
@@ -626,15 +649,24 @@ class RepairableRBD(RBD):
         Returns
         -------
         dict[Any, np.ndarray]
-            Dictionary with node names as keys and fussel-vessely importances
+            Dictionary with node names as keys and Fussell-Vesely importances
             as values
 
         Raises
         ------
         ValueError
-            TODO
-        NotImplementedError
-            TODO
+            If ``fv_type`` is not 'c' (cut-set) or 'p' (path-set).
         """
         node_probabilities = self.node_availability()
-        return super()._fussel_vesely(node_probabilities, fv_type)
+        return super()._fussell_vesely(node_probabilities, fv_type)
+
+    def fussel_vesely(self, fv_type: str = "c") -> dict[Any, np.ndarray]:
+        """Deprecated alias for :meth:`fussell_vesely` (corrected spelling)."""
+        warnings.warn(
+            "fussel_vesely() is deprecated; use fussell_vesely() "
+            "(Fussell-Vesely). This alias will be removed in a future "
+            "release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.fussell_vesely(fv_type)

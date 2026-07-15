@@ -527,9 +527,7 @@ class RBD:
         # system unreliability is the probability that at least one minimal
         # cut set has all of its components failed.
         cut_sets = self.get_min_cut_sets(include_in_out_nodes=False)
-        node_unreliability = {
-            k: 1 - v for k, v in node_probabilities.items()
-        }
+        node_unreliability = {k: 1 - v for k, v in node_probabilities.items()}
         system_unreliability = probability_any_set_satisfied(
             cut_sets, node_unreliability, array_shape
         )
@@ -540,9 +538,11 @@ class RBD:
         self,
         target: float,
         node_probabilities: Dict,
-        fixed: list = [],
+        fixed: Optional[list] = None,
         weights=None,
     ):
+        if fixed is None:
+            fixed = []
         node_probabilities = copy(node_probabilities)
 
         for n, v in node_probabilities.items():
@@ -581,7 +581,6 @@ class RBD:
             res["x"].item(),
             weights,
         )
-        print(out)
         out = {**node_probabilities, **out}
         out = {k: v.item() for k, v in out.items()}
         return out
@@ -781,13 +780,13 @@ class RBD:
             )
         return node_importance
 
-    def _fussel_vesely(
+    def _fussell_vesely(
         self,
         node_probabilities: dict[Any, ArrayLike],
         fv_type: str = "c",
         approx: bool = True,
     ) -> dict[Any, np.ndarray]:
-        """Calculate Fussel-Vesely importance of all components at time/s x.
+        """Calculate Fussell-Vesely importance of all components at time/s x.
 
         Briefly, the Fussel-Vesely importance measure for node i =
         (sum of probabilities of cut-sets including node i occuring/failing) /
@@ -815,15 +814,14 @@ class RBD:
         Returns
         -------
         dict[Any, np.ndarray]
-            Dictionary with node names as keys and fussel-vessely importances
+            Dictionary with node names as keys and Fussell-Vesely importances
             as values
 
         Raises
         ------
         ValueError
-            TODO
-        NotImplementedError
-            TODO
+            If ``fv_type`` is not 'c' (cut-set) or 'p' (path-set), or if the
+            node probability arrays are not all the same length.
         """
         node_probabilities_new: dict[Any, np.ndarray] = {}
         lengths = np.array([], dtype=np.int64)

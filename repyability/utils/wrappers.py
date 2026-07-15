@@ -1,4 +1,35 @@
+from contextlib import contextmanager
+
 import numpy as np
+
+
+@contextmanager
+def numpy_seed(seed):
+    """Temporarily seed numpy's global RNG, restoring the previous state on
+    exit.
+
+    surpyval's ``.random()`` draws from numpy's *global* RNG and exposes no
+    seed argument, so reproducible Monte-Carlo simulations are obtained by
+    seeding that global RNG. This context manager seeds it for the duration of
+    a simulation and restores the caller's RNG state afterwards, so calling a
+    simulation with ``seed=...`` is reproducible *without* disturbing the
+    surrounding program's random stream. ``seed=None`` is a no-op (i.e. the
+    simulation stays non-reproducible, using whatever global state exists).
+
+    Parameters
+    ----------
+    seed : int or None
+        The seed to apply, or None to leave the global RNG untouched.
+    """
+    if seed is None:
+        yield
+        return
+    state = np.random.get_state()
+    try:
+        np.random.seed(seed)
+        yield
+    finally:
+        np.random.set_state(state)
 
 
 def check_probability(func):
