@@ -4,6 +4,7 @@ using both the cut set and path set methods.
 
 Uses pytest fixtures located in conftest.py in the tests/ directory.
 """
+
 import pytest
 from surpyval import FixedEventProbability
 

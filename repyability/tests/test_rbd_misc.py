@@ -3,6 +3,7 @@ Tests miscellaneous cases for the NonRepairableRBD class.
 
 Uses pytest fixtures located in conftest.py in the tests/ directory.
 """
+
 import numpy as np
 import pytest
 from surpyval import Exponential, FixedEventProbability

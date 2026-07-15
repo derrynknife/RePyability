@@ -3,6 +3,7 @@ Tests Repeated Nodes.
 
 Uses pytest fixtures located in conftest.py in the tests/ directory.
 """
+
 import pytest
 from surpyval import Exponential, Gamma, Weibull
 

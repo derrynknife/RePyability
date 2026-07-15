@@ -3,6 +3,7 @@ Tests structure cases for the RBD class.
 
 Uses pytest fixtures located in conftest.py in the tests/ directory.
 """
+
 import pytest
 
 from repyability.rbd.rbd import RBD
