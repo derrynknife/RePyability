@@ -113,6 +113,58 @@ def test_repeated_node_symmetry_both_raise():
         rbd.sf(1, broken_nodes=[5])
 
 
+# --- sf / ff / derived paths -----------------------------------------------
+# ff, reliability, unreliability and cs all delegate to sf via *args/**kwargs,
+# so working_nodes/broken_nodes (and their validation) must flow through.
+
+
+def test_ff_equals_one_minus_sf_with_overrides():
+    p = _parallel()
+    for kw in ({}, {"working_nodes": ["A"]}, {"broken_nodes": ["A"]}):
+        np.testing.assert_allclose(p.ff(1, **kw), 1 - p.sf(1, **kw))
+
+
+def test_reliability_unreliability_delegate_with_overrides():
+    p = _parallel()
+    np.testing.assert_allclose(
+        p.reliability(1, broken_nodes=["A"]), p.sf(1, broken_nodes=["A"])
+    )
+    np.testing.assert_allclose(
+        p.unreliability(1, broken_nodes=["A"]),
+        1 - p.sf(1, broken_nodes=["A"]),
+    )
+
+
+def test_ff_method_kwarg_flows_through():
+    p = _parallel()
+    np.testing.assert_allclose(
+        p.ff(1, broken_nodes=["A"], method="p"),
+        p.ff(1, broken_nodes=["A"], method="c"),
+    )
+
+
+def test_override_validation_propagates_through_ff_and_friends():
+    p = _parallel()
+    for fn in (p.ff, p.reliability, p.unreliability):
+        with pytest.raises(ValueError, match="Unknown node"):
+            fn(1, working_nodes=["Z"])
+
+
+def test_cs_with_broken_node_matches_surviving_branch():
+    # With A broken, the parallel system reduces to B alone, so the system's
+    # conditional survival equals B's conditional survival.
+    w = NonRepairableRBD(
+        [("s", "A"), ("s", "B"), ("A", "t"), ("B", "t")],
+        {
+            "A": surv.Weibull.from_params([100, 2]),
+            "B": surv.Weibull.from_params([50, 1.5]),
+        },
+    )
+    b = w.reliabilities["B"]
+    expected = np.atleast_1d(b.sf(30)) / np.atleast_1d(b.sf(20))
+    np.testing.assert_allclose(w.cs(10, 20, broken_nodes=["A"]), expected)
+
+
 # --- RepairableRBD ---------------------------------------------------------
 
 

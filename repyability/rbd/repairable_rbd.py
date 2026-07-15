@@ -493,12 +493,14 @@ class RepairableRBD(RBD):
 
             for component in self.components.keys():
                 component_timelines[component].append((t_simulation, 0))
-                components_uptime[component] += time_at_status(
+                # This simulation's uptime for the component; the downtime is
+                # the remainder of the window. (Use the per-simulation value,
+                # not the running cumulative components_uptime[component].)
+                component_ut = time_at_status(
                     component_timelines[component], 1
                 )
-                components_downtime[component] += (
-                    t_simulation - components_uptime[component]
-                )
+                components_uptime[component] += component_ut
+                components_downtime[component] += t_simulation - component_ut
                 joint_t, joint_events = combined_timeline(
                     component_timelines[component], system_timeline
                 )

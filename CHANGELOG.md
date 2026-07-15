@@ -70,6 +70,13 @@ foundations (Phases 0 and 1 of the development plan in
     plausible-but-wrong result.
   - Setting a repeated node broken now raises the same error as setting it
     working (previously it was silently ignored — an asymmetry).
+- **`RepairableRBD.availability()` component downtime accounting.**
+  `components_downtime` was accumulated against the *running cumulative*
+  component uptime instead of the current simulation's uptime, giving wrong
+  (often negative) totals after the first simulation. Each component's
+  uptime + downtime now correctly sums to `N * t_simulation`. (`sf`/`ff` and
+  the derived `reliability`/`unreliability`/`cs` paths were audited for the
+  working/broken overrides and found correct; regression tests added.)
 
 ### Removed
 - Dead/unused `repyability/rbd/rbd_args_check.py` module and the never-
