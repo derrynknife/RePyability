@@ -1,39 +1,44 @@
 # See https://pre-commit.com for more information
 # See https://pre-commit.com/hooks.html for more hooks
+#
+# Hook versions are kept in step with the pinned dev tooling in pyproject.toml
+# ([project.optional-dependencies].dev) so local pre-commit, CI, and a manual
+# `pip install -e .[dev]` all format/lint identically.
 
 repos:
-
-# Organise imports
--   repo: https://github.com/PyCQA/isort
-    rev: '5.11.4'
+  # Organise imports
+  - repo: https://github.com/PyCQA/isort
+    rev: "6.0.1"
     hooks:
-    -   id: isort
+      - id: isort
 
-# Update all old python syntax
--   repo: https://github.com/asottile/pyupgrade
-    rev: 'v3.3.1'
+  # Update old python syntax
+  - repo: https://github.com/asottile/pyupgrade
+    rev: "v3.19.1"
     hooks:
-    -   id: pyupgrade
+      - id: pyupgrade
+        args: ["--py310-plus"]
 
-# Format with Black
--   repo: https://github.com/psf/black
-    rev: '22.12.0'
+  # Format with Black
+  - repo: https://github.com/psf/black
+    rev: "26.3.1"
     hooks:
-    -   id: black
+      - id: black
 
-# Lint with flake8
--   repo: https://github.com/PyCQA/flake8
-    rev: '6.0.0'
+  # Lint with flake8 (reads [tool.flake8] from pyproject via flake8-pyproject)
+  - repo: https://github.com/PyCQA/flake8
+    rev: "7.3.0"
     hooks:
-    -   id: flake8
-        args: ['--per-file-ignores=**/__init__.py:F401']
+      - id: flake8
+        additional_dependencies: ["flake8-pyproject"]
 
-# It uses the locally installed (need mypy installed locally) since the mirror
-# by default uses opionated args
--   repo: local
+  # Uses the locally installed mypy (the mirror uses opinionated args by
+  # default); tests are excluded to match the CI configuration.
+  - repo: local
     hooks:
-    -   id: mypy
+      - id: mypy
         name: mypy
         entry: mypy
         language: system
         types: [python]
+        exclude: "^repyability/tests/"

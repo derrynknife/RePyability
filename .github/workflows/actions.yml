@@ -2,48 +2,70 @@ name: actions
 
 run-name: RePyability CI
 
-on: [push]
-
-env:
-  SRC: repyability # Source directory to run jobs on
+on: [push, pull_request]
 
 jobs:
-  repyability_ci:
+  lint:
+    name: lint (black, isort, flake8, mypy)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: Set-up Python 3.x
-        uses: actions/setup-python@v4
+      - name: Set-up Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-      
-      - name: Install dependencies
+          python-version: '3.11'
+
+      - name: Install package with dev dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements_dev.txt
-      
-      - name: pytest
-        run:
-          coverage run -m pytest
-      
-      - name: coverage
+          pip install -e .[dev]
+
+      - name: black
+        run: black --check repyability
+
+      - name: isort
+        run: isort --check-only repyability
+
+      - name: flake8
+        run: flake8 repyability
+
+      - name: mypy
+        run: mypy repyability
+
+  test:
+    name: test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set-up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package with dev dependencies
         run: |
-          coverage report
-          coverage html
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+
+      - name: pytest (under coverage)
+        run: coverage run -m pytest
+
+      - name: coverage report (enforces the fail_under gate)
+        run: coverage report
+
+      - name: coverage html
+        if: matrix.python-version == '3.11'
+        run: coverage html
 
       - name: Upload coverage html report artifact
-        uses: actions/upload-artifact@v3
+        if: matrix.python-version == '3.11'
+        uses: actions/upload-artifact@v4
         with:
           name: coverage-html-report
           path: htmlcov/
-      
-      - name: flake8
-        run: flake8 $SRC
-      
-      - name: mypy
-        run: mypy $SRC
-      
-      - name: black
-        run:
-          black $SRC
