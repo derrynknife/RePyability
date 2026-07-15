@@ -189,6 +189,23 @@ class NonRepairableRBD(RBD):
         )
         self.structure_check["non_analytic_nodes"] = non_analytic_nodes
 
+    def _validate_node_overrides(self, working_nodes, broken_nodes) -> None:
+        """Extends the base check with the repeated-node rule: a repeated node
+        has been collapsed into the node it repeats, so it cannot be
+        independently forced working or broken (in either set)."""
+        for label, nodes in (
+            ("working_nodes", working_nodes),
+            ("broken_nodes", broken_nodes),
+        ):
+            for node in nodes:
+                if node in self.repeated:
+                    raise ValueError(
+                        f"Node {node}, given to {label}, is a repeat of node "
+                        f"{self.repeated[node]}. Create a new RBD where it is "
+                        "not a repeated node."
+                    )
+        super()._validate_node_overrides(working_nodes, broken_nodes)
+
     @check_x
     def sf(
         self,
@@ -227,16 +244,7 @@ class NonRepairableRBD(RBD):
         # Normalise the (optional) node overrides into sets for O(1) lookup.
         working_nodes = set() if working_nodes is None else set(working_nodes)
         broken_nodes = set() if broken_nodes is None else set(broken_nodes)
-
-        for node in working_nodes:
-            if node in self.repeated:
-                raise ValueError(
-                    (
-                        "Node {}, which has been set to working is a repeat "
-                        + "of node {}. You need to create a new RBD where "
-                        + "it is not a repeated node."
-                    ).format(node, self.repeated[node])
-                )
+        self._validate_node_overrides(working_nodes, broken_nodes)
 
         # Collect node probabilities to pass to RBD class
         node_probabilities: dict[Any, np.ndarray] = {}

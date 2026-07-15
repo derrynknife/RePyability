@@ -630,6 +630,42 @@ class RBD:
         """Simply returns the list component names of the RBD."""
         return list(self.nodes)
 
+    def _validate_node_overrides(self, working_nodes, broken_nodes) -> None:
+        """Validate the working/broken node override sets.
+
+        Raises a ValueError on invalid input rather than silently ignoring it:
+        the same node in both sets, the input/output node, or an unknown node
+        name (e.g. a typo, which would otherwise silently have no effect and
+        return a plausible-but-wrong result).
+        """
+        working_nodes = set(working_nodes)
+        broken_nodes = set(broken_nodes)
+
+        both = working_nodes & broken_nodes
+        if both:
+            raise ValueError(
+                f"Node(s) {sorted(both, key=str)} given as both working and "
+                "broken; a node cannot be forced to both states."
+            )
+
+        valid = set(self.nodes)
+        for label, nodes in (
+            ("working_nodes", working_nodes),
+            ("broken_nodes", broken_nodes),
+        ):
+            for node in nodes:
+                if node in self.in_or_out:
+                    which = "input" if node == self.input_node else "output"
+                    raise ValueError(
+                        f"Cannot set the {which} node {node!r} via {label}."
+                    )
+                if node not in valid:
+                    raise ValueError(
+                        f"Unknown node {node!r} given to {label}; it is not "
+                        "an intermediate node of the RBD. Valid nodes are: "
+                        f"{sorted(valid, key=str)}."
+                    )
+
     def _birnbaum_importance(
         self, node_probabilities: dict[Any, ArrayLike]
     ) -> dict[Any, np.ndarray]:

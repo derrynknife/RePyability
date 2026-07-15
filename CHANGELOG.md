@@ -55,6 +55,21 @@ foundations (Phases 0 and 1 of the development plan in
 - Replaced `type(x) == Cls` checks with `isinstance` in `NonRepairable`.
 - Replaced mutable default arguments (`{}`, `[]`) with `None` sentinels.
 - Removed cross-instance access to a name-mangled attribute (`__fixed_probs`).
+- **`working_nodes`/`broken_nodes` ("force node working/failed") logic:**
+  - `RepairableRBD.availability()` no longer crashes with `ZeroDivisionError`
+    (and the operational/IOU criticality indices no longer return `NaN`) when
+    a simulation records zero system failures/restorations — e.g. when a
+    redundant node is forced working. Zero-exposure measures return 0.
+  - A component forced broken in `availability()` is now accounted as **down**
+    from t=0 (its uptime and the initial system state were previously assumed
+    "up", so a broken component reported full uptime and a system it kept down
+    was over-counted as available at the start).
+  - `working_nodes`/`broken_nodes` now **raise** on invalid input instead of
+    silently ignoring it: unknown node names, the input/output node, or the
+    same node in both sets. Previously a typo silently returned a
+    plausible-but-wrong result.
+  - Setting a repeated node broken now raises the same error as setting it
+    working (previously it was silently ignored — an asymmetry).
 
 ### Removed
 - Dead/unused `repyability/rbd/rbd_args_check.py` module and the never-

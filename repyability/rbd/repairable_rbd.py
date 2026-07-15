@@ -68,10 +68,28 @@ def time_at_status(timeline, status):
     return union.sum()
 
 
+def _safe_ratio(numerator, denominator):
+    """Ratio that is 0 when the denominator is 0.
+
+    Several criticality/importance measures divide by a total (system uptime,
+    downtime, failures, restorations, or a union of intervals) that can
+    legitimately be 0 -- e.g. when a redundant component is forced working so
+    the system never fails, or a component is forced broken. With nothing to
+    attribute, the measure is 0 rather than a NaN/inf (or a crash).
+    """
+    return numerator / denominator if denominator else 0.0
+
+
 def failure_criticality_index_per_system_failures(FCI, system_failures):
     fci = {}
     for node in FCI.keys():
-        fci[node] = FCI[node]["system_failures"] / system_failures
+        if system_failures == 0:
+            # No system failures occurred (e.g. a redundant node was forced
+            # working, or the system was highly reliable over the simulated
+            # window), so no node can be credited with causing one.
+            fci[node] = 0
+        else:
+            fci[node] = FCI[node]["system_failures"] / system_failures
     return fci
 
 
@@ -92,7 +110,12 @@ def failure_criticality_index_per_component_failures(FCI):
 def restoration_criticality_index_by_system(RCI, system_restorations):
     rci = {}
     for node in RCI.keys():
-        rci[node] = RCI[node]["system_restorations"] / system_restorations
+        if system_restorations == 0:
+            # No system restorations occurred, so no node can be credited with
+            # causing one.
+            rci[node] = 0
+        else:
+            rci[node] = RCI[node]["system_restorations"] / system_restorations
     return rci
 
 
@@ -145,6 +168,7 @@ class RepairableRBD(RBD):
         t_simulation,
         working_components: Optional[Collection[Hashable]] = None,
         broken_components: Optional[Collection[Hashable]] = None,
+        method: str = "p",
     ):
         working_components = (
             set() if working_components is None else set(working_components)
@@ -184,7 +208,10 @@ class RepairableRBD(RBD):
                 # Event status is False => event is a component failure
                 event_queue.put(Event(t_event, component_id, event))
         self._event_queue = event_queue
-        self.system_state = True
+        # The initial system state must reflect any forced-broken components
+        # (e.g. a broken component in series starts the system down), rather
+        # than assuming everything is up.
+        self.system_state = self.is_system_working(component_status, method)
         self.t_simulation = t_simulation
         self.component_status = component_status
 
@@ -234,6 +261,7 @@ class RepairableRBD(RBD):
         # https://www.diva-portal.org/smash/get/diva2:986067/FULLTEXT01.pdf
         working_nodes = set() if working_nodes is None else set(working_nodes)
         broken_nodes = set() if broken_nodes is None else set(broken_nodes)
+        self._validate_node_overrides(working_nodes, broken_nodes)
 
         # Cache all component reliabilities for efficiency
         component_availability: dict[Hashable, np.float64] = {}
@@ -322,6 +350,9 @@ class RepairableRBD(RBD):
         tuple[np.ndarray, np.ndarray]
             times, availabilities
         """
+        working_nodes = set() if working_nodes is None else set(working_nodes)
+        broken_nodes = set() if broken_nodes is None else set(broken_nodes)
+        self._validate_node_overrides(working_nodes, broken_nodes)
 
         # aggregate_timeline keeps track of how many of the simulated systems
         # turn on and off at time t.
@@ -337,8 +368,15 @@ class RepairableRBD(RBD):
         # Set the end of the timeline to be 0 (i.e. unchanged if no event
         # falls) exactly at time t_simulation.
         aggregate_timeline[t_simulation] = 0
-        # Set all systems working at time 0
-        aggregate_timeline[0] = N
+        # The initial system state is the same for every simulation (the forced
+        # working/broken sets are fixed): all components start working except
+        # those forced broken, which can make the system start down (e.g. a
+        # broken component in series). Seed time 0 accordingly.
+        initial_status = {c: c not in broken_nodes for c in self.components}
+        initial_system_up = bool(
+            self.is_system_working(initial_status, method)
+        )
+        aggregate_timeline[0] = N if initial_system_up else 0
 
         # Restoration Criticality Index
         RCI: defaultdict = defaultdict(lambda: defaultdict(lambda: 0))
@@ -374,10 +412,17 @@ class RepairableRBD(RBD):
                 t_simulation,
                 working_nodes,
                 broken_nodes,
+                method,
             )
 
-            component_timelines: defaultdict = defaultdict(lambda: [(0.0, 1)])
-            system_timeline = [(0.0, 1)]
+            # Seed each timeline from the actual initial status so that
+            # forced-broken components (and a system they start down) are
+            # accounted as down from t=0, not assumed up.
+            component_timelines: dict = {
+                comp: [(0.0, 1 if self.component_status[comp] else 0)]
+                for comp in self.components
+            }
+            system_timeline = [(0.0, 1 if self.system_state else 0)]
 
             # Implemented ensure that no events that occur after the
             # end-time of the simulation are added to the queue; so we just
@@ -479,11 +524,12 @@ class RepairableRBD(RBD):
         criticalities = {}
         # Operational Criticality Index
         oci_down = {
-            k: v / system_downtime
+            k: _safe_ratio(v, system_downtime)
             for k, v in dict(intersection_downtime).items()
         }
         oci_up = {
-            k: v / system_uptime for k, v in dict(intersection_uptime).items()
+            k: _safe_ratio(v, system_uptime)
+            for k, v in dict(intersection_uptime).items()
         }
         criticalities["operational_criticality_index"] = {
             "up": oci_up,
@@ -491,11 +537,11 @@ class RepairableRBD(RBD):
         }
         # Intersection Over Union Importance
         iou_up = {
-            k: intersection_uptime[k] / union_uptime[k]
+            k: _safe_ratio(intersection_uptime[k], union_uptime[k])
             for k in dict(intersection_uptime).keys()
         }
         iou_down = {
-            k: intersection_downtime[k] / union_downtime[k]
+            k: _safe_ratio(intersection_downtime[k], union_downtime[k])
             for k in dict(intersection_downtime).keys()
         }
         criticalities["iou"] = {"up": iou_up, "down": iou_down}
