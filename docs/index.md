@@ -45,8 +45,8 @@ reliabilities = {
 }
 rbd = NonRepairableRBD(edges, reliabilities)
 
-rbd.sf(50)                       # system reliability at t=50   -> array([0.839...])
-rbd.ff([50, 100])                # system unreliability at t=50, 100
+rbd.sf(50)                       # system reliability at t=50   -> 0.839...
+rbd.ff([50, 100])                # system unreliability at t=50, 100 (array)
 rbd.mean_time_to_failure(seed=0) # MTTF via Monte-Carlo (seed for reproducibility)
 rbd.birnbaum_importance(50)      # per-node Birnbaum importance at t=50
 ```

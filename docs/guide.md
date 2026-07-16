@@ -43,9 +43,11 @@ rbd.Hf(t)              # cumulative hazard H(t) = -ln R(t)
 rbd.cs(t, T)           # conditional survival R(t | already survived to T)
 ```
 
-`t` may be a scalar or an array; the return is an array. Both the exact
-**path-set** (`method="p"`, default) and **cut-set** (`method="c"`) evaluations
-give the same result.
+The return contract is numpy-style: a **scalar `t` returns a float**, an
+**array `t` returns a numpy array** (the per-node and importance methods
+likewise return dicts of floats or arrays). Both the exact **path-set**
+(`method="p"`, default) and **cut-set** (`method="c"`) evaluations give the
+same result.
 
 ### Mean time to failure
 
@@ -86,7 +88,12 @@ rbd.criticality_importance(t)
 rbd.fussell_vesely(t, fv_type="c")   # "c" cut-set (default) or "p" path-set
 ```
 
-Each returns a dict mapping node name to its importance at time(s) `t`.
+Each returns a dict mapping node name to its importance at time(s) `t`. All
+importance measures also accept `working_nodes`/`broken_nodes` to condition
+the analysis, e.g. `rbd.birnbaum_importance(t, broken_nodes=["pump2"])`.
+
+The same measures exist on `RepairableRBD`, evaluated at the nodes' long-run
+availabilities (no time argument): `rbd.birnbaum_importance()`, etc.
 
 ## Repairable systems and availability
 
@@ -114,6 +121,23 @@ rbd = RepairableRBD([("s", "A"), ("s", "B"), ("A", "t"), ("B", "t")], components
 rbd.mean_availability()                        # steady-state, closed form
 result = rbd.availability(t_simulation=100.0, N=10_000, seed=0)   # simulated
 ```
+
+### Steady-state metrics (exact, no simulation)
+
+The classic repairable-system metrics are available in closed form via the
+Birnbaum/Vesely frequency formula (exact for independent nodes):
+
+```python
+rbd.system_failure_frequency()      # system failures per unit time
+rbd.mean_up_time()                  # MUT: mean uninterrupted working period
+rbd.mean_down_time()                # MDT: mean outage duration
+rbd.mean_time_between_failures()    # MTBF = MUT + MDT = 1 / frequency
+```
+
+All of them (and `mean_availability`) accept `working_nodes`/`broken_nodes`
+for conditional analyses. The simulated `AvailabilityResult` carries matching
+*estimates* (`result.mean_up_time`, `result.mean_down_time`,
+`result.failure_frequency`) you can cross-check against the exact values.
 
 ### The availability result
 

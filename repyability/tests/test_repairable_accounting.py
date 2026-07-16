@@ -34,8 +34,8 @@ def test_component_uptime_plus_downtime_equals_window():
     N, T = 300, 20.0
     result = _rbd().availability(t_simulation=T, N=N, seed=1)
     for comp in ("A", "B"):
-        up = result["components_uptime"][comp]
-        down = result["components_downtime"][comp]
+        up = result["node_uptime"][comp]
+        down = result["node_downtime"][comp]
         assert up >= 0.0
         assert down >= 0.0
         assert np.isclose(up + down, N * T)
@@ -46,5 +46,5 @@ def test_broken_component_has_full_downtime():
     result = _rbd().availability(
         t_simulation=T, N=N, broken_nodes=["A"], seed=1
     )
-    assert result["components_uptime"]["A"] == 0.0
-    assert np.isclose(result["components_downtime"]["A"], N * T)
+    assert result["node_uptime"]["A"] == 0.0
+    assert np.isclose(result["node_downtime"]["A"], N * T)

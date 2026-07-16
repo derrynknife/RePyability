@@ -13,8 +13,8 @@ from repyability.rbd.non_repairable_rbd import NonRepairableRBD
 
 def test_rbd_sf_ff_by_node(rbd_series: NonRepairableRBD):
     t = 5
-    node_sf = rbd_series.sf_by_node(t)
-    node_ff = rbd_series.ff_by_node(t)
+    node_sf = rbd_series.node_sf(t)
+    node_ff = rbd_series.node_ff(t)
     for k in node_sf.keys():
         # surpyval >= 0.11 computes ff(t) directly (more precisely than
         # 1 - sf(t)), so the two can differ by a floating-point ULP.
@@ -32,14 +32,11 @@ def test_rel_unrel(rbd_series: NonRepairableRBD):
 @pytest.mark.parametrize("method", ["c", "p"])
 def test_rbd_sf_series(rbd_series: NonRepairableRBD, method: str):
     t = 5
-    assert (
-        pytest.approx(
-            rbd_series.reliabilities[2].sf(t)
-            * rbd_series.reliabilities[3].sf(t)
-            * rbd_series.reliabilities[4].sf(t)
-        )
-        == rbd_series.sf(t, method=method)[0]
-    )
+    assert pytest.approx(
+        rbd_series.reliabilities[2].sf(t)
+        * rbd_series.reliabilities[3].sf(t)
+        * rbd_series.reliabilities[4].sf(t)
+    ) == rbd_series.sf(t, method=method)
 
 
 # Test sf() w/ simple series NonRepairableRBD
@@ -165,5 +162,5 @@ def test_rbd_conditional_survival():
     X = 30.0
     expected = rbd.sf(x + X) / rbd.sf(X)
     assert np.allclose(rbd.cs(x, X), expected)
-    # Surviving zero further time is certain.
-    assert rbd.cs(0.0, X)[0] == 1.0
+    # Surviving zero further time is certain (scalar in -> float out).
+    assert rbd.cs(0.0, X) == 1.0

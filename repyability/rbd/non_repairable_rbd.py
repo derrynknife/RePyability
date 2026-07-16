@@ -1,9 +1,10 @@
+import functools
 import pprint
 import warnings
 from copy import copy
 from dataclasses import dataclass, field
 from queue import PriorityQueue
-from typing import Any, Collection, Dict, Hashable, Iterable, Optional
+from typing import Any, Collection, Dict, Hashable, Iterable, Optional, Union
 
 import networkx as nx
 import numpy as np
@@ -31,14 +32,35 @@ class NodeFailure:
 
 
 def check_x(func):
-    """Handles a none or ArrayLike x value"""
+    """Normalises the time input ``x`` and enforces the return contract.
 
+    The wrapped function always receives ``x`` as a 1-d numpy array. The
+    caller-facing contract is numpy-style: a scalar ``x`` returns a float (or
+    a dict of floats for the per-node/importance methods), an array ``x``
+    returns a numpy array (or dict of arrays).
+
+    ``x=None`` is allowed only for a fixed-probability RBD (where time is
+    irrelevant); for a time-varying RBD it raises a ValueError rather than
+    failing cryptically downstream.
+    """
+
+    @functools.wraps(func)
     def wrap(obj, x=None, *args, **kwargs):
-        if not obj.time_varying_rbd():
-            x = 1.0
-        # Make sure we are using a numpy array (of 1D)
-        x = np.atleast_1d(x)
+        if x is None:
+            if obj.is_fixed:
+                x = 1.0
+            else:
+                raise ValueError(
+                    "x is required: this RBD is time-varying (at least one "
+                    "node model's probability depends on time)."
+                )
+        scalar_in = np.ndim(x) == 0
+        x = np.atleast_1d(np.asarray(x, dtype=float))
         result = func(obj, x, *args, **kwargs)
+        if scalar_in:
+            if isinstance(result, dict):
+                return {k: np.asarray(v).item() for k, v in result.items()}
+            return np.asarray(result).item()
         return result
 
     return wrap
@@ -213,7 +235,7 @@ class NonRepairableRBD(RBD):
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
         method: str = "p",
-    ) -> np.ndarray:
+    ) -> Union[float, np.ndarray]:
         """Returns the system reliability for time/s x.
 
         Parameters
@@ -232,14 +254,15 @@ class NonRepairableRBD(RBD):
 
         Returns
         -------
-        np.ndarray
-            Reliability values for all nodes at all times x
+        float or np.ndarray
+            The system reliability: a float for scalar ``x``, an array for
+            array ``x``.
 
         Raises
         ------
         ValueError
-            If a node in ``working_nodes`` is a repeat of another node (such a
-            node cannot be independently set to working).
+            If a working/broken node is unknown, is the input/output node, is
+            in both sets, or is a repeat of another node.
         """
         # Normalise the (optional) node overrides into sets for O(1) lookup.
         working_nodes = set() if working_nodes is None else set(working_nodes)
@@ -260,7 +283,9 @@ class NonRepairableRBD(RBD):
 
         return self.system_probability(node_probabilities, method=method)
 
-    def ff(self, x: Optional[ArrayLike] = None, *args, **kwargs) -> np.ndarray:
+    def ff(
+        self, x: Optional[ArrayLike] = None, *args, **kwargs
+    ) -> Union[float, np.ndarray]:
         """Returns the system unreliability for time/s x.
 
         Parameters
@@ -272,8 +297,9 @@ class NonRepairableRBD(RBD):
 
         Returns
         -------
-        np.ndarray
-            Unreliability values for all nodes at all times x
+        float or np.ndarray
+            The system unreliability: a float for scalar ``x``, an array for
+            array ``x``.
         """
         return 1 - self.sf(x, *args, **kwargs)
 
@@ -410,25 +436,23 @@ class NonRepairableRBD(RBD):
         )
 
     @check_x
-    def sf_by_node(
+    def node_sf(
         self, x: Optional[ArrayLike] = None, *args, **kwargs
-    ) -> Dict[Any, np.ndarray]:
-
-        # The return dict
+    ) -> Dict[Any, Union[float, np.ndarray]]:
+        """Returns each node's reliability at time/s x (a dict keyed by node
+        name). Floats for scalar ``x``, arrays for array ``x``."""
         node_sf: Dict[Any, np.ndarray] = {}
-
-        # Cache the component reliabilities for efficiency
         for node_name, node in self.reliabilities.items():
             node_sf[node_name] = node.sf(x)
         return node_sf
 
     @check_x
-    def ff_by_node(
+    def node_ff(
         self, x: Optional[ArrayLike] = None, *args, **kwargs
-    ) -> Dict[Any, np.ndarray]:
+    ) -> Dict[Any, Union[float, np.ndarray]]:
+        """Returns each node's unreliability at time/s x (a dict keyed by node
+        name). Floats for scalar ``x``, arrays for array ``x``."""
         node_ff: Dict[Any, np.ndarray] = {}
-
-        # Cache the component reliabilities for efficiency
         for node_name, node in self.reliabilities.items():
             node_ff[node_name] = node.ff(x)
 
@@ -440,7 +464,10 @@ class NonRepairableRBD(RBD):
         probability, so the system reliability does not vary with time."""
         return self._fixed_probs
 
-    def time_varying_rbd(self):
+    @property
+    def is_time_varying(self) -> bool:
+        """True if any node's reliability varies with time (the complement of
+        :attr:`is_fixed`)."""
         return not self._fixed_probs
 
     # Node model types whose reliability is obtained by Monte-Carlo simulation
@@ -570,73 +597,96 @@ class NonRepairableRBD(RBD):
         """
         return self.mean(mc_samples, seed=seed)
 
-    def node_mttf(self, mc_samples: int = 100_000, seed=None):
-        out: dict = {}
+    def node_mttf(
+        self, mc_samples: int = 100_000, seed=None
+    ) -> dict[Any, float]:
+        """Returns each node's mean time to failure (a dict keyed by node
+        name). Simulation-based node models use ``mc_samples`` Monte-Carlo
+        draws; fixed-probability nodes have no time dimension and return 0."""
+        out: dict[Any, float] = {}
         with numpy_seed(seed):
             for node in self.nodes:
                 model = self.reliabilities[node]
                 if isinstance(
                     model, (StandbyModel, NonRepairableRBD, RepeatedNode)
                 ):
-                    out[node] = model.mean(mc_samples)
+                    out[node] = float(np.atleast_1d(model.mean(mc_samples))[0])
                 elif is_fixed_probability(model):
-                    out[node] = 0
+                    out[node] = 0.0
                 else:
-                    out[node] = model.mean()
+                    out[node] = float(np.atleast_1d(model.mean())[0])
         return out
 
     # Importance measures
     # https://www.ntnu.edu/documents/624876/1277590549/chapt05.pdf/82cd565f-fa2f-43e4-a81a-095d95d39272
     @check_x
     def birnbaum_importance(
-        self, x: Optional[ArrayLike] = None
-    ) -> dict[Any, np.ndarray]:
+        self,
+        x: Optional[ArrayLike] = None,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> dict[Any, Union[float, np.ndarray]]:
         """Returns the Birnbaum measure of importance for all nodes.
 
         Note: Birnbaum's measure of importance assumes all nodes are
-        independent. If the RBD called on has two or more nodes associated
-        with the same component then a UserWarning is raised.
+        independent.
 
         Parameters
         ----------
         x : ArrayLike
             Time/s as a number or iterable
+        working_nodes : Collection[Hashable], optional
+            Condition on these nodes being perfectly reliable, by default None
+        broken_nodes : Collection[Hashable], optional
+            Condition on these nodes having failed, by default None
 
         Returns
         -------
-        dict[Any, float]
+        dict[Any, float | np.ndarray]
             Dictionary with node names as keys and Birnbaum importances as
-            values
+            values (floats for scalar ``x``, arrays for array ``x``)
         """
-
-        node_probabilities = self.sf_by_node(x)
+        node_probabilities = self._probabilities_with_overrides(
+            self.node_sf(x), working_nodes, broken_nodes
+        )
         return super()._birnbaum_importance(node_probabilities)
 
-    # TODO: update all importance measures to allow for component as well
     @check_x
     def improvement_potential(
-        self, x: Optional[ArrayLike] = None
-    ) -> dict[Any, np.ndarray]:
+        self,
+        x: Optional[ArrayLike] = None,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> dict[Any, Union[float, np.ndarray]]:
         """Returns the improvement potential of all nodes.
 
         Parameters
         ----------
         x : ArrayLike
             Time/s as a number or iterable
+        working_nodes : Collection[Hashable], optional
+            Condition on these nodes being perfectly reliable, by default None
+        broken_nodes : Collection[Hashable], optional
+            Condition on these nodes having failed, by default None
 
         Returns
         -------
-        dict[Any, float]
+        dict[Any, float | np.ndarray]
             Dictionary with node names as keys and improvement potentials as
-            values
+            values (floats for scalar ``x``, arrays for array ``x``)
         """
-        node_probabilities = self.sf_by_node(x)
+        node_probabilities = self._probabilities_with_overrides(
+            self.node_sf(x), working_nodes, broken_nodes
+        )
         return super()._improvement_potential(node_probabilities)
 
     @check_x
     def risk_achievement_worth(
-        self, x: Optional[ArrayLike] = None
-    ) -> dict[Any, np.ndarray]:
+        self,
+        x: Optional[ArrayLike] = None,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> dict[Any, Union[float, np.ndarray]]:
         """Returns the RAW importance per Modarres & Kaminskiy. That is RAW_i =
         (unreliability of system given i failed) /
         (nominal system unreliability).
@@ -645,19 +695,29 @@ class NonRepairableRBD(RBD):
         ----------
         x : ArrayLike
             Time/s as a number or iterable
+        working_nodes : Collection[Hashable], optional
+            Condition on these nodes being perfectly reliable, by default None
+        broken_nodes : Collection[Hashable], optional
+            Condition on these nodes having failed, by default None
 
         Returns
         -------
-        dict[Any, float]
+        dict[Any, float | np.ndarray]
             Dictionary with node names as keys and RAW importances as values
+            (floats for scalar ``x``, arrays for array ``x``)
         """
-        node_probabilities = self.sf_by_node(x)
+        node_probabilities = self._probabilities_with_overrides(
+            self.node_sf(x), working_nodes, broken_nodes
+        )
         return super()._risk_achievement_worth(node_probabilities)
 
     @check_x
     def risk_reduction_worth(
-        self, x: Optional[ArrayLike] = None
-    ) -> dict[Any, np.ndarray]:
+        self,
+        x: Optional[ArrayLike] = None,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> dict[Any, Union[float, np.ndarray]]:
         """Returns the RRW importance per Modarres & Kaminskiy. That is RRW_i =
         (nominal unreliability of system) /
         (unreliability of system given i is working).
@@ -666,40 +726,60 @@ class NonRepairableRBD(RBD):
         ----------
         x : ArrayLike
             Time/s as a number or iterable
+        working_nodes : Collection[Hashable], optional
+            Condition on these nodes being perfectly reliable, by default None
+        broken_nodes : Collection[Hashable], optional
+            Condition on these nodes having failed, by default None
 
         Returns
         -------
-        dict[Any, float]
+        dict[Any, float | np.ndarray]
             Dictionary with node names as keys and RRW importances as values
+            (floats for scalar ``x``, arrays for array ``x``)
         """
-        node_probabilities = self.sf_by_node(x)
+        node_probabilities = self._probabilities_with_overrides(
+            self.node_sf(x), working_nodes, broken_nodes
+        )
         return super()._risk_reduction_worth(node_probabilities)
 
     @check_x
     def criticality_importance(
-        self, x: Optional[ArrayLike] = None
-    ) -> dict[Any, np.ndarray]:
+        self,
+        x: Optional[ArrayLike] = None,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> dict[Any, Union[float, np.ndarray]]:
         """Returns the criticality importance of all nodes at time/s x.
 
         Parameters
         ----------
-        x : int | float | Iterable[int  |  float]
+        x : ArrayLike
             Time/s as a number or iterable
+        working_nodes : Collection[Hashable], optional
+            Condition on these nodes being perfectly reliable, by default None
+        broken_nodes : Collection[Hashable], optional
+            Condition on these nodes having failed, by default None
 
         Returns
         -------
-        dict[Any, float]
+        dict[Any, float | np.ndarray]
             Dictionary with node names as keys and criticality importances as
-            values
+            values (floats for scalar ``x``, arrays for array ``x``)
         """
-        node_probabilities = self.sf_by_node(x)
+        node_probabilities = self._probabilities_with_overrides(
+            self.node_sf(x), working_nodes, broken_nodes
+        )
         return super()._criticality_importance(node_probabilities)
 
     @check_x
     def fussell_vesely(
-        self, x: Optional[ArrayLike] = None, fv_type: str = "c"
-    ) -> dict[Any, np.ndarray]:
-        """Calculate Fussell-Vesely importance of all components at time/s x.
+        self,
+        x: Optional[ArrayLike] = None,
+        fv_type: str = "c",
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> dict[Any, Union[float, np.ndarray]]:
+        """Calculate Fussell-Vesely importance of all nodes at time/s x.
 
         Briefly, the Fussell-Vesely importance measure for node i =
         (sum of probabilities of cut-sets including node i occuring/failing) /
@@ -720,29 +800,33 @@ class NonRepairableRBD(RBD):
         fv_type : str, optional
             Dictates the method of calculation, 'c' = cut-set and
             'p' = path-set, by default "c"
+        working_nodes : Collection[Hashable], optional
+            Condition on these nodes being perfectly reliable, by default None
+        broken_nodes : Collection[Hashable], optional
+            Condition on these nodes having failed, by default None
 
         Returns
         -------
-        dict[Any, np.ndarray]
+        dict[Any, float | np.ndarray]
             Dictionary with node names as keys and Fussell-Vesely importances
-            as values
+            as values (floats for scalar ``x``, arrays for array ``x``)
 
         Raises
         ------
         ValueError
             If ``fv_type`` is not 'c' (cut-set) or 'p' (path-set).
         """
-
-        # Cache the component reliabilities for efficiency
         rel_dict = {}
         for node_name, node in self.reliabilities.items():
             rel_dict[node_name] = node.sf(x)
-
+        rel_dict = self._probabilities_with_overrides(
+            rel_dict, working_nodes, broken_nodes
+        )
         return super()._fussell_vesely(rel_dict, fv_type)
 
     def fussel_vesely(
         self, x: Optional[ArrayLike] = None, fv_type: str = "c"
-    ) -> dict[Any, np.ndarray]:
+    ) -> dict[Any, Union[float, np.ndarray]]:
         """Deprecated alias for :meth:`fussell_vesely` (corrected spelling)."""
         warnings.warn(
             "fussel_vesely() is deprecated; use fussell_vesely() "

@@ -11,6 +11,8 @@ with a compatibility test) and gives the call sites intention-revealing names.
 
 from typing import Optional
 
+import numpy as np
+
 # surpyval distribution names whose event probability does not vary with time,
 # i.e. ``sf(t)`` is constant. These behave as fixed per-demand probabilities
 # rather than lifetime distributions.
@@ -40,3 +42,18 @@ def is_fixed_probability(model) -> bool:
 def is_exponential(model) -> bool:
     """True if ``model`` is a surpyval Exponential distribution."""
     return distribution_name(model) == "Exponential"
+
+
+def model_mean(model) -> float:
+    """The model's mean as a plain float.
+
+    Works around surpyval 0.11's ExactEventTime, whose ``mean()`` raises
+    AttributeError (its underlying dist has no ``mean``); for an exact event
+    time the mean is simply its parameter.
+    """
+    try:
+        return float(np.atleast_1d(model.mean())[0])
+    except AttributeError:
+        if distribution_name(model) == "ExactEventTime":
+            return float(np.atleast_1d(model.params)[0])
+        raise

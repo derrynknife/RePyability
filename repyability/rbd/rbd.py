@@ -626,9 +626,32 @@ class RBD:
         self.res = res
         return node_probabilities
 
-    def get_nodes_names(self) -> list[Hashable]:
-        """Simply returns the list component names of the RBD."""
+    def node_names(self) -> list[Hashable]:
+        """Returns the list of (intermediate) node names of the RBD."""
         return list(self.nodes)
+
+    def _probabilities_with_overrides(
+        self,
+        node_probabilities: dict,
+        working_nodes,
+        broken_nodes,
+    ) -> dict:
+        """Returns a copy of ``node_probabilities`` with any forced nodes set
+        to probability 1 (working) or 0 (broken), validating the overrides
+        first. Shared by the importance measures and steady-state metrics."""
+        working_nodes = set() if working_nodes is None else set(working_nodes)
+        broken_nodes = set() if broken_nodes is None else set(broken_nodes)
+        self._validate_node_overrides(working_nodes, broken_nodes)
+        out = dict(node_probabilities)
+        for node in working_nodes:
+            out[node] = np.ones_like(
+                np.atleast_1d(np.asarray(out[node], dtype=float))
+            )
+        for node in broken_nodes:
+            out[node] = np.zeros_like(
+                np.atleast_1d(np.asarray(out[node], dtype=float))
+            )
+        return out
 
     def _validate_node_overrides(self, working_nodes, broken_nodes) -> None:
         """Validate the working/broken node override sets.

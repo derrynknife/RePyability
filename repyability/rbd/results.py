@@ -120,7 +120,13 @@ class Criticalities(_ResultMapping):
 
 @dataclass
 class AvailabilityResult(_ResultMapping):
-    """The result of :meth:`RepairableRBD.availability`.
+    """The result of ``RepairableRBD.availability()``.
+
+    The properties ``mean_up_time``, ``mean_down_time`` and
+    ``failure_frequency`` are simulation *estimates* derived from the fields
+    below; their exact steady-state counterparts are the
+    ``RepairableRBD.mean_up_time()``, ``mean_down_time()`` and
+    ``system_failure_frequency()`` methods.
 
     Attributes
     ----------
@@ -133,13 +139,20 @@ class AvailabilityResult(_ResultMapping):
     time_simulated_to : float
         The ``t_simulation`` the simulations were run to.
     criticalities : Criticalities
-        The importance/criticality measures (see :class:`Criticalities`).
-    components_uptime : dict
-        Total uptime per component summed over all simulations.
-    components_downtime : dict
-        Total downtime per component summed over all simulations.
-        (``components_uptime[c] + components_downtime[c]`` equals
-        ``N * time_simulated_to``.)
+        The importance/criticality measures (see ``Criticalities``).
+    node_uptime : dict
+        Total uptime per node summed over all simulations.
+    node_downtime : dict
+        Total downtime per node summed over all simulations; a node's uptime
+        plus downtime equals ``n_simulations * time_simulated_to``.
+    system_downtime : float
+        Total system downtime summed over all simulations.
+    system_failures : int
+        Number of system failures observed across all simulations.
+    system_restorations : int
+        Number of system restorations observed across all simulations.
+    n_simulations : int
+        The number of simulations run (``N``).
     """
 
     timeline: np.ndarray
@@ -147,5 +160,35 @@ class AvailabilityResult(_ResultMapping):
     system_uptime: float
     time_simulated_to: float
     criticalities: Criticalities
-    components_uptime: Dict[Hashable, float]
-    components_downtime: Dict[Hashable, float]
+    node_uptime: Dict[Hashable, float]
+    node_downtime: Dict[Hashable, float]
+    system_downtime: float
+    system_failures: int
+    system_restorations: int
+    n_simulations: int
+
+    @property
+    def mean_up_time(self) -> float:
+        """Simulation estimate of the Mean Up Time,
+        ``system uptime / system failures``. Infinite if no failure was
+        observed."""
+        if self.system_failures > 0:
+            return self.system_uptime / self.system_failures
+        return float("inf") if self.system_uptime > 0 else 0.0
+
+    @property
+    def mean_down_time(self) -> float:
+        """Simulation estimate of the Mean Down Time,
+        ``system downtime / system restorations``. Infinite if downtime was
+        observed but never restored."""
+        if self.system_restorations > 0:
+            return self.system_downtime / self.system_restorations
+        return float("inf") if self.system_downtime > 0 else 0.0
+
+    @property
+    def failure_frequency(self) -> float:
+        """Simulation estimate of the system failure frequency (failures per
+        unit time), ``system failures / total simulated time``."""
+        return self.system_failures / (
+            self.n_simulations * self.time_simulated_to
+        )

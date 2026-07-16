@@ -48,16 +48,16 @@ def _bridge():
 
 def test_series_working_and_broken_values():
     s = _series()
-    assert s.sf(1)[0] == pytest.approx(0.48)
-    assert s.sf(1, working_nodes=["A"])[0] == pytest.approx(0.6)  # R_B
-    assert s.sf(1, broken_nodes=["A"])[0] == pytest.approx(0.0)
+    assert s.sf(1) == pytest.approx(0.48)
+    assert s.sf(1, working_nodes=["A"]) == pytest.approx(0.6)  # R_B
+    assert s.sf(1, broken_nodes=["A"]) == pytest.approx(0.0)
 
 
 def test_parallel_working_and_broken_values():
     p = _parallel()
-    assert p.sf(1)[0] == pytest.approx(0.92)
-    assert p.sf(1, working_nodes=["A"])[0] == pytest.approx(1.0)
-    assert p.sf(1, broken_nodes=["A"])[0] == pytest.approx(0.6)  # R_B
+    assert p.sf(1) == pytest.approx(0.92)
+    assert p.sf(1, working_nodes=["A"]) == pytest.approx(1.0)
+    assert p.sf(1, broken_nodes=["A"]) == pytest.approx(0.6)  # R_B
 
 
 @pytest.mark.parametrize("method", ["p", "c"])
@@ -227,7 +227,7 @@ def test_availability_broken_component_accounted_as_down():
     result = rbd.availability(
         t_simulation=20.0, N=200, broken_nodes=["A"], seed=1
     )
-    assert result["components_uptime"]["A"] == 0.0
+    assert result["node_uptime"]["A"] == 0.0
 
 
 def test_availability_broken_in_series_keeps_system_down():

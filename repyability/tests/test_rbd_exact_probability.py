@@ -61,8 +61,8 @@ def test_exact_matches_brute_force_bridge():
     rel = {1: 0.9, 2: 0.8, 3: 0.7, 4: 0.85, 5: 0.6}
     rbd = _bridge_rbd(rel)
     expected = _brute_force_reliability(rbd, rel)
-    assert rbd.sf(1, method="p")[0] == pytest.approx(expected)
-    assert rbd.sf(1, method="c")[0] == pytest.approx(expected)
+    assert rbd.sf(1, method="p") == pytest.approx(expected)
+    assert rbd.sf(1, method="c") == pytest.approx(expected)
 
 
 def test_cut_and_path_methods_agree(

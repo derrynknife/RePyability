@@ -45,8 +45,48 @@ foundations (Phases 0 and 1 of the development plan in
 - **Documentation site** (MkDocs + mkdocstrings): overview/quickstart, a user
   guide, and an auto-generated API reference. A CI job builds it with
   `--strict`.
+- **Exact steady-state repairable metrics** on `RepairableRBD` via the
+  Birnbaum/Vesely frequency formula: `system_failure_frequency()`,
+  `mean_up_time()` (MUT), `mean_down_time()` (MDT) and
+  `mean_time_between_failures()` (MTBF), all supporting
+  `working_nodes`/`broken_nodes` conditioning; `NonRepairable` gains
+  `failure_frequency()`. `AvailabilityResult` gains `system_downtime`,
+  `system_failures`, `system_restorations` and `n_simulations` fields plus
+  simulation-estimate properties `mean_up_time`, `mean_down_time` and
+  `failure_frequency` to cross-check against the exact values.
+- Fixed `NonRepairable.mean_availability()` crashing with the default
+  (instant) replacement time — surpyval's `ExactEventTime.mean()` raises
+  `AttributeError`; a workaround computes its mean from its parameter.
 
 ### Changed
+- **API standardised across `RBD`/`NonRepairableRBD`/`RepairableRBD`**
+  (breaking):
+  - **Numpy-style return contract**: scalar time in → `float` out; array in →
+    `numpy.ndarray` out. Applies to `sf`/`ff`/`reliability`/`unreliability`/
+    `df`/`hf`/`Hf`/`cs`, the per-node accessors, and the importance measures
+    (dicts of floats for scalar input). Previously everything returned
+    length-1 arrays for scalar input. `mean_availability` and friends return
+    plain `float`.
+  - `x=None` on a time-varying RBD now raises a clear `ValueError` (it
+    previously failed cryptically); fixed-probability RBDs broadcast over an
+    array `x` instead of collapsing it to one value.
+  - **Renames**: `sf_by_node`/`ff_by_node` → `node_sf`/`node_ff`;
+    `get_nodes_names()` → `node_names()`; `time_varying_rbd()` → property
+    `is_time_varying`; `initialize_event_queue(working_components,
+    broken_components)` → `(working_nodes, broken_nodes)`;
+    `AvailabilityResult.components_uptime`/`components_downtime` →
+    `node_uptime`/`node_downtime`.
+  - **Constructor parity**: `RepairableRBD` now accepts `input_node`,
+    `output_node` and `on_infeasible_rbd` like `NonRepairableRBD`, validates
+    its node list, and raises a clear error for graph nodes with no component
+    definition (previously a `KeyError` mid-simulation).
+  - **Importance measures unified**: explicit signatures on both classes,
+    typed returns, and all measures now accept `working_nodes`/`broken_nodes`
+    to condition the analysis. `RepairableRBD` importances return floats
+    (steady state has no time dimension).
+  - The `check_x`/`check_probability` decorators now use `functools.wraps`,
+    so `help()`, IDE hovers and `inspect` see the real names, docstrings and
+    signatures (they previously reported `wrap` with no docstring).
 - **`fussel_vesely` → `fussell_vesely`** (corrected Fussell-Vesely spelling).
   The old name remains as a deprecated alias that emits a `DeprecationWarning`.
 - Reliability-model dispatch no longer branches on surpyval `dist.name` string
