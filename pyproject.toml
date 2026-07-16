@@ -38,10 +38,6 @@ dependencies = [
     "networkx>=3.0",
     "surpyval>=0.11.1,<0.12",
     "tqdm>=4.64",
-    # surpyval (0.11.1) imports joblib at import time but does not declare it
-    # as a dependency, so `import surpyval` fails without it. Pinned here so
-    # the package is installable; ideally fixed upstream in surpyval.
-    "joblib>=1.0",
 ]
 
 [project.optional-dependencies]
@@ -54,6 +50,10 @@ dev = [
     "pytest>=7.0",
     "coverage>=7.0",
     "pre-commit>=3.0",
+    # Testing-only: the suite imports surpyval, which transitively pulls in its
+    # RandomSurvivalForest (and hence joblib). Not a runtime dependency of
+    # RePyability.
+    "joblib>=1.0",
 ]
 docs = [
     "mkdocs-material>=9.0",

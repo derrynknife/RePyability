@@ -16,9 +16,10 @@ foundations (Phases 0 and 1 of the development plan in
   `[project]` table and a `[build-system]`, so the package builds and installs
   from source (`pip install .`) with correct name, version and dependencies.
   Version is sourced from `repyability/_version.py`.
-- **`scipy` and `joblib` dependencies** are now declared (both were required at
-  runtime — `scipy` directly, `joblib` transitively via surpyval — but
-  undeclared).
+- **`scipy` dependency** is now declared (it was used directly but undeclared).
+  `joblib` is declared in the `dev` extra only — it is a testing requirement
+  (the suite imports surpyval's RandomSurvivalForest), not a runtime
+  dependency.
 - **Optional dependency groups**: `.[dev]` (pinned tooling) and `.[docs]`.
 - **Seedable Monte-Carlo.** Simulation entry points accept a `seed=`
   argument (`NonRepairableRBD.random/mean/mean_time_to_failure/node_mttf`,
