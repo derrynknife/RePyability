@@ -19,6 +19,7 @@ from repyability.rbd.repeated_node import RepeatedNode
 from repyability.rbd.repeated_standby_node import RepeatedStandbyNode
 from repyability.rbd.results import (
     AvailabilityResult,
+    ConfidenceInterval,
     Criticalities,
     FailureCriticalityIndex,
     RestorationCriticalityIndex,
@@ -44,6 +45,7 @@ __all__ = [
     "PerfectUnreliability",
     # Result types
     "AvailabilityResult",
+    "ConfidenceInterval",
     "Criticalities",
     "UpDownImportance",
     "FailureCriticalityIndex",

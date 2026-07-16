@@ -16,9 +16,10 @@ False; use ``isinstance(result, Mapping)`` if you need such a check.)
 import dataclasses
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Dict, Hashable
+from typing import Dict, Hashable, Tuple
 
 import numpy as np
+from scipy.stats import norm
 
 
 class _ResultMapping(Mapping):
@@ -42,6 +43,34 @@ class _ResultMapping(Mapping):
 
     def _field_names(self):
         return tuple(f.name for f in dataclasses.fields(self))
+
+
+@dataclass
+class ConfidenceInterval(_ResultMapping):
+    """A Monte-Carlo estimate with its sampling uncertainty.
+
+    Attributes
+    ----------
+    estimate : float
+        The point estimate (the sample mean).
+    lower : float
+        Lower bound of the confidence interval.
+    upper : float
+        Upper bound of the confidence interval.
+    confidence : float
+        The confidence level the bounds correspond to (e.g. 0.95).
+    standard_error : float
+        The standard error of the estimate.
+    n_samples : int
+        The number of Monte-Carlo samples the estimate was computed from.
+    """
+
+    estimate: float
+    lower: float
+    upper: float
+    confidence: float
+    standard_error: float
+    n_samples: int
 
 
 @dataclass
@@ -168,10 +197,60 @@ class AvailabilityResult(_ResultMapping):
     n_simulations: int
 
     @property
+    def availability_se(self) -> np.ndarray:
+        """Pointwise standard error of the availability estimate.
+
+        At each time in ``timeline`` the availability is the proportion of
+        the ``n_simulations`` systems that were up, so its sampling standard
+        error is the binomial ``sqrt(A (1 - A) / n)``.
+        """
+        p = np.asarray(self.availability, dtype=float)
+        return np.sqrt(p * (1.0 - p) / self.n_simulations)
+
+    def availability_interval(
+        self, confidence: float = 0.95
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Pointwise confidence band for the availability curve.
+
+        Uses the Wilson score interval for a binomial proportion, which
+        remains well-behaved when the estimated availability is at or near 0
+        or 1 (where the plain normal interval collapses to zero width).
+
+        Parameters
+        ----------
+        confidence : float, optional
+            The confidence level, by default 0.95.
+
+        Returns
+        -------
+        (numpy.ndarray, numpy.ndarray)
+            The lower and upper bounds at each time in ``timeline``.
+        """
+        if not 0.0 < confidence < 1.0:
+            raise ValueError("confidence must be between 0 and 1.")
+        z = float(norm.ppf(0.5 + confidence / 2.0))
+        p = np.asarray(self.availability, dtype=float)
+        n = self.n_simulations
+        denominator = 1.0 + z**2 / n
+        centre = (p + z**2 / (2.0 * n)) / denominator
+        half_width = (z / denominator) * np.sqrt(
+            p * (1.0 - p) / n + z**2 / (4.0 * n**2)
+        )
+        lower = np.clip(centre - half_width, 0.0, 1.0)
+        upper = np.clip(centre + half_width, 0.0, 1.0)
+        return lower, upper
+
+    @property
     def mean_up_time(self) -> float:
         """Simulation estimate of the Mean Up Time,
         ``system uptime / system failures``. Infinite if no failure was
-        observed."""
+        observed.
+
+        Note: estimated from a finite window, so each simulation's final
+        (unfinished) up period is censored; for windows that are short
+        relative to the up-down cycle this biases the estimate. Prefer the
+        exact ``RepairableRBD.mean_up_time()`` for steady-state values.
+        """
         if self.system_failures > 0:
             return self.system_uptime / self.system_failures
         return float("inf") if self.system_uptime > 0 else 0.0
@@ -180,7 +259,12 @@ class AvailabilityResult(_ResultMapping):
     def mean_down_time(self) -> float:
         """Simulation estimate of the Mean Down Time,
         ``system downtime / system restorations``. Infinite if downtime was
-        observed but never restored."""
+        observed but never restored.
+
+        Note: estimated from a finite window (final unfinished down periods
+        are censored), so short windows bias the estimate. Prefer the exact
+        ``RepairableRBD.mean_down_time()`` for steady-state values.
+        """
         if self.system_restorations > 0:
             return self.system_downtime / self.system_restorations
         return float("inf") if self.system_downtime > 0 else 0.0

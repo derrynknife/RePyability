@@ -33,6 +33,8 @@ the top-level `repyability` package).
 
 ::: repyability.AvailabilityResult
 
+::: repyability.ConfidenceInterval
+
 ::: repyability.Criticalities
 
 ::: repyability.UpDownImportance

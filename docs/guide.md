@@ -139,6 +139,33 @@ for conditional analyses. The simulated `AvailabilityResult` carries matching
 *estimates* (`result.mean_up_time`, `result.mean_down_time`,
 `result.failure_frequency`) you can cross-check against the exact values.
 
+### Simulation uncertainty
+
+Monte-Carlo results are estimates, and the result objects quantify their
+sampling error:
+
+```python
+result = rbd.availability(t_simulation=100.0, N=10_000, seed=0)
+
+result.availability_se                    # pointwise standard error
+lower, upper = result.availability_interval(confidence=0.95)   # Wilson band
+```
+
+`lower`/`upper` align with `result.timeline`, so a consumer can render the
+availability curve with its confidence band. For MTTF:
+
+```python
+interval = nonrepairable_rbd.mean_time_to_failure_interval(
+    mc_samples=100_000, confidence=0.95, seed=0
+)
+interval.estimate, interval.lower, interval.upper, interval.standard_error
+```
+
+The simulator itself is validated against exact Markov solutions: the
+transient availability of exponential systems (single component, series,
+parallel) is held to the closed-form curve within sampling error in the test
+suite.
+
 ### The availability result
 
 `availability()` returns a typed

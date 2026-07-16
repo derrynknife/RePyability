@@ -9,6 +9,7 @@ from typing import Any, Collection, Dict, Hashable, Iterable, Optional, Union
 import networkx as nx
 import numpy as np
 from numpy.typing import ArrayLike
+from scipy.stats import norm
 from surpyval import NonParametric
 
 from repyability.utils.wrappers import conditional_survival, numpy_seed
@@ -18,6 +19,7 @@ from .helper_classes import PerfectReliability, PerfectUnreliability
 from .rbd import RBD
 from .repeated_node import RepeatedNode
 from .repeated_standby_node import RepeatedStandbyNode
+from .results import ConfidenceInterval
 from .standby_node import StandbyModel
 
 
@@ -596,6 +598,49 @@ class NonRepairableRBD(RBD):
         User friendly way to get MTTF
         """
         return self.mean(mc_samples, seed=seed)
+
+    def mean_time_to_failure_interval(
+        self,
+        mc_samples: int = 100_000,
+        confidence: float = 0.95,
+        seed=None,
+    ) -> ConfidenceInterval:
+        """Returns the Monte-Carlo MTTF estimate with its sampling
+        uncertainty.
+
+        The MTTF is the mean of ``mc_samples`` simulated system lifetimes; by
+        the central limit theorem its sampling error is normal with standard
+        error ``sample std / sqrt(mc_samples)``, from which the confidence
+        interval is built.
+
+        Parameters
+        ----------
+        mc_samples : int, optional
+            Number of Monte-Carlo samples, by default 100_000.
+        confidence : float, optional
+            The confidence level, by default 0.95.
+        seed : int or None, optional
+            Seed for reproducibility (see :meth:`random`).
+
+        Returns
+        -------
+        ConfidenceInterval
+            The estimate, bounds, standard error and sample count.
+        """
+        if not 0.0 < confidence < 1.0:
+            raise ValueError("confidence must be between 0 and 1.")
+        samples = self.random(mc_samples, seed=seed)
+        estimate = float(samples.mean())
+        standard_error = float(samples.std(ddof=1) / np.sqrt(len(samples)))
+        z = float(norm.ppf(0.5 + confidence / 2.0))
+        return ConfidenceInterval(
+            estimate=estimate,
+            lower=max(0.0, estimate - z * standard_error),
+            upper=estimate + z * standard_error,
+            confidence=confidence,
+            standard_error=standard_error,
+            n_samples=mc_samples,
+        )
 
     def node_mttf(
         self, mc_samples: int = 100_000, seed=None

@@ -57,6 +57,16 @@ foundations (Phases 0 and 1 of the development plan in
 - Fixed `NonRepairable.mean_availability()` crashing with the default
   (instant) replacement time — surpyval's `ExactEventTime.mean()` raises
   `AttributeError`; a workaround computes its mean from its parameter.
+- **Simulation uncertainty quantification and validation.**
+  `AvailabilityResult` gains `availability_se` (pointwise standard error) and
+  `availability_interval(confidence)` (pointwise Wilson confidence band);
+  `NonRepairableRBD` gains `mean_time_to_failure_interval()` returning a new
+  `ConfidenceInterval` result type (estimate, bounds, standard error). The
+  simulator's transient availability is now validated in the test suite
+  against exact Markov closed forms (single-component, series and parallel
+  exponential systems) within Monte-Carlo sampling error, and the
+  finite-window censoring bias of the simulation MUT/MDT estimates is
+  documented.
 
 ### Changed
 - **API standardised across `RBD`/`NonRepairableRBD`/`RepairableRBD`**
