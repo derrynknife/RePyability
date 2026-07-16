@@ -13,3 +13,6 @@ htmlcov/
 build/
 dist/
 *.egg-info/
+
+# Docs site build
+site/

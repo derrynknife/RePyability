@@ -6,6 +6,8 @@ edge-case fixes: input validation, repeated-node symmetry, the zero-system-
 failures crash, and broken-component accounting in the simulation.
 """
 
+from collections.abc import Mapping
+
 import numpy as np
 import pytest
 import surpyval as surv
@@ -209,7 +211,7 @@ def test_availability_zero_system_failures_does_not_crash():
     # Every criticality/importance value stays finite (no NaN/inf) even though
     # the system never failed, so denominators like system_downtime are 0.
     def _leaves(obj):
-        if isinstance(obj, dict):
+        if isinstance(obj, Mapping):
             for v in obj.values():
                 yield from _leaves(v)
         else:

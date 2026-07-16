@@ -10,6 +10,13 @@ from tqdm import tqdm
 
 from repyability.non_repairable import NonRepairable
 from repyability.rbd.rbd import RBD
+from repyability.rbd.results import (
+    AvailabilityResult,
+    Criticalities,
+    FailureCriticalityIndex,
+    RestorationCriticalityIndex,
+    UpDownImportance,
+)
 
 
 @dataclass(order=True)
@@ -241,10 +248,10 @@ class RepairableRBD(RBD):
         Parameters
         ----------
         working_nodes : Collection[Hashable], optional
-            Marks these components as perfectly reliable, by default []
+            Marks these components as perfectly reliable, by default None
         broken_nodes : Collection[Hashable], optional
-            Marks these components as perfectly unreliable, by default []
-        using: str, optional
+            Marks these components as perfectly unreliable, by default None
+        method : str, optional
             Input either "c" or "p" for the function to use cut sets or path
             sets respectively. Defaults to path sets.
 
@@ -256,6 +263,8 @@ class RepairableRBD(RBD):
         Raises
         ------
         ValueError
+            If a working/broken node is unknown, is the input/output node, or
+            is in both sets.
         """
         # Good reference on the Availability of a system
         # https://www.diva-portal.org/smash/get/diva2:986067/FULLTEXT01.pdf
@@ -332,7 +341,7 @@ class RepairableRBD(RBD):
         N: int = 10_000,
         verbose: bool = False,
         seed: Optional[int] = None,
-    ) -> dict:
+    ) -> AvailabilityResult:
         """Returns the times, and availability for those times, as numpy
         arrays
 
@@ -523,7 +532,6 @@ class RepairableRBD(RBD):
 
         # Collect Importance/Criticality measures from the simulation
         # reference: https://www.weibull.com/pubs/2004rm_05B_02.pdf
-        criticalities = {}
         # Operational Criticality Index
         oci_down = {
             k: _safe_ratio(v, system_downtime)
@@ -532,10 +540,6 @@ class RepairableRBD(RBD):
         oci_up = {
             k: _safe_ratio(v, system_uptime)
             for k, v in dict(intersection_uptime).items()
-        }
-        criticalities["operational_criticality_index"] = {
-            "up": oci_up,
-            "down": oci_down,
         }
         # Intersection Over Union Importance
         iou_up = {
@@ -546,25 +550,28 @@ class RepairableRBD(RBD):
             k: _safe_ratio(intersection_downtime[k], union_downtime[k])
             for k in dict(intersection_downtime).keys()
         }
-        criticalities["iou"] = {"up": iou_up, "down": iou_down}
         # Failure Criticality Index Importance
         fci_sys = failure_criticality_index_per_system_failures(
             FCI, system_failures
         )
         fci_comp = failure_criticality_index_per_component_failures(FCI)
-        criticalities["failure_criticality_index"] = {
-            "per_system_failure": fci_sys,
-            "per_component_failure": fci_comp,
-        }
         # Restoration Criticality Index Importance
         rci_sys = restoration_criticality_index_by_system(
             RCI, system_restorations
         )
         rci_comp = restoration_criticality_index_by_component(RCI)
-        criticalities["restoration_criticality_index"] = {
-            "by_system": rci_sys,
-            "by_component": rci_comp,
-        }
+        criticalities = Criticalities(
+            operational_criticality_index=UpDownImportance(
+                up=oci_up, down=oci_down
+            ),
+            iou=UpDownImportance(up=iou_up, down=iou_down),
+            failure_criticality_index=FailureCriticalityIndex(
+                per_system_failure=fci_sys, per_component_failure=fci_comp
+            ),
+            restoration_criticality_index=RestorationCriticalityIndex(
+                by_system=rci_sys, by_component=rci_comp
+            ),
+        )
 
         # Now we need to return the system availability from t=0..t_simulation
         # Using numpy arrays for efficiency
@@ -585,15 +592,15 @@ class RepairableRBD(RBD):
         del self.t_simulation
         del self.component_status
 
-        simulation_results = {
-            "timeline": time,
-            "availability": system_availability,
-            "system_uptime": system_uptime,
-            "time_simulated_to": t_simulation,
-            "criticalities": criticalities,
-            "components_uptime": dict(components_uptime),
-            "components_downtime": dict(components_downtime),
-        }
+        simulation_results = AvailabilityResult(
+            timeline=time,
+            availability=system_availability,
+            system_uptime=system_uptime,
+            time_simulated_to=t_simulation,
+            criticalities=criticalities,
+            components_uptime=dict(components_uptime),
+            components_downtime=dict(components_downtime),
+        )
 
         return simulation_results
 

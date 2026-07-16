@@ -17,6 +17,13 @@ from repyability.rbd.rbd import RBD
 from repyability.rbd.repairable_rbd import RepairableRBD
 from repyability.rbd.repeated_node import RepeatedNode
 from repyability.rbd.repeated_standby_node import RepeatedStandbyNode
+from repyability.rbd.results import (
+    AvailabilityResult,
+    Criticalities,
+    FailureCriticalityIndex,
+    RestorationCriticalityIndex,
+    UpDownImportance,
+)
 from repyability.rbd.standby_node import StandbyModel
 from repyability.repairable import Repairable
 
@@ -35,4 +42,10 @@ __all__ = [
     # Helpers
     "PerfectReliability",
     "PerfectUnreliability",
+    # Result types
+    "AvailabilityResult",
+    "Criticalities",
+    "UpDownImportance",
+    "FailureCriticalityIndex",
+    "RestorationCriticalityIndex",
 ]

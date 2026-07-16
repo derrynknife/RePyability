@@ -36,6 +36,15 @@ foundations (Phases 0 and 1 of the development plan in
   coverage `fail_under` gate; a release workflow publishes to PyPI via trusted
   publishing.
 - `CHANGELOG.md`, `CONTRIBUTING.md`, and issue/PR templates.
+- **Typed result objects** for `RepairableRBD.availability()`
+  (`AvailabilityResult`, `Criticalities`, `UpDownImportance`,
+  `FailureCriticalityIndex`, `RestorationCriticalityIndex`), exported from the
+  top-level package. They give documented, IDE-discoverable attribute access
+  (`result.criticalities.iou.up`) while remaining backwards compatible with the
+  old nested-dict API (subscript, `keys`/`items`/`values`, `in`, `dict()`).
+- **Documentation site** (MkDocs + mkdocstrings): overview/quickstart, a user
+  guide, and an auto-generated API reference. A CI job builds it with
+  `--strict`.
 
 ### Changed
 - **`fussel_vesely` → `fussell_vesely`** (corrected Fussell-Vesely spelling).
@@ -49,6 +58,10 @@ foundations (Phases 0 and 1 of the development plan in
   dev pulled surpyval from git HEAD while runtime pinned a release.
 - Coverage now measures the library only (tests omitted) and enforces a
   `fail_under` threshold.
+- `RepairableRBD.availability()` now returns a typed `AvailabilityResult`
+  instead of a plain `dict`. It is a `collections.abc.Mapping` (not a `dict`
+  subclass), so dict-style access is preserved but `isinstance(result, dict)`
+  is now False (use `isinstance(result, Mapping)`).
 - Requires Python >= 3.10.
 
 ### Fixed

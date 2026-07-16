@@ -13,6 +13,17 @@ RePyability can be installed via pip using the PyPI [repository](https://pypi.or
 pip install repyability
 ```
 
+## Documentation
+The documentation (overview, user guide, and full API reference) is built with
+[MkDocs](https://www.mkdocs.org/). To build and serve it locally:
+
+```bash
+pip install -e .[docs]
+mkdocs serve            # then open http://127.0.0.1:8000
+```
+
+The source lives in `docs/` and `mkdocs.yml`; start with `docs/index.md`.
+
 ## Testing
 Run the testing suite by simply executing:
 ```bash
