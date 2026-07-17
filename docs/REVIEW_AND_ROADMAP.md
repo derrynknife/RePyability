@@ -37,6 +37,46 @@ cannot attract contributors.
 
 ---
 
+## 1a. Status — progress since this review
+
+Most of the plan below has shipped on branch
+`claude/package-review-recommendations-2lmh5a`; the authoritative record is
+`CHANGELOG.md`. In brief (all **C/H/M/L findings in §4 are resolved**):
+
+- **Phase 0 (foundation) — done.** PEP 621 packaging (installs as
+  `repyability`), reconciled deps (`scipy` declared; `joblib` moved to the
+  `dev` extra as a test-only requirement), gating CI (black/isort/flake8/mypy
+  + a 3.10–3.12 test matrix + a coverage gate), a PyPI trusted-publishing
+  release workflow, and `CHANGELOG`/`CONTRIBUTING`/issue+PR templates.
+- **Phase 1 (correctness & API) — done, and extended.** Curated public API +
+  `__all__`; seedable Monte-Carlo (save/restore of the global RNG);
+  capability-based surpyval dispatch + a compat test; system `df`/`hf`/`Hf`;
+  Fussell–Vesely rename (deprecated alias). Extended with a full **API
+  standardisation** across the three classes (numpy-style scalar-in/array-in
+  return contract, `functools.wraps` on the `check_x`/`check_probability`
+  decorators, node-vocabulary renames, `RepairableRBD` constructor parity,
+  and `working_nodes`/`broken_nodes` conditioning on every importance
+  measure), plus the **force-node-working/failed bug fixes** (a
+  `ZeroDivisionError` crash, broken-component accounting, and the
+  component-downtime accumulation error).
+- **Phase 2 (docs) — done.** MkDocs-Material + mkdocstrings site (overview,
+  user guide, auto-generated API reference) with a strict-build CI job.
+- **Phase 3 (features) — partly done.** Monte-Carlo hardening (seeds,
+  pointwise standard errors + Wilson confidence bands on availability, an
+  MTTF confidence interval, and transient availability **validated against
+  exact Markov solutions**); exact steady-state repairable metrics
+  (MTBF/MUT/MDT/failure-frequency); inverse-reliability queries
+  (`time_to_reliability`, `bx_life`); typed result objects
+  (`AvailabilityResult` et al.); and **RBD serialisation**
+  (`to_dict`/`from_dict`/`to_json`/`from_json`).
+- **Descoped by project decision** (see `CLAUDE.md`): **visualization** lives
+  in the Reliafy app; **data/distribution fitting** lives in surpyval.
+
+The suite is now **287 tests at ~90% coverage**. The remaining forward work —
+including two flagship threads born out of design discussions — is in §8–§9.
+
+---
+
 ## 2. What the package does today (architecture map)
 
 ```
@@ -161,48 +201,60 @@ Grouped by severity. File references are `path:line`.
 
 ---
 
-## 5. Recommendations for additional features
+## 5. Feature roadmap (what the RBD should have)
 
-Ordered roughly by value-to-effort for the stated audience (students →
-professionals). Items marked ★ are the highest-impact.
+The package is already complete on one axis — **exact binary-state
+reliability + availability + importance**. The gaps below are specific
+capabilities, grouped into tiers by value-to-effort for the engine's role
+(the computational backend behind the Reliafy app; fitting in surpyval; no
+plotting). ✅ = shipped this branch.
 
-1. **★ Visualization.** Draw the RBD (graphviz/networkx layout) and plot
-   `R(t)`, `F(t)`, `h(t)`, and availability curves via an optional matplotlib
-   backend. This is the biggest single usability win for teaching and for
-   communicating results, and it reuses the existing graph and `sf` machinery.
-2. **★ Fault Tree Analysis (FTA).** AND/OR/k-of-n(VOTE) gates, minimal cut sets,
-   top-event probability, and RBD↔FTA conversion. It reuses the existing
-   cut-set and Shannon-decomposition engine and is the natural companion model
-   to RBDs.
-3. **★ Monte-Carlo engine hardening.** Seedable `Generator`, confidence
-   intervals and convergence diagnostics on availability/MTTF, variance
-   reduction, and parallel replications. Turns the simulator from
-   "point estimate" into "estimate ± CI."
-4. **Data → model workflow.** Helpers to fit surpyval distributions from field
-   failure data (CSV/pandas) and drop them straight into RBD nodes — a
-   "from failure data to system reliability" story that showcases the surpyval
-   integration.
-5. **Maintenance & spares optimization (RCM).** Extend the single-component
-   age-replacement model to block replacement, inspection intervals,
-   condition-based policies, and spare-parts stocking — with system-level cost
-   optimization on top of the RBD.
-6. **Redundancy Allocation Problem (RAP).** Given per-component cost/reliability,
-   optimize redundancy to meet a system target — a direct, high-value extension
-   of the existing allocation methods.
-7. **Uncertainty propagation.** Put distributions on node parameters and
-   propagate to system reliability (the array-vectorised `system_probability`
-   already supports Monte-Carlo over parameter draws).
-8. **Common-Cause Failures (CCF).** Beta-factor / MGL models — essential for
-   safety-critical (nuclear, aerospace, process) users.
-9. **Markov / state-space models** for repairable systems with dependencies
-   (shared repair crews, switching failures) beyond what simulation covers
-   analytically.
-10. **Reliability growth** (Crow-AMSAA/NHPP, Duane) and **reliability
-    demonstration test** planning.
-11. **Serialization / interchange.** Save/load an RBD to JSON/YAML; optional
-    import/export with other tools (OpenFTA, etc.).
-12. **Advanced structures:** phased-mission analysis, load-sharing, and
-    degradation/PoF models.
+**Tier 1 — foundational (backend + ergonomics)**
+- ✅ **Serialisation.** `to_dict`/`from_dict`/`to_json`/`from_json` — an RBD
+  round-trips to JSON so Reliafy can save, load, share and version diagrams.
+- ✅ **Inverse reliability / BX-life / design life.**
+  `time_to_reliability(target)`, `bx_life(x)`.
+
+**Tier 2 — canonical RBD capabilities**
+- **Warm & hot standby** — the package has *cold* standby only. Warm (spares
+  age at a reduced rate) is the real gap; hot is parallel.
+- **Load-sharing** — dependent-failure redundancy: survivors carry more load
+  and age faster. See §9 — this is one of the two flagship threads and folds
+  into the condition-based engine via surpyval's AFT models.
+- **Redundancy Allocation Problem (RAP)** — choose integer redundancy under a
+  cost/weight budget to hit a reliability target. Distinct from the existing
+  *reliability*-allocation methods.
+- **Structural importance** (probability-free) and **parameter sensitivity**
+  (d(reliability)/d(Weibull shape/scale)) — round out the importance suite.
+
+**Tier 3 — dependence & structure generalisations (specialist / larger)**
+- **Common-Cause Failures (CCF)** — beta-factor / MGL / alpha-factor. Breaks
+  the independence assumption; essential for safety-critical users.
+- **Phased-mission systems** — the diagram changes per mission phase.
+- **Multi-state / capacity (flow) systems** — degraded/derated states and
+  throughput, not just working/failed.
+- **Undirected network reliability** — s-t reliability on general graphs.
+- **Epistemic uncertainty propagation** — distributions on node *parameters* →
+  system-reliability *bounds* (distinct from the aleatory Monte-Carlo).
+
+**Companion models & scale**
+- **Fault Tree Analysis (FTA)** — AND/OR/VOTE gates, top-event probability,
+  RBD↔FTA conversion; reuses the cut-set / Shannon engine.
+- **BDD/ZBDD engine** for very large systems (only when scale bites).
+- **Maintenance & spares optimisation (RCM)** — block replacement, inspection
+  intervals, condition-based policies, spares stocking (the vestigial
+  `Repairable` class is the seed).
+
+**Flagship threads (detailed in §8–§9)**
+- **★ Condition-based ("digital twin") reliability** — condition each
+  component on its *current life/state* (fed from sensors) → live system
+  reliability, remaining useful life, and state-dependent importances. Mostly
+  composable from existing primitives; the keystone the sensor/Reliafy vision
+  needs, and the substrate load-sharing sits on.
+- **★ Load-sharing via AFT** — dependent redundancy through surpyval's
+  accelerated-failure-time models (cumulative-exposure time-scaling).
+
+_Removed from scope:_ visualization (Reliafy) and data-fitting (surpyval).
 
 ---
 
@@ -212,65 +264,57 @@ The phases are ordered so that each unblocks the next. Phase 0 is a hard
 prerequisite for meaningful adoption; Phases 1–2 make the project contributor-
 and user-ready; Phases 3+ are feature growth.
 
-### Phase 0 — Foundation & hygiene _(prerequisite; ~1–2 weeks)_
-**Goal: the package installs, builds, and enforces its own quality bars.**
-- [ ] Add PEP 621 `[project]` + `[build-system]` to `pyproject.toml`; dynamic
-      version; `dev`/`docs` extras; classifiers; Python `>=3.9`. **(C1)**
-- [ ] Reconcile requirements files; pin dev tools; stop installing surpyval from
-      git HEAD in dev. **(C2)**
-- [ ] Make CI gate on `black --check`, `isort --check`, `flake8`, `mypy`; add a
-      Python version matrix and refresh action versions; add a coverage
-      threshold. **(C3, §4.5)**
-- [ ] Set up a release workflow (tag → build → publish to PyPI via trusted
-      publishing) and add `CHANGELOG.md`, `CONTRIBUTING.md`, PR/issue templates.
-- [ ] Delete the debug `print` and fix the mutable-default and `type ==` issues
-      (fast, low-risk). **(H1, H3, M4)**
+### Phase 0 — Foundation & hygiene — ✅ done
+Packaging, reconciled deps, gating CI + version matrix + coverage gate,
+release workflow, community files, and the quick code cleanups (debug print,
+mutable defaults, `type ==`). **(C1–C3, H1, H3, M4, §4.5)**
 
-### Phase 1 — Correctness & API consistency _(~1–2 weeks)_
-**Goal: no papercuts; a coherent, discoverable public API.**
-- [ ] Curate `__init__.py` / `__all__`; export `NonRepairableRBD` et al. **(M1)**
-- [ ] Add seedable RNG to all simulation entry points. **(H2)**
-- [ ] Resolve the components-vs-nodes masking promise (implement or remove);
-      delete or cover `rbd_args_check.py`. **(H4)**
-- [ ] Replace surpyval string dispatch with capability checks + a compat test;
-      remove cross-instance dunder access. **(H5, H6)**
-- [ ] Scalar-in/scalar-out ergonomics; add system `df`/`hf`/`Hf`. **(M2, M3)**
-- [ ] Fix docstring TODOs and the Fussell–Vesely naming (with deprecation
-      shim). **(L1, L2)**
+### Phase 1 — Correctness & API consistency — ✅ done (and extended)
+Public API/`__all__`, seedable RNG, dead-code removal, capability-based
+dispatch + compat test, `df`/`hf`/`Hf`, Fussell–Vesely rename, docstring
+fixes — plus the full cross-class API standardisation and the
+working/broken-node bug fixes. **(H2, H4–H6, M1–M3, M5, L1–L4)**
 
-### Phase 2 — Documentation & examples _(~2–3 weeks)_
-**Goal: a student can go from install to a solved system in 10 minutes.**
-- [ ] Stand up a docs site (MkDocs-Material or Sphinx) with autodoc/API
-      reference, hosted on GitHub Pages/Read the Docs.
-- [ ] Write a "Getting started" tutorial and a **worked example gallery**
-      (series/parallel, k-of-n, standby, repairable availability, importances)
-      as runnable notebooks — reusing the reference systems already in
-      `conftest.py`.
-- [ ] Expand the README with a quickstart, feature list, and links; add
-      theory/reference notes and citations for each method.
-- [ ] Add doctest-backed examples to key public methods.
+### Phase 2 — Documentation & examples — ✅ done
+MkDocs-Material + mkdocstrings site (overview, guide, API reference), strict
+docs build in CI, README quickstart/links. _(Remaining nice-to-have: a
+hosted GitHub Pages/RTD deploy and doctest-backed examples.)_
 
-### Phase 3 — High-value features _(iterative)_
-- [ ] **Visualization** module (RBD drawing + reliability/availability plots).
-      ★ Do this first — it also makes the docs gallery far better.
-- [ ] **Monte-Carlo hardening** (CIs, convergence, parallelism).
-- [ ] **Data→model** helpers (fit from failure data → RBD nodes).
+### Phase 3 — High-value features — ◑ partly done
+- [x] **Monte-Carlo hardening** — seeds, standard errors + Wilson bands, MTTF
+      CI, transient availability validated against exact Markov solutions.
+- [x] **Serialisation** and **inverse-reliability** (moved up from later tiers).
+- [ ] Convergence diagnostics / variance reduction / parallel replications
+      (the remaining MC-hardening tail).
 
-### Phase 4 — New analysis capabilities _(iterative)_
+### Phase 4 — Condition-based reliability & the dependent-failure engine _(next; see §8–§9)_
+The keystone sequence — each step reuses the last:
+- [ ] **Condition-based ("digital twin") evaluation layer** — a per-node
+      `state` (age/exposure, alive/failed, optional current load) feeding
+      `sf_given_state`, `remaining_life` (RUL), and `importances_given_state`.
+      Reuses `conditional_survival` + `system_probability` + the
+      `time_to_reliability` root-find. **(§8)**
+- [ ] **AFT exposure model** — carry a surpyval AFT model on a node; effective
+      age = accumulated exposure, current load → acceleration `φ(load)`. **(§9)**
+- [ ] **Load-sharing node** — the self-loading special case (load = `L /
+      survivors`), exact for identical-exponential, MC+KM otherwise. **(§9)**
+
+### Phase 5 — New analysis capabilities _(iterative)_
 - [ ] **Fault Tree Analysis** with RBD↔FTA conversion.
-- [ ] **Redundancy Allocation** optimization.
-- [ ] **Uncertainty propagation** over node parameters.
+- [ ] **Redundancy Allocation Problem (RAP)**.
+- [ ] **Warm standby**; **structural importance** & **parameter sensitivity**.
+- [ ] **Epistemic uncertainty propagation** over node parameters.
 
-### Phase 5 — Advanced / specialist _(as demand warrants)_
-- [ ] Common-cause failures; Markov/state-space; reliability growth &
-      demonstration testing; phased-mission / load-sharing / degradation.
+### Phase 6 — Advanced / specialist _(as demand warrants)_
+- [ ] Common-cause failures; phased-mission; multi-state/capacity; network
+      reliability; Markov/state-space; reliability growth & demonstration
+      testing; maintenance/spares optimisation; BDD engine for scale.
 
 ---
 
-## 7. Suggested first PRs (quick wins, ≤ a day each)
+## 7. Suggested first PRs (quick wins) — ✅ all shipped
 
-These are low-risk, high-signal changes that immediately improve the project
-and can land before the larger phases:
+These low-risk, high-signal changes have all landed on this branch:
 
 1. **Packaging PR** — add `[project]`/`[build-system]`; makes `pip install .`
    real. _(C1)_
@@ -285,6 +329,118 @@ and can land before the larger phases:
 
 ---
 
-_Review notes: 202/202 tests pass (Py 3.11, numpy 2.x, surpyval 0.11.1); line
-coverage 91% (`repairable.py` and `rbd_args_check.py` at 0%). Findings reference
-current `master` at the time of review._
+## 8. Flagship thread: condition-based ("digital twin") reliability
+
+**Vision.** A user inputs the *current life/state* of each component — ideally
+streamed from sensors — and gets the system's reliability **given the current
+state**, updating as the state (and loading) changes. This is the
+condition-based / prognostics layer, and it is the single highest-leverage
+capability for the sensor + Reliafy story.
+
+**It is mostly already in the engine.** Condition each component on its own
+current life `Xᵢ` and propagate through the exact system engine:
+
+```
+Rᵢ(x | Xᵢ) = Rᵢ(Xᵢ + x) / Rᵢ(Xᵢ)        # per-component conditional survival
+R_sys(x | {Xᵢ}) = Φ( {Rᵢ(x | Xᵢ)} )      # feed into system_probability()
+```
+
+Failed → 0 (`broken_nodes`), as-new → `Xᵢ = 0`, aged → its (lower) conditional
+curve. This is the **heterogeneous generalisation of the existing `cs`**: `cs`
+conditions on *system* survival to a single age (marginalising over which
+components are alive); this conditions on the **known state of every
+component**, which is what telemetry gives you and is far more informative. A
+proof-of-concept composed from existing primitives (`conditional_survival` +
+`system_probability` + the `time_to_reliability` root-find) already produces
+correct conditional reliability and RUL that collapse appropriately as
+redundancy is worn down.
+
+**Outputs it unlocks (same machinery):**
+- **Live forward reliability** given the current fleet state.
+- **Remaining Useful Life (RUL)** — `time_to_reliability` on the *conditional*
+  curve: "how long until the system drops below its target, given where every
+  part is right now."
+- **State-dependent importances** — Birnbaum/criticality re-evaluated at the
+  current state: *which component is the weak link right now?* — a live
+  maintenance-priority signal, not a design-time average.
+
+**Streaming shape.** Structure is static (persist once — this is what the new
+serialisation is for); state is streamed (per-component age + load per update).
+Each update is a cheap, *exact* re-evaluation (sub-millisecond for realistic
+systems): hold the RBD, push component states, read `{reliability, RUL,
+criticality}`, Reliafy renders. A live reliability digital twin.
+
+**Proposed surface.** A per-node `state` (age/exposure, alive/failed, optional
+current load) plus `sf_given_state(x, state)`, `remaining_life(target, state)`,
+and `importances_given_state(state)`.
+
+**Scope note.** Clean for ordinary distribution components (repeated components
+share one state — they are one physical unit). Dynamic nodes (standby) carry
+internal sequence-state that is messier to condition; scope v1 to ordinary
+components.
+
+---
+
+## 9. Flagship thread: load-sharing via AFT (and the unification)
+
+**What it is.** *n* active units split a total load; when one fails the
+survivors carry more and **age faster** (dependent failure). Works while ≥ `k`
+survive. Distinct from parallel (independent) and cold standby (sequential).
+
+**Architecture.** It must be a **single dynamic node** (the coupled group
+cannot be *n* independent RBD nodes, which the exact engine assumes) — exactly
+the pattern `StandbyModel` already uses. So it is a new node model
+(`LoadSharingModel`), not a change to the structural engine.
+
+**Each unit carries a surpyval AFT model.** surpyval's accelerated-failure-time
+model computes `H(x | Z) = H₀(φ(Z)·x)` — literally the Nelson cumulative-
+exposure / time-scale model, which is *exactly* what load-sharing needs. So the
+acceleration is fit from data (not an ad-hoc knob), any life-stress law
+(power/Arrhenius/Eyring/…) is supported, and `φ(Z)` is a direct call
+(`model.phi(Z, *phi_params)`). This handles a survivor's load jumping mid-life
+correctly for any baseline distribution — the subtlety a naive implementation
+gets wrong.
+
+**Engine (exact cumulative exposure), reusing the standby three-way split:**
+
+```
+draw baseline threshold  τ_i = M_i.dist.qf(U_i)        # baseline life, φ = 1
+e_i = 0; t = 0; survivors = all n
+while len(survivors) >= k:
+    Z   = per-unit load for this survivor count         # e.g. L / j
+    φ_i = M_i.phi(Z)                                     # direct call
+    dt  = min_i (τ_i − e_i) / φ_i;   t += dt             # real time to next failure
+    e_i += φ_i · dt   for survivors;   drop the failer   # load redistributes
+system lifetime = t                                     # at the (n−k+1)-th failure
+```
+
+Exact closed form for identical-exponential baselines (each phase is
+`Exp(j·λ₀·φ_j)` → hypoexponential, generalising the Erlang cold-standby
+result with `φ ≡ 1`); Monte-Carlo + Kaplan-Meier otherwise.
+
+**The unification — build §8 first.** "Current life" is really *accumulated
+exposure*, and current load sets the go-forward `φ`. With an AFT node,
+`R(x | eᵢ, load ℓᵢ) = R₀(eᵢ + φ(ℓᵢ)·x) / R₀(eᵢ)` — the *same* conditional-
+survival formula as §8. So condition-based reliability and load-sharing are
+**one engine**, differing only in where the load comes from: **fed from
+sensors** (digital twin) vs. **computed from the group's survivors** (load-
+sharing). Building the §8 conditional-state layer first makes load-sharing the
+self-loading special case.
+
+**Open decisions.**
+1. Load→covariate mapping — default "covariate = per-unit load", user supplies
+   total load `L` (so `Z_j = L/j`) and, if needed, a `load → Z` transform.
+2. AFT serialisation — reconstruct a fitted AFT as `(baseline dist, life-stress
+   model, params)`; verify surpyval's reconstruction API before committing.
+3. Scope: non-repairable first; equal load share; one shared or per-unit AFT.
+
+_(surpyval also has Cox PH — the hazard-scaling sibling, cumulative-hazard
+clock — available if stress should bend the hazard shape rather than rescale
+time. AFT is the right lead for load-sharing.)_
+
+---
+
+_Review notes (original): 202/202 tests pass (Py 3.11, numpy 2.x,
+surpyval 0.11.1); line coverage 91%. Findings in §4 reference `master` at the
+time of the initial review and are now resolved (§1a). Current state: 287 tests,
+~90% coverage._
