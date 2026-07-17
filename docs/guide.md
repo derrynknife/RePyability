@@ -59,6 +59,21 @@ rbd.mean_time_to_failure(seed=0)
 rbd.node_mttf(seed=0)     # per-node MTTF
 ```
 
+### Inverse reliability (BX life, design life)
+
+To go the other way — from a target reliability to a time — invert the
+survival function:
+
+```python
+rbd.time_to_reliability(0.9)   # time at which R(t) drops to 0.9
+rbd.bx_life(10)                # B10 life: time by which 10% have failed
+```
+
+`bx_life(x)` is `time_to_reliability(1 - x/100)`. Both accept the same
+`working_nodes`/`broken_nodes`/`method` arguments as `sf`, and raise if the
+target reliability is never reached or the RBD is fixed-probability (constant
+in time).
+
 ## Forcing nodes working or failed
 
 `sf`/`ff`/`reliability`/`unreliability`/`cs` accept `working_nodes` and

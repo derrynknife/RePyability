@@ -45,6 +45,10 @@ foundations (Phases 0 and 1 of the development plan in
 - **Documentation site** (MkDocs + mkdocstrings): overview/quickstart, a user
   guide, and an auto-generated API reference. A CI job builds it with
   `--strict`.
+- **Inverse-reliability queries** on `NonRepairableRBD`:
+  `time_to_reliability(target)` (solves ``R(t) = target``) and `bx_life(x)`
+  (the B\ :sub:`X` life, e.g. `bx_life(10)` is the B10 life). Both accept the
+  usual `working_nodes`/`broken_nodes`/`method` arguments.
 - **Exact steady-state repairable metrics** on `RepairableRBD` via the
   Birnbaum/Vesely frequency formula: `system_failure_frequency()`,
   `mean_up_time()` (MUT), `mean_down_time()` (MDT) and

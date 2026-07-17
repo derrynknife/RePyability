@@ -9,6 +9,7 @@ from typing import Any, Collection, Dict, Hashable, Iterable, Optional, Union
 import networkx as nx
 import numpy as np
 from numpy.typing import ArrayLike
+from scipy.optimize import brentq
 from scipy.stats import norm
 from surpyval import NonParametric
 
@@ -641,6 +642,90 @@ class NonRepairableRBD(RBD):
             standard_error=standard_error,
             n_samples=mc_samples,
         )
+
+    def time_to_reliability(
+        self,
+        target: float,
+        upper_bound: Optional[float] = None,
+        **kwargs,
+    ) -> float:
+        """Returns the time at which system reliability equals ``target``.
+
+        Solves ``R(t) = target`` for ``t`` (the inverse of :meth:`sf`). System
+        reliability is monotonically non-increasing in time, so the solution
+        is unique.
+
+        Parameters
+        ----------
+        target : float
+            The reliability level to solve for, in (0, 1).
+        upper_bound : float, optional
+            An upper bound for the search; found automatically (by doubling)
+            if None.
+        **kwargs :
+            Any sf() arguments (e.g. working_nodes, broken_nodes, method).
+
+        Returns
+        -------
+        float
+            The time at which ``R(t) == target``.
+
+        Raises
+        ------
+        ValueError
+            If ``target`` is not in (0, 1), if the RBD is fixed-probability
+            (reliability is constant in time), or if ``target`` exceeds the
+            system reliability at ``t = 0`` (so it is never reached).
+        """
+        if not 0.0 < target < 1.0:
+            raise ValueError("target reliability must be in (0, 1).")
+        if self.is_fixed:
+            raise ValueError(
+                "System reliability does not vary with time (all nodes are "
+                "fixed-probability); time_to_reliability is undefined."
+            )
+
+        r0 = float(self.sf(0.0, **kwargs))
+        if target > r0:
+            raise ValueError(
+                f"target reliability {target} exceeds the system reliability "
+                f"at t=0 ({r0:.6g}); it is never reached."
+            )
+
+        def f(t):
+            return float(self.sf(t, **kwargs)) - target
+
+        hi = upper_bound
+        if hi is None:
+            hi = 1.0
+            for _ in range(1000):
+                if f(hi) < 0.0:
+                    break
+                hi *= 2.0
+            else:
+                raise ValueError(
+                    "Could not bracket the target reliability; pass an "
+                    "explicit upper_bound."
+                )
+        return float(brentq(f, 0.0, hi))
+
+    def bx_life(self, x: float, **kwargs) -> float:
+        """Returns the B\\ :sub:`X` life: the time by which ``x`` percent of
+        systems have failed, i.e. the time at which ``R(t) = 1 - x/100``.
+
+        For example ``bx_life(10)`` is the B10 life (10% failed / 90%
+        reliability).
+
+        Parameters
+        ----------
+        x : float
+            The percentage failed, in (0, 100).
+        **kwargs :
+            Any sf() arguments (e.g. working_nodes, broken_nodes, method).
+        """
+        if not 0.0 < x < 100.0:
+            raise ValueError("x must be a percentage in (0, 100).")
+        return self.time_to_reliability(1.0 - x / 100.0, **kwargs)
 
     def node_mttf(
         self, mc_samples: int = 100_000, seed=None
