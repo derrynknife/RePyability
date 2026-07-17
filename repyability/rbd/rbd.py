@@ -630,6 +630,46 @@ class RBD:
         """Returns the list of (intermediate) node names of the RBD."""
         return list(self.nodes)
 
+    # -- Serialisation -----------------------------------------------------
+
+    def to_dict(self) -> dict:
+        """Serialise the RBD to a JSON-friendly dict (round-trips via
+        :meth:`from_dict`). Node models are serialised structurally; fitted
+        non-parametric models are not supported."""
+        from repyability.rbd.serialisation import rbd_to_dict
+
+        return rbd_to_dict(self)
+
+    def to_json(self, **json_kwargs) -> str:
+        """Serialise the RBD to a JSON string (kwargs pass through to
+        ``json.dumps``)."""
+        from repyability.rbd.serialisation import rbd_to_json
+
+        return rbd_to_json(self, **json_kwargs)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "RBD":
+        """Reconstruct an RBD from :meth:`to_dict` output.
+
+        Called on a specific subclass, the document's ``type`` must match;
+        called on ``RBD`` it dispatches to whichever type the document names.
+        """
+        from repyability.rbd.serialisation import rbd_from_dict
+
+        if cls is not RBD and cls.__name__ != d.get("type"):
+            raise ValueError(
+                f"{cls.__name__}.from_dict got a {d.get('type')!r} document; "
+                f"use {d.get('type')}.from_dict or RBD.from_dict."
+            )
+        return rbd_from_dict(d)
+
+    @classmethod
+    def from_json(cls, s: str) -> "RBD":
+        """Reconstruct an RBD from a JSON string (see :meth:`from_dict`)."""
+        import json
+
+        return cls.from_dict(json.loads(s))
+
     def _probabilities_with_overrides(
         self,
         node_probabilities: dict,

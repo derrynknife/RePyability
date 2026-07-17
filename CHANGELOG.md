@@ -45,6 +45,15 @@ foundations (Phases 0 and 1 of the development plan in
 - **Documentation site** (MkDocs + mkdocstrings): overview/quickstart, a user
   guide, and an auto-generated API reference. A CI job builds it with
   `--strict`.
+- **Serialisation.** RBDs round-trip to/from a JSON-friendly structure via
+  `to_dict`/`from_dict`/`to_json`/`from_json`, so a diagram can be saved,
+  loaded, shared and version-controlled. The structure (edges, k-out-of-n,
+  repeated nodes, nested RBDs) and node models (surpyval parametric
+  distributions, and the standby/repeated/`NonRepairable` wrappers) are
+  reconstructed faithfully; integer and string node names both survive JSON.
+  `RBD.from_dict`/`from_json` dispatch on the document's declared type. Fitted
+  non-parametric models raise a clear `NotImplementedError` (no reconstruction
+  API upstream).
 - **Inverse-reliability queries** on `NonRepairableRBD`:
   `time_to_reliability(target)` (solves ``R(t) = target``) and `bx_life(x)`
   (the B\ :sub:`X` life, e.g. `bx_life(10)` is the B10 life). Both accept the

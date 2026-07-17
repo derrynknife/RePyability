@@ -159,6 +159,17 @@ class RepairableRBD(RBD):
         output_node: Optional[Any] = None,
         on_infeasible_rbd: str = "raise",
     ):
+        # Capture the constructor inputs verbatim (before any mutation) so the
+        # RBD can be faithfully serialised via to_dict()/to_json().
+        edges = list(edges)
+        self._init_args = {
+            "edges": [tuple(e) for e in edges],
+            "components": dict(components),
+            "k": dict(k) if k else None,
+            "input_node": input_node,
+            "output_node": output_node,
+            "on_infeasible_rbd": on_infeasible_rbd,
+        }
         components = copy(components)
         reliability = {}
         repairability = {}

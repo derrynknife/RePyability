@@ -200,6 +200,36 @@ result.criticalities.failure_criticality_index.per_system_failure
 
 See [`Criticalities`][repyability.Criticalities] for what each measure means.
 
+## Saving and loading
+
+An RBD round-trips to a plain, JSON-friendly structure, so it can be saved,
+loaded, shared, and version controlled:
+
+```python
+data = rbd.to_dict()          # JSON-friendly dict
+text = rbd.to_json(indent=2)  # JSON string (kwargs pass to json.dumps)
+
+clone = NonRepairableRBD.from_dict(data)
+clone = NonRepairableRBD.from_json(text)
+```
+
+The reconstructed RBD is equivalent — same structure (edges, k-out-of-n,
+repeated nodes, nested RBDs) and same reliability/availability. Node models
+are serialised structurally: surpyval parametric distributions as their name
+and parameters, and the standby/repeated/`NonRepairable` wrappers recursively.
+Integer *and* string node names survive JSON (the per-node collections are
+encoded as lists of entries, not string-keyed objects).
+
+`RBD.from_dict`/`from_json` dispatch on the document's type, so
+`RBD.from_dict(data)` returns the right subclass; calling the wrong subclass
+(`RepairableRBD.from_dict(a_non_repairable_document)`) raises.
+
+!!! note
+    Fitted non-parametric models (e.g. a Kaplan-Meier estimate) cannot be
+    serialised — surpyval has no public reconstruction API for them — and
+    raise a clear `NotImplementedError`. Fit in surpyval and pass parametric
+    models in if you need to persist the diagram.
+
 ## Reproducibility
 
 Every Monte-Carlo entry point (`random`, `mean`, `mean_time_to_failure`,
