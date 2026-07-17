@@ -1,3 +1,76 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "repyability"
+dynamic = ["version"]
+description = "Reliability engineering tools for Python"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+authors = [{ name = "derrynknife", email = "derrynknife@gmail.com" }]
+keywords = [
+    "reliability",
+    "reliability-engineering",
+    "reliability-block-diagram",
+    "rbd",
+    "survival-analysis",
+    "availability",
+    "maintainability",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Mathematics",
+]
+dependencies = [
+    "numpy>=2.0,<3",
+    "scipy>=1.7",
+    "networkx>=3.0",
+    "surpyval>=0.11.1,<0.12",
+    "tqdm>=4.64",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black==26.3.1",
+    "isort>=5.12",
+    "flake8>=6.0",
+    "flake8-pyproject>=1.2",
+    "mypy>=1.8",
+    "pytest>=7.0",
+    "coverage>=7.0",
+    "pre-commit>=3.0",
+    # Testing-only: the suite imports surpyval, which transitively pulls in its
+    # RandomSurvivalForest (and hence joblib). Not a runtime dependency of
+    # RePyability.
+    "joblib>=1.0",
+]
+docs = [
+    "mkdocs-material>=9.0",
+    "mkdocstrings[python]>=0.24",
+]
+
+[project.urls]
+Homepage = "https://github.com/derrynknife/RePyability"
+Repository = "https://github.com/derrynknife/RePyability"
+Issues = "https://github.com/derrynknife/RePyability/issues"
+
+[tool.setuptools.dynamic]
+version = { attr = "repyability._version.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["repyability*"]
+
 # For Black pre-commit hook
 [tool.black]
 line-length = 79
@@ -5,9 +78,11 @@ line-length = 79
 # So isort is compatible with black
 [tool.isort]
 profile = "black"
+line_length = 79
 
 # mypy
 [tool.mypy]
+exclude = ['repyability/tests/']
 
 [[tool.mypy.overrides]]
 module = [
@@ -15,16 +90,23 @@ module = [
     'networkx',
     'surpyval.*',
     'tqdm',
+    'numpy',
+    'numpy.*',
 ]
 ignore_missing_imports = true
 
 # Coverage
 [tool.coverage.run]
 source = ["repyability"]
+omit = ["*/tests/*"]
+
+[tool.coverage.report]
+# The library (excluding tests) must stay above this bar.
+fail_under = 80
 
 # Flake8
 [tool.flake8]
-ignore = ['E203', 'W503']
+extend-ignore = ['E203', 'W503']
 per-file-ignores = [
     '*/__init__.py:F401',
 ]

@@ -40,8 +40,16 @@ def _brute_force_reliability(rbd: NonRepairableRBD, rel: dict) -> float:
 def _bridge_rbd(rel: dict) -> NonRepairableRBD:
     # rbd3 topology: a bridge network that is not reducible to series/parallel.
     edges = [
-        (0, 1), (0, 3), (1, 2), (3, 4), (1, 5),
-        (3, 5), (5, 2), (5, 4), (2, 6), (4, 6),
+        (0, 1),
+        (0, 3),
+        (1, 2),
+        (3, 4),
+        (1, 5),
+        (3, 5),
+        (5, 2),
+        (5, 4),
+        (2, 6),
+        (4, 6),
     ]
     reliabilities = {
         n: FixedEventProbability.from_params(1 - r) for n, r in rel.items()
@@ -53,8 +61,8 @@ def test_exact_matches_brute_force_bridge():
     rel = {1: 0.9, 2: 0.8, 3: 0.7, 4: 0.85, 5: 0.6}
     rbd = _bridge_rbd(rel)
     expected = _brute_force_reliability(rbd, rel)
-    assert rbd.sf(1, method="p")[0] == pytest.approx(expected)
-    assert rbd.sf(1, method="c")[0] == pytest.approx(expected)
+    assert rbd.sf(1, method="p") == pytest.approx(expected)
+    assert rbd.sf(1, method="c") == pytest.approx(expected)
 
 
 def test_cut_and_path_methods_agree(

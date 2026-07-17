@@ -4,6 +4,7 @@ from scipy.interpolate import interp1d
 from scipy.optimize import minimize
 from surpyval import ExactEventTime, NonParametric, Parametric
 
+from repyability.rbd._model_utils import distribution_name, model_mean
 from repyability.rbd.standby_node import StandbyModel
 
 FAILURE = 1
@@ -18,16 +19,16 @@ class NonRepairable:
     def __init__(
         self, reliability, time_to_replace=ExactEventTime.from_params(0)
     ):
-        if type(reliability) == Parametric:
+        if isinstance(reliability, Parametric):
             self.model_parameterization = "parametric"
             self.reliability_function = reliability.sf
-        elif type(reliability) == NonParametric:
+        elif isinstance(reliability, NonParametric):
             # TODO: Allow non-interpolated?
             self.model_parameterization = "non-parametric"
             self.reliability_function = interp1d(
                 reliability.x, 1 - reliability.F, fill_value="extrapolate"
             )
-        elif type(reliability) == StandbyModel:
+        elif isinstance(reliability, StandbyModel):
             self.model_parameterization = "non-parametric"
             self.reliability_function = interp1d(
                 reliability.model.x,
@@ -74,17 +75,32 @@ class NonRepairable:
     def _log_cost_rate(self, t):
         return np.log(self._cost_rate(t))
 
-    def mean_unavailability(self):
+    def mean_unavailability(self) -> float:
         return 1 - self.mean_availability()
 
-    def mean_availability(self):
+    def mean_availability(self) -> float:
+        """Long-run availability, MTTF / (MTTF + MTTR)."""
         if isinstance(self.reliability, NonParametric):
             raise ValueError(
                 "Mean Availability requires a parametric reliability model"
             )
-        mttf = self.reliability.mean()
-        mttr = self.time_to_replace.mean()
+        mttf = model_mean(self.reliability)
+        mttr = model_mean(self.time_to_replace)
         return mttf / (mttr + mttf)
+
+    def failure_frequency(self) -> float:
+        """Long-run failure frequency (failures per unit time).
+
+        For an alternating renewal process (fail, repair, fail, ...) this is
+        ``1 / (MTTF + MTTR)`` — one failure per mean up-down cycle.
+        """
+        if isinstance(self.reliability, NonParametric):
+            raise ValueError(
+                "Failure frequency requires a parametric reliability model"
+            )
+        mttf = model_mean(self.reliability)
+        mttr = model_mean(self.time_to_replace)
+        return 1.0 / (mttf + mttr)
 
     def _cost_rate_with_log_x(self, x):
         return self._cost_rate(np.exp(x))
@@ -94,7 +110,7 @@ class NonRepairable:
 
     def find_optimal_replacement(self, options=None):
         if self.model_parameterization == "parametric":
-            if self.reliability.dist.name == "Weibull":
+            if distribution_name(self.reliability) == "Weibull":
                 if self.reliability.offset:
                     pass
                 elif self.reliability.zi:

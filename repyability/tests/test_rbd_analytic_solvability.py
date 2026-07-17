@@ -14,7 +14,6 @@ import surpyval as surv
 from repyability.rbd.non_repairable_rbd import NonRepairableRBD
 from repyability.rbd.repeated_node import RepeatedNode
 
-
 # --- Analytically solvable RBDs --------------------------------------------
 
 

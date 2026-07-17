@@ -527,9 +527,7 @@ class RBD:
         # system unreliability is the probability that at least one minimal
         # cut set has all of its components failed.
         cut_sets = self.get_min_cut_sets(include_in_out_nodes=False)
-        node_unreliability = {
-            k: 1 - v for k, v in node_probabilities.items()
-        }
+        node_unreliability = {k: 1 - v for k, v in node_probabilities.items()}
         system_unreliability = probability_any_set_satisfied(
             cut_sets, node_unreliability, array_shape
         )
@@ -540,9 +538,11 @@ class RBD:
         self,
         target: float,
         node_probabilities: Dict,
-        fixed: list = [],
+        fixed: Optional[list] = None,
         weights=None,
     ):
+        if fixed is None:
+            fixed = []
         node_probabilities = copy(node_probabilities)
 
         for n, v in node_probabilities.items():
@@ -581,7 +581,6 @@ class RBD:
             res["x"].item(),
             weights,
         )
-        print(out)
         out = {**node_probabilities, **out}
         out = {k: v.item() for k, v in out.items()}
         return out
@@ -627,9 +626,108 @@ class RBD:
         self.res = res
         return node_probabilities
 
-    def get_nodes_names(self) -> list[Hashable]:
-        """Simply returns the list component names of the RBD."""
+    def node_names(self) -> list[Hashable]:
+        """Returns the list of (intermediate) node names of the RBD."""
         return list(self.nodes)
+
+    # -- Serialisation -----------------------------------------------------
+
+    def to_dict(self) -> dict:
+        """Serialise the RBD to a JSON-friendly dict (round-trips via
+        :meth:`from_dict`). Node models are serialised structurally; fitted
+        non-parametric models are not supported."""
+        from repyability.rbd.serialisation import rbd_to_dict
+
+        return rbd_to_dict(self)
+
+    def to_json(self, **json_kwargs) -> str:
+        """Serialise the RBD to a JSON string (kwargs pass through to
+        ``json.dumps``)."""
+        from repyability.rbd.serialisation import rbd_to_json
+
+        return rbd_to_json(self, **json_kwargs)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "RBD":
+        """Reconstruct an RBD from :meth:`to_dict` output.
+
+        Called on a specific subclass, the document's ``type`` must match;
+        called on ``RBD`` it dispatches to whichever type the document names.
+        """
+        from repyability.rbd.serialisation import rbd_from_dict
+
+        if cls is not RBD and cls.__name__ != d.get("type"):
+            raise ValueError(
+                f"{cls.__name__}.from_dict got a {d.get('type')!r} document; "
+                f"use {d.get('type')}.from_dict or RBD.from_dict."
+            )
+        return rbd_from_dict(d)
+
+    @classmethod
+    def from_json(cls, s: str) -> "RBD":
+        """Reconstruct an RBD from a JSON string (see :meth:`from_dict`)."""
+        import json
+
+        return cls.from_dict(json.loads(s))
+
+    def _probabilities_with_overrides(
+        self,
+        node_probabilities: dict,
+        working_nodes,
+        broken_nodes,
+    ) -> dict:
+        """Returns a copy of ``node_probabilities`` with any forced nodes set
+        to probability 1 (working) or 0 (broken), validating the overrides
+        first. Shared by the importance measures and steady-state metrics."""
+        working_nodes = set() if working_nodes is None else set(working_nodes)
+        broken_nodes = set() if broken_nodes is None else set(broken_nodes)
+        self._validate_node_overrides(working_nodes, broken_nodes)
+        out = dict(node_probabilities)
+        for node in working_nodes:
+            out[node] = np.ones_like(
+                np.atleast_1d(np.asarray(out[node], dtype=float))
+            )
+        for node in broken_nodes:
+            out[node] = np.zeros_like(
+                np.atleast_1d(np.asarray(out[node], dtype=float))
+            )
+        return out
+
+    def _validate_node_overrides(self, working_nodes, broken_nodes) -> None:
+        """Validate the working/broken node override sets.
+
+        Raises a ValueError on invalid input rather than silently ignoring it:
+        the same node in both sets, the input/output node, or an unknown node
+        name (e.g. a typo, which would otherwise silently have no effect and
+        return a plausible-but-wrong result).
+        """
+        working_nodes = set(working_nodes)
+        broken_nodes = set(broken_nodes)
+
+        both = working_nodes & broken_nodes
+        if both:
+            raise ValueError(
+                f"Node(s) {sorted(both, key=str)} given as both working and "
+                "broken; a node cannot be forced to both states."
+            )
+
+        valid = set(self.nodes)
+        for label, nodes in (
+            ("working_nodes", working_nodes),
+            ("broken_nodes", broken_nodes),
+        ):
+            for node in nodes:
+                if node in self.in_or_out:
+                    which = "input" if node == self.input_node else "output"
+                    raise ValueError(
+                        f"Cannot set the {which} node {node!r} via {label}."
+                    )
+                if node not in valid:
+                    raise ValueError(
+                        f"Unknown node {node!r} given to {label}; it is not "
+                        "an intermediate node of the RBD. Valid nodes are: "
+                        f"{sorted(valid, key=str)}."
+                    )
 
     def _birnbaum_importance(
         self, node_probabilities: dict[Any, ArrayLike]
@@ -781,13 +879,13 @@ class RBD:
             )
         return node_importance
 
-    def _fussel_vesely(
+    def _fussell_vesely(
         self,
         node_probabilities: dict[Any, ArrayLike],
         fv_type: str = "c",
         approx: bool = True,
     ) -> dict[Any, np.ndarray]:
-        """Calculate Fussel-Vesely importance of all components at time/s x.
+        """Calculate Fussell-Vesely importance of all components at time/s x.
 
         Briefly, the Fussel-Vesely importance measure for node i =
         (sum of probabilities of cut-sets including node i occuring/failing) /
@@ -815,15 +913,14 @@ class RBD:
         Returns
         -------
         dict[Any, np.ndarray]
-            Dictionary with node names as keys and fussel-vessely importances
+            Dictionary with node names as keys and Fussell-Vesely importances
             as values
 
         Raises
         ------
         ValueError
-            TODO
-        NotImplementedError
-            TODO
+            If ``fv_type`` is not 'c' (cut-set) or 'p' (path-set), or if the
+            node probability arrays are not all the same length.
         """
         node_probabilities_new: dict[Any, np.ndarray] = {}
         lengths = np.array([], dtype=np.int64)

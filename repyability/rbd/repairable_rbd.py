@@ -1,14 +1,23 @@
+import pprint
+import warnings
 from collections import defaultdict
 from copy import copy
 from dataclasses import dataclass, field
 from queue import PriorityQueue
-from typing import Any, Collection, Hashable, Iterable, List, Tuple
+from typing import Any, Collection, Hashable, Iterable, List, Optional, Tuple
 
 import numpy as np
 from tqdm import tqdm
 
 from repyability.non_repairable import NonRepairable
 from repyability.rbd.rbd import RBD
+from repyability.rbd.results import (
+    AvailabilityResult,
+    Criticalities,
+    FailureCriticalityIndex,
+    RestorationCriticalityIndex,
+    UpDownImportance,
+)
 
 
 @dataclass(order=True)
@@ -67,10 +76,35 @@ def time_at_status(timeline, status):
     return union.sum()
 
 
+def _squeeze_values(d: dict) -> dict:
+    """Convert a dict of 1-element arrays (as produced by the base RBD
+    importance helpers) to a dict of plain floats. Steady-state availability
+    has no time dimension, so the repairable importances return floats."""
+    return {k: float(np.asarray(v).reshape(-1)[0]) for k, v in d.items()}
+
+
+def _safe_ratio(numerator, denominator):
+    """Ratio that is 0 when the denominator is 0.
+
+    Several criticality/importance measures divide by a total (system uptime,
+    downtime, failures, restorations, or a union of intervals) that can
+    legitimately be 0 -- e.g. when a redundant component is forced working so
+    the system never fails, or a component is forced broken. With nothing to
+    attribute, the measure is 0 rather than a NaN/inf (or a crash).
+    """
+    return numerator / denominator if denominator else 0.0
+
+
 def failure_criticality_index_per_system_failures(FCI, system_failures):
     fci = {}
     for node in FCI.keys():
-        fci[node] = FCI[node]["system_failures"] / system_failures
+        if system_failures == 0:
+            # No system failures occurred (e.g. a redundant node was forced
+            # working, or the system was highly reliable over the simulated
+            # window), so no node can be credited with causing one.
+            fci[node] = 0
+        else:
+            fci[node] = FCI[node]["system_failures"] / system_failures
     return fci
 
 
@@ -91,7 +125,12 @@ def failure_criticality_index_per_component_failures(FCI):
 def restoration_criticality_index_by_system(RCI, system_restorations):
     rci = {}
     for node in RCI.keys():
-        rci[node] = RCI[node]["system_restorations"] / system_restorations
+        if system_restorations == 0:
+            # No system restorations occurred, so no node can be credited with
+            # causing one.
+            rci[node] = 0
+        else:
+            rci[node] = RCI[node]["system_restorations"] / system_restorations
     return rci
 
 
@@ -115,8 +154,22 @@ class RepairableRBD(RBD):
         self,
         edges: Iterable[tuple[Hashable, Hashable]],
         components: dict[Any, Any],
-        k: dict[Any, int] = {},
+        k: Optional[dict[Any, int]] = None,
+        input_node: Optional[Any] = None,
+        output_node: Optional[Any] = None,
+        on_infeasible_rbd: str = "raise",
     ):
+        # Capture the constructor inputs verbatim (before any mutation) so the
+        # RBD can be faithfully serialised via to_dict()/to_json().
+        edges = list(edges)
+        self._init_args = {
+            "edges": [tuple(e) for e in edges],
+            "components": dict(components),
+            "k": dict(k) if k else None,
+            "input_node": input_node,
+            "output_node": output_node,
+            "on_infeasible_rbd": on_infeasible_rbd,
+        }
         components = copy(components)
         reliability = {}
         repairability = {}
@@ -134,7 +187,38 @@ class RepairableRBD(RBD):
                 reliability[name] = component.reliability
                 repairability[name] = component.time_to_replace
 
-        super().__init__(edges, k)
+        super().__init__(
+            edges,
+            k,
+            set(components.keys()),
+            input_node,
+            output_node,
+            on_infeasible_rbd,
+        )
+
+        # Every intermediate graph node needs a component definition (the
+        # input/output nodes do not). Surface missing ones now with a clear
+        # error rather than a KeyError mid-simulation.
+        missing = [
+            n
+            for n in self.G.nodes
+            if n not in components and n not in self.in_or_out
+        ]
+        self.structure_check["is_missing_components"] = bool(missing)
+        self.structure_check["nodes_with_no_component"] = missing
+        if missing:
+            self.structure_check["is_valid"] = False
+            if on_infeasible_rbd == "raise":
+                raise ValueError(
+                    f"Node(s) {sorted(missing, key=str)} have no entry in "
+                    "the components dict."
+                )
+            elif on_infeasible_rbd == "warn":
+                warnings.warn(
+                    "Nodes with no component definition: "
+                    + pprint.pformat(missing),
+                    stacklevel=2,
+                )
 
         self.components = components
         self.repairability = copy(repairability)
@@ -142,15 +226,19 @@ class RepairableRBD(RBD):
     def initialize_event_queue(
         self,
         t_simulation,
-        working_components: Collection[Hashable] = [],
-        broken_components: Collection[Hashable] = [],
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        method: str = "p",
     ):
+        working_nodes = set() if working_nodes is None else set(working_nodes)
+        broken_nodes = set() if broken_nodes is None else set(broken_nodes)
+
         # Keep record of component status', initially they're all working
         component_status: dict[Any, bool] = {
             component: True for component in self.components.keys()
         }
 
-        for component in broken_components:
+        for component in broken_nodes:
             component_status[component] = False
 
         # PriorityQueue supplies failure/repair events in chronological
@@ -159,9 +247,9 @@ class RepairableRBD(RBD):
         # For each component add in the initial failure
         for component_id in self.components.keys():
             component = self.components[component_id]
-            if component_id in working_components:
+            if component_id in working_nodes:
                 continue
-            elif component_id in broken_components:
+            elif component_id in broken_nodes:
                 continue
             # If status not known, then continue
             if isinstance(component, RepairableRBD):
@@ -176,7 +264,10 @@ class RepairableRBD(RBD):
                 # Event status is False => event is a component failure
                 event_queue.put(Event(t_event, component_id, event))
         self._event_queue = event_queue
-        self.system_state = True
+        # The initial system state must reflect any forced-broken components
+        # (e.g. a broken component in series starts the system down), rather
+        # than assuming everything is up.
+        self.system_state = self.is_system_working(component_status, method)
         self.t_simulation = t_simulation
         self.component_status = component_status
 
@@ -190,55 +281,60 @@ class RepairableRBD(RBD):
 
         Returns
         -------
-        np.float64
+        float
             Long run unavailability of the system
         """
         return 1 - self.mean_availability(*args, **kwargs)
 
     def mean_availability(
         self,
-        working_nodes: Collection[Hashable] = [],
-        broken_nodes: Collection[Hashable] = [],
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
         method: str = "p",
-    ) -> np.float64:
+    ) -> float:
         """Returns the system long run availability
 
         Parameters
         ----------
         working_nodes : Collection[Hashable], optional
-            Marks these components as perfectly reliable, by default []
+            Marks these nodes as always available, by default None
         broken_nodes : Collection[Hashable], optional
-            Marks these components as perfectly unreliable, by default []
-        using: str, optional
+            Marks these nodes as failed, by default None
+        method : str, optional
             Input either "c" or "p" for the function to use cut sets or path
             sets respectively. Defaults to path sets.
 
         Returns
         -------
-        np.float64
+        float
             Long run availability of the system
 
         Raises
         ------
         ValueError
+            If a working/broken node is unknown, is the input/output node, or
+            is in both sets.
         """
         # Good reference on the Availability of a system
         # https://www.diva-portal.org/smash/get/diva2:986067/FULLTEXT01.pdf
+        working_nodes = set() if working_nodes is None else set(working_nodes)
+        broken_nodes = set() if broken_nodes is None else set(broken_nodes)
+        self._validate_node_overrides(working_nodes, broken_nodes)
 
-        # Cache all component reliabilities for efficiency
-        component_availability: dict[Hashable, np.float64] = {}
+        # Cache all component availabilities for efficiency
+        component_availability: dict[Hashable, float] = {}
         for comp in self.components:
             if comp in working_nodes:
-                component_availability[comp] = np.float64(1.0)
+                component_availability[comp] = 1.0
             elif comp in broken_nodes:
-                component_availability[comp] = np.float64(0.0)
+                component_availability[comp] = 0.0
             else:
-                component_availability[comp] = self.components[
-                    comp
-                ].mean_availability()
+                component_availability[comp] = float(
+                    np.atleast_1d(self.components[comp].mean_availability())[0]
+                )
 
         for comp in self.in_or_out:
-            component_availability[comp] = np.float64(1.0)
+            component_availability[comp] = 1.0
 
         mean_availability = self.system_probability(
             component_availability, method=method
@@ -288,12 +384,13 @@ class RepairableRBD(RBD):
     def availability(
         self,
         t_simulation: float,
-        working_nodes: Collection[Hashable] = [],
-        broken_nodes: Collection[Hashable] = [],
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
         method: str = "p",
         N: int = 10_000,
         verbose: bool = False,
-    ) -> dict:
+        seed: Optional[int] = None,
+    ) -> AvailabilityResult:
         """Returns the times, and availability for those times, as numpy
         arrays
 
@@ -311,6 +408,9 @@ class RepairableRBD(RBD):
         tuple[np.ndarray, np.ndarray]
             times, availabilities
         """
+        working_nodes = set() if working_nodes is None else set(working_nodes)
+        broken_nodes = set() if broken_nodes is None else set(broken_nodes)
+        self._validate_node_overrides(working_nodes, broken_nodes)
 
         # aggregate_timeline keeps track of how many of the simulated systems
         # turn on and off at time t.
@@ -326,8 +426,15 @@ class RepairableRBD(RBD):
         # Set the end of the timeline to be 0 (i.e. unchanged if no event
         # falls) exactly at time t_simulation.
         aggregate_timeline[t_simulation] = 0
-        # Set all systems working at time 0
-        aggregate_timeline[0] = N
+        # The initial system state is the same for every simulation (the forced
+        # working/broken sets are fixed): all components start working except
+        # those forced broken, which can make the system start down (e.g. a
+        # broken component in series). Seed time 0 accordingly.
+        initial_status = {c: c not in broken_nodes for c in self.components}
+        initial_system_up = bool(
+            self.is_system_working(initial_status, method)
+        )
+        aggregate_timeline[0] = N if initial_system_up else 0
 
         # Restoration Criticality Index
         RCI: defaultdict = defaultdict(lambda: defaultdict(lambda: 0))
@@ -339,14 +446,22 @@ class RepairableRBD(RBD):
         system_failures = 0
         system_uptime = 0
 
-        components_downtime: defaultdict = defaultdict(lambda: 0)
-        components_uptime: defaultdict = defaultdict(lambda: 0)
+        node_downtime: defaultdict = defaultdict(lambda: 0)
+        node_uptime: defaultdict = defaultdict(lambda: 0)
         intersection_uptime: defaultdict = defaultdict(lambda: 0)
         intersection_downtime: defaultdict = defaultdict(lambda: 0)
         union_uptime: defaultdict = defaultdict(lambda: 0)
         union_downtime: defaultdict = defaultdict(lambda: 0)
 
-        # Perform N simulations
+        # Perform N simulations. surpyval's ``.random`` draws from numpy's
+        # global RNG, so seed it here (if a seed was given) to make the run
+        # reproducible, restoring the caller's RNG state once the randomised
+        # simulations below have finished.
+        _rng_state = None
+        if seed is not None:
+            _rng_state = np.random.get_state()
+            np.random.seed(seed)
+
         for _ in tqdm(
             range(N), disable=not verbose, desc="Running simulations"
         ):
@@ -355,10 +470,17 @@ class RepairableRBD(RBD):
                 t_simulation,
                 working_nodes,
                 broken_nodes,
+                method,
             )
 
-            component_timelines: defaultdict = defaultdict(lambda: [(0.0, 1)])
-            system_timeline = [(0.0, 1)]
+            # Seed each timeline from the actual initial status so that
+            # forced-broken components (and a system they start down) are
+            # accounted as down from t=0, not assumed up.
+            component_timelines: dict = {
+                comp: [(0.0, 1 if self.component_status[comp] else 0)]
+                for comp in self.components
+            }
+            system_timeline = [(0.0, 1 if self.system_state else 0)]
 
             # Implemented ensure that no events that occur after the
             # end-time of the simulation are added to the queue; so we just
@@ -429,12 +551,14 @@ class RepairableRBD(RBD):
 
             for component in self.components.keys():
                 component_timelines[component].append((t_simulation, 0))
-                components_uptime[component] += time_at_status(
+                # This simulation's uptime for the component; the downtime is
+                # the remainder of the window. (Use the per-simulation value,
+                # not the running cumulative node_uptime[component].)
+                component_ut = time_at_status(
                     component_timelines[component], 1
                 )
-                components_downtime[component] += (
-                    t_simulation - components_uptime[component]
-                )
+                node_uptime[component] += component_ut
+                node_downtime[component] += t_simulation - component_ut
                 joint_t, joint_events = combined_timeline(
                     component_timelines[component], system_timeline
                 )
@@ -451,49 +575,52 @@ class RepairableRBD(RBD):
             system_uptime += simulation_system_ut
             system_downtime += t_simulation - simulation_system_ut
 
+        # Randomised simulations are done; restore the caller's RNG state.
+        if _rng_state is not None:
+            np.random.set_state(_rng_state)
+
         # Collect Importance/Criticality measures from the simulation
         # reference: https://www.weibull.com/pubs/2004rm_05B_02.pdf
-        criticalities = {}
         # Operational Criticality Index
         oci_down = {
-            k: v / system_downtime
+            k: _safe_ratio(v, system_downtime)
             for k, v in dict(intersection_downtime).items()
         }
         oci_up = {
-            k: v / system_uptime for k, v in dict(intersection_uptime).items()
-        }
-        criticalities["operational_criticality_index"] = {
-            "up": oci_up,
-            "down": oci_down,
+            k: _safe_ratio(v, system_uptime)
+            for k, v in dict(intersection_uptime).items()
         }
         # Intersection Over Union Importance
         iou_up = {
-            k: intersection_uptime[k] / union_uptime[k]
+            k: _safe_ratio(intersection_uptime[k], union_uptime[k])
             for k in dict(intersection_uptime).keys()
         }
         iou_down = {
-            k: intersection_downtime[k] / union_downtime[k]
+            k: _safe_ratio(intersection_downtime[k], union_downtime[k])
             for k in dict(intersection_downtime).keys()
         }
-        criticalities["iou"] = {"up": iou_up, "down": iou_down}
         # Failure Criticality Index Importance
         fci_sys = failure_criticality_index_per_system_failures(
             FCI, system_failures
         )
         fci_comp = failure_criticality_index_per_component_failures(FCI)
-        criticalities["failure_criticality_index"] = {
-            "per_system_failure": fci_sys,
-            "per_component_failure": fci_comp,
-        }
         # Restoration Criticality Index Importance
         rci_sys = restoration_criticality_index_by_system(
             RCI, system_restorations
         )
         rci_comp = restoration_criticality_index_by_component(RCI)
-        criticalities["restoration_criticality_index"] = {
-            "by_system": rci_sys,
-            "by_component": rci_comp,
-        }
+        criticalities = Criticalities(
+            operational_criticality_index=UpDownImportance(
+                up=oci_up, down=oci_down
+            ),
+            iou=UpDownImportance(up=iou_up, down=iou_down),
+            failure_criticality_index=FailureCriticalityIndex(
+                per_system_failure=fci_sys, per_component_failure=fci_comp
+            ),
+            restoration_criticality_index=RestorationCriticalityIndex(
+                by_system=rci_sys, by_component=rci_comp
+            ),
+        )
 
         # Now we need to return the system availability from t=0..t_simulation
         # Using numpy arrays for efficiency
@@ -514,46 +641,166 @@ class RepairableRBD(RBD):
         del self.t_simulation
         del self.component_status
 
-        simulation_results = {
-            "timeline": time,
-            "availability": system_availability,
-            "system_uptime": system_uptime,
-            "time_simulated_to": t_simulation,
-            "criticalities": criticalities,
-            "components_uptime": dict(components_uptime),
-            "components_downtime": dict(components_downtime),
-        }
+        simulation_results = AvailabilityResult(
+            timeline=time,
+            availability=system_availability,
+            system_uptime=system_uptime,
+            time_simulated_to=t_simulation,
+            criticalities=criticalities,
+            node_uptime=dict(node_uptime),
+            node_downtime=dict(node_downtime),
+            system_downtime=system_downtime,
+            system_failures=system_failures,
+            system_restorations=system_restorations,
+            n_simulations=N,
+        )
 
         return simulation_results
 
-    def node_availability(self):
-        node_av: dict = {}
+    def node_availability(self) -> dict[Hashable, float]:
+        """Returns each node's long-run availability (a dict keyed by node
+        name); the input/output nodes are 1.0."""
+        node_av: dict[Hashable, float] = {}
         for node_name, component in self.components.items():
-            node_av[node_name] = component.mean_availability()
+            node_av[node_name] = float(
+                np.atleast_1d(component.mean_availability())[0]
+            )
 
         for node_name in self.in_or_out:
-            node_av[node_name] = np.float64(1.0)
+            node_av[node_name] = 1.0
 
         return node_av
 
-    def birnbaum_importance(self) -> dict[Any, np.ndarray]:
-        """Returns the Birnbaum measure of importance for all nodes.
+    def _node_failure_frequency(self, component) -> float:
+        """A component's long-run failure frequency (failures per unit time):
+        recursive for nested RepairableRBDs, ``1 / (MTTF + MTTR)`` for
+        NonRepairable components."""
+        if isinstance(component, RepairableRBD):
+            return component.system_failure_frequency()
+        return component.failure_frequency()
+
+    def system_failure_frequency(
+        self,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> float:
+        """Returns the system's long-run failure frequency (failures per unit
+        time), by the Birnbaum/Vesely formula.
+
+        In steady state the system failure frequency is
+
+        .. math::
+            \\omega = \\sum_i I_B^i \\cdot \\omega_i
+
+        where :math:`I_B^i` is node i's Birnbaum importance evaluated at the
+        nodes' availabilities and :math:`\\omega_i = 1/(MTTF_i + MTTR_i)` is
+        node i's failure frequency. Exact for independent repairable nodes.
+
+        Parameters
+        ----------
+        working_nodes : Collection[Hashable], optional
+            Condition on these nodes always working (they contribute no
+            failures), by default None
+        broken_nodes : Collection[Hashable], optional
+            Condition on these nodes being failed (they contribute no
+            failures), by default None
+        """
+        availability = self._probabilities_with_overrides(
+            self.node_availability(), working_nodes, broken_nodes
+        )
+        forced = (set() if working_nodes is None else set(working_nodes)) | (
+            set() if broken_nodes is None else set(broken_nodes)
+        )
+        birnbaum = super()._birnbaum_importance(availability)
+        omega = 0.0
+        for node, component in self.components.items():
+            if node in forced:
+                # A forced node never changes state, so it contributes no
+                # system failures.
+                continue
+            omega += np.asarray(birnbaum[node]).item() * (
+                self._node_failure_frequency(component)
+            )
+        return omega
+
+    def mean_time_between_failures(
+        self,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> float:
+        """Returns the system's long-run Mean Time Between Failures,
+        ``MTBF = 1 / failure frequency`` — the mean length of one full
+        up-down cycle, i.e. ``MTBF = MUT + MDT``. Infinite if the system
+        never fails."""
+        omega = self.system_failure_frequency(working_nodes, broken_nodes)
+        return 1.0 / omega if omega > 0.0 else float("inf")
+
+    def mean_up_time(
+        self,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> float:
+        """Returns the system's long-run Mean Up Time (mean duration of an
+        uninterrupted working period; sometimes called the repairable-system
+        MTTF), ``MUT = availability / failure frequency``."""
+        availability = self.mean_availability(working_nodes, broken_nodes)
+        omega = self.system_failure_frequency(working_nodes, broken_nodes)
+        if omega > 0.0:
+            return float(availability) / omega
+        return float("inf") if availability > 0.0 else 0.0
+
+    def mean_down_time(
+        self,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> float:
+        """Returns the system's long-run Mean Down Time (mean duration of an
+        outage; the repairable-system MTTR),
+        ``MDT = unavailability / failure frequency``."""
+        availability = self.mean_availability(working_nodes, broken_nodes)
+        omega = self.system_failure_frequency(working_nodes, broken_nodes)
+        if omega > 0.0:
+            return (1.0 - float(availability)) / omega
+        return 0.0 if availability >= 1.0 else float("inf")
+
+    def birnbaum_importance(
+        self,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> dict[Any, float]:
+        """Returns the Birnbaum measure of importance for all nodes,
+        evaluated at the nodes' long-run availabilities.
 
         Note: Birnbaum's measure of importance assumes all nodes are
-        independent. If the RBD called on has two or more nodes associated
-        with the same component then a UserWarning is raised.
+        independent.
+
+        Parameters
+        ----------
+        working_nodes : Collection[Hashable], optional
+            Condition on these nodes being always available, by default None
+        broken_nodes : Collection[Hashable], optional
+            Condition on these nodes being failed, by default None
 
         Returns
         -------
-        dict[Any, np.ndarray]
+        dict[Any, float]
             Dictionary with node names as keys and Birnbaum importances as
             values
         """
-        node_probabilities = self.node_availability()
-        return super()._birnbaum_importance(node_probabilities)
+        node_probabilities = self._probabilities_with_overrides(
+            self.node_availability(), working_nodes, broken_nodes
+        )
+        return _squeeze_values(
+            super()._birnbaum_importance(node_probabilities)
+        )
 
-    def improvement_potential(self) -> dict[Any, np.ndarray]:
-        """Returns the improvement potential of all nodes.
+    def improvement_potential(
+        self,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> dict[Any, float]:
+        """Returns the improvement potential of all nodes, evaluated at the
+        nodes' long-run availabilities.
 
         Returns
         -------
@@ -561,37 +808,64 @@ class RepairableRBD(RBD):
             Dictionary with node names as keys and improvement potentials as
             values
         """
-        node_probabilities = self.node_availability()
-        return super()._improvement_potential(node_probabilities)
+        node_probabilities = self._probabilities_with_overrides(
+            self.node_availability(), working_nodes, broken_nodes
+        )
+        return _squeeze_values(
+            super()._improvement_potential(node_probabilities)
+        )
 
-    def risk_achievement_worth(self) -> dict[Any, np.ndarray]:
-        """Returns the RAW importance per Modarres & Kaminskiy. That is RAW_i =
-        (unreliability of system given i failed) /
-        (nominal system unreliability).
+    def risk_achievement_worth(
+        self,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> dict[Any, float]:
+        """Returns the RAW importance per Modarres & Kaminskiy, evaluated at
+        the nodes' long-run availabilities. That is RAW_i =
+        (unavailability of system given i failed) /
+        (nominal system unavailability).
 
         Returns
         -------
         dict[Any, float]
             Dictionary with node names as keys and RAW importances as values
         """
-        node_probabilities = self.node_availability()
-        return super()._risk_achievement_worth(node_probabilities)
+        node_probabilities = self._probabilities_with_overrides(
+            self.node_availability(), working_nodes, broken_nodes
+        )
+        return _squeeze_values(
+            super()._risk_achievement_worth(node_probabilities)
+        )
 
-    def risk_reduction_worth(self) -> dict[Any, np.ndarray]:
-        """Returns the RRW importance per Modarres & Kaminskiy. That is RRW_i =
-        (nominal unreliability of system) /
-        (unreliability of system given i is working).
+    def risk_reduction_worth(
+        self,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> dict[Any, float]:
+        """Returns the RRW importance per Modarres & Kaminskiy, evaluated at
+        the nodes' long-run availabilities. That is RRW_i =
+        (nominal unavailability of system) /
+        (unavailability of system given i is working).
 
         Returns
         -------
         dict[Any, float]
             Dictionary with node names as keys and RRW importances as values
         """
-        node_probabilities = self.node_availability()
-        return super()._risk_reduction_worth(node_probabilities)
+        node_probabilities = self._probabilities_with_overrides(
+            self.node_availability(), working_nodes, broken_nodes
+        )
+        return _squeeze_values(
+            super()._risk_reduction_worth(node_probabilities)
+        )
 
-    def criticality_importance(self) -> dict[Any, np.ndarray]:
-        """Returns the criticality importance of all nodes at time/s x.
+    def criticality_importance(
+        self,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> dict[Any, float]:
+        """Returns the criticality importance of all nodes, evaluated at the
+        nodes' long-run availabilities.
 
         Returns
         -------
@@ -599,13 +873,23 @@ class RepairableRBD(RBD):
             Dictionary with node names as keys and criticality importances as
             values
         """
-        node_probabilities = self.node_availability()
-        return super()._criticality_importance(node_probabilities)
+        node_probabilities = self._probabilities_with_overrides(
+            self.node_availability(), working_nodes, broken_nodes
+        )
+        return _squeeze_values(
+            super()._criticality_importance(node_probabilities)
+        )
 
-    def fussel_vesely(self, fv_type: str = "c") -> dict[Any, np.ndarray]:
-        """Calculate Fussel-Vesely importance of all components at time/s x.
+    def fussell_vesely(
+        self,
+        fv_type: str = "c",
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> dict[Any, float]:
+        """Calculate Fussell-Vesely importance of all nodes, evaluated at the
+        nodes' long-run availabilities.
 
-        Briefly, the Fussel-Vesely importance measure for node i =
+        Briefly, the Fussell-Vesely importance measure for node i =
         (sum of probabilities of cut-sets including node i occuring/failing) /
         (the probability of the system failing).
 
@@ -622,19 +906,36 @@ class RepairableRBD(RBD):
         fv_type : str, optional
             Dictates the method of calculation, 'c' = cut-set and
             'p' = path-set, by default "c"
+        working_nodes : Collection[Hashable], optional
+            Condition on these nodes being always available, by default None
+        broken_nodes : Collection[Hashable], optional
+            Condition on these nodes being failed, by default None
 
         Returns
         -------
-        dict[Any, np.ndarray]
-            Dictionary with node names as keys and fussel-vessely importances
+        dict[Any, float]
+            Dictionary with node names as keys and Fussell-Vesely importances
             as values
 
         Raises
         ------
         ValueError
-            TODO
-        NotImplementedError
-            TODO
+            If ``fv_type`` is not 'c' (cut-set) or 'p' (path-set).
         """
-        node_probabilities = self.node_availability()
-        return super()._fussel_vesely(node_probabilities, fv_type)
+        node_probabilities = self._probabilities_with_overrides(
+            self.node_availability(), working_nodes, broken_nodes
+        )
+        return _squeeze_values(
+            super()._fussell_vesely(node_probabilities, fv_type)
+        )
+
+    def fussel_vesely(self, fv_type: str = "c") -> dict[Any, np.ndarray]:
+        """Deprecated alias for :meth:`fussell_vesely` (corrected spelling)."""
+        warnings.warn(
+            "fussel_vesely() is deprecated; use fussell_vesely() "
+            "(Fussell-Vesely). This alias will be removed in a future "
+            "release.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.fussell_vesely(fv_type)

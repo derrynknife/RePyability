@@ -1,3 +1,5 @@
+from repyability.utils.wrappers import numpy_seed
+
 REPEATED_NODE_TYPES = {"parallel", "series"}
 PARALLEL = 1
 SERIES = 0
@@ -15,8 +17,9 @@ class RepeatedNode:
             self.kind = SERIES
         self.repeats = repeats
 
-    def random(self, size):
-        randoms = self.model.random((size, self.repeats))
+    def random(self, size, seed=None):
+        with numpy_seed(seed):
+            randoms = self.model.random((size, self.repeats))
         if self.kind == SERIES:
             # If repetition is in series, then a random event will be the
             # smallest of all the events in series. i.e. when the first item
@@ -28,8 +31,8 @@ class RepeatedNode:
             # fails.
             return randoms.max(axis=1)
 
-    def mean(self, N=1_000_000):
-        return self.random(N).mean()
+    def mean(self, N=1_000_000, seed=None):
+        return self.random(N, seed=seed).mean()
 
     def sf(self, x):
         if self.kind == SERIES:

@@ -1,12 +1,6 @@
-# Include production requirements
--r requirements.txt
-
-# Dev requirements
-black
-flake8
-flake8-pyproject
-mypy
-pytest
-coverage
-pre-commit
-git+https://github.com/derrynknife/SurPyval.git
+# Development environment: installs the package in editable mode together with
+# the pinned dev tooling declared in pyproject.toml ([project.optional-
+# dependencies].dev). This keeps a single source of truth for versions and
+# avoids the previous mismatch (surpyval was pinned here to git HEAD while
+# pyproject/requirements pinned a release).
+-e .[dev]
