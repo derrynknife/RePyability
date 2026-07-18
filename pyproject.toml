@@ -35,7 +35,7 @@ dependencies = [
     "numpy>=2.0,<3",
     "scipy>=1.7",
     "networkx>=3.0",
-    "surpyval>=0.11.1,<0.12",
+    "surpyval>=0.13,<0.14",
     "tqdm>=4.64",
 ]
 
@@ -49,10 +49,6 @@ dev = [
     "pytest>=7.0",
     "coverage>=7.0",
     "pre-commit>=3.0",
-    # Testing-only: the suite imports surpyval, which transitively pulls in its
-    # RandomSurvivalForest (and hence joblib). Not a runtime dependency of
-    # RePyability.
-    "joblib>=1.0",
 ]
 docs = [
     "mkdocs-material>=9.0",

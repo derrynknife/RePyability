@@ -15,7 +15,7 @@ Reference: https://reliawiki.org/index.php/Repairable_Systems_Analysis
 
 import numpy as np
 import pytest
-import surpyval as surv
+from surpyval.recurrent import CrowAMSAA, Duane
 
 from repyability import MaintenancePolicy, Repairable
 
@@ -31,7 +31,7 @@ def closed_form_cost_rate(alpha, beta, cr, co):
 
 def test_cost_and_cost_rate_values():
     alpha, beta = 100.0, 1.5
-    rep = Repairable(surv.CrowAMSAA.from_params([alpha, beta]))
+    rep = Repairable(CrowAMSAA.from_params([alpha, beta]))
     rep.set_repair_and_overhaul_costs(10.0, 1000.0)
 
     t = 250.0
@@ -58,7 +58,7 @@ def test_optimal_interval_matches_closed_form():
         (2000.0, 2.2, 250.0, 60_000.0),
     ]
     for alpha, beta, cr, co in cases:
-        rep = Repairable(surv.CrowAMSAA.from_params([alpha, beta]))
+        rep = Repairable(CrowAMSAA.from_params([alpha, beta]))
         rep.set_repair_and_overhaul_costs(cr, co)
         t_star = rep.find_optimal_overhaul_interval()
         assert t_star == pytest.approx(
@@ -73,7 +73,7 @@ def test_duane_model_closed_form():
     # Duane cif: Lambda(t) = b * t^a (surpyval params [a, b]), giving
     # t* = (co / (cr*b*(a-1)))^(1/a) for a > 1.
     a, b, cr, co = 1.8, 0.01, 20.0, 4000.0
-    rep = Repairable(surv.Duane.from_params([a, b]))
+    rep = Repairable(Duane.from_params([a, b]))
     rep.set_repair_and_overhaul_costs(cr, co)
     expected = (co / (cr * b * (a - 1.0))) ** (1.0 / a)
     assert rep.find_optimal_overhaul_interval() == pytest.approx(
@@ -86,14 +86,14 @@ def test_no_wear_out_never_overhauls():
     # nothing. beta < 1 (reliability growth) makes overhauls strictly
     # worse. Both must return an infinite interval.
     for beta in (1.0, 0.8):
-        rep = Repairable(surv.CrowAMSAA.from_params([500.0, beta]))
+        rep = Repairable(CrowAMSAA.from_params([500.0, beta]))
         rep.set_repair_and_overhaul_costs(10.0, 1000.0)
         assert rep.find_optimal_overhaul_interval() == np.inf
 
 
 def test_optimal_overhaul_policy():
     alpha, beta, cr, co = 100.0, 1.5, 10.0, 1000.0
-    rep = Repairable(surv.CrowAMSAA.from_params([alpha, beta]))
+    rep = Repairable(CrowAMSAA.from_params([alpha, beta]))
     rep.set_repair_and_overhaul_costs(cr, co)
     policy = rep.optimal_overhaul_policy()
     assert isinstance(policy, MaintenancePolicy)
@@ -110,7 +110,7 @@ def test_policy_when_never_overhauling():
     # long-run rate of occurrence, cr * Lambda(t)/t = cr/alpha for
     # beta = 1.
     alpha, cr, co = 500.0, 10.0, 1000.0
-    rep = Repairable(surv.CrowAMSAA.from_params([alpha, 1.0]))
+    rep = Repairable(CrowAMSAA.from_params([alpha, 1.0]))
     rep.set_repair_and_overhaul_costs(cr, co)
     policy = rep.optimal_overhaul_policy()
     assert policy.interval == np.inf
@@ -118,7 +118,7 @@ def test_policy_when_never_overhauling():
 
 
 def test_cost_validation():
-    rep = Repairable(surv.CrowAMSAA.from_params([100.0, 1.5]))
+    rep = Repairable(CrowAMSAA.from_params([100.0, 1.5]))
     with pytest.raises(ValueError, match="less than overhaul"):
         rep.set_repair_and_overhaul_costs(10.0, 10.0)
     with pytest.raises(ValueError, match="positive"):
