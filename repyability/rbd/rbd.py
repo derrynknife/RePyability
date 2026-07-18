@@ -206,6 +206,11 @@ def minimal_cut_sets_from_path_sets(
 
 
 class RBD:
+    # Constructor inputs, captured verbatim by each subclass's ``__init__`` so
+    # the RBD can be re-created (see ``serialisation``); declared here so the
+    # attribute is visible on the base type.
+    _init_args: dict
+
     def __init__(
         self,
         edges: Iterable[tuple[Hashable, Hashable]],
