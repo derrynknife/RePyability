@@ -61,6 +61,7 @@ docs = [
 
 [project.urls]
 Homepage = "https://github.com/derrynknife/RePyability"
+Documentation = "https://derrynknife.github.io/RePyability/"
 Repository = "https://github.com/derrynknife/RePyability"
 Issues = "https://github.com/derrynknife/RePyability/issues"
 
