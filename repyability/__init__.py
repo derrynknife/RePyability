@@ -7,6 +7,7 @@ directly from the top-level package, e.g.::
 """
 
 from repyability._version import __version__
+from repyability.maintenance import MaintenancePolicy
 from repyability.non_repairable import NonRepairable
 from repyability.rbd.helper_classes import (
     PerfectReliability,
@@ -50,4 +51,5 @@ __all__ = [
     "UpDownImportance",
     "FailureCriticalityIndex",
     "RestorationCriticalityIndex",
+    "MaintenancePolicy",
 ]
