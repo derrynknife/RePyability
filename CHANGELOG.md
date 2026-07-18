@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.5.0] - 2026-07-18
+
 This release focuses on packaging, tooling, correctness and API-consistency
 foundations (Phases 0 and 1 of the project's development plan; forward-looking
 work is tracked as issues in the GitHub repository).
