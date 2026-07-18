@@ -4,7 +4,16 @@ import warnings
 from copy import copy
 from dataclasses import dataclass, field
 from queue import PriorityQueue
-from typing import Any, Collection, Dict, Hashable, Iterable, Optional, Union
+from typing import (
+    Any,
+    Collection,
+    Dict,
+    Hashable,
+    Iterable,
+    Optional,
+    Union,
+    cast,
+)
 
 import networkx as nx
 import numpy as np
@@ -455,7 +464,7 @@ class NonRepairableRBD(RBD):
     ) -> Dict[Any, Union[float, np.ndarray]]:
         """Returns each node's reliability at time/s x (a dict keyed by node
         name). Floats for scalar ``x``, arrays for array ``x``."""
-        node_sf: Dict[Any, np.ndarray] = {}
+        node_sf: Dict[Any, Union[float, np.ndarray]] = {}
         for node_name, node in self.reliabilities.items():
             node_sf[node_name] = node.sf(x)
         return node_sf
@@ -466,7 +475,7 @@ class NonRepairableRBD(RBD):
     ) -> Dict[Any, Union[float, np.ndarray]]:
         """Returns each node's unreliability at time/s x (a dict keyed by node
         name). Floats for scalar ``x``, arrays for array ``x``."""
-        node_ff: Dict[Any, np.ndarray] = {}
+        node_ff: Dict[Any, Union[float, np.ndarray]] = {}
         for node_name, node in self.reliabilities.items():
             node_ff[node_name] = node.ff(x)
 
@@ -790,7 +799,10 @@ class NonRepairableRBD(RBD):
         node_probabilities = self._probabilities_with_overrides(
             self.node_sf(x), working_nodes, broken_nodes
         )
-        return super()._birnbaum_importance(node_probabilities)
+        return cast(
+            Dict[Any, Union[float, np.ndarray]],
+            super()._birnbaum_importance(node_probabilities),
+        )
 
     @check_x
     def improvement_potential(
@@ -819,7 +831,10 @@ class NonRepairableRBD(RBD):
         node_probabilities = self._probabilities_with_overrides(
             self.node_sf(x), working_nodes, broken_nodes
         )
-        return super()._improvement_potential(node_probabilities)
+        return cast(
+            Dict[Any, Union[float, np.ndarray]],
+            super()._improvement_potential(node_probabilities),
+        )
 
     @check_x
     def risk_achievement_worth(
@@ -850,7 +865,10 @@ class NonRepairableRBD(RBD):
         node_probabilities = self._probabilities_with_overrides(
             self.node_sf(x), working_nodes, broken_nodes
         )
-        return super()._risk_achievement_worth(node_probabilities)
+        return cast(
+            Dict[Any, Union[float, np.ndarray]],
+            super()._risk_achievement_worth(node_probabilities),
+        )
 
     @check_x
     def risk_reduction_worth(
@@ -881,7 +899,10 @@ class NonRepairableRBD(RBD):
         node_probabilities = self._probabilities_with_overrides(
             self.node_sf(x), working_nodes, broken_nodes
         )
-        return super()._risk_reduction_worth(node_probabilities)
+        return cast(
+            Dict[Any, Union[float, np.ndarray]],
+            super()._risk_reduction_worth(node_probabilities),
+        )
 
     @check_x
     def criticality_importance(
@@ -910,7 +931,10 @@ class NonRepairableRBD(RBD):
         node_probabilities = self._probabilities_with_overrides(
             self.node_sf(x), working_nodes, broken_nodes
         )
-        return super()._criticality_importance(node_probabilities)
+        return cast(
+            Dict[Any, Union[float, np.ndarray]],
+            super()._criticality_importance(node_probabilities),
+        )
 
     @check_x
     def fussell_vesely(
@@ -963,7 +987,10 @@ class NonRepairableRBD(RBD):
         rel_dict = self._probabilities_with_overrides(
             rel_dict, working_nodes, broken_nodes
         )
-        return super()._fussell_vesely(rel_dict, fv_type)
+        return cast(
+            Dict[Any, Union[float, np.ndarray]],
+            super()._fussell_vesely(rel_dict, fv_type),
+        )
 
     def fussel_vesely(
         self, x: Optional[ArrayLike] = None, fv_type: str = "c"

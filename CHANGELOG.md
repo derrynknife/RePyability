@@ -32,7 +32,7 @@ work is tracked as issues in the GitHub repository).
   package (`from repyability import NonRepairableRBD, StandbyModel, ...`) and
   listed in `__all__`. `repyability.__version__` is available.
 - **`NonRepairableRBD.is_fixed`** property.
-- CI now runs a lint/type gate and a test matrix (Python 3.10–3.12) with a
+- CI now runs a lint/type gate and a test matrix (Python 3.11–3.12) with a
   coverage `fail_under` gate; a release workflow publishes to PyPI via trusted
   publishing.
 - `CHANGELOG.md`, `CONTRIBUTING.md`, and issue/PR templates.
@@ -125,7 +125,9 @@ work is tracked as issues in the GitHub repository).
   instead of a plain `dict`. It is a `collections.abc.Mapping` (not a `dict`
   subclass), so dict-style access is preserved but `isinstance(result, dict)`
   is now False (use `isinstance(result, Mapping)`).
-- Requires Python >= 3.10.
+- Requires Python >= 3.11 (raised from 3.10: `surpyval` >= 0.11.1, the core
+  dependency, itself requires Python >= 3.11, so the declared 3.10 support could
+  not actually be installed).
 
 ### Fixed
 - Removed a stray debug `print()` in `RBD.improvement_allocation`.

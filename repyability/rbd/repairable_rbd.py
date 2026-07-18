@@ -271,7 +271,7 @@ class RepairableRBD(RBD):
         self.t_simulation = t_simulation
         self.component_status = component_status
 
-    def mean_unavailability(self, *args, **kwargs) -> np.float64:
+    def mean_unavailability(self, *args, **kwargs) -> float:
         """Returns the system long run UNavailability
 
         Parameters
@@ -929,7 +929,7 @@ class RepairableRBD(RBD):
             super()._fussell_vesely(node_probabilities, fv_type)
         )
 
-    def fussel_vesely(self, fv_type: str = "c") -> dict[Any, np.ndarray]:
+    def fussel_vesely(self, fv_type: str = "c") -> dict[Any, float]:
         """Deprecated alias for :meth:`fussell_vesely` (corrected spelling)."""
         warnings.warn(
             "fussel_vesely() is deprecated; use fussell_vesely() "

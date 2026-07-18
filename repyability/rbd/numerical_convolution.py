@@ -10,6 +10,8 @@ quickly -- as a robust alternative to estimating it from Monte-Carlo samples
 with a Kaplan-Meier fit.
 """
 
+from typing import cast
+
 import numpy as np
 from scipy.integrate import cumulative_trapezoid, trapezoid
 from scipy.signal import fftconvolve
@@ -53,7 +55,7 @@ def switch_success_probs(switching_probability, n) -> list:
     if n <= 1:
         return []
     if np.isscalar(switching_probability):
-        probs = [float(switching_probability)] * (n - 1)
+        probs = [float(cast(float, switching_probability))] * (n - 1)
     else:
         probs = [float(p) for p in switching_probability]
         if len(probs) != n - 1:
@@ -70,7 +72,7 @@ def switch_success_probs(switching_probability, n) -> list:
 def is_perfect_switching(switching_probability) -> bool:
     """True if every switch succeeds with probability 1."""
     if np.isscalar(switching_probability):
-        return float(switching_probability) == 1.0
+        return float(cast(float, switching_probability)) == 1.0
     return all(float(p) == 1.0 for p in switching_probability)
 
 
