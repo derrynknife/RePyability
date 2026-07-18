@@ -44,7 +44,8 @@ work is tracked as issues in the GitHub repository).
   old nested-dict API (subscript, `keys`/`items`/`values`, `in`, `dict()`).
 - **Documentation site** (MkDocs + mkdocstrings): overview/quickstart, a user
   guide, and an auto-generated API reference. A CI job builds it with
-  `--strict`.
+  `--strict`, and it is published to GitHub Pages
+  (https://derrynknife.github.io/RePyability/) on every push to `master`.
 - **Serialisation.** RBDs round-trip to/from a JSON-friendly structure via
   `to_dict`/`from_dict`/`to_json`/`from_json`, so a diagram can be saved,
   loaded, shared and version-controlled. The structure (edges, k-out-of-n,

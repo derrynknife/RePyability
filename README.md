@@ -1,6 +1,7 @@
 # RePyability
 
 [![actions](https://github.com/derrynknife/RePyability/actions/workflows/actions.yml/badge.svg)](https://github.com/derrynknife/RePyability/actions/workflows/actions.yml)
+[![docs](https://github.com/derrynknife/RePyability/actions/workflows/docs.yml/badge.svg)](https://derrynknife.github.io/RePyability/)
 
 Reliability Engineering Tools
 
@@ -14,8 +15,12 @@ pip install repyability
 ```
 
 ## Documentation
-The documentation (overview, user guide, and full API reference) is built with
-[MkDocs](https://www.mkdocs.org/). To build and serve it locally:
+The full documentation — overview, user guide, and API reference — is hosted at
+**[derrynknife.github.io/RePyability](https://derrynknife.github.io/RePyability/)**.
+
+It is built with [MkDocs](https://www.mkdocs.org/) from the sources in `docs/`
+and `mkdocs.yml`, and published to GitHub Pages on every push to `master`. To
+build and serve it locally:
 
 ```bash
 pip install -e .[docs]
