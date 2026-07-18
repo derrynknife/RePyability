@@ -80,6 +80,23 @@ work is tracked as issues in the GitHub repository).
   exponential systems) within Monte-Carlo sampling error, and the
   finite-window censoring bias of the simulation MUT/MDT estimates is
   documented.
+- **Component maintenance-policy layer.** The vestigial `Repairable` class
+  is now a real minimal-repair ("as bad as old") economics tool: it takes a
+  surpyval recurrence model (anything exposing `cif`, e.g. Crow-AMSAA,
+  Duane) and finds the optimal overhaul interval minimising
+  `(cr*Lambda(t) + co)/t` (the Barlow-Hunter policy), returning `inf` when
+  the unit does not wear out (HPP-like, `beta <= 1`) — validated against
+  the power-law closed form. New typed result `MaintenancePolicy`
+  (`interval`, `cost_rate`), returned by
+  `Repairable.optimal_overhaul_policy()` and the new
+  `NonRepairable.optimal_replacement_policy()`.
+  `NonRepairable.find_optimal_replacement()` now returns `inf` for an
+  exponential lifetime (memoryless — preventive replacement never pays),
+  matching the existing Weibull shape <= 1 behaviour. A user-guide section
+  explains renewal ("as good as new", `NonRepairable` — also the component
+  representation inside `RepairableRBD`) vs minimal repair (`Repairable` —
+  standalone; not a valid RBD node model, since RBD repairs are assumed to
+  renew).
 
 ### Changed
 - **API standardised across `RBD`/`NonRepairableRBD`/`RepairableRBD`**
@@ -156,6 +173,12 @@ work is tracked as issues in the GitHub repository).
   uptime + downtime now correctly sums to `N * t_simulation`. (`sf`/`ff` and
   the derived `reliability`/`unreliability`/`cs` paths were audited for the
   working/broken overrides and found correct; regression tests added.)
+- `Repairable.find_optimal_overhaul_interval()` returned a raw
+  `scipy.optimize` result object instead of the interval, performed an
+  unbounded search from an arbitrary starting point, and the class
+  docstring described the wrong class ("stores the non-repairable
+  information"). All fixed in the rebuild; the previously commented-out
+  `test_repairable.py` is resurrected with closed-form validation.
 
 ### Removed
 - Dead/unused `repyability/rbd/rbd_args_check.py` module and the never-

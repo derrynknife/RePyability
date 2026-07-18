@@ -4,7 +4,12 @@ from scipy.interpolate import interp1d
 from scipy.optimize import minimize
 from surpyval import ExactEventTime, NonParametric, Parametric
 
-from repyability.rbd._model_utils import distribution_name, model_mean
+from repyability.maintenance import MaintenancePolicy
+from repyability.rbd._model_utils import (
+    distribution_name,
+    is_exponential,
+    model_mean,
+)
 from repyability.rbd.standby_node import StandbyModel
 
 FAILURE = 1
@@ -12,8 +17,24 @@ REPLACE = 0
 
 
 class NonRepairable:
-    """
-    Class to store the non-repairable information
+    """A component renewed by replacement ("as good as new").
+
+    Pairs a lifetime (reliability) model with a time-to-replace model for
+    a unit that cannot be repaired in place: every failure or planned
+    replacement fits a new unit, so each cycle is a statistical renewal.
+
+    It plays two roles:
+
+    - Standalone, it prices the classic *age-replacement* policy — replace
+      preventively at age ``t`` (planned, cost ``cp``) or on failure
+      (unplanned, cost ``cu > cp``) — via ``find_optimal_replacement()``
+      and ``optimal_replacement_policy()``.
+    - Inside ``RepairableRBD``, it is the per-component representation
+      used by the availability engine (components are "repaired" by as-new
+      replacement, which is exactly the renewal this class models).
+
+    Contrast with ``Repairable``, which models *minimal repair* ("as bad
+    as old") and the overhaul-interval policy.
     """
 
     def __init__(
@@ -40,7 +61,15 @@ class NonRepairable:
 
         self.reliability = reliability
         self.time_to_replace = time_to_replace
-        self.cost_rate = np.vectorize(self._cost_rate)
+        self.cost_rate = np.vectorize(
+            self._cost_rate,
+            doc=(
+                "Long-run cost per unit time of an age-replacement policy "
+                "with replacement age t:\n"
+                "(cp * R(t) + cu * F(t)) / integral_0^t R(u) du.\n"
+                "Vectorised over t."
+            ),
+        )
         self.__next_event_type = FAILURE
 
     def set_costs_planned_and_unplanned(self, cp, cu):
@@ -110,6 +139,14 @@ class NonRepairable:
 
     def find_optimal_replacement(self, options=None):
         if self.model_parameterization == "parametric":
+            if is_exponential(self.reliability) and not (
+                getattr(self.reliability, "offset", False)
+                or getattr(self.reliability, "zi", False)
+                or getattr(self.reliability, "lfp", False)
+            ):
+                # Memoryless lifetime: an old unit is statistically as good
+                # as a new one, so preventive replacement never pays.
+                return np.inf
             if distribution_name(self.reliability) == "Weibull":
                 if self.reliability.offset:
                     pass
@@ -155,6 +192,28 @@ class NonRepairable:
             optimal_idx = np.argmin(costs)
             optimal = x_search[optimal_idx]
         return optimal
+
+    def optimal_replacement_policy(self) -> MaintenancePolicy:
+        """The optimal age-replacement policy as a typed result.
+
+        Returns a ``MaintenancePolicy`` whose ``interval`` is the
+        cost-optimal replacement age and whose ``cost_rate`` is the
+        long-run cost per unit time under it. When preventive replacement
+        never pays (no aging — e.g. an exponential lifetime, or a Weibull
+        with shape <= 1) the interval is ``inf`` and the cost rate is the
+        run-to-failure rate ``cu / MTTF``.
+        """
+        if not hasattr(self, "cp"):
+            raise ValueError(
+                "costs not set: call set_costs_planned_and_unplanned"
+                "(cp, cu) first"
+            )
+        interval = self.find_optimal_replacement()
+        if np.isinf(interval):
+            rate = self.cu / model_mean(self.reliability)
+        else:
+            rate = float(self._cost_rate(interval))
+        return MaintenancePolicy(interval=float(interval), cost_rate=rate)
 
     def reset(self):
         self.__next_event_type = FAILURE

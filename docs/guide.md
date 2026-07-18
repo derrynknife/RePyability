@@ -200,6 +200,66 @@ result.criticalities.failure_criticality_index.per_system_failure
 
 See [`Criticalities`][repyability.Criticalities] for what each measure means.
 
+## Maintenance policies: replacement vs overhaul
+
+Two component-level classes price preventive maintenance. They sit at the
+two ends of the repair-effectiveness spectrum:
+
+- [`NonRepairable`][repyability.NonRepairable] — the unit is **replaced** on
+  failure ("as good as new"): every cycle is a statistical renewal. This is
+  also the component model `RepairableRBD` uses internally, because RBD
+  repairs are assumed to restore a component to as-new.
+- [`Repairable`][repyability.Repairable] — the unit is patched by **minimal
+  repair** ("as bad as old"): fixes restore function but not age, so
+  failures arrive ever faster, following a recurrent-event model (its
+  cumulative intensity `cif`, e.g. surpyval's Crow-AMSAA). Because that
+  violates the renewal assumption, `Repairable` is a standalone tool — it
+  is **not** a valid RBD node model.
+
+### Age replacement (`NonRepairable`)
+
+Replace preventively at age `t` (planned, cost `cp`) or on failure
+(unplanned, cost `cu > cp`); minimise the long-run cost rate:
+
+```python
+import surpyval as surv
+from repyability import NonRepairable
+
+comp = NonRepairable(surv.Weibull.from_params([1000, 2.5]))
+comp.set_costs_planned_and_unplanned(1, 5)
+
+comp.find_optimal_replacement()       # optimal replacement age (float)
+policy = comp.optimal_replacement_policy()
+policy.interval, policy.cost_rate     # typed MaintenancePolicy result
+```
+
+If the lifetime shows no aging (an exponential, or a Weibull with shape
+&le; 1), preventive replacement never pays: the interval is `inf` and the
+policy cost rate is the run-to-failure rate `cu / MTTF`.
+
+### Overhaul under minimal repair (`Repairable`)
+
+Minimal repairs cost `cr` each; an overhaul costs `co > cr` and renews the
+unit. The optimal overhaul interval minimises
+`(cr * Lambda(t) + co) / t`, where `Lambda` is the cumulative intensity —
+the classic Barlow-Hunter policy:
+
+```python
+import surpyval as surv
+from repyability import Repairable
+
+unit = Repairable(surv.CrowAMSAA.from_params([1500, 1.5]))
+unit.set_repair_and_overhaul_costs(100, 10_000)
+
+unit.find_optimal_overhaul_interval()   # inf if the unit never wears out
+policy = unit.optimal_overhaul_policy()
+policy.interval, policy.cost_rate
+```
+
+A finite optimum requires wear-out (Crow-AMSAA `beta > 1`). For HPP-like
+behaviour (`beta <= 1`) repairs never become more frequent, overhauls never
+pay, and the interval is `inf` with the cost rate of repairs alone.
+
 ## Saving and loading
 
 An RBD round-trips to a plain, JSON-friendly structure, so it can be saved,

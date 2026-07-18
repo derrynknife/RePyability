@@ -136,3 +136,38 @@ def test_cost_rates():
     assert pytest.approx(nr_model._log_cost_rate(1000)) == np.log(
         nr_model.cost_rate(1000)
     )
+
+
+def test_exponential_never_replaced():
+    # Memoryless lifetime: an old unit is statistically as good as new,
+    # so preventive replacement can never pay.
+    from surpyval import Exponential
+
+    nr_model = NonRepairable(Exponential.from_params([0.001]))
+    nr_model.set_costs_planned_and_unplanned(1, 5)
+    assert nr_model.find_optimal_replacement() == np.inf
+
+    policy = nr_model.optimal_replacement_policy()
+    assert policy.interval == np.inf
+    # Run-to-failure cost rate: cu / MTTF = 5 / 1000.
+    assert policy.cost_rate == pytest.approx(5 * 0.001)
+
+
+def test_optimal_replacement_policy():
+    surv_model = Weibull.from_params((1000, 2.5))
+    nr_model = NonRepairable(surv_model)
+    nr_model.set_costs_planned_and_unplanned(1, 5)
+
+    policy = nr_model.optimal_replacement_policy()
+    assert policy.interval == pytest.approx(
+        nr_model.find_optimal_replacement()
+    )
+    assert policy.cost_rate == pytest.approx(
+        float(nr_model.cost_rate(policy.interval))
+    )
+
+
+def test_policy_requires_costs():
+    nr_model = NonRepairable(Weibull.from_params((1000, 2.5)))
+    with pytest.raises(ValueError, match="costs not set"):
+        nr_model.optimal_replacement_policy()

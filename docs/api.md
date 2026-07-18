@@ -42,3 +42,5 @@ the top-level `repyability` package).
 ::: repyability.FailureCriticalityIndex
 
 ::: repyability.RestorationCriticalityIndex
+
+::: repyability.MaintenancePolicy
