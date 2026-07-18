@@ -33,6 +33,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Enable Pages (with the GitHub Actions build type) if it isn't already,
+      # using the workflow's pages:write token — so no manual repo setting is
+      # needed. Harmless once Pages is enabled.
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
       - name: Set-up Python
         uses: actions/setup-python@v5
         with:
