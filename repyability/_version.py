@@ -5,4 +5,4 @@ Kept deliberately free of imports so the build backend can read
 dependencies) via ``[tool.setuptools.dynamic]`` in ``pyproject.toml``.
 """
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"

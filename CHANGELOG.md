@@ -9,6 +9,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet._
 
+## [0.5.1] - 2026-07-18
+
+### Fixed
+- **Clean installs of 0.5.0 could not `import repyability`.** Importing
+  `surpyval` (which RePyability does at load time) failed with
+  `ModuleNotFoundError: No module named 'joblib'`: surpyval 0.11 imported
+  joblib unconditionally without declaring it as a dependency, and
+  RePyability listed joblib only in its `dev` extra, so a plain
+  `pip install repyability` never pulled it in. Fixed by requiring
+  `surpyval >= 0.13`, which declares `joblib` as a dependency — a plain
+  install now imports cleanly.
+
+### Changed
+- Bumped the `surpyval` requirement from `>=0.11.1,<0.12` to `>=0.13,<0.14`.
+  surpyval 0.13 relocated its recurrent-event models
+  (`surpyval.CrowAMSAA` → `surpyval.recurrent.CrowAMSAA`, and likewise
+  `Duane`); `Repairable` is unaffected (it only needs an object exposing
+  `cif`), and the docs and tests were updated to the new import path.
+- Dropped the now-redundant `joblib` entry from the `dev` extra (surpyval
+  provides it transitively).
+
 ## [0.5.0] - 2026-07-18
 
 This release focuses on packaging, tooling, correctness and API-consistency

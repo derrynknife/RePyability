@@ -245,10 +245,10 @@ unit. The optimal overhaul interval minimises
 the classic Barlow-Hunter policy:
 
 ```python
-import surpyval as surv
+from surpyval.recurrent import CrowAMSAA
 from repyability import Repairable
 
-unit = Repairable(surv.CrowAMSAA.from_params([1500, 1.5]))
+unit = Repairable(CrowAMSAA.from_params([1500, 1.5]))
 unit.set_repair_and_overhaul_costs(100, 10_000)
 
 unit.find_optimal_overhaul_interval()   # inf if the unit never wears out
