@@ -189,8 +189,8 @@ class RepairableRBD(RBD):
 
         super().__init__(
             edges,
-            k,
             set(components.keys()),
+            k,
             input_node,
             output_node,
             on_infeasible_rbd,
