@@ -373,6 +373,22 @@ every repair a renewal) the `NonRepairable` boundary. `n_simulations` sets the
 Monte-Carlo sample size and `max_interval` the search horizon — raise it if the
 optimum (which grows as repairs get more effective) sits beyond the default.
 
+Instead of renewing at a fixed *age*, you can renew at a fixed **failure
+count** — repair on each failure and replace at the N-th:
+
+```python
+unit.optimal_failure_limit_policy(seed=0)   # -> FailureLimitPolicy(failure_count, cost_rate)
+unit.expected_time_to_nth_failure(5, seed=0)  # E[T_5] by simulation
+```
+
+For the minimal-repair (`q = 1`, power-law) limit, `E[T_n]` is exact and needs
+no simulation:
+
+```python
+from repyability import minimal_repair_time_to_nth_failure
+minimal_repair_time_to_nth_failure(alpha=1500, beta=2.0, n=5)
+```
+
 ## Saving and loading
 
 An RBD round-trips to a plain, JSON-friendly structure, so it can be saved,

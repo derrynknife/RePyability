@@ -20,6 +20,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   / `find_optimal_overhaul_interval` take `seed`, `n_simulations` and
   `max_interval` for a reproducible, bounded search, and `is_simulated` reports
   which path a `Repairable` uses.
+- **Replace-at-N-th-failure policy on `Repairable`.** As an alternative to
+  renewing at a fixed age, `optimal_failure_limit_policy` /
+  `find_optimal_replacement_failure_count` price repairing on each failure and
+  replacing at the N-th, minimising `(cr·(n-1) + co) / E[T_n]`, and return a new
+  typed `FailureLimitPolicy(failure_count, cost_rate)`. `E[T_n]` comes from a
+  seeded simulation (`expected_time_to_nth_failure`); for the minimal-repair
+  (power-law) limit the exact closed form is exposed as
+  `minimal_repair_time_to_nth_failure(alpha, beta, n)`.
 
 ### Changed
 - **Harmonised the RBD constructor signatures.** The base ``RBD`` now takes

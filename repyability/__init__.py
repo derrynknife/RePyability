@@ -7,7 +7,7 @@ directly from the top-level package, e.g.::
 """
 
 from repyability._version import __version__
-from repyability.maintenance import MaintenancePolicy
+from repyability.maintenance import FailureLimitPolicy, MaintenancePolicy
 from repyability.non_repairable import NonRepairable
 from repyability.rbd.helper_classes import (
     PerfectReliability,
@@ -28,7 +28,10 @@ from repyability.rbd.results import (
     UpDownImportance,
 )
 from repyability.rbd.standby_node import StandbyModel
-from repyability.repairable import Repairable
+from repyability.repairable import (
+    Repairable,
+    minimal_repair_time_to_nth_failure,
+)
 
 __all__ = [
     "__version__",
@@ -46,6 +49,7 @@ __all__ = [
     "PerfectReliability",
     "PerfectUnreliability",
     "NodeState",
+    "minimal_repair_time_to_nth_failure",
     # Result types
     "AvailabilityResult",
     "ConfidenceInterval",
@@ -54,4 +58,5 @@ __all__ = [
     "FailureCriticalityIndex",
     "RestorationCriticalityIndex",
     "MaintenancePolicy",
+    "FailureLimitPolicy",
 ]

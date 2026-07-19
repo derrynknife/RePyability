@@ -26,3 +26,24 @@ class MaintenancePolicy:
 
     interval: float
     cost_rate: float
+
+
+@dataclass(frozen=True)
+class FailureLimitPolicy:
+    """An optimal failure-limit (replace-at-N-th-failure) policy.
+
+    Returned by ``Repairable.optimal_failure_limit_policy()``: rather than
+    renewing at a fixed *age*, the unit is repaired on each failure and
+    replaced at the ``failure_count``-th failure.
+
+    Attributes
+    ----------
+    failure_count : int
+        The optimal number of failures per replacement cycle (repairs on the
+        first ``failure_count - 1`` failures, then replace on the last).
+    cost_rate : float
+        The long-run cost per unit time under the policy.
+    """
+
+    failure_count: int
+    cost_rate: float
