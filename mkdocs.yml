@@ -51,5 +51,7 @@ markdown_extensions:
 
 nav:
   - Home: index.md
+  - Tutorial: tutorial.md
   - User guide: guide.md
+  - Concepts: concepts.md
   - API reference: api.md

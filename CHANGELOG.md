@@ -35,6 +35,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nodes raise if given a state. State is transient input — the structure still
   persists via serialisation.
 
+### Documentation
+- **Doctest-backed examples** on the primary public methods (`sf`/`ff`, the
+  importance measures, `time_to_reliability`/`bx_life`, the condition-based
+  methods, `mean_availability`, and serialisation). They run in CI via
+  `--doctest-modules`, so the documented examples cannot silently rot. Examples
+  use deterministic (non-simulated) quantities so they need no seeding.
+- **Expanded documentation site**: a start-to-finish
+  [Tutorial](https://derrynknife.github.io/RePyability/tutorial/) and a
+  [Concepts](https://derrynknife.github.io/RePyability/concepts/) reference
+  (path/cut sets, exact computation, choosing an importance measure, and
+  condition-based conditioning).
+
 ## [0.5.1] - 2026-07-18
 
 ### Fixed
