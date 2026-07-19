@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [0.6.0] - 2026-07-19
+
+The **Condition-Based Reliability** milestone: evaluate a system from the
+current, sensor-known state of each component (a "digital twin"), and round out
+the importance suite with design-time and data-targeting measures.
+
 ### Added
 - **`structural_importance()`** on every RBD: the Birnbaum importance with all
   node reliabilities at 1/2 — a probability-free, design-time ranking of where

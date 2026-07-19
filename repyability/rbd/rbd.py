@@ -677,7 +677,9 @@ class RBD:
         >>> {k: round(v, 4) for k, v in sorted(si.items())}
         {'a': 0.5, 'b': 0.5}
         """
-        node_probabilities = {node: np.full(1, 0.5) for node in self.nodes}
+        node_probabilities: dict[Any, ArrayLike] = {
+            node: np.full(1, 0.5) for node in self.nodes
+        }
         node_probabilities = self._probabilities_with_overrides(
             node_probabilities, working_nodes, broken_nodes
         )

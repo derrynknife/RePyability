@@ -45,7 +45,9 @@ dev = [
     "isort>=5.12",
     "flake8>=6.0",
     "flake8-pyproject>=1.2",
-    "mypy>=1.8",
+    # Pinned (like black) so a new mypy release can't fail CI on code that
+    # type-checks locally; bump deliberately.
+    "mypy==2.3.0",
     "pytest>=7.0",
     "coverage>=7.0",
     "pre-commit>=3.0",
