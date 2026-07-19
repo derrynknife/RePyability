@@ -7,7 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_Nothing yet._
+### Added
+- **`structural_importance()`** on every RBD: the Birnbaum importance with all
+  node reliabilities at 1/2 — a probability-free, design-time ranking of where
+  each node is pivotal in the structure. It depends only on the diagram, so it
+  is identical for a `NonRepairableRBD` and a `RepairableRBD` on the same
+  layout, and honours the usual `working_nodes`/`broken_nodes` conditioning.
+- **`parameter_sensitivity(t)`** on `NonRepairableRBD`: the sensitivity of
+  system reliability to each node's distribution parameters,
+  `dR_sys/d_theta = birnbaum_importance(node) * d sf_node/d_theta`. The
+  parameter derivative is computed numerically (via surpyval's `from_params`),
+  so it applies to any parametric model without per-distribution formulae.
+  Composite and non-parametric nodes are omitted; forced nodes report zero.
 
 ## [0.5.1] - 2026-07-18
 

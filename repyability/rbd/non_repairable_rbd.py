@@ -24,7 +24,7 @@ from surpyval import NonParametric
 
 from repyability.utils.wrappers import conditional_survival, numpy_seed
 
-from ._model_utils import is_fixed_probability
+from ._model_utils import is_fixed_probability, parametric_spec
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .rbd import RBD
 from .repeated_node import RepeatedNode
@@ -76,6 +76,42 @@ def check_x(func):
         return result
 
     return wrap
+
+
+def _dsf_dparam(cls, params, j, x_arr, rel_step) -> np.ndarray:
+    """Partial derivative of a distribution's ``sf`` at ``x_arr`` with respect
+    to its ``j``-th parameter, by finite difference.
+
+    ``cls.from_params`` rebuilds the distribution with a perturbed parameter,
+    so this works for any surpyval parametric distribution without hard-coding
+    per-distribution derivative formulae. A central difference is used where
+    both perturbations are valid; if one perturbation falls outside a
+    parameter's admissible range (e.g. a probability leaving ``[0, 1]``) it
+    falls back to a one-sided difference about the unperturbed value.
+    """
+    theta = params[j]
+    h = rel_step * abs(theta) if theta != 0.0 else rel_step
+
+    def perturbed(delta):
+        trial = list(params)
+        trial[j] = theta + delta
+        try:
+            return np.asarray(cls.from_params(trial).sf(x_arr), dtype=float)
+        except Exception:
+            return None
+
+    up = perturbed(h)
+    down = perturbed(-h)
+    if up is not None and down is not None:
+        return (up - down) / (2.0 * h)
+    # A perturbation hit a parameter bound; fall back to a one-sided
+    # difference about the unperturbed value.
+    base = np.asarray(cls.from_params(list(params)).sf(x_arr), dtype=float)
+    if up is not None:
+        return (up - base) / h
+    if down is not None:
+        return (base - down) / h
+    return np.full(x_arr.shape, np.nan)
 
 
 class NonRepairableRBD(RBD):
@@ -1004,3 +1040,93 @@ class NonRepairableRBD(RBD):
             stacklevel=2,
         )
         return self.fussell_vesely(x, fv_type)
+
+    def parameter_sensitivity(
+        self,
+        x: Optional[ArrayLike] = None,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        rel_step: float = 1e-5,
+    ) -> Dict[Any, Dict[str, Union[float, np.ndarray]]]:
+        """Sensitivity of the system reliability to each node's distribution
+        parameters at time/s ``x``.
+
+        For node ``i`` with parameter ``theta``, the sensitivity is
+
+        ``d R_sys / d theta = B_i(x) * d sf_i(x; theta) / d theta``
+
+        where ``B_i`` is the Birnbaum importance of node ``i`` (how much the
+        system reliability moves per unit change in that node's reliability)
+        and ``d sf_i / d theta`` is how much the node's reliability moves per
+        unit change in the parameter. The parameter derivative is taken
+        numerically (a central finite difference, rebuilding the distribution
+        with ``from_params``), so it applies to any parametric surpyval model
+        without per-distribution formulae. It answers "which fitted parameter,
+        if it were a little different, would move system reliability the most"
+        -- e.g. to target data collection or to gauge the impact of estimation
+        uncertainty.
+
+        Only nodes with reconstructable distribution parameters are included;
+        composite nodes (a nested RBD, a standby arrangement, a repeated node)
+        and fitted non-parametric models have no parameters to perturb and are
+        omitted. A node forced via ``working_nodes``/``broken_nodes`` is pinned
+        independently of its parameters, so its sensitivities are reported as
+        zero.
+
+        Parameters
+        ----------
+        x : ArrayLike
+            Time/s as a number or iterable.
+        working_nodes : Collection[Hashable], optional
+            Condition on these nodes being perfectly reliable, by default None.
+        broken_nodes : Collection[Hashable], optional
+            Condition on these nodes having failed, by default None.
+        rel_step : float, optional
+            Relative step used for the finite difference, by default ``1e-5``.
+
+        Returns
+        -------
+        dict[Any, dict[str, float | np.ndarray]]
+            ``{node_name: {parameter_name: sensitivity}}``. Sensitivities are
+            floats for scalar ``x`` and arrays for array ``x``.
+        """
+        if x is None:
+            if self.is_fixed:
+                x = 1.0
+            else:
+                raise ValueError(
+                    "x is required: this RBD is time-varying (at least one "
+                    "node model's probability depends on time)."
+                )
+        scalar_in = np.ndim(x) == 0
+        x_arr = np.atleast_1d(np.asarray(x, dtype=float))
+
+        # Birnbaum importance validates the override sets and honours them.
+        birnbaum = self.birnbaum_importance(x_arr, working_nodes, broken_nodes)
+        forced = set(working_nodes or ()) | set(broken_nodes or ())
+
+        def _out(value) -> Union[float, np.ndarray]:
+            arr = np.asarray(value, dtype=float)
+            return float(arr.reshape(-1)[0]) if scalar_in else arr
+
+        sensitivities: Dict[Any, Dict[str, Union[float, np.ndarray]]] = {}
+        for node_name, model in self.reliabilities.items():
+            spec = parametric_spec(model)
+            if spec is None:
+                # Composite / non-parametric node: no parameters to perturb.
+                continue
+            cls, params, names = spec
+            node_out: Dict[str, Union[float, np.ndarray]] = {}
+            if node_name in forced:
+                # Pinned regardless of its parameters -> zero sensitivity.
+                zero = np.zeros_like(x_arr)
+                for name in names:
+                    node_out[name] = _out(zero)
+                sensitivities[node_name] = node_out
+                continue
+            b_i = np.asarray(birnbaum[node_name], dtype=float)
+            for j, name in enumerate(names):
+                dsf = _dsf_dparam(cls, params, j, x_arr, rel_step)
+                node_out[name] = _out(b_i * dsf)
+            sensitivities[node_name] = node_out
+        return sensitivities
