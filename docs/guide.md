@@ -289,12 +289,15 @@ two ends of the repair-effectiveness spectrum:
   failure ("as good as new"): every cycle is a statistical renewal. This is
   also the component model `RepairableRBD` uses internally, because RBD
   repairs are assumed to restore a component to as-new.
-- [`Repairable`][repyability.Repairable] — the unit is patched by **minimal
-  repair** ("as bad as old"): fixes restore function but not age, so
-  failures arrive ever faster, following a recurrent-event model (its
-  cumulative intensity `cif`, e.g. surpyval's Crow-AMSAA). Because that
-  violates the renewal assumption, `Repairable` is a standalone tool — it
-  is **not** a valid RBD node model.
+- [`Repairable`][repyability.Repairable] — the unit is patched by **repair**
+  that rejuvenates it anywhere from not at all (**minimal repair**, "as bad as
+  old") to partially (**imperfect repair** / generalized renewal), then
+  periodically **overhauled or replaced** to as-new. It prices the same policy
+  from the model's expected number of failures `E[N(t)]`: analytic `cif` for
+  minimal repair (e.g. surpyval's Crow-AMSAA) or seeded `mcf` for imperfect
+  repair (a fitted `GeneralizedRenewal`, Kijima I/II). Because a repaired unit
+  does not renew, `Repairable` is a standalone tool — it is **not** a valid RBD
+  node model.
 
 ### Age replacement (`NonRepairable`)
 
@@ -339,6 +342,36 @@ policy.interval, policy.cost_rate
 A finite optimum requires wear-out (Crow-AMSAA `beta > 1`). For HPP-like
 behaviour (`beta <= 1`) repairs never become more frequent, overhauls never
 pay, and the interval is `inf` with the cost rate of repairs alone.
+
+### Imperfect repair (`Repairable`)
+
+Real repairs sit between the extremes: each one rejuvenates the unit
+*partially* (a restoration factor `0 < q < 1` — the generalized-renewal /
+Kijima virtual-age model), so failures still accelerate, but more slowly than
+under minimal repair. Give `Repairable` a fitted surpyval `GeneralizedRenewal`
+and the *same* overhaul/replacement policy applies — only now `E[N(t)]` has no
+closed form and is estimated by simulation, so pass a `seed` for a reproducible
+result:
+
+```python
+from surpyval import Weibull
+from surpyval.recurrent import GeneralizedRenewal
+from repyability import Repairable
+
+model = GeneralizedRenewal.fit_from_parameters(
+    [1500, 2.0], q=0.4, kijima="i", dist=Weibull
+)
+unit = Repairable(model)                 # unit.is_simulated is True
+unit.set_repair_and_overhaul_costs(100, 10_000)
+
+policy = unit.optimal_overhaul_policy(seed=0)   # seeded → reproducible
+policy.interval, policy.cost_rate
+```
+
+Minimal repair is the `q = 1` edge of this model and perfect repair (`q = 0`,
+every repair a renewal) the `NonRepairable` boundary. `n_simulations` sets the
+Monte-Carlo sample size and `max_interval` the search horizon — raise it if the
+optimum (which grows as repairs get more effective) sits beyond the default.
 
 ## Saving and loading
 

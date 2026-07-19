@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Imperfect repair (generalized renewal / Kijima) in `Repairable`.** The
+  `Repairable` component now spans the whole repair-effectiveness spectrum
+  rather than only minimal repair: it sources the expected number of failures
+  `E[N(t)]` from the model it is given — analytic `cif` for minimal repair
+  (unchanged; e.g. a surpyval Crow-AMSAA) or a seeded `mcf` for imperfect
+  repair (a fitted `GeneralizedRenewal`, Kijima I/II). Minimal repair is the
+  `q = 1` special case; perfect repair (`q = 0`) is the `NonRepairable`
+  boundary. The overhaul/replacement-interval policy is unchanged in form
+  `(cr·E[N(t)] + co)/t`; for a simulation-backed model `optimal_overhaul_policy`
+  / `find_optimal_overhaul_interval` take `seed`, `n_simulations` and
+  `max_interval` for a reproducible, bounded search, and `is_simulated` reports
+  which path a `Repairable` uses.
+
 ### Changed
 - **Harmonised the RBD constructor signatures.** The base ``RBD`` now takes
   ``(edges, nodes, k, ...)`` instead of ``(edges, k, nodes, ...)``, so all
