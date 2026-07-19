@@ -323,6 +323,28 @@ class NonRepairableRBD(RBD):
         ValueError
             If a working/broken node is unknown, is the input/output node, is
             in both sets, or is a repeat of another node.
+
+        Examples
+        --------
+        Two components in parallel, each 90% reliable, so the system is
+        ``1 - 0.1 * 0.1 = 0.99`` reliable:
+
+        >>> from surpyval import FixedEventProbability
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        ...     {
+        ...         "a": FixedEventProbability.from_params(0.1),
+        ...         "b": FixedEventProbability.from_params(0.1),
+        ...     },
+        ... )
+        >>> round(rbd.sf(), 4)
+        0.99
+
+        Conditioning on node ``"a"`` having failed leaves only ``"b"``:
+
+        >>> round(rbd.sf(broken_nodes=["a"]), 4)
+        0.9
         """
         # Normalise the (optional) node overrides into sets for O(1) lookup.
         working_nodes = set() if working_nodes is None else set(working_nodes)
@@ -360,6 +382,20 @@ class NonRepairableRBD(RBD):
         float or np.ndarray
             The system unreliability: a float for scalar ``x``, an array for
             array ``x``.
+
+        Examples
+        --------
+        >>> from surpyval import FixedEventProbability
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        ...     {
+        ...         "a": FixedEventProbability.from_params(0.1),
+        ...         "b": FixedEventProbability.from_params(0.1),
+        ...     },
+        ... )
+        >>> round(rbd.ff(), 4)
+        0.01
         """
         return 1 - self.sf(x, *args, **kwargs)
 
@@ -733,6 +769,17 @@ class NonRepairableRBD(RBD):
             If ``target`` is not in (0, 1), if the RBD is fixed-probability
             (reliability is constant in time), or if ``target`` exceeds the
             system reliability at ``t = 0`` (so it is never reached).
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {"c": surv.Weibull.from_params([100, 2])},
+        ... )
+        >>> round(rbd.time_to_reliability(0.9), 2)
+        32.46
         """
         return self._invert_reliability(
             lambda t: float(self.sf(t, **kwargs)), target, upper_bound
@@ -796,6 +843,19 @@ class NonRepairableRBD(RBD):
             The percentage failed, in (0, 100).
         **kwargs :
             Any sf() arguments (e.g. working_nodes, broken_nodes, method).
+
+        Examples
+        --------
+        The B10 life (10% failed) of a single Weibull component:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {"c": surv.Weibull.from_params([100, 2])},
+        ... )
+        >>> round(rbd.bx_life(10), 2)
+        32.46
         """
         if not 0.0 < x < 100.0:
             raise ValueError("x must be a percentage in (0, 100).")
@@ -918,6 +978,20 @@ class NonRepairableRBD(RBD):
         forward (its per-demand uncertainty is resolved by observing it
         alive). Composite / dynamic nodes (standby, repeated, nested RBD) are
         not supported here in this release and raise if given a state.
+
+        Examples
+        --------
+        A component 40 hours into life is less reliable over the next 50 than
+        a new one would be:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, NodeState
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {"c": surv.Weibull.from_params([100, 2])},
+        ... )
+        >>> round(rbd.sf_given_state(50, {"c": NodeState(age=40)}), 4)
+        0.522
         """
         if state is None:
             state = {}
@@ -952,6 +1026,17 @@ class NonRepairableRBD(RBD):
         -------
         float
             The remaining time until ``R_sys(t | state) == target``.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, NodeState
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {"c": surv.Weibull.from_params([100, 2])},
+        ... )
+        >>> round(rbd.remaining_life(0.9, {"c": NodeState(age=40)}), 2)
+        11.51
         """
         if state is None:
             state = {}
@@ -1071,6 +1156,24 @@ class NonRepairableRBD(RBD):
         dict[Any, float | np.ndarray]
             Dictionary with node names as keys and Birnbaum importances as
             values (floats for scalar ``x``, arrays for array ``x``)
+
+        Examples
+        --------
+        In a two-component parallel system each node's Birnbaum importance is
+        the probability the *other* node has failed:
+
+        >>> from surpyval import FixedEventProbability
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        ...     {
+        ...         "a": FixedEventProbability.from_params(0.1),
+        ...         "b": FixedEventProbability.from_params(0.1),
+        ...     },
+        ... )
+        >>> bi = rbd.birnbaum_importance()
+        >>> {k: round(v, 4) for k, v in sorted(bi.items())}
+        {'a': 0.1, 'b': 0.1}
         """
         node_probabilities = self._probabilities_with_overrides(
             self.node_sf(x), working_nodes, broken_nodes

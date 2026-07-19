@@ -658,6 +658,24 @@ class RBD:
         -------
         dict[Any, float]
             Node name -> structural importance, in ``[0, 1]``.
+
+        Examples
+        --------
+        In a two-component parallel system each node is pivotal in half of the
+        other node's states, independent of any failure model:
+
+        >>> from surpyval import FixedEventProbability
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        ...     {
+        ...         "a": FixedEventProbability.from_params(0.1),
+        ...         "b": FixedEventProbability.from_params(0.4),
+        ...     },
+        ... )
+        >>> si = rbd.structural_importance()
+        >>> {k: round(v, 4) for k, v in sorted(si.items())}
+        {'a': 0.5, 'b': 0.5}
         """
         node_probabilities = {node: np.full(1, 0.5) for node in self.nodes}
         node_probabilities = self._probabilities_with_overrides(
@@ -692,6 +710,21 @@ class RBD:
 
         Called on a specific subclass, the document's ``type`` must match;
         called on ``RBD`` it dispatches to whichever type the document names.
+
+        Examples
+        --------
+        The structure round-trips through a plain dict, so reliability is
+        preserved:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {"c": surv.Weibull.from_params([100, 2])},
+        ... )
+        >>> restored = NonRepairableRBD.from_dict(rbd.to_dict())
+        >>> round(restored.sf(50), 4) == round(rbd.sf(50), 4)
+        True
         """
         from repyability.rbd.serialisation import rbd_from_dict
 

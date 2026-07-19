@@ -314,6 +314,25 @@ class RepairableRBD(RBD):
         ValueError
             If a working/broken node is unknown, is the input/output node, or
             is in both sets.
+
+        Examples
+        --------
+        A single component with mean time to failure 10 and mean time to
+        repair 1 has long-run availability ``10 / (10 + 1)``:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> rbd = RepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {
+        ...         "c": {
+        ...             "reliability": surv.Exponential.from_params([0.1]),
+        ...             "repairability": surv.Exponential.from_params([1.0]),
+        ...         }
+        ...     },
+        ... )
+        >>> round(rbd.mean_availability(), 4)
+        0.9091
         """
         # Good reference on the Availability of a system
         # https://www.diva-portal.org/smash/get/diva2:986067/FULLTEXT01.pdf

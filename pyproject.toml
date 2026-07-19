@@ -61,6 +61,13 @@ Documentation = "https://derrynknife.github.io/RePyability/"
 Repository = "https://github.com/derrynknife/RePyability"
 Issues = "https://github.com/derrynknife/RePyability/issues"
 
+[tool.pytest.ini_options]
+# Collect the unit tests and, via --doctest-modules, the runnable examples in
+# the library's docstrings, so the documented examples are exercised in CI and
+# cannot silently rot.
+testpaths = ["repyability"]
+addopts = "--doctest-modules"
+
 [tool.setuptools.dynamic]
 version = { attr = "repyability._version.__version__" }
 
