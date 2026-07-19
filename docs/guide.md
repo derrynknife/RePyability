@@ -110,6 +110,41 @@ the analysis, e.g. `rbd.birnbaum_importance(t, broken_nodes=["pump2"])`.
 The same measures exist on `RepairableRBD`, evaluated at the nodes' long-run
 availabilities (no time argument): `rbd.birnbaum_importance()`, etc.
 
+### Structural importance (design-time, model-free)
+
+```python
+rbd.structural_importance()
+```
+
+`structural_importance` is the Birnbaum importance with every node reliability
+set to 1/2 — the fraction of the states of the *other* nodes in which a node is
+pivotal. It depends only on the diagram, not on any failure model, so you can
+rank where redundancy matters most **before** any life data exists. Being a
+structural property, it is identical for a `NonRepairableRBD` and a
+`RepairableRBD` built on the same diagram. For example, a node in series with a
+parallel pair scores `0.75` against the pair's `0.25` each. It accepts the same
+`working_nodes`/`broken_nodes` conditioning.
+
+### Parameter sensitivity (which fitted parameter matters most)
+
+```python
+rbd.parameter_sensitivity(t)
+# {node: {"alpha": dR_sys/d_alpha, "beta": ...}, ...}
+```
+
+`parameter_sensitivity` (on `NonRepairableRBD`) reports how much the system
+reliability moves per unit change in each node's distribution parameters:
+`dR_sys/d_theta = birnbaum_importance(node) * d sf_node/d_theta`. The parameter
+derivative is taken numerically (rebuilding the distribution with a perturbed
+parameter), so it works for any surpyval parametric model without
+per-distribution formulae. Use it to target data collection or to gauge the
+impact of estimation uncertainty. Composite nodes (a nested RBD, a standby
+arrangement, a repeated node) and fitted non-parametric models have no
+parameters to perturb and are omitted; a node forced via
+`working_nodes`/`broken_nodes` is pinned regardless of its parameters and so
+reports zero. As elsewhere, a scalar `t` returns floats and an array returns
+numpy arrays.
+
 ## Repairable systems and availability
 
 A [`RepairableRBD`][repyability.RepairableRBD] takes components with both a

@@ -57,3 +57,30 @@ def model_mean(model) -> float:
         if distribution_name(model) == "ExactEventTime":
             return float(np.atleast_1d(model.params)[0])
         raise
+
+
+def parametric_spec(model):
+    """Return ``(surpyval_class, params, param_names)`` for a parametric node
+    model, or ``None`` when it has no reconstructable distribution parameters
+    (a ``StandbyModel``, ``RepeatedNode``, nested RBD, a repeated node's source
+    name, the perfect-reliability helpers, or a fitted non-parametric model).
+
+    Used by parameter-sensitivity analysis to rebuild a distribution with a
+    perturbed parameter. It is faithful for exactly the models
+    ``serialisation`` round-trips (surpyval parametric distributions), since it
+    goes through the same ``dist name`` + ``from_params`` reconstruction.
+    """
+    import surpyval
+
+    name = distribution_name(model)
+    if name is None:
+        return None
+    cls = getattr(surpyval, name, None)
+    if cls is None or not hasattr(cls, "from_params"):
+        return None
+    params = [float(p) for p in np.atleast_1d(model.params)]
+    dist = getattr(model, "dist", None)
+    names = getattr(dist, "param_names", None)
+    if not names or len(list(names)) != len(params):
+        names = [f"param{i}" for i in range(len(params))]
+    return cls, params, list(names)

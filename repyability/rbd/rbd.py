@@ -635,6 +635,40 @@ class RBD:
         """Returns the list of (intermediate) node names of the RBD."""
         return list(self.nodes)
 
+    def structural_importance(
+        self,
+        working_nodes: Optional[Iterable[Hashable]] = None,
+        broken_nodes: Optional[Iterable[Hashable]] = None,
+    ) -> dict[Any, float]:
+        """Structural (probability-free) importance of every node.
+
+        The fraction of the states of the *other* nodes in which the node is
+        pivotal -- the system works when the node works and fails when it
+        fails, holding the others fixed. Equivalently it is the Birnbaum
+        importance with every node reliability at 1/2, so it depends only on
+        the RBD's structure and not on any failure model -- useful at design
+        time, before any life data exists. It is a structural property, so it
+        is the same for a ``NonRepairableRBD`` and a ``RepairableRBD`` with the
+        same diagram.
+
+        ``working_nodes``/``broken_nodes`` condition on those nodes being
+        forced up/down (validated as elsewhere).
+
+        Returns
+        -------
+        dict[Any, float]
+            Node name -> structural importance, in ``[0, 1]``.
+        """
+        node_probabilities = {node: np.full(1, 0.5) for node in self.nodes}
+        node_probabilities = self._probabilities_with_overrides(
+            node_probabilities, working_nodes, broken_nodes
+        )
+        importance = self._birnbaum_importance(node_probabilities)
+        return {
+            node: float(np.asarray(value).reshape(-1)[0])
+            for node, value in importance.items()
+        }
+
     # -- Serialisation -----------------------------------------------------
 
     def to_dict(self) -> dict:
