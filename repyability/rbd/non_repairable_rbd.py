@@ -910,7 +910,7 @@ class NonRepairableRBD(RBD):
                     f"is a {type(self.reliabilities[node]).__name__}."
                 )
 
-    def _state_node_probabilities(self, x, state) -> Dict[Any, np.ndarray]:
+    def _state_node_probabilities(self, x, state) -> Dict[Any, ArrayLike]:
         """Per-node forward reliability at ``x`` given each node's ``state``.
 
         ``x`` is a 1-d array. Each node conditions on its own current life: a
@@ -919,7 +919,7 @@ class NonRepairableRBD(RBD):
         contributes ``conditional_survival(model, x, X) = sf(X + x) / sf(X)``.
         """
         self._validate_state(state)
-        node_probabilities: Dict[Any, np.ndarray] = {}
+        node_probabilities: Dict[Any, ArrayLike] = {}
         for node_name, model in self.reliabilities.items():
             node_state = state.get(node_name)
             if node_state is None:
