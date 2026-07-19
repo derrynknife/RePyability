@@ -13,6 +13,7 @@ from repyability.rbd.helper_classes import (
     PerfectReliability,
     PerfectUnreliability,
 )
+from repyability.rbd.node_state import NodeState
 from repyability.rbd.non_repairable_rbd import NonRepairableRBD
 from repyability.rbd.rbd import RBD
 from repyability.rbd.repairable_rbd import RepairableRBD
@@ -44,6 +45,7 @@ __all__ = [
     # Helpers
     "PerfectReliability",
     "PerfectUnreliability",
+    "NodeState",
     # Result types
     "AvailabilityResult",
     "ConfidenceInterval",

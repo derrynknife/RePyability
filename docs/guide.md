@@ -145,6 +145,51 @@ parameters to perturb and are omitted; a node forced via
 reports zero. As elsewhere, a scalar `t` returns floats and an array returns
 numpy arrays.
 
+## Condition-based reliability (a "digital twin")
+
+The methods above assume every component is brand new. In a condition-based
+setting each component instead has a *current state* — how much life it has
+already accumulated (from sensors/telemetry), and whether it is still working —
+and each conditions on its own state:
+
+```
+R_i(x | X_i)     = R_i(X_i + x) / R_i(X_i)
+R_sys(x | {X_i}) = system reliability of the conditioned components
+```
+
+You pass the state as a dict of [`NodeState`][repyability.NodeState] (a node
+omitted from the dict is treated as new):
+
+```python
+from repyability import NodeState
+
+state = {
+    "pump1": NodeState(age=1200),           # 1200 hours into life
+    "pump2": NodeState(age=800),
+    "valve": NodeState(alive=False),        # already failed
+}
+
+rbd.sf_given_state(x, state)          # reliability a further x from now
+rbd.remaining_life(0.9, state)        # remaining useful life (RUL) to R=0.9
+rbd.importances_given_state(x, state) # {"birnbaum": {...}, "criticality": {...}}
+```
+
+- `sf_given_state(x, state)` is the conditional generalisation of `sf` — with an
+  empty state it is exactly `sf(x)`, and at `x=0` it is 1 (nothing has failed
+  yet).
+- `remaining_life(target, state)` is the state-conditioned inverse: the further
+  time until system reliability falls to `target`. As redundancy is worn down,
+  RUL collapses toward the weakest surviving path.
+- `importances_given_state(x, state)` re-evaluates the Birnbaum and criticality
+  importances at the conditioned reliabilities, so the ranking reflects the
+  current wear rather than the as-new design.
+
+Only lifetime (time-varying) distributions age; a fixed-probability component
+conditioned on being alive contributes reliability 1 going forward. This
+release supports ordinary distribution components — dynamic nodes (standby) and
+composite nodes raise if given a state. The structure is static (persist it via
+serialisation); state is transient input you supply per evaluation.
+
 ## Repairable systems and availability
 
 A [`RepairableRBD`][repyability.RepairableRBD] takes components with both a

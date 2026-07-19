@@ -104,6 +104,10 @@ rbd.mean_availability()
 
 ## Where to next
 
+- **[Tutorial](tutorial.md)** — a start-to-finish worked example: model a
+  system, find its weak link, and read its remaining life from live state.
 - **[User guide](guide.md)** — building RBDs, reliability, importance measures,
-  forcing nodes, and availability results.
+  forcing nodes, condition-based evaluation, and availability results.
+- **[Concepts](concepts.md)** — the theory: path/cut sets, choosing an
+  importance measure, and how conditioning works.
 - **[API reference](api.md)** — every public class and method.
