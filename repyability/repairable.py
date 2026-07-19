@@ -36,17 +36,38 @@ renew on repair, so a repairable unit modelled here is not a valid RBD node
 model — ``Repairable`` is a standalone component-level tool.
 """
 
+import warnings
 from typing import Optional, Union
 
 import numpy as np
 from scipy.optimize import minimize_scalar
+from scipy.special import gammaln
 
-from repyability.maintenance import MaintenancePolicy
+from repyability.maintenance import FailureLimitPolicy, MaintenancePolicy
 from repyability.utils.wrappers import numpy_seed
 
 # Simulation draws used to estimate E[N(t)] for a simulation-backed
 # (imperfect-repair) model. Ignored for analytic (``cif``) models.
 _DEFAULT_N_SIMULATIONS = 1000
+
+# Default largest failure count searched by the replace-at-N-th-failure policy.
+_DEFAULT_MAX_FAILURES = 30
+
+
+def minimal_repair_time_to_nth_failure(
+    alpha: float, beta: float, n: int
+) -> float:
+    """Expected time to the ``n``-th failure of a minimal-repair (power-law /
+    Weibull-baseline) process: ``alpha * Gamma(n + 1/beta) / Gamma(n)``.
+
+    A closed form for the ``q = 1`` (minimal repair) limit, exact and cheap;
+    used both directly and to anchor the simulated
+    :meth:`Repairable.expected_time_to_nth_failure`.
+    """
+    if n < 1:
+        raise ValueError("n must be a positive integer.")
+    return float(alpha * np.exp(gammaln(n + 1.0 / beta) - gammaln(n)))
+
 
 # Default search horizon for the simulated optimum, as a multiple of the
 # baseline mean-time-to-first-failure. Imperfect repair pushes the optimal
@@ -343,3 +364,141 @@ class Repairable:
         """
         interval, rate = self._optimise(seed, n_simulations, max_interval)
         return MaintenancePolicy(interval=interval, cost_rate=rate)
+
+    # -- Replace-at-N-th-failure policy ------------------------------------
+
+    def _require_simulation(self) -> None:
+        if self._analytic:
+            raise ValueError(
+                "the N-th-failure policy needs an imperfect-repair "
+                "(simulation-backed) model; for a power-law minimal-repair "
+                "process use minimal_repair_time_to_nth_failure() directly."
+            )
+
+    def _expected_times_to_failures(
+        self, max_failures: int, seed: Optional[int], n_simulations: int
+    ) -> np.ndarray:
+        """``[E[T_1], ..., E[T_k]]`` from a single seeded count-terminated
+        simulation, where ``k <= max_failures``.
+
+        Simulating to the ``max_failures``-th failure records every earlier
+        failure time too, so one simulation yields the whole curve, and for
+        each item the ``n``-th failure time is its ``n``-th ordered event. The
+        surpyval simulator can become unstable (NaN interarrival times) at high
+        failure counts for near-minimal repair; if it does, the horizon is
+        halved until it succeeds and the (shorter) achievable curve is
+        returned with a warning.
+        """
+        self._require_simulation()
+        with numpy_seed(seed):
+            achievable = max_failures
+            result = None
+            while achievable >= 1:
+                try:
+                    result = self.model.count_terminated_simulation(
+                        achievable, items=n_simulations, seed=seed
+                    )
+                    break
+                except (ValueError, FloatingPointError):
+                    achievable //= 2
+            if result is None:
+                raise ValueError(
+                    "could not simulate the failure process; the model may be "
+                    "degenerate."
+                )
+        if achievable < max_failures:
+            warnings.warn(
+                "the failure simulator became unstable beyond "
+                f"{achievable} failures; the search was truncated from "
+                f"{max_failures}. For minimal repair use "
+                "minimal_repair_time_to_nth_failure().",
+                stacklevel=3,
+            )
+        data = result.data
+        x = np.asarray(data.x, dtype=float)
+        item = np.asarray(data.i)
+
+        # Order by (item, time), then read the n-th event of each item block.
+        order = np.lexsort((x, item))
+        xs, items = x[order], item[order]
+        ids = np.arange(1, n_simulations + 1)
+        starts = np.searchsorted(items, ids, side="left")
+        ends = np.searchsorted(items, ids, side="right")
+
+        expected = np.empty(achievable, dtype=float)
+        for n in range(1, achievable + 1):
+            idx = starts + (n - 1)
+            valid = idx < ends
+            expected[n - 1] = np.nanmean(xs[idx[valid]])
+        return expected
+
+    def expected_time_to_nth_failure(
+        self,
+        n: int,
+        seed: Optional[int] = None,
+        n_simulations: int = _DEFAULT_N_SIMULATIONS,
+    ) -> float:
+        """Expected time to the ``n``-th failure, ``E[T_n]``.
+
+        Estimated by a seeded simulation for an imperfect-repair model. For a
+        minimal-repair (power-law) process the closed form
+        :func:`minimal_repair_time_to_nth_failure` is exact and cheaper.
+        """
+        if n < 1:
+            raise ValueError("n must be a positive integer.")
+        curve = self._expected_times_to_failures(n, seed, n_simulations)
+        if len(curve) < n:
+            raise ValueError(
+                f"the simulator could not reach {n} failures for this model "
+                "(near-minimal repair); use "
+                "minimal_repair_time_to_nth_failure() instead."
+            )
+        return float(curve[n - 1])
+
+    def _optimise_failure_limit(
+        self, seed: Optional[int], n_simulations: int, max_failures: int
+    ) -> tuple[int, float]:
+        self._require_costs()
+        expected = self._expected_times_to_failures(
+            max_failures, seed, n_simulations
+        )
+        n = np.arange(1, len(expected) + 1)
+        # Replace at the n-th failure: n-1 repairs (cr each) then a replacement
+        # (co), over an expected cycle length E[T_n].
+        cost_rate = (self.cr * (n - 1) + self.co) / expected
+        i = int(np.nanargmin(cost_rate))
+        return int(n[i]), float(cost_rate[i])
+
+    def find_optimal_replacement_failure_count(
+        self,
+        seed: Optional[int] = None,
+        n_simulations: int = _DEFAULT_N_SIMULATIONS,
+        max_failures: int = _DEFAULT_MAX_FAILURES,
+    ) -> int:
+        """The number of failures per cycle minimising the long-run cost rate
+        of a replace-at-N-th-failure policy.
+
+        Simulation-based; pass a ``seed`` for a reproducible result.
+        ``max_failures`` bounds the search (raise it if the optimum sits at the
+        bound).
+        """
+        return self._optimise_failure_limit(seed, n_simulations, max_failures)[
+            0
+        ]
+
+    def optimal_failure_limit_policy(
+        self,
+        seed: Optional[int] = None,
+        n_simulations: int = _DEFAULT_N_SIMULATIONS,
+        max_failures: int = _DEFAULT_MAX_FAILURES,
+    ) -> FailureLimitPolicy:
+        """The optimal replace-at-N-th-failure policy as a typed result.
+
+        Repair on each failure (cost ``cr``) and replace on the
+        ``failure_count``-th (cost ``co``); the long-run cost rate is
+        ``(cr*(n-1) + co) / E[T_n]`` minimised over ``n``.
+        """
+        count, rate = self._optimise_failure_limit(
+            seed, n_simulations, max_failures
+        )
+        return FailureLimitPolicy(failure_count=count, cost_rate=rate)

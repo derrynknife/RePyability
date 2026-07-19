@@ -13,7 +13,11 @@ import pytest
 import surpyval as surv
 from surpyval.recurrent import CrowAMSAA, GeneralizedRenewal
 
-from repyability.repairable import Repairable
+from repyability.maintenance import FailureLimitPolicy
+from repyability.repairable import (
+    Repairable,
+    minimal_repair_time_to_nth_failure,
+)
 
 
 def _gr(q, alpha=100.0, beta=2.0, kijima="ii"):
@@ -91,3 +95,64 @@ def test_costs_required_and_ordered():
         rep.find_optimal_overhaul_interval(seed=1, n_simulations=200)
     with pytest.raises(ValueError, match="less than"):
         rep.set_repair_and_overhaul_costs(5.0, 1.0)
+
+
+# -- Replace-at-N-th-failure policy ---------------------------------------
+
+
+def test_minimal_repair_time_to_nth_failure_closed_form():
+    # T_1 is just the baseline mean: alpha * Gamma(1 + 1/beta).
+    from scipy.special import gamma
+
+    assert minimal_repair_time_to_nth_failure(100.0, 2.0, 1) == pytest.approx(
+        100.0 * gamma(1.5)
+    )
+    # A monotone increasing sequence.
+    ts = [
+        minimal_repair_time_to_nth_failure(100.0, 2.0, n) for n in range(1, 6)
+    ]
+    assert all(a < b for a, b in zip(ts, ts[1:]))
+    with pytest.raises(ValueError):
+        minimal_repair_time_to_nth_failure(100.0, 2.0, 0)
+
+
+def test_expected_time_to_nth_failure_matches_closed_form_at_q1():
+    rep = Repairable(_gr(1.0, alpha=100.0, beta=2.0))
+    for n in (3, 6):
+        sim = rep.expected_time_to_nth_failure(n, seed=1, n_simulations=5000)
+        exact = minimal_repair_time_to_nth_failure(100.0, 2.0, n)
+        assert sim == pytest.approx(exact, rel=0.05)
+
+
+def test_expected_time_to_nth_failure_analytic_raises():
+    analytic = Repairable(CrowAMSAA.from_params([0.5, 1.6]))
+    with pytest.raises(ValueError, match="minimal_repair_time_to_nth_failure"):
+        analytic.expected_time_to_nth_failure(3)
+
+
+def test_expected_time_to_nth_failure_validation():
+    rep = Repairable(_gr(0.5))
+    with pytest.raises(ValueError, match="positive"):
+        rep.expected_time_to_nth_failure(0, seed=1, n_simulations=200)
+
+
+def test_optimal_failure_limit_policy():
+    rep = Repairable(_gr(0.4, kijima="i"))
+    rep.set_repair_and_overhaul_costs(1.0, 5.0)
+    policy = rep.optimal_failure_limit_policy(
+        seed=3, n_simulations=1200, max_failures=25
+    )
+    assert isinstance(policy, FailureLimitPolicy)
+    assert policy.failure_count >= 1
+    assert policy.cost_rate > 0
+    # Reproducible for a fixed seed.
+    again = rep.optimal_failure_limit_policy(
+        seed=3, n_simulations=1200, max_failures=25
+    )
+    assert policy == again
+
+
+def test_failure_limit_costs_required():
+    rep = Repairable(_gr(0.5))
+    with pytest.raises(ValueError, match="costs not set"):
+        rep.find_optimal_replacement_failure_count(seed=1, n_simulations=200)
