@@ -7,7 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_Nothing yet._
+### Changed
+- **Harmonised the RBD constructor signatures.** The base ``RBD`` now takes
+  ``(edges, nodes, k, ...)`` instead of ``(edges, k, nodes, ...)``, so all
+  three classes share the same positional order: the structure first (``edges``
+  then the node definition -- ``nodes``/``reliabilities``/``components``), then
+  the optional ``k`` (k-out-of-n) modifier. ``NonRepairableRBD`` and
+  ``RepairableRBD`` are unchanged. This only affects code that constructed the
+  base ``RBD`` with a *positional* ``k`` (``RBD(edges, k_dict)``); pass ``k`` by
+  keyword (``RBD(edges, k=k_dict)``) or as the third argument.
 
 ## [0.6.0] - 2026-07-19
 

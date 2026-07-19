@@ -161,8 +161,8 @@ class NonRepairableRBD(RBD):
         if repeated == {}:
             super().__init__(
                 edges,
-                k,
                 set(reliabilities.keys()),
+                k,
                 input_node,
                 output_node,
                 on_infeasible_rbd,
@@ -178,8 +178,8 @@ class NonRepairableRBD(RBD):
                 new_edges.append((start, stop))
             super().__init__(
                 new_edges,
-                k,
                 set(reliabilities.keys()),
+                k,
                 input_node,
                 output_node,
                 on_infeasible_rbd,

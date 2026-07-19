@@ -214,22 +214,32 @@ class RBD:
     def __init__(
         self,
         edges: Iterable[tuple[Hashable, Hashable]],
-        k: Optional[dict[Any, int]] = None,
         nodes: Optional[Iterable] = None,
+        k: Optional[dict[Any, int]] = None,
         input_node: Optional[Any] = None,
         output_node: Optional[Any] = None,
         on_infeasible_rbd: str = "raise",
     ):
         """Creates and returns a Reliability Block Diagram object.
 
+        The positional order mirrors the subclasses
+        (:class:`~repyability.NonRepairableRBD`,
+        :class:`~repyability.RepairableRBD`): the structure -- ``edges`` then
+        ``nodes`` -- comes first, and ``k`` (k-out-of-n) is an optional
+        modifier after it.
+
         Parameters
         ----------
         edges : Iterable[tuple[Hashable, Hashable]]
             The collection of node edges, e.g. [(1, 2), (2, 3)] would
             correspond to the edges 1-2 and 2-3
-        k : dict[Any, int]
-            A dictionary mapping nodes to k-out-of-n (koon) values, by default
-            {}, by default all nodes koon values are 1
+        nodes : Iterable, optional
+            Extra node names to include beyond those implied by ``edges`` (e.g.
+            isolated nodes), by default None. The RBD subclasses pass their set
+            of component names here.
+        k : dict[Any, int], optional
+            A dictionary mapping nodes to k-out-of-n (koon) values; by default
+            every node's koon value is 1.
         on_infeasible_rbd : {{'raise', 'warn', 'ignore'}}, default 'raise'
             Specifies what to do upon encountering a bad line (a line with too
             many fields). Allowed values are :
