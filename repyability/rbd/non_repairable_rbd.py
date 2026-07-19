@@ -26,6 +26,7 @@ from repyability.utils.wrappers import conditional_survival, numpy_seed
 
 from ._model_utils import is_fixed_probability, parametric_spec
 from .helper_classes import PerfectReliability, PerfectUnreliability
+from .node_state import NodeState
 from .rbd import RBD
 from .repeated_node import RepeatedNode
 from .repeated_standby_node import RepeatedStandbyNode
@@ -733,15 +734,32 @@ class NonRepairableRBD(RBD):
             (reliability is constant in time), or if ``target`` exceeds the
             system reliability at ``t = 0`` (so it is never reached).
         """
+        return self._invert_reliability(
+            lambda t: float(self.sf(t, **kwargs)), target, upper_bound
+        )
+
+    def _invert_reliability(
+        self,
+        sf_func,
+        target: float,
+        upper_bound: Optional[float] = None,
+    ) -> float:
+        """Solve ``sf_func(t) == target`` for ``t >= 0``.
+
+        ``sf_func`` maps a scalar time to a scalar system reliability and is
+        monotonically non-increasing, so the solution is unique. Shared by
+        :meth:`time_to_reliability` and :meth:`remaining_life`; the target is
+        bracketed automatically (by doubling) unless ``upper_bound`` is given.
+        """
         if not 0.0 < target < 1.0:
             raise ValueError("target reliability must be in (0, 1).")
         if self.is_fixed:
             raise ValueError(
                 "System reliability does not vary with time (all nodes are "
-                "fixed-probability); time_to_reliability is undefined."
+                "fixed-probability); the time to a reliability is undefined."
             )
 
-        r0 = float(self.sf(0.0, **kwargs))
+        r0 = float(sf_func(0.0))
         if target > r0:
             raise ValueError(
                 f"target reliability {target} exceeds the system reliability "
@@ -749,7 +767,7 @@ class NonRepairableRBD(RBD):
             )
 
         def f(t):
-            return float(self.sf(t, **kwargs)) - target
+            return float(sf_func(t)) - target
 
         hi = upper_bound
         if hi is None:
@@ -782,6 +800,228 @@ class NonRepairableRBD(RBD):
         if not 0.0 < x < 100.0:
             raise ValueError("x must be a percentage in (0, 100).")
         return self.time_to_reliability(1.0 - x / 100.0, **kwargs)
+
+    # -- Condition-based ("digital twin") evaluation -----------------------
+
+    def _node_is_stateable(self, model) -> bool:
+        """True if a single scalar age applies unambiguously to ``model``.
+
+        Excludes the composite / dynamic node models -- a standby arrangement,
+        a repeated node, and a nested RBD -- whose conditioning semantics are
+        out of scope for condition-based evaluation in this release.
+        """
+        return not isinstance(
+            model, (StandbyModel, RepeatedStandbyNode, RepeatedNode, RBD)
+        )
+
+    def _validate_state(self, state) -> None:
+        """Validate a condition-based ``state`` mapping.
+
+        Raises rather than silently ignoring bad input: a non-mapping, a value
+        that is not a :class:`NodeState`, the input/output node, an unknown
+        node, or a node whose model is composite/dynamic.
+        """
+        if not isinstance(state, dict):
+            raise TypeError(
+                "state must be a dict of {node: NodeState}, got "
+                f"{type(state).__name__}."
+            )
+        valid = set(self.nodes)
+        for node, node_state in state.items():
+            if not isinstance(node_state, NodeState):
+                raise TypeError(
+                    f"state[{node!r}] must be a NodeState, got "
+                    f"{type(node_state).__name__}."
+                )
+            if node in self.in_or_out:
+                which = "input" if node == self.input_node else "output"
+                raise ValueError(
+                    f"Cannot set state for the {which} node {node!r}."
+                )
+            if node not in valid:
+                raise ValueError(
+                    f"Unknown node {node!r} in state; it is not a node of "
+                    "this RBD."
+                )
+            if not self._node_is_stateable(self.reliabilities[node]):
+                raise ValueError(
+                    "Condition-based evaluation supports only ordinary "
+                    f"distribution components in this release; node {node!r} "
+                    f"is a {type(self.reliabilities[node]).__name__}."
+                )
+
+    def _state_node_probabilities(self, x, state) -> Dict[Any, np.ndarray]:
+        """Per-node forward reliability at ``x`` given each node's ``state``.
+
+        ``x`` is a 1-d array. Each node conditions on its own current life: a
+        node absent from ``state`` uses its unconditioned reliability (age 0),
+        a failed node contributes zero, and an alive node of age ``X``
+        contributes ``conditional_survival(model, x, X) = sf(X + x) / sf(X)``.
+        """
+        self._validate_state(state)
+        node_probabilities: Dict[Any, np.ndarray] = {}
+        for node_name, model in self.reliabilities.items():
+            node_state = state.get(node_name)
+            if node_state is None:
+                node_probabilities[node_name] = np.atleast_1d(model.sf(x))
+            elif not node_state.alive:
+                node_probabilities[node_name] = np.atleast_1d(
+                    PerfectUnreliability.sf(x)
+                )
+            else:
+                node_probabilities[node_name] = np.atleast_1d(
+                    conditional_survival(model, x, node_state.age)
+                )
+        return node_probabilities
+
+    @check_x
+    def sf_given_state(
+        self,
+        x: Optional[ArrayLike] = None,
+        state: Optional[Dict[Hashable, NodeState]] = None,
+        method: str = "p",
+    ) -> Union[float, np.ndarray]:
+        """System reliability a further ``x`` into the future, given each
+        node's current state.
+
+        The condition-based ("digital twin") generalisation of :meth:`sf`:
+        instead of assuming every component is new, each component conditions
+        on its own current life ``X_i`` (streamed from sensors) and the
+        conditioned per-node reliabilities are propagated exactly through the
+        system::
+
+            R_i(x | X_i)     = R_i(X_i + x) / R_i(X_i)
+            R_sys(x | {X_i}) = system_probability({ R_i(x | X_i) })
+
+        Parameters
+        ----------
+        x : ArrayLike
+            The further duration/s at which reliability is evaluated (measured
+            from *now*, so ``x = 0`` is the present).
+        state : dict[Hashable, NodeState]
+            The current state of each component. A node omitted from the
+            mapping is treated as new (age 0), so an empty state reproduces
+            :meth:`sf`.
+        method : str, optional
+            "p" (path-set, default) or "c" (cut-set); both are exact.
+
+        Returns
+        -------
+        float or np.ndarray
+            System reliability given the state: a float for scalar ``x``, an
+            array for array ``x``.
+
+        Notes
+        -----
+        Only lifetime (time-varying) distributions age; a fixed-probability
+        component conditioned on being alive contributes reliability 1 going
+        forward (its per-demand uncertainty is resolved by observing it
+        alive). Composite / dynamic nodes (standby, repeated, nested RBD) are
+        not supported here in this release and raise if given a state.
+        """
+        if state is None:
+            state = {}
+        node_probabilities = self._state_node_probabilities(x, state)
+        return self.system_probability(node_probabilities, method=method)
+
+    def remaining_life(
+        self,
+        target: float,
+        state: Optional[Dict[Hashable, NodeState]] = None,
+        upper_bound: Optional[float] = None,
+    ) -> float:
+        """Remaining useful life (RUL): the further time until system
+        reliability falls to ``target``, given each node's current state.
+
+        The condition-based analogue of :meth:`time_to_reliability`: it solves
+        ``sf_given_state(t, state) == target`` for ``t``. Because
+        ``sf_given_state`` is measured from now, the result is the time
+        *remaining* from the current state. ``remaining_life(1 - x/100,
+        state)`` is the conditional B\\ :sub:`X` life.
+
+        Parameters
+        ----------
+        target : float
+            The system reliability level to solve for, in (0, 1).
+        state : dict[Hashable, NodeState]
+            The current state of each component (see :meth:`sf_given_state`).
+        upper_bound : float, optional
+            An upper bound for the search; found automatically if None.
+
+        Returns
+        -------
+        float
+            The remaining time until ``R_sys(t | state) == target``.
+        """
+        if state is None:
+            state = {}
+        return self._invert_reliability(
+            lambda t: float(self.sf_given_state(t, state)),
+            target,
+            upper_bound,
+        )
+
+    def importances_given_state(
+        self,
+        x: Optional[ArrayLike] = None,
+        state: Optional[Dict[Hashable, NodeState]] = None,
+    ) -> Dict[str, Dict[Any, Union[float, np.ndarray]]]:
+        """Live, state-dependent node importance over a forward horizon ``x``
+        -- how each component's importance shifts once the current wear on
+        every component is accounted for.
+
+        Evaluates the Birnbaum and criticality importance measures at the
+        conditioned per-node reliabilities ``R_i(x | X_i)`` (see
+        :meth:`sf_given_state`) rather than at the as-new reliabilities, so the
+        rankings reflect the current state. Both use the same conventions as
+        :meth:`birnbaum_importance` and :meth:`criticality_importance`: they
+        measure how much the system reliability depends on each node *now*, not
+        which node is most likely to have failed.
+
+        Parameters
+        ----------
+        x : ArrayLike
+            The forward horizon/s over which importance is evaluated (from
+            now).
+        state : dict[Hashable, NodeState]
+            The current state of each component (see :meth:`sf_given_state`).
+
+        Returns
+        -------
+        dict[str, dict[Any, float | np.ndarray]]
+            ``{"birnbaum": {node: value}, "criticality": {node: value}}``.
+            Values are floats for scalar ``x`` and arrays for array ``x``.
+        """
+        if state is None:
+            state = {}
+        if x is None:
+            if self.is_fixed:
+                x = 1.0
+            else:
+                raise ValueError(
+                    "x is required: this RBD is time-varying (at least one "
+                    "node model's probability depends on time)."
+                )
+        scalar_in = np.ndim(x) == 0
+        x_arr = np.atleast_1d(np.asarray(x, dtype=float))
+        node_probabilities = self._state_node_probabilities(x_arr, state)
+        birnbaum = super()._birnbaum_importance(node_probabilities)
+        criticality = super()._criticality_importance(node_probabilities)
+
+        def _squeeze(measure):
+            return {
+                node: (
+                    float(np.asarray(value).reshape(-1)[0])
+                    if scalar_in
+                    else np.asarray(value)
+                )
+                for node, value in measure.items()
+            }
+
+        return {
+            "birnbaum": _squeeze(birnbaum),
+            "criticality": _squeeze(criticality),
+        }
 
     def node_mttf(
         self, mc_samples: int = 100_000, seed=None

@@ -19,6 +19,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parameter derivative is computed numerically (via surpyval's `from_params`),
   so it applies to any parametric model without per-distribution formulae.
   Composite and non-parametric nodes are omitted; forced nodes report zero.
+- **Condition-based ("digital twin") evaluation** on `NonRepairableRBD`, driven
+  by a new public `NodeState(age, alive)` per node. Each component conditions on
+  its own current life `R_i(x | X_i) = R_i(X_i + x) / R_i(X_i)` and that
+  propagates exactly through the system:
+  - `sf_given_state(x, state)` — system reliability a further `x` from now given
+    each node's state (the conditional generalisation of `sf`; an empty state
+    reproduces `sf`).
+  - `remaining_life(target, state)` — remaining useful life (RUL): the further
+    time until system reliability falls to `target`.
+  - `importances_given_state(x, state)` — the Birnbaum and criticality
+    importances re-evaluated at the conditioned reliabilities.
+
+  Supports ordinary distribution components; dynamic (standby) and composite
+  nodes raise if given a state. State is transient input — the structure still
+  persists via serialisation.
 
 ## [0.5.1] - 2026-07-18
 

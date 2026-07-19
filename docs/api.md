@@ -25,6 +25,8 @@ the top-level `repyability` package).
 
 ## Helpers
 
+::: repyability.NodeState
+
 ::: repyability.PerfectReliability
 
 ::: repyability.PerfectUnreliability
