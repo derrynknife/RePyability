@@ -34,6 +34,7 @@ from repyability.rbd.helper_classes import (
     PerfectUnreliability,
 )
 from repyability.rbd.rbd import RBD
+from repyability.rbd.regression_node import RegressionNode
 from repyability.rbd.repeated_node import PARALLEL, RepeatedNode
 from repyability.rbd.repeated_standby_node import RepeatedStandbyNode
 from repyability.rbd.standby_node import StandbyModel
@@ -81,6 +82,8 @@ def serialise_model(model: Any) -> dict:
             "reliability": serialise_model(model.reliability),
             "time_to_replace": serialise_model(model.time_to_replace),
         }
+    if isinstance(model, RegressionNode):
+        return {"kind": "regression_node", **model.to_dict()}
     dist = distribution_name(model)
     if dist is not None:
         return {
@@ -135,6 +138,8 @@ def deserialise_model(d: dict) -> Any:
             deserialise_model(d["reliability"]),
             deserialise_model(d["time_to_replace"]),
         )
+    if kind == "regression_node":
+        return RegressionNode.from_dict(d)
     raise ValueError(f"Unknown model kind {kind!r}.")
 
 

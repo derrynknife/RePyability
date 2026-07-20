@@ -24,19 +24,19 @@ class NodeState:
     Parameters
     ----------
     age : float, optional
-        The component's current age / accumulated exposure ``X_i`` (``>= 0``),
-        by default ``0.0`` (a brand-new component, equivalent to no
-        conditioning).
+        The component's current age / accumulated operating time (``>= 0``), by
+        default ``0.0`` (a brand-new component, equivalent to no conditioning).
     alive : bool, optional
         Whether the component is currently working, by default ``True``.
 
     Notes
     -----
     Only lifetime (time-varying) distributions age; a fixed-probability
-    component's reliability does not depend on ``age``. Load/stress is not part
-    of the state in this release -- it is a planned extension (accelerated-life
-    exposure and load sharing), at which point this class gains a further
-    field.
+    component's reliability does not depend on ``age``. Covariate/load
+    dependence is a property of the *component*, not its transient state: a
+    :class:`~repyability.rbd.regression_node.RegressionNode` stores the
+    covariates, so ``age`` keeps a single meaning (operating time) for every
+    node type.
     """
 
     age: float = 0.0

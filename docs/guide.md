@@ -190,6 +190,50 @@ release supports ordinary distribution components — dynamic nodes (standby) an
 composite nodes raise if given a state. The structure is static (persist it via
 serialisation); state is transient input you supply per evaluation.
 
+### Covariate-dependent components (regression nodes)
+
+A component's reliability often depends on the *conditions it runs under* —
+temperature, current, cycle rate, duty. If you have fitted a **regression**
+survival model in surpyval (accelerated-failure-time, proportional-hazards
+(Cox), proportional-odds, ...), a [`RegressionNode`][repyability.RegressionNode]
+uses it in an RBD by pinning a **covariate vector** `Z` (this component's
+operating conditions). Its reliability is just the model's survival at those
+covariates:
+
+```
+R(x) = model.sf(x, Z)
+```
+
+so it is an ordinary univariate node — it takes part in system reliability,
+importance, MTTF and the condition-based (`age`) layer with no special
+handling. Fit the model in surpyval (RePyability consumes it) and pin the
+covariates:
+
+```python
+import surpyval as surv
+from repyability import NonRepairableRBD, RegressionNode, NodeState
+
+aft = surv.WeibullAFT.fit(failure_times, Z=covariates)   # fitted in surpyval
+motor = RegressionNode(aft, covariates=[0.6])            # runs hot (Z = 0.6)
+
+rbd = NonRepairableRBD([("s", "m"), ("m", "t")], {"m": motor})
+
+rbd.sf(30)                                       # reliability of a new motor
+rbd.sf_given_state(30, {"m": NodeState(age=40)}) # ...given 40 hours already run
+rbd.remaining_life(0.9, {"m": NodeState(age=40)})
+```
+
+- Because the covariates are fixed on the node, `age` keeps its single, ordinary
+  meaning (operating time survived): `R(x | age) = sf(age + x, Z) / sf(age, Z)`,
+  which holds for every regression family. A hotter-running motor is simply a
+  node with different covariates.
+- The node serialises with the RBD — the fitted regression model round-trips
+  through `surpyval.from_dict`.
+- `mean` and `random` (simulation-based MTTF) need a proper parametric lifetime,
+  so they work for AFT/PO/parametric models; a *semiparametric* Cox baseline has
+  no defined MTTF and reports that clearly. Reliability, conditioning and
+  importance work for all of them.
+
 ## Repairable systems and availability
 
 A [`RepairableRBD`][repyability.RepairableRBD] takes components with both a
