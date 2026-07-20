@@ -23,6 +23,8 @@ the top-level `repyability` package).
 
 ::: repyability.Repairable
 
+::: repyability.RegressionNode
+
 ## Helpers
 
 ::: repyability.NodeState

@@ -28,8 +28,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   seeded simulation (`expected_time_to_nth_failure`); for the minimal-repair
   (power-law) limit the exact closed form is exposed as
   `minimal_repair_time_to_nth_failure(alpha, beta, n)`.
+- **`RegressionNode`: covariate-dependent components in an RBD.** A new node
+  wraps a fitted surpyval **regression** survival model (accelerated-failure-
+  time, proportional-hazards/Cox, proportional-odds, ...) together with a fixed
+  covariate vector `Z` — the component's operating conditions — so its
+  reliability is `model.sf(x, Z)`. It is an ordinary univariate node: system
+  reliability, importance, MTTF and the condition-based (`age`) layer all work
+  with no special handling, because at fixed covariates
+  `R(x | age) = sf(age + x, Z) / sf(age, Z)` holds for every regression family.
+  The fitted model serialises with the RBD via `surpyval.from_dict`. Simulation-
+  based `mean`/`random` require a proper parametric lifetime (AFT/PO/parametric);
+  a semiparametric Cox baseline has no defined MTTF and says so clearly. (#37)
 
 ### Changed
+- **Bumped the surpyval pin to `>=0.15,<0.16`** (from `>=0.13,<0.14`), for the
+  regression-model serialisation (`to_dict`/`surpyval.from_dict`) that
+  `RegressionNode` relies on. No change to existing behaviour.
 - **Harmonised the RBD constructor signatures.** The base ``RBD`` now takes
   ``(edges, nodes, k, ...)`` instead of ``(edges, k, nodes, ...)``, so all
   three classes share the same positional order: the structure first (``edges``

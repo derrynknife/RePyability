@@ -16,6 +16,7 @@ from repyability.rbd.helper_classes import (
 from repyability.rbd.node_state import NodeState
 from repyability.rbd.non_repairable_rbd import NonRepairableRBD
 from repyability.rbd.rbd import RBD
+from repyability.rbd.regression_node import RegressionNode
 from repyability.rbd.repairable_rbd import RepairableRBD
 from repyability.rbd.repeated_node import RepeatedNode
 from repyability.rbd.repeated_standby_node import RepeatedStandbyNode
@@ -49,6 +50,7 @@ __all__ = [
     "PerfectReliability",
     "PerfectUnreliability",
     "NodeState",
+    "RegressionNode",
     "minimal_repair_time_to_nth_failure",
     # Result types
     "AvailabilityResult",
