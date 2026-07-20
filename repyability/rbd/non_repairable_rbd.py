@@ -26,6 +26,7 @@ from repyability.utils.wrappers import conditional_survival, numpy_seed
 
 from ._model_utils import is_fixed_probability, parametric_spec
 from .helper_classes import PerfectReliability, PerfectUnreliability
+from .load_sharing_node import LoadSharingModel
 from .node_state import NodeState
 from .rbd import RBD
 from .repeated_node import RepeatedNode
@@ -251,7 +252,7 @@ class NonRepairableRBD(RBD):
                 continue
             else:
                 # when node is a Parametric model
-                if isinstance(node, StandbyModel):
+                if isinstance(node, (StandbyModel, LoadSharingModel)):
                     fixed_flags = [False]
                     break
                 elif isinstance(node, RepeatedNode):
@@ -571,7 +572,11 @@ class NonRepairableRBD(RBD):
     # standby arrangement is sequence-dependent (dynamic), so its sf(t) cannot
     # be expressed analytically and is instead estimated by simulation. Such
     # nodes therefore prevent a purely analytic / BDD solution of the system.
-    _SIMULATION_NODE_TYPES = (StandbyModel, RepeatedStandbyNode)
+    _SIMULATION_NODE_TYPES = (
+        StandbyModel,
+        RepeatedStandbyNode,
+        LoadSharingModel,
+    )
 
     def _node_is_analytic(self, model) -> bool:
         """Returns True if a node's reliability is available without
@@ -871,7 +876,14 @@ class NonRepairableRBD(RBD):
         out of scope for condition-based evaluation in this release.
         """
         return not isinstance(
-            model, (StandbyModel, RepeatedStandbyNode, RepeatedNode, RBD)
+            model,
+            (
+                StandbyModel,
+                RepeatedStandbyNode,
+                LoadSharingModel,
+                RepeatedNode,
+                RBD,
+            ),
         )
 
     def _validate_state(self, state) -> None:
@@ -1119,7 +1131,13 @@ class NonRepairableRBD(RBD):
             for node in self.nodes:
                 model = self.reliabilities[node]
                 if isinstance(
-                    model, (StandbyModel, NonRepairableRBD, RepeatedNode)
+                    model,
+                    (
+                        StandbyModel,
+                        LoadSharingModel,
+                        NonRepairableRBD,
+                        RepeatedNode,
+                    ),
                 ):
                     out[node] = float(np.atleast_1d(model.mean(mc_samples))[0])
                 elif is_fixed_probability(model):

@@ -33,6 +33,7 @@ from repyability.rbd.helper_classes import (
     PerfectReliability,
     PerfectUnreliability,
 )
+from repyability.rbd.load_sharing_node import LoadSharingModel
 from repyability.rbd.rbd import RBD
 from repyability.rbd.regression_node import RegressionNode
 from repyability.rbd.repeated_node import PARALLEL, RepeatedNode
@@ -84,6 +85,14 @@ def serialise_model(model: Any) -> dict:
         }
     if isinstance(model, RegressionNode):
         return {"kind": "regression_node", **model.to_dict()}
+    if isinstance(model, LoadSharingModel):
+        return {
+            "kind": "load_sharing",
+            "models": [m.to_dict() for m in model.models],
+            "load": model.load,
+            "k": model.k,
+            "n_sims": model.n_sims,
+        }
     dist = distribution_name(model)
     if dist is not None:
         return {
@@ -140,6 +149,13 @@ def deserialise_model(d: dict) -> Any:
         )
     if kind == "regression_node":
         return RegressionNode.from_dict(d)
+    if kind == "load_sharing":
+        return LoadSharingModel(
+            [surpyval.from_dict(md) for md in d["models"]],
+            load=d["load"],
+            k=d["k"],
+            n_sims=d.get("n_sims", 10_000),
+        )
     raise ValueError(f"Unknown model kind {kind!r}.")
 
 

@@ -17,6 +17,8 @@ the top-level `repyability` package).
 
 ::: repyability.StandbyModel
 
+::: repyability.LoadSharingModel
+
 ::: repyability.RepeatedNode
 
 ::: repyability.RepeatedStandbyNode
