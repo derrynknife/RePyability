@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **`LoadSharingModel`: load-sharing dynamic node (dependent failure).** A
+  sibling to `StandbyModel` where *n* coupled units share a total load and the
+  survivors carry more (and so age faster) as siblings fail — the group works
+  while ≥ `k` survive. Each unit is a fitted AFT model, and a cumulative-exposure
+  event loop advances every unit's baseline clock at rate `phi(L / survivors)`.
+  Identical Exponential-baseline units get an exact hypoexponential closed form;
+  otherwise the survival function is a Kaplan-Meier fit to simulated lifetimes
+  (`is_simulated` reports which). With no load effect (`phi == 1`) the group
+  reduces exactly to the ordinary k-out-of-n parallel result. Plugs into an RBD
+  as a single simulation-backed node and serialises with it. (#38)
+
 ## [0.7.0] - 2026-07-20
 
 The **Maintenance & Covariates** milestone: price imperfect-repair (generalized

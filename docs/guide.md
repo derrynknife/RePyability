@@ -234,6 +234,44 @@ rbd.remaining_life(0.9, {"m": NodeState(age=40)})
   no defined MTTF and reports that clearly. Reliability, conditioning and
   importance work for all of them.
 
+## Load-sharing (dependent failure)
+
+Redundant units that *share a load* fail dependently: when one fails, the
+survivors pick up its share, run harder, and age faster — so the failures are
+correlated, not independent. A [`LoadSharingModel`][repyability.LoadSharingModel]
+captures this as a single RBD node (the units are coupled, so they can't be `n`
+independent nodes). It is the "self-loading" sibling of the condition-based
+layer: there the load is streamed from sensors, here it is computed from the
+group's own survivors (`L / s`).
+
+Each unit is a fitted AFT model (load as its covariate), so a survivor under
+load `L/s` ages at rate `φ(L/s)` on its baseline clock. The group works while at
+least `k` of `n` units survive:
+
+```python
+import surpyval as surv
+from repyability import NonRepairableRBD, LoadSharingModel
+
+# One AFT unit fitted with load as the covariate (higher load → shorter life)
+unit = surv.ExponentialAFT.fit(failure_times, Z=loads)
+
+# Three identical units share a total load of 3.0; the group needs ≥ 2
+group = LoadSharingModel([unit, unit, unit], load=3.0, k=2)
+
+rbd = NonRepairableRBD([("s", "g"), ("g", "t")], {"g": group})
+rbd.sf(50)      # group (and system) reliability
+group.mean()    # mean group lifetime
+```
+
+- **Exact where it can be:** identical units with an Exponential baseline give a
+  closed-form (hypoexponential) group lifetime; otherwise the survival function
+  is a Kaplan-Meier fit to simulated lifetimes (`is_simulated` reports which).
+- **Validation:** with no load effect (`φ ≡ 1`) the units neither share stress
+  nor accelerate, so the group reduces *exactly* to the ordinary k-out-of-n
+  parallel result.
+- Like any dynamic node it plugs into an RBD as a single simulation-backed node
+  and serialises with it (each unit round-trips via `surpyval.from_dict`).
+
 ## Repairable systems and availability
 
 A [`RepairableRBD`][repyability.RepairableRBD] takes components with both a
