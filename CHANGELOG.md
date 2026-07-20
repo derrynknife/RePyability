@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-20
+
+The **Maintenance & Covariates** milestone: price imperfect-repair (generalized
+renewal / Kijima) and replace-at-N-th-failure maintenance policies on
+`Repairable`, and drive component reliability from operating covariates with
+fitted surpyval regression models — alongside a harmonised RBD constructor
+signature.
+
 ### Added
 - **Imperfect repair (generalized renewal / Kijima) in `Repairable`.** The
   `Repairable` component now spans the whole repair-effectiveness spectrum
