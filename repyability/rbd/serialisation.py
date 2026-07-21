@@ -201,6 +201,44 @@ def _k_from_list(k_list):
     return None if not k_list else {e["node"]: e["k"] for e in k_list}
 
 
+def _ccf_to_list(ccf_groups):
+    from repyability.rbd.ccf import MGL, BetaFactor
+
+    if not ccf_groups:
+        return None
+    out = []
+    for group in ccf_groups:
+        if isinstance(group.model, BetaFactor):
+            model = {"kind": "beta_factor", "beta": group.model.beta}
+        elif isinstance(group.model, MGL):
+            model = {"kind": "mgl", "letters": list(group.model.letters)}
+        else:
+            raise NotImplementedError(
+                f"Cannot serialise CCF model {type(group.model).__name__}."
+            )
+        out.append({"members": list(group.members), "model": model})
+    return out
+
+
+def _ccf_from_list(ccf_list):
+    from repyability.rbd.ccf import MGL, BetaFactor, CCFGroup
+
+    if not ccf_list:
+        return None
+    groups = []
+    for entry in ccf_list:
+        model_dict = entry["model"]
+        kind = model_dict["kind"]
+        if kind == "beta_factor":
+            model: object = BetaFactor(model_dict["beta"])
+        elif kind == "mgl":
+            model = MGL(*model_dict["letters"])
+        else:
+            raise ValueError(f"Unknown CCF model kind {kind!r}.")
+        groups.append(CCFGroup(entry["members"], model))
+    return groups
+
+
 def rbd_to_dict(rbd: RBD) -> dict:
     """Serialise an RBD (NonRepairableRBD or RepairableRBD) to a dict."""
     args = rbd._init_args
@@ -227,6 +265,7 @@ def rbd_to_dict(rbd: RBD) -> dict:
             }
             for n, v in args["reliabilities"].items()
         ]
+        out["ccf_groups"] = _ccf_to_list(args.get("ccf_groups"))
     return out
 
 
@@ -255,7 +294,12 @@ def rbd_from_dict(d: dict) -> RBD:
             e["node"]: _deserialise_reliability_value(e["model"])
             for e in d["reliabilities"]
         }
-        return NonRepairableRBD(edges, reliabilities, **common)
+        return NonRepairableRBD(
+            edges,
+            reliabilities,
+            ccf_groups=_ccf_from_list(d.get("ccf_groups")),
+            **common,
+        )
     raise ValueError(f"Unknown RBD type {rbd_type!r}.")
 
 

@@ -31,6 +31,12 @@ the top-level `repyability` package).
 
 ::: repyability.NodeState
 
+::: repyability.CCFGroup
+
+::: repyability.BetaFactor
+
+::: repyability.MGL
+
 ::: repyability.PerfectReliability
 
 ::: repyability.PerfectUnreliability
