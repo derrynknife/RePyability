@@ -18,19 +18,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`is_simulated` reports which). With no load effect (`phi == 1`) the group
   reduces exactly to the ordinary k-out-of-n parallel result. Plugs into an RBD
   as a single simulation-backed node and serialises with it. (#38)
-- **Common-cause failures (CCF) — beta-factor model.** `NonRepairableRBD` gains
-  a `ccf_groups` argument taking `CCFGroup(members, BetaFactor(beta))`: a
-  fraction `beta` of a symmetric redundant group's failures come from a shared
-  cause that fails every member at once, the rest are independent. System
-  reliability is computed **exactly** by conditioning on each group's
-  shared-cause event and reusing the ordinary independent engine per branch, so
-  `beta = 0` reproduces the independent result and `beta = 1` collapses the
-  group to a single component. Honoured by `sf()`/`ff()` (and quantities derived
-  from them) and persisted through serialisation; the probability-dependent
-  importance/sensitivity and condition-based methods raise a clear error on a
-  CCF RBD for now (`structural_importance`, being probability-free, is
-  unaffected). Alpha-factor and Multiple Greek Letter (partial common-cause) are
-  a planned extension. (#44)
+- **Common-cause failures (CCF) — beta-factor and Multiple Greek Letter.**
+  `NonRepairableRBD` gains a `ccf_groups` argument taking
+  `CCFGroup(members, model)`, where the model couples a symmetric redundant
+  group through a shared failure cause. `BetaFactor(beta)` is the all-or-nothing
+  model (a fraction `beta` of failures fail the whole group at once, the rest
+  are independent); `MGL(beta, gamma, ...)` is the Multiple Greek Letter model,
+  which also captures *partial* common causes (a cause failing some but not all
+  of the group) — `MGL(beta)` on two members is exactly `BetaFactor(beta)`.
+  System reliability is computed **exactly** by conditioning on each group's
+  mutually-exclusive shock outcomes and reusing the ordinary independent engine
+  per branch, so `beta = 0` reproduces the independent result. Honoured by
+  `sf()`/`ff()` (and quantities derived from them) and persisted through
+  serialisation; the probability-dependent importance/sensitivity and
+  condition-based methods raise a clear error on a CCF RBD for now
+  (`structural_importance`, being probability-free, is unaffected).
+  Alpha-factor is a planned extension. (#44)
 
 ## [0.7.0] - 2026-07-20
 

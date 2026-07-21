@@ -281,12 +281,19 @@ them all down at once. The exact engine assumes independence and therefore
 **over-estimates** redundant systems; a common-cause model injects the shared
 coupling.
 
-RePyability provides the **beta-factor** model, the workhorse of
-probabilistic-risk assessment: a fraction `beta` of each component's failures
-come from a cause shared across the group (failing every member together), and
-the remaining `1 - beta` are independent. Declare a
-[`CCFGroup`][repyability.CCFGroup] over the coupled nodes and pass it via
+RePyability provides two models, both declared with a
+[`CCFGroup`][repyability.CCFGroup] over the coupled nodes and passed via
 `ccf_groups`:
+
+- [`BetaFactor(beta)`][repyability.BetaFactor] — the workhorse of
+  probabilistic-risk assessment: a fraction `beta` of each component's failures
+  come from a cause shared across the *whole* group (failing every member
+  together), the rest are independent.
+- [`MGL(beta, gamma, ...)`][repyability.MGL] — the Multiple Greek Letter model,
+  which also captures *partial* common causes (a cause failing some but not all
+  of the group) via a cascade of conditional probabilities. `MGL(beta)` on two
+  members is exactly `BetaFactor(beta)`; a group of `m` members takes `m - 1`
+  letters.
 
 ```python
 from surpyval import FixedEventProbability
@@ -317,9 +324,8 @@ group no better than a single component.
   condition-based (`age`) methods do not yet account for CCF and raise a clear
   error on a CCF RBD; `structural_importance` is probability-free and so is
   unaffected. The group persists with the RBD through serialisation.
-- **Partial** common-cause models — alpha-factor and Multiple Greek Letter,
-  where a cause fails *some but not all* of a group — build on the same
-  conditioning and are a planned extension.
+- **Alpha-factor** — a data-estimable reparameterisation of the same partial
+  common-cause multiplicities as MGL — is a planned extension.
 
 ## Repairable systems and availability
 

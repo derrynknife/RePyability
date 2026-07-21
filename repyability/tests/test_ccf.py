@@ -13,6 +13,7 @@ import pytest
 from surpyval import FixedEventProbability, Weibull
 
 from repyability import (
+    MGL,
     BetaFactor,
     CCFGroup,
     NodeState,
@@ -252,3 +253,71 @@ def test_group_validation_against_rbd():
                 CCFGroup(["a", "b"], BetaFactor(0.2)),
             ],
         )
+
+
+# -- Multiple Greek Letter (partial common cause) --------------------------
+
+
+def test_mgl_two_members_equals_beta_factor():
+    # MGL(beta) on a two-member group is exactly the beta-factor model.
+    Q = 0.1
+    bf = float(_parallel(Q, [CCFGroup(["a", "b"], BetaFactor(0.15))]).sf())
+    mgl = float(_parallel(Q, [CCFGroup(["a", "b"], MGL(0.15))]).sf())
+    assert mgl == pytest.approx(bf)
+
+
+def test_mgl_1of3_matches_textbook():
+    # A parallel triple (fails iff all three fail) with MGL(beta, gamma). The
+    # all-three-down cut set has leading-order contributions Q3 + 3*Q2*Q1 +
+    # Q1**3 from the MGL basic-event probabilities.
+    Q, beta, gamma = 0.1, 0.1, 0.3
+    edges = [("s", n) for n in "abc"] + [(n, "t") for n in "abc"]
+    nodes = {n: FixedEventProbability.from_params(Q) for n in "abc"}
+    rbd = NonRepairableRBD(
+        edges, nodes, ccf_groups=[CCFGroup(list("abc"), MGL(beta, gamma))]
+    )
+    q1 = (1 - beta) * Q
+    q2 = beta * (1 - gamma) / 2 * Q
+    q3 = beta * gamma * Q
+    textbook = q3 + 3 * q2 * q1 + q1**3
+    assert 1 - float(rbd.sf()) == pytest.approx(textbook, abs=1e-4)
+
+
+def test_mgl_gamma_one_is_all_or_nothing():
+    # gamma = 1 forces every >=2 common cause to escalate to all 3, i.e. the
+    # group is all-or-nothing: identical to BetaFactor(beta) on the triple.
+    Q, beta = 0.1, 0.2
+    edges = [("s", n) for n in "abc"] + [(n, "t") for n in "abc"]
+    nodes = {n: FixedEventProbability.from_params(Q) for n in "abc"}
+    mgl = NonRepairableRBD(
+        edges, nodes, ccf_groups=[CCFGroup(list("abc"), MGL(beta, 1.0))]
+    )
+    beta_all = NonRepairableRBD(
+        edges, nodes, ccf_groups=[CCFGroup(list("abc"), BetaFactor(beta))]
+    )
+    assert float(mgl.sf()) == pytest.approx(float(beta_all.sf()))
+
+
+def test_mgl_serialisation_roundtrip():
+    Q = 0.1
+    edges = [("s", n) for n in "abc"] + [(n, "t") for n in "abc"]
+    nodes = {n: FixedEventProbability.from_params(Q) for n in "abc"}
+    rbd = NonRepairableRBD(
+        edges, nodes, ccf_groups=[CCFGroup(list("abc"), MGL(0.1, 0.3))]
+    )
+    restored = NonRepairableRBD.from_json(rbd.to_json())
+    assert restored.ccf_groups[0].model == MGL(0.1, 0.3)
+    assert float(restored.sf()) == pytest.approx(float(rbd.sf()))
+
+
+def test_mgl_validation():
+    with pytest.raises(ValueError, match="at least one"):
+        MGL()
+    with pytest.raises(ValueError, match=r"\[0, 1\]"):
+        MGL(0.1, 1.5)
+    assert MGL(0.1, 0.2).group_size == 3
+    assert MGL(0.1) == MGL(0.1)
+    assert MGL(0.1, 0.2) != MGL(0.1, 0.3)
+    # An MGL model's parameter count must match the group size.
+    with pytest.raises(ValueError, match="members"):
+        CCFGroup(["a", "b"], MGL(0.1, 0.3))  # 2 letters -> needs 3 members

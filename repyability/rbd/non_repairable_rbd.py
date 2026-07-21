@@ -463,31 +463,50 @@ class NonRepairableRBD(RBD):
                     "broken_nodes is not supported yet."
                 )
 
-        # Per-group failure probability Q(t), from a representative member
-        # (groups are symmetric).
-        group_Q = [
-            1.0 - np.atleast_1d(base_probabilities[g.members[0]])
-            for g in self.ccf_groups
-        ]
+        # Each group's mutually-exclusive shock outcomes: (weight, {member:
+        # reliability}) for every subset that can fail together plus the
+        # no-shock case, from the model's decomposition of Q(t) (taken from a
+        # representative member, since groups are symmetric).
+        group_outcomes = []
+        for group in self.ccf_groups:
+            Q = 1.0 - np.atleast_1d(base_probabilities[group.members[0]])
+            q_independent, shocks = group.model.decompose(group.members, Q)
+            r_independent = 1.0 - q_independent
+            outcomes = []
+            total_shock = np.zeros_like(Q)
+            for subset, prob in shocks:
+                total_shock = total_shock + prob
+                outcomes.append(
+                    (
+                        prob,
+                        {
+                            member: (
+                                np.zeros_like(Q)
+                                if member in subset
+                                else r_independent
+                            )
+                            for member in group.members
+                        },
+                    )
+                )
+            # No common-cause shock: every member fails only independently.
+            outcomes.append(
+                (
+                    1.0 - total_shock,
+                    {member: r_independent for member in group.members},
+                )
+            )
+            group_outcomes.append(outcomes)
 
         terms = []
-        for combo in product((False, True), repeat=len(self.ccf_groups)):
+        for combo in product(*group_outcomes):
             node_probabilities = dict(base_probabilities)
-            weight = np.ones_like(group_Q[0])
-            for group, Q, fired in zip(self.ccf_groups, group_Q, combo):
-                beta = group.model.beta
-                q_common = beta * Q
-                if fired:
-                    weight = weight * q_common
-                    for member in group.members:
-                        node_probabilities[member] = np.zeros_like(Q)
-                else:
-                    weight = weight * (1.0 - q_common)
-                    r_independent = 1.0 - (1.0 - beta) * Q
-                    for member in group.members:
-                        node_probabilities[member] = r_independent
+            weight: Any = 1.0
+            for outcome_weight, member_probs in combo:
+                weight = weight * outcome_weight
+                node_probabilities.update(member_probs)
             terms.append(
-                weight
+                np.asarray(weight)
                 * np.asarray(
                     self.system_probability(node_probabilities, method=method)
                 )

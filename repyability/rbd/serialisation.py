@@ -202,7 +202,7 @@ def _k_from_list(k_list):
 
 
 def _ccf_to_list(ccf_groups):
-    from repyability.rbd.ccf import BetaFactor
+    from repyability.rbd.ccf import MGL, BetaFactor
 
     if not ccf_groups:
         return None
@@ -210,6 +210,8 @@ def _ccf_to_list(ccf_groups):
     for group in ccf_groups:
         if isinstance(group.model, BetaFactor):
             model = {"kind": "beta_factor", "beta": group.model.beta}
+        elif isinstance(group.model, MGL):
+            model = {"kind": "mgl", "letters": list(group.model.letters)}
         else:
             raise NotImplementedError(
                 f"Cannot serialise CCF model {type(group.model).__name__}."
@@ -219,7 +221,7 @@ def _ccf_to_list(ccf_groups):
 
 
 def _ccf_from_list(ccf_list):
-    from repyability.rbd.ccf import BetaFactor, CCFGroup
+    from repyability.rbd.ccf import MGL, BetaFactor, CCFGroup
 
     if not ccf_list:
         return None
@@ -228,7 +230,9 @@ def _ccf_from_list(ccf_list):
         model_dict = entry["model"]
         kind = model_dict["kind"]
         if kind == "beta_factor":
-            model = BetaFactor(model_dict["beta"])
+            model: object = BetaFactor(model_dict["beta"])
+        elif kind == "mgl":
+            model = MGL(*model_dict["letters"])
         else:
             raise ValueError(f"Unknown CCF model kind {kind!r}.")
         groups.append(CCFGroup(entry["members"], model))

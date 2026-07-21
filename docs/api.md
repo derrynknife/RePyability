@@ -35,6 +35,8 @@ the top-level `repyability` package).
 
 ::: repyability.BetaFactor
 
+::: repyability.MGL
+
 ::: repyability.PerfectReliability
 
 ::: repyability.PerfectUnreliability
