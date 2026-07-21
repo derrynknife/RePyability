@@ -9,6 +9,7 @@ directly from the top-level package, e.g.::
 from repyability._version import __version__
 from repyability.maintenance import FailureLimitPolicy, MaintenancePolicy
 from repyability.non_repairable import NonRepairable
+from repyability.rbd.ccf import BetaFactor, CCFGroup
 from repyability.rbd.helper_classes import (
     PerfectReliability,
     PerfectUnreliability,
@@ -53,6 +54,8 @@ __all__ = [
     "PerfectUnreliability",
     "NodeState",
     "RegressionNode",
+    "BetaFactor",
+    "CCFGroup",
     "minimal_repair_time_to_nth_failure",
     # Result types
     "AvailabilityResult",

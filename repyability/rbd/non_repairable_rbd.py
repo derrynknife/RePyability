@@ -25,6 +25,7 @@ from surpyval import NonParametric
 from repyability.utils.wrappers import conditional_survival, numpy_seed
 
 from ._model_utils import is_fixed_probability, parametric_spec
+from .ccf import CCFGroup
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .load_sharing_node import LoadSharingModel
 from .node_state import NodeState
@@ -125,6 +126,7 @@ class NonRepairableRBD(RBD):
         input_node: Optional[Any] = None,
         output_node: Optional[Any] = None,
         on_infeasible_rbd: str = "raise",
+        ccf_groups: Optional[Iterable[CCFGroup]] = None,
     ):
         if on_infeasible_rbd not in ["raise", "warn", "ignore"]:
             raise ValueError(
@@ -134,6 +136,7 @@ class NonRepairableRBD(RBD):
         # Capture the constructor inputs verbatim (before any mutation) so the
         # RBD can be faithfully serialised via to_dict()/to_json().
         edges = list(edges)
+        ccf_groups = list(ccf_groups) if ccf_groups else []
         self._init_args = {
             "edges": [tuple(e) for e in edges],
             "reliabilities": dict(reliabilities),
@@ -141,6 +144,7 @@ class NonRepairableRBD(RBD):
             "input_node": input_node,
             "output_node": output_node,
             "on_infeasible_rbd": on_infeasible_rbd,
+            "ccf_groups": ccf_groups,
         }
         reliabilities = copy(reliabilities)
         for key, value in reliabilities.items():
@@ -238,6 +242,7 @@ class NonRepairableRBD(RBD):
 
         self.reliabilities = reliabilities
         self.repeated = repeated
+        self.ccf_groups = self._validate_ccf_groups(ccf_groups)
 
         fixed_flags = []
         for _, node in self.reliabilities.items():
@@ -352,7 +357,20 @@ class NonRepairableRBD(RBD):
         broken_nodes = set() if broken_nodes is None else set(broken_nodes)
         self._validate_node_overrides(working_nodes, broken_nodes)
 
-        # Collect node probabilities to pass to RBD class
+        node_probabilities = self._base_node_probabilities(
+            x, working_nodes, broken_nodes
+        )
+        if self.ccf_groups:
+            return self._ccf_system_probability(
+                node_probabilities, working_nodes, broken_nodes, method
+            )
+        return self.system_probability(node_probabilities, method=method)
+
+    def _base_node_probabilities(
+        self, x, working_nodes, broken_nodes
+    ) -> Dict[Any, np.ndarray]:
+        """Per-node reliability at ``x``, honouring the working/broken
+        overrides (perfectly reliable / perfectly unreliable)."""
         node_probabilities: dict[Any, np.ndarray] = {}
         for node_name in self.reliabilities.keys():
             if node_name in working_nodes:
@@ -363,8 +381,131 @@ class NonRepairableRBD(RBD):
                 node_probabilities[node_name] = self.reliabilities[
                     node_name
                 ].sf(x)
+        return node_probabilities
 
-        return self.system_probability(node_probabilities, method=method)
+    def _validate_ccf_groups(self, ccf_groups) -> list:
+        """Validate common-cause groups against the RBD structure.
+
+        Members must be real, non-repeated component nodes (not the input or
+        output node), each node in at most one group, and each group symmetric
+        (identical component models). Returns the validated list.
+        """
+        seen: set = set()
+        for group in ccf_groups:
+            if not isinstance(group, CCFGroup):
+                raise ValueError(
+                    "ccf_groups must contain CCFGroup instances, got "
+                    f"{type(group).__name__}."
+                )
+            for member in group.members:
+                if member not in self.reliabilities:
+                    raise ValueError(
+                        f"CCF group member {member!r} is not a node in the "
+                        "RBD."
+                    )
+                if member in (self.input_node, self.output_node):
+                    raise ValueError(
+                        f"CCF group member {member!r} cannot be the input or "
+                        "output node."
+                    )
+                if member in self.repeated:
+                    raise ValueError(
+                        f"CCF group member {member!r} cannot be a repeated "
+                        "node."
+                    )
+                if member in seen:
+                    raise ValueError(
+                        f"Node {member!r} appears in more than one CCF group."
+                    )
+                seen.add(member)
+            self._check_symmetric_group(group)
+        return list(ccf_groups)
+
+    def _check_symmetric_group(self, group) -> None:
+        # Standard CCF theory is for symmetric groups, so the members must
+        # carry identical component models. Compare via the serialised form
+        # (exact); skip silently if a member is not serialisable.
+        from repyability.rbd.serialisation import serialise_model
+
+        try:
+            specs = [
+                serialise_model(self.reliabilities[m]) for m in group.members
+            ]
+        except Exception:
+            return
+        if any(spec != specs[0] for spec in specs[1:]):
+            raise ValueError(
+                f"CCF group {list(group.members)} is not symmetric: its "
+                "members must carry identical component models."
+            )
+
+    def _ccf_system_probability(
+        self, base_probabilities, working_nodes, broken_nodes, method
+    ) -> np.ndarray:
+        """Exact system reliability with common-cause groups, by conditioning
+        on each group's shared-cause event.
+
+        For each beta-factor group the shared cause either fires (probability
+        ``beta * Q``, failing every member) or does not (each member fails only
+        independently, reliability ``1 - (1 - beta) * Q``). Conditioning on the
+        independent shared-cause events of every group and summing over the
+        ``2 ** len(groups)`` combinations gives the exact result — each term a
+        call to the ordinary independent engine. ``beta = 0`` recovers it
+        exactly.
+        """
+        from itertools import product
+
+        forced = working_nodes | broken_nodes
+        for group in self.ccf_groups:
+            if forced.intersection(group.members):
+                raise NotImplementedError(
+                    "Forcing a CCF group member via working_nodes / "
+                    "broken_nodes is not supported yet."
+                )
+
+        # Per-group failure probability Q(t), from a representative member
+        # (groups are symmetric).
+        group_Q = [
+            1.0 - np.atleast_1d(base_probabilities[g.members[0]])
+            for g in self.ccf_groups
+        ]
+
+        terms = []
+        for combo in product((False, True), repeat=len(self.ccf_groups)):
+            node_probabilities = dict(base_probabilities)
+            weight = np.ones_like(group_Q[0])
+            for group, Q, fired in zip(self.ccf_groups, group_Q, combo):
+                beta = group.model.beta
+                q_common = beta * Q
+                if fired:
+                    weight = weight * q_common
+                    for member in group.members:
+                        node_probabilities[member] = np.zeros_like(Q)
+                else:
+                    weight = weight * (1.0 - q_common)
+                    r_independent = 1.0 - (1.0 - beta) * Q
+                    for member in group.members:
+                        node_probabilities[member] = r_independent
+            terms.append(
+                weight
+                * np.asarray(
+                    self.system_probability(node_probabilities, method=method)
+                )
+            )
+        return np.sum(terms, axis=0)
+
+    def _require_no_ccf(self) -> None:
+        """Raise if the RBD has CCF groups, for the probability-dependent
+        importance / sensitivity measures that do not yet account for them.
+        (Common-cause coupling is currently reflected only in ``sf()`` /
+        ``ff()``; ``structural_importance`` is probability-free and so is
+        unaffected.)"""
+        if self.ccf_groups:
+            raise NotImplementedError(
+                "Importance and sensitivity measures do not yet account for "
+                "common-cause (CCF) groups; CCF is currently supported by "
+                "sf() / ff()."
+            )
 
     def ff(
         self, x: Optional[ArrayLike] = None, *args, **kwargs
@@ -930,6 +1071,13 @@ class NonRepairableRBD(RBD):
         a failed node contributes zero, and an alive node of age ``X``
         contributes ``conditional_survival(model, x, X) = sf(X + x) / sf(X)``.
         """
+        if self.ccf_groups:
+            raise NotImplementedError(
+                "Condition-based evaluation (sf_given_state / remaining_life "
+                "/ importances_given_state) does not yet account for "
+                "common-cause (CCF) groups; use sf()/ff() for CCF system "
+                "reliability."
+            )
         self._validate_state(state)
         node_probabilities: Dict[Any, ArrayLike] = {}
         for node_name, model in self.reliabilities.items():
@@ -1193,6 +1341,7 @@ class NonRepairableRBD(RBD):
         >>> {k: round(v, 4) for k, v in sorted(bi.items())}
         {'a': 0.1, 'b': 0.1}
         """
+        self._require_no_ccf()
         node_probabilities = self._probabilities_with_overrides(
             self.node_sf(x), working_nodes, broken_nodes
         )
@@ -1225,6 +1374,7 @@ class NonRepairableRBD(RBD):
             Dictionary with node names as keys and improvement potentials as
             values (floats for scalar ``x``, arrays for array ``x``)
         """
+        self._require_no_ccf()
         node_probabilities = self._probabilities_with_overrides(
             self.node_sf(x), working_nodes, broken_nodes
         )
@@ -1259,6 +1409,7 @@ class NonRepairableRBD(RBD):
             Dictionary with node names as keys and RAW importances as values
             (floats for scalar ``x``, arrays for array ``x``)
         """
+        self._require_no_ccf()
         node_probabilities = self._probabilities_with_overrides(
             self.node_sf(x), working_nodes, broken_nodes
         )
@@ -1293,6 +1444,7 @@ class NonRepairableRBD(RBD):
             Dictionary with node names as keys and RRW importances as values
             (floats for scalar ``x``, arrays for array ``x``)
         """
+        self._require_no_ccf()
         node_probabilities = self._probabilities_with_overrides(
             self.node_sf(x), working_nodes, broken_nodes
         )
@@ -1325,6 +1477,7 @@ class NonRepairableRBD(RBD):
             Dictionary with node names as keys and criticality importances as
             values (floats for scalar ``x``, arrays for array ``x``)
         """
+        self._require_no_ccf()
         node_probabilities = self._probabilities_with_overrides(
             self.node_sf(x), working_nodes, broken_nodes
         )
@@ -1378,6 +1531,7 @@ class NonRepairableRBD(RBD):
         ValueError
             If ``fv_type`` is not 'c' (cut-set) or 'p' (path-set).
         """
+        self._require_no_ccf()
         rel_dict = {}
         for node_name, node in self.reliabilities.items():
             rel_dict[node_name] = node.sf(x)

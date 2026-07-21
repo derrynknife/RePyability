@@ -272,6 +272,55 @@ group.mean()    # mean group lifetime
 - Like any dynamic node it plugs into an RBD as a single simulation-backed node
   and serialises with it (each unit round-trips via `surpyval.from_dict`).
 
+## Common-cause failures (CCF)
+
+Redundancy only helps if the redundant units fail *independently*. In practice
+they often share a root cause — a common manufacturing defect, a shared power
+supply, one maintenance error applied to every unit — so a single cause takes
+them all down at once. The exact engine assumes independence and therefore
+**over-estimates** redundant systems; a common-cause model injects the shared
+coupling.
+
+RePyability provides the **beta-factor** model, the workhorse of
+probabilistic-risk assessment: a fraction `beta` of each component's failures
+come from a cause shared across the group (failing every member together), and
+the remaining `1 - beta` are independent. Declare a
+[`CCFGroup`][repyability.CCFGroup] over the coupled nodes and pass it via
+`ccf_groups`:
+
+```python
+from surpyval import FixedEventProbability
+from repyability import NonRepairableRBD, CCFGroup, BetaFactor
+
+# Two redundant pumps, each 99% reliable
+rbd = NonRepairableRBD(
+    [("s", "p1"), ("s", "p2"), ("p1", "t"), ("p2", "t")],
+    {"p1": FixedEventProbability.from_params(0.01),
+     "p2": FixedEventProbability.from_params(0.01)},
+    ccf_groups=[CCFGroup(["p1", "p2"], BetaFactor(0.1))],
+)
+rbd.sf()   # ~0.9989 — a ~10x higher failure probability than the
+           # independent estimate (0.9999), because the shared cause dominates
+```
+
+The result is **exact**: internally the system reliability is computed by
+conditioning on each group's shared-cause event (fires → the whole group is
+down; doesn't → each member fails only independently) and blending by
+probability — each branch an ordinary system-reliability evaluation. So `beta =
+0` reproduces the independent result exactly, and `beta = 1` makes a redundant
+group no better than a single component.
+
+- Groups must be **symmetric** (members carry identical component models — the
+  standard CCF assumption) and disjoint (a node is in at most one group).
+- CCF is honoured by `sf()` / `ff()` (and quantities derived from them). The
+  probability-dependent importance / sensitivity measures and the
+  condition-based (`age`) methods do not yet account for CCF and raise a clear
+  error on a CCF RBD; `structural_importance` is probability-free and so is
+  unaffected. The group persists with the RBD through serialisation.
+- **Partial** common-cause models — alpha-factor and Multiple Greek Letter,
+  where a cause fails *some but not all* of a group — build on the same
+  conditioning and are a planned extension.
+
 ## Repairable systems and availability
 
 A [`RepairableRBD`][repyability.RepairableRBD] takes components with both a
