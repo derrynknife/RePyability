@@ -2,9 +2,9 @@
 
 This walkthrough takes a small but realistic system and answers the questions a
 reliability engineer actually asks of it — *how reliable is it, when should we
-service it, what is the weak link, and what does its remaining life look like
-once it is in the field.* Every capability in RePyability shows up here in the
-order you would reach for it.
+service it, what is the weak link, what does its remaining life look like once it
+is in the field, and where is its redundancy weaker than it looks.* Every
+capability in RePyability shows up here in the order you would reach for it.
 
 We will model a **pumping skid**:
 
@@ -184,7 +184,92 @@ Stream a new `state` each time fresh readings arrive; every update is a cheap,
 exact re-evaluation. (Only lifetime distributions age; standby/composite nodes
 are out of scope for the condition-based methods in this release.)
 
-## 8. If the skid is repairable: availability
+## 8. When redundancy is optimistic: dependent failures
+
+Steps 1–7 assumed the five components fail **independently** and each runs at a
+**fixed** load. Both assumptions flatter a redundant system. RePyability lets you
+relax each one where it matters — and because the system quantity stays exact,
+you see precisely what the optimism was worth. The theory behind all three is in
+[Concepts](concepts.md).
+
+### The pumps share the load
+
+The parallel-pump model assumed the surviving pump is unaffected when its sibling
+drops. In reality it then carries the *whole* duty, runs harder, and ages faster.
+Refit the pump with **load as a covariate** and model the pair as a load-sharing
+group — each pump carries half of a total load of `2.0` while both run, and the
+group needs at least one:
+
+```python
+import surpyval as surv
+from repyability import LoadSharingModel
+
+pump = surv.ExponentialAFT.fit(pump_hours, Z=pump_loads)   # fitted in surpyval
+pumps = LoadSharingModel([pump, pump], load=2.0, k=1)       # 2 units, need >= 1
+
+pumps.sf(4000)     # -> 0.868   the pair, sharing the load
+```
+
+Modelled *independently* — the same two pumps each pinned at the half-load — the
+redundant pair would read `0.920`. The load transfer has quietly eaten a third of
+the pair's redundancy margin, and more as it wears: `0.641` vs `0.764` at 8000 h.
+Identical Exponential-baseline units like these get the **exact** hypoexponential
+group lifetime, so `pumps.is_simulated` is `False` — no simulation involved.
+
+### A common cause on the filters
+
+The two filters are the same part from the same shelf, so one bad batch — or one
+contamination event upstream — can blind both at once. That is a **common-cause
+failure**, and no amount of *structural* redundancy defends against it. Attach a
+beta-factor group (here 8% of a filter's failures are shared) to the otherwise
+unchanged skid:
+
+```python
+from repyability import CCFGroup, BetaFactor
+
+rbd_ccf = NonRepairableRBD(
+    edges, reliabilities,
+    ccf_groups=[CCFGroup(["filterA", "filterB"], BetaFactor(0.08))],
+)
+
+rbd_ccf.sf(4000)   # -> 0.9023   vs 0.9091 with independent filters
+```
+
+Modest at the skid level *here*, because the filters are not the weak link — but
+the coupling is exact, and on a system that leans on its redundant pair it is the
+difference between a design that meets its target and one that only appears to.
+`BetaFactor(0)` recovers the independent number; `MGL(β, γ, …)` handles a cause
+that fails *some* but not all of a larger group.
+
+### A duty that ramps up
+
+Finally, drop the fixed-load assumption. Say the skid is commissioned gently and
+then, at 3000 h, pushed to a harsher continuous duty. Fit a regression model with
+the duty as a covariate and give the node a **schedule** instead of a single
+covariate vector:
+
+```python
+from surpyval import StepSchedule
+from repyability import RegressionNode
+
+duty_unit = surv.WeibullAFT.fit(run_hours, Z=duty_history)   # fitted in surpyval
+# benign until 3000 h, then a harsher duty for the rest of life
+duty = StepSchedule.from_changepoints([0, 3000], [[0.0], [1.0]])
+node = RegressionNode(duty_unit, schedule=duty)
+
+node.sf(4000)      # -> 0.822   just after the step up
+node.sf(6000)      # -> 0.603   the harsher duty has now done real damage
+```
+
+Held at the benign duty the same unit would read `0.861` and `0.736`. Reliability
+is the exact survival *along* the duty path, and conditioning on the component's
+age (`NodeState(age=...)`) gives its go-forward reliability from wherever it sits
+on that path — the digital twin of step 7, now with a load history.
+
+Each of these is an ordinary node: it serialises with the RBD and takes part in
+the same exact system computation as everything above.
+
+## 9. If the skid is repairable: availability
 
 If a failed component is repaired rather than replaced, give each one a
 *repairability* (time-to-repair) distribution and ask about availability instead
@@ -212,7 +297,7 @@ Long-run availability is exact and needs no simulation; the time-resolved
 availability curve and its criticality measures come from a seeded
 discrete-event simulation.
 
-## 9. Persist the model
+## 10. Persist the model
 
 The structure and its fitted models round-trip to plain JSON, so you can build
 the RBD once and reload it wherever the analysis runs (a dashboard, a scheduled
@@ -229,8 +314,9 @@ transient input you supply at evaluation time.
 ## Where to next
 
 - **[Concepts](concepts.md)** — the theory behind these numbers: path/cut sets,
-  the full importance-measure family and when to use each, and how conditioning
-  works.
+  the full importance-measure family and when to use each, how conditioning
+  works, and the dependent-failure models from step 8 (load sharing, common
+  cause, and covariate/time-varying reliability).
 - **[User guide](guide.md)** — the reference for every method, argument, and
   return contract.
 - **[API reference](api.md)** — the generated signatures and docstrings.

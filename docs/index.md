@@ -109,5 +109,6 @@ rbd.mean_availability()
 - **[User guide](guide.md)** — building RBDs, reliability, importance measures,
   forcing nodes, condition-based evaluation, and availability results.
 - **[Concepts](concepts.md)** — the theory: path/cut sets, choosing an
-  importance measure, and how conditioning works.
+  importance measure, how conditioning works, and the dependent-failure models
+  (load sharing and common cause) and covariate/time-varying reliability.
 - **[API reference](api.md)** — every public class and method.
