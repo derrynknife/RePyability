@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-22
+
+The **Dependent Failures** milestone: model redundant components that fail
+*together* or *drive each other's aging*, rather than independently — load-
+sharing groups whose survivors carry more and age faster as siblings fail
+(`LoadSharingModel`), common-cause failures through the beta-factor and Multiple
+Greek Letter models (`CCFGroup`), and covariate loads that vary over a
+component's life (`RegressionNode` schedules, built on surpyval 0.16's
+`sf_tvc`).
+
 ### Added
 - **Time-varying load for `RegressionNode` (load-dependent aging, #37).**
   `RegressionNode` now accepts a `schedule=` (a surpyval `StepSchedule`) as an
