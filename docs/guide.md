@@ -227,6 +227,22 @@ rbd.remaining_life(0.9, {"m": NodeState(age=40)})
   meaning (operating time survived): `R(x | age) = sf(age + x, Z) / sf(age, Z)`,
   which holds for every regression family. A hotter-running motor is simply a
   node with different covariates.
+- **Time-varying load (a `schedule`).** If the load *changes over the
+  component's life*, pass a surpyval `StepSchedule` instead of a fixed vector —
+  `RegressionNode(model, schedule=...)`. Reliability is then the exact survival
+  along that covariate path (`model.sf_tvc`), and conditioning on `age` gives
+  the go-forward reliability from the component's current life under the
+  schedule — the load-dependent-aging / digital-twin model of issue #37. This
+  works for accelerated-failure-time and proportional-/additive-hazards models
+  (not proportional-odds), and needs a surpyval build that provides `sf_tvc`.
+
+```python
+from surpyval import StepSchedule
+# benign for 500 h, then a harsher load
+sched = StepSchedule.from_changepoints([0, 500], [[0.0], [1.0]])
+motor = RegressionNode(aft, schedule=sched)
+rbd.sf_given_state(x, {"m": NodeState(age=520)})  # forward reliability, now in the harsh phase
+```
 - The node serialises with the RBD — the fitted regression model round-trips
   through `surpyval.from_dict`.
 - `mean` and `random` (simulation-based MTTF) need a proper parametric lifetime,

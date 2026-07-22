@@ -116,6 +116,131 @@ is a cheap, exact re-evaluation — the heterogeneous generalisation of the
 age, to *per-component* ages. Only lifetime (time-varying) distributions age; a
 fixed-probability component's reliability does not depend on `Xᵢ`.
 
+## Covariate-dependent and time-varying reliability
+
+A component's reliability often depends on the *conditions it runs under*, not
+only on elapsed time. If you have fitted a **regression** survival model in
+surpyval — accelerated-failure-time (AFT), proportional-hazards (Cox, PH),
+proportional-odds (PO), … — a [`RegressionNode`][repyability.RegressionNode]
+uses it as an ordinary RBD node.
+
+**Fixed covariates.** Pin the component's operating point `Z` (temperature,
+load, duty cycle) and its reliability is the model's survival there:
+
+```
+R(x) = model.sf(x, Z)
+```
+
+That is a single univariate curve, so the node takes part in system reliability,
+importance, MTTF and the condition-based (`age`) layer with no special handling
+— a hotter-running unit is just a node with different covariates. This is
+family-agnostic: AFT, PH and PO all expose `sf(x, Z)`.
+
+**A time-varying covariate path.** When the load itself changes over the
+component's life, the reliability is no longer the survival at one covariate
+value but the survival *along the whole path* `Z(t)`. For a piecewise-constant
+path (a surpyval `StepSchedule`) this is
+
+```
+R(x) = model.sf_tvc(x, schedule)
+```
+
+the probability of surviving each segment in turn under its own covariate.
+Conditioning on an `age` needs no special case, because
+
+```
+R(x | age) = sf_tvc(age + x) / sf_tvc(age) = sf_tvc(x, schedule, given=age)
+```
+
+is exactly the go-forward survival from the component's current life under the
+schedule — the load-dependent-aging / "digital twin" node. Whether a family
+composes along a path is a property of the model: **AFT** (the path rescales the
+clock) and **proportional-/additive-hazards** (the path accumulates hazard) do;
+**proportional-odds** does not, and is refused in schedule mode. The
+fixed-covariate node is the special case of a constant path.
+
+## Dependent failures: load sharing
+
+Redundant units that *share a load* do not fail independently. While all are up
+each carries its share; when one fails the survivors pick up the slack, run
+harder, and age faster — so the failures are positively correlated, and treating
+them as `n` independent parallel nodes over-counts the redundancy.
+
+A [`LoadSharingModel`][repyability.LoadSharingModel] captures the coupling as a
+single node. Each unit is a fitted AFT model with **load as its covariate**, so a
+unit running under load `ℓ` ages on its baseline clock at an acceleration factor
+`φ(ℓ)` (the AFT time-scaling). With `s` survivors sharing a total load `L`, each
+carries `L / s` and ages at `φ(L / s)`; as siblings fail, `s` falls, `L / s`
+rises, and the survivors' clocks speed up. The group works while at least `k` of
+the `n` units survive. This is the **cumulative-exposure** model: a unit's
+*virtual age* is the integral of `φ(load(t))` over real time, and it fails when
+that virtual age reaches its baseline failure age.
+
+Two regimes:
+
+- **Closed form.** Identical units with an **Exponential** baseline give a group
+  lifetime that is a sum of exponential stages — each stage the time for the
+  next unit to fail at the current shared load — i.e. a **hypoexponential**
+  distribution, evaluated exactly with no simulation (`is_simulated == False`).
+- **Simulation.** Otherwise the survival curve is a Kaplan–Meier fit to
+  lifetimes drawn from the cumulative-exposure event loop (seeded;
+  `is_simulated == True`).
+
+As a check, with no load effect (`φ ≡ 1`) the survivors do not accelerate and the
+group reduces *exactly* to the ordinary k-out-of-n parallel result. Load sharing
+is the "self-loading" sibling of the condition-based layer: there the load is
+streamed in from sensors, here it is computed from the group's own survivors.
+
+## Common-cause failures
+
+Redundancy only buys reliability if the redundant units fail for *independent*
+reasons. In practice they often share a root cause — a common manufacturing
+batch, a shared power supply, one miscalibration applied to every unit — and a
+single event takes them all down together. Because the exact engine assumes
+independence, it **over-estimates** a redundant group; a common-cause model
+injects the shared coupling. (This is the mirror image of load sharing: there the
+coupling is mechanical load transfer, here it is a shared shock.)
+
+A [`CCFGroup`][repyability.CCFGroup] declares the coupled (symmetric) members and
+the model, passed via `ccf_groups`. Two models:
+
+- [`BetaFactor(beta)`][repyability.BetaFactor] — a fraction `β` of each unit's
+  failure probability `Q` comes from a cause shared across the **whole** group
+  (which fails every member at once); the remaining `(1 − β) Q` is independent.
+  The workhorse of probabilistic-risk assessment.
+- [`MGL(beta, gamma, ...)`][repyability.MGL] — the **Multiple Greek Letter**
+  model, which also resolves *partial* common causes (a cause failing some but
+  not all of the group) through a cascade of conditional probabilities:
+  `β = P(shared by ≥ 2 | failed)`, `γ = P(≥ 3 | ≥ 2)`, and so on. The probability
+  that a cause fails a *specific* set of `k` of the `m` members is the standard
+  basic-event probability
+
+```
+Q_k = [ 1 / C(m−1, k−1) ] · (ρ₁ ρ₂ ⋯ ρ_k) · (1 − ρ_{k+1}) · Q
+```
+
+  with `ρ₁ = 1, ρ₂ = β, ρ₃ = γ, …, ρ_{m+1} = 0`; these partition each unit's `Q`
+  exactly. A group of `m` members takes `m − 1` letters, and `MGL(β)` on two
+  members is exactly `BetaFactor(β)`.
+
+**The evaluation is exact, not a correction factor.** Each model's `decompose`
+splits the group's failure into an independent part plus a set of
+**mutually-exclusive shocks** (each a subset of members failing together). The
+system reliability is then computed by conditioning on the shock outcome of every
+group — in each branch the shocked members are down and the rest fail only
+independently, so it is an ordinary independent system-reliability evaluation —
+and blending the branches by their probabilities. Hence `β = 0` reproduces the
+independent result exactly, and `β = 1` makes a redundant group no better than a
+single unit.
+
+Common cause is currently reflected in `sf()` / `ff()` (and quantities derived
+from them) and persists through serialisation. Groups must be symmetric
+(identical member models) and disjoint. The probability-dependent
+importance/sensitivity and the condition-based methods do not yet account for it
+and raise a clear error on a CCF RBD; `structural_importance`, being
+probability-free, is unaffected. **Alpha-factor**, a data-estimable
+reparameterisation of the same multiplicities, is a planned extension.
+
 ## Scope
 
 - **Fitting failure data to distributions lives in
