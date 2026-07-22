@@ -17,9 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   digital-twin / load-dependent-aging node — with no change to the
   condition-based layer, since `sf_tvc(age+x)/sf_tvc(age)` is exactly surpyval's
   `sf_tvc(..., given=age)`. Works for accelerated-failure-time and
-  proportional-/additive-hazards families (not proportional-odds); needs a
-  surpyval build that provides `sf_tvc`. The schedule persists through
-  serialisation.
+  proportional-/additive-hazards families (not proportional-odds). The schedule
+  persists through serialisation. (Uses surpyval's `sf_tvc`, which is why the
+  minimum surpyval is now 0.16 — see below.)
+
+### Changed
+- Require **surpyval >= 0.16** (was >= 0.15): the time-varying-load
+  `RegressionNode` schedule mode above is built on surpyval's `sf_tvc`, added
+  in 0.16.
 - **`LoadSharingModel`: load-sharing dynamic node (dependent failure).** A
   sibling to `StandbyModel` where *n* coupled units share a total load and the
   survivors carry more (and so age faster) as siblings fail — the group works
