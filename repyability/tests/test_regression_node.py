@@ -16,6 +16,20 @@ import surpyval as surv
 
 from repyability import NodeState, NonRepairableRBD, RegressionNode
 
+# The time-varying-covariate (schedule) mode needs a surpyval build exposing
+# sf_tvc / StepSchedule; skip those tests on older builds so CI stays green.
+try:
+    from surpyval.univariate.regression import StepSchedule
+
+    _HAS_TVC = True
+except ImportError:  # pragma: no cover
+    StepSchedule = None
+    _HAS_TVC = False
+
+needs_tvc = pytest.mark.skipif(
+    not _HAS_TVC, reason="surpyval build lacks sf_tvc / StepSchedule"
+)
+
 
 @pytest.fixture(scope="module")
 def data():
@@ -182,3 +196,97 @@ def test_non_regression_model_rejected():
         RegressionNode(
             surv.Weibull.from_params([100.0, 2.0]), covariates=[0.1]
         )
+
+
+def test_requires_exactly_one_of_covariates_or_schedule(models):
+    with pytest.raises(ValueError, match="exactly one"):
+        RegressionNode(models["aft"])  # neither
+
+
+# -- time-varying covariate (schedule) mode, issue #37 ---------------------
+
+
+@needs_tvc
+@pytest.mark.parametrize("family", ["aft", "ph"])
+def test_schedule_sf_matches_sf_tvc(models, family):
+    sched = StepSchedule.from_changepoints([0, 50], [[0.0], [0.8]])
+    node = RegressionNode(models[family], schedule=sched)
+    xt = np.array([30.0, 80.0, 150.0])
+    assert np.allclose(node.sf(xt), np.ravel(models[family].sf_tvc(xt, sched)))
+
+
+@needs_tvc
+def test_schedule_condition_based_is_given(models):
+    # The condition-based `age` path must equal surpyval's sf_tvc(given=age):
+    # forward reliability from the component's current life under the schedule.
+    sched = StepSchedule.from_changepoints([0, 50], [[0.0], [0.8]])
+    node = RegressionNode(models["aft"], schedule=sched)
+    rbd = NonRepairableRBD([("s", "c"), ("c", "t")], {"c": node})
+    age = 60.0
+    for x in (20.0, 40.0):
+        got = float(rbd.sf_given_state(x, {"c": NodeState(age=age)}))
+        want = float(
+            np.ravel(
+                models["aft"].sf_tvc(np.array([age + x]), sched, given=age)
+            )[0]
+        )
+        assert got == pytest.approx(want)
+
+
+@needs_tvc
+def test_schedule_more_load_lowers_reliability(models):
+    # A schedule ramping to a higher load is less reliable than a benign one.
+    low = RegressionNode(
+        models["aft"],
+        schedule=StepSchedule.from_changepoints([0, 50], [[0.0], [0.0]]),
+    )
+    high = RegressionNode(
+        models["aft"],
+        schedule=StepSchedule.from_changepoints([0, 50], [[0.0], [1.0]]),
+    )
+    xt = np.array([120.0])
+    assert high.sf(xt)[0] < low.sf(xt)[0]
+
+
+@needs_tvc
+def test_po_schedule_rejected(models):
+    # Proportional odds does not compose along a time-varying covariate.
+    with pytest.raises(ValueError, match="proportional-odds|sf_tvc"):
+        RegressionNode(
+            models["po"],
+            schedule=StepSchedule.from_changepoints([0, 50], [[0.0], [0.8]]),
+        )
+
+
+@needs_tvc
+def test_schedule_serialisation_roundtrip(models):
+    sched = StepSchedule.from_changepoints([0, 50, 120], [[0.0], [0.8], [0.3]])
+    node = RegressionNode(models["aft"], schedule=sched)
+    node2 = RegressionNode.from_dict(json.loads(json.dumps(node.to_dict())))
+    xt = np.array([30.0, 90.0, 160.0])
+    assert np.allclose(node.sf(xt), node2.sf(xt))
+
+
+@needs_tvc
+def test_rbd_with_schedule_node_json_roundtrip(models):
+    sched = StepSchedule.from_changepoints([0, 50], [[0.0], [0.8]])
+    rbd = NonRepairableRBD(
+        [("s", "c"), ("c", "t")],
+        {"c": RegressionNode(models["aft"], schedule=sched)},
+    )
+    restored = NonRepairableRBD.from_json(rbd.to_json())
+    assert np.isclose(float(rbd.sf(80.0)), float(restored.sf(80.0)))
+
+
+@needs_tvc
+def test_schedule_mean_and_random(models):
+    node = RegressionNode(
+        models["aft"],
+        schedule=StepSchedule.from_changepoints([0, 50], [[0.0], [0.5]]),
+    )
+    assert node.mean() > 0.0
+    np.random.seed(0)
+    a = node.random(2000)
+    np.random.seed(0)
+    b = node.random(2000)
+    assert np.allclose(a, b) and (a > 0).all()

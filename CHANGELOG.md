@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Time-varying load for `RegressionNode` (load-dependent aging, #37).**
+  `RegressionNode` now accepts a `schedule=` (a surpyval `StepSchedule`) as an
+  alternative to a fixed covariate vector: the load the component runs under
+  varies over its life, and reliability is the exact survival along that
+  covariate path (`model.sf_tvc`). Conditioning on `age` gives the go-forward
+  reliability from the component's current life under the schedule — the
+  digital-twin / load-dependent-aging node — with no change to the
+  condition-based layer, since `sf_tvc(age+x)/sf_tvc(age)` is exactly surpyval's
+  `sf_tvc(..., given=age)`. Works for accelerated-failure-time and
+  proportional-/additive-hazards families (not proportional-odds); needs a
+  surpyval build that provides `sf_tvc`. The schedule persists through
+  serialisation.
 - **`LoadSharingModel`: load-sharing dynamic node (dependent failure).** A
   sibling to `StandbyModel` where *n* coupled units share a total load and the
   survivors carry more (and so age faster) as siblings fail — the group works
