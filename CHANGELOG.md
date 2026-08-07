@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Cost of a repairable system (`expected_cost_rate`).** `RepairableRBD`
+  components may now carry `repair_cost` and `replace_cost` (charged per
+  corrective action) and an optional `downtime_cost` rate, alongside a
+  system-level `downtime_cost_rate` for production lost while the system is
+  down. `expected_cost_rate()` returns the long-run cost per unit time in
+  closed form — no simulation — as
+  `downtime_cost_rate·(1 − A_sys) + Σ ωᵢ·(repair + replace) + Σ (1 − Aᵢ)·downtime`,
+  reusing the existing availability and failure-frequency machinery, and it
+  accepts the usual `working_nodes`/`broken_nodes` conditioning. Every cost is
+  optional and defaults to 0, so any subset can be priced; when nothing is
+  priced `has_costs` is `False` and the method short-circuits without doing the
+  work. Costs are corrective-only and undiscounted, and they persist through
+  serialisation. Unknown keys in a component spec are now rejected at
+  construction, so a mistyped cost key can no longer be silently priced at zero.
+
 ### Changed
 - Require **surpyval >= 0.19** (was >= 0.16). Verified against surpyval 0.19.0:
   the whole test suite, the type checks and the strict docs build pass

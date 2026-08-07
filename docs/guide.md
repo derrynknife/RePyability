@@ -387,6 +387,59 @@ for conditional analyses. The simulated `AvailabilityResult` carries matching
 *estimates* (`result.mean_up_time`, `result.mean_down_time`,
 `result.failure_frequency`) you can cross-check against the exact values.
 
+### What it costs to run (`expected_cost_rate`)
+
+Availability answers *how often the system is up*; the next question is
+usually *what that costs*. Price the components — and, usually the dominant
+term, the production lost while the system is down — and
+`expected_cost_rate()` returns the long-run cost per unit time in closed
+form (no simulation):
+
+```python
+rbd = RepairableRBD(
+    edges,
+    {
+        "pump": {
+            "reliability":   surv.Weibull.from_params([12000, 1.8]),
+            "repairability": surv.Exponential.from_params([1 / 48]),
+            "repair_cost":   500,    # labour, per corrective repair
+            "replace_cost":  4000,   # the spare itself, per repair
+        },
+        # ... other components ...
+    },
+    downtime_cost_rate=1000,         # lost production per hour down
+)
+
+rbd.expected_cost_rate()             # -> cost per hour, long run
+```
+
+The rate is the sum of three exact terms:
+
+```
+cost_rate = downtime_cost_rate · (1 − A_sys)              # production loss
+          + Σ ωᵢ · (repair_costᵢ + replace_costᵢ)          # corrective actions
+          + Σ (1 − Aᵢ) · downtime_costᵢ                    # optional, per node
+```
+
+where `Aᵢ` is a node's availability and `ωᵢ = 1 / (MTTFᵢ + MTTRᵢ)` its
+long-run failure frequency — so the `repair_cost`/`replace_cost` pair is
+charged **per corrective action** while the downtime rates are charged **per
+unit time down**.
+
+- **Every cost is optional and defaults to 0**, so you can price any subset:
+  only `repair_cost`/`replace_cost` gives a pure spares-and-labour budget,
+  only `downtime_cost_rate` a pure production-loss model. With nothing priced
+  there is no cost model to evaluate, so `has_costs` is `False` and the method
+  short-circuits to `0.0` rather than doing the work.
+- `downtime_cost` is the niche one: it prices *this component* being down even
+  when redundancy keeps the system up (degraded-mode or per-leg SLA penalties).
+- Costs are **corrective only** and **undiscounted** — every failure is repaired
+  at the same price, and there is no preventive-replacement or net-present-value
+  term.
+- Like the other steady-state metrics it accepts `working_nodes`/`broken_nodes`,
+  and the costs persist through serialisation. A mistyped cost key is rejected
+  at construction rather than silently priced at zero.
+
 ### Simulation uncertainty
 
 Monte-Carlo results are estimates, and the result objects quantify their

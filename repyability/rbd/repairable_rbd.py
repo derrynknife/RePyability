@@ -150,6 +150,11 @@ def restoration_criticality_index_by_component(RCI):
 
 
 class RepairableRBD(RBD):
+    #: Optional per-component cost fields accepted in a component spec dict.
+    COST_KEYS = ("repair_cost", "replace_cost", "downtime_cost")
+    #: Every key a component spec dict may carry.
+    COMPONENT_SPEC_KEYS = ("reliability", "repairability") + COST_KEYS
+
     def __init__(
         self,
         edges: Iterable[tuple[Hashable, Hashable]],
@@ -158,6 +163,7 @@ class RepairableRBD(RBD):
         input_node: Optional[Any] = None,
         output_node: Optional[Any] = None,
         on_infeasible_rbd: str = "raise",
+        downtime_cost_rate: float = 0.0,
     ):
         # Capture the constructor inputs verbatim (before any mutation) so the
         # RBD can be faithfully serialised via to_dict()/to_json().
@@ -169,12 +175,27 @@ class RepairableRBD(RBD):
             "input_node": input_node,
             "output_node": output_node,
             "on_infeasible_rbd": on_infeasible_rbd,
+            "downtime_cost_rate": downtime_cost_rate,
         }
+        self.downtime_cost_rate = self._validate_cost(
+            "<system>", "downtime_cost_rate", downtime_cost_rate
+        )
+        # Per-node cost fields, pulled out of the component specs. Only nodes
+        # that declare at least one non-zero cost appear here.
+        self.costs: dict[Any, dict[str, float]] = {}
         components = copy(components)
         reliability = {}
         repairability = {}
         for name, component in components.items():
             if isinstance(component, dict):
+                self._validate_component_spec(name, component)
+                node_costs = {
+                    key: self._validate_cost(name, key, component[key])
+                    for key in self.COST_KEYS
+                    if component.get(key)
+                }
+                if node_costs:
+                    self.costs[name] = node_costs
                 components[name] = NonRepairable(
                     component["reliability"], component["repairability"]
                 )
@@ -222,6 +243,151 @@ class RepairableRBD(RBD):
 
         self.components = components
         self.repairability = copy(repairability)
+
+    @classmethod
+    def _validate_component_spec(cls, node, spec: dict) -> None:
+        """Reject unknown keys in a component spec.
+
+        A mistyped cost key (``repair_costs``) would otherwise be silently
+        ignored and priced at zero, which is a quiet way to get the money
+        wrong; surface it at construction instead.
+        """
+        unknown = set(spec) - set(cls.COMPONENT_SPEC_KEYS)
+        if unknown:
+            raise ValueError(
+                f"Component {node!r} has unknown key(s) "
+                f"{sorted(map(str, unknown))}. A component spec takes "
+                f"{', '.join(cls.COMPONENT_SPEC_KEYS)}."
+            )
+
+    @staticmethod
+    def _validate_cost(node, key: str, value) -> float:
+        """Coerce a cost to a finite, non-negative float."""
+        try:
+            cost = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(
+                f"{node!r}: {key} must be a number, got {value!r}."
+            ) from None
+        if not np.isfinite(cost) or cost < 0.0:
+            raise ValueError(
+                f"{node!r}: {key} must be finite and non-negative, got "
+                f"{value!r}."
+            )
+        return cost
+
+    @property
+    def has_costs(self) -> bool:
+        """Whether any cost has been declared (per-component or system-wide).
+
+        When nothing is priced there is no cost model to evaluate, so the cost
+        methods short-circuit rather than doing the work.
+        """
+        return bool(self.costs) or bool(self.downtime_cost_rate)
+
+    def expected_cost_rate(
+        self,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> float:
+        """Returns the long-run expected cost per unit time.
+
+        Exact (no simulation), from the steady-state quantities:
+
+        .. math::
+            E[\\text{cost rate}] =
+              c_{\\text{sys}} \\, (1 - A_{\\text{sys}})
+              + \\sum_i \\omega_i \\, (c^{\\text{repair}}_i
+                                      + c^{\\text{replace}}_i)
+              + \\sum_i (1 - A_i) \\, c^{\\text{down}}_i
+
+        where :math:`A` is availability and :math:`\\omega_i =
+        1/(MTTF_i + MTTR_i)` is node i's long-run failure frequency — so
+        ``repair_cost``/``replace_cost`` are charged per corrective action,
+        while the downtime rates are charged per unit time down.
+
+        Every cost is optional and defaults to 0, so any subset can be
+        priced; with nothing priced this is 0. Costs are corrective-only and
+        undiscounted.
+
+        Parameters
+        ----------
+        working_nodes : Collection[Hashable], optional
+            Condition on these nodes always working: they never fail, so they
+            incur no corrective or downtime cost, by default None
+        broken_nodes : Collection[Hashable], optional
+            Condition on these nodes being failed: they incur no corrective
+            cost (they never change state) but are down for all time, by
+            default None
+
+        Returns
+        -------
+        float
+            Expected cost per unit time
+
+        Examples
+        --------
+        One component with MTTF 10 and MTTR 1 is up 10/11 of the time and
+        fails 1/11 times per unit time, so at 100 per repair and 50 per unit
+        time of outage the cost rate is ``(100 + 50) / 11``:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> rbd = RepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {
+        ...         "c": {
+        ...             "reliability": surv.Exponential.from_params([0.1]),
+        ...             "repairability": surv.Exponential.from_params([1.0]),
+        ...             "repair_cost": 100.0,
+        ...         }
+        ...     },
+        ...     downtime_cost_rate=50.0,
+        ... )
+        >>> round(rbd.expected_cost_rate(), 4)
+        13.6364
+        """
+        if not self.has_costs:
+            return 0.0
+
+        working_nodes = set() if working_nodes is None else set(working_nodes)
+        broken_nodes = set() if broken_nodes is None else set(broken_nodes)
+        self._validate_node_overrides(working_nodes, broken_nodes)
+        forced = working_nodes | broken_nodes
+
+        rate = 0.0
+
+        # Production lost while the *system* is down.
+        if self.downtime_cost_rate:
+            unavailability = 1.0 - self.mean_availability(
+                working_nodes, broken_nodes
+            )
+            rate += self.downtime_cost_rate * unavailability
+
+        if not self.costs:
+            return rate
+
+        node_availability = _squeeze_values(
+            self._probabilities_with_overrides(
+                self.node_availability(), working_nodes, broken_nodes
+            )
+        )
+        for node, node_costs in self.costs.items():
+            # Corrective actions, charged per failure. A forced node never
+            # changes state, so it never incurs one.
+            per_action = node_costs.get("repair_cost", 0.0) + node_costs.get(
+                "replace_cost", 0.0
+            )
+            if per_action and node not in forced:
+                rate += per_action * self._node_failure_frequency(
+                    self.components[node]
+                )
+            # Optional cost of *this component* being down, whether or not
+            # the system as a whole is.
+            downtime_cost = node_costs.get("downtime_cost", 0.0)
+            if downtime_cost:
+                rate += downtime_cost * (1.0 - node_availability[node])
+        return rate
 
     def initialize_event_queue(
         self,
