@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Require **surpyval >= 0.19** (was >= 0.16). Verified against surpyval 0.19.0:
+  the whole test suite, the type checks and the strict docs build pass
+  unchanged — no RePyability API depended on anything that moved, and the
+  `sf_tvc` / `StepSchedule` time-varying-load path is unaffected.
+
+### Fixed
+- `test_weibull_no_optimal_replacement` no longer asserts that a warning is
+  emitted for an offset (3-parameter) Weibull. The warning was an incidental
+  numerical `RuntimeWarning` raised inside surpyval while evaluating the
+  model's mean, not a contract of `find_optimal_replacement()`; surpyval 0.19
+  evaluates that mean cleanly, so the assertion no longer held. The behaviour
+  under test — a finite (non-`inf`) replacement age for an offset Weibull — is
+  unchanged and still asserted.
+
 ## [0.8.0] - 2026-07-22
 
 The **Dependent Failures** milestone: model redundant components that fail
