@@ -60,6 +60,7 @@ def serialise_model(model: Any) -> dict:
             "k": model.k,
             "n_sims": model.n_sims,
             "switching_probability": model.switching_probability,
+            "dormancy_factor": model.dormancy_factor,
         }
     if isinstance(model, RepeatedStandbyNode):
         return {
@@ -129,6 +130,7 @@ def deserialise_model(d: dict) -> Any:
             k=d["k"],
             n_sims=d.get("n_sims", 10_000),
             switching_probability=d.get("switching_probability", 1.0),
+            dormancy_factor=d.get("dormancy_factor", 0.0),
         )
     if kind == "repeated_standby":
         return RepeatedStandbyNode(
@@ -178,10 +180,16 @@ def _serialise_component(value) -> dict:
     if isinstance(value, dict):
         from repyability.rbd.repairable_rbd import RepairableRBD
 
+        repairability = value["repairability"]
         out: dict[str, Any] = {
             "kind": "component_spec",
             "reliability": serialise_model(value["reliability"]),
-            "repairability": serialise_model(value["repairability"]),
+            # "instant" (repair in zero time) is a sentinel, not a model.
+            "repairability": (
+                "instant"
+                if repairability == "instant"
+                else serialise_model(repairability)
+            ),
         }
         for key in RepairableRBD.COST_KEYS:
             if value.get(key):
@@ -196,7 +204,11 @@ def _deserialise_component(d: dict) -> Any:
 
         out: Any = {
             "reliability": deserialise_model(d["reliability"]),
-            "repairability": deserialise_model(d["repairability"]),
+            "repairability": (
+                "instant"
+                if d["repairability"] == "instant"
+                else deserialise_model(d["repairability"])
+            ),
         }
         for key in RepairableRBD.COST_KEYS:
             if key in d:

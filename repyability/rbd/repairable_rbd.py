@@ -7,12 +7,14 @@ from queue import PriorityQueue
 from typing import Any, Collection, Hashable, Iterable, List, Optional, Tuple
 
 import numpy as np
+from surpyval import ExactEventTime
 from tqdm import tqdm
 
 from repyability.non_repairable import NonRepairable
 from repyability.rbd.rbd import RBD
 from repyability.rbd.results import (
     AvailabilityResult,
+    CostResult,
     Criticalities,
     FailureCriticalityIndex,
     RestorationCriticalityIndex,
@@ -196,11 +198,28 @@ class RepairableRBD(RBD):
                 }
                 if node_costs:
                     self.costs[name] = node_costs
+                repair_model = component["repairability"]
+                if isinstance(repair_model, str):
+                    # "instant": repaired in zero time. The component still
+                    # *fails* (failure events fire, and any repair/replace
+                    # cost is charged), but each outage has zero length, so
+                    # it contributes no downtime and its availability is 1.
+                    # The convenient assumption when repairs are much faster
+                    # than the timescale being studied, or when no
+                    # repair-time data exists.
+                    if repair_model != "instant":
+                        raise ValueError(
+                            f"Component {name!r}: unknown repairability "
+                            f"{repair_model!r}. Pass a fitted time-to-repair "
+                            "model, or the string 'instant' for repair in "
+                            "zero time."
+                        )
+                    repair_model = ExactEventTime.from_params(0)
                 components[name] = NonRepairable(
-                    component["reliability"], component["repairability"]
+                    component["reliability"], repair_model
                 )
                 reliability[name] = component["reliability"]
-                repairability[name] = component["repairability"]
+                repairability[name] = repair_model
             elif isinstance(component, RepairableRBD):
                 reliability[name] = component
                 repairability[name] = None
@@ -638,6 +657,25 @@ class RepairableRBD(RBD):
         union_uptime: defaultdict = defaultdict(lambda: 0)
         union_downtime: defaultdict = defaultdict(lambda: 0)
 
+        # Cost accumulation rides along on the same replications, but only
+        # when some cost has been declared -- an unpriced RBD does none of
+        # this work. Each replication yields one total-cost sample (the
+        # distribution); the running sums produce the mean breakdowns.
+        has_costs = self.has_costs
+        per_action_cost = {
+            node: c.get("repair_cost", 0.0) + c.get("replace_cost", 0.0)
+            for node, c in self.costs.items()
+        }
+        component_downtime_rate = {
+            node: c["downtime_cost"]
+            for node, c in self.costs.items()
+            if c.get("downtime_cost")
+        }
+        cost_samples: List[float] = []
+        corrective_cost_total = 0.0
+        component_downtime_cost_total = 0.0
+        system_downtime_cost_total = 0.0
+
         # Perform N simulations. surpyval's ``.random`` draws from numpy's
         # global RNG, so seed it here (if a seed was given) to make the run
         # reproducible, restoring the caller's RNG state once the randomised
@@ -666,6 +704,8 @@ class RepairableRBD(RBD):
                 for comp in self.components
             }
             system_timeline = [(0.0, 1 if self.system_state else 0)]
+            rep_corrective_cost = 0.0
+            rep_component_downtime_cost = 0.0
 
             # Implemented ensure that no events that occur after the
             # end-time of the simulation are added to the queue; so we just
@@ -680,6 +720,12 @@ class RepairableRBD(RBD):
                     RCI[event.component]["component_restorations"] += 1
                 else:
                     FCI[event.component]["component_failures"] += 1
+                    if has_costs:
+                        # Repair + replace are charged per corrective action,
+                        # at the failure that triggers it.
+                        rep_corrective_cost += per_action_cost.get(
+                            event.component, 0.0
+                        )
 
                 status = 1 if event.status else -1
                 component_timelines[event.component].append(
@@ -744,6 +790,10 @@ class RepairableRBD(RBD):
                 )
                 node_uptime[component] += component_ut
                 node_downtime[component] += t_simulation - component_ut
+                if has_costs and component in component_downtime_rate:
+                    rep_component_downtime_cost += component_downtime_rate[
+                        component
+                    ] * (t_simulation - component_ut)
                 joint_t, joint_events = combined_timeline(
                     component_timelines[component], system_timeline
                 )
@@ -759,6 +809,19 @@ class RepairableRBD(RBD):
             simulation_system_ut = time_at_status(system_timeline, 1)
             system_uptime += simulation_system_ut
             system_downtime += t_simulation - simulation_system_ut
+
+            if has_costs:
+                rep_system_downtime_cost = self.downtime_cost_rate * (
+                    t_simulation - simulation_system_ut
+                )
+                cost_samples.append(
+                    rep_corrective_cost
+                    + rep_component_downtime_cost
+                    + rep_system_downtime_cost
+                )
+                corrective_cost_total += rep_corrective_cost
+                component_downtime_cost_total += rep_component_downtime_cost
+                system_downtime_cost_total += rep_system_downtime_cost
 
         # Randomised simulations are done; restore the caller's RNG state.
         if _rng_state is not None:
@@ -826,6 +889,31 @@ class RepairableRBD(RBD):
         del self.t_simulation
         del self.component_status
 
+        cost_result = None
+        if has_costs:
+            # Mean cost attributable to each costed component: its corrective
+            # actions plus its own downtime cost. (System downtime is a
+            # system-level quantity and is not attributed to components.)
+            by_component = {}
+            for node, node_costs in self.costs.items():
+                attributable = (
+                    per_action_cost[node] * FCI[node]["component_failures"]
+                    + node_costs.get("downtime_cost", 0.0)
+                    * node_downtime[node]
+                )
+                by_component[node] = attributable / N
+            cost_result = CostResult(
+                samples=np.asarray(cost_samples, dtype=float),
+                t_simulation=t_simulation,
+                n_simulations=N,
+                by_category={
+                    "corrective": corrective_cost_total / N,
+                    "component_downtime": component_downtime_cost_total / N,
+                    "system_downtime": system_downtime_cost_total / N,
+                },
+                by_component=by_component,
+            )
+
         simulation_results = AvailabilityResult(
             timeline=time,
             availability=system_availability,
@@ -838,9 +926,46 @@ class RepairableRBD(RBD):
             system_failures=system_failures,
             system_restorations=system_restorations,
             n_simulations=N,
+            cost=cost_result,
         )
 
         return simulation_results
+
+    def cost(
+        self,
+        t_simulation: float,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        method: str = "p",
+        N: int = 10_000,
+        verbose: bool = False,
+        seed: Optional[int] = None,
+    ) -> Optional[CostResult]:
+        """Simulate the cost of running the system for ``t_simulation``.
+
+        Runs the availability simulation with cost accumulation and returns
+        its :class:`CostResult` — the distribution of the window's total cost
+        (``samples``, ``mean``, ``percentile(q)``) with per-category and
+        per-component breakdowns. ``result.cost_rate`` converges to the exact
+        :meth:`expected_cost_rate` as the window grows, which is the
+        cross-check to reach for.
+
+        Returns ``None`` when no cost has been declared anywhere — with
+        nothing priced there is no cost model to evaluate. (The same result
+        is available as ``availability(...).cost`` if you also want the
+        availability outputs from the same replications.)
+        """
+        if not self.has_costs:
+            return None
+        return self.availability(
+            t_simulation,
+            working_nodes=working_nodes,
+            broken_nodes=broken_nodes,
+            method=method,
+            N=N,
+            verbose=verbose,
+            seed=seed,
+        ).cost
 
     def node_availability(self) -> dict[Hashable, float]:
         """Returns each node's long-run availability (a dict keyed by node

@@ -250,6 +250,37 @@ rbd.sf_given_state(x, {"m": NodeState(age=520)})  # forward reliability, now in 
   no defined MTTF and reports that clearly. Reliability, conditioning and
   importance work for all of them.
 
+## Standby redundancy (cold, warm, hot)
+
+A [`StandbyModel`][repyability.StandbyModel] is a k-out-of-n arrangement
+where spares wait to be switched in as operating units fail.
+`dormancy_factor` sets how fast a *dormant* spare ages relative to an
+operating unit, spanning the whole standby spectrum with one number:
+
+```python
+from repyability import StandbyModel
+
+pumps = StandbyModel([pump, pump, pump], k=1, dormancy_factor=0.3)
+```
+
+- **`0` — cold** (the default, unchanged): spares do not age while dormant;
+  with `k = 1` the lifetime is the sum of the units' lifetimes.
+- **`0 < dormancy_factor < 1` — warm**: a dormant spare ages at that fraction
+  of the operating rate (a pressurised spare pump, an energised hot-spare
+  board), so it can fail **latent** — dead before it is ever needed, and
+  skipped at promotion. Spares are promoted in list order.
+- **`1` — hot**: spares age as fast as operating units, which is exactly an
+  ordinary k-out-of-n parallel arrangement (named here so the assumption is
+  explicit).
+
+Identical Exponential units get an **exact** closed form for any
+`dormancy_factor` (the stage rates are `lam * (k + (j - k) * kappa)` with `j`
+units alive — Erlang when cold, hypoexponential otherwise); other lifetimes
+are simulated and fitted with Kaplan-Meier. Warm standby uses the same
+cumulative-exposure (virtual-age) machinery as `LoadSharingModel`; imperfect
+switching (`switching_probability`) remains cold-`k = 1`-only for now. The
+`dormancy_factor` persists through serialisation.
+
 ## Load-sharing (dependent failure)
 
 Redundant units that *share a load* fail dependently: when one fails, the
@@ -439,6 +470,51 @@ unit time down**.
 - Like the other steady-state metrics it accepts `working_nodes`/`broken_nodes`,
   and the costs persist through serialisation. A mistyped cost key is rejected
   at construction rather than silently priced at zero.
+
+### The cost *distribution* (`cost`)
+
+The exact rate is a mean; budgeting usually needs the spread — *what could a
+bad year cost?* `cost()` runs the availability simulation with cost
+accumulation and returns a [`CostResult`][repyability.CostResult]: one total
+cost per replication over the window, with per-category and per-component
+breakdowns.
+
+```python
+result = rbd.cost(t_simulation=8760, N=10_000, seed=0)   # one year, simulated
+
+result.mean             # mean cost of the year
+result.percentile(90)   # a planning-case budget: 9 years in 10 cost less
+result.cost_rate        # mean / t_simulation — converges to expected_cost_rate()
+result.by_category      # {"corrective": ..., "component_downtime": ..., "system_downtime": ...}
+result.by_component     # mean attributable cost per costed component
+```
+
+The same result rides along on `availability(...)` as `result.cost`, so one
+simulation pays for both answers. When nothing is priced there is no cost
+model to run: `cost()` returns `None` and `availability(...).cost` is `None`.
+Cross-check: `result.cost_rate` must approach the exact
+`expected_cost_rate()` as the window grows — that identity is asserted in the
+test suite.
+
+### Instantly repaired components
+
+When repairs are much faster than the timescale under study — or no
+repair-time data exists — pass `"repairability": "instant"` instead of a
+fitted time-to-repair model:
+
+```python
+rbd = RepairableRBD(edges, {
+    "fuse": {"reliability": fuse_life, "repairability": "instant",
+             "replace_cost": 40},
+    # ... other components with real repair-time models ...
+})
+```
+
+The component still **fails** — failure events fire and any
+`repair_cost`/`replace_cost` is charged — but every outage has zero length,
+so it contributes no downtime and its availability is exactly 1. Invisible to
+availability, visible to cost: the modelling shorthand for cheap,
+fast-swapped parts whose money is in the swaps, not the outages.
 
 ### Simulation uncertainty
 

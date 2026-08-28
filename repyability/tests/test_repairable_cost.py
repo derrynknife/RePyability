@@ -9,6 +9,7 @@ is exact arithmetic.
 
 import json
 
+import numpy as np
 import pytest
 import surpyval as surv
 
@@ -188,3 +189,95 @@ def test_uncosted_rbd_still_round_trips():
     restored = RepairableRBD.from_json(rbd.to_json())
     assert restored.has_costs is False
     assert restored.expected_cost_rate() == 0.0
+
+
+# -- instant repair (zero repair time) -------------------------------------
+
+
+def test_instant_repair_availability_is_one():
+    rbd = one_component({"repairability": "instant"})
+    assert rbd.mean_availability() == pytest.approx(1.0)
+    result = rbd.availability(t_simulation=50.0, N=100, seed=1)
+    # Every outage has zero length, so availability never dips.
+    assert np.all(result.availability == 1.0)
+    assert result.system_downtime == pytest.approx(0.0)
+
+
+def test_instant_repair_still_fails_and_costs():
+    # Invisible to availability, but not to money: failures still happen at
+    # frequency 1/MTTF and each one is charged.
+    rbd = one_component({"repairability": "instant", "repair_cost": 100.0})
+    assert rbd.expected_cost_rate() == pytest.approx(100.0 / 10.0)
+    result = rbd.cost(t_simulation=500.0, N=400, seed=5)
+    assert result.cost_rate == pytest.approx(10.0, rel=0.05)
+
+
+def test_instant_repair_round_trips():
+    rbd = one_component({"repairability": "instant", "repair_cost": 100.0})
+    restored = RepairableRBD.from_json(rbd.to_json())
+    assert restored.mean_availability() == pytest.approx(1.0)
+    assert restored.expected_cost_rate() == pytest.approx(10.0)
+
+
+def test_unknown_repairability_string_rejected():
+    with pytest.raises(ValueError, match="instant"):
+        one_component({"repairability": "immediate"})
+
+
+# -- the simulated cost distribution ---------------------------------------
+
+
+def full_cost_rbd():
+    return one_component(
+        {"repair_cost": 100.0, "replace_cost": 400.0, "downtime_cost": 22.0},
+        downtime_cost_rate=50.0,
+    )
+
+
+def test_cost_simulation_converges_to_the_closed_form():
+    # The whole point of building the exact rate first: the Monte-Carlo mean
+    # must converge to it. (A long window drowns the start-up transient.)
+    rbd = full_cost_rbd()
+    result = rbd.cost(t_simulation=1000.0, N=600, seed=3)
+    assert result.cost_rate == pytest.approx(
+        rbd.expected_cost_rate(), rel=0.05
+    )
+
+
+def test_cost_breakdowns_are_internally_consistent():
+    result = full_cost_rbd().cost(t_simulation=200.0, N=300, seed=4)
+    # The category means partition the overall mean...
+    assert sum(result.by_category.values()) == pytest.approx(result.mean)
+    # ...and with one costed component, its attributable share is everything
+    # except the (system-level) downtime cost.
+    assert result.by_component["c"] == pytest.approx(
+        result.by_category["corrective"]
+        + result.by_category["component_downtime"]
+    )
+    assert result.n_simulations == len(result.samples) == 300
+    assert result.percentile(100) == pytest.approx(result.samples.max())
+    assert result.std > 0.0
+
+
+def test_cost_is_reproducible_with_a_seed():
+    a = full_cost_rbd().cost(t_simulation=100.0, N=50, seed=9)
+    b = full_cost_rbd().cost(t_simulation=100.0, N=50, seed=9)
+    assert np.allclose(a.samples, b.samples)
+
+
+def test_cost_rides_along_on_availability():
+    result = full_cost_rbd().availability(t_simulation=100.0, N=50, seed=9)
+    assert result.cost is not None
+    assert result.cost.mean > 0.0
+
+
+def test_cost_is_none_when_nothing_is_priced():
+    rbd = one_component()
+    assert rbd.cost(t_simulation=100.0, N=10, seed=0) is None
+    assert rbd.availability(t_simulation=100.0, N=10, seed=0).cost is None
+
+
+def test_forced_working_node_simulates_to_zero_cost():
+    rbd = one_component({"repair_cost": 100.0}, downtime_cost_rate=50.0)
+    result = rbd.cost(t_simulation=100.0, N=30, seed=2, working_nodes=["c"])
+    assert np.allclose(result.samples, 0.0)

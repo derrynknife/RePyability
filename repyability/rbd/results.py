@@ -16,7 +16,7 @@ False; use ``isinstance(result, Mapping)`` if you need such a check.)
 import dataclasses
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Dict, Hashable, Tuple
+from typing import Dict, Hashable, Optional, Tuple
 
 import numpy as np
 from scipy.stats import norm
@@ -148,6 +148,65 @@ class Criticalities(_ResultMapping):
 
 
 @dataclass
+class CostResult(_ResultMapping):
+    """The simulated cost of running the system over a window.
+
+    Each of the ``n_simulations`` replications of the availability simulation
+    yields one *total cost over the window*: repair/replace costs charged at
+    each component failure, plus any per-component downtime cost, plus the
+    system-downtime cost. ``samples`` is that distribution — the point of
+    simulating rather than stopping at the exact
+    ``RepairableRBD.expected_cost_rate()`` is the spread: ``percentile(90)``
+    answers "what could a bad window cost", which a mean cannot.
+
+    Attributes
+    ----------
+    samples : numpy.ndarray
+        Total cost of each replication over the window (length
+        ``n_simulations``).
+    t_simulation : float
+        The window length each replication was run for.
+    n_simulations : int
+        The number of replications.
+    by_category : dict
+        Mean per-replication cost split into ``"corrective"`` (repair +
+        replace, charged per failure), ``"component_downtime"`` and
+        ``"system_downtime"``.
+    by_component : dict
+        Mean per-replication cost attributable to each costed component (its
+        corrective plus its own downtime cost; the system-downtime cost is
+        not attributed to components).
+    """
+
+    samples: np.ndarray
+    t_simulation: float
+    n_simulations: int
+    by_category: Dict[str, float]
+    by_component: Dict[Hashable, float]
+
+    @property
+    def mean(self) -> float:
+        """Mean total cost over the window."""
+        return float(np.mean(self.samples))
+
+    @property
+    def std(self) -> float:
+        """Sample standard deviation of the window's total cost."""
+        return float(np.std(self.samples, ddof=1))
+
+    @property
+    def cost_rate(self) -> float:
+        """Mean cost per unit time (``mean / t_simulation``); converges to
+        the exact ``expected_cost_rate()`` as the window grows."""
+        return self.mean / self.t_simulation
+
+    def percentile(self, q) -> float:
+        """The ``q``-th percentile of the window's total cost (e.g.
+        ``percentile(90)`` for a planning-case budget)."""
+        return float(np.percentile(self.samples, q))
+
+
+@dataclass
 class AvailabilityResult(_ResultMapping):
     """The result of ``RepairableRBD.availability()``.
 
@@ -182,6 +241,9 @@ class AvailabilityResult(_ResultMapping):
         Number of system restorations observed across all simulations.
     n_simulations : int
         The number of simulations run (``N``).
+    cost : CostResult, optional
+        The simulated cost distribution, when the RBD declares any costs;
+        ``None`` when nothing is priced (no cost model to run).
     """
 
     timeline: np.ndarray
@@ -195,6 +257,7 @@ class AvailabilityResult(_ResultMapping):
     system_failures: int
     system_restorations: int
     n_simulations: int
+    cost: Optional[CostResult] = None
 
     @property
     def availability_se(self) -> np.ndarray:

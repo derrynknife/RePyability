@@ -22,6 +22,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   work. Costs are corrective-only and undiscounted, and they persist through
   serialisation. Unknown keys in a component spec are now rejected at
   construction, so a mistyped cost key can no longer be silently priced at zero.
+- **Simulated cost distribution (`RepairableRBD.cost`, closes #54).** The
+  availability simulation now accumulates costs (only when some cost is
+  declared): each replication yields the window's total cost, and
+  `cost(t_simulation, N, seed)` — or `availability(...).cost` from the same
+  replications — returns a `CostResult` with the `samples`, `mean`, `std`,
+  `percentile(q)` (a P90 planning budget, which the exact mean cannot give),
+  a per-category breakdown (corrective / component-downtime /
+  system-downtime) and the mean attributable cost per component.
+  `result.cost_rate` converges to the exact `expected_cost_rate()`, and the
+  test suite asserts that identity. With nothing priced, `cost()` returns
+  `None` and no cost work is done.
+- **Instantly repaired components.** A `RepairableRBD` component may declare
+  `"repairability": "instant"` — repaired in zero time. It still *fails*
+  (failure events fire and repair/replace costs are charged) but every outage
+  has zero length, so it contributes no downtime and its availability is
+  exactly 1: the modelling shorthand for parts swapped much faster than the
+  timescale under study, or with no repair-time data.
+- **Warm and hot standby (`StandbyModel(dormancy_factor=...)`, closes #41).**
+  `dormancy_factor` is the dormant-to-operating aging ratio: `0` is the
+  existing cold standby (default, unchanged), values in between are **warm**
+  (a dormant spare ages at that fraction of the operating rate — the
+  cumulative-exposure / virtual-age model shared with `LoadSharingModel` —
+  and can fail *latent*, dead before it is needed), and `1` is **hot**,
+  which is exactly k-out-of-n parallel. Identical Exponential units get an
+  exact hypoexponential closed form for any `dormancy_factor` (Erlang and
+  the parallel order-statistic as the cold/hot endpoints); other lifetimes
+  are simulated. Spares are promoted in list order; the factor persists
+  through serialisation. Imperfect switching remains cold-`k=1`-only.
 
 ### Changed
 - Require **surpyval >= 0.19**, and the requirement is now **uncapped** (was
