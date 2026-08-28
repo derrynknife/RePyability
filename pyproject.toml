@@ -28,6 +28,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Scientific/Engineering",
     "Topic :: Scientific/Engineering :: Mathematics",
 ]
@@ -35,7 +36,10 @@ dependencies = [
     "numpy>=2.0,<3",
     "scipy>=1.7",
     "networkx>=3.0",
-    "surpyval>=0.19,<0.20",
+    # Deliberately uncapped: RePyability consumes a small, stable surface of
+    # surpyval (sf/ff/random/mean, regression sf/sf_tvc, to_dict/from_dict),
+    # so new surpyval minors should not require a RePyability release.
+    "surpyval>=0.19",
     "tqdm>=4.64",
 ]
 
@@ -53,7 +57,11 @@ dev = [
     "pre-commit>=3.0",
 ]
 docs = [
-    "mkdocs-material>=9.0",
+    # MkDocs 2.0 removes the plugin system with no migration path (per the
+    # mkdocs-material advisory), so hold the docs stack on the 1.x/9.x line
+    # until a deliberate migration.
+    "mkdocs>=1.6,<2",
+    "mkdocs-material>=9.0,<10",
     "mkdocstrings[python]>=0.24",
 ]
 
@@ -79,6 +87,9 @@ include = ["repyability*"]
 # For Black pre-commit hook
 [tool.black]
 line-length = 79
+# Pin the formatting target to the minimum supported Python so output does
+# not depend on the interpreter black happens to run under.
+target-version = ["py311"]
 
 # So isort is compatible with black
 [tool.isort]

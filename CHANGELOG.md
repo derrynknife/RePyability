@@ -24,10 +24,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   construction, so a mistyped cost key can no longer be silently priced at zero.
 
 ### Changed
-- Require **surpyval >= 0.19** (was >= 0.16). Verified against surpyval 0.19.0:
-  the whole test suite, the type checks and the strict docs build pass
-  unchanged — no RePyability API depended on anything that moved, and the
-  `sf_tvc` / `StepSchedule` time-varying-load path is unaffected.
+- Require **surpyval >= 0.19**, and the requirement is now **uncapped** (was
+  `>=0.16,<0.17`). Verified against surpyval 0.19.0: the whole test suite, the
+  type checks and the strict docs build pass unchanged — no RePyability API
+  depended on anything that moved, and the `sf_tvc` / `StepSchedule`
+  time-varying-load path is unaffected. RePyability consumes a small, stable
+  surface of surpyval, and the one-minor-wide caps used until now meant every
+  surpyval minor release made `pip` refuse to co-install the two packages
+  until a RePyability release followed; new surpyval minors are now picked up
+  without one.
+- Python **3.13** is now supported and tested in CI (classifiers and test
+  matrix; surpyval declares 3.11–3.13, so 3.14 waits on upstream).
+- Maintenance: CI actions moved off the deprecated Node 20 runtime
+  (`actions/checkout@v5`, `actions/setup-python@v6`); the docs stack is held
+  on MkDocs 1.x / mkdocs-material 9.x (MkDocs 2.0 removes the plugin system
+  with no migration path); black's `target-version` is pinned to the minimum
+  supported Python so formatting no longer depends on the interpreter it
+  runs under.
 
 ### Fixed
 - `test_weibull_no_optimal_replacement` no longer asserts that a warning is
