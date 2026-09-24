@@ -2,12 +2,11 @@ from queue import PriorityQueue
 
 import numpy as np
 from scipy.stats import gamma as _gamma
-from surpyval import KaplanMeier
+from surpyval import Hypoexponential, KaplanMeier
 
 from repyability.utils.wrappers import numpy_seed
 
 from ._model_utils import is_exponential
-from .load_sharing_node import _HypoexponentialSurvival
 from .numerical_convolution import (
     ConvolvedSurvival,
     is_perfect_switching,
@@ -119,6 +118,7 @@ class StandbyModel:
                     "switching_probability is only supported for cold "
                     "standby (dormancy_factor == 0) with k == 1."
                 )
+            closed_form = None
             if rate is not None:
                 # Identical Exponential units: with j units alive, k operate
                 # at rate `rate` and j - k sit dormant at `dormancy_factor *
@@ -130,7 +130,14 @@ class StandbyModel:
                     rate * (self.k + (j - self.k) * self.dormancy_factor)
                     for j in range(self.N, self.k - 1, -1)
                 ]
-                self._sf_model = _HypoexponentialSurvival(stage_rates)
+                try:
+                    closed_form = Hypoexponential.from_params(stage_rates)
+                except ValueError:
+                    # A tiny dormancy factor leaves the stage rates too close
+                    # for surpyval to separate; simulate instead.
+                    closed_form = None
+            if closed_form is not None:
+                self._sf_model = closed_form
                 self.model = None
             else:
                 x_random = self.random(n_sims, seed=seed)
@@ -273,7 +280,7 @@ class StandbyModel:
         # available (exponential closed form or convolution); otherwise fall
         # back to the Monte-Carlo estimate.
         if self._sf_model is not None:
-            return self._sf_model.mean()
+            return float(np.ravel(self._sf_model.mean())[0])
         return self.random(N, seed=seed).mean()
 
     def sf(self, *args, **kwargs):

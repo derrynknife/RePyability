@@ -30,7 +30,7 @@ function is a Kaplan-Meier fit to simulated lifetimes (like ``StandbyModel``).
 """
 
 import numpy as np
-from surpyval import KaplanMeier
+from surpyval import Hypoexponential, KaplanMeier
 
 from repyability.utils.wrappers import conditional_survival, numpy_seed
 
@@ -44,39 +44,6 @@ def _baseline(model):
     return model.distribution.from_params(
         [float(p) for p in np.atleast_1d(model.dist_params)]
     )
-
-
-class _HypoexponentialSurvival:
-    """Survival function of a sum of independent Exponentials with *distinct*
-    rates (a hypoexponential / generalised-Erlang distribution).
-
-    For rates ``r_1, ..., r_m`` the survival is the partial-fraction sum
-    ``sf(t) = sum_j C_j exp(-r_j t)`` with ``C_j = prod_{l != j} r_l / (r_l -
-    r_j)`` (and ``sum_j C_j = 1``, so ``sf(0) = 1``). The mean is
-    ``sum_j 1 / r_j``.
-    """
-
-    def __init__(self, rates):
-        r = np.asarray(rates, dtype=float)
-        m = len(r)
-        coef = np.ones(m)
-        for j in range(m):
-            for ell in range(m):
-                if ell != j:
-                    coef[j] *= r[ell] / (r[ell] - r[j])
-        self.rates = r
-        self.coef = coef
-
-    def sf(self, x):
-        x = np.atleast_1d(np.asarray(x, dtype=float))
-        terms = self.coef[None, :] * np.exp(-self.rates[None, :] * x[:, None])
-        return np.clip(terms.sum(axis=1), 0.0, 1.0)
-
-    def ff(self, x):
-        return 1.0 - self.sf(x)
-
-    def mean(self, *args, **kwargs):
-        return float(np.sum(1.0 / self.rates))
 
 
 def _identical_exponential_stage_rates(models, load, k, baselines, phi_table):
@@ -193,15 +160,20 @@ class LoadSharingModel:
         rates = _identical_exponential_stage_rates(
             models, self.load, self.k, self._baselines, self._phi_table
         )
-        # The partial-fraction hypoexponential needs distinct rates; if a load
-        # effect collides two stage rates, fall back to the simulation path.
+        # The hypoexponential closed form needs distinct stage rates. If a
+        # load effect collides two of them, surpyval rejects the rates; fall
+        # back to the simulation path rather than fail.
+        self._sf_model: object = None
         if rates is not None and _all_distinct(rates):
-            self._sf_model: object = _HypoexponentialSurvival(rates)
+            try:
+                self._sf_model = Hypoexponential.from_params(rates)
+            except ValueError:
+                self._sf_model = None
+        if self._sf_model is not None:
             self.model = None
         else:
             x_random = self.random(n_sims, seed=seed)
             self.model = KaplanMeier.fit(x_random, set_lower_limit=lower)
-            self._sf_model = None
 
     def random(self, size, seed=None):
         """Monte-Carlo simulate ``size`` group lifetimes via the cumulative-
@@ -235,7 +207,7 @@ class LoadSharingModel:
 
     def mean(self, N=10_000, seed=None):
         if self._sf_model is not None:
-            return self._sf_model.mean()
+            return float(np.ravel(self._sf_model.mean())[0])
         return float(self.random(N, seed=seed).mean())
 
     def sf(self, *args, **kwargs):

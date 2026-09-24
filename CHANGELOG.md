@@ -52,15 +52,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through serialisation. Imperfect switching remains cold-`k=1`-only.
 
 ### Changed
-- Require **surpyval >= 0.19**, and the requirement is now **uncapped** (was
-  `>=0.16,<0.17`). Verified against surpyval 0.19.0: the whole test suite, the
-  type checks and the strict docs build pass unchanged — no RePyability API
-  depended on anything that moved, and the `sf_tvc` / `StepSchedule`
-  time-varying-load path is unaffected. RePyability consumes a small, stable
-  surface of surpyval, and the one-minor-wide caps used until now meant every
-  surpyval minor release made `pip` refuse to co-install the two packages
-  until a RePyability release followed; new surpyval minors are now picked up
-  without one.
+- Require **surpyval >= 0.20**, and the requirement is now **uncapped** (was
+  `>=0.16,<0.17`). 0.20 adds a first-class `Hypoexponential` distribution, so
+  RePyability's private `_HypoexponentialSurvival` (the closed-form group
+  lifetime behind identical-Exponential `LoadSharingModel` and warm/hot
+  `StandbyModel`) is deleted in favour of it — the same maths, now with
+  `random`, `qf`, `var` and serialisation through `surpyval.from_dict` for
+  free, per the rule that univariate distributions live in surpyval. Where
+  the stage rates are not distinct (surpyval rejects them; the old private
+  class silently produced nonsense there) both nodes now fall back to
+  simulation. Verified against surpyval 0.19.0 and 0.20.0: the whole test
+  suite, the type checks and the strict docs build pass unchanged — no
+  RePyability API depended on anything that moved, and the `sf_tvc` /
+  `StepSchedule` time-varying-load path is unaffected. RePyability consumes
+  a small, stable surface of surpyval, and the one-minor-wide caps used
+  until now meant every surpyval minor release made `pip` refuse to
+  co-install the two packages until a RePyability release followed; new
+  surpyval minors are now picked up without one.
 - Python **3.13** is now supported and tested in CI (classifiers and test
   matrix; surpyval declares 3.11–3.13, so 3.14 waits on upstream).
 - Maintenance: CI actions moved off the deprecated Node 20 runtime

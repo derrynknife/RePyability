@@ -39,7 +39,7 @@ dependencies = [
     # Deliberately uncapped: RePyability consumes a small, stable surface of
     # surpyval (sf/ff/random/mean, regression sf/sf_tvc, to_dict/from_dict),
     # so new surpyval minors should not require a RePyability release.
-    "surpyval>=0.19",
+    "surpyval>=0.20",
     "tqdm>=4.64",
 ]
 
