@@ -145,6 +145,56 @@ parameters to perturb and are omitted; a node forced via
 reports zero. As elsewhere, a scalar `t` returns floats and an array returns
 numpy arrays.
 
+## Redundancy allocation (how many copies to fit)
+
+Importance measures say *where* redundancy would help; redundancy allocation
+decides *how much* to buy. Given a per-copy cost for the nodes that may be
+duplicated, `allocate_redundancy` chooses how many identical copies of each to
+fit in active parallel (the classic Redundancy Allocation Problem), in either
+of two forms:
+
+```python
+costs = {"pump": 4000, "valve": 900, "ctrl": 12000}   # per copy
+
+# Most reliable design within a budget, at a 5000 h mission:
+best = rbd.allocate_redundancy(costs, budget=40_000, t=5000)
+best.units          # copies of each costed node, e.g. {'pump': 2, ...}
+best.reliability    # system reliability at t=5000 with that design
+best.cost           # total cost (every copy, including the original)
+
+# Cheapest design that meets a reliability target:
+rbd.allocate_redundancy(costs, target=0.99, t=5000)
+```
+
+- **The model.** `n` identical, independent copies of a node with reliability
+  `p`, all active, have reliability `1 - (1 - p) ** n`. Each candidate design
+  is scored with the exact system computation, so any structure works — not
+  only the textbook series of subsystems. Nodes not in `costs` stay as they
+  are; `t` is the mission time (not needed when every node is a fixed
+  probability).
+- **Exact by default.** `method="exact"` returns a proven optimum. Adding a
+  copy never lowers a coherent system's reliability, so for a budget only the
+  designs that cannot afford another copy need scoring, which keeps typical
+  problems (a handful of nodes) fast; if a problem is too large to search it
+  stops with an explanatory error instead of hanging.
+- **Greedy for scale.** `method="greedy"` adds one copy at a time, always the
+  one with the largest log-reliability gain per unit cost. It is fast at any
+  size and usually optimal, but not always: on non-series structures it can
+  fall short, which is why it is opt-in.
+- **Constraints.** `max_units` caps the copies of every costed node (an int)
+  or of particular ones (a dict), e.g. for space limits. The "cost" can be any
+  additive resource — money, weight, volume. A budget that cannot afford one
+  of each costed node, or a target that no design can reach (within
+  `max_units`), is reported clearly.
+- The result is a [`RedundancyAllocation`][repyability.RedundancyAllocation].
+  RBDs with common-cause groups are not supported yet (duplicating a member
+  would also have to extend its group).
+
+This is distinct from the older *reliability*-allocation helpers
+(`simple_allocation`, `equal_allocation`, `improvement_allocation`), which
+apportion a target reliability among existing components rather than choosing
+numbers of units.
+
 ## Condition-based reliability (a "digital twin")
 
 The methods above assume every component is brand new. In a condition-based

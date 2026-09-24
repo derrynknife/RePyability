@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Redundancy allocation (`NonRepairableRBD.allocate_redundancy`, closes
+  #40).** Solves the Redundancy Allocation Problem: given a per-copy cost for
+  the nodes that may be duplicated, choose how many identical, independent,
+  active copies of each to fit, either to **maximise system reliability
+  within a budget** or to **minimise cost while meeting a reliability
+  target**. `n` copies of a node with reliability `p` are scored as
+  `1 - (1 - p) ** n` inside the exact system computation, so any RBD
+  structure works, not only series-of-subsystems. `method="exact"` (the
+  default) returns a proven optimum — for a budget it only scores designs
+  that cannot afford another copy, since adding a copy never lowers a
+  coherent system's reliability — and stops with guidance if a problem is too
+  large to search; `method="greedy"` (best log-reliability gain per unit
+  cost) is fast at any size but not guaranteed optimal. `max_units` caps
+  copies per node, the "cost" can be any additive resource (money, weight,
+  volume), and the result is a typed `RedundancyAllocation` (`units`,
+  `reliability`, `cost`, `method`). Tests check both forms against an
+  independent brute force on a (non-series-parallel) bridge network, and the
+  `1 - (1 - p) ** n` model against an RBD with the copies drawn out
+  explicitly. RBDs with CCF groups are not yet supported.
 - **Cost of a repairable system (`expected_cost_rate`).** `RepairableRBD`
   components may now carry `repair_cost` and `replace_cost` (charged per
   corrective action) and an optional `downtime_cost` rate, alongside a

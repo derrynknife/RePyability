@@ -207,6 +207,32 @@ class CostResult(_ResultMapping):
 
 
 @dataclass
+class RedundancyAllocation(_ResultMapping):
+    """The result of ``NonRepairableRBD.allocate_redundancy()``.
+
+    Attributes
+    ----------
+    units : dict
+        How many identical copies of each costed node to fit in active
+        parallel. Always at least 1: the original unit.
+    reliability : float
+        The system reliability with that allocation (at the mission time
+        ``t``, for a time-varying RBD).
+    cost : float
+        Total cost of the allocation, ``sum(costs[node] * units[node])``.
+        Every copy is costed, including the original.
+    method : str
+        ``"exact"`` (a proven optimum) or ``"greedy"`` (a fast heuristic
+        solution, usually but not always optimal).
+    """
+
+    units: Dict[Hashable, int]
+    reliability: float
+    cost: float
+    method: str
+
+
+@dataclass
 class AvailabilityResult(_ResultMapping):
     """The result of ``RepairableRBD.availability()``.
 
