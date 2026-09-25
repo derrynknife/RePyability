@@ -1,4 +1,8 @@
+import numpy as np
+
 from repyability.utils.wrappers import numpy_seed
+
+from ._sampling import RowSampler, inverse_sampler
 
 REPEATED_NODE_TYPES = {"parallel", "series"}
 PARALLEL = 1
@@ -30,6 +34,21 @@ class RepeatedNode:
             # largest of all the events in series. i.e. when the last item
             # fails.
             return randoms.max(axis=1)
+
+    def _row_sampler(self):
+        """``random(1)`` as a :class:`~._sampling.RowSampler` (``repeats``
+        draws of the model, in order), so an RBD with this node batches its
+        draws; ``None`` unless the model's draws can be replayed."""
+        sampler = inverse_sampler(self.model)
+        if sampler is None:
+            return None
+        reduce = np.min if self.kind == SERIES else np.max
+
+        def draw(u):
+            draws = sampler(np.ascontiguousarray(u))
+            return reduce(np.asarray(draws, dtype=float), axis=1)
+
+        return RowSampler(self.repeats, draw)
 
     def mean(self, N=1_000_000, seed=None):
         return self.random(N, seed=seed).mean()

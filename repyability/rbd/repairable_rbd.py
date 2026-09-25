@@ -1,9 +1,9 @@
+import heapq
 import pprint
 import warnings
 from collections import defaultdict
 from copy import copy
 from dataclasses import dataclass, field
-from queue import PriorityQueue
 from typing import (
     Any,
     Collection,
@@ -20,6 +20,7 @@ from surpyval import ExactEventTime
 from tqdm import tqdm
 
 from repyability.non_repairable import NonRepairable
+from repyability.rbd._sampling import UniformStream, inverse_sampler
 from repyability.rbd.rbd import RBD
 from repyability.rbd.results import (
     AvailabilityResult,
@@ -29,6 +30,88 @@ from repyability.rbd.results import (
     RestorationCriticalityIndex,
     UpDownImportance,
 )
+
+
+class _StreamedRBD:
+    """Stands in for a nested :class:`RepairableRBD` component during
+    ``availability()``: runs the nested RBD's own simulation, with its
+    components' draws replayed from the shared :class:`UniformStream` by
+    their own stand-ins (see ``RepairableRBD._streamed_components``)."""
+
+    def __init__(self, rbd: "RepairableRBD", sources: dict):
+        self._rbd = rbd
+        self._sources = sources
+
+    def initialize_event_queue(self, t_simulation):
+        self._rbd.initialize_event_queue(t_simulation, sources=self._sources)
+
+    def next_event(self):
+        return self._rbd.next_event(sources=self._sources)
+
+
+class _EventQueue:
+    """The simulation's event queue.
+
+    ``queue.PriorityQueue`` is this same heap (``heappush``/``heappop``) plus
+    thread locking on every operation, which a single-threaded simulation
+    only pays for; events come out in exactly the same order.
+    """
+
+    __slots__ = ("_heap",)
+
+    def __init__(self):
+        self._heap: list = []
+
+    def put(self, event) -> None:
+        heapq.heappush(self._heap, event)
+
+    def get(self):
+        return heapq.heappop(self._heap)
+
+    def empty(self) -> bool:
+        return not self._heap
+
+    def qsize(self) -> int:
+        return len(self._heap)
+
+
+class _StreamedComponent:
+    """Stands in for a :class:`NonRepairable` component during
+    ``availability()``: alternates failure and repair draws exactly as
+    ``NonRepairable.next_event`` does, but takes them from a shared
+    :class:`UniformStream`, which reproduces the same numbers."""
+
+    def __init__(self, failure, repair, stream: UniformStream):
+        self._failure = failure
+        self._repair = repair
+        self._stream = stream
+        self._fails_next = True
+
+    def reset(self):
+        self._fails_next = True
+
+    def next_event(self):
+        if self._fails_next:
+            self._fails_next = False
+            return self._stream.draw(self._failure), False
+        self._fails_next = True
+        return self._stream.draw(self._repair), True
+
+
+def _stand_in(component, stream: UniformStream, made: dict):
+    """A component's stand-in for ``RepairableRBD._streamed_components``, or
+    ``None`` if its draws cannot be streamed. (A subclass may draw its events
+    its own way, so only the classes themselves are streamed.)"""
+    if type(component) is RepairableRBD:
+        nested = component._streamed_components(stream, made)
+        return None if nested is None else _StreamedRBD(component, nested)
+    if type(component) is not NonRepairable:
+        return None
+    failure = inverse_sampler(component.reliability)
+    repair = inverse_sampler(component.time_to_replace)
+    if failure is None or repair is None:
+        return None
+    return _StreamedComponent(failure, repair, stream)
 
 
 @dataclass(order=True)
@@ -378,6 +461,29 @@ class RepairableRBD(RBD):
         """
         return bool(self.costs) or bool(self.downtime_cost_rate)
 
+    def _streamed_components(
+        self, stream: UniformStream, made: Optional[dict] = None
+    ) -> Optional[dict[Any, Any]]:
+        """Stand-ins that replay every component's failure/repair draws from
+        ``stream``, nested RBDs' components included, or ``None`` if any
+        component's draws cannot be reproduced exactly that way (a
+        non-parametric model, ...), in which case the simulation draws from
+        the components themselves. The stand-ins are called at exactly the
+        points the components would be, so the draws come in the same order.
+
+        A component object used for several nodes, at any level, has one
+        event state, so it gets one stand-in (``made``, by object).
+        """
+        made = {} if made is None else made
+        streamed: dict[Any, Any] = {}
+        for name, component in self.components.items():
+            if id(component) not in made:
+                made[id(component)] = _stand_in(component, stream, made)
+            if made[id(component)] is None:
+                return None
+            streamed[name] = made[id(component)]
+        return streamed
+
     def _failure_charges(self) -> dict[Any, list[tuple[str, Iterator[float]]]]:
         """For each costed node, its ``("repair" | "replace", charges)``
         pairs: the stream of amounts charged at the node's successive
@@ -513,9 +619,13 @@ class RepairableRBD(RBD):
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
         method: str = "p",
+        sources: Optional[dict] = None,
     ):
         working_nodes = set() if working_nodes is None else set(working_nodes)
         broken_nodes = set() if broken_nodes is None else set(broken_nodes)
+        # What the components draw their events from: themselves, or
+        # stand-ins replaying the same draws (see _streamed_components).
+        sources = self.components if sources is None else sources
 
         # Keep record of component status', initially they're all working
         component_status: dict[Any, bool] = {
@@ -525,8 +635,8 @@ class RepairableRBD(RBD):
         for component in broken_nodes:
             component_status[component] = False
 
-        # PriorityQueue supplies failure/repair events in chronological
-        event_queue: PriorityQueue[Event] = PriorityQueue()
+        # The queue supplies failure/repair events in chronological order
+        event_queue = _EventQueue()
 
         # For each component add in the initial failure
         for component_id in self.components.keys():
@@ -537,11 +647,13 @@ class RepairableRBD(RBD):
                 continue
             # If status not known, then continue
             if isinstance(component, RepairableRBD):
-                component.initialize_event_queue(t_simulation)
-                t_event, event = component.next_event()
+                source = sources[component_id]
+                source.initialize_event_queue(t_simulation)
+                t_event, event = source.next_event()
             elif isinstance(component, NonRepairable):
-                component.reset()
-                t_event, event = component.next_event()
+                source = sources[component_id]
+                source.reset()
+                t_event, event = source.next_event()
 
             # Only consider it if it occurs within the simulation window
             if t_event < t_simulation:
@@ -644,13 +756,30 @@ class RepairableRBD(RBD):
         )
         return mean_availability.item()
 
-    def next_event(self, method="p"):
+    def _next_event_time(self, event: Event, t: float) -> float:
+        """When the component of ``event`` next changes state, given ``t``
+        from its ``next_event()``.
+
+        A component's ``next_event()`` gives the time *to* its next event,
+        measured from ``event``. A nested RBD's gives the time *of* its next
+        state change: its simulation runs on the same clock, from 0.
+        """
+        if isinstance(self.components[event.component], RepairableRBD):
+            return t
+        return event.time + t
+
+    def next_event(self, method="p", sources: Optional[dict] = None):
         # This method allows a user to extract the next system status
         # changing event. The intent of this is so that it has the same api
         # as the NonRepairable class so that a RepairableRBD can be used in
         # a RepairableRBD/
+        # Unlike NonRepairable's, the time returned is the time *of* the
+        # change, not the time to it (see _next_event_time).
         if not hasattr(self, "_event_queue"):
             raise ValueError("Need to initialize the event queue")
+        # The components' draws come from the same sources the queue was
+        # initialised with (see initialize_event_queue).
+        sources = self.components if sources is None else sources
         new_system_state = copy(self.system_state)
 
         # Use a while loop to find the next time/event at which the system
@@ -666,14 +795,13 @@ class RepairableRBD(RBD):
                 self.component_status, method
             )
 
-            next_event_t, next_event_type = self.components[
+            next_event_t, next_event_type = sources[
                 event.component
             ].next_event()
             next_event = Event(
-                # Current time (event.time) + time to next failure
-                event.time + next_event_t,
+                self._next_event_time(event, next_event_t),
                 event.component,
-                next_event_type,  # This is a component failure event
+                next_event_type,
             )
             # But only queue up the event if it occurs before the end
             # of the simulation
@@ -784,6 +912,8 @@ class RepairableRBD(RBD):
             _rng_state = np.random.get_state()
             np.random.seed(seed)
         failure_charges = self._failure_charges() if has_costs else {}
+        stream = UniformStream()
+        sources = self._streamed_components(stream) or self.components
 
         for _ in tqdm(
             range(N), disable=not verbose, desc="Running simulations"
@@ -794,6 +924,7 @@ class RepairableRBD(RBD):
                 working_nodes,
                 broken_nodes,
                 method,
+                sources,
             )
 
             # Seed each timeline from the actual initial status so that
@@ -861,14 +992,12 @@ class RepairableRBD(RBD):
                 # If the component just got repaired then we need it's next
                 # failure event, otherwise it just broke and we need it's
                 # repair event
-                next_event_t, next_event_type = self.components[
+                next_event_t, next_event_type = sources[
                     event.component
                 ].next_event()
 
                 next_event = Event(
-                    # The next event time is the current time [event.time]
-                    # plus the time to next event
-                    event.time + next_event_t,
+                    self._next_event_time(event, next_event_t),
                     event.component,
                     next_event_type,
                 )
@@ -923,7 +1052,11 @@ class RepairableRBD(RBD):
                 cost_by_category["system_downtime"] += charge
                 cost_samples.append(rep_cost)
 
-        # Randomised simulations are done; restore the caller's RNG state.
+        # Randomised simulations are done. Leave the global RNG where the
+        # draw-at-a-time simulation would have, then restore the caller's
+        # state if a seed was given. (If a simulation raises, neither
+        # happens: the RNG is left up to a block of uniforms further on.)
+        stream.close()
         if _rng_state is not None:
             np.random.set_state(_rng_state)
 

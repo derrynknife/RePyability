@@ -22,6 +22,12 @@ an independent part plus a set of mutually-exclusive *shock* outcomes (each a
 subset of members failing together); ``NonRepairableRBD`` evaluates the exact
 system reliability by conditioning on those outcomes. See issue #44.
 
+These are the PRA basic-event models, which split each member's failure
+*probability* ``Q``; like their textbook form they assume ``Q`` is small (a
+mission or proof-test interval, not a whole life). As ``Q`` grows they drift
+from a rate-based treatment, and from about ``Q = 0.5`` a redundant group can
+come out more reliable than an independent one.
+
 Alpha-factor (a data-estimable reparameterisation of the same multiplicities)
 is a planned extension.
 """

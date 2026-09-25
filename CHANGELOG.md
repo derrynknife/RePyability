@@ -105,8 +105,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with no migration path); black's `target-version` is pinned to the minimum
   supported Python so formatting no longer depends on the interpreter it
   runs under.
+- **Performance, with identical results.** The simulations used to draw one
+  surpyval sample per call (tens of microseconds of overhead each) inside
+  Python loops. For plain parametric models a surpyval draw is `qf(u)` of one
+  uniform from numpy's global RNG, so the samplers now take the *same*
+  uniforms in one block, in the order the old loops consumed them, and apply
+  `qf` to the block. Per-sample loops that do deterministic work run for all
+  samples at once, the exact engine records its Shannon decomposition once per
+  RBD and replays it, and the repairable simulation's event queue drops
+  `queue.PriorityQueue`'s thread locking (it is the same heap). Composite
+  nodes -- standby, repeated, repeated-standby, load-sharing, regression and
+  nested-RBD nodes -- describe how their `random(1)` consumes the RNG, so an
+  RBD containing them is batched the same way, and a `RepairableRBD` nested
+  in another draws its components' failure and repair times from the outer
+  simulation's block of uniforms too. Minimal cut sets are read off
+  the exact engine's decomposition (a node's cut sets either spare its pivot
+  component or contain it with a cut set of the failed branch) instead of
+  Berge's algorithm, whose intermediate families could grow far beyond the
+  answer, and they are computed once per RBD; the decomposition also runs on
+  an explicit stack, so `sf()` and cut sets now work on systems with more
+  than about a thousand components, where they used to hit Python's
+  recursion limit. Seeded results are unchanged, and unseeded runs leave the
+  global RNG in the same state. Models whose sampling cannot be reproduced
+  exactly this way (fixed-probability, limited-failure-population or
+  zero-inflated models) keep their original code path. Measured at default
+  settings:
+
+  | Workload | Before | After |
+  |---|---|---|
+  | `NonRepairableRBD.mean()`, 5-node bridge (100k samples) | 26.4 s | 24 ms |
+  | `NonRepairableRBD.mean()`, 12-node system | 66.2 s | 125 ms |
+  | `mean()`, RBD with a standby / repeated / nested-RBD node | 18–32 s | 16–38 ms |
+  | `RepairableRBD.availability(t=1000, N=300)`, 4 components | 1.81 s | 0.16 s |
+  | `RepairableRBD.availability(t=1000, N=200)`, with nested `RepairableRBD`s | 0.92–2.4 s | 97–175 ms |
+  | `StandbyModel` cold, k=2 of 4 Weibull units (build) | 1.81 s | 6 ms |
+  | `StandbyModel` warm, 4 Weibull units (build) | 0.52 s | 13 ms |
+  | `LoadSharingModel`, 3 Weibull-AFT units (build) | 0.29 s | 7 ms |
+  | Six importance measures, 12-node system | 126 ms | 20 ms |
+  | `get_min_cut_sets()`, 6 stages of 3 in parallel (729 path sets) | 6.8 s | 52 ms |
+  | `fussell_vesely()`, same system | 6.9 s | 140 ms |
+
+  The one trade-off is flat systems, whose cut sets Berge found almost
+  instantly: a first `get_min_cut_sets()` on 500 components in plain series
+  or parallel now takes tens of milliseconds instead of a few (later calls
+  are cached).
+
+  `test_performance_equivalence.py` holds each fast path to the code it
+  replaced (kept as the fallback, or for the exact engine and the cut sets a
+  verbatim copy of the original algorithm): same samples, same simulation
+  outputs, same final RNG state, exactly the same exact-engine probabilities,
+  and the same minimal cut sets.
 
 ### Fixed
+- **Nested `RepairableRBD` simulations put the nested RBD's state changes at
+  the wrong times.** A nested RBD's `next_event()` returns the time *of* its
+  next state change, but the outer simulation added it to the current time as
+  if it were the time *to* it (as a component's is). Every nested failure and
+  restoration after the first therefore landed late, by more the longer the
+  run, so `availability()` and `cost()` of any RBD containing a nested
+  `RepairableRBD` were wrong: a single unit with MTTF 10 and MTTR 1, nested,
+  simulated at 0.51 availability instead of 0.91. The outer simulation now
+  takes a nested RBD's times as they are, and a nested RBD simulates exactly
+  as it does on its own. The exact methods (`mean_availability()` and the
+  failure-frequency family) were not affected; seeded simulations of RBDs
+  without nested `RepairableRBD`s are unchanged.
+- `test_non_parametric_optimal_replacement` drew its data from the unseeded
+  global RNG and failed about one run in 150; it is now seeded.
 - `test_weibull_no_optimal_replacement` no longer asserts that a warning is
   emitted for an offset (3-parameter) Weibull. The warning was an incidental
   numerical `RuntimeWarning` raised inside surpyval while evaluating the
@@ -114,6 +178,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   evaluates that mean cleanly, so the assertion no longer held. The behaviour
   under test — a finite (non-`inf`) replacement age for an offset Weibull — is
   unchanged and still asserted.
+
+### Documentation
+- The common-cause (CCF) docs now state the models' assumption: they are the
+  PRA basic-event models, which split each member's failure *probability*, and
+  hold while that probability is small (a mission or proof-test interval, not
+  a whole life). They also say that `random()`, `mean()` and the MTTF interval
+  sample members independently and do not include CCF, since an MTTF spans the
+  whole life. No behaviour changed.
 
 ## [0.8.0] - 2026-07-22
 
