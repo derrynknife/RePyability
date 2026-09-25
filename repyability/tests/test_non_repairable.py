@@ -9,6 +9,7 @@ import pytest
 from surpyval import KaplanMeier, LogNormal, Weibull
 
 from repyability.non_repairable import NonRepairable
+from repyability.utils.wrappers import numpy_seed
 
 
 def test_optimal_replacement1():
@@ -56,7 +57,11 @@ def test_optimal_replacement():
 def test_non_parametric_optimal_replacement():
     # https://reliawiki.org/index.php/Optimum_Replacement_Time_Example
     surv_model = Weibull.from_params((1000, 2.5))
-    non_p_model = KaplanMeier.fit(surv_model.random(10000))
+    # Seeded: unseeded, about 1 draw in 150 lands the fitted optimum outside
+    # the 10% tolerance.
+    with numpy_seed(1):
+        data = surv_model.random(10000)
+    non_p_model = KaplanMeier.fit(data)
     nr_model = NonRepairable(non_p_model)
     nr_model.set_costs_planned_and_unplanned(1, 5)
 
