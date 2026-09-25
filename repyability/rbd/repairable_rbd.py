@@ -346,6 +346,11 @@ class RepairableRBD(RBD):
                 reliability[name] = component
                 repairability[name] = None
             elif isinstance(component, NonRepairable):
+                # A NonRepairable carries its simulation state (whether it
+                # fails or is repaired next), so each node gets its own copy:
+                # one object can then be given for several identical parts,
+                # here or in a nested RBD.
+                components[name] = copy(component)
                 reliability[name] = component.reliability
                 repairability[name] = component.time_to_replace
 
@@ -471,8 +476,9 @@ class RepairableRBD(RBD):
         the components themselves. The stand-ins are called at exactly the
         points the components would be, so the draws come in the same order.
 
-        A component object used for several nodes, at any level, has one
-        event state, so it gets one stand-in (``made``, by object).
+        A component object used for several nodes has one simulation state,
+        so it gets one stand-in (``made``, by object). Since each node has
+        its own copy of a ``NonRepairable``, only a nested RBD object can be.
         """
         made = {} if made is None else made
         streamed: dict[Any, Any] = {}

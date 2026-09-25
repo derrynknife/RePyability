@@ -19,6 +19,7 @@ import numpy as np
 import pytest
 import surpyval as surv
 
+from repyability.non_repairable import NonRepairable
 from repyability.rbd.non_repairable_rbd import NonRepairableRBD
 from repyability.rbd.repairable_rbd import RepairableRBD
 
@@ -152,6 +153,35 @@ def test_transient_availability_matches_markov_nested():
         * (1.0 - _exact_marginal(0.8, 1.0, T_CHECK))
     )
     _assert_within_sampling_error(_sim_at(result, T_CHECK), exact, n)
+
+
+@pytest.mark.parametrize("layout", ["one_rbd", "across_levels", "siblings"])
+def test_one_model_object_for_several_nodes_acts_as_separate_parts(layout):
+    # Each node keeps its own failure/repair state, so giving several nodes
+    # the same NonRepairable object is the same as giving each its own.
+    W = surv.Weibull.from_params
+
+    def part():
+        return NonRepairable(W([4.0, 1.5]), E([1.0]))
+
+    def alone(unit):
+        return RepairableRBD([("s", "p"), ("p", "t")], {"p": unit})
+
+    def build(unit):  # unit() gives each node's NonRepairable
+        parallel = [("s", "x"), ("s", "y"), ("x", "t"), ("y", "t")]
+        if layout == "one_rbd":
+            return RepairableRBD(parallel, {"x": unit(), "y": unit()})
+        if layout == "across_levels":
+            return RepairableRBD(parallel, {"x": unit(), "y": alone(unit())})
+        return RepairableRBD(
+            parallel, {"x": alone(unit()), "y": alone(unit())}
+        )
+
+    one = part()
+    shared = build(lambda: one).availability(30.0, N=200, seed=19)
+    separate = build(part).availability(30.0, N=200, seed=19)
+    np.testing.assert_array_equal(shared.timeline, separate.timeline)
+    np.testing.assert_array_equal(shared.availability, separate.availability)
 
 
 # --- Uncertainty quantification ---------------------------------------------
