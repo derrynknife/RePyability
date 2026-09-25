@@ -834,6 +834,40 @@ def test_nested_rbd_that_cannot_be_streamed_falls_back_entirely(monkeypatch):
     assert_same(fast, reference)
 
 
+def test_subclassed_components_keep_their_own_event_methods():
+    # A subclass may draw its events its own way, so the simulation calls
+    # the component itself rather than streaming its draws.
+    E = surv.Exponential.from_params
+    calls = []
+
+    class LoggedUnit(NonRepairable):
+        def next_event(self):
+            calls.append("unit")
+            return super().next_event()
+
+    class LoggedRBD(RepairableRBD):
+        def next_event(self, method="p"):
+            calls.append("rbd")
+            return super().next_event(method)
+
+    unit = {"reliability": W([40, 2]), "repairability": E([0.5])}
+    for component, kind in (
+        (LoggedUnit(W([40, 2]), E([0.5])), "unit"),
+        (LoggedRBD([("s", "p"), ("p", "t")], {"p": unit}), "rbd"),
+    ):
+        rbd = RepairableRBD(
+            [("s", "a"), ("a", "sub"), ("sub", "t")],
+            {
+                "a": {"reliability": W([70, 1.5]), "repairability": E([0.8])},
+                "sub": component,
+            },
+        )
+        assert rbd._streamed_components(_sampling.UniformStream()) is None
+        calls.clear()
+        rbd.availability(200.0, N=5, seed=30)
+        assert kind in calls
+
+
 def step_by_hand(rbd, t_simulation):
     """Every system event of one of ``rbd``'s simulations, stepped through
     with its public event API."""

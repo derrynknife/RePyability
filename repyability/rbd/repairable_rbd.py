@@ -100,8 +100,9 @@ class _StreamedComponent:
 
 def _stand_in(component, stream: UniformStream, made: dict):
     """A component's stand-in for ``RepairableRBD._streamed_components``, or
-    ``None`` if its draws cannot be streamed."""
-    if isinstance(component, RepairableRBD):
+    ``None`` if its draws cannot be streamed. (A subclass may draw its events
+    its own way, so only the classes themselves are streamed.)"""
+    if type(component) is RepairableRBD:
         nested = component._streamed_components(stream, made)
         return None if nested is None else _StreamedRBD(component, nested)
     if type(component) is not NonRepairable:
