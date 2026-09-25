@@ -185,24 +185,63 @@ class LoadSharingModel:
             for i, base in enumerate(self._baselines):
                 tau[i] = np.asarray(base.random(size), dtype=float).reshape(-1)
 
-            out = np.empty(size)
-            for j in range(size):
-                thr = tau[:, j]
-                e = np.zeros(n)
-                alive = np.ones(n, dtype=bool)
-                t = 0.0
-                s = n
-                while s >= k:
-                    idx = np.flatnonzero(alive)
-                    phi = phi_tab[idx, s - 1]
-                    remaining = (thr[idx] - e[idx]) / phi
-                    w = int(np.argmin(remaining))
-                    dt = remaining[w]
-                    t += dt
-                    e[idx] += phi * dt
-                    alive[idx[w]] = False
-                    s -= 1
-                out[j] = t
+        phi_used = phi_tab[:, k - 1 :]  # noqa: E203
+        if (
+            np.all(np.isfinite(tau))
+            and np.all(np.isfinite(phi_used))
+            and np.all(phi_used > 0.0)
+        ):
+            return self._lifetimes(tau)
+        return self._lifetimes_by_sample(tau)
+
+    def _lifetimes(self, tau):
+        """The event loop for every replicate at once.
+
+        Each step fails exactly one unit in every replicate, so all replicates
+        stay in step (``s`` survivors each) and one array operation per step
+        does what the per-replicate loop does, with the same arithmetic and
+        the same tie-break (the lowest-indexed surviving unit). Requires
+        finite thresholds and positive, finite ``phi``, so that the failing
+        unit always has a finite remaining time.
+        """
+        n, size = tau.shape
+        thr = np.ascontiguousarray(tau.T)
+        rows = np.arange(size)
+        e = np.zeros((size, n))
+        alive = np.ones((size, n), dtype=bool)
+        t = np.zeros(size)
+        for s in range(n, self.k - 1, -1):
+            phi = self._phi_table[:, s - 1]
+            remaining = np.where(alive, (thr - e) / phi, np.inf)
+            w = np.argmin(remaining, axis=1)
+            dt = remaining[rows, w]
+            t += dt
+            e = np.where(alive, e + phi * dt[:, None], e)
+            alive[rows, w] = False
+        return t
+
+    def _lifetimes_by_sample(self, tau):
+        """The event loop, one replicate at a time (any thresholds)."""
+        n, size = tau.shape
+        k, phi_tab = self.k, self._phi_table
+        out = np.empty(size)
+        for j in range(size):
+            thr = tau[:, j]
+            e = np.zeros(n)
+            alive = np.ones(n, dtype=bool)
+            t = 0.0
+            s = n
+            while s >= k:
+                idx = np.flatnonzero(alive)
+                phi = phi_tab[idx, s - 1]
+                remaining = (thr[idx] - e[idx]) / phi
+                w = int(np.argmin(remaining))
+                dt = remaining[w]
+                t += dt
+                e[idx] += phi * dt
+                alive[idx[w]] = False
+                s -= 1
+            out[j] = t
         return out
 
     def mean(self, N=10_000, seed=None):

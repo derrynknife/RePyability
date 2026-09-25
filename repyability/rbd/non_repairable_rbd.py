@@ -27,6 +27,7 @@ from repyability.utils.wrappers import conditional_survival, numpy_seed
 
 from . import redundancy_allocation
 from ._model_utils import is_fixed_probability, parametric_spec
+from ._sampling import draw_rows, inverse_sampler
 from .ccf import CCFGroup
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .load_sharing_node import LoadSharingModel
@@ -1075,30 +1076,78 @@ class NonRepairableRBD(RBD):
             RNG); the caller's RNG state is restored afterwards. By default
             None (non-reproducible).
         """
-        out = np.zeros(size)
         with numpy_seed(seed):
-            for i in range(size):
-                event_queue: PriorityQueue = PriorityQueue()
-                for node in self.G.nodes:
-                    # .random(1) returns a 1-element array; take the scalar so
-                    # the event time orders the PriorityQueue and assigns into
-                    # ``out`` (NumPy >= 2 rejects assigning a 1-element array
-                    # to a scalar).
-                    draw = np.asarray(self.reliabilities[node].random(1))
-                    time = float(draw.reshape(-1)[0])
-                    event_queue.put(NodeFailure(time, node))
+            fast = self._random_vectorised(size)
+            if fast is not None:
+                return fast
+            return self._random_by_events(size)
 
-                working_nodes = {k: True for k in self.G.nodes}
-                system_working = True
-                while system_working:
-                    failure = event_queue.get()
-                    time = failure.time
-                    working_nodes[failure.node] = False
-                    system_working = self.is_system_working(
-                        working_nodes, method="p"
-                    )
-                out[i] = time
+    def _random_vectorised(self, size) -> Optional[np.ndarray]:
+        """``random(size)`` without the per-sample event loop, when every
+        node's draws can be reproduced exactly in one block (see
+        ``_sampling``); otherwise ``None`` (nothing is drawn).
 
+        A coherent system fails when its last intact path set breaks, so its
+        lifetime is the max over minimal path sets of the min of their
+        members' lifetimes: the same value the event loop finds.
+        """
+        constants: dict[Any, np.ndarray] = {}
+        samplers = {}
+        for node in self.G.nodes:
+            model = self.reliabilities[node]
+            if model is PerfectReliability or model is PerfectUnreliability:
+                # Neither draws from the RNG.
+                constants[node] = np.asarray(model.random(size), dtype=float)
+                continue
+            sampler = inverse_sampler(model)
+            if sampler is None:
+                return None
+            samplers[node] = sampler
+
+        state = np.random.get_state()
+        lifetimes = dict(
+            zip(samplers, draw_rows(list(samplers.values()), size))
+        )
+        lifetimes.update(constants)
+        if any(np.isnan(t).any() for t in lifetimes.values()):
+            # The event loop's ordering of NaN times is not reproducible
+            # here; rewind and let it run.
+            np.random.set_state(state)
+            return None
+
+        out = np.full(size, -np.inf)
+        for path_set in self.get_min_path_sets(include_in_out_nodes=False):
+            path_life = np.full(size, np.inf)
+            for node in path_set:
+                path_life = np.minimum(path_life, lifetimes[node])
+            out = np.maximum(out, path_life)
+        return out
+
+    def _random_by_events(self, size) -> np.ndarray:
+        """``random(size)`` by stepping through each sample's failures in
+        time order until the system fails; works for any node model."""
+        out = np.zeros(size)
+        for i in range(size):
+            event_queue: PriorityQueue = PriorityQueue()
+            for node in self.G.nodes:
+                # .random(1) returns a 1-element array; take the scalar so
+                # the event time orders the PriorityQueue and assigns into
+                # ``out`` (NumPy >= 2 rejects assigning a 1-element array to
+                # a scalar).
+                draw = np.asarray(self.reliabilities[node].random(1))
+                time = float(draw.reshape(-1)[0])
+                event_queue.put(NodeFailure(time, node))
+
+            working_nodes = {k: True for k in self.G.nodes}
+            system_working = True
+            while system_working:
+                failure = event_queue.get()
+                time = failure.time
+                working_nodes[failure.node] = False
+                system_working = self.is_system_working(
+                    working_nodes, method="p"
+                )
+            out[i] = time
         return out
 
     def mean(self, mc_samples: int = 100_000, seed=None):

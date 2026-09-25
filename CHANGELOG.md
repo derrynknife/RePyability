@@ -105,8 +105,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with no migration path); black's `target-version` is pinned to the minimum
   supported Python so formatting no longer depends on the interpreter it
   runs under.
+- **Performance, with identical results.** The simulations used to draw one
+  surpyval sample per call (tens of microseconds of overhead each) inside
+  Python loops. For plain parametric models a surpyval draw is `qf(u)` of one
+  uniform from numpy's global RNG, so the samplers now take the *same*
+  uniforms in one block, in the order the old loops consumed them, and apply
+  `qf` to the block. Per-sample loops that do deterministic work run for all
+  samples at once, the exact engine records its Shannon decomposition once per
+  RBD and replays it, and the repairable simulation's event queue drops
+  `queue.PriorityQueue`'s thread locking (it is the same heap). Seeded
+  results are unchanged, and unseeded runs leave the global RNG in the same
+  state. Nodes whose sampling cannot be reproduced exactly this way (nested
+  RBDs, standby or load-sharing nodes inside an RBD, fixed-probability,
+  limited-failure-population or non-parametric models) keep their original
+  code path. Measured at default settings:
+
+  | Workload | Before | After |
+  |---|---|---|
+  | `NonRepairableRBD.mean()`, 5-node bridge (100k samples) | 26.4 s | 24 ms |
+  | `NonRepairableRBD.mean()`, 12-node system | 66.2 s | 125 ms |
+  | `RepairableRBD.availability(t=1000, N=300)`, 4 components | 1.81 s | 0.16 s |
+  | `StandbyModel` cold, k=2 of 4 Weibull units (build) | 1.81 s | 6 ms |
+  | `StandbyModel` warm, 4 Weibull units (build) | 0.52 s | 13 ms |
+  | `LoadSharingModel`, 3 Weibull-AFT units (build) | 0.29 s | 7 ms |
+  | Six importance measures, 12-node system | 126 ms | 20 ms |
+
+  `test_performance_equivalence.py` holds each fast path to the code it
+  replaced (kept as the fallback, or for the exact engine a verbatim copy of
+  the original recursion): same samples, same simulation outputs, same final
+  RNG state, and exactly the same exact-engine probabilities.
 
 ### Fixed
+- `test_non_parametric_optimal_replacement` drew its data from the unseeded
+  global RNG and failed about one run in 150; it is now seeded.
 - `test_weibull_no_optimal_replacement` no longer asserts that a warning is
   emitted for an offset (3-parameter) Weibull. The warning was an incidental
   numerical `RuntimeWarning` raised inside surpyval while evaluating the

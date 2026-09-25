@@ -108,20 +108,41 @@ def probability_any_set_satisfied(
     np.ndarray
         The probability that at least one set is fully active.
     """
-    sets = [frozenset(s) for s in sets]
-    memo: Dict[frozenset, np.ndarray] = {}
+    return _evaluate_shannon_plan(
+        _shannon_plan(sets), element_probabilities, array_shape
+    )
 
-    def recurse(state: frozenset) -> np.ndarray:
+
+# Value slots 0 and 1 of a Shannon plan hold the constant 0 and 1 arrays.
+_ZERO, _ONE = 0, 1
+
+
+def _shannon_plan(sets: Iterable[frozenset]) -> tuple[list, int]:
+    """Record the Shannon decomposition used by
+    :func:`probability_any_set_satisfied` as a replayable plan.
+
+    The decomposition -- which element to pivot on, and which sub-problems
+    recur -- depends only on the sets, not on the probabilities, so it can be
+    worked out once and replayed for any probabilities. Returns ``(steps,
+    root)``: step ``i`` fills value slot ``i + 2`` with
+    ``p[pivot] * value[active] + (1 - p[pivot]) * value[inactive]``, and
+    ``root`` is the slot holding the answer.
+    """
+    sets = [frozenset(s) for s in sets]
+    slots: Dict[frozenset, int] = {}
+    steps: list[tuple[Any, int, int]] = []
+
+    def build(state: frozenset) -> int:
         # state is a frozenset of frozensets: the sets still to be satisfied,
         # with already-active elements removed.
         if not state:
             # No set can be satisfied any more -> probability 0.
-            return np.zeros(array_shape)
+            return _ZERO
         if frozenset() in state:
             # A set has had all its elements satisfied -> probability 1.
-            return np.ones(array_shape)
-        if state in memo:
-            return memo[state]
+            return _ONE
+        if state in slots:
+            return slots[state]
 
         # Pivot on the element appearing in the most sets, which tends to
         # collapse the problem (and the memo table) fastest.
@@ -130,7 +151,6 @@ def probability_any_set_satisfied(
             for element in s:
                 counts[element] = counts.get(element, 0) + 1
         pivot = max(counts, key=lambda e: counts[e])
-        p = element_probabilities[pivot]
 
         # Pivot active: it satisfies its requirement, so drop it from every
         # set that contained it (other sets are unaffected).
@@ -138,11 +158,27 @@ def probability_any_set_satisfied(
         # Pivot inactive: any set needing it can never be satisfied -> drop it.
         state_inactive = frozenset(s for s in state if pivot not in s)
 
-        result = p * recurse(state_active) + (1 - p) * recurse(state_inactive)
-        memo[state] = result
-        return result
+        active = build(state_active)
+        inactive = build(state_inactive)
+        steps.append((pivot, active, inactive))
+        slots[state] = len(steps) + 1
+        return slots[state]
 
-    return recurse(frozenset(sets))
+    return steps, build(frozenset(sets))
+
+
+def _evaluate_shannon_plan(
+    plan: tuple[list, int],
+    element_probabilities: Dict[Any, np.ndarray],
+    array_shape,
+) -> np.ndarray:
+    """Replay a :func:`_shannon_plan` for the given probabilities."""
+    steps, root = plan
+    values = [np.zeros(array_shape), np.ones(array_shape)]
+    for pivot, active, inactive in steps:
+        p = element_probabilities[pivot]
+        values.append(p * values[active] + (1 - p) * values[inactive])
+    return values[root]
 
 
 def _keep_minimal_sets(sets: Iterable[frozenset]) -> list[frozenset]:
@@ -440,9 +476,9 @@ class RBD:
                         include_in_out_nodes=False
                     )
                 ]
+            status = component_status.__getitem__
             return any(
-                all(component_status[component] for component in path_set)
-                for path_set in self._eval_path_sets
+                all(map(status, path_set)) for path_set in self._eval_path_sets
             )
         elif method == "c":
             if not hasattr(self, "_eval_cut_sets"):
@@ -452,9 +488,9 @@ class RBD:
                         include_in_out_nodes=False
                     )
                 ]
+            status = component_status.__getitem__
             return all(
-                any(component_status[component] for component in cut_set)
-                for cut_set in self._eval_cut_sets
+                any(map(status, cut_set)) for cut_set in self._eval_cut_sets
             )
         else:
             raise ValueError("`method` must be either 'p' or 'c'")
@@ -533,20 +569,34 @@ class RBD:
         if method == "p":
             # The system reliability is the probability that at least one
             # minimal path set has all of its components working.
-            path_sets = self.get_min_path_sets(include_in_out_nodes=False)
-            return probability_any_set_satisfied(
-                path_sets, node_probabilities, array_shape
+            return _evaluate_shannon_plan(
+                self._shannon_plan("p"), node_probabilities, array_shape
             )
 
         # method == "c": work with cut sets and node unreliabilities. The
         # system unreliability is the probability that at least one minimal
         # cut set has all of its components failed.
-        cut_sets = self.get_min_cut_sets(include_in_out_nodes=False)
         node_unreliability = {k: 1 - v for k, v in node_probabilities.items()}
-        system_unreliability = probability_any_set_satisfied(
-            cut_sets, node_unreliability, array_shape
+        system_unreliability = _evaluate_shannon_plan(
+            self._shannon_plan("c"), node_unreliability, array_shape
         )
         return 1 - system_unreliability
+
+    def _shannon_plan(self, method: str) -> tuple[list, int]:
+        """The exact engine's plan over the minimal path sets (``"p"``) or
+        cut sets (``"c"``). It depends only on the structure, so it is built
+        on first use and reused by every later evaluation (importance
+        measures, redundancy allocation and the repairable closed forms call
+        the engine many times)."""
+        if not hasattr(self, "_shannon_plans"):
+            self._shannon_plans: dict[str, tuple[list, int]] = {}
+        if method not in self._shannon_plans:
+            if method == "p":
+                sets = self.get_min_path_sets(include_in_out_nodes=False)
+            else:
+                sets = self.get_min_cut_sets(include_in_out_nodes=False)
+            self._shannon_plans[method] = _shannon_plan(sets)
+        return self._shannon_plans[method]
 
     @check_probability
     def improvement_allocation(

@@ -7,6 +7,7 @@ from surpyval import Hypoexponential, KaplanMeier
 from repyability.utils.wrappers import numpy_seed
 
 from ._model_utils import is_exponential
+from ._sampling import draw_rows, inverse_sampler
 from .numerical_convolution import (
     ConvolvedSurvival,
     is_perfect_switching,
@@ -182,13 +183,57 @@ class StandbyModel:
         its budget dies latent and is skipped. The system lifetime is the
         instant the number of surviving units drops below ``k``.
         """
-        kappa = self.dormancy_factor
         budgets = np.column_stack(
             [
                 np.asarray(model.random(size), dtype=float)
                 for model in self.reliabilities
             ]
         )
+        if np.all(np.isfinite(budgets)):
+            return self._warm_lifetimes(budgets)
+        return self._warm_lifetimes_by_sample(budgets)
+
+    def _warm_lifetimes(self, budgets):
+        """The virtual-age loop for every sample at once.
+
+        Each step fails exactly one unit in every sample (after ``N - k + 1``
+        steps fewer than ``k`` remain), so all samples stay in step and one
+        array operation per step does what the per-sample loop does, with the
+        same arithmetic and the same tie-break (the lowest-indexed healthy
+        unit). Requires finite budgets, so that the failing unit always has a
+        finite remaining time.
+        """
+        size, n = budgets.shape
+        k, kappa = self.k, self.dormancy_factor
+        rows = np.arange(size)
+        age = np.zeros((size, n))
+        alive = np.ones((size, n), dtype=bool)
+        t = np.zeros(size)
+        for _ in range(n - k + 1):
+            # The first k healthy units (in list order) operate; the rest of
+            # the healthy ones are dormant.
+            rank = np.cumsum(alive, axis=1)
+            operating = alive & (rank <= k)
+            dormant = alive & (rank > k)
+            remaining = np.full((size, n), np.inf)
+            remaining[operating] = budgets[operating] - age[operating]
+            remaining[dormant] = (budgets[dormant] - age[dormant]) / kappa
+            idx = np.argmin(remaining, axis=1)
+            dt = remaining[rows, idx]
+            t += dt
+            age[operating] += np.broadcast_to(dt[:, None], age.shape)[
+                operating
+            ]
+            age[dormant] += np.broadcast_to((kappa * dt)[:, None], age.shape)[
+                dormant
+            ]
+            alive[rows, idx] = False
+        return t
+
+    def _warm_lifetimes_by_sample(self, budgets):
+        """The virtual-age loop, one sample at a time (any budgets)."""
+        size = budgets.shape[0]
+        kappa = self.dormancy_factor
         out = np.empty(size, dtype=float)
         for s in range(size):
             X = budgets[s]
@@ -259,20 +304,45 @@ class StandbyModel:
                 # failure time. This simulation is repeated size
                 # number of times and then the model is approximated
                 # with a non parametric estimate.
-                x_random = np.zeros(size)
-                for i in range(size):
-                    pq: PriorityQueue = PriorityQueue()
-                    # start k streams:
-                    for node in self.reliabilities[: self.k]:
-                        pq.put(node.random(1).item())
+                x_random = self._random_cold_k(size)
+        return x_random
 
-                    # Add the next event time to the lowest value in the queue
-                    for node in self.reliabilities[self.k :]:  # noqa: E203
-                        next_t = node.random(1).item()
-                        current_lowest = pq.get()
-                        pq.put(current_lowest + next_t)
+    def _random_cold_k(self, size):
+        """Cold standby with k >= 2: every sample at once when each unit's
+        draws can be reproduced exactly in one block (see ``_sampling``),
+        otherwise sample by sample."""
+        samplers = [inverse_sampler(m) for m in self.reliabilities]
+        if all(sampler is not None for sampler in samplers):
+            state = np.random.get_state()
+            # One draw per unit per sample, in list order: the order the
+            # sample-by-sample loop draws them in.
+            lifetimes = draw_rows(samplers, size)
+            if not any(np.isnan(x).any() for x in lifetimes):
+                streams = np.column_stack(lifetimes[: self.k])
+                rows = np.arange(size)
+                for spare in lifetimes[self.k :]:  # noqa: E203
+                    # The spare extends whichever stream ends first (a tie
+                    # between equal ends gives the same result either way).
+                    lowest = np.argmin(streams, axis=1)
+                    streams[rows, lowest] = streams[rows, lowest] + spare
+                return streams.min(axis=1)
+            # NaN times order differently in the queue; rewind and loop.
+            np.random.set_state(state)
 
-                    x_random[i] = pq.get()
+        x_random = np.zeros(size)
+        for i in range(size):
+            pq: PriorityQueue = PriorityQueue()
+            # start k streams:
+            for node in self.reliabilities[: self.k]:
+                pq.put(node.random(1).item())
+
+            # Add the next event time to the lowest value in the queue
+            for node in self.reliabilities[self.k :]:  # noqa: E203
+                next_t = node.random(1).item()
+                current_lowest = pq.get()
+                pq.put(current_lowest + next_t)
+
+            x_random[i] = pq.get()
         return x_random
 
     def mean(self, N=10_000, seed=None):
