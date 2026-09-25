@@ -159,6 +159,12 @@ class CostResult(_ResultMapping):
     ``RepairableRBD.expected_cost_rate()`` is the spread: ``percentile(90)``
     answers "what could a bad window cost", which a mean cannot.
 
+    Two different uncertainties live here. ``std`` and ``percentile`` describe
+    how much the cost of a window *varies*; that is a property of the system
+    and does not shrink with more replications. ``mean_se`` and
+    ``mean_interval`` describe how precisely the *expected* cost has been
+    estimated; that shrinks like ``1 / sqrt(n_simulations)``.
+
     Attributes
     ----------
     samples : numpy.ndarray
@@ -169,12 +175,12 @@ class CostResult(_ResultMapping):
     n_simulations : int
         The number of replications.
     by_category : dict
-        Mean per-replication cost split into ``"corrective"`` (repair +
-        replace, charged per failure), ``"component_downtime"`` and
-        ``"system_downtime"``.
+        Mean per-replication cost split into ``"repair"`` and ``"replace"``
+        (both charged per failure), ``"component_downtime"`` and
+        ``"system_downtime"``. The four sum to ``mean``.
     by_component : dict
         Mean per-replication cost attributable to each costed component (its
-        corrective plus its own downtime cost; the system-downtime cost is
+        repair, replace and own downtime cost; the system-downtime cost is
         not attributed to components).
     """
 
@@ -193,6 +199,44 @@ class CostResult(_ResultMapping):
     def std(self) -> float:
         """Sample standard deviation of the window's total cost."""
         return float(np.std(self.samples, ddof=1))
+
+    @property
+    def mean_se(self) -> float:
+        """Standard error of ``mean``, ``std / sqrt(n_simulations)``: how far
+        the simulated mean is likely to be from the true expected cost."""
+        return self.std / float(np.sqrt(len(self.samples)))
+
+    def mean_interval(self, confidence: float = 0.95) -> ConfidenceInterval:
+        """Confidence interval for the expected total cost over the window.
+
+        By the central limit theorem the mean of the replications is normal
+        with standard error ``mean_se``, from which the interval is built.
+        Use it to judge whether ``N`` was large enough; for the range a
+        single window's cost could fall in, use ``percentile`` instead.
+
+        Parameters
+        ----------
+        confidence : float, optional
+            The confidence level, by default 0.95.
+
+        Returns
+        -------
+        ConfidenceInterval
+            The estimate (``mean``), bounds, standard error and sample count.
+        """
+        if not 0.0 < confidence < 1.0:
+            raise ValueError("confidence must be between 0 and 1.")
+        estimate = self.mean
+        standard_error = self.mean_se
+        z = float(norm.ppf(0.5 + confidence / 2.0))
+        return ConfidenceInterval(
+            estimate=estimate,
+            lower=max(0.0, estimate - z * standard_error),
+            upper=estimate + z * standard_error,
+            confidence=confidence,
+            standard_error=standard_error,
+            n_samples=len(self.samples),
+        )
 
     @property
     def cost_rate(self) -> float:

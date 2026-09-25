@@ -514,6 +514,13 @@ unit time down**.
   short-circuits to `0.0` rather than doing the work.
 - `downtime_cost` is the niche one: it prices *this component* being down even
   when redundancy keeps the system up (degraded-mode or per-leg SLA penalties).
+- **Uncertain prices.** `repair_cost` and `replace_cost` can be a distribution
+  of the cost instead of a number, e.g. a surpyval model fitted to past
+  invoices: `"repair_cost": surv.LogNormal.from_params([6.2, 0.4])`. The
+  closed form uses its mean; the simulation below draws a fresh cost at every
+  failure. It must have a finite mean and no appreciable probability of a
+  negative cost. The downtime costs stay numbers: they are rates, and the
+  outage durations already make them random.
 - Costs are **corrective only** and **undiscounted** — every failure is repaired
   at the same price, and there is no preventive-replacement or net-present-value
   term.
@@ -534,10 +541,17 @@ result = rbd.cost(t_simulation=8760, N=10_000, seed=0)   # one year, simulated
 
 result.mean             # mean cost of the year
 result.percentile(90)   # a planning-case budget: 9 years in 10 cost less
+result.mean_interval()  # 95% confidence interval for the mean: was N enough?
 result.cost_rate        # mean / t_simulation — converges to expected_cost_rate()
-result.by_category      # {"corrective": ..., "component_downtime": ..., "system_downtime": ...}
+result.by_category      # mean repair, replace, component_downtime, system_downtime
 result.by_component     # mean attributable cost per costed component
 ```
+
+Two different uncertainties are on offer here. `percentile` (and `std`)
+describe how much a year's cost *varies*. That is a property of the system,
+and more replications will not shrink it. `mean_interval()` describes how
+precisely the *expected* cost has been pinned down, and narrows like
+`1/√N`. It is the one to check before you quote the mean.
 
 The same result rides along on `availability(...)` as `result.cost`, so one
 simulation pays for both answers. When nothing is priced there is no cost
@@ -587,6 +601,9 @@ interval = nonrepairable_rbd.mean_time_to_failure_interval(
 )
 interval.estimate, interval.lower, interval.upper, interval.standard_error
 ```
+
+A simulated cost has the same: `cost_result.mean_interval(confidence=0.95)`
+returns the same `ConfidenceInterval` for the mean cost over the window.
 
 The simulator itself is validated against exact Markov solutions: the
 transient availability of exponential systems (single component, series,

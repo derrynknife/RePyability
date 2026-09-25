@@ -192,8 +192,12 @@ def _serialise_component(value) -> dict:
             ),
         }
         for key in RepairableRBD.COST_KEYS:
-            if value.get(key):
-                out[key] = float(value[key])
+            cost = value.get(key)
+            if hasattr(cost, "qf"):
+                # A per-failure cost may be a distribution of the cost.
+                out[key] = serialise_model(cost)
+            elif cost:
+                out[key] = float(cost)
         return out
     return serialise_model(value)
 
@@ -212,7 +216,10 @@ def _deserialise_component(d: dict) -> Any:
         }
         for key in RepairableRBD.COST_KEYS:
             if key in d:
-                out[key] = d[key]
+                cost = d[key]
+                out[key] = (
+                    deserialise_model(cost) if isinstance(cost, dict) else cost
+                )
         return out
     return deserialise_model(d)
 

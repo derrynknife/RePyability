@@ -47,11 +47,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `cost(t_simulation, N, seed)` — or `availability(...).cost` from the same
   replications — returns a `CostResult` with the `samples`, `mean`, `std`,
   `percentile(q)` (a P90 planning budget, which the exact mean cannot give),
-  a per-category breakdown (corrective / component-downtime /
-  system-downtime) and the mean attributable cost per component.
-  `result.cost_rate` converges to the exact `expected_cost_rate()`, and the
-  test suite asserts that identity. With nothing priced, `cost()` returns
-  `None` and no cost work is done.
+  `mean_se` and `mean_interval(confidence)` (a confidence interval for the
+  expected cost, to judge whether `N` was enough), a per-category breakdown
+  (repair / replace / component-downtime / system-downtime) and the mean
+  attributable cost per component. `result.cost_rate` converges to the exact
+  `expected_cost_rate()`, and the test suite asserts that identity. With
+  nothing priced, `cost()` returns `None` and no cost work is done.
+- **Costs drawn from distributions.** `repair_cost` and `replace_cost` may be
+  a distribution of the cost (e.g. a surpyval model fitted to past invoices)
+  instead of a number: the simulation draws a fresh cost at every failure,
+  and the closed form uses the mean. The draws come from their own random
+  stream, so seeded runs stay reproducible and pricing never changes the
+  failure/repair simulation or any availability output. A cost distribution
+  must have a finite mean and no appreciable probability of a negative cost,
+  and it persists through serialisation; the downtime costs stay numbers.
 - **Instantly repaired components.** A `RepairableRBD` component may declare
   `"repairability": "instant"` — repaired in zero time. It still *fails*
   (failure events fire and repair/replace costs are charged) but every outage
