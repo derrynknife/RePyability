@@ -32,6 +32,23 @@ from repyability.rbd.results import (
 )
 
 
+class _StreamedRBD:
+    """Stands in for a nested :class:`RepairableRBD` component during
+    ``availability()``: runs the nested RBD's own simulation, with its
+    components' draws replayed from the shared :class:`UniformStream` by
+    their own stand-ins (see ``RepairableRBD._streamed_components``)."""
+
+    def __init__(self, rbd: "RepairableRBD", sources: dict):
+        self._rbd = rbd
+        self._sources = sources
+
+    def initialize_event_queue(self, t_simulation):
+        self._rbd.initialize_event_queue(t_simulation, sources=self._sources)
+
+    def next_event(self):
+        return self._rbd.next_event(sources=self._sources)
+
+
 class _EventQueue:
     """The simulation's event queue.
 
@@ -79,6 +96,21 @@ class _StreamedComponent:
             return self._stream.draw(self._failure), False
         self._fails_next = True
         return self._stream.draw(self._repair), True
+
+
+def _stand_in(component, stream: UniformStream, made: dict):
+    """A component's stand-in for ``RepairableRBD._streamed_components``, or
+    ``None`` if its draws cannot be streamed."""
+    if isinstance(component, RepairableRBD):
+        nested = component._streamed_components(stream, made)
+        return None if nested is None else _StreamedRBD(component, nested)
+    if type(component) is not NonRepairable:
+        return None
+    failure = inverse_sampler(component.reliability)
+    repair = inverse_sampler(component.time_to_replace)
+    if failure is None or repair is None:
+        return None
+    return _StreamedComponent(failure, repair, stream)
 
 
 @dataclass(order=True)
@@ -429,21 +461,26 @@ class RepairableRBD(RBD):
         return bool(self.costs) or bool(self.downtime_cost_rate)
 
     def _streamed_components(
-        self, stream: UniformStream
-    ) -> Optional[dict[Any, _StreamedComponent]]:
+        self, stream: UniformStream, made: Optional[dict] = None
+    ) -> Optional[dict[Any, Any]]:
         """Stand-ins that replay every component's failure/repair draws from
-        ``stream``, or ``None`` if any component's draws cannot be reproduced
-        exactly that way (a nested RBD, a non-parametric model, ...), in which
-        case the simulation draws from the components themselves."""
-        streamed = {}
+        ``stream``, nested RBDs' components included, or ``None`` if any
+        component's draws cannot be reproduced exactly that way (a
+        non-parametric model, ...), in which case the simulation draws from
+        the components themselves. The stand-ins are called at exactly the
+        points the components would be, so the draws come in the same order.
+
+        A component object used for several nodes, at any level, has one
+        event state, so it gets one stand-in (``made``, by object).
+        """
+        made = {} if made is None else made
+        streamed: dict[Any, Any] = {}
         for name, component in self.components.items():
-            if type(component) is not NonRepairable:
+            if id(component) not in made:
+                made[id(component)] = _stand_in(component, stream, made)
+            if made[id(component)] is None:
                 return None
-            failure = inverse_sampler(component.reliability)
-            repair = inverse_sampler(component.time_to_replace)
-            if failure is None or repair is None:
-                return None
-            streamed[name] = _StreamedComponent(failure, repair, stream)
+            streamed[name] = made[id(component)]
         return streamed
 
     def _failure_charges(self) -> dict[Any, list[tuple[str, Iterator[float]]]]:
@@ -585,8 +622,8 @@ class RepairableRBD(RBD):
     ):
         working_nodes = set() if working_nodes is None else set(working_nodes)
         broken_nodes = set() if broken_nodes is None else set(broken_nodes)
-        # What NonRepairable components draw their events from: themselves,
-        # or stand-ins replaying the same draws (see _streamed_components).
+        # What the components draw their events from: themselves, or
+        # stand-ins replaying the same draws (see _streamed_components).
         sources = self.components if sources is None else sources
 
         # Keep record of component status', initially they're all working
@@ -609,8 +646,9 @@ class RepairableRBD(RBD):
                 continue
             # If status not known, then continue
             if isinstance(component, RepairableRBD):
-                component.initialize_event_queue(t_simulation)
-                t_event, event = component.next_event()
+                source = sources[component_id]
+                source.initialize_event_queue(t_simulation)
+                t_event, event = source.next_event()
             elif isinstance(component, NonRepairable):
                 source = sources[component_id]
                 source.reset()
@@ -717,13 +755,16 @@ class RepairableRBD(RBD):
         )
         return mean_availability.item()
 
-    def next_event(self, method="p"):
+    def next_event(self, method="p", sources: Optional[dict] = None):
         # This method allows a user to extract the next system status
         # changing event. The intent of this is so that it has the same api
         # as the NonRepairable class so that a RepairableRBD can be used in
         # a RepairableRBD/
         if not hasattr(self, "_event_queue"):
             raise ValueError("Need to initialize the event queue")
+        # The components' draws come from the same sources the queue was
+        # initialised with (see initialize_event_queue).
+        sources = self.components if sources is None else sources
         new_system_state = copy(self.system_state)
 
         # Use a while loop to find the next time/event at which the system
@@ -739,7 +780,7 @@ class RepairableRBD(RBD):
                 self.component_status, method
             )
 
-            next_event_t, next_event_type = self.components[
+            next_event_t, next_event_type = sources[
                 event.component
             ].next_event()
             next_event = Event(
@@ -1001,7 +1042,8 @@ class RepairableRBD(RBD):
 
         # Randomised simulations are done. Leave the global RNG where the
         # draw-at-a-time simulation would have, then restore the caller's
-        # state if a seed was given.
+        # state if a seed was given. (If a simulation raises, neither
+        # happens: the RNG is left up to a block of uniforms further on.)
         stream.close()
         if _rng_state is not None:
             np.random.set_state(_rng_state)

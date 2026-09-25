@@ -13,7 +13,9 @@ these tests hold the fast path to that reference:
 - the per-sample loops of the warm-standby and load-sharing simulations run
   for every sample at once: same arithmetic, same tie-breaks;
 - the repairable simulation's event queue drops ``queue.PriorityQueue``'s
-  locking but keeps its heap, so events come out in the same order;
+  locking but keeps its heap, so events come out in the same order, and its
+  components (nested RBDs' included) draw from one stream of uniforms, in the
+  order they drew from the global RNG;
 - composite nodes (standby, repeated, load-sharing, regression, nested RBDs)
   replay their ``random(1)`` for a whole block of samples, so an RBD
   containing them is batched too;
@@ -562,8 +564,31 @@ def test_load_sharing_fit_is_unchanged(weibull_aft, monkeypatch):
 # -- the repairable simulation -----------------------------------------------
 
 
+def repairable_pair(scale, reliability=None):
+    """A RepairableRBD of two repairable units in parallel, to nest."""
+    return RepairableRBD(
+        [("s", "p"), ("s", "q"), ("p", "t"), ("q", "t")],
+        {
+            "p": {
+                "reliability": (
+                    W([scale, 2]) if reliability is None else reliability
+                ),
+                "repairability": surv.Exponential.from_params([0.5]),
+            },
+            "q": {
+                "reliability": W([scale + 5, 2]),
+                "repairability": surv.LogNormal.from_params([0.2, 0.4]),
+            },
+        },
+    )
+
+
 def repairable_rbds():
     L = surv.LogNormal.from_params
+    # A model object used for several nodes, even at different levels, has
+    # one event state; the stand-ins must share it the same way.
+    pump = NonRepairable(W([50, 2]), surv.Exponential.from_params([0.5]))
+    shared = NonRepairable(W([60, 1.5]), L([0.3, 0.5]))
     return {
         "costed_pairs": RepairableRBD(
             [
@@ -637,7 +662,98 @@ def repairable_rbds():
                 ),
             },
         ),
+        "nested_one_level": RepairableRBD(
+            [("s", "a"), ("a", "sub"), ("sub", "t")],
+            {
+                "a": {
+                    "reliability": W([70, 1.5]),
+                    "repairability": surv.Exponential.from_params([0.8]),
+                    "repair_cost": 50.0,
+                },
+                "sub": repairable_pair(40),
+            },
+            downtime_cost_rate=5.0,
+        ),
+        "nested_two_levels": RepairableRBD(
+            [("s", "a"), ("a", "mid"), ("mid", "t")],
+            {
+                "a": {
+                    "reliability": W([120, 1.5]),
+                    "repairability": surv.Exponential.from_params([0.8]),
+                },
+                "mid": RepairableRBD(
+                    [("s", "m"), ("s", "deep"), ("m", "t"), ("deep", "t")],
+                    {
+                        "m": {
+                            "reliability": W([70, 2]),
+                            "repairability": surv.Exponential.from_params(
+                                [0.4]
+                            ),
+                        },
+                        "deep": RepairableRBD(
+                            [("s", "u"), ("u", "v"), ("v", "t")],
+                            {
+                                "u": {
+                                    "reliability": W([90, 1.5]),
+                                    "repairability": "instant",
+                                },
+                                "v": NonRepairable(
+                                    surv.Exponential.from_params([0.01]),
+                                    W([2, 1.5]),
+                                ),
+                            },
+                        ),
+                    },
+                ),
+            },
+        ),
+        "nested_koon": RepairableRBD(
+            [
+                ("s", "x"),
+                ("s", "y"),
+                ("s", "z"),
+                ("x", "v"),
+                ("y", "v"),
+                ("z", "v"),
+                ("v", "t"),
+            ],
+            {
+                "x": repairable_pair(50),
+                "y": repairable_pair(55),
+                "z": {
+                    "reliability": W([60, 1.8]),
+                    "repairability": surv.Exponential.from_params([0.3]),
+                },
+                "v": {
+                    "reliability": W([500, 1.2]),
+                    "repairability": surv.Exponential.from_params([1.0]),
+                },
+            },
+            k={"v": 2},
+        ),
+        "one_model_two_nodes": RepairableRBD(
+            [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+            {"a": pump, "b": pump},
+        ),
+        "one_model_two_levels": RepairableRBD(
+            [
+                ("s", "a"),
+                ("s", "x"),
+                ("s", "y"),
+                ("a", "t"),
+                ("x", "t"),
+                ("y", "t"),
+            ],
+            {
+                "a": shared,
+                "x": RepairableRBD([("s", "p"), ("p", "t")], {"p": shared}),
+                "y": RepairableRBD([("s", "p"), ("p", "t")], {"p": shared}),
+            },
+        ),
     }
+
+
+NESTED = ["nested_koon", "nested_one_level", "nested_two_levels"]
 
 
 def simulate_both(monkeypatch, rbd, **kwargs):
@@ -680,7 +796,27 @@ def test_repairable_simulation_leaves_the_global_rng_unchanged(
     assert_same_rng_state(rng_state(), after_fast)
 
 
-def test_nested_repairable_rbd_uses_the_components_themselves():
+@pytest.mark.parametrize("forced", ["working_nodes", "broken_nodes"])
+@pytest.mark.parametrize("name", NESTED)
+def test_forcing_a_nested_rbd_is_identical(name, forced, monkeypatch):
+    rbd = repairable_rbds()[name]
+    for node, component in rbd.components.items():
+        if isinstance(component, RepairableRBD):
+            fast, reference = simulate_both(
+                monkeypatch,
+                rbd,
+                t_simulation=200.0,
+                N=30,
+                seed=26,
+                **{forced: [node]},
+            )
+            assert_same(fast, reference)
+
+
+def test_nested_rbd_that_cannot_be_streamed_falls_back_entirely(monkeypatch):
+    # A zero-inflated model draws through np.random.binomial, which the
+    # stream cannot reproduce. Streaming the other components' draws would
+    # change their order, so nothing is streamed.
     rbd = RepairableRBD(
         [("s", "a"), ("a", "sub"), ("sub", "t")],
         {
@@ -688,21 +824,39 @@ def test_nested_repairable_rbd_uses_the_components_themselves():
                 "reliability": W([70, 1.5]),
                 "repairability": surv.Exponential.from_params([0.8]),
             },
-            "sub": RepairableRBD(
-                [("s", "p"), ("p", "t")],
-                {
-                    "p": {
-                        "reliability": W([40, 2]),
-                        "repairability": surv.Exponential.from_params([0.5]),
-                    }
-                },
-            ),
+            "sub": repairable_pair(40, W([40, 2], f0=0.1)),
         },
     )
     assert rbd._streamed_components(_sampling.UniformStream()) is None
-    a = rbd.availability(100.0, N=10, seed=26)
-    b = rbd.availability(100.0, N=10, seed=26)
-    assert_same(a, b)
+    fast, reference = simulate_both(
+        monkeypatch, rbd, t_simulation=200.0, N=30, seed=27
+    )
+    assert_same(fast, reference)
+
+
+def step_by_hand(rbd, t_simulation):
+    """Every system event of one of ``rbd``'s simulations, stepped through
+    with its public event API."""
+    rbd.initialize_event_queue(t_simulation)
+    events = [rbd.next_event()]
+    while events[-1][0] < t_simulation:
+        events.append(rbd.next_event())
+    return events
+
+
+def test_nested_rbds_step_by_hand_as_before_after_a_simulation():
+    # availability() hands nested RBDs their stand-ins only for the run:
+    # afterwards they draw from their components again.
+    used = repairable_rbds()["nested_two_levels"]
+    used.availability(300.0, N=10, seed=28)
+    fresh = repairable_rbds()["nested_two_levels"]
+    np.random.seed(29)
+    expected = step_by_hand(fresh, 2000.0)
+    after_fresh = rng_state()
+    np.random.seed(29)
+    assert step_by_hand(used, 2000.0) == expected
+    assert_same_rng_state(rng_state(), after_fresh)
+    assert len(expected) > 10
 
 
 def test_event_queue_pops_in_priority_queue_order():

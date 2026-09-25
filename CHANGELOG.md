@@ -116,7 +116,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `queue.PriorityQueue`'s thread locking (it is the same heap). Composite
   nodes -- standby, repeated, repeated-standby, load-sharing, regression and
   nested-RBD nodes -- describe how their `random(1)` consumes the RNG, so an
-  RBD containing them is batched the same way. Minimal cut sets are read off
+  RBD containing them is batched the same way, and a `RepairableRBD` nested
+  in another draws its components' failure and repair times from the outer
+  simulation's block of uniforms too. Minimal cut sets are read off
   the exact engine's decomposition (a node's cut sets either spare its pivot
   component or contain it with a cut set of the failed branch) instead of
   Berge's algorithm, whose intermediate families could grow far beyond the
@@ -135,6 +137,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `NonRepairableRBD.mean()`, 12-node system | 66.2 s | 125 ms |
   | `mean()`, RBD with a standby / repeated / nested-RBD node | 18–32 s | 16–38 ms |
   | `RepairableRBD.availability(t=1000, N=300)`, 4 components | 1.81 s | 0.16 s |
+  | `RepairableRBD.availability(t=1000, N=200)`, with nested `RepairableRBD`s | 0.45–2.2 s | 56–178 ms |
   | `StandbyModel` cold, k=2 of 4 Weibull units (build) | 1.81 s | 6 ms |
   | `StandbyModel` warm, 4 Weibull units (build) | 0.52 s | 13 ms |
   | `LoadSharingModel`, 3 Weibull-AFT units (build) | 0.29 s | 7 ms |
