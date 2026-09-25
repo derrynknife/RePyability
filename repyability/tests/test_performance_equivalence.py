@@ -585,8 +585,8 @@ def repairable_pair(scale, reliability=None):
 
 def repairable_rbds():
     L = surv.LogNormal.from_params
-    # A model object used for several nodes, even at different levels, has
-    # one event state; the stand-ins must share it the same way.
+    # A model object given for several nodes, even at different levels (each
+    # node simulates with its own copy).
     pump = NonRepairable(W([50, 2]), surv.Exponential.from_params([0.5]))
     shared = NonRepairable(W([60, 1.5]), L([0.3, 0.5]))
     return {

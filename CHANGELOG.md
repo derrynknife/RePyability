@@ -169,6 +169,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as it does on its own. The exact methods (`mean_availability()` and the
   failure-frequency family) were not affected; seeded simulations of RBDs
   without nested `RepairableRBD`s are unchanged.
+- **A `NonRepairable` object given for several nodes shared one simulation
+  state.** The object records whether it fails or is repaired next, so when
+  the same object was given for two nodes of a `RepairableRBD` (or for a node
+  and a node of a nested RBD, or nodes of two nested RBDs), one node's failure
+  could be followed by another failure instead of a repair, and the simulated
+  availability and costs were wrong. Each node now gets its own copy of the
+  object, so one object can stand for several identical parts: it simulates
+  exactly as separate objects would. (`rbd.components[node]` is that copy.
+  Models given as `{"reliability": ..., "repairability": ...}` dicts always
+  made a new object per node and are unchanged.)
 - `test_non_parametric_optimal_replacement` drew its data from the unseeded
   global RNG and failed about one run in 150; it is now seeded.
 - `test_weibull_no_optimal_replacement` no longer asserts that a warning is
