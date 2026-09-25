@@ -7,6 +7,114 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Redundancy allocation (`NonRepairableRBD.allocate_redundancy`, closes
+  #40).** Solves the Redundancy Allocation Problem: given a per-copy cost for
+  the nodes that may be duplicated, choose how many identical, independent,
+  active copies of each to fit, either to **maximise system reliability
+  within a budget** or to **minimise cost while meeting a reliability
+  target**. `n` copies of a node with reliability `p` are scored as
+  `1 - (1 - p) ** n` inside the exact system computation, so any RBD
+  structure works, not only series-of-subsystems. `method="exact"` (the
+  default) returns a proven optimum — for a budget it only scores designs
+  that cannot afford another copy, since adding a copy never lowers a
+  coherent system's reliability — and stops with guidance if a problem is too
+  large to search; `method="greedy"` (best log-reliability gain per unit
+  cost) is fast at any size but not guaranteed optimal. `max_units` caps
+  copies per node, the "cost" can be any additive resource (money, weight,
+  volume), and the result is a typed `RedundancyAllocation` (`units`,
+  `reliability`, `cost`, `method`). Tests check both forms against an
+  independent brute force on a (non-series-parallel) bridge network, and the
+  `1 - (1 - p) ** n` model against an RBD with the copies drawn out
+  explicitly. RBDs with CCF groups are not yet supported.
+- **Cost of a repairable system (`expected_cost_rate`).** `RepairableRBD`
+  components may now carry `repair_cost` and `replace_cost` (charged per
+  corrective action) and an optional `downtime_cost` rate, alongside a
+  system-level `downtime_cost_rate` for production lost while the system is
+  down. `expected_cost_rate()` returns the long-run cost per unit time in
+  closed form — no simulation — as
+  `downtime_cost_rate·(1 − A_sys) + Σ ωᵢ·(repair + replace) + Σ (1 − Aᵢ)·downtime`,
+  reusing the existing availability and failure-frequency machinery, and it
+  accepts the usual `working_nodes`/`broken_nodes` conditioning. Every cost is
+  optional and defaults to 0, so any subset can be priced; when nothing is
+  priced `has_costs` is `False` and the method short-circuits without doing the
+  work. Costs are corrective-only and undiscounted, and they persist through
+  serialisation. Unknown keys in a component spec are now rejected at
+  construction, so a mistyped cost key can no longer be silently priced at zero.
+- **Simulated cost distribution (`RepairableRBD.cost`, closes #54).** The
+  availability simulation now accumulates costs (only when some cost is
+  declared): each replication yields the window's total cost, and
+  `cost(t_simulation, N, seed)` — or `availability(...).cost` from the same
+  replications — returns a `CostResult` with the `samples`, `mean`, `std`,
+  `percentile(q)` (a P90 planning budget, which the exact mean cannot give),
+  `mean_se` and `mean_interval(confidence)` (a confidence interval for the
+  expected cost, to judge whether `N` was enough), a per-category breakdown
+  (repair / replace / component-downtime / system-downtime) and the mean
+  attributable cost per component. `result.cost_rate` converges to the exact
+  `expected_cost_rate()`, and the test suite asserts that identity. With
+  nothing priced, `cost()` returns `None` and no cost work is done.
+- **Costs drawn from distributions.** `repair_cost` and `replace_cost` may be
+  a distribution of the cost (e.g. a surpyval model fitted to past invoices)
+  instead of a number: the simulation draws a fresh cost at every failure,
+  and the closed form uses the mean. The draws come from their own random
+  stream, so seeded runs stay reproducible and pricing never changes the
+  failure/repair simulation or any availability output. A cost distribution
+  must have a finite mean and no appreciable probability of a negative cost,
+  and it persists through serialisation; the downtime costs stay numbers.
+- **Instantly repaired components.** A `RepairableRBD` component may declare
+  `"repairability": "instant"` — repaired in zero time. It still *fails*
+  (failure events fire and repair/replace costs are charged) but every outage
+  has zero length, so it contributes no downtime and its availability is
+  exactly 1: the modelling shorthand for parts swapped much faster than the
+  timescale under study, or with no repair-time data.
+- **Warm and hot standby (`StandbyModel(dormancy_factor=...)`, closes #41).**
+  `dormancy_factor` is the dormant-to-operating aging ratio: `0` is the
+  existing cold standby (default, unchanged), values in between are **warm**
+  (a dormant spare ages at that fraction of the operating rate — the
+  cumulative-exposure / virtual-age model shared with `LoadSharingModel` —
+  and can fail *latent*, dead before it is needed), and `1` is **hot**,
+  which is exactly k-out-of-n parallel. Identical Exponential units get an
+  exact hypoexponential closed form for any `dormancy_factor` (Erlang and
+  the parallel order-statistic as the cold/hot endpoints); other lifetimes
+  are simulated. Spares are promoted in list order; the factor persists
+  through serialisation. Imperfect switching remains cold-`k=1`-only.
+
+### Changed
+- Require **surpyval >= 0.20**, and the requirement is now **uncapped** (was
+  `>=0.16,<0.17`). 0.20 adds a first-class `Hypoexponential` distribution, so
+  RePyability's private `_HypoexponentialSurvival` (the closed-form group
+  lifetime behind identical-Exponential `LoadSharingModel` and warm/hot
+  `StandbyModel`) is deleted in favour of it — the same maths, now with
+  `random`, `qf`, `var` and serialisation through `surpyval.from_dict` for
+  free, per the rule that univariate distributions live in surpyval. Where
+  the stage rates are not distinct (surpyval rejects them; the old private
+  class silently produced nonsense there) both nodes now fall back to
+  simulation. Verified against surpyval 0.19.0 and 0.20.0: the whole test
+  suite, the type checks and the strict docs build pass unchanged — no
+  RePyability API depended on anything that moved, and the `sf_tvc` /
+  `StepSchedule` time-varying-load path is unaffected. RePyability consumes
+  a small, stable surface of surpyval, and the one-minor-wide caps used
+  until now meant every surpyval minor release made `pip` refuse to
+  co-install the two packages until a RePyability release followed; new
+  surpyval minors are now picked up without one.
+- Python **3.13** is now supported and tested in CI (classifiers and test
+  matrix; surpyval declares 3.11–3.13, so 3.14 waits on upstream).
+- Maintenance: CI actions moved off the deprecated Node 20 runtime
+  (`actions/checkout@v5`, `actions/setup-python@v6`); the docs stack is held
+  on MkDocs 1.x / mkdocs-material 9.x (MkDocs 2.0 removes the plugin system
+  with no migration path); black's `target-version` is pinned to the minimum
+  supported Python so formatting no longer depends on the interpreter it
+  runs under.
+
+### Fixed
+- `test_weibull_no_optimal_replacement` no longer asserts that a warning is
+  emitted for an offset (3-parameter) Weibull. The warning was an incidental
+  numerical `RuntimeWarning` raised inside surpyval while evaluating the
+  model's mean, not a contract of `find_optimal_replacement()`; surpyval 0.19
+  evaluates that mean cleanly, so the assertion no longer held. The behaviour
+  under test — a finite (non-`inf`) replacement age for an offset Weibull — is
+  unchanged and still asserted.
+
 ## [0.8.0] - 2026-07-22
 
 The **Dependent Failures** milestone: model redundant components that fail

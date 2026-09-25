@@ -16,7 +16,7 @@ False; use ``isinstance(result, Mapping)`` if you need such a check.)
 import dataclasses
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Dict, Hashable, Tuple
+from typing import Dict, Hashable, Optional, Tuple
 
 import numpy as np
 from scipy.stats import norm
@@ -148,6 +148,135 @@ class Criticalities(_ResultMapping):
 
 
 @dataclass
+class CostResult(_ResultMapping):
+    """The simulated cost of running the system over a window.
+
+    Each of the ``n_simulations`` replications of the availability simulation
+    yields one *total cost over the window*: repair/replace costs charged at
+    each component failure, plus any per-component downtime cost, plus the
+    system-downtime cost. ``samples`` is that distribution — the point of
+    simulating rather than stopping at the exact
+    ``RepairableRBD.expected_cost_rate()`` is the spread: ``percentile(90)``
+    answers "what could a bad window cost", which a mean cannot.
+
+    Two different uncertainties live here. ``std`` and ``percentile`` describe
+    how much the cost of a window *varies*; that is a property of the system
+    and does not shrink with more replications. ``mean_se`` and
+    ``mean_interval`` describe how precisely the *expected* cost has been
+    estimated; that shrinks like ``1 / sqrt(n_simulations)``.
+
+    Attributes
+    ----------
+    samples : numpy.ndarray
+        Total cost of each replication over the window (length
+        ``n_simulations``).
+    t_simulation : float
+        The window length each replication was run for.
+    n_simulations : int
+        The number of replications.
+    by_category : dict
+        Mean per-replication cost split into ``"repair"`` and ``"replace"``
+        (both charged per failure), ``"component_downtime"`` and
+        ``"system_downtime"``. The four sum to ``mean``.
+    by_component : dict
+        Mean per-replication cost attributable to each costed component (its
+        repair, replace and own downtime cost; the system-downtime cost is
+        not attributed to components).
+    """
+
+    samples: np.ndarray
+    t_simulation: float
+    n_simulations: int
+    by_category: Dict[str, float]
+    by_component: Dict[Hashable, float]
+
+    @property
+    def mean(self) -> float:
+        """Mean total cost over the window."""
+        return float(np.mean(self.samples))
+
+    @property
+    def std(self) -> float:
+        """Sample standard deviation of the window's total cost."""
+        return float(np.std(self.samples, ddof=1))
+
+    @property
+    def mean_se(self) -> float:
+        """Standard error of ``mean``, ``std / sqrt(n_simulations)``: how far
+        the simulated mean is likely to be from the true expected cost."""
+        return self.std / float(np.sqrt(len(self.samples)))
+
+    def mean_interval(self, confidence: float = 0.95) -> ConfidenceInterval:
+        """Confidence interval for the expected total cost over the window.
+
+        By the central limit theorem the mean of the replications is normal
+        with standard error ``mean_se``, from which the interval is built.
+        Use it to judge whether ``N`` was large enough; for the range a
+        single window's cost could fall in, use ``percentile`` instead.
+
+        Parameters
+        ----------
+        confidence : float, optional
+            The confidence level, by default 0.95.
+
+        Returns
+        -------
+        ConfidenceInterval
+            The estimate (``mean``), bounds, standard error and sample count.
+        """
+        if not 0.0 < confidence < 1.0:
+            raise ValueError("confidence must be between 0 and 1.")
+        estimate = self.mean
+        standard_error = self.mean_se
+        z = float(norm.ppf(0.5 + confidence / 2.0))
+        return ConfidenceInterval(
+            estimate=estimate,
+            lower=max(0.0, estimate - z * standard_error),
+            upper=estimate + z * standard_error,
+            confidence=confidence,
+            standard_error=standard_error,
+            n_samples=len(self.samples),
+        )
+
+    @property
+    def cost_rate(self) -> float:
+        """Mean cost per unit time (``mean / t_simulation``); converges to
+        the exact ``expected_cost_rate()`` as the window grows."""
+        return self.mean / self.t_simulation
+
+    def percentile(self, q) -> float:
+        """The ``q``-th percentile of the window's total cost (e.g.
+        ``percentile(90)`` for a planning-case budget)."""
+        return float(np.percentile(self.samples, q))
+
+
+@dataclass
+class RedundancyAllocation(_ResultMapping):
+    """The result of ``NonRepairableRBD.allocate_redundancy()``.
+
+    Attributes
+    ----------
+    units : dict
+        How many identical copies of each costed node to fit in active
+        parallel. Always at least 1: the original unit.
+    reliability : float
+        The system reliability with that allocation (at the mission time
+        ``t``, for a time-varying RBD).
+    cost : float
+        Total cost of the allocation, ``sum(costs[node] * units[node])``.
+        Every copy is costed, including the original.
+    method : str
+        ``"exact"`` (a proven optimum) or ``"greedy"`` (a fast heuristic
+        solution, usually but not always optimal).
+    """
+
+    units: Dict[Hashable, int]
+    reliability: float
+    cost: float
+    method: str
+
+
+@dataclass
 class AvailabilityResult(_ResultMapping):
     """The result of ``RepairableRBD.availability()``.
 
@@ -182,6 +311,9 @@ class AvailabilityResult(_ResultMapping):
         Number of system restorations observed across all simulations.
     n_simulations : int
         The number of simulations run (``N``).
+    cost : CostResult, optional
+        The simulated cost distribution, when the RBD declares any costs;
+        ``None`` when nothing is priced (no cost model to run).
     """
 
     timeline: np.ndarray
@@ -195,6 +327,7 @@ class AvailabilityResult(_ResultMapping):
     system_failures: int
     system_restorations: int
     n_simulations: int
+    cost: Optional[CostResult] = None
 
     @property
     def availability_se(self) -> np.ndarray:

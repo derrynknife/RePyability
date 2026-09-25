@@ -25,8 +25,10 @@ from repyability.rbd.repeated_standby_node import RepeatedStandbyNode
 from repyability.rbd.results import (
     AvailabilityResult,
     ConfidenceInterval,
+    CostResult,
     Criticalities,
     FailureCriticalityIndex,
+    RedundancyAllocation,
     RestorationCriticalityIndex,
     UpDownImportance,
 )
@@ -61,6 +63,8 @@ __all__ = [
     # Result types
     "AvailabilityResult",
     "ConfidenceInterval",
+    "CostResult",
+    "RedundancyAllocation",
     "Criticalities",
     "UpDownImportance",
     "FailureCriticalityIndex",

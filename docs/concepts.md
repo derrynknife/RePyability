@@ -191,6 +191,14 @@ group reduces *exactly* to the ordinary k-out-of-n parallel result. Load sharing
 is the "self-loading" sibling of the condition-based layer: there the load is
 streamed in from sensors, here it is computed from the group's own survivors.
 
+The same virtual-age machinery powers **warm standby**
+(`StandbyModel(dormancy_factor=...)`): a dormant spare ages at a fixed fraction
+of the operating rate instead of a load-dependent one, so the standby spectrum
+runs from cold (`0`, no dormant aging — lifetimes add) through warm (latent
+failures become possible) to hot (`1`, exactly k-out-of-n parallel). Identical
+Exponential units again give an exact hypoexponential lifetime, with the cold
+Erlang and the hot parallel order-statistic as its two endpoints.
+
 ## Common-cause failures
 
 Redundancy only buys reliability if the redundant units fail for *independent*

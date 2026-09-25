@@ -45,6 +45,10 @@ the top-level `repyability` package).
 
 ::: repyability.AvailabilityResult
 
+::: repyability.CostResult
+
+::: repyability.RedundancyAllocation
+
 ::: repyability.ConfidenceInterval
 
 ::: repyability.Criticalities

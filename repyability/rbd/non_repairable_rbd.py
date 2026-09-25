@@ -1,4 +1,5 @@
 import functools
+import math
 import pprint
 import warnings
 from copy import copy
@@ -24,6 +25,7 @@ from surpyval import NonParametric
 
 from repyability.utils.wrappers import conditional_survival, numpy_seed
 
+from . import redundancy_allocation
 from ._model_utils import is_fixed_probability, parametric_spec
 from .ccf import CCFGroup
 from .helper_classes import PerfectReliability, PerfectUnreliability
@@ -32,7 +34,7 @@ from .node_state import NodeState
 from .rbd import RBD
 from .repeated_node import RepeatedNode
 from .repeated_standby_node import RepeatedStandbyNode
-from .results import ConfidenceInterval
+from .results import ConfidenceInterval, RedundancyAllocation
 from .standby_node import StandbyModel
 
 
@@ -559,6 +561,259 @@ class NonRepairableRBD(RBD):
         0.01
         """
         return 1 - self.sf(x, *args, **kwargs)
+
+    def allocate_redundancy(
+        self,
+        costs: Dict[Hashable, float],
+        *,
+        budget: Optional[float] = None,
+        target: Optional[float] = None,
+        t: Optional[float] = None,
+        max_units: Union[int, Dict[Hashable, int], None] = None,
+        method: str = "exact",
+    ) -> RedundancyAllocation:
+        """Choose how many copies of each node to fit (redundancy
+        allocation).
+
+        Solves the Redundancy Allocation Problem: pick how many identical,
+        independent copies of each node in ``costs`` to fit in active
+        parallel, to either
+
+        - maximise system reliability with total cost at most ``budget``, or
+        - minimise total cost with system reliability at least ``target``.
+
+        Give exactly one of ``budget`` or ``target``. A node with reliability
+        ``p`` fitted as ``n`` copies has reliability ``1 - (1 - p) ** n``, and
+        the system reliability of each candidate allocation is computed
+        exactly, so any RBD structure works. Nodes not in ``costs`` stay as
+        they are.
+
+        Parameters
+        ----------
+        costs : dict
+            ``{node: cost per copy}`` for the nodes that may be duplicated.
+            Every copy is costed, including the original, so the cheapest
+            allocation (one of each) costs ``sum(costs.values())``. The
+            "cost" can be any additive resource, e.g. weight or volume.
+        budget : float, optional
+            Maximise reliability subject to total cost <= budget.
+        target : float, optional
+            Minimise cost subject to system reliability >= target, in (0, 1).
+        t : float, optional
+            The mission time at which reliability is evaluated. Required for
+            a time-varying RBD; not needed when every node is a fixed
+            probability.
+        max_units : int or dict, optional
+            The most copies allowed of every costed node (an int) or of
+            particular nodes (a dict), e.g. for space limits. By default
+            unlimited; the budget or target bounds the search.
+        method : {"exact", "greedy"}, optional
+            ``"exact"`` (the default) searches for a proven optimum and is
+            fast for typical problems (a handful of nodes); it gives up
+            with an explanatory error on problems too large to search.
+            ``"greedy"`` repeatedly adds the copy with the best
+            log-reliability gain per unit cost: fast for any size, usually
+            optimal or close, but not guaranteed optimal.
+
+        Returns
+        -------
+        RedundancyAllocation
+            The chosen ``units`` per costed node, with the resulting
+            ``reliability`` and total ``cost``.
+
+        Raises
+        ------
+        ValueError
+            On invalid inputs, a budget that cannot afford one of each costed
+            node, or a target that cannot be reached (within ``max_units``).
+        NotImplementedError
+            If the RBD has common-cause (CCF) groups.
+
+        Examples
+        --------
+        Two components in series, 90% and 80% reliable, one cost unit each.
+        With a budget of 3 the extra copy goes to the weaker component:
+
+        >>> from surpyval import FixedEventProbability
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "a"), ("a", "b"), ("b", "t")],
+        ...     {
+        ...         "a": FixedEventProbability.from_params(0.1),
+        ...         "b": FixedEventProbability.from_params(0.2),
+        ...     },
+        ... )
+        >>> best = rbd.allocate_redundancy({"a": 1.0, "b": 1.0}, budget=3)
+        >>> best.units
+        {'a': 1, 'b': 2}
+        >>> round(best.reliability, 4)
+        0.864
+
+        The cheapest design that is at least 90% reliable needs two of each:
+
+        >>> rbd.allocate_redundancy({"a": 1.0, "b": 1.0}, target=0.9).units
+        {'a': 2, 'b': 2}
+        """
+        if (budget is None) == (target is None):
+            raise ValueError("Give exactly one of budget or target.")
+        if method not in ("exact", "greedy"):
+            raise ValueError(
+                f"method must be 'exact' or 'greedy', got {method!r}."
+            )
+        if self.ccf_groups:
+            raise NotImplementedError(
+                "Redundancy allocation does not yet account for common-cause "
+                "(CCF) groups: duplicating a group member would also have to "
+                "extend its common-cause group."
+            )
+        if not costs:
+            raise ValueError("costs must name at least one node.")
+        nodes = list(costs)
+        unit_costs = []
+        for node in nodes:
+            if node not in self.nodes:
+                raise ValueError(
+                    f"Node {node!r} in costs is not a component node of the "
+                    "RBD (the input and output nodes cannot be duplicated)."
+                )
+            if node in self.repeated:
+                raise ValueError(
+                    f"Node {node!r} is a repeat of node "
+                    f"{self.repeated[node]!r}; allocate redundancy to that "
+                    "node instead."
+                )
+            cost = float(costs[node])
+            if not np.isfinite(cost) or cost <= 0.0:
+                raise ValueError(
+                    f"The cost of node {node!r} must be finite and positive, "
+                    f"got {costs[node]!r}."
+                )
+            unit_costs.append(cost)
+
+        caps = self._redundancy_caps(nodes, max_units)
+        if t is not None and np.ndim(t) != 0:
+            raise ValueError("t must be a single mission time.")
+        if t is None:
+            if self.is_time_varying:
+                raise ValueError(
+                    "t (the mission time) is required: this RBD is "
+                    "time-varying, so its reliability depends on when it is "
+                    "evaluated."
+                )
+            # A fixed-probability RBD does not depend on time (as in sf()).
+            t = 1.0
+        x = np.atleast_1d(np.asarray(t, dtype=float))
+
+        base = {
+            node: np.asarray(p, dtype=float)
+            for node, p in self._base_node_probabilities(
+                x, set(), set()
+            ).items()
+        }
+        cache: Dict[tuple, float] = {}
+
+        def evaluate(units: tuple) -> float:
+            if units not in cache:
+                probabilities = dict(base)
+                for node, n in zip(nodes, units):
+                    probabilities[node] = 1.0 - (1.0 - base[node]) ** n
+                cache[units] = float(
+                    np.ravel(self.system_probability(probabilities))[0]
+                )
+            return cache[units]
+
+        if budget is not None:
+            budget = float(budget)
+            minimum = math.fsum(unit_costs)
+            if not np.isfinite(budget) or budget < minimum:
+                raise ValueError(
+                    f"budget must be finite and at least {minimum:g}, the "
+                    "cost of one of each costed node; got "
+                    f"{budget!r}."
+                )
+            if method == "exact":
+                found = redundancy_allocation.exact_max_reliability(
+                    evaluate, unit_costs, caps, budget
+                )
+            else:
+                found = redundancy_allocation.greedy(
+                    evaluate, unit_costs, caps, budget=budget
+                )
+        else:
+            assert target is not None
+            target = float(target)
+            if not (0.0 < target < 1.0):
+                raise ValueError(f"target must be in (0, 1), got {target!r}.")
+            # The best reliability any allocation can reach: every costed node
+            # at its cap, where 1 - (1 - p) ** inf gives the unlimited limit.
+            ceiling = evaluate(tuple(caps))
+            if ceiling < target:
+                raise ValueError(
+                    f"target {target:g} is unreachable: the best achievable "
+                    f"system reliability is {ceiling:.6g}"
+                    + (
+                        " within max_units."
+                        if max_units is not None
+                        else " even with unlimited copies of the costed "
+                        "nodes."
+                    )
+                )
+            found = redundancy_allocation.greedy(
+                evaluate, unit_costs, caps, target=target
+            )
+            if found[0] < target:
+                raise ValueError(
+                    f"target {target:g} could not be reached: adding copies "
+                    f"stopped improving the system at reliability "
+                    f"{found[0]:.6g}."
+                )
+            if method == "exact":
+                found = redundancy_allocation.exact_min_cost(
+                    evaluate, unit_costs, caps, target, found
+                )
+
+        reliability, total_cost, units = found
+        return RedundancyAllocation(
+            units={node: int(n) for node, n in zip(nodes, units)},
+            reliability=reliability,
+            cost=total_cost,
+            method=method,
+        )
+
+    @staticmethod
+    def _redundancy_caps(nodes, max_units) -> list:
+        """Per-node copy limits for allocate_redundancy (inf = unlimited)."""
+        if max_units is None:
+            return [math.inf] * len(nodes)
+        if isinstance(max_units, dict):
+            unknown = set(max_units) - set(nodes)
+            if unknown:
+                raise ValueError(
+                    "max_units names node(s) not in costs: "
+                    f"{sorted(map(str, unknown))}."
+                )
+            limits = {n: max_units.get(n, math.inf) for n in nodes}
+        else:
+            limits = {n: max_units for n in nodes}
+        for node, limit in limits.items():
+            if limit is math.inf:
+                continue
+            if isinstance(limit, bool) or not isinstance(
+                limit, (int, np.integer)
+            ):
+                raise ValueError(
+                    f"max_units for node {node!r} must be an integer, got "
+                    f"{limit!r}."
+                )
+            if limit < 1:
+                raise ValueError(
+                    f"max_units for node {node!r} must be at least 1, got "
+                    f"{limit!r}."
+                )
+        return [
+            limits[n] if limits[n] is math.inf else int(limits[n])
+            for n in nodes
+        ]
 
     def unreliability(self, x: Optional[ArrayLike] = None, *args, **kwargs):
         """Returns the system unreliability for time/s x.

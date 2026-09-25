@@ -2,7 +2,7 @@ from queue import PriorityQueue
 
 import numpy as np
 from scipy.stats import gamma as _gamma
-from surpyval import KaplanMeier
+from surpyval import Hypoexponential, KaplanMeier
 
 from repyability.utils.wrappers import numpy_seed
 
@@ -58,6 +58,29 @@ class _ExponentialStandbySurvival:
 
 
 class StandbyModel:
+    """A k-out-of-n standby arrangement, from cold through warm to hot.
+
+    ``n`` units with ``k`` operating at a time; spares are promoted in list
+    order as operating units fail, and the arrangement fails when fewer than
+    ``k`` units survive. ``dormancy_factor`` sets how fast a *dormant* spare
+    ages relative to an operating unit (the cumulative-exposure model, the
+    same virtual-age machinery as ``LoadSharingModel``):
+
+    - ``0`` — **cold** standby (the default): spares do not age while
+      dormant. With ``k = 1`` the lifetime is the sum of the units'
+      lifetimes.
+    - ``0 < dormancy_factor < 1`` — **warm** standby: a dormant spare ages at
+      that fraction of the operating rate, so it can fail *latent* (dead
+      before it is ever switched in; it is skipped at promotion).
+    - ``1`` — **hot** standby: spares age as fast as operating units, which
+      is exactly an ordinary k-out-of-n parallel arrangement.
+
+    Identical Exponential units get exact closed forms (Erlang when cold, a
+    hypoexponential otherwise); anything else is simulated (Kaplan-Meier fit
+    to ``n_sims`` lifetimes). ``switching_probability`` (imperfect switching)
+    is supported for cold ``k = 1`` only.
+    """
+
     def __init__(
         self,
         reliabilities,
@@ -66,20 +89,61 @@ class StandbyModel:
         lower=-np.inf,
         switching_probability=1.0,
         seed=None,
+        dormancy_factor=0.0,
     ):
         if k > len(reliabilities):
             raise ValueError(
                 "Must be more nodes in the standby arrangement"
                 + " than are required (k)"
             )
+        if not (0.0 <= float(dormancy_factor) <= 1.0):
+            raise ValueError(
+                "dormancy_factor is the dormant-to-operating aging ratio, in "
+                f"[0, 1] (0 = cold, 1 = hot); got {dormancy_factor!r}."
+            )
         self.reliabilities = reliabilities
         self.k = k
         self.N = len(reliabilities)
         self.n_sims = n_sims
         self.switching_probability = switching_probability
+        self.dormancy_factor = float(dormancy_factor)
 
         rate = _identical_exponential_rate(reliabilities)
-        if rate is not None and is_perfect_switching(switching_probability):
+        if self.dormancy_factor > 0.0:
+            # Warm/hot standby: dormant aging couples the spares' clocks to
+            # elapsed time, so the cold-only machinery (lifetime sums /
+            # convolution) does not apply.
+            if not is_perfect_switching(switching_probability):
+                raise NotImplementedError(
+                    "switching_probability is only supported for cold "
+                    "standby (dormancy_factor == 0) with k == 1."
+                )
+            closed_form = None
+            if rate is not None:
+                # Identical Exponential units: with j units alive, k operate
+                # at rate `rate` and j - k sit dormant at `dormancy_factor *
+                # rate`, and by memorylessness the stage durations are
+                # independent Exponentials. The lifetime is hypoexponential
+                # with those stage rates; dormancy_factor == 1 gives j*rate,
+                # the ordinary k-out-of-n parallel order statistic.
+                stage_rates = [
+                    rate * (self.k + (j - self.k) * self.dormancy_factor)
+                    for j in range(self.N, self.k - 1, -1)
+                ]
+                try:
+                    closed_form = Hypoexponential.from_params(stage_rates)
+                except ValueError:
+                    # A tiny dormancy factor leaves the stage rates too close
+                    # for surpyval to separate; simulate instead.
+                    closed_form = None
+            if closed_form is not None:
+                self._sf_model = closed_form
+                self.model = None
+            else:
+                x_random = self.random(n_sims, seed=seed)
+                self.model = KaplanMeier.fit(x_random, set_lower_limit=lower)
+                self._sf_model = None
+        elif rate is not None and is_perfect_switching(switching_probability):
             # Identical exponential units: the cold standby lifetime is exactly
             # Erlang(N-k+1, k*rate) for any k, by the memorylessness of the
             # exponential. Use that closed form directly.
@@ -109,8 +173,53 @@ class StandbyModel:
             self.model = KaplanMeier.fit(x_random, set_lower_limit=lower)
             self._sf_model = None
 
+    def _random_warm(self, size):
+        """Warm-standby lifetimes by cumulative exposure (virtual age).
+
+        Each unit draws the operating age at which it would fail. Operating
+        units age at rate 1 and dormant spares at ``dormancy_factor``; spares
+        are promoted in list order, and a spare whose dormant aging exhausts
+        its budget dies latent and is skipped. The system lifetime is the
+        instant the number of surviving units drops below ``k``.
+        """
+        kappa = self.dormancy_factor
+        budgets = np.column_stack(
+            [
+                np.asarray(model.random(size), dtype=float)
+                for model in self.reliabilities
+            ]
+        )
+        out = np.empty(size, dtype=float)
+        for s in range(size):
+            X = budgets[s]
+            age = np.zeros(self.N)
+            alive = np.ones(self.N, dtype=bool)
+            t = 0.0
+            while True:
+                healthy = np.flatnonzero(alive)
+                if healthy.size < self.k:
+                    break
+                operating = healthy[: self.k]
+                dormant = healthy[self.k :]  # noqa: E203
+                remaining = np.concatenate(
+                    [
+                        X[operating] - age[operating],
+                        (X[dormant] - age[dormant]) / kappa,
+                    ]
+                )
+                idx = int(np.argmin(remaining))
+                dt = float(remaining[idx])
+                t += dt
+                age[operating] += dt
+                age[dormant] += kappa * dt
+                alive[int(np.concatenate([operating, dormant])[idx])] = False
+            out[s] = t
+        return out
+
     def random(self, size, seed=None):
         with numpy_seed(seed):
+            if self.dormancy_factor > 0.0:
+                return self._random_warm(size)
             if self.k == 1:
                 # If k is only one for the standby node the reliability can be
                 # estimated from the sum of each of the components in the node,
@@ -171,7 +280,7 @@ class StandbyModel:
         # available (exponential closed form or convolution); otherwise fall
         # back to the Monte-Carlo estimate.
         if self._sf_model is not None:
-            return self._sf_model.mean()
+            return float(np.ravel(self._sf_model.mean())[0])
         return self.random(N, seed=seed).mean()
 
     def sf(self, *args, **kwargs):

@@ -145,6 +145,56 @@ parameters to perturb and are omitted; a node forced via
 reports zero. As elsewhere, a scalar `t` returns floats and an array returns
 numpy arrays.
 
+## Redundancy allocation (how many copies to fit)
+
+Importance measures say *where* redundancy would help; redundancy allocation
+decides *how much* to buy. Given a per-copy cost for the nodes that may be
+duplicated, `allocate_redundancy` chooses how many identical copies of each to
+fit in active parallel (the classic Redundancy Allocation Problem), in either
+of two forms:
+
+```python
+costs = {"pump": 4000, "valve": 900, "ctrl": 12000}   # per copy
+
+# Most reliable design within a budget, at a 5000 h mission:
+best = rbd.allocate_redundancy(costs, budget=40_000, t=5000)
+best.units          # copies of each costed node, e.g. {'pump': 2, ...}
+best.reliability    # system reliability at t=5000 with that design
+best.cost           # total cost (every copy, including the original)
+
+# Cheapest design that meets a reliability target:
+rbd.allocate_redundancy(costs, target=0.99, t=5000)
+```
+
+- **The model.** `n` identical, independent copies of a node with reliability
+  `p`, all active, have reliability `1 - (1 - p) ** n`. Each candidate design
+  is scored with the exact system computation, so any structure works — not
+  only the textbook series of subsystems. Nodes not in `costs` stay as they
+  are; `t` is the mission time (not needed when every node is a fixed
+  probability).
+- **Exact by default.** `method="exact"` returns a proven optimum. Adding a
+  copy never lowers a coherent system's reliability, so for a budget only the
+  designs that cannot afford another copy need scoring, which keeps typical
+  problems (a handful of nodes) fast; if a problem is too large to search it
+  stops with an explanatory error instead of hanging.
+- **Greedy for scale.** `method="greedy"` adds one copy at a time, always the
+  one with the largest log-reliability gain per unit cost. It is fast at any
+  size and usually optimal, but not always: on non-series structures it can
+  fall short, which is why it is opt-in.
+- **Constraints.** `max_units` caps the copies of every costed node (an int)
+  or of particular ones (a dict), e.g. for space limits. The "cost" can be any
+  additive resource — money, weight, volume. A budget that cannot afford one
+  of each costed node, or a target that no design can reach (within
+  `max_units`), is reported clearly.
+- The result is a [`RedundancyAllocation`][repyability.RedundancyAllocation].
+  RBDs with common-cause groups are not supported yet (duplicating a member
+  would also have to extend its group).
+
+This is distinct from the older *reliability*-allocation helpers
+(`simple_allocation`, `equal_allocation`, `improvement_allocation`), which
+apportion a target reliability among existing components rather than choosing
+numbers of units.
+
 ## Condition-based reliability (a "digital twin")
 
 The methods above assume every component is brand new. In a condition-based
@@ -249,6 +299,37 @@ rbd.sf_given_state(x, {"m": NodeState(age=520)})  # forward reliability, now in 
   so they work for AFT/PO/parametric models; a *semiparametric* Cox baseline has
   no defined MTTF and reports that clearly. Reliability, conditioning and
   importance work for all of them.
+
+## Standby redundancy (cold, warm, hot)
+
+A [`StandbyModel`][repyability.StandbyModel] is a k-out-of-n arrangement
+where spares wait to be switched in as operating units fail.
+`dormancy_factor` sets how fast a *dormant* spare ages relative to an
+operating unit, spanning the whole standby spectrum with one number:
+
+```python
+from repyability import StandbyModel
+
+pumps = StandbyModel([pump, pump, pump], k=1, dormancy_factor=0.3)
+```
+
+- **`0` — cold** (the default, unchanged): spares do not age while dormant;
+  with `k = 1` the lifetime is the sum of the units' lifetimes.
+- **`0 < dormancy_factor < 1` — warm**: a dormant spare ages at that fraction
+  of the operating rate (a pressurised spare pump, an energised hot-spare
+  board), so it can fail **latent** — dead before it is ever needed, and
+  skipped at promotion. Spares are promoted in list order.
+- **`1` — hot**: spares age as fast as operating units, which is exactly an
+  ordinary k-out-of-n parallel arrangement (named here so the assumption is
+  explicit).
+
+Identical Exponential units get an **exact** closed form for any
+`dormancy_factor` (the stage rates are `lam * (k + (j - k) * kappa)` with `j`
+units alive — Erlang when cold, hypoexponential otherwise); other lifetimes
+are simulated and fitted with Kaplan-Meier. Warm standby uses the same
+cumulative-exposure (virtual-age) machinery as `LoadSharingModel`; imperfect
+switching (`switching_probability`) remains cold-`k = 1`-only for now. The
+`dormancy_factor` persists through serialisation.
 
 ## Load-sharing (dependent failure)
 
@@ -387,6 +468,118 @@ for conditional analyses. The simulated `AvailabilityResult` carries matching
 *estimates* (`result.mean_up_time`, `result.mean_down_time`,
 `result.failure_frequency`) you can cross-check against the exact values.
 
+### What it costs to run (`expected_cost_rate`)
+
+Availability answers *how often the system is up*; the next question is
+usually *what that costs*. Price the components — and, usually the dominant
+term, the production lost while the system is down — and
+`expected_cost_rate()` returns the long-run cost per unit time in closed
+form (no simulation):
+
+```python
+rbd = RepairableRBD(
+    edges,
+    {
+        "pump": {
+            "reliability":   surv.Weibull.from_params([12000, 1.8]),
+            "repairability": surv.Exponential.from_params([1 / 48]),
+            "repair_cost":   500,    # labour, per corrective repair
+            "replace_cost":  4000,   # the spare itself, per repair
+        },
+        # ... other components ...
+    },
+    downtime_cost_rate=1000,         # lost production per hour down
+)
+
+rbd.expected_cost_rate()             # -> cost per hour, long run
+```
+
+The rate is the sum of three exact terms:
+
+```
+cost_rate = downtime_cost_rate · (1 − A_sys)              # production loss
+          + Σ ωᵢ · (repair_costᵢ + replace_costᵢ)          # corrective actions
+          + Σ (1 − Aᵢ) · downtime_costᵢ                    # optional, per node
+```
+
+where `Aᵢ` is a node's availability and `ωᵢ = 1 / (MTTFᵢ + MTTRᵢ)` its
+long-run failure frequency — so the `repair_cost`/`replace_cost` pair is
+charged **per corrective action** while the downtime rates are charged **per
+unit time down**.
+
+- **Every cost is optional and defaults to 0**, so you can price any subset:
+  only `repair_cost`/`replace_cost` gives a pure spares-and-labour budget,
+  only `downtime_cost_rate` a pure production-loss model. With nothing priced
+  there is no cost model to evaluate, so `has_costs` is `False` and the method
+  short-circuits to `0.0` rather than doing the work.
+- `downtime_cost` is the niche one: it prices *this component* being down even
+  when redundancy keeps the system up (degraded-mode or per-leg SLA penalties).
+- **Uncertain prices.** `repair_cost` and `replace_cost` can be a distribution
+  of the cost instead of a number, e.g. a surpyval model fitted to past
+  invoices: `"repair_cost": surv.LogNormal.from_params([6.2, 0.4])`. The
+  closed form uses its mean; the simulation below draws a fresh cost at every
+  failure. It must have a finite mean and no appreciable probability of a
+  negative cost. The downtime costs stay numbers: they are rates, and the
+  outage durations already make them random.
+- Costs are **corrective only** and **undiscounted** — every failure is repaired
+  at the same price, and there is no preventive-replacement or net-present-value
+  term.
+- Like the other steady-state metrics it accepts `working_nodes`/`broken_nodes`,
+  and the costs persist through serialisation. A mistyped cost key is rejected
+  at construction rather than silently priced at zero.
+
+### The cost *distribution* (`cost`)
+
+The exact rate is a mean; budgeting usually needs the spread — *what could a
+bad year cost?* `cost()` runs the availability simulation with cost
+accumulation and returns a [`CostResult`][repyability.CostResult]: one total
+cost per replication over the window, with per-category and per-component
+breakdowns.
+
+```python
+result = rbd.cost(t_simulation=8760, N=10_000, seed=0)   # one year, simulated
+
+result.mean             # mean cost of the year
+result.percentile(90)   # a planning-case budget: 9 years in 10 cost less
+result.mean_interval()  # 95% confidence interval for the mean: was N enough?
+result.cost_rate        # mean / t_simulation — converges to expected_cost_rate()
+result.by_category      # mean repair, replace, component_downtime, system_downtime
+result.by_component     # mean attributable cost per costed component
+```
+
+Two different uncertainties are on offer here. `percentile` (and `std`)
+describe how much a year's cost *varies*. That is a property of the system,
+and more replications will not shrink it. `mean_interval()` describes how
+precisely the *expected* cost has been pinned down, and narrows like
+`1/√N`. It is the one to check before you quote the mean.
+
+The same result rides along on `availability(...)` as `result.cost`, so one
+simulation pays for both answers. When nothing is priced there is no cost
+model to run: `cost()` returns `None` and `availability(...).cost` is `None`.
+Cross-check: `result.cost_rate` must approach the exact
+`expected_cost_rate()` as the window grows — that identity is asserted in the
+test suite.
+
+### Instantly repaired components
+
+When repairs are much faster than the timescale under study — or no
+repair-time data exists — pass `"repairability": "instant"` instead of a
+fitted time-to-repair model:
+
+```python
+rbd = RepairableRBD(edges, {
+    "fuse": {"reliability": fuse_life, "repairability": "instant",
+             "replace_cost": 40},
+    # ... other components with real repair-time models ...
+})
+```
+
+The component still **fails** — failure events fire and any
+`repair_cost`/`replace_cost` is charged — but every outage has zero length,
+so it contributes no downtime and its availability is exactly 1. Invisible to
+availability, visible to cost: the modelling shorthand for cheap,
+fast-swapped parts whose money is in the swaps, not the outages.
+
 ### Simulation uncertainty
 
 Monte-Carlo results are estimates, and the result objects quantify their
@@ -408,6 +601,9 @@ interval = nonrepairable_rbd.mean_time_to_failure_interval(
 )
 interval.estimate, interval.lower, interval.upper, interval.standard_error
 ```
+
+A simulated cost has the same: `cost_result.mean_interval(confidence=0.95)`
+returns the same `ConfidenceInterval` for the mean cost over the window.
 
 The simulator itself is validated against exact Markov solutions: the
 transient availability of exponential systems (single component, series,
