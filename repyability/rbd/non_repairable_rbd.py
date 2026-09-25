@@ -1075,6 +1075,11 @@ class NonRepairableRBD(RBD):
             the result is reproducible (surpyval's ``.random`` uses the global
             RNG); the caller's RNG state is restored afterwards. By default
             None (non-reproducible).
+
+        Nodes are sampled independently: common-cause groups are not
+        included (their basic-event model assumes a small failure
+        probability, and a lifetime runs to ``Q = 1``), so neither are they
+        in :meth:`mean` or :meth:`mean_time_to_failure_interval`.
         """
         with numpy_seed(seed):
             fast = self._random_vectorised(size)

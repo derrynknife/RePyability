@@ -146,6 +146,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   under test — a finite (non-`inf`) replacement age for an offset Weibull — is
   unchanged and still asserted.
 
+### Documentation
+- The common-cause (CCF) docs now state the models' assumption: they are the
+  PRA basic-event models, which split each member's failure *probability*, and
+  hold while that probability is small (a mission or proof-test interval, not
+  a whole life). They also say that `random()`, `mean()` and the MTTF interval
+  sample members independently and do not include CCF, since an MTTF spans the
+  whole life. No behaviour changed.
+
 ## [0.8.0] - 2026-07-22
 
 The **Dependent Failures** milestone: model redundant components that fail

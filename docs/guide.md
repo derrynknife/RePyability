@@ -416,11 +416,20 @@ group no better than a single component.
 
 - Groups must be **symmetric** (members carry identical component models — the
   standard CCF assumption) and disjoint (a node is in at most one group).
+- **Keep each member's `Q` small.** "Exact" describes the evaluation; the model
+  is the PRA basic-event one (`βQ` shared, `(1 − β)Q` independent), a
+  rare-event model. Evaluate it over a mission or proof-test interval rather
+  than a whole life: a `β = 0.3` pair is within 3.5% of a rate-based treatment
+  at `Q = 0.1`, but from about `Q = 0.5` it comes out *more* reliable than an
+  independent pair. See [Concepts](concepts.md#common-cause-failures).
 - CCF is honoured by `sf()` / `ff()` (and quantities derived from them). The
-  probability-dependent importance / sensitivity measures and the
-  condition-based (`age`) methods do not yet account for CCF and raise a clear
-  error on a CCF RBD; `structural_importance` is probability-free and so is
-  unaffected. The group persists with the RBD through serialisation.
+  Monte-Carlo `random()`, `mean()` and MTTF interval sample members
+  independently and do not include it: an MTTF spans the whole life, outside
+  the small-`Q` model. The probability-dependent importance / sensitivity
+  measures and the condition-based (`age`) methods do not yet account for CCF
+  and raise a clear error on a CCF RBD; `structural_importance` is
+  probability-free and so is unaffected. The group persists with the RBD
+  through serialisation.
 - **Alpha-factor** — a data-estimable reparameterisation of the same partial
   common-cause multiplicities as MGL — is a planned extension.
 

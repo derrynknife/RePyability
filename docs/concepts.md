@@ -241,13 +241,30 @@ and blending the branches by their probabilities. Hence `β = 0` reproduces the
 independent result exactly, and `β = 1` makes a redundant group no better than a
 single unit.
 
+**The model assumes each member's `Q` is small.** "Exact" means the evaluation
+of the model is exact; the model itself is the PRA basic-event one, which splits
+each member's failure *probability* (`βQ` shared, `(1 − β)Q` independent) and
+is a rare-event model. Use it over periods in which each member's failure
+probability stays small, such as a mission or a proof-test interval. For a
+parallel pair with `β = 0.3`, the system unreliability is within 0.3% of a
+rate-based beta-factor treatment (which splits each member's failure *rate*
+instead, making the shared cause a shock with reliability `R(t)^β`) at
+`Q = 0.01`, 3.5% at `Q = 0.1` and about 10% at `Q = 0.3`. From about `Q = 0.5`
+the pair comes out *more* reliable than an independent pair. Over a whole life
+(`Q → 1`) the model stops describing a lifetime at all: under the beta factor,
+each member would only ever fail with probability `1 − β(1 − β)` (0.79 at
+`β = 0.3`).
+
 Common cause is currently reflected in `sf()` / `ff()` (and quantities derived
 from them) and persists through serialisation. Groups must be symmetric
-(identical member models) and disjoint. The probability-dependent
-importance/sensitivity and the condition-based methods do not yet account for it
-and raise a clear error on a CCF RBD; `structural_importance`, being
-probability-free, is unaffected. **Alpha-factor**, a data-estimable
-reparameterisation of the same multiplicities, is a planned extension.
+(identical member models) and disjoint. The Monte-Carlo `random()`, `mean()` and
+MTTF interval sample the members independently and do not include CCF: an MTTF
+integrates over the whole life, where `Q` is no longer small, so it is outside
+this model. The probability-dependent importance/sensitivity and the
+condition-based methods do not yet account for it and raise a clear error on a
+CCF RBD; `structural_importance`, being probability-free, is unaffected.
+**Alpha-factor**, a data-estimable reparameterisation of the same
+multiplicities, is a planned extension.
 
 ## Scope
 
