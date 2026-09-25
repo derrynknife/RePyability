@@ -28,6 +28,8 @@ from typing import Any, Optional
 import numpy as np
 from numpy.typing import ArrayLike
 
+from ._sampling import RowSampler
+
 
 class RegressionNode:
     """An RBD node backed by a fitted surpyval regression model.
@@ -178,6 +180,16 @@ class RegressionNode:
         u = np.random.uniform(size=size)
         # s decreases in t; np.interp needs an increasing sample-point array.
         return np.interp(u, s[::-1], t[::-1])
+
+    def _row_sampler(self) -> RowSampler:
+        """``random(1)`` as a :class:`~._sampling.RowSampler` (one uniform
+        per draw), so an RBD with this node batches its draws."""
+
+        def draw(u):
+            t, s = self._survival_grid()
+            return np.interp(np.ascontiguousarray(u[:, 0]), s[::-1], t[::-1])
+
+        return RowSampler(1, draw)
 
     # -- Serialisation ----------------------------------------------------
 

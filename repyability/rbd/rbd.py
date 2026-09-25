@@ -127,12 +127,17 @@ def _shannon_plan(sets: Iterable[frozenset]) -> tuple[list, int]:
     root)``: step ``i`` fills value slot ``i + 2`` with
     ``p[pivot] * value[active] + (1 - p[pivot]) * value[inactive]``, and
     ``root`` is the slot holding the answer.
+
+    The decomposition is a depth-first recursion (the active branch, then
+    the inactive one, then the step itself), run on an explicit stack so
+    that systems with a thousand or more components do not reach Python's
+    recursion limit.
     """
     sets = [frozenset(s) for s in sets]
     slots: Dict[frozenset, int] = {}
     steps: list[tuple[Any, int, int]] = []
 
-    def build(state: frozenset) -> int:
+    def known(state: frozenset) -> Optional[int]:
         # state is a frozenset of frozensets: the sets still to be satisfied,
         # with already-active elements removed.
         if not state:
@@ -141,9 +146,9 @@ def _shannon_plan(sets: Iterable[frozenset]) -> tuple[list, int]:
         if frozenset() in state:
             # A set has had all its elements satisfied -> probability 1.
             return _ONE
-        if state in slots:
-            return slots[state]
+        return slots.get(state)
 
+    def split(state: frozenset) -> list:
         # Pivot on the element appearing in the most sets, which tends to
         # collapse the problem (and the memo table) fastest.
         counts: Dict[Any, int] = {}
@@ -157,14 +162,31 @@ def _shannon_plan(sets: Iterable[frozenset]) -> tuple[list, int]:
         state_active = frozenset(s - {pivot} for s in state)
         # Pivot inactive: any set needing it can never be satisfied -> drop it.
         state_inactive = frozenset(s for s in state if pivot not in s)
+        # [state, pivot, (branches still to solve), their solved slots]
+        return [state, pivot, [state_active, state_inactive], []]
 
-        active = build(state_active)
-        inactive = build(state_inactive)
-        steps.append((pivot, active, inactive))
+    root_state = frozenset(sets)
+    root = known(root_state)
+    stack = [] if root is not None else [split(root_state)]
+    while stack:
+        state, pivot, branches, solved = stack[-1]
+        if len(solved) < 2:
+            branch = branches[len(solved)]
+            slot = known(branch)
+            if slot is None:
+                stack.append(split(branch))
+            else:
+                solved.append(slot)
+            continue
+        steps.append((pivot, solved[0], solved[1]))
         slots[state] = len(steps) + 1
-        return slots[state]
-
-    return steps, build(frozenset(sets))
+        stack.pop()
+        if stack:
+            stack[-1][3].append(slots[state])
+        else:
+            root = slots[state]
+    assert root is not None
+    return steps, root
 
 
 def _evaluate_shannon_plan(
@@ -181,19 +203,6 @@ def _evaluate_shannon_plan(
     return values[root]
 
 
-def _keep_minimal_sets(sets: Iterable[frozenset]) -> list[frozenset]:
-    """Return only the inclusion-minimal sets.
-
-    Discards any set that is a superset of another (and de-duplicates).
-    """
-    minimal: list[frozenset] = []
-    # Consider smaller sets first so that a kept set can prune its supersets.
-    for candidate in sorted(set(sets), key=len):
-        if not any(kept <= candidate for kept in minimal):
-            minimal.append(candidate)
-    return minimal
-
-
 def minimal_cut_sets_from_path_sets(
     path_sets: Iterable[frozenset],
 ) -> set[frozenset]:
@@ -201,15 +210,23 @@ def minimal_cut_sets_from_path_sets(
 
     A minimal cut set is a minimal "transversal" (hitting set) of the path
     sets: a smallest set of components that intersects every path set, so that
-    failing those components breaks every path through the system.
+    failing those components breaks every path through the system. Because it
+    works directly from the path sets, this stays correct for k-out-of-n
+    structures, whose k-of-n behaviour is already encoded in the path sets.
 
-    This uses Berge's algorithm: it builds the minimal transversals
-    incrementally, one path set at a time, discarding non-minimal candidates at
-    every step. Unlike taking the full Cartesian product of the path sets and
-    filtering once at the end, it never materialises the (potentially enormous)
-    product, which makes it dramatically faster in practice. Because it works
-    directly from the path sets, it stays correct for k-out-of-n structures,
-    whose k-of-n behaviour is already encoded in the path sets.
+    The cut sets are read off the same Shannon decomposition the exact engine
+    uses (see :func:`_shannon_plan`), which shares every repeated
+    sub-problem. At a step pivoting on component ``x``, the system works as
+    ``f1`` if ``x`` works and ``f0`` if it has failed, with ``f0 <= f1`` (a
+    coherent system never works *better* for a failure). A minimal cut set
+    either spares ``x`` -- a minimal cut set of ``f1`` -- or contains it, with
+    the rest a minimal cut set of ``f0`` that contains none of ``f1``'s
+    (otherwise ``x`` would be redundant). Working up from the constant
+    functions (no cut set can stop a system that always works; the empty set
+    stops one that never does) gives the root's minimal cut sets. Unlike
+    building the transversals one path set at a time (Berge's algorithm),
+    whose intermediate families can grow far larger than the answer, this
+    only ever holds each sub-problem's own minimal cut sets.
 
     Parameters
     ----------
@@ -221,24 +238,33 @@ def minimal_cut_sets_from_path_sets(
     set[frozenset]
         The minimal cut sets.
     """
-    # Start with the single empty transversal and extend it to hit each path
-    # set in turn.
-    transversals: list[frozenset] = [frozenset()]
-    for path_set in path_sets:
-        path_set = frozenset(path_set)
-        candidates: list[frozenset] = []
-        for transversal in transversals:
-            if transversal & path_set:
-                # Already hits this path set; keep it unchanged.
-                candidates.append(transversal)
-            else:
-                # Must be extended to hit this path set, by one of its
-                # components.
-                for component in path_set:
-                    candidates.append(transversal | {component})
-        # Prune non-minimal candidates now so the working set stays small.
-        transversals = _keep_minimal_sets(candidates)
-    return set(transversals)
+    return _minimal_cut_sets(_shannon_plan(path_sets))
+
+
+def _minimal_cut_sets(plan: tuple[list, int]) -> set[frozenset]:
+    """The minimal cut sets of the structure a :func:`_shannon_plan` was
+    built from (see :func:`minimal_cut_sets_from_path_sets`)."""
+    steps, root = plan
+    # Cut sets as bitmasks (one bit per component), so each union and subset
+    # test is a single integer operation.
+    components = list(dict.fromkeys(pivot for pivot, _, _ in steps))
+    bit = {component: 1 << i for i, component in enumerate(components)}
+    # Value slots as in the plan: 0 never works (the empty set is a cut),
+    # 1 always works (nothing is a cut), then one per step.
+    cuts: list[list[int]] = [[0], []]
+    for pivot, active, inactive in steps:
+        spare_pivot = cuts[active]
+        cuts.append(
+            spare_pivot
+            + [
+                bit[pivot] | rest
+                for rest in cuts[inactive]
+                if not any(cut & rest == cut for cut in spare_pivot)
+            ]
+        )
+    return {
+        frozenset(c for c in components if cut & bit[c]) for cut in cuts[root]
+    }
 
 
 class RBD:
@@ -504,13 +530,25 @@ class RBD:
         set elements could be hashable.
 
         The minimal cut sets are the minimal transversals (hitting sets) of the
-        minimal path sets, computed with Berge's algorithm. See
-        minimal_cut_sets_from_path_sets() for details.
+        minimal path sets, read off the exact engine's Shannon decomposition.
+        See minimal_cut_sets_from_path_sets() for details.
         """
-        path_sets = self.get_min_path_sets(
-            include_in_out_nodes=include_in_out_nodes
-        )
-        return minimal_cut_sets_from_path_sets(path_sets)
+        # The structure is fixed once built (the path sets are cached too),
+        # so the cut sets are worked out once per RBD; each call gets its own
+        # copy of the set.
+        if not hasattr(self, "_min_cut_sets"):
+            self._min_cut_sets: dict[bool, set[frozenset[Hashable]]] = {}
+        key = bool(include_in_out_nodes)
+        if key not in self._min_cut_sets:
+            if key:
+                plan = _shannon_plan(
+                    self.get_min_path_sets(include_in_out_nodes=True)
+                )
+            else:
+                # The exact engine's own plan (built on first use).
+                plan = self._shannon_plan("p")
+            self._min_cut_sets[key] = _minimal_cut_sets(plan)
+        return set(self._min_cut_sets[key])
 
     def path_set_probabilities(self, node_probabilities):
         path_sets = self.get_min_path_sets(include_in_out_nodes=False)

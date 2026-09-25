@@ -11,15 +11,68 @@ change.
 :func:`inverse_sampler` returns ``None`` for any model whose sampling it
 cannot reproduce exactly (nested RBDs, standby nodes, fixed-probability or
 limited-failure-population models, ...), and callers then keep their
-original, draw-at-a-time code path.
+original, draw-at-a-time code path. :func:`row_sampler` extends the same idea
+to composite node models (standby, repeated, load-sharing, regression and
+nested-RBD nodes), which draw several uniforms per sample.
 """
 
+from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 import numpy as np
-from surpyval import Parametric
+from surpyval import NonParametric, Parametric
+
+from .helper_classes import PerfectReliability, PerfectUnreliability
 
 Sampler = Callable[[np.ndarray], np.ndarray]
+
+
+@dataclass(frozen=True)
+class RowSampler:
+    """A model's ``random(1)``, replayed for many samples at once.
+
+    One ``random(1)`` call takes ``width`` uniforms from the global RNG, in a
+    fixed order. ``draw`` maps an ``(n, width)`` block of uniforms -- one row
+    per call, columns in that order -- to the ``n`` values those calls
+    return. The block is taken row by row, so drawing it consumes the global
+    RNG exactly as ``n`` successive calls would.
+    """
+
+    width: int
+    draw: Callable[[np.ndarray], np.ndarray]
+
+
+def column(u: np.ndarray, j: int, sampler: Sampler) -> np.ndarray:
+    """``sampler`` applied to column ``j`` of a block of uniforms.
+
+    Copied to a contiguous array first, as a single draw's uniform is, so
+    that numpy's vectorised math runs the same code path."""
+    return np.asarray(sampler(np.ascontiguousarray(u[:, j])), dtype=float)
+
+
+def row_sampler(model) -> Optional[RowSampler]:
+    """The :class:`RowSampler` for a node model, or ``None`` if its
+    ``random(1)`` cannot be replayed exactly."""
+    if model is PerfectReliability:
+        return RowSampler(0, lambda u: np.full(len(u), np.inf))
+    if model is PerfectUnreliability:
+        return RowSampler(0, lambda u: np.zeros(len(u)))
+    sampler = inverse_sampler(model)
+    if sampler is not None:
+        return RowSampler(1, lambda u: column(u, 0, sampler))
+    if (
+        isinstance(model, NonParametric)
+        and type(model).random is NonParametric.random
+    ):
+        # surpyval draws these from a fresh, OS-seeded generator on every
+        # call, never from numpy's global RNG: they take no global uniforms
+        # (and are not reproducible, batched or not).
+        return RowSampler(
+            0, lambda u: np.asarray(model.random(len(u)), dtype=float)
+        )
+    # Composite nodes describe their own draws.
+    own = getattr(model, "_row_sampler", None)
+    return own() if callable(own) else None
 
 
 def inverse_sampler(model) -> Optional[Sampler]:
@@ -51,10 +104,7 @@ def draw_rows(samplers: list[Sampler], size: int) -> list[np.ndarray]:
     would consume them in.
     """
     u = np.random.random_sample((size, len(samplers)))
-    return [
-        np.asarray(sampler(np.ascontiguousarray(u[:, j])), dtype=float)
-        for j, sampler in enumerate(samplers)
-    ]
+    return [column(u, j, sampler) for j, sampler in enumerate(samplers)]
 
 
 class UniformStream:

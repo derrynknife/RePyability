@@ -7,7 +7,7 @@ from surpyval import Hypoexponential, KaplanMeier
 from repyability.utils.wrappers import numpy_seed
 
 from ._model_utils import is_exponential
-from ._sampling import draw_rows, inverse_sampler
+from ._sampling import RowSampler, column, draw_rows, inverse_sampler
 from .numerical_convolution import (
     ConvolvedSurvival,
     is_perfect_switching,
@@ -189,6 +189,11 @@ class StandbyModel:
                 for model in self.reliabilities
             ]
         )
+        return self._warm_from_budgets(budgets)
+
+    def _warm_from_budgets(self, budgets):
+        """Warm-standby lifetimes from the units' budgets (one row per
+        sample)."""
         if np.all(np.isfinite(budgets)):
             return self._warm_lifetimes(budgets)
         return self._warm_lifetimes_by_sample(budgets)
@@ -318,14 +323,7 @@ class StandbyModel:
             # sample-by-sample loop draws them in.
             lifetimes = draw_rows(samplers, size)
             if not any(np.isnan(x).any() for x in lifetimes):
-                streams = np.column_stack(lifetimes[: self.k])
-                rows = np.arange(size)
-                for spare in lifetimes[self.k :]:  # noqa: E203
-                    # The spare extends whichever stream ends first (a tie
-                    # between equal ends gives the same result either way).
-                    lowest = np.argmin(streams, axis=1)
-                    streams[rows, lowest] = streams[rows, lowest] + spare
-                return streams.min(axis=1)
+                return self._cold_k_lifetimes(lifetimes)
             # NaN times order differently in the queue; rewind and loop.
             np.random.set_state(state)
 
@@ -344,6 +342,74 @@ class StandbyModel:
 
             x_random[i] = pq.get()
         return x_random
+
+    def _cold_k_lifetimes(self, lifetimes):
+        """Cold standby with k >= 2 for every sample at once, from each
+        unit's lifetimes (a list of arrays, one per unit): the queue loop's
+        stream arithmetic, one array operation per spare."""
+        streams = np.column_stack(lifetimes[: self.k])
+        rows = np.arange(len(streams))
+        for spare in lifetimes[self.k :]:  # noqa: E203
+            # The spare extends whichever stream ends first (a tie between
+            # equal ends gives the same result either way).
+            lowest = np.argmin(streams, axis=1)
+            streams[rows, lowest] = streams[rows, lowest] + spare
+        return streams.min(axis=1)
+
+    def _row_sampler(self):
+        """``random(1)`` as a :class:`~._sampling.RowSampler`, so an RBD with
+        this node batches its draws; ``None`` unless every unit's draws can
+        be replayed. Columns follow the order ``random(1)`` draws in: one per
+        unit, and under imperfect k=1 switching a switch draw before each
+        spare's."""
+        units = [inverse_sampler(m) for m in self.reliabilities]
+        if any(unit is None for unit in units):
+            return None
+
+        if self.dormancy_factor > 0.0:
+
+            def draw(u):
+                budgets = np.column_stack(
+                    [column(u, j, unit) for j, unit in enumerate(units)]
+                )
+                return self._warm_from_budgets(budgets)
+
+            return RowSampler(self.N, draw)
+
+        if self.k == 1 and is_perfect_switching(self.switching_probability):
+
+            def draw(u):
+                x = column(u, 0, units[0])
+                for j in range(1, self.N):
+                    x = x + column(u, j, units[j])
+                return x
+
+            return RowSampler(self.N, draw)
+
+        if self.k == 1:
+            probs = switch_success_probs(self.switching_probability, self.N)
+            spares = list(zip(units[1:], probs))
+
+            def draw(u):
+                x = column(u, 0, units[0])
+                running = np.ones(len(u), dtype=bool)
+                for i, (unit, p) in enumerate(spares):
+                    running = running & (u[:, 1 + 2 * i] < p)
+                    x = x + np.where(running, column(u, 2 + 2 * i, unit), 0.0)
+                return x
+
+            return RowSampler(1 + 2 * len(spares), draw)
+
+        def draw(u):
+            lifetimes = [column(u, j, unit) for j, unit in enumerate(units)]
+            out = self._cold_k_lifetimes(lifetimes)
+            # The queue loop orders NaN times its own way; mark the sample
+            # so the caller falls back to it.
+            for lifetime in lifetimes:
+                out[np.isnan(lifetime)] = np.nan
+            return out
+
+        return RowSampler(self.N, draw)
 
     def mean(self, N=10_000, seed=None):
         # Use the exact/deterministic mean when an analytic survival model is

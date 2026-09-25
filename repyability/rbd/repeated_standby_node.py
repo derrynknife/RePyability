@@ -2,6 +2,7 @@ import numpy as np
 
 from repyability.utils.wrappers import numpy_seed
 
+from ._sampling import RowSampler, column, inverse_sampler
 from .numerical_convolution import (
     ConvolvedSurvival,
     is_perfect_switching,
@@ -52,6 +53,38 @@ class RepeatedStandbyNode:
                         running, self.model.random(size), 0.0
                     )
         return x_random
+
+    def _row_sampler(self):
+        """``random(1)`` as a :class:`~._sampling.RowSampler`, so an RBD with
+        this node batches its draws; ``None`` unless the model's draws can be
+        replayed. Columns follow the order ``random(1)`` draws in: one per
+        copy, and under imperfect switching a switch draw before each
+        spare's."""
+        unit = inverse_sampler(self.model)
+        if unit is None:
+            return None
+
+        if is_perfect_switching(self.switching_probability):
+
+            def draw(u):
+                x = column(u, 0, unit)
+                for j in range(1, self.repeats):
+                    x = x + column(u, j, unit)
+                return x
+
+            return RowSampler(self.repeats, draw)
+
+        probs = switch_success_probs(self.switching_probability, self.repeats)
+
+        def draw(u):
+            x = column(u, 0, unit)
+            running = np.ones(len(u), dtype=bool)
+            for i, p in enumerate(probs):
+                running = running & (u[:, 1 + 2 * i] < p)
+                x = x + np.where(running, column(u, 2 + 2 * i, unit), 0.0)
+            return x
+
+        return RowSampler(1 + 2 * len(probs), draw)
 
     def mean(self, *args, **kwargs):
         # Exact, deterministic mean from the convolution (E[T] = integral of

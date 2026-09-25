@@ -113,27 +113,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `qf` to the block. Per-sample loops that do deterministic work run for all
   samples at once, the exact engine records its Shannon decomposition once per
   RBD and replays it, and the repairable simulation's event queue drops
-  `queue.PriorityQueue`'s thread locking (it is the same heap). Seeded
-  results are unchanged, and unseeded runs leave the global RNG in the same
-  state. Nodes whose sampling cannot be reproduced exactly this way (nested
-  RBDs, standby or load-sharing nodes inside an RBD, fixed-probability,
-  limited-failure-population or non-parametric models) keep their original
-  code path. Measured at default settings:
+  `queue.PriorityQueue`'s thread locking (it is the same heap). Composite
+  nodes -- standby, repeated, repeated-standby, load-sharing, regression and
+  nested-RBD nodes -- describe how their `random(1)` consumes the RNG, so an
+  RBD containing them is batched the same way. Minimal cut sets are read off
+  the exact engine's decomposition (a node's cut sets either spare its pivot
+  component or contain it with a cut set of the failed branch) instead of
+  Berge's algorithm, whose intermediate families could grow far beyond the
+  answer, and they are computed once per RBD; the decomposition also runs on
+  an explicit stack, so `sf()` and cut sets now work on systems with more
+  than about a thousand components, where they used to hit Python's
+  recursion limit. Seeded results are unchanged, and unseeded runs leave the
+  global RNG in the same state. Models whose sampling cannot be reproduced
+  exactly this way (fixed-probability, limited-failure-population or
+  zero-inflated models) keep their original code path. Measured at default
+  settings:
 
   | Workload | Before | After |
   |---|---|---|
   | `NonRepairableRBD.mean()`, 5-node bridge (100k samples) | 26.4 s | 24 ms |
   | `NonRepairableRBD.mean()`, 12-node system | 66.2 s | 125 ms |
+  | `mean()`, RBD with a standby / repeated / nested-RBD node | 18–32 s | 16–38 ms |
   | `RepairableRBD.availability(t=1000, N=300)`, 4 components | 1.81 s | 0.16 s |
   | `StandbyModel` cold, k=2 of 4 Weibull units (build) | 1.81 s | 6 ms |
   | `StandbyModel` warm, 4 Weibull units (build) | 0.52 s | 13 ms |
   | `LoadSharingModel`, 3 Weibull-AFT units (build) | 0.29 s | 7 ms |
   | Six importance measures, 12-node system | 126 ms | 20 ms |
+  | `get_min_cut_sets()`, 6 stages of 3 in parallel (729 path sets) | 6.8 s | 52 ms |
+  | `fussell_vesely()`, same system | 6.9 s | 140 ms |
+
+  The one trade-off is flat systems, whose cut sets Berge found almost
+  instantly: a first `get_min_cut_sets()` on 500 components in plain series
+  or parallel now takes tens of milliseconds instead of a few (later calls
+  are cached).
 
   `test_performance_equivalence.py` holds each fast path to the code it
-  replaced (kept as the fallback, or for the exact engine a verbatim copy of
-  the original recursion): same samples, same simulation outputs, same final
-  RNG state, and exactly the same exact-engine probabilities.
+  replaced (kept as the fallback, or for the exact engine and the cut sets a
+  verbatim copy of the original algorithm): same samples, same simulation
+  outputs, same final RNG state, exactly the same exact-engine probabilities,
+  and the same minimal cut sets.
 
 ### Fixed
 - `test_non_parametric_optimal_replacement` drew its data from the unseeded

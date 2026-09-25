@@ -27,7 +27,7 @@ from repyability.utils.wrappers import conditional_survival, numpy_seed
 
 from . import redundancy_allocation
 from ._model_utils import is_fixed_probability, parametric_spec
-from ._sampling import draw_rows, inverse_sampler
+from ._sampling import RowSampler, row_sampler
 from .ccf import CCFGroup
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .load_sharing_node import LoadSharingModel
@@ -1089,44 +1089,58 @@ class NonRepairableRBD(RBD):
 
     def _random_vectorised(self, size) -> Optional[np.ndarray]:
         """``random(size)`` without the per-sample event loop, when every
-        node's draws can be reproduced exactly in one block (see
-        ``_sampling``); otherwise ``None`` (nothing is drawn).
-
-        A coherent system fails when its last intact path set breaks, so its
-        lifetime is the max over minimal path sets of the min of their
-        members' lifetimes: the same value the event loop finds.
-        """
-        constants: dict[Any, np.ndarray] = {}
-        samplers = {}
-        for node in self.G.nodes:
-            model = self.reliabilities[node]
-            if model is PerfectReliability or model is PerfectUnreliability:
-                # Neither draws from the RNG.
-                constants[node] = np.asarray(model.random(size), dtype=float)
-                continue
-            sampler = inverse_sampler(model)
-            if sampler is None:
-                return None
-            samplers[node] = sampler
-
+        node's draws can be replayed in one block (see :meth:`_row_sampler`);
+        otherwise ``None`` (nothing is drawn)."""
+        sampler = self._row_sampler()
+        if sampler is None:
+            return None
         state = np.random.get_state()
-        lifetimes = dict(
-            zip(samplers, draw_rows(list(samplers.values()), size))
-        )
-        lifetimes.update(constants)
-        if any(np.isnan(t).any() for t in lifetimes.values()):
+        out = sampler.draw(np.random.random_sample((size, sampler.width)))
+        if np.isnan(out).any():
             # The event loop's ordering of NaN times is not reproducible
             # here; rewind and let it run.
             np.random.set_state(state)
             return None
-
-        out = np.full(size, -np.inf)
-        for path_set in self.get_min_path_sets(include_in_out_nodes=False):
-            path_life = np.full(size, np.inf)
-            for node in path_set:
-                path_life = np.minimum(path_life, lifetimes[node])
-            out = np.maximum(out, path_life)
         return out
+
+    def _row_sampler(self) -> Optional[RowSampler]:
+        """This RBD's ``random(1)`` as a :class:`RowSampler`, when every
+        node's draws can be replayed that way (which also lets an RBD nested
+        as a node be batched); otherwise ``None``.
+
+        A coherent system fails when its last intact path set breaks, so its
+        lifetime is the max over minimal path sets of the min of their
+        members' lifetimes: the same value the event loop finds. A sample in
+        which any node drew NaN comes out NaN, so that the caller falls back
+        to the event loop, which orders NaN times its own way.
+        """
+        nodes = list(self.G.nodes)
+        samplers: list[RowSampler] = []
+        for node in nodes:
+            node_sampler = row_sampler(self.reliabilities[node])
+            if node_sampler is None:
+                return None
+            samplers.append(node_sampler)
+        path_sets = self.get_min_path_sets(include_in_out_nodes=False)
+
+        def draw(u):
+            size = len(u)
+            lifetimes, start = {}, 0
+            for node, sampler in zip(nodes, samplers):
+                end = start + sampler.width
+                lifetimes[node] = sampler.draw(u[:, start:end])
+                start = end
+            out = np.full(size, -np.inf)
+            for path_set in path_sets:
+                path_life = np.full(size, np.inf)
+                for node in path_set:
+                    path_life = np.minimum(path_life, lifetimes[node])
+                out = np.maximum(out, path_life)
+            for lifetime in lifetimes.values():
+                out[np.isnan(lifetime)] = np.nan
+            return out
+
+        return RowSampler(sum(s.width for s in samplers), draw)
 
     def _random_by_events(self, size) -> np.ndarray:
         """``random(size)`` by stepping through each sample's failures in

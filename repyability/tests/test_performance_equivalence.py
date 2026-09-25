@@ -13,7 +13,13 @@ these tests hold the fast path to that reference:
 - the per-sample loops of the warm-standby and load-sharing simulations run
   for every sample at once: same arithmetic, same tie-breaks;
 - the repairable simulation's event queue drops ``queue.PriorityQueue``'s
-  locking but keeps its heap, so events come out in the same order.
+  locking but keeps its heap, so events come out in the same order;
+- composite nodes (standby, repeated, load-sharing, regression, nested RBDs)
+  replay their ``random(1)`` for a whole block of samples, so an RBD
+  containing them is batched too;
+- minimal cut sets are read off the exact engine's decomposition instead of
+  Berge's algorithm (the minimal cut sets are unique, so they must match
+  exactly), and that decomposition runs on an explicit stack.
 
 Floating-point samples are compared to 1e-12 relative (the fast paths do the
 same operations, so they agree to the last bit here; the tolerance only
@@ -51,7 +57,13 @@ from repyability.rbd.helper_classes import (
     PerfectReliability,
     PerfectUnreliability,
 )
-from repyability.rbd.rbd import probability_any_set_satisfied
+from repyability.rbd.rbd import (
+    minimal_cut_sets_from_path_sets,
+    probability_any_set_satisfied,
+)
+from repyability.rbd.regression_node import RegressionNode
+from repyability.rbd.repeated_node import RepeatedNode
+from repyability.rbd.repeated_standby_node import RepeatedStandbyNode
 from repyability.utils.wrappers import numpy_seed
 
 W = surv.Weibull.from_params
@@ -69,7 +81,8 @@ def assert_same_rng_state(a, b):
 
 def no_fast_path(monkeypatch):
     """Force every sampler back onto its original draw-at-a-time code."""
-    for module in (non_repairable_rbd, standby_node, repairable_rbd):
+    monkeypatch.setattr(non_repairable_rbd, "row_sampler", lambda model: None)
+    for module in (standby_node, repairable_rbd):
         monkeypatch.setattr(module, "inverse_sampler", lambda model: None)
 
 
@@ -361,9 +374,11 @@ def test_random_mean_and_interval_use_the_fast_path_unchanged(monkeypatch):
 
 
 def test_random_falls_back_for_nodes_it_cannot_reproduce():
+    # A zero-inflated model draws through np.random.binomial, which cannot be
+    # replayed from a block of uniforms.
     rbd = NonRepairableRBD(
-        [("s", "a"), ("a", "sb"), ("sb", "t")],
-        {"a": W([900, 1.4]), "sb": StandbyModel([W([300, 2.0])] * 2, k=1)},
+        [("s", "a"), ("a", "z"), ("z", "t")],
+        {"a": W([900, 1.4]), "z": W([300, 2.0], f0=0.05)},
     )
     np.random.seed(10)
     before = rng_state()
@@ -378,7 +393,7 @@ def test_random_rewinds_and_falls_back_on_nan(monkeypatch):
     # The event loop's ordering of NaN times cannot be reproduced, so a NaN
     # draw must hand over to it with the RNG rewound.
     monkeypatch.setattr(
-        non_repairable_rbd,
+        _sampling,
         "inverse_sampler",
         lambda model: (lambda u: np.where(u < 0.5, np.nan, u)),
     )
@@ -706,3 +721,322 @@ def test_event_queue_pops_in_priority_queue_order():
             assert ours.get() is theirs.get()
         assert ours.qsize() == theirs.qsize()
         assert ours.empty() == theirs.empty()
+
+
+# -- composite nodes inside an RBD --------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def composites(weibull_aft):
+    """One of each composite node type, covering every sampling branch.
+    (Building the cold-standby convolution evaluates LogNormal densities at
+    zero, which only warns.)"""
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return composite_nodes(weibull_aft)
+
+
+def other_aft():
+    """A second Weibull-AFT unit, unlike ``weibull_aft``."""
+    rng = np.random.default_rng(2)
+    load = rng.uniform(0.5, 2.0, size=400)
+    x = rng.weibull(1.5, size=400) * 120.0 / np.exp(0.2 * (load - 1)) + 1e-3
+    return surv.WeibullAFT.fit(x, Z=load.reshape(-1, 1))
+
+
+def composite_nodes(aft):
+    L = surv.LogNormal.from_params
+    return {
+        "standby_warm": StandbyModel(
+            [W([300, 2.0]), W([280, 1.7]), L([5.5, 0.4])],
+            k=1,
+            dormancy_factor=0.3,
+            n_sims=50,
+            seed=1,
+        ),
+        "standby_warm_k2": StandbyModel(
+            [W([300, 2.0])] * 4, k=2, dormancy_factor=0.6, n_sims=50, seed=1
+        ),
+        "standby_cold_k1": StandbyModel(
+            [W([300, 2.0]), L([5.5, 0.4]), W([250, 1.2], gamma=5)], k=1
+        ),
+        "standby_cold_k1_switching": StandbyModel(
+            [W([300, 2.0])] * 3, k=1, switching_probability=0.9
+        ),
+        "standby_cold_k1_switch_list": StandbyModel(
+            [W([300, 2.0])] * 3, k=1, switching_probability=[0.95, 0.8]
+        ),
+        "standby_cold_k2": StandbyModel(COLD_UNITS, k=2, n_sims=50, seed=1),
+        "repeated_parallel": RepeatedNode(W([500, 2.0]), 3, "parallel"),
+        "repeated_series": RepeatedNode(L([6.0, 0.5]), 2, "series"),
+        "repeated_standby": RepeatedStandbyNode(W([300, 2.0]), 3),
+        "repeated_standby_switching": RepeatedStandbyNode(
+            W([300, 2.0]), 3, switching_probability=0.85
+        ),
+        "load_sharing": LoadSharingModel(
+            [aft] * 3, load=2.0, n_sims=50, seed=1
+        ),
+        # Different units, so their order matters.
+        "load_sharing_mixed": LoadSharingModel(
+            [aft, aft, other_aft()], load=2.0, n_sims=50, seed=1
+        ),
+        "regression": RegressionNode(aft, covariates=[1.2]),
+        "nested_rbd": NonRepairableRBD(
+            [("s", "q"), ("s", "sb"), ("q", "t"), ("sb", "t")],
+            {"q": W([800, 2]), "sb": StandbyModel([W([300, 2.0])] * 2, k=1)},
+        ),
+        "perfect": PerfectReliability,
+        "plain": W([400, 1.5]),
+    }
+
+
+def rbd_with(node):
+    return NonRepairableRBD(
+        [("s", "a"), ("a", "x"), ("s", "b"), ("b", "x"), ("x", "t")],
+        {"a": W([900, 1.4]), "b": W([800, 1.6]), "x": node},
+    )
+
+
+COMPOSITE_NAMES = [
+    "standby_warm",
+    "standby_warm_k2",
+    "standby_cold_k1",
+    "standby_cold_k1_switching",
+    "standby_cold_k1_switch_list",
+    "standby_cold_k2",
+    "repeated_parallel",
+    "repeated_series",
+    "repeated_standby",
+    "repeated_standby_switching",
+    "load_sharing",
+    "load_sharing_mixed",
+    "regression",
+    "nested_rbd",
+    "perfect",
+    "plain",
+]
+
+
+@pytest.mark.parametrize("name", COMPOSITE_NAMES)
+def test_row_sampler_replays_random_1(composites, name):
+    # The block replay of ``random(1)``: same values, same RNG consumption
+    # (the block's width is how many uniforms one call takes).
+    model = composites[name]
+    sampler = _sampling.row_sampler(model)
+    assert sampler is not None
+    np.random.seed(30)
+    expected = np.array(
+        [float(np.asarray(model.random(1)).reshape(-1)[0]) for _ in range(300)]
+    )
+    after_single_draws = rng_state()
+    np.random.seed(30)
+    got = sampler.draw(np.random.random_sample((300, sampler.width)))
+    np.testing.assert_allclose(got, expected, rtol=RTOL, atol=0)
+    assert_same_rng_state(rng_state(), after_single_draws)
+
+
+@pytest.mark.parametrize("name", COMPOSITE_NAMES)
+def test_rbd_with_a_composite_node_is_identical(composites, name):
+    rbd = rbd_with(composites[name])
+    assert rbd._random_vectorised(1) is not None  # the fast path applies
+    fast = rbd.random(1500, seed=31)
+    with numpy_seed(31):
+        reference = rbd._random_by_events(1500)
+    np.testing.assert_allclose(fast, reference, rtol=RTOL, atol=0)
+
+    np.random.seed(32)
+    rbd.random(200)
+    after_fast = rng_state()
+    np.random.seed(32)
+    rbd._random_by_events(200)
+    assert_same_rng_state(rng_state(), after_fast)
+
+
+def test_every_composite_node_in_one_rbd(composites):
+    nodes = composites
+    edges = [("s", n) for n in nodes] + [(n, "t") for n in nodes]
+    rbd = NonRepairableRBD(edges, nodes)
+    assert rbd._random_vectorised(1) is not None
+    fast = rbd.random(800, seed=33)
+    with numpy_seed(33):
+        reference = rbd._random_by_events(800)
+    np.testing.assert_allclose(fast, reference, rtol=RTOL, atol=0)
+
+
+def test_kaplan_meier_node_is_batched_without_the_global_rng(monkeypatch):
+    with numpy_seed(34):
+        km = surv.KaplanMeier.fit(W([700, 2]).random(200))
+    rbd = rbd_with(km)
+    assert rbd._random_vectorised(1) is not None
+    # surpyval draws Kaplan-Meier samples from a fresh, OS-seeded generator,
+    # never numpy's global RNG, so the global stream -- and with it every
+    # other node's draws -- must be untouched by batching them.
+    np.random.seed(35)
+    rbd.random(300)
+    after_fast = rng_state()
+    np.random.seed(35)
+    rbd._random_by_events(300)
+    assert_same_rng_state(rng_state(), after_fast)
+    # Pinning the Kaplan-Meier draws makes the rest comparable exactly.
+    monkeypatch.setattr(
+        type(km), "random", lambda self, size, *a, **k: np.full(size, 450.0)
+    )
+    fast = rbd.random(500, seed=36)
+    with numpy_seed(36):
+        reference = rbd._random_by_events(500)
+    np.testing.assert_allclose(fast, reference, rtol=RTOL, atol=0)
+
+
+@pytest.mark.parametrize("where", ["standby", "nested"])
+def test_nan_inside_a_composite_node_falls_back(
+    weibull_aft, where, monkeypatch
+):
+    # A NaN draw anywhere, however deep, must hand the whole batch to the
+    # event loop with the RNG rewound.
+    def nan_sampler(model):
+        return lambda u: np.where(u < 0.3, np.nan, 100.0 + u)
+
+    if where == "standby":
+        monkeypatch.setattr(standby_node, "inverse_sampler", nan_sampler)
+        node = StandbyModel(COLD_UNITS, k=2, n_sims=5, seed=0)
+    else:
+        node = rbd_with(W([500, 2]))
+        monkeypatch.setattr(_sampling, "inverse_sampler", nan_sampler)
+    rbd = rbd_with(node)
+    np.random.seed(37)
+    before = rng_state()
+    assert rbd._random_vectorised(100) is None
+    assert_same_rng_state(rng_state(), before)
+
+
+def test_nan_in_an_irrelevant_node_still_falls_back(monkeypatch):
+    # b lies on no minimal path (a -> t bypasses it), so its lifetime never
+    # reaches the system's max-min, but the event loop still queues its NaN
+    # time: the batch must still hand over to it.
+    bad = W([500, 2.0])
+    rbd = NonRepairableRBD(
+        [("s", "a"), ("a", "t"), ("a", "b"), ("b", "t")],
+        {"a": W([400, 2.0]), "b": bad},
+    )
+    assert rbd.structure_check["irrelevant_nodes"] == {"b"}
+    real = _sampling.inverse_sampler
+    monkeypatch.setattr(
+        _sampling,
+        "inverse_sampler",
+        lambda m: (lambda u: np.full(len(u), np.nan)) if m is bad else real(m),
+    )
+    np.random.seed(39)
+    before = rng_state()
+    assert rbd._random_vectorised(50) is None
+    assert_same_rng_state(rng_state(), before)
+
+
+# -- minimal cut sets --------------------------------------------------------
+
+
+def reference_minimal_cut_sets(path_sets):
+    """The previous implementation (Berge's algorithm), verbatim."""
+
+    def keep_minimal(sets):
+        minimal = []
+        for candidate in sorted(set(sets), key=len):
+            if not any(kept <= candidate for kept in minimal):
+                minimal.append(candidate)
+        return minimal
+
+    transversals = [frozenset()]
+    for path_set in path_sets:
+        path_set = frozenset(path_set)
+        candidates = []
+        for transversal in transversals:
+            if transversal & path_set:
+                candidates.append(transversal)
+            else:
+                for component in path_set:
+                    candidates.append(transversal | {component})
+        transversals = keep_minimal(candidates)
+    return set(transversals)
+
+
+def test_cut_sets_match_berge_on_random_hypergraphs():
+    rng = np.random.default_rng(38)
+    for _ in range(3000):
+        elements = list(range(rng.integers(1, 9))) + ["x", ("t", 1)]
+        path_sets = [
+            frozenset(
+                elements[i]
+                for i in rng.choice(
+                    len(elements),
+                    rng.integers(0, len(elements)),
+                    replace=False,
+                )
+            )
+            for _ in range(rng.integers(0, 8))
+        ]
+        assert minimal_cut_sets_from_path_sets(
+            path_sets
+        ) == reference_minimal_cut_sets(path_sets), path_sets
+
+
+@pytest.mark.parametrize("name", sorted(rbds()))
+@pytest.mark.parametrize("in_out", [False, True])
+def test_rbd_cut_sets_match_berge(name, in_out):
+    rbd = rbds()[name]
+    path_sets = rbd.get_min_path_sets(include_in_out_nodes=in_out)
+    expected = reference_minimal_cut_sets(path_sets)
+    assert rbd.get_min_cut_sets(include_in_out_nodes=in_out) == expected
+    # Cached, but each call gets its own copy.
+    got = rbd.get_min_cut_sets(include_in_out_nodes=in_out)
+    got.add(frozenset({"not a node"}))
+    assert rbd.get_min_cut_sets(include_in_out_nodes=in_out) == expected
+
+
+def test_multi_stage_redundancy_cut_sets():
+    # Where Berge's intermediate families explode (729 path sets), and the
+    # answer is simply each stage.
+    rbd = series_of_parallels(6, 3)
+    stages = {frozenset(f"n{i}_{j}" for j in range(3)) for i in range(6)}
+    assert rbd.get_min_cut_sets() == stages
+
+
+# -- the decomposition on an explicit stack -----------------------------------
+
+
+@pytest.mark.parametrize(
+    "edges_of",
+    [
+        lambda n: [("s", f"c{i}") for i in range(n)]
+        + [(f"c{i}", "t") for i in range(n)],
+        lambda n: [("s", "c0")]
+        + [(f"c{i}", f"c{i + 1}") for i in range(n - 1)]
+        + [(f"c{n - 1}", "t")],
+    ],
+    ids=["parallel", "series"],
+)
+def test_deep_decomposition_is_identical_to_the_recursion(edges_of):
+    # Deep enough to exercise the stack, shallow enough for the recursive
+    # reference.
+    n = 300
+    rbd = NonRepairableRBD(
+        edges_of(n),
+        {f"c{i}": W([1000 + i, 1.5]) for i in range(n)},
+    )
+    probs = rbd._base_node_probabilities(np.array([400.0]), set(), set())
+    sets = rbd.get_min_path_sets(include_in_out_nodes=False)
+    assert np.array_equal(
+        rbd.system_probability(probs),
+        reference_probability_any_set_satisfied(sets, probs, 1),
+    )
+
+
+def test_wide_system_needs_no_recursion():
+    # Wider than Python's recursion limit: the recursive decomposition could
+    # not handle this.
+    n = 1100
+    q = 0.01
+    units = [f"c{i}" for i in range(n)]
+    rbd = NonRepairableRBD(
+        [("s", u) for u in units] + [(u, "t") for u in units],
+        {u: FixedEventProbability.from_params(q) for u in units},
+    )
+    assert float(rbd.sf()) == pytest.approx(1 - q**n)
+    assert rbd.get_min_cut_sets() == {frozenset(units)}

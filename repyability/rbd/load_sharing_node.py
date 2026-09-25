@@ -35,6 +35,7 @@ from surpyval import Hypoexponential, KaplanMeier
 from repyability.utils.wrappers import conditional_survival, numpy_seed
 
 from ._model_utils import is_exponential
+from ._sampling import RowSampler, column, inverse_sampler
 
 _AFT_KIND = "Accelerated Failure Time"
 
@@ -178,14 +179,17 @@ class LoadSharingModel:
     def random(self, size, seed=None):
         """Monte-Carlo simulate ``size`` group lifetimes via the cumulative-
         exposure event loop."""
-        n, k, phi_tab = self.N, self.k, self._phi_table
         with numpy_seed(seed):
             # Baseline exposure-to-failure thresholds: (N, size).
-            tau = np.empty((n, size))
+            tau = np.empty((self.N, size))
             for i, base in enumerate(self._baselines):
                 tau[i] = np.asarray(base.random(size), dtype=float).reshape(-1)
+        return self._lifetimes_from_thresholds(tau)
 
-        phi_used = phi_tab[:, k - 1 :]  # noqa: E203
+    def _lifetimes_from_thresholds(self, tau):
+        """Group lifetimes from the units' thresholds (one column per
+        replicate)."""
+        phi_used = self._phi_table[:, self.k - 1 :]  # noqa: E203
         if (
             np.all(np.isfinite(tau))
             and np.all(np.isfinite(phi_used))
@@ -193,6 +197,22 @@ class LoadSharingModel:
         ):
             return self._lifetimes(tau)
         return self._lifetimes_by_sample(tau)
+
+    def _row_sampler(self):
+        """``random(1)`` as a :class:`~._sampling.RowSampler` (one threshold
+        draw per unit, in unit order), so an RBD with this node batches its
+        draws; ``None`` unless every baseline's draws can be replayed."""
+        baselines = [inverse_sampler(base) for base in self._baselines]
+        if any(base is None for base in baselines):
+            return None
+
+        def draw(u):
+            tau = np.vstack(
+                [column(u, i, base) for i, base in enumerate(baselines)]
+            )
+            return self._lifetimes_from_thresholds(tau)
+
+        return RowSampler(self.N, draw)
 
     def _lifetimes(self, tau):
         """The event loop for every replicate at once.
