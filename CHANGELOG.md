@@ -157,6 +157,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and the same minimal cut sets.
 
 ### Fixed
+- **Nested `RepairableRBD` simulations put the nested RBD's state changes at
+  the wrong times.** A nested RBD's `next_event()` returns the time *of* its
+  next state change, but the outer simulation added it to the current time as
+  if it were the time *to* it (as a component's is). Every nested failure and
+  restoration after the first therefore landed late, by more the longer the
+  run, so `availability()` and `cost()` of any RBD containing a nested
+  `RepairableRBD` were wrong: a single unit with MTTF 10 and MTTR 1, nested,
+  simulated at 0.51 availability instead of 0.91. The outer simulation now
+  takes a nested RBD's times as they are, and a nested RBD simulates exactly
+  as it does on its own. The exact methods (`mean_availability()` and the
+  failure-frequency family) were not affected; seeded simulations of RBDs
+  without nested `RepairableRBD`s are unchanged.
 - `test_non_parametric_optimal_replacement` drew its data from the unseeded
   global RNG and failed about one run in 150; it is now seeded.
 - `test_weibull_no_optimal_replacement` no longer asserts that a warning is

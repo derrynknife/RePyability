@@ -9,7 +9,8 @@ Because every component in the simulation has its own independent repair
 process, the exact *system* transient availability of any structure is the
 structure function applied to these marginal availabilities (e.g. product for
 series, 1 - product of complements for parallel). These tests hold the
-simulated curve to the exact solution within Monte-Carlo sampling error.
+simulated curve to the exact solution within Monte-Carlo sampling error, for
+flat and nested RBDs alike.
 
 All tests are seeded, so they are deterministic.
 """
@@ -92,6 +93,63 @@ def test_transient_availability_matches_markov_parallel():
     result = rbd.availability(t_simulation=20.0, N=n, seed=11)
     exact = 1.0 - (1.0 - _exact_marginal(0.5, 1.0, T_CHECK)) * (
         1.0 - _exact_marginal(0.8, 1.0, T_CHECK)
+    )
+    _assert_within_sampling_error(_sim_at(result, T_CHECK), exact, n)
+
+
+# --- Nested RBDs ------------------------------------------------------------
+
+
+def _wrapped(rbd):
+    """``rbd`` as the only node of an outer RBD."""
+    return RepairableRBD([("s", "sub"), ("sub", "t")], {"sub": rbd})
+
+
+def _nestable():
+    # A Weibull unit in parallel with a series of an instantly repaired unit
+    # and an exponential one: state changes that do and do not change the
+    # system state, and zero-length outages.
+    W = surv.Weibull.from_params
+    return RepairableRBD(
+        [("s", "a"), ("s", "b"), ("b", "c"), ("a", "t"), ("c", "t")],
+        {
+            "a": {"reliability": W([4.0, 1.5]), "repairability": E([1.0])},
+            "b": {"reliability": E([0.3]), "repairability": "instant"},
+            "c": _comp(0.4, 0.8),
+        },
+    )
+
+
+@pytest.mark.parametrize("levels", [1, 2])
+def test_a_nested_rbd_simulates_exactly_as_it_does_alone(levels):
+    # A nested RBD runs its own simulation on the outer one's clock. As the
+    # outer's only node it draws the same numbers in the same order, so its
+    # state changes, and the outer system's, fall at exactly the same times.
+    alone = _nestable().availability(t_simulation=30.0, N=200, seed=13)
+    nested = _nestable()
+    for _ in range(levels):
+        nested = _wrapped(nested)
+    result = nested.availability(t_simulation=30.0, N=200, seed=13)
+    np.testing.assert_array_equal(result.timeline, alone.timeline)
+    np.testing.assert_array_equal(result.availability, alone.availability)
+
+
+def test_transient_availability_matches_markov_nested():
+    # A in series with a nested parallel pair (B, C).
+    n = 3000
+    pair = RepairableRBD(
+        [("s", "B"), ("s", "C"), ("B", "t"), ("C", "t")],
+        {"B": _comp(0.5, 1.0), "C": _comp(0.8, 1.0)},
+    )
+    rbd = RepairableRBD(
+        [("s", "A"), ("A", "pair"), ("pair", "t")],
+        {"A": _comp(0.2, 1.0), "pair": pair},
+    )
+    result = rbd.availability(t_simulation=20.0, N=n, seed=17)
+    exact = _exact_marginal(0.2, 1.0, T_CHECK) * (
+        1.0
+        - (1.0 - _exact_marginal(0.5, 1.0, T_CHECK))
+        * (1.0 - _exact_marginal(0.8, 1.0, T_CHECK))
     )
     _assert_within_sampling_error(_sim_at(result, T_CHECK), exact, n)
 

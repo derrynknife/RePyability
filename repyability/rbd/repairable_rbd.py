@@ -756,11 +756,25 @@ class RepairableRBD(RBD):
         )
         return mean_availability.item()
 
+    def _next_event_time(self, event: Event, t: float) -> float:
+        """When the component of ``event`` next changes state, given ``t``
+        from its ``next_event()``.
+
+        A component's ``next_event()`` gives the time *to* its next event,
+        measured from ``event``. A nested RBD's gives the time *of* its next
+        state change: its simulation runs on the same clock, from 0.
+        """
+        if isinstance(self.components[event.component], RepairableRBD):
+            return t
+        return event.time + t
+
     def next_event(self, method="p", sources: Optional[dict] = None):
         # This method allows a user to extract the next system status
         # changing event. The intent of this is so that it has the same api
         # as the NonRepairable class so that a RepairableRBD can be used in
         # a RepairableRBD/
+        # Unlike NonRepairable's, the time returned is the time *of* the
+        # change, not the time to it (see _next_event_time).
         if not hasattr(self, "_event_queue"):
             raise ValueError("Need to initialize the event queue")
         # The components' draws come from the same sources the queue was
@@ -785,10 +799,9 @@ class RepairableRBD(RBD):
                 event.component
             ].next_event()
             next_event = Event(
-                # Current time (event.time) + time to next failure
-                event.time + next_event_t,
+                self._next_event_time(event, next_event_t),
                 event.component,
-                next_event_type,  # This is a component failure event
+                next_event_type,
             )
             # But only queue up the event if it occurs before the end
             # of the simulation
@@ -984,9 +997,7 @@ class RepairableRBD(RBD):
                 ].next_event()
 
                 next_event = Event(
-                    # The next event time is the current time [event.time]
-                    # plus the time to next event
-                    event.time + next_event_t,
+                    self._next_event_time(event, next_event_t),
                     event.component,
                     next_event_type,
                 )
