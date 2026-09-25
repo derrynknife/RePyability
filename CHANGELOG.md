@@ -137,7 +137,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   | `NonRepairableRBD.mean()`, 12-node system | 66.2 s | 125 ms |
   | `mean()`, RBD with a standby / repeated / nested-RBD node | 18–32 s | 16–38 ms |
   | `RepairableRBD.availability(t=1000, N=300)`, 4 components | 1.81 s | 0.16 s |
-  | `RepairableRBD.availability(t=1000, N=200)`, with nested `RepairableRBD`s | 0.45–2.2 s | 56–178 ms |
+  | `RepairableRBD.availability(t=1000, N=200)`, with nested `RepairableRBD`s | 0.92–2.4 s | 97–175 ms |
   | `StandbyModel` cold, k=2 of 4 Weibull units (build) | 1.81 s | 6 ms |
   | `StandbyModel` warm, 4 Weibull units (build) | 0.52 s | 13 ms |
   | `LoadSharingModel`, 3 Weibull-AFT units (build) | 0.29 s | 7 ms |
