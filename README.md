@@ -7,6 +7,40 @@ Reliability Engineering Tools
 
 This is a series of tools created to make an open source set of methods to be used by reliability engineers to make it more accessible for students right through to practicing professionals.
 
+RePyability builds and analyses systems as reliability block diagrams (RBDs),
+taking already-fitted lifetime models (from
+[surpyval](https://github.com/derrynknife/SurPyval) or anything exposing
+`sf`/`ff`) as its components:
+
+- **Reliability**: exact system reliability, hazard and conditional survival;
+  MTTF with confidence intervals; B*X* life.
+- **Importance**: Birnbaum, improvement potential, RAW, RRW, criticality,
+  Fussell–Vesely, structural importance and parameter sensitivity.
+- **Live state**: reliability, remaining life and importance given each
+  component's current age, and covariate-dependent components.
+- **Redundancy and dependence**: cold, warm and hot standby; repeated nodes;
+  load sharing; beta-factor and MGL common-cause groups.
+- **Repairable systems**: exact long-run availability, failure frequency and
+  MUT/MDT/MTBF; simulated availability over time with criticality measures.
+- **Cost, design and maintenance**: exact and simulated running costs,
+  optimal redundancy allocation, and age-replacement and overhaul policies.
+
+```python
+import surpyval as surv
+from repyability import NonRepairableRBD
+
+rbd = NonRepairableRBD(
+    [("s", "pump1"), ("s", "pump2"), ("pump1", "valve"), ("pump2", "valve"), ("valve", "t")],
+    {
+        "pump1": surv.Weibull.from_params([100, 2]),
+        "pump2": surv.Weibull.from_params([100, 2]),
+        "valve": surv.Weibull.from_params([200, 1.5]),
+    },
+)
+rbd.sf(50)                     # 0.839: system reliability at t = 50
+rbd.birnbaum_importance(50)    # which component matters most
+```
+
 ## Install
 RePyability can be installed via pip using the PyPI [repository](https://pypi.org/project/repyability/)
 
@@ -15,7 +49,8 @@ pip install repyability
 ```
 
 ## Documentation
-The full documentation — overview, user guide, and API reference — is hosted at
+The full documentation — tutorial, user guide, concepts and API reference — is
+hosted at
 **[derrynknife.github.io/RePyability](https://derrynknife.github.io/RePyability/)**.
 
 It is built with [MkDocs](https://www.mkdocs.org/) from the sources in `docs/`

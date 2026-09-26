@@ -48,10 +48,30 @@ markdown_extensions:
       permalink: true
   - pymdownx.highlight
   - pymdownx.superfences
+  - tables
+
+# Broken links and anchors fail the (strict) build.
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
 
 nav:
   - Home: index.md
   - Tutorial: tutorial.md
-  - User guide: guide.md
+  - User guide:
+      - Overview: guide/index.md
+      - Building an RBD: guide/building.md
+      - Reliability of a system: guide/reliability.md
+      - Importance measures: guide/importance.md
+      - Condition-based evaluation: guide/condition-based.md
+      - Redundancy models: guide/redundancy-models.md
+      - Common-cause failures: guide/common-cause.md
+      - Repairable systems: guide/repairable.md
+      - Costs: guide/costs.md
+      - Design and allocation: guide/design.md
+      - Maintenance policies: guide/maintenance.md
+      - Saving, reproducibility and performance: guide/saving.md
   - Concepts: concepts.md
   - API reference: api.md

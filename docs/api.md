@@ -1,7 +1,9 @@
 # API reference
 
-Auto-generated from the docstrings of the public API (everything exported from
-the top-level `repyability` package).
+Generated from the docstrings of the public API: everything exported from the
+top-level `repyability` package (`from repyability import ...`). The
+installed version is `repyability.__version__`. For task-oriented
+explanations and runnable examples, see the [user guide](guide/index.md).
 
 ## System models
 
@@ -11,25 +13,27 @@ the top-level `repyability` package).
 
 ::: repyability.RepairableRBD
 
-## Component models
+## Node models
 
-::: repyability.NonRepairable
+Anything exposing `sf`/`ff` can be a node; these are the composite and helper
+models provided here (see [Building an RBD](guide/building.md) and
+[Redundancy models](guide/redundancy-models.md)).
 
 ::: repyability.StandbyModel
-
-::: repyability.LoadSharingModel
 
 ::: repyability.RepeatedNode
 
 ::: repyability.RepeatedStandbyNode
 
-::: repyability.Repairable
+::: repyability.LoadSharingModel
 
 ::: repyability.RegressionNode
 
-## Helpers
+::: repyability.PerfectReliability
 
-::: repyability.NodeState
+::: repyability.PerfectUnreliability
+
+## Common-cause failures
 
 ::: repyability.CCFGroup
 
@@ -37,19 +41,21 @@ the top-level `repyability` package).
 
 ::: repyability.MGL
 
-::: repyability.PerfectReliability
+## Condition-based evaluation
 
-::: repyability.PerfectUnreliability
+::: repyability.NodeState
+
+## Components and maintenance
+
+::: repyability.NonRepairable
+
+::: repyability.Repairable
+
+::: repyability.minimal_repair_time_to_nth_failure
 
 ## Result types
 
 ::: repyability.AvailabilityResult
-
-::: repyability.CostResult
-
-::: repyability.RedundancyAllocation
-
-::: repyability.ConfidenceInterval
 
 ::: repyability.Criticalities
 
@@ -59,4 +65,12 @@ the top-level `repyability` package).
 
 ::: repyability.RestorationCriticalityIndex
 
+::: repyability.CostResult
+
+::: repyability.ConfidenceInterval
+
+::: repyability.RedundancyAllocation
+
 ::: repyability.MaintenancePolicy
+
+::: repyability.FailureLimitPolicy
