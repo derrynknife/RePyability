@@ -100,3 +100,35 @@ def test_allocation_to_a_target_of_one_makes_the_nodes_perfect():
 def test_improvement_allocation_rejects_invalid_node_probabilities(value):
     with pytest.raises(ValueError, match="node_probabilities"):
         _series().improvement_allocation(0.9, {1: value})
+
+
+def test_simple_allocation_raises_when_the_target_is_out_of_reach():
+    # A node with weight 0 stays at 0.5, so a series system cannot beat
+    # 0.5; the closest miss used to come back with res.success True.
+    rbd = _series()
+    with pytest.raises(ValueError, match="did not reach target 0.9"):
+        rbd.simple_allocation(0.9, weights={1: 0.0, 2: 1.0, 3: 1.0})
+    assert rbd.res is not None
+
+
+def test_simple_allocation_raises_when_the_search_stalls():
+    # Thirty nodes in parallel at 0.5 each work with probability
+    # 1 - 0.5 ** 30, so near 1 that the search cannot move: it used to
+    # return every node at 0.5 for a target of 0.5.
+    parallel = RBD(
+        [("s", i) for i in range(30)] + [(i, "t") for i in range(30)]
+    )
+    with pytest.raises(ValueError, match="improvement_allocation"):
+        parallel.simple_allocation(0.5)
+    # The exact method has no such limit.
+    new = parallel.equal_allocation(0.5)
+    assert parallel.system_probability(new).item() == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize("target", [0.0, 1e-6, 0.5, 0.999999, 1.0])
+def test_simple_allocation_meets_reachable_targets(target):
+    rbd = RBD([("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")])
+    new = rbd.simple_allocation(target)
+    achieved = rbd.system_probability(new).item()
+    tail = min(target, 1 - target)
+    assert abs(achieved - target) <= (1e-6 * tail if tail else 1e-6)

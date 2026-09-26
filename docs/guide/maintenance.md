@@ -53,11 +53,17 @@ steady.set_costs_planned_and_unplanned(1, 5)
 steady.optimal_replacement_policy().cost_rate   # -> 0.005   = 5 / 1000
 ```
 
-`set_costs_planned_and_unplanned` raises `ValueError` unless `cp < cu`. Set
-the costs before asking for a policy: without them
-`optimal_replacement_policy()` raises `ValueError`, and
-`find_optimal_replacement()` raises `AttributeError` (unless it can return
-`inf` without them, as above).
+`set_costs_planned_and_unplanned` raises `ValueError` unless both costs are
+finite, `cp` is not negative and `cp < cu`. Set the costs before asking for a
+cost rate or a policy: without them `cost_rate`, `find_optimal_replacement()`
+and `optimal_replacement_policy()` raise `ValueError` (except that
+`find_optimal_replacement()` returns `inf` without them in the cases above).
+
+A non-parametric lifetime (a Kaplan–Meier fit, say) works too. Its survival
+function is taken as linear between the estimate's time points, from 1 at age
+0, and held at its last value beyond them; the cost rate is then exact, and
+the search covers ages up to the last time point, since the estimate says
+nothing about later ones.
 
 ### As a repairable component
 

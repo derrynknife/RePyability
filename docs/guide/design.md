@@ -176,6 +176,13 @@ that meets the target, and heavily weighted nodes can be driven to
 perfection. Prefer `improvement_allocation` when the starting reliabilities
 are known.
 
+`simple_allocation` checks the allocation it finds and raises `ValueError`
+if it misses the target (by more than one part in a million). That happens
+when the target is out of reach (a node with weight 0 stays at 0.5), and on
+large systems: the search starts with every node at 0.5, which puts the
+probability of, say, 30 nodes in parallel so near 1 that it cannot move.
+`equal_allocation` and `improvement_allocation` are exact at any size.
+
 All three raise `ValueError` for a target outside [0, 1], work on any
 structure (not only series), and keep the solver's result in `rbd.res` for
 inspection.

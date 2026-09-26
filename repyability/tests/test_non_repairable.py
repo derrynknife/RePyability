@@ -4,6 +4,8 @@ Tests Non-Repairable Optimal Replacement Time algorithms.
 Uses pytest fixtures located in conftest.py in the tests/ directory.
 """
 
+import warnings
+
 import numpy as np
 import pytest
 import surpyval as surv
@@ -275,3 +277,86 @@ def test_a_closed_form_standby_component_in_a_repairable_rbd():
     )
     # MTTF 2000, MTTR 24.
     assert rbd.mean_availability() == pytest.approx(2000 / 2024)
+
+
+# Kaplan-Meier failures at 10, 20, 30 and 40: linear between them and from
+# 1 at age 0, the survival function is exactly R(u) = 1 - u / 40.
+_UNIFORM_KM = [10, 20, 30, 40]
+
+
+def test_non_parametric_cycle_length_is_exact():
+    # The cycle length used to start at the first time point and stop at
+    # the last one below t (giving 0, 5 and 7.5 here), and the linear
+    # extrapolation beyond the data made the survival negative.
+    unit = NonRepairable(KaplanMeier.fit(_UNIFORM_KM))
+    for t in (5, 25, 40, 60):
+        age = min(t, 40)
+        assert unit.avg_replacement_time(t) == pytest.approx(age - age**2 / 80)
+    assert unit.reliability_function(60) == 0.0
+    # With the last time censored, the survival is held beyond it.
+    censored = NonRepairable(KaplanMeier.fit(_UNIFORM_KM, c=[0, 0, 0, 1]))
+    assert censored.reliability_function(80) == pytest.approx(0.25)
+    assert censored.avg_replacement_time(80) == pytest.approx(21.25 + 10)
+
+
+def test_non_parametric_optimum_is_exact_and_consistent():
+    # The cost rate (1 * R + 5 * (1 - R)) / (t - t**2 / 80) is least at
+    # t = 20, where it is 0.2. The search used to return 21.6, and the
+    # policy's cost rate (0.63) disagreed with the search's.
+    unit = NonRepairable(KaplanMeier.fit(_UNIFORM_KM))
+    unit.set_costs_planned_and_unplanned(1, 5)
+    assert unit.find_optimal_replacement() == pytest.approx(20.0)
+    policy = unit.optimal_replacement_policy()
+    assert policy.interval == pytest.approx(20.0)
+    assert policy.cost_rate == pytest.approx(0.2)
+
+
+def _lifetimes():
+    from repyability import StandbyModel
+
+    return {
+        "parametric": Weibull.from_params([1000, 2.5]),
+        "non-parametric": KaplanMeier.fit(_UNIFORM_KM),
+        "standby": StandbyModel([surv.Exponential.from_params([0.001])] * 2),
+    }
+
+
+@pytest.mark.parametrize("kind", ["parametric", "non-parametric", "standby"])
+def test_missing_costs_raise_value_error(kind):
+    # find_optimal_replacement() and cost_rate used to raise AttributeError,
+    # optimal_replacement_policy() ValueError.
+    unit = NonRepairable(_lifetimes()[kind])
+    for call in (
+        lambda: unit.cost_rate(100.0),
+        unit.find_optimal_replacement,
+        unit.optimal_replacement_policy,
+    ):
+        with pytest.raises(ValueError, match="costs not set"):
+            call()
+
+
+def test_never_replacing_needs_no_costs():
+    unit = NonRepairable(surv.Exponential.from_params([0.001]))
+    assert unit.find_optimal_replacement() == np.inf
+
+
+@pytest.mark.parametrize(
+    "cp, cu",
+    [(-1.0, 5.0), (np.nan, 5.0), (1.0, np.inf), (1.0, np.nan)],
+    ids=["negative", "nan planned", "infinite unplanned", "nan unplanned"],
+)
+def test_invalid_costs_are_rejected(cp, cu):
+    unit = NonRepairable(Weibull.from_params([1000, 2.5]))
+    with pytest.raises(ValueError, match="costs must be"):
+        unit.set_costs_planned_and_unplanned(cp, cu)
+    unit.set_costs_planned_and_unplanned(0.0, 5.0)  # a free planned swap
+
+
+def test_options_argument_is_deprecated():
+    unit = NonRepairable(Weibull.from_params([1000, 2.5]))
+    unit.set_costs_planned_and_unplanned(1, 5)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")  # no warning without it
+        expected = unit.find_optimal_replacement()
+    with pytest.warns(DeprecationWarning, match="options"):
+        assert unit.find_optimal_replacement(options={}) == expected

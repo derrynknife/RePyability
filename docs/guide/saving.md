@@ -113,11 +113,9 @@ results do not depend on which internal path a model takes.
 - **Structure size.** The number of minimal path and cut sets can grow very
   fast with the size and meshing of a diagram; systems of a few hundred
   nodes in series or parallel are routine, and wide ones of over a thousand
-  work, while densely meshed diagrams get expensive sooner. A single chain of
-  about a thousand nodes in series exceeds Python's default recursion limit
-  while its path sets are found, when the RBD is built.
-  `get_all_path_sets()` enumerates every simple path and is the first thing
-  to avoid on a large diagram.
+  work, while densely meshed diagrams get expensive sooner (but see the
+  known limit below for long chains). `get_all_path_sets()` enumerates every
+  simple path and is the first thing to avoid on a large diagram.
 - **Simulations** are vectorised where the models allow it: `mean()` of a
   system of parametric components draws 100 000 lifetimes in well under a
   second. Availability simulations step through events, so their cost grows
@@ -125,3 +123,12 @@ results do not depend on which internal path a model takes.
 - **Monte-Carlo error** shrinks like `1/√N`: use the confidence intervals
   (`mean_time_to_failure_interval`, `availability_interval`,
   `CostResult.mean_interval`) to choose `N`.
+
+!!! note "Known limit: long chains in series"
+    The minimal path sets are found recursively, one level per node along
+    the longest path, so building an RBD with a chain of about a thousand or
+    more nodes in series exceeds Python's default recursion limit of 1,000
+    and raises
+    `RecursionError`. Raise the limit before building such an RBD:
+    `sys.setrecursionlimit(10_000)` handles chains of several thousand nodes.
+    Wide systems (many nodes in parallel) are not affected.

@@ -272,8 +272,10 @@ class Repairable:
         Raises
         ------
         ValueError
-            If ``cr <= 0`` or ``cr >= co``.
+            If a cost is not finite, or if ``cr <= 0`` or ``cr >= co``.
         """
+        if not (np.isfinite(cr) and np.isfinite(co)):
+            raise ValueError(f"costs must be finite, got cr={cr}, co={co}.")
         if cr <= 0:
             raise ValueError("repair cost, cr, must be positive.")
         if cr >= co:

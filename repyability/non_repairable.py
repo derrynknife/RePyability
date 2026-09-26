@@ -1,6 +1,7 @@
+import warnings
+
 import numpy as np
 from scipy.integrate import quad, trapezoid
-from scipy.interpolate import interp1d
 from scipy.optimize import minimize, minimize_scalar
 from surpyval import ExactEventTime, NonParametric, Parametric
 
@@ -24,6 +25,38 @@ def _scalar_sf(model):
         return float(np.ravel(model.sf(np.atleast_1d(float(t))))[0])
 
     return sf
+
+
+def _piecewise_linear_sf(model):
+    """A non-parametric estimate's survival function, and its knots.
+
+    Linear between the estimate's time points, starting from 1 at age 0,
+    and held at its last value beyond the last one (as surpyval's own
+    step function is), so it stays a probability.
+    """
+    ages = np.asarray(model.x, dtype=float)
+    survival = np.clip(1.0 - np.asarray(model.F, dtype=float), 0.0, 1.0)
+    if ages[0] > 0.0:
+        ages = np.concatenate([[0.0], ages])
+        survival = np.concatenate([[1.0], survival])
+
+    def sf(t):
+        return np.interp(t, ages, survival)
+
+    return sf, ages
+
+
+def _cost_rates(cp, cu, ages, R):
+    """The age-replacement cost rate at each of ``ages`` (increasing, from
+    0), the cycle length integrated by the cumulative trapezoidal rule. The
+    rate at age 0 is ``inf``."""
+    cycle = np.concatenate(
+        [[0.0], np.cumsum(np.diff(ages) * (R[1:] + R[:-1]) / 2.0)]
+    )
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rates = (cp * R + cu * (1.0 - R)) / cycle
+    rates[0] = np.inf
+    return rates
 
 
 class NonRepairable:
@@ -63,8 +96,9 @@ class NonRepairable:
         - a surpyval parametric distribution, fitted or built with
           ``from_params``;
         - a surpyval non-parametric estimate (e.g. a ``KaplanMeier``
-          fit). Its survival function is linearly interpolated between its
-          time points and linearly extrapolated beyond them; the
+          fit). For the cost calculations its survival function is taken
+          as linear between its time points, starting from 1 at age 0,
+          and held at its last value beyond the last one; the
           availability methods reject it, and its draws in
           ``next_event()`` cannot be seeded;
         - a [`StandbyModel`][repyability.StandbyModel], in any of its
@@ -87,7 +121,8 @@ class NonRepairable:
         ``(cp * R(t) + cu * (1 - R(t))) / avg_replacement_time(t)``, with
         ``R`` the survival function of ``reliability``. Vectorised over
         ``t``; returns a numpy array (0-d for a scalar ``t``). Needs the
-        costs set by ``set_costs_planned_and_unplanned()``.
+        costs set by ``set_costs_planned_and_unplanned()`` (without them
+        it raises ValueError).
 
     Raises
     ------
@@ -130,10 +165,9 @@ class NonRepairable:
             self.model_parameterization = "parametric"
             self.reliability_function = reliability.sf
         elif isinstance(reliability, NonParametric):
-            # TODO: Allow non-interpolated?
             self.model_parameterization = "non-parametric"
-            self.reliability_function = interp1d(
-                reliability.x, 1 - reliability.F, fill_value="extrapolate"
+            self.reliability_function, self._knots = _piecewise_linear_sf(
+                reliability
             )
         elif isinstance(reliability, StandbyModel):
             # Whatever the arrangement's survival function is (a closed
@@ -177,12 +211,23 @@ class NonRepairable:
         Raises
         ------
         ValueError
-            If ``cp >= cu``.
+            If a cost is negative or not finite, or if ``cp >= cu``.
         """
+        if not (np.isfinite(cp) and np.isfinite(cu)):
+            raise ValueError(f"costs must be finite, got cp={cp}, cu={cu}.")
+        if cp < 0:
+            raise ValueError(f"costs must be non-negative, got cp={cp}.")
         if cp >= cu:
             raise ValueError("Planned costs must be less than unplanned costs")
         self.cp = cp
         self.cu = cu
+
+    def _require_costs(self) -> None:
+        if not hasattr(self, "cp"):
+            raise ValueError(
+                "costs not set: call set_costs_planned_and_unplanned"
+                "(cp, cu) first"
+            )
 
     def avg_replacement_time(self, t):
         """Expected time between replacements when replacing at age ``t``.
@@ -195,11 +240,9 @@ class NonRepairable:
         For a parametric model the integral is computed by quadrature, and
         for a ``StandbyModel`` by the trapezoidal rule on 4,001 ages (its
         survival function may be a step function). For a non-parametric
-        model it is a right-endpoint sum of the
-        interpolated ``R`` over the estimate's own time points below
-        ``t``: it starts at the first time point rather than 0 and stops
-        at the last one below ``t``, so it slightly underestimates the
-        integral.
+        model it is exact for the survival function described in the
+        class docstring (linear between the estimate's time points, from 1
+        at age 0, and held beyond the last one).
 
         Parameters
         ----------
@@ -232,11 +275,14 @@ class NonRepairable:
             R = np.ravel(np.asarray(self.reliability.sf(ages), dtype=float))
             out = float(trapezoid(np.clip(R, 0.0, 1.0), ages))
         else:
-            mask = self.reliability.x < t
-            x_less_than_t = self.reliability.x[mask]
-            dt = np.diff(x_less_than_t)
-            F = self.reliability_function(x_less_than_t[1:])
-            out = (dt * F).sum()
+            # The survival function is linear between its knots, so the
+            # trapezoidal rule over the knots below t, and t, is exact.
+            t = float(t)
+            if t <= 0.0:
+                return 0.0
+            inner = self._knots[(self._knots > 0.0) & (self._knots < t)]
+            ages = np.concatenate([[0.0], inner, [t]])
+            out = float(trapezoid(self.reliability_function(ages), ages))
 
         return out
 
@@ -245,6 +291,7 @@ class NonRepairable:
         # arrive as a 1-element array from scipy.optimize.minimize. Coerce to a
         # plain float so the quadrature bound in avg_replacement_time() is a
         # scalar (scipy.integrate.quad rejects array bounds).
+        self._require_costs()
         t = float(np.asarray(t).item())
         planned_costs = self.reliability_function(t) * self.cp
         unplanned_costs = (1 - self.reliability_function(t)) * self.cu
@@ -365,9 +412,6 @@ class NonRepairable:
     def _cost_rate_with_log_x(self, x):
         return self._cost_rate(np.exp(x))
 
-    def _log_cost_rate_with_log_x(self, x):
-        return self._cost_rate(np.exp(x))
-
     def find_optimal_replacement(self, options=None):
         """The replacement age that minimises the long-run cost rate.
 
@@ -383,10 +427,10 @@ class NonRepairable:
           (BFGS) searches over ``log(t)``, starting from the mean life,
           and its result is kept in the ``optimisation_results``
           attribute.
-        - Non-parametric model: the cost rate is evaluated at 10,000
-          evenly spaced ages between the estimate's first and last time
-          points (the integral as a right-endpoint sum from 0) and the
-          cheapest age is returned.
+        - Non-parametric model: the cost rate is evaluated exactly at
+          10,001 evenly spaced ages from 0 to the estimate's last time
+          point, and at its time points, and the cheapest age is
+          returned (the estimate says nothing about later ages).
         - ``StandbyModel``: its survival function may be a step function
           (a simulated arrangement), so the cost rate is evaluated on a
           grid of 2,001 ages up to where survival falls to 1e-6, and the
@@ -404,7 +448,7 @@ class NonRepairable:
         Parameters
         ----------
         options : object, optional
-            Not used.
+            Deprecated and ignored; it will be removed in a future release.
 
         Returns
         -------
@@ -414,10 +458,15 @@ class NonRepairable:
 
         Raises
         ------
-        AttributeError
+        ValueError
             If the costs have not been set with
             ``set_costs_planned_and_unplanned()`` (the parametric ``inf``
             cases above return without them).
+
+        Warns
+        -----
+        DeprecationWarning
+            If ``options`` is given.
 
         Examples
         --------
@@ -435,6 +484,13 @@ class NonRepairable:
         >>> unit.find_optimal_replacement()
         inf
         """
+        if options is not None:
+            warnings.warn(
+                "find_optimal_replacement()'s options argument is ignored "
+                "and deprecated; it will be removed in a future release.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
         if self.model_parameterization == "parametric":
             if is_exponential(self.reliability) and not (
                 getattr(self.reliability, "offset", False)
@@ -453,43 +509,30 @@ class NonRepairable:
                     pass
                 elif self.reliability.params[1] <= 1:
                     return np.inf
+        # The cases above need no costs; every search below does.
+        self._require_costs()
+        if self.model_parameterization == "parametric":
             # When using a parametric distribution the optimisation is
             # straight forward. Simply find the point in the support where
             # the cost rate is minimised. Uses quadrature to integrate!
             mean = self.reliability.mean()
             old_err_state = np.seterr(all="ignore")
             res = minimize(self._cost_rate_with_log_x, np.log(mean), tol=1e-10)
-            res_log = minimize(
-                self._log_cost_rate_with_log_x, np.log(mean), tol=1e-10
-            )
             np.seterr(**old_err_state)
             self.optimisation_results = res
-            if res["fun"] < np.exp(res_log["fun"]):
-                optimal = np.exp(res.x[0])
-            else:
-                optimal = np.exp(res_log.x[0])
+            optimal = np.exp(res.x[0])
         elif self.model_parameterization == "standby":
             optimal = self._optimal_standby_replacement()
         else:
-            # When using non-parametric estimations, it can also be straight
-            # forward. Simply find the cost rate at a number of places
-            # from the min to the max support of the model and return the
-            # value of x which has the minimum cost rate.
-            x_search = np.linspace(
-                self.reliability.x.min(), self.reliability.x.max(), 10000
+            # Scan the estimate's range on a grid that includes its knots,
+            # on which the cumulative trapezoidal rule is exact.
+            ages = np.union1d(
+                np.linspace(0.0, self._knots[-1], 10001), self._knots
             )
-
-            dt = np.diff(x_search, prepend=0)
-            R = self.reliability_function(x_search)
-            avg_replacement_times = (dt * R).cumsum()
-
-            planned_costs = R * self.cp
-            unplanned_costs = (1 - R) * self.cu
-
-            costs = (planned_costs + unplanned_costs) / avg_replacement_times
-
-            optimal_idx = np.argmin(costs)
-            optimal = x_search[optimal_idx]
+            rates = _cost_rates(
+                self.cp, self.cu, ages, self.reliability_function(ages)
+            )
+            optimal = float(ages[int(np.nanargmin(rates))])
         return optimal
 
     def _optimal_standby_replacement(self) -> float:
@@ -519,12 +562,7 @@ class NonRepairable:
             0.0,
             1.0,
         )
-        cycle = np.concatenate(
-            [[0.0], np.cumsum(np.diff(ages) * (R[1:] + R[:-1]) / 2.0)]
-        )
-        with np.errstate(divide="ignore", invalid="ignore"):
-            rates = (self.cp * R + self.cu * (1.0 - R)) / cycle
-        rates[0] = np.inf
+        rates = _cost_rates(self.cp, self.cu, ages, R)
         i = int(np.nanargmin(rates))
         lo, hi = ages[max(i - 1, 1)], ages[min(i + 1, len(ages) - 1)]
         if hi <= lo:
@@ -574,11 +612,7 @@ class NonRepairable:
         >>> policy.interval, round(policy.cost_rate, 4)
         (inf, 0.05)
         """
-        if not hasattr(self, "cp"):
-            raise ValueError(
-                "costs not set: call set_costs_planned_and_unplanned"
-                "(cp, cu) first"
-            )
+        self._require_costs()
         interval = self.find_optimal_replacement()
         if np.isinf(interval):
             rate = self.cu / model_mean(self.reliability)

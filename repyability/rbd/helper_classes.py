@@ -193,7 +193,7 @@ class PerfectUnreliability:
         return np.zeros_like(np.atleast_1d(x)).astype(float)
 
     @classmethod
-    def random(self, size):
+    def random(cls, size):
         """Draw failure times: all 0, as the node has always failed.
 
         Parameters

@@ -30,7 +30,7 @@ from tqdm import tqdm
 
 from repyability.non_repairable import NonRepairable
 from repyability.rbd._sampling import UniformStream, inverse_sampler
-from repyability.rbd.rbd import RBD
+from repyability.rbd.rbd import RBD, _check_on_infeasible_rbd
 from repyability.rbd.results import (
     AvailabilityResult,
     CostResult,
@@ -685,8 +685,10 @@ class RepairableRBD(RBD):
         appreciable probability on a negative cost (its 1e-12 quantile is
         below 0); if a reliability model is not a surpyval parametric or
         non-parametric model or a ``StandbyModel``; if ``input_node`` or
-        ``output_node`` is not in the diagram; or if the diagram is invalid
-        and ``on_infeasible_rbd`` is ``"raise"``.
+        ``output_node`` is not in the diagram, or is not its source or sink;
+        if ``on_infeasible_rbd`` is not ``"raise"``, ``"warn"`` or
+        ``"ignore"``; or if the diagram is invalid and ``on_infeasible_rbd``
+        is ``"raise"``.
     KeyError
         If a spec dict has no ``"reliability"`` or no ``"repairability"``.
 
@@ -769,6 +771,7 @@ class RepairableRBD(RBD):
         on_infeasible_rbd: str = "raise",
         downtime_cost_rate: float = 0.0,
     ):
+        _check_on_infeasible_rbd(on_infeasible_rbd)
         # Capture the constructor inputs verbatim (before any mutation) so the
         # RBD can be faithfully serialised via to_dict()/to_json().
         edges = list(edges)

@@ -39,7 +39,7 @@ from .ccf import CCFGroup
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .load_sharing_node import LoadSharingModel
 from .node_state import NodeState
-from .rbd import RBD
+from .rbd import RBD, _check_on_infeasible_rbd
 from .repeated_node import RepeatedNode
 from .repeated_standby_node import RepeatedStandbyNode
 from .results import ConfidenceInterval, RedundancyAllocation
@@ -339,11 +339,7 @@ class NonRepairableRBD(RBD):
         on_infeasible_rbd: str = "raise",
         ccf_groups: Optional[Iterable[CCFGroup]] = None,
     ):
-        if on_infeasible_rbd not in ["raise", "warn", "ignore"]:
-            raise ValueError(
-                "'on_infeasible_rbd' must be one of"
-                + " {'raise', 'warn', 'ignore'}"
-            )
+        _check_on_infeasible_rbd(on_infeasible_rbd)
         # Capture the constructor inputs verbatim (before any mutation) so the
         # RBD can be faithfully serialised via to_dict()/to_json().
         edges = list(edges)
@@ -442,7 +438,7 @@ class NonRepairableRBD(RBD):
         if not self.structure_check["is_valid"]:
             if on_infeasible_rbd == "warn":
                 warnings.warn(
-                    "Strucutral Errors in RBD:\n"
+                    "Structural Errors in RBD:\n"
                     + pprint.pformat(self.structure_check),
                     stacklevel=2,
                 )

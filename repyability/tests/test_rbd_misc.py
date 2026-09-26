@@ -109,3 +109,55 @@ def test_named_input_and_output_must_be_the_source_and_sink(kwargs, message):
         edges, {"a": unit, "b": unit}, input_node="s", output_node="t"
     )
     assert named.sf(50) == pytest.approx(unit.sf(50).item() ** 2)
+
+
+@pytest.mark.parametrize("cls", ["RBD", "NonRepairableRBD", "RepairableRBD"])
+def test_an_invalid_on_infeasible_rbd_is_rejected_on_a_valid_diagram(cls):
+    # The base RBD (and so RepairableRBD) checked the value only when the
+    # diagram was invalid, so a typo passed unnoticed on a valid one.
+    from repyability import RBD
+
+    edges = [("s", "a"), ("a", "t")]
+    unit = surv.Exponential.from_params([0.1])
+    build = {
+        "RBD": lambda: RBD(edges, on_infeasible_rbd="warm"),
+        "NonRepairableRBD": lambda: NonRepairableRBD(
+            edges, {"a": unit}, on_infeasible_rbd="warm"
+        ),
+        "RepairableRBD": lambda: RepairableRBD(
+            edges,
+            {"a": {"reliability": unit, "repairability": unit}},
+            on_infeasible_rbd="warm",
+        ),
+    }[cls]
+    with pytest.raises(ValueError, match="must be one of"):
+        build()
+
+
+def test_structure_warning():
+    with pytest.warns(UserWarning, match="^Structural Errors in RBD"):
+        NonRepairableRBD(
+            [("s", "a"), ("a", "t"), ("b", "t")],
+            {
+                "a": Exponential.from_params([0.1]),
+                "b": Exponential.from_params([0.1]),
+            },
+            on_infeasible_rbd="warn",
+        )
+
+
+def test_system_probability_rejects_an_unknown_method():
+    # Anything but "p" used to be taken silently as cut sets.
+    rbd = NonRepairableRBD(
+        [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        {n: Exponential.from_params([0.1]) for n in "ab"},
+    )
+    probabilities = {"a": 0.9, "b": 0.8}
+    by_paths = rbd.system_probability(probabilities, method="p")
+    by_cuts = rbd.system_probability(probabilities, method="c")
+    assert by_paths == pytest.approx([0.98])
+    assert by_cuts == pytest.approx([0.98])
+    with pytest.raises(ValueError, match="'p' or 'c'"):
+        rbd.system_probability(probabilities, method="cut sets")
+    with pytest.raises(ValueError, match="'p' or 'c'"):
+        rbd.sf(1.0, method="x")

@@ -24,6 +24,19 @@ from repyability.rbd.min_path_sets import min_path_sets as find_min_path_sets
 from repyability.rbd.rbd_graph import RBDGraph
 from repyability.utils.wrappers import check_probability
 
+_ON_INFEASIBLE_RBD = ("raise", "warn", "ignore")
+
+
+def _check_on_infeasible_rbd(value: Any) -> None:
+    """Raise unless ``value`` is an ``on_infeasible_rbd`` option. It is
+    checked on construction whether or not the diagram is valid, so a typo
+    cannot pass unnoticed."""
+    if value not in _ON_INFEASIBLE_RBD:
+        raise ValueError(
+            "'on_infeasible_rbd' must be one of {'raise', 'warn', 'ignore'}, "
+            f"got {value!r}."
+        )
+
 
 def log_linearly_scale_probabilities(p: float, x: float) -> np.ndarray:
     """Scale a probability by shifting the log of its complement.
@@ -450,8 +463,7 @@ class RBD:
         if the structure is infeasible
         and ``on_infeasible_rbd`` is ``"raise"`` (the message does not
         list the problems: use ``"warn"`` to see them); if
-        ``on_infeasible_rbd`` is not one of its three values (the base
-        class checks this only for an infeasible structure); or if, with
+        ``on_infeasible_rbd`` is not one of its three values; or if, with
         ``"warn"`` or ``"ignore"``, no set of working nodes can reach the
         output node (e.g. a ``k`` greater than the node's number of
         incoming edges).
@@ -508,6 +520,7 @@ class RBD:
         # merges the two). The positional order mirrors the subclasses: the
         # structure -- ``edges`` then ``nodes`` -- comes first, and ``k``
         # (k-out-of-n) is an optional modifier after it.
+        _check_on_infeasible_rbd(on_infeasible_rbd)
 
         # Create RBD graph
         self.G = RBDGraph()
@@ -570,19 +583,12 @@ class RBD:
         if not structure_check["is_valid"]:
             if on_infeasible_rbd == "warn":
                 warnings.warn(
-                    "Strucutral Errors in RBD:\n"
+                    "Structural Errors in RBD:\n"
                     + pprint.pformat(structure_check),
                     stacklevel=2,
                 )
             elif on_infeasible_rbd == "raise":
                 raise ValueError("RBD not correctly structured")
-            elif on_infeasible_rbd == "ignore":
-                pass
-            else:
-                raise ValueError(
-                    "'on_infeasible_rbd' must be one of"
-                    + " {'raise', 'warn', 'ignore'}"
-                )
 
         self.structure_check = structure_check
         self.input_node = structure_check["input_node"]
@@ -986,7 +992,8 @@ class RBD:
         Raises
         ------
         ValueError
-            If the node probability arrays are not all the same length.
+            If ``method`` is not ``"p"`` or ``"c"``, or the node probability
+            arrays are not all the same length.
         KeyError
             If an intermediate node has no entry in ``node_probabilities``.
 
@@ -1016,6 +1023,8 @@ class RBD:
         >>> [round(float(v), 4) for v in p]
         [0.931, 0.375]
         """
+        if method not in ("p", "c"):
+            raise ValueError("`method` must be either 'p' or 'c'")
 
         node_probabilities = copy(node_probabilities)
         lengths = np.array([], dtype=np.int64)
@@ -1283,10 +1292,19 @@ class RBD:
         With equal weights, nodes placed symmetrically (e.g. all in series,
         or all in parallel) get the same value.
 
-        The scipy result is stored on the RBD as ``res``, replacing any
-        earlier one. Because the tolerance is very tight, ``res.success`` is
-        often False ("precision loss") even when the target is met, so check
-        the result with ``system_probability`` instead.
+        The allocation found is checked: if its system probability misses
+        the target by more than one part in a million (of the target, or of
+        ``1 - target`` if that is smaller; 1e-6 for a target of 0 or 1), a
+        ValueError is raised. That happens when the target is out of reach
+        (a node with weight 0 stays at 0.5), and on large systems: the
+        search starts with every node at 0.5, which puts the probability of
+        a large series or parallel system so near 0 or 1 that the search
+        stalls. [`equal_allocation`][repyability.RBD.equal_allocation] and
+        [`improvement_allocation`][repyability.RBD.improvement_allocation]
+        are exact at any size. The scipy result is stored on the RBD as
+        ``res`` (also when the check fails), replacing any earlier one;
+        ``res.success`` is often False ("precision loss") even when the
+        target is met, as the tolerance is very tight.
 
         Parameters
         ----------
@@ -1306,7 +1324,8 @@ class RBD:
         Raises
         ------
         ValueError
-            If ``target`` is above 1 or below 0.
+            If ``target`` is above 1 or below 0, or the allocation found
+            misses it (see above).
         KeyError
             If ``weights`` is given without an entry for an intermediate
             node.
@@ -1351,6 +1370,16 @@ class RBD:
         }
 
         self.res = res
+        achieved = self.system_probability(node_probabilities).item()
+        tail = min(target, 1.0 - target)
+        if abs(achieved - target) > (1e-6 * tail if tail > 0.0 else 1e-6):
+            raise ValueError(
+                f"the search did not reach target {target}: its allocation "
+                f"gives {achieved:.6g}. It starts every node at 0.5, which on "
+                "a large system puts the system probability so near 0 or 1 "
+                "that it stalls, and a node with weight 0 stays at 0.5. "
+                "equal_allocation and improvement_allocation are exact."
+            )
         return node_probabilities
 
     def node_names(self) -> list[Hashable]:

@@ -158,6 +158,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   outputs, same final RNG state, exactly the same exact-engine probabilities,
   and the same minimal cut sets.
 
+### Deprecated
+- The `options` argument of `NonRepairable.find_optimal_replacement()` was
+  never used. Passing it now issues a `DeprecationWarning`; it will be
+  removed in a future release.
+
 ### Fixed
 - **Nested `RepairableRBD` simulations put the nested RBD's state changes at
   the wrong times.** A nested RBD's `next_event()` returns the time *of* its
@@ -234,6 +239,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   warns that the cost rate is still falling there (and whether raising
   `max_interval` could help), where the horizon used to be returned in
   silence.
+- **`NonRepairable` got the cycle length and survival of a non-parametric
+  lifetime wrong.** `avg_replacement_time` integrated from the estimate's
+  first time point instead of age 0 and stopped at the last time point below
+  `t`, and the survival function was linearly extrapolated beyond the data,
+  where it went negative. For a Kaplan-Meier fit to failures at 10, 20, 30
+  and 40, the cycle length to age 25 came out as 5 instead of 17.19, and the
+  search returned 21.6 with a policy cost rate of 0.63, where the optimum is
+  20 at 0.2. The survival function is now linear between the estimate's time
+  points, from 1 at age 0, and held at its last value beyond them (as
+  surpyval's own step function is); the cycle length is its exact integral,
+  and the search uses the same exact integral from age 0, so the policy's
+  cost rate agrees with it.
+- **Missing costs raised different errors in `NonRepairable`.** `cost_rate`
+  and `find_optimal_replacement()` raised `AttributeError` and
+  `optimal_replacement_policy()` `ValueError`; all three now raise
+  `ValueError` ("costs not set"). `find_optimal_replacement()` still returns
+  `inf` without costs when preventive replacement never pays.
+- **Negative and non-finite costs were accepted.**
+  `NonRepairable.set_costs_planned_and_unplanned` accepted a negative planned
+  cost and NaN or infinite costs, and `Repairable.set_repair_and_overhaul_costs`
+  NaN or infinite ones; both now raise `ValueError`. (`RepairableRBD`
+  already rejected them.)
+- **`simple_allocation` never checked that it met the target.** A target out
+  of reach (a node with weight 0 stays at 0.5) came back as the closest miss,
+  and on large systems the search could not move at all: it starts every node
+  at 0.5, which puts, say, 30 nodes in parallel within 1e-9 of certain
+  success, so a target of 0.5 returned every node at 0.5. It now raises
+  `ValueError` when the allocation misses the target by more than one part in
+  a million (of the target, or of `1 - target` if smaller);
+  `equal_allocation` and `improvement_allocation` are exact at any size.
+  Allocations that met their target are unchanged.
+- **`system_probability` took any `method` other than `"p"` as cut sets.** It
+  now raises `ValueError` unless `method` is `"p"` or `"c"`, as
+  `is_system_working` does, and so do the methods that pass their `method`
+  on to it (`sf`, `mean_availability`, ...).
+- **An invalid `on_infeasible_rbd` passed unnoticed on a valid diagram.**
+  `RBD` and `RepairableRBD` checked the value only when the structure was
+  invalid; every RBD class now checks it on construction. The structure
+  warning's "Strucutral" typo is corrected.
+- **`find_optimal_replacement()` ran its search twice.** A helper meant to
+  minimise the log of the cost rate duplicated the plain one, so for a
+  parametric lifetime the same search ran twice and the second result could
+  never be chosen. It now runs once, with bit-identical results (checked on
+  200 lifetime and cost combinations). `PerfectUnreliability.random`'s first
+  parameter is renamed `cls`, as it is a class method.
 - `test_non_parametric_optimal_replacement` drew its data from the unseeded
   global RNG and failed about one run in 150; it is now seeded.
 - `test_weibull_no_optimal_replacement` no longer asserts that a warning is
@@ -245,6 +295,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged and still asserted.
 
 ### Documentation
+- **Long chains in series are a documented known limit.** Finding the path
+  sets is recursive, so building an RBD with a chain of about a thousand or
+  more nodes in series exceeds Python's default recursion limit; the
+  performance section now says so, with the workaround
+  (`sys.setrecursionlimit(10_000)` handles chains of several thousand nodes).
 - **The documentation is rewritten for complete coverage.**
   - **The user guide** is now eleven pages, one per task: building an RBD,
     reliability, importance measures, condition-based evaluation, redundancy
