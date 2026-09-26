@@ -123,13 +123,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   component or contain it with a cut set of the failed branch) instead of
   Berge's algorithm, whose intermediate families could grow far beyond the
   answer, and they are computed once per RBD; the decomposition also runs on
-  an explicit stack, so `sf()` and cut sets now work on systems with more
-  than about a thousand components, where they used to hit Python's
-  recursion limit. Seeded results are unchanged, and unseeded runs leave the
-  global RNG in the same state. Models whose sampling cannot be reproduced
-  exactly this way (fixed-probability, limited-failure-population or
-  zero-inflated models) keep their original code path. Measured at default
-  settings:
+  an explicit stack, so `sf()` and cut sets now work on wide systems of more
+  than about a thousand components (1 100 units in parallel, say), where they
+  used to hit Python's recursion limit. (Finding the path sets is still
+  recursive, so a single chain of about a thousand nodes in series still
+  exceeds the limit when the RBD is built.) Seeded results are unchanged,
+  and unseeded runs leave the global RNG in the same state. Models whose
+  sampling cannot be reproduced exactly this way (fixed-probability,
+  limited-failure-population or zero-inflated models) keep their original
+  code path. Measured at default settings:
 
   | Workload | Before | After |
   |---|---|---|
@@ -190,6 +192,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged and still asserted.
 
 ### Documentation
+- **The documentation is rewritten for complete coverage.**
+  - **The user guide** is now eleven pages, one per task: building an RBD,
+    reliability, importance measures, condition-based evaluation, redundancy
+    models, common-cause failures, repairable systems, costs, design and
+    allocation, maintenance policies, and saving/reproducibility/performance.
+    Every public capability is covered, with the arguments it takes, what it
+    returns and its limits, including ones the old guide never mentioned:
+    - repeated components (one component drawn in several places);
+    - the structure check, irrelevant nodes and all path sets;
+    - density, hazard and per-node values;
+    - the simulated criticality measures;
+    - nested repairable RBDs, and stepping a simulation by hand;
+    - the reliability-allocation helpers.
+  - **Concepts** gains the theory of lifetimes by simulation, standby and
+    repeated nodes, availability (renewal, the frequency formula, MUT/MDT,
+    the simulation and its criticality measures), costs, allocation, and the
+    maintenance models.
+  - **The tutorial** now runs end to end, including the fits, and adds steps
+    on pricing redundancy and on the cost of the repairable skid. The home
+    page maps every capability to its guide page.
+  - **The API reference** now includes `FailureLimitPolicy` and
+    `minimal_repair_time_to_nth_failure`.
+- **Every public class, method and property has a complete numpy-style
+  docstring**, with parameters, returns, errors and examples, run as
+  doctests.
+- **The docs are now tested.** `test_docs_examples.py` runs every code block
+  on every page and checks each number quoted in a `# -> value` comment
+  against the code. `test_api_docstrings.py` requires every public member to
+  have a docstring that documents each of its parameters. The strict docs
+  build now also fails on broken links and anchors.
+- **Stale statements are corrected.** The tutorial's field-data snippets did
+  not run, and several guide examples used undefined names. The
+  performance entry above overstated which systems no longer hit the
+  recursion limit.
 - The common-cause (CCF) docs now state the models' assumption: they are the
   PRA basic-event models, which split each member's failure *probability*, and
   hold while that probability is small (a mission or proof-test interval, not
