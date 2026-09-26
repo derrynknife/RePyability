@@ -46,11 +46,39 @@ def _density_on_grid(model, t: np.ndarray) -> np.ndarray:
 
 
 def switch_success_probs(switching_probability, n) -> list:
-    """Normalise a switching_probability into a list of (n-1) per-switch
-    success probabilities (the switches into components 2..n).
+    """Normalise a switching probability into per-switch probabilities.
 
-    switching_probability is either a scalar (same probability for every
-    switch) or a sequence of length n-1 (one success probability per switch).
+    Returns the ``n - 1`` success probabilities of the switches into
+    components 2, ..., n of a standby chain.
+
+    Parameters
+    ----------
+    switching_probability : float or sequence of float
+        A scalar (the same probability for every switch) or a sequence of
+        length ``n - 1`` (one success probability per switch), each in
+        ``[0, 1]``.
+    n : int
+        The number of components in the chain.
+
+    Returns
+    -------
+    list of float
+        The per-switch success probabilities; empty when ``n <= 1``, in
+        which case ``switching_probability`` is not checked.
+
+    Raises
+    ------
+    ValueError
+        If a sequence does not have length ``n - 1``, or a probability is
+        outside ``[0, 1]``.
+
+    Examples
+    --------
+    >>> from repyability.rbd.numerical_convolution import switch_success_probs
+    >>> switch_success_probs(0.9, 3)
+    [0.9, 0.9]
+    >>> switch_success_probs([1.0, 0.5], 3)
+    [1.0, 0.5]
     """
     if n <= 1:
         return []
@@ -70,7 +98,26 @@ def switch_success_probs(switching_probability, n) -> list:
 
 
 def is_perfect_switching(switching_probability) -> bool:
-    """True if every switch succeeds with probability 1."""
+    """True if every switch succeeds with probability 1.
+
+    Parameters
+    ----------
+    switching_probability : float or sequence of float
+        A scalar, or one success probability per switch.
+
+    Returns
+    -------
+    bool
+        Whether the scalar, or every element of the sequence, equals 1.0
+        (an empty sequence counts as perfect). Values are not
+        range-checked.
+
+    Examples
+    --------
+    >>> from repyability.rbd.numerical_convolution import is_perfect_switching
+    >>> is_perfect_switching(1.0), is_perfect_switching([1.0, 0.9])
+    (True, False)
+    """
     if np.isscalar(switching_probability):
         return float(cast(float, switching_probability)) == 1.0
     return all(float(p) == 1.0 for p in switching_probability)
@@ -116,14 +163,22 @@ class ConvolvedSurvival:
     next spare succeeds only with some probability, so the lifetime is a
     mixture of partial sums (run the first component; if its switch works, run
     the second too; and so on). This computes that mixture by numerically
-    convolving the component densities on a fine time grid. sf()/ff() then
-    interpolate the pre-computed grid, so they are fast and deterministic.
+    convolving the component densities on a fine time grid. ``sf``/``ff``
+    then interpolate the pre-computed grid, so they are fast and
+    deterministic.
+
+    The grid runs from 0 to the sum of the components' upper times (for
+    each, the smallest ``max(mean, 1) * 2 ** j`` at which its survival is
+    at most ``eps``). The densities are evaluated on it (non-finite values
+    set to 0), convolved by FFT, and each partial sum's distribution is
+    normalised to total probability 1 before the mixture is formed.
 
     Parameters
     ----------
     models : sequence
         The component lifetime distributions, in standby order (primary
-        first). Each must expose df() (density), sf() (survival) and mean().
+        first). Each must expose ``df`` (density), ``sf`` (survival) and
+        ``mean``.
     switching_probability : float or sequence, optional
         Probability that a switch onto the next spare succeeds. A scalar
         applies to every switch; a sequence gives one probability per switch
@@ -134,6 +189,35 @@ class ConvolvedSurvival:
         accuracy at the cost of construction time.
     eps : float, optional
         Survival threshold used to bound the time grid, by default 1e-10.
+
+    Attributes
+    ----------
+    switching_weights : list of float
+        The mixture weights: ``switching_weights[i]`` is the probability
+        that exactly the first ``i + 1`` components run (the switches
+        before succeed and the next one fails, or, for the last, every
+        switch succeeds). They sum to 1.
+
+    Raises
+    ------
+    ValueError
+        If ``models`` is empty, a switching probability is outside
+        ``[0, 1]``, or a sequence of them has the wrong length.
+
+    Examples
+    --------
+    The sum of two Exponential(1) lifetimes is Erlang(2, 1), whose
+    survival function is ``exp(-t) * (1 + t)``; the numerical result is
+    close to it:
+
+    >>> import surpyval as surv
+    >>> from repyability.rbd.numerical_convolution import ConvolvedSurvival
+    >>> unit = surv.Exponential.from_params([1.0])
+    >>> conv = ConvolvedSurvival([unit, unit])
+    >>> round(float(conv.sf(2.0)), 3)  # exact: exp(-2) * 3 = 0.406
+    0.406
+    >>> round(conv.mean(), 2)  # exact: 2
+    2.0
     """
 
     def __init__(
@@ -179,13 +263,52 @@ class ConvolvedSurvival:
         self._sf = np.clip(sf, 0.0, 1.0)
 
     def sf(self, x):
-        """Survival function at x (1 at/below 0, ~0 beyond the grid)."""
+        """Survival function at x (1 at/below 0, ~0 beyond the grid).
+
+        Linear interpolation of the pre-computed curve: 1 for ``x`` below
+        the grid (``x < 0``) and 0 beyond its end.
+
+        Parameters
+        ----------
+        x : float or array_like
+            The time(s) at which to evaluate.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The survival probability: a numpy float for a scalar ``x``, an
+            array of the same shape for an array ``x``.
+        """
         return np.interp(x, self._t, self._sf, left=1.0, right=0.0)
 
     def ff(self, x):
-        """Cumulative failure probability (CDF) at x."""
+        """Cumulative failure probability (CDF) at x.
+
+        Parameters
+        ----------
+        x : float or array_like
+            The time(s) at which to evaluate.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            ``1 - sf(x)``, shaped as for ``sf``.
+        """
         return 1.0 - self.sf(x)
 
     def mean(self, *args, **kwargs) -> float:
-        """Mean lifetime, E[T] = integral of the survival function."""
+        """Mean lifetime, E[T] = integral of the survival function.
+
+        Integrated over the grid with the trapezoidal rule.
+
+        Parameters
+        ----------
+        *args, **kwargs
+            Ignored; accepted so ``mean`` can be called like other models'.
+
+        Returns
+        -------
+        float
+            The mean lifetime.
+        """
         return float(trapezoid(self._sf, self._t))

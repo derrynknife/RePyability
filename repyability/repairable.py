@@ -18,17 +18,26 @@ whose repairs are anything from worthless to partial:
 
 Minimal repair is the ``q = 1`` edge of imperfect repair; perfect repair
 (``q = 0``, a full renewal each time) is the ``NonRepairable`` boundary.
-Whichever the unit is, ``Repairable`` prices the same policy: each repair costs
-``cr`` while an *overhaul / replacement* costs ``co`` (> ``cr``) and renews the
-unit to as-new. Renewing every ``t`` time units makes each cycle a renewal
-cycle costing ``cr * E[N(t)] + co``, so the long-run cost rate is::
+Whichever the unit is, each repair costs ``cr`` while an *overhaul /
+replacement* costs ``co`` (> ``cr``) and renews the unit to as-new. Renewing
+every ``t`` time units makes each cycle a renewal cycle costing
+``cr * E[N(t)] + co``, so the long-run cost rate is::
 
     g(t) = (cr * E[N(t)] + co) / t
 
 Minimising ``g`` gives the optimal overhaul/replacement interval (the
 Barlow-Hunter policy). A finite optimum exists only when the unit wears out
 (``E[N(t)]`` growing super-linearly); otherwise repairs never become frequent
-enough for renewal to pay and the optimal interval is infinite.
+enough for renewal to pay and the optimal interval is infinite (reported as
+``inf`` for an analytic model; the simulated search is bounded by a horizon
+and returns the horizon instead).
+
+``Repairable`` also prices a *failure-limit* policy: repair the first
+``n - 1`` failures and replace the unit at the ``n``-th, with long-run cost
+rate ``(cr * (n - 1) + co) / E[T_n]``, where ``E[T_n]``, the expected time to
+the ``n``-th failure, is simulated from an imperfect-repair model (for
+power-law minimal repair, ``minimal_repair_time_to_nth_failure`` gives it in
+closed form).
 
 Contrast with ``NonRepairable``, which models renewal *by replacement* ("as
 good as new") and the age-replacement policy. RBD components are assumed to
@@ -57,12 +66,51 @@ _DEFAULT_MAX_FAILURES = 30
 def minimal_repair_time_to_nth_failure(
     alpha: float, beta: float, n: int
 ) -> float:
-    """Expected time to the ``n``-th failure of a minimal-repair (power-law /
-    Weibull-baseline) process: ``alpha * Gamma(n + 1/beta) / Gamma(n)``.
+    """Expected time to the ``n``-th failure under power-law minimal repair.
 
-    A closed form for the ``q = 1`` (minimal repair) limit, exact and cheap;
-    used both directly and to anchor the simulated
-    :meth:`Repairable.expected_time_to_nth_failure`.
+    For a minimal-repair process with expected number of failures
+    ``E[N(t)] = (t / alpha) ** beta`` (a Weibull(``alpha``, ``beta``) unit
+    repaired "as bad as old": surpyval's
+    ``CrowAMSAA.from_params([alpha, beta])``, or a ``GeneralizedRenewal``
+    with that Weibull baseline and ``q = 1``), the ``n``-th failure time
+    is ``alpha * S ** (1 / beta)`` with ``S ~ Gamma(n, 1)``, so
+    ``E[T_n] = alpha * Gamma(n + 1 / beta) / Gamma(n)``.
+
+    The closed form is exact and cheap: use it for minimal repair in place
+    of the simulated
+    [`Repairable.expected_time_to_nth_failure`]
+    [repyability.Repairable.expected_time_to_nth_failure] (which needs an
+    imperfect-repair model), or to check that estimate at ``q = 1``.
+    ``n = 1`` gives the Weibull mean, ``alpha * Gamma(1 + 1 / beta)``.
+
+    Parameters
+    ----------
+    alpha : float
+        Scale of the power law (the Weibull baseline's scale), in time
+        units.
+    beta : float
+        Shape of the power law (the Weibull baseline's shape).
+    n : int
+        The failure number, 1 for the first failure.
+
+    Returns
+    -------
+    float
+        The expected time to the ``n``-th failure, in the units of
+        ``alpha``.
+
+    Raises
+    ------
+    ValueError
+        If ``n < 1``.
+
+    Examples
+    --------
+    >>> from repyability import minimal_repair_time_to_nth_failure
+    >>> round(minimal_repair_time_to_nth_failure(100.0, 2.0, 1), 2)
+    88.62
+    >>> round(minimal_repair_time_to_nth_failure(100.0, 2.0, 3), 2)
+    166.17
     """
     if n < 1:
         raise ValueError("n must be a positive integer.")
@@ -78,22 +126,89 @@ _DEFAULT_HORIZON_MULTIPLE = 15.0
 
 
 class Repairable:
-    """Repairable component with an optimal overhaul/replacement policy.
+    """Repairable component with optimal overhaul and failure-limit policies.
+
+    Prices the repair-versus-renew trade-off for a unit whose repairs are
+    minimal ("as bad as old") or imperfect (partial rejuvenation). Each
+    failure is repaired at cost ``cr``; an overhaul/replacement costs
+    ``co > cr`` and renews the unit to as good as new. Two policies are
+    optimised:
+
+    - periodic overhaul: renew every ``t`` time units, with long-run cost
+      rate ``g(t) = (cr * E[N(t)] + co) / t`` (the Barlow-Hunter policy),
+      where ``E[N(t)]`` is the expected number of failures by age ``t``;
+      see ``optimal_overhaul_policy()``;
+    - failure limit: repair the first ``n - 1`` failures and replace at
+      the ``n``-th, with cost rate ``(cr * (n - 1) + co) / E[T_n]``, where
+      ``E[T_n]`` is the expected time to the ``n``-th failure; see
+      ``optimal_failure_limit_policy()`` (simulation-backed models only).
+
+    Repairs and overhauls take no time and costs are per event, so cost
+    rates are per unit of the model's time. Set the costs with
+    ``set_repair_and_overhaul_costs()`` before any cost calculation.
+
+    This is a standalone component-level tool, not an RBD node model: RBD
+    components are assumed to renew on repair, as a
+    [`NonRepairable`][repyability.NonRepairable] does.
 
     Parameters
     ----------
     model : object
-        A recurrent-event model exposing the expected number of failures by
-        age ``t``, ``E[N(t)]``, as either:
+        A recurrent-event model exposing ``E[N(t)]`` as either:
 
-        - ``cif(t)`` — an analytic cumulative intensity (minimal repair), e.g.
-          a surpyval ``CrowAMSAA``/``Duane``/``HPP`` (fitted or from params);
-          or
-        - ``mcf(t, items=..., seed=...)`` — a simulation-estimated mean
-          cumulative function (imperfect repair), e.g. a fitted surpyval
-          ``GeneralizedRenewal`` (Kijima I/II).
+        - ``cif(t)``: an analytic cumulative intensity (minimal repair),
+          e.g. a surpyval ``CrowAMSAA`` or ``Duane`` model (fitted, or
+          built with ``from_params``) or a fitted ``HPP``; or
+        - ``mcf(t, items=..., seed=...)``: a simulation-estimated mean
+          cumulative function (imperfect repair), e.g. a surpyval
+          ``GeneralizedRenewal`` (Kijima I/II) model, fitted or built with
+          ``fit_from_parameters``.
 
-        If both are present ``cif`` is used (analytic, exact).
+        If both are present ``cif`` is used (analytic, exact). The
+        failure-count methods (``expected_time_to_nth_failure()`` and the
+        failure-limit policy) also call the model's
+        ``count_terminated_simulation``, which surpyval's
+        simulation-backed models provide.
+
+    Attributes
+    ----------
+    model : object
+        The recurrent-event model given.
+
+    Raises
+    ------
+    ValueError
+        If ``model`` exposes neither ``cif`` nor ``mcf``.
+
+    Examples
+    --------
+    Minimal repair with a power-law (Crow-AMSAA) intensity, where
+    ``E[N(t)] = (t / 100) ** 1.5`` is exact:
+
+    >>> from surpyval.recurrent import CrowAMSAA
+    >>> from repyability import Repairable
+    >>> unit = Repairable(CrowAMSAA.from_params([100.0, 1.5]))
+    >>> unit.set_repair_and_overhaul_costs(cr=10.0, co=1000.0)
+    >>> policy = unit.optimal_overhaul_policy()
+    >>> round(policy.interval, 1), round(policy.cost_rate, 4)
+    (3420.0, 0.8772)
+
+    Imperfect repair (Kijima I with restoration factor ``q = 0.5``) has no
+    closed-form ``E[N(t)]``, so it is simulated; pass a ``seed`` for a
+    reproducible result:
+
+    >>> import surpyval as surv
+    >>> from surpyval.recurrent import GeneralizedRenewal
+    >>> grp = GeneralizedRenewal.fit_from_parameters(
+    ...     [100.0, 2.0], 0.5, kijima="i", dist=surv.Weibull
+    ... )
+    >>> unit = Repairable(grp)
+    >>> unit.set_repair_and_overhaul_costs(cr=1.0, co=5.0)
+    >>> policy = unit.optimal_overhaul_policy(
+    ...     seed=1, n_simulations=100, max_interval=600.0
+    ... )
+    >>> round(policy.interval), round(policy.cost_rate, 3)
+    (369, 0.035)
     """
 
     def __init__(self, model):
@@ -109,16 +224,40 @@ class Repairable:
 
     @property
     def is_simulated(self) -> bool:
-        """True if ``E[N(t)]`` is estimated by simulation (imperfect repair),
-        so the policy methods honour ``seed``/``n_simulations``."""
+        """Whether ``E[N(t)]`` is estimated by simulation.
+
+        ``True`` for an ``mcf``-only (imperfect-repair) model, whose
+        methods honour ``seed``, ``n_simulations`` and ``max_interval``;
+        ``False`` for an analytic ``cif`` model, whose methods ignore them.
+
+        Examples
+        --------
+        >>> from surpyval.recurrent import CrowAMSAA
+        >>> from repyability import Repairable
+        >>> Repairable(CrowAMSAA.from_params([100.0, 1.5])).is_simulated
+        False
+        """
         return not self._analytic
 
     def set_repair_and_overhaul_costs(self, cr: float, co: float) -> None:
         """Set the repair cost ``cr`` and overhaul/replacement cost ``co``.
 
-        Requires ``0 < cr < co``: an overhaul/replacement (a full renewal) must
-        cost more than a repair, otherwise one would simply renew at every
-        failure.
+        Required before any cost or policy calculation. The costs are
+        stored as the ``cr`` and ``co`` attributes.
+
+        Parameters
+        ----------
+        cr : float
+            Cost of each (minimal or imperfect) repair. Must be positive.
+        co : float
+            Cost of an overhaul/replacement, which renews the unit. Must
+            exceed ``cr``: otherwise one would simply renew at every
+            failure.
+
+        Raises
+        ------
+        ValueError
+            If ``cr <= 0`` or ``cr >= co``.
         """
         if cr <= 0:
             raise ValueError("repair cost, cr, must be positive.")
@@ -165,12 +304,44 @@ class Repairable:
         seed: Optional[int] = None,
         n_simulations: int = _DEFAULT_N_SIMULATIONS,
     ) -> Union[float, np.ndarray]:
-        """Expected cost of one overhaul/replacement cycle of length ``t``:
-        ``cr * E[N(t)] + co``.
+        """Expected cost of one overhaul/replacement cycle of length ``t``.
 
-        Scalar ``t`` returns a float; array ``t`` returns an array.
-        ``seed``/``n_simulations`` apply only to a simulation-backed
-        (imperfect-repair) model.
+        ``cr * E[N(t)] + co``: the repairs expected before the overhaul at
+        age ``t``, plus the overhaul itself.
+
+        Parameters
+        ----------
+        t : float or array_like
+            The cycle length(s), in the model's time units.
+        seed : int, optional
+            Seed for the simulation of a simulation-backed model (ignored
+            for an analytic one). ``None`` (the default) draws from numpy's
+            global RNG.
+        n_simulations : int, optional
+            Number of simulated histories used to estimate ``E[N(t)]``
+            (default 1000; ignored for an analytic model).
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The expected cycle cost: a float for a scalar ``t``, an array
+            for an array ``t``.
+
+        Raises
+        ------
+        ValueError
+            If the costs have not been set.
+
+        Examples
+        --------
+        With ``E[N(250)] = (250 / 100) ** 1.5 = 3.95`` expected repairs:
+
+        >>> from surpyval.recurrent import CrowAMSAA
+        >>> from repyability import Repairable
+        >>> unit = Repairable(CrowAMSAA.from_params([100.0, 1.5]))
+        >>> unit.set_repair_and_overhaul_costs(cr=10.0, co=1000.0)
+        >>> round(unit.cost(250.0), 2)
+        1039.53
         """
         self._require_costs()
         scalar_in = np.ndim(t) == 0
@@ -185,12 +356,50 @@ class Repairable:
         seed: Optional[int] = None,
         n_simulations: int = _DEFAULT_N_SIMULATIONS,
     ) -> Union[float, np.ndarray]:
-        """Long-run cost per unit time when renewing every ``t``:
-        ``(cr * E[N(t)] + co) / t``.
+        """Long-run cost per unit time when overhauling every ``t``.
 
-        Scalar ``t`` returns a float; array ``t`` returns an array.
-        ``seed``/``n_simulations`` apply only to a simulation-backed
-        (imperfect-repair) model.
+        ``g(t) = (cr * E[N(t)] + co) / t``, the cost of one cycle over its
+        length (renewal-reward); ``t = 0`` gives ``inf``. This is the cost
+        rate the overhaul policy minimises.
+
+        For a simulation-backed model a single simulation, run to the
+        largest ``t``, serves every age in the call, so pass all the ages
+        to be compared in one call: with a fixed ``seed``, the estimate at
+        an age depends on the largest age requested.
+
+        Parameters
+        ----------
+        t : float or array_like
+            The overhaul interval(s), in the model's time units.
+        seed : int, optional
+            Seed for the simulation of a simulation-backed model (ignored
+            for an analytic one). ``None`` (the default) draws from numpy's
+            global RNG.
+        n_simulations : int, optional
+            Number of simulated histories used to estimate ``E[N(t)]``
+            (default 1000; ignored for an analytic model).
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The cost rate: a float for a scalar ``t``, an array for an
+            array ``t``.
+
+        Raises
+        ------
+        ValueError
+            If the costs have not been set.
+
+        Examples
+        --------
+        >>> from surpyval.recurrent import CrowAMSAA
+        >>> from repyability import Repairable
+        >>> unit = Repairable(CrowAMSAA.from_params([100.0, 1.5]))
+        >>> unit.set_repair_and_overhaul_costs(cr=10.0, co=1000.0)
+        >>> round(unit.cost_rate(250.0), 4)
+        4.1581
+        >>> [round(float(g), 4) for g in unit.cost_rate([1000.0, 3420.0])]
+        [1.3162, 0.8772]
         """
         self._require_costs()
         scalar_in = np.ndim(t) == 0
@@ -334,15 +543,86 @@ class Repairable:
     ) -> float:
         """The overhaul/replacement interval minimising the long-run cost rate.
 
-        For an analytic (minimal-repair) model, returns ``inf`` when renewal
-        never pays: the unit does not wear out (``E[N(t)]`` grows at most
-        linearly — e.g. HPP, or Crow-AMSAA with ``beta <= 1``), so the cost
-        rate keeps falling as the interval grows.
+        Minimises ``g(t) = (cr * E[N(t)] + co) / t`` (see ``cost_rate``).
 
-        For a simulation-backed (imperfect-repair) model, pass a ``seed`` for a
-        reproducible result; ``n_simulations`` sets the Monte-Carlo sample size
-        and ``max_interval`` the search horizon (default ~15x the baseline
-        mean-time-to-first-failure).
+        For an analytic (``cif``) model the search is deterministic: it
+        brackets, to within a factor of 2, the age at which
+        ``cr * E[N(t)]`` reaches ``co``, scans a 1601-point log-spaced grid
+        from 1e-4 to 1e4 times that age (moving the grid when the minimum
+        falls on an edge), and refines the best grid point with a bounded
+        scalar minimiser. It returns ``inf`` when renewal never pays: the
+        unit does not wear out (``E[N(t)]`` grows at most linearly, e.g. an
+        HPP, or Crow-AMSAA with ``beta <= 1``), so the cost rate keeps
+        falling as the interval grows. ``seed``, ``n_simulations`` and
+        ``max_interval`` are ignored.
+
+        For a simulation-backed (imperfect-repair) model, ``E[N(t)]`` is
+        estimated by a single simulation over 250 log-spaced ages from
+        ``max_interval / 10**2.5`` to ``max_interval``, and the cheapest of
+        those ages is returned (no refinement). The result is never
+        ``inf``: if the cost rate is still falling at ``max_interval`` (the
+        optimum lies beyond it, or there is none), ``max_interval`` itself
+        is returned, so a result equal to it calls for a longer horizon.
+        The horizon must also stay within what surpyval's simulator can
+        resolve: once the baseline survival function at the unit's virtual
+        age falls below about 1e-16 (double precision; surpyval then warns
+        that sequences stalled), the simulated ``E[N(t)]`` stops growing,
+        which can drag the optimum to the horizon. Near-minimal repair
+        (``q`` close to 1) can reach that point within the default
+        horizon; lower ``max_interval`` if it does.
+
+        Parameters
+        ----------
+        seed : int, optional
+            Seed for a reproducible simulation (simulation-backed models
+            only). ``None`` (the default) draws from numpy's global RNG.
+        n_simulations : int, optional
+            Number of simulated histories used to estimate ``E[N(t)]``
+            (default 1000; simulation-backed models only).
+        max_interval : float, optional
+            The search horizon (simulation-backed models only). By default
+            15 times the mean of the model's baseline lifetime distribution
+            (``model.model.mean()``), or 15 if there is none.
+
+        Returns
+        -------
+        float
+            The optimal interval, in the model's time units; ``inf`` (for
+            an analytic model only) when overhauls never pay.
+
+        Raises
+        ------
+        ValueError
+            If the costs have not been set.
+
+        Examples
+        --------
+        A unit with a constant failure intensity (no wear-out) is never
+        worth overhauling:
+
+        >>> from surpyval.recurrent import CrowAMSAA
+        >>> from repyability import Repairable
+        >>> unit = Repairable(CrowAMSAA.from_params([500.0, 1.0]))
+        >>> unit.set_repair_and_overhaul_costs(cr=10.0, co=1000.0)
+        >>> unit.find_optimal_overhaul_interval()
+        inf
+
+        Simulated minimal repair (``q = 1``) lands near the closed-form
+        optimum ``alpha * (co / (cr * (beta - 1))) ** (1 / beta)``, here
+        ``100 * 5 ** 0.5 = 223.6``:
+
+        >>> import surpyval as surv
+        >>> from surpyval.recurrent import GeneralizedRenewal
+        >>> grp = GeneralizedRenewal.fit_from_parameters(
+        ...     [100.0, 2.0], 1.0, kijima="i", dist=surv.Weibull
+        ... )
+        >>> unit = Repairable(grp)
+        >>> unit.set_repair_and_overhaul_costs(cr=1.0, co=5.0)
+        >>> t = unit.find_optimal_overhaul_interval(
+        ...     seed=1, n_simulations=100, max_interval=500.0
+        ... )
+        >>> round(t)
+        239
         """
         return self._optimise(seed, n_simulations, max_interval)[0]
 
@@ -354,13 +634,56 @@ class Repairable:
     ) -> MaintenancePolicy:
         """The optimal overhaul/replacement policy as a typed result.
 
-        Returns a ``MaintenancePolicy`` carrying the optimal interval and the
-        long-run cost rate under it. For an analytic model an ``inf`` interval
-        (never renew) reports the limiting rate of repairs alone.
+        Runs the search of ``find_optimal_overhaul_interval()`` (see there
+        for the method, its limits and the parameters) and also reports the
+        long-run cost rate at the optimum.
 
-        For a simulation-backed (imperfect-repair) model, pass a ``seed`` for a
-        reproducible result; ``n_simulations`` sets the Monte-Carlo sample size
-        and ``max_interval`` the search horizon.
+        Parameters
+        ----------
+        seed : int, optional
+            Seed for a reproducible simulation (simulation-backed models
+            only). ``None`` (the default) draws from numpy's global RNG.
+        n_simulations : int, optional
+            Number of simulated histories used to estimate ``E[N(t)]``
+            (default 1000; simulation-backed models only).
+        max_interval : float, optional
+            The search horizon (simulation-backed models only); see
+            ``find_optimal_overhaul_interval()``.
+
+        Returns
+        -------
+        MaintenancePolicy
+            ``interval`` is the optimal overhaul interval and ``cost_rate``
+            the long-run cost per unit time under it. When the interval is
+            ``inf`` (never overhaul), ``cost_rate`` is the cost rate at the
+            far end of the search grid, which approximates the limiting
+            rate of repairs alone, ``cr * E[N(t)] / t`` as ``t`` grows. For
+            a simulation-backed model, ``cost_rate`` is the simulated
+            estimate at the chosen interval.
+
+        Raises
+        ------
+        ValueError
+            If the costs have not been set.
+
+        Examples
+        --------
+        >>> from surpyval.recurrent import CrowAMSAA
+        >>> from repyability import Repairable
+        >>> unit = Repairable(CrowAMSAA.from_params([100.0, 1.5]))
+        >>> unit.set_repair_and_overhaul_costs(cr=10.0, co=1000.0)
+        >>> policy = unit.optimal_overhaul_policy()
+        >>> round(policy.interval, 1), round(policy.cost_rate, 4)
+        (3420.0, 0.8772)
+
+        Without wear-out the unit is never overhauled and only repairs are
+        paid for, here ``cr / alpha = 10 / 500`` per unit time:
+
+        >>> unit = Repairable(CrowAMSAA.from_params([500.0, 1.0]))
+        >>> unit.set_repair_and_overhaul_costs(cr=10.0, co=1000.0)
+        >>> policy = unit.optimal_overhaul_policy()
+        >>> policy.interval, round(policy.cost_rate, 3)
+        (inf, 0.02)
         """
         interval, rate = self._optimise(seed, n_simulations, max_interval)
         return MaintenancePolicy(interval=interval, cost_rate=rate)
@@ -440,9 +763,62 @@ class Repairable:
     ) -> float:
         """Expected time to the ``n``-th failure, ``E[T_n]``.
 
-        Estimated by a seeded simulation for an imperfect-repair model. For a
-        minimal-repair (power-law) process the closed form
-        :func:`minimal_repair_time_to_nth_failure` is exact and cheaper.
+        Estimated from a single count-terminated simulation of
+        ``n_simulations`` failure histories (the model's
+        ``count_terminated_simulation``), as the mean of their ``n``-th
+        failure times. It needs a simulation-backed (imperfect-repair)
+        model; for a power-law minimal-repair process the closed form
+        [`minimal_repair_time_to_nth_failure`]
+        [repyability.minimal_repair_time_to_nth_failure] is exact and
+        cheaper.
+
+        If the simulation fails at a high failure count (surpyval's
+        simulator can, for near-minimal repair), it is retried with the
+        count halved until it succeeds, with a warning; ``ValueError`` is
+        then raised, as ``n`` failures were not reached.
+
+        Parameters
+        ----------
+        n : int
+            The failure number, 1 for the first failure.
+        seed : int, optional
+            Seed for a reproducible simulation. ``None`` (the default)
+            draws from numpy's global RNG.
+        n_simulations : int, optional
+            Number of simulated histories (default 1000).
+
+        Returns
+        -------
+        float
+            The expected time to the ``n``-th failure, in the model's time
+            units.
+
+        Raises
+        ------
+        ValueError
+            If ``n < 1``, if the model is analytic (``cif``), or if the
+            simulation cannot reach ``n`` failures.
+
+        Examples
+        --------
+        At ``q = 1`` (minimal repair) the estimate approaches the closed
+        form:
+
+        >>> import surpyval as surv
+        >>> from surpyval.recurrent import GeneralizedRenewal
+        >>> from repyability import Repairable
+        >>> from repyability import minimal_repair_time_to_nth_failure
+        >>> grp = GeneralizedRenewal.fit_from_parameters(
+        ...     [100.0, 2.0], 1.0, kijima="i", dist=surv.Weibull
+        ... )
+        >>> unit = Repairable(grp)
+        >>> t3 = unit.expected_time_to_nth_failure(
+        ...     3, seed=1, n_simulations=500
+        ... )
+        >>> round(t3, 1)
+        165.4
+        >>> round(minimal_repair_time_to_nth_failure(100.0, 2.0, 3), 1)
+        166.2
         """
         if n < 1:
             raise ValueError("n must be a positive integer.")
@@ -475,12 +851,62 @@ class Repairable:
         n_simulations: int = _DEFAULT_N_SIMULATIONS,
         max_failures: int = _DEFAULT_MAX_FAILURES,
     ) -> int:
-        """The number of failures per cycle minimising the long-run cost rate
-        of a replace-at-N-th-failure policy.
+        """The failure count at which to replace, minimising the cost rate.
 
-        Simulation-based; pass a ``seed`` for a reproducible result.
-        ``max_failures`` bounds the search (raise it if the optimum sits at the
-        bound).
+        Under a replace-at-``n``-th-failure policy the unit is repaired
+        (cost ``cr``) at each of its first ``n - 1`` failures and replaced
+        (cost ``co``, renewing it) at the ``n``-th, so the long-run cost
+        rate is ``(cr * (n - 1) + co) / E[T_n]``. ``E[T_1], ...,
+        E[T_max_failures]`` come from a single count-terminated
+        simulation (see ``expected_time_to_nth_failure()``), and the
+        cheapest ``n`` is returned. It needs a simulation-backed
+        (imperfect-repair) model.
+
+        ``n = 1`` means replace at every failure. If the simulation fails
+        at a high failure count (as surpyval's simulator can for
+        near-minimal repair), the count is halved until it succeeds and
+        the search is truncated there, with a warning. A result equal to
+        the largest count searched may mean the optimum lies beyond it:
+        raise ``max_failures`` if the search was not truncated. The cost
+        rate is often flat near its minimum, so the chosen count can shift
+        with the seed, ``n_simulations`` and ``max_failures``.
+
+        Parameters
+        ----------
+        seed : int, optional
+            Seed for a reproducible simulation. ``None`` (the default)
+            draws from numpy's global RNG.
+        n_simulations : int, optional
+            Number of simulated histories (default 1000).
+        max_failures : int, optional
+            The largest failure count searched (default 30).
+
+        Returns
+        -------
+        int
+            The optimal number of failures per replacement cycle.
+
+        Raises
+        ------
+        ValueError
+            If the costs have not been set, if the model is analytic
+            (``cif``), or if the failure process cannot be simulated at
+            all.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from surpyval.recurrent import GeneralizedRenewal
+        >>> from repyability import Repairable
+        >>> grp = GeneralizedRenewal.fit_from_parameters(
+        ...     [100.0, 2.0], 0.4, kijima="i", dist=surv.Weibull
+        ... )
+        >>> unit = Repairable(grp)
+        >>> unit.set_repair_and_overhaul_costs(cr=1.0, co=5.0)
+        >>> unit.find_optimal_replacement_failure_count(
+        ...     seed=1, n_simulations=200, max_failures=15
+        ... )
+        7
         """
         return self._optimise_failure_limit(seed, n_simulations, max_failures)[
             0
@@ -495,8 +921,50 @@ class Repairable:
         """The optimal replace-at-N-th-failure policy as a typed result.
 
         Repair on each failure (cost ``cr``) and replace on the
-        ``failure_count``-th (cost ``co``); the long-run cost rate is
-        ``(cr*(n-1) + co) / E[T_n]`` minimised over ``n``.
+        ``failure_count``-th (cost ``co``); the long-run cost rate
+        ``(cr * (n - 1) + co) / E[T_n]`` is minimised over ``n`` by the
+        search of ``find_optimal_replacement_failure_count()`` (see there
+        for the method and its limits).
+
+        Parameters
+        ----------
+        seed : int, optional
+            Seed for a reproducible simulation. ``None`` (the default)
+            draws from numpy's global RNG.
+        n_simulations : int, optional
+            Number of simulated histories (default 1000).
+        max_failures : int, optional
+            The largest failure count searched (default 30).
+
+        Returns
+        -------
+        FailureLimitPolicy
+            ``failure_count`` is the optimal number of failures per
+            replacement cycle and ``cost_rate`` the long-run cost per unit
+            time under it.
+
+        Raises
+        ------
+        ValueError
+            If the costs have not been set, if the model is analytic
+            (``cif``), or if the failure process cannot be simulated at
+            all.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from surpyval.recurrent import GeneralizedRenewal
+        >>> from repyability import Repairable
+        >>> grp = GeneralizedRenewal.fit_from_parameters(
+        ...     [100.0, 2.0], 0.4, kijima="i", dist=surv.Weibull
+        ... )
+        >>> unit = Repairable(grp)
+        >>> unit.set_repair_and_overhaul_costs(cr=1.0, co=5.0)
+        >>> policy = unit.optimal_failure_limit_policy(
+        ...     seed=1, n_simulations=200, max_failures=15
+        ... )
+        >>> policy.failure_count, round(policy.cost_rate, 3)
+        (7, 0.031)
         """
         count, rate = self._optimise_failure_limit(
             seed, n_simulations, max_failures

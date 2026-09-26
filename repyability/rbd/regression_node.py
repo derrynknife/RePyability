@@ -1,6 +1,6 @@
 """Regression node: an RBD node whose reliability depends on stored covariates.
 
-A :class:`RegressionNode` wraps a fitted surpyval **regression** model (an
+A ``RegressionNode`` wraps a fitted surpyval **regression** model (an
 accelerated-failure-time, proportional-hazards, proportional-odds, ... model)
 together with the covariate history of *this* component in the system, and
 exposes its survival as an ordinary univariate node. The covariates can be:
@@ -34,8 +34,24 @@ from ._sampling import RowSampler
 class RegressionNode:
     """An RBD node backed by a fitted surpyval regression model.
 
-    Provide exactly one of ``covariates`` (a fixed operating point) or
-    ``schedule`` (a time-varying covariate path).
+    Pairs a fitted regression model (accelerated failure time,
+    proportional hazards, proportional odds, ...) with this component's
+    covariates, giving an ordinary univariate node. Provide exactly one of:
+
+    - ``covariates``, a fixed operating point ``Z``: the reliability is
+      ``R(x) = model.sf(x, Z)``, for any regression family; or
+    - ``schedule``, a time-varying covariate path ``Z(t)``: the reliability
+      is ``R(x) = model.sf_tvc(x, schedule)``, the survival along that
+      path (accelerated-failure-time and proportional- or additive-hazards
+      models; not proportional odds).
+
+    ``sf`` and ``ff`` evaluate that curve directly, so the node takes part
+    in system reliability, importance measures and the condition-based
+    (``age``) methods with no special handling. ``mean`` and ``random``
+    work from the curve tabulated on a grid, which needs a proper
+    parametric curve: a semiparametric model such as ``surpyval.CoxPH``
+    supports ``sf`` but not ``mean`` or ``random``. Do the regression fit
+    in surpyval and pass the fitted model in.
 
     Parameters
     ----------
@@ -52,18 +68,43 @@ class RegressionNode:
         runs under over its life (build with
         ``surpyval.StepSchedule.from_changepoints`` / ``from_intervals``).
 
+    Raises
+    ------
+    ValueError
+        If not exactly one of ``covariates`` and ``schedule`` is given, or
+        if a trial evaluation of the survival at ``x = 1`` fails or is not
+        finite: e.g. ``model`` is not a fitted regression model,
+        ``covariates`` has the wrong width, or in schedule mode the model
+        has no ``sf_tvc`` or is proportional odds.
+
     Examples
     --------
+    Fit an Exponential AFT model with load as its covariate in surpyval.
+    With these data the life at load 1 is 100 and at load 2 is 25:
+
     >>> import numpy as np
     >>> import surpyval as surv
-    >>> from repyability.rbd.regression_node import RegressionNode
-    >>> rng = np.random.default_rng(0)
-    >>> Z = rng.normal(size=(300, 1))
-    >>> x = rng.weibull(2.0, size=300) * 100 + 1e-3
-    >>> model = surv.WeibullAFT.fit(x, Z=Z)
-    >>> node = RegressionNode(model, covariates=[0.5])
-    >>> bool(0.0 < node.sf(np.array([50.0]))[0] < 1.0)
-    True
+    >>> from repyability import RegressionNode
+    >>> x = np.array([50.0, 100.0, 150.0, 12.5, 25.0, 37.5])
+    >>> load = np.array([[1.0], [1.0], [1.0], [2.0], [2.0], [2.0]])
+    >>> model = surv.ExponentialAFT.fit(x, Z=load)
+
+    A component always run at load 1:
+
+    >>> node = RegressionNode(model, covariates=[1.0])
+    >>> round(float(node.sf(100.0)[0]), 4)  # exp(-100 / 100)
+    0.3679
+    >>> round(node.mean(), 1)
+    100.0
+
+    One run at load 1 for 50 time units and at load 2 after that:
+
+    >>> schedule = surv.StepSchedule.from_changepoints(
+    ...     [0, 50], [[1.0], [2.0]]
+    ... )
+    >>> ramped = RegressionNode(model, schedule=schedule)
+    >>> round(float(ramped.sf(100.0)[0]), 4)  # exp(-50 / 100 - 50 / 25)
+    0.0821
     """
 
     def __init__(
@@ -119,12 +160,39 @@ class RegressionNode:
     # -- Node reliability interface ---------------------------------------
 
     def sf(self, x: ArrayLike) -> np.ndarray:
-        """Reliability at the stored covariates (``model.sf(x, Z)``) or along
-        the covariate schedule (``model.sf_tvc(x, schedule)``)."""
+        """Reliability at the stored covariates or along the schedule.
+
+        ``model.sf(x, Z)`` at the fixed covariates ``Z``, or
+        ``model.sf_tvc(x, schedule)`` along the covariate schedule. An RBD
+        calls this for the node's reliability.
+
+        Parameters
+        ----------
+        x : array_like
+            The time(s) at which to evaluate.
+
+        Returns
+        -------
+        numpy.ndarray
+            The probability of surviving beyond each ``x``. Always an
+            array: a scalar ``x`` gives a 1-element array.
+        """
         return self._sf_at(np.atleast_1d(np.asarray(x, dtype=float)))
 
     def ff(self, x: ArrayLike) -> np.ndarray:
-        """Unreliability: ``1 - sf(x)``."""
+        """Unreliability: ``1 - sf(x)``.
+
+        Parameters
+        ----------
+        x : array_like
+            The time(s) at which to evaluate.
+
+        Returns
+        -------
+        numpy.ndarray
+            The probability of failing by each ``x``; always an array, as
+            for ``sf``.
+        """
         return 1.0 - self.sf(x)
 
     def _survival_grid(self):
@@ -164,7 +232,23 @@ class RegressionNode:
         """Mean time to failure at the stored covariates / along the schedule.
 
         For a non-negative lifetime ``E[T] = integral of R(t)``, integrated
-        numerically over the survival curve.
+        numerically over the survival curve: the trapezoidal rule on 4096
+        points from 0 to the first ``t`` in 1, 2, 4, 8, ... at which
+        ``R(t) <= 1e-4``. The tail beyond is left out, so the result is
+        slightly low (by that tail's integral). The grid is built on first
+        use and cached.
+
+        Returns
+        -------
+        float
+            The mean time to failure.
+
+        Raises
+        ------
+        ValueError
+            If the survival curve is improper (``R(1e-9) <= 0.99``, as with
+            a semiparametric Cox baseline) or does not fall to 1e-4 by
+            ``t = 1e15``.
         """
         t, s = self._survival_grid()
         return float(np.trapezoid(s, t))
@@ -172,9 +256,29 @@ class RegressionNode:
     def random(self, size: int) -> np.ndarray:
         """Draw ``size`` failure times at the stored covariates / schedule.
 
-        Inverse-transform sampling on the survival curve. Uses numpy's global
-        RNG, so wrap the call in
-        :func:`~repyability.utils.wrappers.numpy_seed` to reproduce.
+        Inverse-transform sampling on the survival curve tabulated for
+        ``mean``: each uniform ``u`` maps to the time at which ``R = u``
+        (linear interpolation), so draws never exceed the grid's end,
+        where ``R <= 1e-4``. There is no ``seed`` argument: this uses
+        numpy's global RNG, so seed it (``np.random.seed``) or wrap the
+        call in ``repyability.utils.wrappers.numpy_seed`` to reproduce the
+        draws. An RBD's seeded ``random`` and ``mean`` do this for you.
+
+        Parameters
+        ----------
+        size : int
+            The number of failure times to draw.
+
+        Returns
+        -------
+        numpy.ndarray
+            The ``size`` failure times, shape ``(size,)``.
+
+        Raises
+        ------
+        ValueError
+            If the survival curve is improper or does not decay, as for
+            ``mean``.
         """
         t, s = self._survival_grid()
         u = np.random.uniform(size=size)
@@ -204,8 +308,31 @@ class RegressionNode:
         return {"times": times, "values": np.asarray(schedule.Z).tolist()}
 
     def to_dict(self) -> dict:
-        """Serialise to a JSON-friendly dict (the fitted model + covariates or
-        schedule). See :meth:`from_dict`."""
+        """Serialise the node to a JSON-friendly dict.
+
+        The fitted model is stored with its own ``to_dict()``, plus either
+        ``"covariates"`` (a list of floats) or ``"schedule"`` (the
+        schedule's finite segment edges as ``"times"`` and its covariate
+        rows as ``"values"``). ``from_dict`` rebuilds the node, and an
+        RBD's ``to_dict``/``to_json`` use this for a regression node.
+
+        A schedule is rebuilt with ``StepSchedule.from_changepoints``, so
+        only one whose last segment is open-ended round-trips (e.g. from
+        ``from_changepoints``). One whose last edge is finite (e.g. from
+        ``from_intervals``) is written, but ``from_dict`` then raises
+        ``ValueError``.
+
+        Returns
+        -------
+        dict
+            ``{"model": ..., "covariates": [...]}`` or
+            ``{"model": ..., "schedule": {"times": [...], "values": [...]}}``.
+
+        Raises
+        ------
+        NotImplementedError
+            If the schedule is cyclic (has a ``period``).
+        """
         out: dict = {"model": self.model.to_dict()}
         if self.schedule is not None:
             out["schedule"] = self._schedule_to_dict(self.schedule)
@@ -216,8 +343,45 @@ class RegressionNode:
 
     @classmethod
     def from_dict(cls, d: dict) -> "RegressionNode":
-        """Reconstruct from :meth:`to_dict` (the fitted model round-trips
-        through ``surpyval.from_dict``)."""
+        """Reconstruct a node from the output of ``to_dict``.
+
+        The fitted model round-trips through ``surpyval.from_dict``, and a
+        schedule is rebuilt with ``StepSchedule.from_changepoints``.
+
+        Parameters
+        ----------
+        d : dict
+            A dict produced by ``to_dict``, e.g. after a JSON round trip.
+
+        Returns
+        -------
+        RegressionNode
+            The reconstructed node.
+
+        Raises
+        ------
+        KeyError
+            If ``d`` has no ``"model"``, or neither ``"schedule"`` nor
+            ``"covariates"``.
+        ValueError
+            If the schedule cannot be rebuilt, or the node fails the
+            constructor's checks.
+
+        Examples
+        --------
+        >>> import json
+        >>> import numpy as np
+        >>> import surpyval as surv
+        >>> from repyability import RegressionNode
+        >>> x = np.array([50.0, 100.0, 150.0, 12.5, 25.0, 37.5])
+        >>> load = np.array([[1.0], [1.0], [1.0], [2.0], [2.0], [2.0]])
+        >>> model = surv.ExponentialAFT.fit(x, Z=load)
+        >>> node = RegressionNode(model, covariates=[1.0])
+        >>> text = json.dumps(node.to_dict())
+        >>> restored = RegressionNode.from_dict(json.loads(text))
+        >>> round(float(restored.sf(100.0)[0]), 4)
+        0.3679
+        """
         import surpyval
 
         model = surpyval.from_dict(d["model"])

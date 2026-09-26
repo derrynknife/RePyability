@@ -1,3 +1,13 @@
+"""The reliability block diagram base class and its exact engine.
+
+``RBD`` holds a diagram's structure and the computations that need only the
+structure and per-node probabilities; ``NonRepairableRBD`` and
+``RepairableRBD`` build on it. The module-level functions are the engine it
+uses: the exact probability that at least one set of elements fully works
+(a memoised Shannon decomposition), minimal cut sets from minimal path sets,
+and the probability scaling used by reliability allocation.
+"""
+
 import pprint
 import warnings
 from collections import defaultdict
@@ -16,15 +26,37 @@ from repyability.utils.wrappers import check_probability
 
 
 def log_linearly_scale_probabilities(p: float, x: float) -> np.ndarray:
-    """
-    Log-linearly scale probabilities.
+    """Scale a probability by shifting the log of its complement.
 
-    Parameters:
-        p (float): Probability value.
-        x (float): Input value.
+    Returns ``1 - (1 - p) * exp(-x)``: the complement ``1 - p`` (the
+    unreliability, when ``p`` is a reliability) is multiplied by
+    ``exp(-x)``, i.e. ``log(1 - p)`` is shifted by ``-x``. A positive ``x``
+    moves ``p`` towards 1 and a negative ``x`` moves it down. The result is
+    not clipped, so a negative enough ``x`` gives a value below 0. A ``p``
+    of exactly 1 is returned unchanged (avoiding ``log(0)``). This is the
+    scaling used by ``RBD.improvement_allocation``.
 
-    Returns:
-        np.ndarray: Log-linearly scaled probabilities.
+    Parameters
+    ----------
+    p : float
+        A single probability, in [0, 1].
+    x : float
+        The amount by which ``log(1 - p)`` is decreased.
+
+    Returns
+    -------
+    np.ndarray
+        The scaled probability, as a one-element array.
+
+    Examples
+    --------
+    ``x = log(2)`` halves the unreliability of a 0.9-reliable node:
+
+    >>> import numpy as np
+    >>> from repyability.rbd.rbd import log_linearly_scale_probabilities
+    >>> p = log_linearly_scale_probabilities(0.9, np.log(2))
+    >>> round(float(p[0]), 4)
+    0.95
     """
     if p == 1.0:
         return np.atleast_1d(1.0)
@@ -37,24 +69,46 @@ def scale_probability_dict(
     x: float,
     weights: Optional[Dict[str, float]] = None,
 ) -> Dict[str, np.ndarray]:
-    """
-    Scale a dictionary of node probabilities using log-linear scaling.
+    """Log-linearly scale every probability in a dict.
+
+    Each entry ``p`` with weight ``w`` becomes ``1 - (1 - p) * exp(-x * w)``
+    (see ``log_linearly_scale_probabilities``): its complement is
+    multiplied by ``exp(-x * w)``. This is the scaling used by
+    ``RBD.improvement_allocation``.
 
     Parameters
     ----------
     node_probabilities : Dict[str, float]
-        The dictionary of node probabilities to be scaled.
+        The probabilities to scale (single floats), keyed by node name.
     x : float
-        The scaling factor.
+        The common scale factor.
     weights : Optional[Dict[str, float]], optional
-        The dictionary of weights for each node, by default None.
-        If None, a weight of 1.0 is used for all nodes.
+        A weight per node, by default None (a weight of 1.0 for every node).
+        If given, it needs an entry for every key of ``node_probabilities``.
 
     Returns
     -------
     Dict[str, np.ndarray]
-        A dictionary of the scaled probability values.
+        The scaled probabilities, as one-element arrays, with the same keys.
 
+    Raises
+    ------
+    KeyError
+        If ``weights`` is given without an entry for a key of
+        ``node_probabilities``.
+
+    Examples
+    --------
+    With ``x = log(2)``, a weight of 1 halves an unreliability and a weight
+    of 2 quarters it:
+
+    >>> import numpy as np
+    >>> from repyability.rbd.rbd import scale_probability_dict
+    >>> scaled = scale_probability_dict(
+    ...     {"a": 0.9, "b": 0.6}, np.log(2), weights={"a": 1.0, "b": 2.0}
+    ... )
+    >>> {k: round(float(v[0]), 4) for k, v in sorted(scaled.items())}
+    {'a': 0.95, 'b': 0.9}
     """
     out = {}
     if weights is None:
@@ -78,8 +132,9 @@ def probability_any_set_satisfied(
 
     Each "set" is a collection of elements (e.g. a minimal path set of
     components); the set is "satisfied" when *all* of its elements are active.
-    Given the per-element probability of being active, this returns the
-    probability that *at least one* set is satisfied.
+    Given the per-element probability of being active, with the elements
+    independent, this returns the probability that *at least one* set is
+    satisfied.
 
     With path sets and node reliabilities this is the system reliability; with
     cut sets and node unreliabilities it is the system unreliability.
@@ -97,16 +152,37 @@ def probability_any_set_satisfied(
     Parameters
     ----------
     sets : Iterable[frozenset]
-        The collection of sets (e.g. minimal path sets or cut sets).
+        The collection of sets (e.g. minimal path sets or cut sets). No sets
+        at all gives probability 0; an empty set is always satisfied, giving
+        1.
     element_probabilities : Dict[Any, np.ndarray]
-        Maps each element to its probability array of being active.
-    array_shape :
-        The shape of the probability arrays, used to seed the 0/1 base cases.
+        Maps each element of the sets to its probability of being active (a
+        float, or an array of shape ``array_shape``).
+    array_shape : int or tuple of int
+        The shape of the probability arrays (e.g. their length), used to
+        seed the 0/1 base cases.
 
     Returns
     -------
     np.ndarray
-        The probability that at least one set is fully active.
+        The probability that at least one set is fully active, an array of
+        shape ``array_shape``.
+
+    Raises
+    ------
+    KeyError
+        If an element the result depends on has no entry in
+        ``element_probabilities``.
+
+    Examples
+    --------
+    Two sets sharing ``"c"``, so the answer is ``(1 - 0.1 * 0.2) * 0.95``:
+
+    >>> from repyability.rbd.rbd import probability_any_set_satisfied
+    >>> sets = [frozenset({"a", "c"}), frozenset({"b", "c"})]
+    >>> p = {"a": 0.9, "b": 0.8, "c": 0.95}
+    >>> round(float(probability_any_set_satisfied(sets, p, 1)[0]), 4)
+    0.931
     """
     return _evaluate_shannon_plan(
         _shannon_plan(sets), element_probabilities, array_shape
@@ -209,13 +285,14 @@ def minimal_cut_sets_from_path_sets(
     """Return the minimal cut sets given the minimal path sets.
 
     A minimal cut set is a minimal "transversal" (hitting set) of the path
-    sets: a smallest set of components that intersects every path set, so that
-    failing those components breaks every path through the system. Because it
+    sets: a set of components that intersects every path set, with no proper
+    subset that also does, so that failing those components breaks every path
+    through the system. Because it
     works directly from the path sets, this stays correct for k-out-of-n
     structures, whose k-of-n behaviour is already encoded in the path sets.
 
     The cut sets are read off the same Shannon decomposition the exact engine
-    uses (see :func:`_shannon_plan`), which shares every repeated
+    uses (see ``_shannon_plan``), which shares every repeated
     sub-problem. At a step pivoting on component ``x``, the system works as
     ``f1`` if ``x`` works and ``f0`` if it has failed, with ``f0 <= f1`` (a
     coherent system never works *better* for a failure). A minimal cut set
@@ -231,12 +308,24 @@ def minimal_cut_sets_from_path_sets(
     Parameters
     ----------
     path_sets : Iterable[frozenset]
-        The minimal path sets (each a set of components).
+        The minimal path sets (each a set, or other iterable, of
+        components).
 
     Returns
     -------
     set[frozenset]
-        The minimal cut sets.
+        The minimal cut sets. No path sets at all gives ``{frozenset()}``
+        (the system never works, so the empty set is a cut set); an empty
+        path set gives no cut sets (the system always works).
+
+    Examples
+    --------
+    Two parallel components ``"a"`` and ``"b"`` in series with ``"c"``:
+
+    >>> from repyability.rbd.rbd import minimal_cut_sets_from_path_sets
+    >>> cuts = minimal_cut_sets_from_path_sets([{"a", "c"}, {"b", "c"}])
+    >>> sorted(sorted(c) for c in cuts)
+    [['a', 'b'], ['c']]
     """
     return _minimal_cut_sets(_shannon_plan(path_sets))
 
@@ -268,6 +357,139 @@ def _minimal_cut_sets(plan: tuple[list, int]) -> set[frozenset]:
 
 
 class RBD:
+    """Reliability block diagram structure: the base of the RBD classes.
+
+    An RBD is a directed acyclic graph from a single input node (the only
+    node with no incoming edges) to a single output node (the only node with
+    no outgoing edges). Every other node is an intermediate node, i.e. a
+    component. The input and output nodes are not components: they are
+    perfectly reliable, and are left out of
+    [`node_names`][repyability.RBD.node_names], of the node probabilities
+    the methods need, and of the nodes that can be forced working or
+    broken. The system works when the output node is reached: the input
+    node is always reached, and any other node is reached when it works
+    and at least ``k`` of its predecessors are reached, where ``k`` is its
+    k-out-of-n value (1 unless set with ``k``). Node names can be any
+    hashable, e.g. strings or integers.
+
+    This class holds what depends only on the structure, or on the
+    structure and given per-node probabilities: minimal path and cut sets,
+    the structure function, the exact system probability, structural
+    importance, reliability allocation and serialisation. It is usually
+    used through [`NonRepairableRBD`][repyability.NonRepairableRBD] or
+    [`RepairableRBD`][repyability.RepairableRBD], which add node models
+    (their model argument takes the place of ``nodes``). It can also be
+    built from ``edges`` alone to analyse a structure with no models.
+    Probability calculations assume the nodes are independent.
+
+    The structure is validated on construction. It is infeasible if it has
+    a cycle; if it has not exactly one node with no incoming edges, or not
+    exactly one with no outgoing edges (e.g. a node in ``nodes`` that is in
+    no edge); if a ``k`` is 0 or greater than the node's number of incoming
+    edges; or if ``k`` names a node not in the diagram. ``on_infeasible_rbd``
+    sets what then happens, and the full report is kept in
+    ``structure_check``. The minimal path sets are found on construction and
+    cached, as are the cut sets and the exact engine's decomposition on
+    first use, so repeated evaluations are cheap.
+
+    Parameters
+    ----------
+    edges : Iterable[tuple[Hashable, Hashable]]
+        The directed edges ``(from_node, to_node)`` of the diagram, e.g.
+        ``[("s", "a"), ("a", "t")]`` for the single component ``"a"``
+        between input ``"s"`` and output ``"t"``.
+    nodes : Iterable, optional
+        Node names that must be in the diagram as well as those in
+        ``edges``, by default None. A name that is in no edge is an isolated
+        node, which makes the structure infeasible; the subclasses pass
+        their component names here so that a component missing from
+        ``edges`` is reported.
+    k : dict[Any, int], optional
+        The k-out-of-n value of nodes, keyed by node name, by default None
+        (every node has ``k = 1``).
+    input_node : Any, optional
+        The input node, by default None: it is found as the node with no
+        incoming edges. If given, it must be a node of the diagram and must
+        be that node; naming another node is not detected and gives a wrong
+        structure. It cannot make a diagram with several such nodes
+        feasible.
+    output_node : Any, optional
+        The output node, by default None: it is found as the node with no
+        outgoing edges. The same rules as for ``input_node`` apply.
+    on_infeasible_rbd : str, optional
+        What to do if the structure is infeasible, by default ``"raise"``:
+        ``"raise"`` raises a ValueError, ``"warn"`` issues a UserWarning
+        containing ``structure_check`` and builds the RBD anyway, and
+        ``"ignore"`` builds it silently. An infeasible RBD may give errors
+        or wrong results later.
+
+    Attributes
+    ----------
+    G : RBDGraph
+        The diagram, a ``networkx.DiGraph`` subclass; each node's ``"k"``
+        attribute is its k-out-of-n value.
+    input_node : Hashable
+        The input node, or None if it could not be found (only possible
+        when an infeasible RBD is built with ``"warn"`` or ``"ignore"``).
+    output_node : Hashable
+        The output node, or None if it could not be found.
+    in_or_out : list
+        ``[input_node, output_node]``.
+    nodes : list
+        The intermediate nodes, in the order they were added to the graph
+        (the same list [`node_names`][repyability.RBD.node_names] returns).
+    structure_check : dict
+        The validation report, e.g. ``"is_valid"``, ``"has_cycles"``,
+        ``"cycles"``, ``"koon_errors"``, ``"koon_warnings"`` and
+        ``"irrelevant_nodes"``. The subclasses add their own entries.
+
+    Raises
+    ------
+    ValueError
+        If ``input_node`` or ``output_node`` is not a node of the diagram
+        (whatever ``on_infeasible_rbd`` is); if the structure is infeasible
+        and ``on_infeasible_rbd`` is ``"raise"`` (the message does not
+        list the problems: use ``"warn"`` to see them); if
+        ``on_infeasible_rbd`` is not one of its three values (the base
+        class checks this only for an infeasible structure); or if, with
+        ``"warn"`` or ``"ignore"``, no set of working nodes can reach the
+        output node (e.g. a ``k`` greater than the node's number of
+        incoming edges).
+
+    Examples
+    --------
+    Two redundant pumps feeding a valve. The subclasses supply the node
+    models; the structure methods come from this class:
+
+    >>> from surpyval import FixedEventProbability
+    >>> from repyability import NonRepairableRBD
+    >>> rbd = NonRepairableRBD(
+    ...     [("s", "p1"), ("s", "p2"), ("p1", "v"), ("p2", "v"), ("v", "t")],
+    ...     {
+    ...         "p1": FixedEventProbability.from_params(0.1),
+    ...         "p2": FixedEventProbability.from_params(0.1),
+    ...         "v": FixedEventProbability.from_params(0.05),
+    ...     },
+    ... )
+    >>> rbd.input_node, rbd.output_node
+    ('s', 't')
+    >>> rbd.node_names()
+    ['p1', 'p2', 'v']
+    >>> sorted(sorted(c) for c in rbd.get_min_cut_sets())
+    [['p1', 'p2'], ['v']]
+
+    The structure alone, with no node models, is enough for structural
+    analysis:
+
+    >>> from repyability import RBD
+    >>> structure = RBD(
+    ...     [("s", "p1"), ("s", "p2"), ("p1", "v"), ("p2", "v"), ("v", "t")]
+    ... )
+    >>> si = structure.structural_importance()
+    >>> {k: round(v, 4) for k, v in sorted(si.items())}
+    {'p1': 0.25, 'p2': 0.25, 'v': 0.75}
+    """
+
     # Constructor inputs, captured verbatim by each subclass's ``__init__`` so
     # the RBD can be re-created (see ``serialisation``); declared here so the
     # attribute is visible on the base type.
@@ -282,40 +504,10 @@ class RBD:
         output_node: Optional[Any] = None,
         on_infeasible_rbd: str = "raise",
     ):
-        """Creates and returns a Reliability Block Diagram object.
-
-        The positional order mirrors the subclasses
-        (:class:`~repyability.NonRepairableRBD`,
-        :class:`~repyability.RepairableRBD`): the structure -- ``edges`` then
-        ``nodes`` -- comes first, and ``k`` (k-out-of-n) is an optional
-        modifier after it.
-
-        Parameters
-        ----------
-        edges : Iterable[tuple[Hashable, Hashable]]
-            The collection of node edges, e.g. [(1, 2), (2, 3)] would
-            correspond to the edges 1-2 and 2-3
-        nodes : Iterable, optional
-            Extra node names to include beyond those implied by ``edges`` (e.g.
-            isolated nodes), by default None. The RBD subclasses pass their set
-            of component names here.
-        k : dict[Any, int], optional
-            A dictionary mapping nodes to k-out-of-n (koon) values; by default
-            every node's koon value is 1.
-        on_infeasible_rbd : {{'raise', 'warn', 'ignore'}}, default 'raise'
-            Specifies what to do upon encountering a bad line (a line with too
-            many fields). Allowed values are :
-                - 'raise', raise an Exception when an infeasible RBD is
-                detected.
-                - 'warn', raise a warning when an infeasible RBD is detected,
-                but return RBD anyway.
-                - 'ignore', return the RBD without raising any warnings.
-
-        Raises
-        ------
-        ValueError
-            A node is not in the node list or edge list
-        """
+        # The constructor is documented in the class docstring (mkdocstrings
+        # merges the two). The positional order mirrors the subclasses: the
+        # structure -- ``edges`` then ``nodes`` -- comes first, and ``k``
+        # (k-out-of-n) is an optional modifier after it.
 
         # Create RBD graph
         self.G = RBDGraph()
@@ -400,19 +592,62 @@ class RBD:
             self.structure_check["irrelevant_nodes"] = irrelevant_nodes
 
     def find_irrelevant_components(self) -> set:
+        """Return the nodes that cannot affect whether the system works.
+
+        A node is irrelevant when it is in no minimal path set, e.g. a node
+        in parallel with a direct edge, which is a connection that never
+        fails. Whether such a node works never changes whether the system
+        works, so its Birnbaum and structural importance are zero. It is
+        still a node of the RBD (it is in
+        [`node_names`][repyability.RBD.node_names]). The same set is found on
+        construction and stored in ``structure_check["irrelevant_nodes"]``,
+        with ``structure_check["has_irrelevant_nodes"]``.
+
+        Returns
+        -------
+        set
+            The irrelevant node names; empty if every node is relevant.
+
+        Raises
+        ------
+        ValueError
+            If no set of working nodes can reach the output node.
+
+        Examples
+        --------
+        Node ``"b"`` is bypassed by the direct edge from ``"a"`` to ``"t"``:
+
+        >>> from repyability import RBD
+        >>> rbd = RBD([("s", "a"), ("a", "t"), ("a", "b"), ("b", "t")])
+        >>> rbd.find_irrelevant_components()
+        {'b'}
+        """
         combined_nodes: set = set().union(*self.get_min_path_sets())
         return set(self.G.nodes).symmetric_difference(combined_nodes)
 
     def get_all_path_sets(self) -> Iterator[list[Hashable]]:
-        """Gets all path sets from input_node to output_node
+        """Iterate over every path from the input node to the output node.
 
-        Really just wraps networkx.all_simple_paths(). This is an expensive
-        operation, so be careful using for very large RBDs.
+        A thin wrapper of ``networkx.all_simple_paths``: each path is a list
+        of node names in order, from the input node to the output node.
+        These are paths of the graph, not reliability path sets: they ignore
+        k-out-of-n values (a path through a node with ``k > 1`` does not by
+        itself make the system work) and need not be minimal. For those, use
+        [`get_min_path_sets`][repyability.RBD.get_min_path_sets]. The number
+        of paths can grow exponentially with the size of the diagram, so
+        avoid exhausting the iterator on very large RBDs.
 
         Returns
         -------
         Iterator[list[Hashable]]
-            The iterator of paths
+            A generator of paths, each a list of node names.
+
+        Examples
+        --------
+        >>> from repyability import RBD
+        >>> rbd = RBD([("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")])
+        >>> sorted(rbd.get_all_path_sets())
+        [['s', 'a', 't'], ['s', 'b', 't']]
         """
         return nx.all_simple_paths(
             self.G, source=self.input_node, target=self.output_node
@@ -421,18 +656,51 @@ class RBD:
     def get_min_path_sets(
         self, include_in_out_nodes=True
     ) -> set[frozenset[Hashable]]:
-        """Gets the minimal path-sets of the RBD
+        """Return the minimal path sets of the RBD.
+
+        A path set is a set of nodes whose working is enough for the system
+        to work; it is minimal when no node can be left out. k-out-of-n
+        values are accounted for: a minimal path set through a node with
+        k-out-of-n value ``k`` combines path sets reaching ``k`` of its
+        predecessors. The sets are found by a memoised search back from the
+        output node, on construction, and cached; each call returns a new
+        set.
 
         Parameters
         ----------
         include_in_out_nodes : bool, optional
-            If false, excludes the input and output nodes
-            in the return, by default True
+            Whether each path set includes the input and output nodes, by
+            default True. Pass False for the components only. (The default
+            differs from
+            [`get_min_cut_sets`][repyability.RBD.get_min_cut_sets].)
 
         Returns
         -------
         set[frozenset[Hashable]]
-            The set of minimal path-sets
+            The minimal path sets, each a frozenset of node names.
+
+        Raises
+        ------
+        ValueError
+            If there is no path set, i.e. no set of working nodes can reach
+            the output node (e.g. a ``k`` greater than the node's number of
+            incoming edges).
+
+        Examples
+        --------
+        A 2-out-of-3 vote ``"v"`` needs two of ``"a"``, ``"b"`` and ``"c"``:
+
+        >>> from repyability import RBD
+        >>> rbd = RBD(
+        ...     [
+        ...         ("s", "a"), ("s", "b"), ("s", "c"),
+        ...         ("a", "v"), ("b", "v"), ("c", "v"), ("v", "t"),
+        ...     ],
+        ...     k={"v": 2},
+        ... )
+        >>> paths = rbd.get_min_path_sets(include_in_out_nodes=False)
+        >>> sorted(sorted(p) for p in paths)
+        [['a', 'b', 'v'], ['a', 'c', 'v'], ['b', 'c', 'v']]
         """
         # Run min_path_sets() but convert all the inner sets to frozensets
         # and remove the input/output nodes if requested
@@ -464,24 +732,50 @@ class RBD:
     def is_system_working(
         self, component_status: dict[Any, bool], method: str
     ) -> bool:
-        """Returns a boolean as to whether the system is working given the
-        status of the components
+        """Return whether the system works, given which components work.
+
+        This is the structure function. With ``method="p"`` the system works
+        when every node of at least one minimal path set works; with
+        ``method="c"`` when at least one node of every minimal cut set
+        works. Both give the same answer; ``"p"`` is typically faster as it
+        does not need the cut sets. The input and output nodes need no
+        entry. The sets are cached on first use, so repeated calls (as in
+        the simulations) are cheap.
 
         Parameters
         ----------
         component_status : dict[Any, bool]
-            Dictionary with all components where
-            component_status[component] = True only if the component is
-            working, and = False if not working.
+            Whether each component is working (truthy) or failed (falsy),
+            keyed by node name. Every node in a minimal path (or cut) set
+            needs an entry; other keys are ignored.
         method : str
-            Either "p" (path-set) or "c" (cut-set). Both return the same
-            result; "p" is typically faster as it avoids deriving the cut
-            sets.
+            ``"p"`` (path sets) or ``"c"`` (cut sets). There is no default.
 
         Returns
         -------
         bool
             True if the system is working, otherwise False.
+
+        Raises
+        ------
+        ValueError
+            If ``method`` is not ``"p"`` or ``"c"``.
+        KeyError
+            If a node needed for the evaluation has no entry in
+            ``component_status``.
+
+        Examples
+        --------
+        Two parallel nodes ``"a"`` and ``"b"`` in series with ``"c"``:
+
+        >>> from repyability import RBD
+        >>> rbd = RBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")]
+        ... )
+        >>> rbd.is_system_working({"a": False, "b": True, "c": True}, "p")
+        True
+        >>> rbd.is_system_working({"a": True, "b": True, "c": False}, "c")
+        False
         """
         # The system structure function is evaluated directly from the minimal
         # path/cut sets, which is plenty fast for the rate at which this is
@@ -524,14 +818,49 @@ class RBD:
     def get_min_cut_sets(
         self, include_in_out_nodes=False
     ) -> set[frozenset[Hashable]]:
-        """
-        Returns the set of frozensets of minimal cut sets of the RBD. The outer
-        set contains the frozenset of nodes. frozensets were used so the inner
-        set elements could be hashable.
+        """Return the minimal cut sets of the RBD.
 
-        The minimal cut sets are the minimal transversals (hitting sets) of the
-        minimal path sets, read off the exact engine's Shannon decomposition.
-        See minimal_cut_sets_from_path_sets() for details.
+        A cut set is a set of nodes whose failure is enough for the system
+        to fail; it is minimal when no node can be left out. The minimal cut
+        sets are the minimal transversals (hitting sets) of the minimal path
+        sets, read off the exact engine's Shannon decomposition (see
+        ``minimal_cut_sets_from_path_sets`` in this module), so k-out-of-n
+        values are accounted for. They are worked out on first use and
+        cached for each value of ``include_in_out_nodes``; each call returns
+        a new set.
+
+        Parameters
+        ----------
+        include_in_out_nodes : bool, optional
+            Whether to derive the cut sets from the path sets including the
+            input and output nodes, by default False (components only). If
+            True, the input and output nodes each appear as an extra
+            single-node cut set. (The default differs from
+            [`get_min_path_sets`][repyability.RBD.get_min_path_sets].)
+
+        Returns
+        -------
+        set[frozenset[Hashable]]
+            The minimal cut sets, each a frozenset of node names.
+
+        Raises
+        ------
+        ValueError
+            If no set of working nodes can reach the output node.
+
+        Examples
+        --------
+        Two parallel nodes ``"a"`` and ``"b"`` in series with ``"c"``:
+
+        >>> from repyability import RBD
+        >>> rbd = RBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")]
+        ... )
+        >>> sorted(sorted(c) for c in rbd.get_min_cut_sets())
+        [['a', 'b'], ['c']]
+        >>> cuts = rbd.get_min_cut_sets(include_in_out_nodes=True)
+        >>> sorted(sorted(c) for c in cuts)
+        [['a', 'b'], ['c'], ['s'], ['t']]
         """
         # The structure is fixed once built (the path sets are cached too),
         # so the cut sets are worked out once per RBD; each call gets its own
@@ -551,6 +880,48 @@ class RBD:
         return set(self._min_cut_sets[key])
 
     def path_set_probabilities(self, node_probabilities):
+        """Return the probability that each minimal path set fully works.
+
+        For each minimal path set (components only) this is the product of
+        its nodes' probabilities, i.e. the probability that all of them
+        work, assuming independent nodes. The path sets share nodes, so these
+        values do not add up to the system probability: use
+        [`system_probability`][repyability.RBD.system_probability] for that.
+
+        Parameters
+        ----------
+        node_probabilities : dict
+            The probability that each node works, keyed by node name, as
+            floats or numpy arrays of equal length (not lists). Every node
+            in a minimal path set needs an entry; other keys are ignored.
+
+        Returns
+        -------
+        np.ndarray
+            One value per minimal path set, in no particular order and with
+            no labels (to pair values with path sets, take the products over
+            ``get_min_path_sets(include_in_out_nodes=False)`` directly).
+            The shape is ``(n_path_sets,)`` for float probabilities and
+            ``(n_path_sets, n)`` for arrays of length ``n``.
+
+        Raises
+        ------
+        KeyError
+            If a node in a minimal path set has no entry.
+
+        Examples
+        --------
+        Two parallel nodes ``"a"`` and ``"b"`` in series with ``"c"`` have
+        the minimal path sets ``{a, c}`` and ``{b, c}``:
+
+        >>> from repyability import RBD
+        >>> rbd = RBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")]
+        ... )
+        >>> probs = rbd.path_set_probabilities({"a": 0.9, "b": 0.8, "c": 0.95})
+        >>> sorted(round(float(p), 4) for p in probs)
+        [0.76, 0.855]
+        """
         path_sets = self.get_min_path_sets(include_in_out_nodes=False)
         out = []
         for path in path_sets:
@@ -565,30 +936,73 @@ class RBD:
         node_probabilities: Dict,
         method: str = "p",
     ) -> np.ndarray:
-        """Returns the system probability/ies given the probability of each
-        node.
+        """Return the exact system probability from each node's probability.
+
+        Given the probability that each node works -- e.g. its reliability
+        at some time or its availability -- this returns the probability
+        that the system works, assuming the nodes are independent. It is the
+        engine behind the subclasses' reliability, availability and
+        importance calculations.
+
+        The result is exact. The structure function is expanded by a
+        Shannon (pivotal) decomposition over the minimal path sets
+        (``method="p"``) or, with the node unreliabilities ``1 - p``, over
+        the minimal cut sets (``method="c"``); repeated sub-problems are
+        solved once. The decomposition depends only on the structure, so it
+        is built on the first call for each method and reused. Both methods
+        give the same result; ``"p"`` is the default as it does not need the
+        cut sets.
 
         Parameters
         ----------
-        node_probabilities: Dict
-            Dictionary containing the probabilities of the event for every node
-            in the RBDGraph. Probability is to be either the reliability or the
-            availability (or some other probability that I can't conceive).
-        method: str, optional
-            Input either "c" or "p" for the function to use the cut set or
-            path set methods respectively, by default "p". Both methods
-            return the same (exact) result; the path set method is the default
-            as it avoids deriving the cut sets.
+        node_probabilities : Dict
+            The probability that each node works, keyed by node name: floats,
+            or 1-d arrays (e.g. one value per time) that all have the same
+            length. Every intermediate node needs an entry; entries for the
+            input and output nodes, and any other keys, are not used. The
+            dict is not modified.
+        method : str, optional
+            ``"p"`` (path sets, the default) or ``"c"`` (cut sets).
 
         Returns
         -------
         np.ndarray
-            Probability values for all events in nodes_probabilities
+            The system probability, a 1-d array with one value per element
+            of the node arrays. It is always an array: float inputs give a
+            one-element array.
 
         Raises
         ------
         ValueError
-            Probability arrays of differing lengths
+            If the node probability arrays are not all the same length.
+        KeyError
+            If an intermediate node has no entry in ``node_probabilities``.
+
+        Examples
+        --------
+        Two parallel nodes ``"a"`` and ``"b"`` in series with ``"c"`` work
+        with probability ``(1 - 0.1 * 0.2) * 0.95``:
+
+        >>> from repyability import RBD
+        >>> rbd = RBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")]
+        ... )
+        >>> p = rbd.system_probability({"a": 0.9, "b": 0.8, "c": 0.95})
+        >>> round(float(p[0]), 4)
+        0.931
+
+        Arrays give one system probability per element:
+
+        >>> import numpy as np
+        >>> p = rbd.system_probability(
+        ...     {
+        ...         "a": np.array([0.9, 0.5]),
+        ...         "b": np.array([0.8, 0.5]),
+        ...         "c": np.array([0.95, 0.5]),
+        ...     }
+        ... )
+        >>> [round(float(v), 4) for v in p]
+        [0.931, 0.375]
         """
 
         node_probabilities = copy(node_probabilities)
@@ -644,6 +1058,88 @@ class RBD:
         fixed: Optional[list] = None,
         weights=None,
     ):
+        """Improve the node probabilities just enough to meet a target.
+
+        Reliability allocation by a common improvement: every node that is
+        not ``fixed`` has its unreliability ``1 - p`` multiplied by
+        ``exp(-x * w)``, where ``w`` is the node's weight and ``x`` is one
+        scale factor shared by all nodes,
+
+            p_new = 1 - (1 - p) * exp(-x * w),
+
+        and ``x`` is solved for (``scipy.optimize.root``, Levenberg-Marquardt,
+        starting at ``x = 1``) so that
+        [`system_probability`][repyability.RBD.system_probability] of the
+        new probabilities equals ``target``. With the default equal weights
+        every free node's unreliability shrinks by the same factor, keeping
+        their ratios. A larger weight changes a node more; a weight of 0
+        leaves it unchanged, as does a probability of exactly 1.
+
+        A ``target`` below the current system probability gives ``x < 0``,
+        which increases the unreliabilities. They are not capped at 1, so a
+        low enough target returns negative (invalid) probabilities. Nor is
+        the target checked to be reachable: if it cannot be met (e.g.
+        ``fixed`` nodes limit the system probability to less) the result is
+        the closest the scaling gets, with no error or warning. Check the
+        result with ``system_probability``. The scipy result is stored on
+        the RBD as ``res`` (``res.x`` holds ``x``), replacing any earlier
+        one.
+
+        Parameters
+        ----------
+        target : float
+            The system probability to reach, in [0, 1]. The unreliabilities
+            never reach 0, so a target of 1 is only approached (unless it is
+            already met).
+        node_probabilities : Dict
+            The current probability that each node works, as a single float
+            per node, keyed by node name. An intermediate node with no entry
+            starts at 0.5. Any other keys (e.g. the input and output nodes)
+            are scaled like the rest and returned.
+        fixed : list, optional
+            Nodes whose probability is not changed, by default None (every
+            node may change).
+        weights : dict, optional
+            A weight per node, by default None (1.0 for every node). If
+            given, it needs an entry for every node that is not ``fixed``.
+
+        Returns
+        -------
+        dict
+            The allocated probability (a float) of every key of
+            ``node_probabilities``, and of any intermediate node that was
+            missing from it. ``fixed`` nodes keep their probability.
+
+        Raises
+        ------
+        ValueError
+            If ``target`` is above 1 or below 0, or a node probability is an
+            array of more than one value.
+        KeyError
+            If ``weights`` is given without an entry for a node that is not
+            ``fixed``.
+
+        Examples
+        --------
+        Raising two parallel nodes ``"a"`` and ``"b"`` in series with
+        ``"c"`` from a system probability of 0.931 to 0.99:
+
+        >>> from repyability import RBD
+        >>> rbd = RBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")]
+        ... )
+        >>> current = {"a": 0.9, "b": 0.8, "c": 0.95}
+        >>> new = rbd.improvement_allocation(0.99, current)
+        >>> {k: round(v, 4) for k, v in sorted(new.items())}
+        {'a': 0.9814, 'b': 0.9627, 'c': 0.9907}
+        >>> round(float(rbd.system_probability(new)[0]), 4)
+        0.99
+
+        Every unreliability was cut by the same factor:
+
+        >>> sorted({round((1 - new[k]) / (1 - current[k]), 4) for k in new})
+        [0.1863]
+        """
         if fixed is None:
             fixed = []
         node_probabilities = copy(node_probabilities)
@@ -690,6 +1186,44 @@ class RBD:
 
     @check_probability
     def equal_allocation(self, target: float):
+        """Give every node the same probability, chosen to meet a target.
+
+        Finds the single probability ``p`` that, given to every intermediate
+        node, makes [`system_probability`][repyability.RBD.system_probability]
+        equal ``target``: e.g. ``target ** (1 / n)`` for ``n`` nodes in
+        series and ``1 - (1 - target) ** (1 / n)`` for ``n`` in parallel.
+        Any node models are ignored. It runs
+        [`improvement_allocation`][repyability.RBD.improvement_allocation]
+        from 0.5 for every node, with equal weights and nothing fixed, so the
+        scipy result is stored on the RBD as ``res``. Targets of 0 and 1 are
+        met only approximately.
+
+        Parameters
+        ----------
+        target : float
+            The system probability to reach, in [0, 1].
+
+        Returns
+        -------
+        dict
+            The allocated probability (a float, the same for every node),
+            keyed by intermediate node name.
+
+        Raises
+        ------
+        ValueError
+            If ``target`` is above 1 or below 0.
+
+        Examples
+        --------
+        Three nodes in series each need ``0.9 ** (1 / 3)``:
+
+        >>> from repyability import RBD
+        >>> rbd = RBD([("s", 1), (1, 2), (2, 3), (3, "t")])
+        >>> new = rbd.equal_allocation(0.9)
+        >>> {k: round(v, 4) for k, v in sorted(new.items())}
+        {1: 0.9655, 2: 0.9655, 3: 0.9655}
+        """
         node_probabilities = {}
         for node in self.nodes:
             node_probabilities[node] = np.atleast_1d(0.5)
@@ -702,6 +1236,66 @@ class RBD:
         target: float,
         weights=None,
     ):
+        """Find node probabilities that meet a target, by optimisation.
+
+        Searches for node probabilities ``p_i = sigmoid(w_i * z_i)`` (which
+        keeps them in (0, 1)), with ``w_i`` the node's weight, that minimise
+        ``(target - R) ** 2``, where ``R`` is
+        [`system_probability`][repyability.RBD.system_probability].
+        ``scipy.optimize.minimize`` (BFGS) starts from ``z = 0``, i.e. every
+        node at 0.5. Any node models are ignored.
+
+        Many allocations meet a target; this returns the one the optimiser
+        reaches. The error's gradient for a node scales with its weight and
+        its Birnbaum importance, so nodes that matter more to the system
+        (e.g. a node in series with a redundant pair) and nodes with larger
+        weights move further from 0.5; a weight of 0 keeps a node at 0.5.
+        With equal weights, nodes placed symmetrically (e.g. all in series,
+        or all in parallel) get the same value.
+
+        The scipy result is stored on the RBD as ``res``, replacing any
+        earlier one. Because the tolerance is very tight, ``res.success`` is
+        often False ("precision loss") even when the target is met, so check
+        the result with ``system_probability`` instead.
+
+        Parameters
+        ----------
+        target : float
+            The system probability to reach, in [0, 1]; 0 and 1 can only be
+            approached.
+        weights : dict, optional
+            A weight per intermediate node, by default None (1.0 for every
+            node). If given, it needs an entry for every intermediate node.
+
+        Returns
+        -------
+        dict
+            The allocated probability (a numpy float) of every intermediate
+            node, keyed by node name.
+
+        Raises
+        ------
+        ValueError
+            If ``target`` is above 1 or below 0.
+        KeyError
+            If ``weights`` is given without an entry for an intermediate
+            node.
+
+        Examples
+        --------
+        With two parallel nodes ``"a"`` and ``"b"`` in series with ``"c"``,
+        the series node ``"c"`` gets the highest probability:
+
+        >>> from repyability import RBD
+        >>> rbd = RBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")]
+        ... )
+        >>> new = rbd.simple_allocation(0.99)
+        >>> {k: round(float(v), 4) for k, v in sorted(new.items())}
+        {'a': 0.9112, 'b': 0.9112, 'c': 0.9979}
+        >>> round(float(rbd.system_probability(new)[0]), 4)
+        0.99
+        """
         node_array_indices = {k: i for i, k in enumerate(self.nodes)}
 
         if weights is None:
@@ -730,7 +1324,25 @@ class RBD:
         return node_probabilities
 
     def node_names(self) -> list[Hashable]:
-        """Returns the list of (intermediate) node names of the RBD."""
+        """Return the names of the intermediate (component) nodes.
+
+        Every node of the diagram except the input and output nodes, in the
+        order the nodes were added to the graph (for a feasible RBD, the
+        order of first appearance in ``edges``). Irrelevant nodes are
+        included. In a ``NonRepairableRBD`` a repeated node is merged into
+        the node it repeats, so only the latter is listed.
+
+        Returns
+        -------
+        list[Hashable]
+            The intermediate node names, as a new list.
+
+        Examples
+        --------
+        >>> from repyability import RBD
+        >>> RBD([("s", "a"), ("a", "b"), ("b", "t")]).node_names()
+        ['a', 'b']
+        """
         return list(self.nodes)
 
     def structural_importance(
@@ -738,24 +1350,41 @@ class RBD:
         working_nodes: Optional[Iterable[Hashable]] = None,
         broken_nodes: Optional[Iterable[Hashable]] = None,
     ) -> dict[Any, float]:
-        """Structural (probability-free) importance of every node.
+        """Return the structural (probability-free) importance of every node.
 
         The fraction of the states of the *other* nodes in which the node is
         pivotal -- the system works when the node works and fails when it
-        fails, holding the others fixed. Equivalently it is the Birnbaum
-        importance with every node reliability at 1/2, so it depends only on
-        the RBD's structure and not on any failure model -- useful at design
-        time, before any life data exists. It is a structural property, so it
-        is the same for a ``NonRepairableRBD`` and a ``RepairableRBD`` with the
-        same diagram.
+        fails, holding the others fixed. It is computed exactly as the
+        Birnbaum importance with every node probability at 1/2, so it
+        depends only on the RBD's structure and not on any failure model --
+        useful at design time, before any life data exists. It is the same
+        for a [`NonRepairableRBD`][repyability.NonRepairableRBD] and a
+        [`RepairableRBD`][repyability.RepairableRBD] with the same diagram,
+        and a common-cause group does not change it.
 
-        ``working_nodes``/``broken_nodes`` condition on those nodes being
-        forced up/down (validated as elsewhere).
+        Parameters
+        ----------
+        working_nodes : Iterable[Hashable], optional
+            Nodes to condition on as working (probability 1), by default
+            None.
+        broken_nodes : Iterable[Hashable], optional
+            Nodes to condition on as failed (probability 0), by default
+            None. With either, the fraction is taken over the states of the
+            nodes that are not forced. A forced node's own importance is
+            still computed, given the other forced nodes.
 
         Returns
         -------
         dict[Any, float]
-            Node name -> structural importance, in ``[0, 1]``.
+            The structural importance of each intermediate node, in
+            ``[0, 1]``, keyed by node name.
+
+        Raises
+        ------
+        ValueError
+            If a node is in both ``working_nodes`` and ``broken_nodes``, is
+            the input or output node, or is not an intermediate node of the
+            RBD. A ``NonRepairableRBD`` also rejects a repeated node.
 
         Examples
         --------
@@ -774,6 +1403,13 @@ class RBD:
         >>> si = rbd.structural_importance()
         >>> {k: round(v, 4) for k, v in sorted(si.items())}
         {'a': 0.5, 'b': 0.5}
+
+        Given that ``"a"`` has failed, ``"b"`` is pivotal in every state
+        (``"a"``'s own value is unchanged, as it is taken over ``"b"``):
+
+        >>> si = rbd.structural_importance(broken_nodes=["a"])
+        >>> {k: round(v, 4) for k, v in sorted(si.items())}
+        {'a': 0.5, 'b': 1.0}
         """
         node_probabilities: dict[Any, ArrayLike] = {
             node: np.full(1, 0.5) for node in self.nodes
@@ -790,26 +1426,129 @@ class RBD:
     # -- Serialisation -----------------------------------------------------
 
     def to_dict(self) -> dict:
-        """Serialise the RBD to a JSON-friendly dict (round-trips via
-        :meth:`from_dict`). Node models are serialised structurally; fitted
-        non-parametric models are not supported."""
+        """Serialise the RBD to a JSON-friendly dict.
+
+        The dict holds the RBD's ``type`` and the ``repyability_version``
+        that wrote it, plus the constructor inputs as given: the edges, the
+        node models (or components), the k-out-of-n values, the input and
+        output nodes, ``on_infeasible_rbd``, and the common-cause groups or
+        the downtime cost rate. [`from_dict`][repyability.RBD.from_dict]
+        rebuilds the RBD by calling its constructor again, so the round
+        trip is faithful even for repeated nodes. Node models are serialised
+        structurally: surpyval parametric distributions as their name and
+        parameters; the RePyability node models (standby, repeated,
+        load-sharing, regression, ``NonRepairable``, ``PerfectReliability``
+        and ``PerfectUnreliability``) and nested RBDs recursively. Per-node
+        values are stored as lists of entries, so integer and string node
+        names both survive JSON. Only a
+        [`NonRepairableRBD`][repyability.NonRepairableRBD] or
+        [`RepairableRBD`][repyability.RepairableRBD] can be serialised.
+
+        Returns
+        -------
+        dict
+            The serialised RBD.
+
+        Raises
+        ------
+        NotImplementedError
+            If a node model cannot be serialised, e.g. a fitted
+            non-parametric model (surpyval has no API to rebuild one).
+        AttributeError
+            If called on a bare ``RBD``, which keeps no constructor inputs.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {"c": surv.Weibull.from_params([100, 2])},
+        ... )
+        >>> d = rbd.to_dict()
+        >>> d["type"], d["edges"]
+        ('NonRepairableRBD', [['s', 'c'], ['c', 't']])
+        >>> d["reliabilities"][0]["model"]
+        {'kind': 'parametric', 'dist': 'Weibull', 'params': [100.0, 2.0]}
+        """
         from repyability.rbd.serialisation import rbd_to_dict
 
         return rbd_to_dict(self)
 
     def to_json(self, **json_kwargs) -> str:
-        """Serialise the RBD to a JSON string (kwargs pass through to
-        ``json.dumps``)."""
+        """Serialise the RBD to a JSON string.
+
+        Equivalent to ``json.dumps(self.to_dict(), **json_kwargs)``; see
+        [`to_dict`][repyability.RBD.to_dict] for what is stored. Node names
+        must survive JSON: strings and integers do, but tuples do not (they
+        come back as lists).
+
+        Parameters
+        ----------
+        **json_kwargs
+            Passed to ``json.dumps``, e.g. ``indent=2``.
+
+        Returns
+        -------
+        str
+            The JSON document.
+
+        Raises
+        ------
+        NotImplementedError
+            If a node model cannot be serialised (see
+            [`to_dict`][repyability.RBD.to_dict]).
+        AttributeError
+            If called on a bare ``RBD``.
+        TypeError
+            If a value cannot be encoded as JSON, e.g. a node name that JSON
+            has no type for.
+
+        Examples
+        --------
+        >>> import json
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {"c": surv.Weibull.from_params([100, 2])},
+        ... )
+        >>> json.loads(rbd.to_json(indent=2))["type"]
+        'NonRepairableRBD'
+        """
         from repyability.rbd.serialisation import rbd_to_json
 
         return rbd_to_json(self, **json_kwargs)
 
     @classmethod
     def from_dict(cls, d: dict) -> "RBD":
-        """Reconstruct an RBD from :meth:`to_dict` output.
+        """Reconstruct an RBD from the output of ``to_dict``.
 
+        The RBD is rebuilt by calling its constructor with the stored
+        inputs, so it is validated again and is equivalent to the original.
         Called on a specific subclass, the document's ``type`` must match;
         called on ``RBD`` it dispatches to whichever type the document names.
+
+        Parameters
+        ----------
+        d : dict
+            A dict made by [`to_dict`][repyability.RBD.to_dict] (possibly
+            after a JSON round trip).
+
+        Returns
+        -------
+        RBD
+            The reconstructed ``NonRepairableRBD`` or ``RepairableRBD``.
+
+        Raises
+        ------
+        ValueError
+            If called on a subclass and ``d["type"]`` is not that subclass;
+            if the RBD type or a node model kind is unknown; or if the
+            constructor rejects the stored inputs.
+        KeyError
+            If a required entry is missing, e.g. ``"type"`` when called on
+            ``RBD``.
 
         Examples
         --------
@@ -837,7 +1576,45 @@ class RBD:
 
     @classmethod
     def from_json(cls, s: str) -> "RBD":
-        """Reconstruct an RBD from a JSON string (see :meth:`from_dict`)."""
+        """Reconstruct an RBD from a JSON string made by ``to_json``.
+
+        Equivalent to ``cls.from_dict(json.loads(s))``, so the same type
+        rules apply (see [`from_dict`][repyability.RBD.from_dict]).
+
+        Parameters
+        ----------
+        s : str
+            A JSON document made by [`to_json`][repyability.RBD.to_json].
+
+        Returns
+        -------
+        RBD
+            The reconstructed ``NonRepairableRBD`` or ``RepairableRBD``.
+
+        Raises
+        ------
+        ValueError
+            If ``s`` is not valid JSON (``json.JSONDecodeError`` is a
+            ValueError), or for the reasons given in ``from_dict``.
+        KeyError
+            If a required entry is missing (see ``from_dict``).
+
+        Examples
+        --------
+        ``RBD.from_json`` returns whichever RBD type the document names:
+
+        >>> import surpyval as surv
+        >>> from repyability import RBD, NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {"c": surv.Weibull.from_params([100, 2])},
+        ... )
+        >>> restored = RBD.from_json(rbd.to_json())
+        >>> type(restored).__name__
+        'NonRepairableRBD'
+        >>> round(restored.sf(50), 4)
+        0.7788
+        """
         import json
 
         return cls.from_dict(json.loads(s))
