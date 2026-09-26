@@ -143,17 +143,19 @@ three_in_series.improvement_allocation(0.95, current, fixed=["a"])["c"]   # -> 0
 `equal_allocation(target)` is `improvement_allocation` starting from 0.5 for
 every node.
 
-!!! warning "Check the result"
-    Nothing checks that the target was reached. If the fixed nodes leave the
-    target out of reach, the closest allocation comes back without complaint,
-    and a target far below the current system reliability can produce values
-    outside [0, 1]. Put the result back through `system_probability`:
+A target below the current system reliability gives the *lowest* node
+reliabilities that still meet it (each failure probability is capped at 1). A
+target the scaling cannot reach, because the fixed nodes limit the system,
+raises `ValueError` with the reachable range:
 
-    ```python
-    stuck = three_in_series.improvement_allocation(0.999, current, fixed=["a", "b"])
-    stuck["c"]                                        # -> 1.0
-    three_in_series.system_probability(stuck)[0]      # -> 0.9603   not 0.999
-    ```
+```python
+try:
+    three_in_series.improvement_allocation(0.999, current, fixed=["a", "b"])
+except ValueError as error:
+    print(error)
+# target 0.999 cannot be reached: with the fixed nodes and weights given,
+# the system probability can only range from 0 to 0.9603.
+```
 
 ### Least-squares allocation
 

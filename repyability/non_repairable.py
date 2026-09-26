@@ -1,7 +1,7 @@
 import numpy as np
-from scipy.integrate import quad
+from scipy.integrate import quad, trapezoid
 from scipy.interpolate import interp1d
-from scipy.optimize import minimize
+from scipy.optimize import minimize, minimize_scalar
 from surpyval import ExactEventTime, NonParametric, Parametric
 
 from repyability.maintenance import MaintenancePolicy
@@ -14,6 +14,16 @@ from repyability.rbd.standby_node import StandbyModel
 
 FAILURE = 1
 REPLACE = 0
+
+
+def _scalar_sf(model):
+    """``model.sf`` as a function of one age returning a float (a
+    ``StandbyModel``'s ``sf`` returns an array even for a scalar)."""
+
+    def sf(t):
+        return float(np.ravel(model.sf(np.atleast_1d(float(t))))[0])
+
+    return sf
 
 
 class NonRepairable:
@@ -57,13 +67,9 @@ class NonRepairable:
           time points and linearly extrapolated beyond them; the
           availability methods reject it, and its draws in
           ``next_event()`` cannot be seeded;
-        - a [`StandbyModel`][repyability.StandbyModel] whose survival
-          function is simulated (a Kaplan-Meier fit, held in its
-          ``model`` attribute), for the availability and event methods
-          only: the cost methods raise ``AttributeError`` for it. A
-          closed-form standby model (identical exponential units, or cold
-          standby with ``k = 1``) makes this constructor raise
-          ``AttributeError``.
+        - a [`StandbyModel`][repyability.StandbyModel], in any of its
+          forms (a closed form, a convolution or a simulation), through its
+          survival function ``sf``.
     time_to_replace : surpyval model, optional
         The distribution of the time taken to replace the unit after a
         failure, used by the availability and event methods. Default
@@ -130,12 +136,11 @@ class NonRepairable:
                 reliability.x, 1 - reliability.F, fill_value="extrapolate"
             )
         elif isinstance(reliability, StandbyModel):
-            self.model_parameterization = "non-parametric"
-            self.reliability_function = interp1d(
-                reliability.model.x,
-                1 - reliability.model.F,
-                fill_value="extrapolate",
-            )
+            # Whatever the arrangement's survival function is (a closed
+            # form, a convolution or a Kaplan-Meier fit to simulated
+            # lifetimes), its sf gives it.
+            self.model_parameterization = "standby"
+            self.reliability_function = _scalar_sf(reliability)
         else:
             raise ValueError("Unknown reliability function")
 
@@ -187,8 +192,10 @@ class NonRepairable:
         or at age ``t``, whichever comes first. It is the denominator of
         ``cost_rate``.
 
-        For a parametric model the integral is computed by quadrature. For
-        a non-parametric model it is a right-endpoint sum of the
+        For a parametric model the integral is computed by quadrature, and
+        for a ``StandbyModel`` by the trapezoidal rule on 4,001 ages (its
+        survival function may be a step function). For a non-parametric
+        model it is a right-endpoint sum of the
         interpolated ``R`` over the estimate's own time points below
         ``t``: it starts at the first time point rather than 0 and stops
         at the last one below ``t``, so it slightly underestimates the
@@ -204,11 +211,6 @@ class NonRepairable:
         float
             The expected cycle length, in the lifetime model's time units.
 
-        Raises
-        ------
-        AttributeError
-            If ``reliability`` is a ``StandbyModel``.
-
         Examples
         --------
         For an exponential lifetime with rate 0.01 the integral is
@@ -222,6 +224,13 @@ class NonRepairable:
         """
         if self.model_parameterization == "parametric":
             out = quad(self.reliability_function, 0, t)[0]
+        elif self.model_parameterization == "standby":
+            # A simulated arrangement's survival function is a Kaplan-Meier
+            # step function, which quadrature handles poorly: integrate on a
+            # fine grid instead.
+            ages = np.linspace(0.0, float(t), 4001)
+            R = np.ravel(np.asarray(self.reliability.sf(ages), dtype=float))
+            out = float(trapezoid(np.clip(R, 0.0, 1.0), ages))
         else:
             mask = self.reliability.x < t
             x_less_than_t = self.reliability.x[mask]
@@ -378,6 +387,12 @@ class NonRepairable:
           evenly spaced ages between the estimate's first and last time
           points (the integral as a right-endpoint sum from 0) and the
           cheapest age is returned.
+        - ``StandbyModel``: its survival function may be a step function
+          (a simulated arrangement), so the cost rate is evaluated on a
+          grid of 2,001 ages up to where survival falls to 1e-6, and the
+          cheapest grid age is refined with a bounded search between its
+          neighbours. If survival never falls that far, ``inf`` is
+          returned.
 
         Only the two cases above give ``inf``. For another lifetime
         without wear-out (e.g. a Gamma with shape below 1) the cost rate
@@ -401,9 +416,8 @@ class NonRepairable:
         ------
         AttributeError
             If the costs have not been set with
-            ``set_costs_planned_and_unplanned()`` (the ``inf`` cases above
-            return without them), or if ``reliability`` is a
-            ``StandbyModel``.
+            ``set_costs_planned_and_unplanned()`` (the parametric ``inf``
+            cases above return without them).
 
         Examples
         --------
@@ -454,6 +468,8 @@ class NonRepairable:
                 optimal = np.exp(res.x[0])
             else:
                 optimal = np.exp(res_log.x[0])
+        elif self.model_parameterization == "standby":
+            optimal = self._optimal_standby_replacement()
         else:
             # When using non-parametric estimations, it can also be straight
             # forward. Simply find the cost rate at a number of places
@@ -476,6 +492,48 @@ class NonRepairable:
             optimal = x_search[optimal_idx]
         return optimal
 
+    def _optimal_standby_replacement(self) -> float:
+        """The cheapest replacement age for a standby arrangement.
+
+        Its survival function may be a Kaplan-Meier step function, on which
+        a gradient search stalls, so the cost rate is scanned on a grid of
+        ages up to where the arrangement has all but surely failed, and the
+        cheapest grid age refined with a bounded search between its
+        neighbours.
+        """
+        # Bracket the age by which survival has fallen to 1e-6.
+        upper = 1.0
+        for _ in range(200):
+            if self.reliability_function(upper) <= 1e-6:
+                break
+            upper *= 2.0
+        else:
+            # It may never fail (e.g. a limited failure population): the
+            # cost rate keeps falling as the age grows, so never replace.
+            return np.inf
+        while upper > 1e-12 and self.reliability_function(upper / 2) <= 1e-6:
+            upper /= 2.0
+        ages = np.linspace(0.0, upper, 2001)
+        R = np.clip(
+            np.ravel(np.asarray(self.reliability.sf(ages), dtype=float)),
+            0.0,
+            1.0,
+        )
+        cycle = np.concatenate(
+            [[0.0], np.cumsum(np.diff(ages) * (R[1:] + R[:-1]) / 2.0)]
+        )
+        with np.errstate(divide="ignore", invalid="ignore"):
+            rates = (self.cp * R + self.cu * (1.0 - R)) / cycle
+        rates[0] = np.inf
+        i = int(np.nanargmin(rates))
+        lo, hi = ages[max(i - 1, 1)], ages[min(i + 1, len(ages) - 1)]
+        if hi <= lo:
+            return float(ages[i])
+        refined = minimize_scalar(
+            self._cost_rate, bounds=(lo, hi), method="bounded"
+        )
+        return float(refined.x)
+
     def optimal_replacement_policy(self) -> MaintenancePolicy:
         """The optimal age-replacement policy as a typed result.
 
@@ -497,8 +555,6 @@ class NonRepairable:
         ValueError
             If the costs have not been set (see
             ``set_costs_planned_and_unplanned()``).
-        AttributeError
-            If ``reliability`` is a ``StandbyModel``.
 
         Examples
         --------

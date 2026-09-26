@@ -6,6 +6,7 @@ Uses pytest fixtures located in conftest.py in the tests/ directory.
 
 import numpy as np
 import pytest
+import surpyval as surv
 from surpyval import KaplanMeier, LogNormal, Weibull
 
 from repyability.non_repairable import NonRepairable
@@ -181,3 +182,96 @@ def test_policy_requires_costs():
     nr_model = NonRepairable(Weibull.from_params((1000, 2.5)))
     with pytest.raises(ValueError, match="costs not set"):
         nr_model.optimal_replacement_policy()
+
+
+def _erlang2_sf(rate, t):
+    return np.exp(-rate * t) * (1 + rate * t)
+
+
+@pytest.mark.parametrize(
+    "form",
+    ["closed form", "convolution", "simulation"],
+)
+def test_a_standby_arrangement_as_the_lifetime(form):
+    # Closed-form arrangements (identical exponential units, or cold k = 1)
+    # used to fail at construction, and the cost methods failed for every
+    # arrangement. Any of them now works through its survival function.
+    from repyability import StandbyModel
+
+    if form == "closed form":
+        standby = StandbyModel([surv.Exponential.from_params([0.001])] * 2)
+    elif form == "convolution":
+        standby = StandbyModel([surv.Weibull.from_params([1000, 2.5])] * 2)
+    else:
+        standby = StandbyModel(
+            [surv.Weibull.from_params([1000, 2.5])] * 2,
+            dormancy_factor=0.3,
+            n_sims=5000,
+            seed=1,
+        )
+    unit = NonRepairable(standby, surv.Exponential.from_params([1 / 24]))
+    unit.set_costs_planned_and_unplanned(1, 5)
+    policy = unit.optimal_replacement_policy()
+    assert 0 < policy.interval < np.inf
+    # The optimum is a minimum of the cost rate.
+    for factor in (0.95, 0.99, 1.01, 1.05):
+        assert unit.cost_rate(policy.interval * factor) >= policy.cost_rate
+    assert 0 < unit.mean_availability() < 1
+
+
+def test_standby_replacement_matches_the_closed_form():
+    # Two identical exponential units in cold standby live an Erlang(2)
+    # time, so the age-replacement optimum can be found independently.
+    from scipy.integrate import quad
+    from scipy.optimize import minimize_scalar
+
+    from repyability import StandbyModel
+
+    rate = 0.001
+
+    def cost_rate(t):
+        R = _erlang2_sf(rate, t)
+        return (1 * R + 5 * (1 - R)) / quad(
+            lambda u: _erlang2_sf(rate, u), 0, t
+        )[0]
+
+    expected = minimize_scalar(
+        cost_rate, bounds=(10, 10_000), method="bounded"
+    )
+    standby = StandbyModel([surv.Exponential.from_params([rate])] * 2)
+    unit = NonRepairable(standby)
+    unit.set_costs_planned_and_unplanned(1, 5)
+    assert unit.find_optimal_replacement() == pytest.approx(
+        expected.x, rel=1e-4
+    )
+    assert unit.avg_replacement_time(1000) == pytest.approx(
+        quad(lambda u: _erlang2_sf(rate, u), 0, 1000)[0]
+    )
+
+
+def test_a_standby_that_may_never_fail_is_never_replaced():
+    # With a limited failure population a unit may never fail, so the cost
+    # rate keeps falling with the replacement age.
+    from repyability import StandbyModel
+
+    never = surv.Weibull.from_params([1000, 2.5], p=0.6)
+    unit = NonRepairable(StandbyModel([never, never], n_sims=2000, seed=0))
+    unit.set_costs_planned_and_unplanned(1, 5)
+    assert unit.find_optimal_replacement() == np.inf
+
+
+def test_a_closed_form_standby_component_in_a_repairable_rbd():
+    from repyability import RepairableRBD, StandbyModel
+
+    standby = StandbyModel([surv.Exponential.from_params([0.001])] * 2)
+    rbd = RepairableRBD(
+        [("s", "pumps"), ("pumps", "t")],
+        {
+            "pumps": {
+                "reliability": standby,
+                "repairability": surv.Exponential.from_params([1 / 24]),
+            }
+        },
+    )
+    # MTTF 2000, MTTR 24.
+    assert rbd.mean_availability() == pytest.approx(2000 / 2024)

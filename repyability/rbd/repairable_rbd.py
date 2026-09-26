@@ -627,10 +627,12 @@ class RepairableRBD(RBD):
         itself is working). By default None, meaning every k is 1.
     input_node : Hashable, optional
         The input (source) node. By default None: the only node with no
-        incoming edge.
+        incoming edge. If given, it must be that node, or a ValueError is
+        raised.
     output_node : Hashable, optional
         The output (sink) node. By default None: the only node with no
-        outgoing edge.
+        outgoing edge. If given, it must be that node, or a ValueError is
+        raised.
     on_infeasible_rbd : str, optional
         ``"raise"`` (the default), ``"warn"`` or ``"ignore"``: what to do if
         the diagram is invalid (it has a cycle, a node other than the input

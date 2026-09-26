@@ -37,9 +37,8 @@ What is saved:
   load-sharing, regression and `NonRepairable` wrappers recursively (a
   regression model through `surpyval.from_dict`).
 
-Integer and string node names both survive JSON; tuple node names survive
-`to_dict`/`from_dict` but not JSON (JSON turns them into lists, and loading
-fails with `TypeError`). Loading with the wrong class
+String, integer and tuple node names all survive JSON (JSON turns a tuple
+into a list, and loading turns it back). Loading with the wrong class
 (`NonRepairableRBD.from_dict` on a `RepairableRBD` document) raises
 `ValueError`; `RBD.from_dict` and `RBD.from_json` always pick the right one.
 

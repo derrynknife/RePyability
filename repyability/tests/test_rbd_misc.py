@@ -6,9 +6,11 @@ Uses pytest fixtures located in conftest.py in the tests/ directory.
 
 import numpy as np
 import pytest
+import surpyval as surv
 from surpyval import Exponential, FixedEventProbability
 
 from repyability.rbd.non_repairable_rbd import NonRepairableRBD
+from repyability.rbd.repairable_rbd import RepairableRBD
 
 
 def test_rbd_mean_time_to_failure_series():
@@ -80,3 +82,30 @@ def test_rbd_circular_dependency():
         edges = [("s", 2), (2, 3), (3, 4), (4, 2), (4, "t")]
         reliabilities = {2: FixedEventProbability.from_params(1 - 0.8)}
         NonRepairableRBD(edges, reliabilities)
+
+
+@pytest.mark.parametrize(
+    "kwargs, message",
+    [
+        ({"input_node": "a"}, "incoming edges"),
+        ({"output_node": "b"}, "outgoing edges"),
+    ],
+)
+def test_named_input_and_output_must_be_the_source_and_sink(kwargs, message):
+    # Naming an inner node used to be accepted, silently analysing a
+    # different system (the nodes beyond it dropped out).
+    unit = surv.Weibull.from_params([100, 2])
+    edges = [("s", "a"), ("a", "b"), ("b", "t")]
+    models = {"s": unit, "a": unit, "b": unit, "t": unit}
+    with pytest.raises(ValueError, match=message):
+        NonRepairableRBD(edges, models, **kwargs)
+    unit_spec = {
+        "reliability": surv.Exponential.from_params([0.1]),
+        "repairability": surv.Exponential.from_params([1.0]),
+    }
+    with pytest.raises(ValueError, match=message):
+        RepairableRBD(edges, {n: unit_spec for n in "sabt"}, **kwargs)
+    named = NonRepairableRBD(
+        edges, {"a": unit, "b": unit}, input_node="s", output_node="t"
+    )
+    assert named.sf(50) == pytest.approx(unit.sf(50).item() ** 2)

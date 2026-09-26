@@ -145,14 +145,15 @@ overhaul.cost_rate        # -> 0.2965
 ```
 
 `max_interval` bounds the search (by default 15 times the mean of the
-baseline lifetime). The simulated search never returns `inf`: if overhauls
-never pay, or the optimum lies beyond the horizon, it returns `max_interval`
-itself, so a result equal to it calls for a longer horizon. There is a limit
-the other way too. Close to minimal repair (`q` near 1), once the survival at
-the unit's virtual age falls below double precision, surpyval's simulator
-stops resolving failures (it warns that sequences stalled), which can drag the
-optimum to the horizon; if that warning appears, lower `max_interval`. The
-optimum grows as repairs become more effective.
+baseline lifetime). Close to minimal repair (`q` near 1) the unit's virtual
+age can reach ages where the survival underflows double precision, and
+surpyval's simulator stops resolving failures there; the search then
+shortens its horizon to what the simulation can resolve, so near-minimal
+repair needs no special handling. The simulated search never returns `inf`:
+if the cost rate is still falling at the horizon (overhauls never pay, or
+the optimum lies beyond it), it returns the horizon with a warning that says
+whether a larger `max_interval` could help. The optimum grows as repairs
+become more effective.
 
 ### Replace at the N-th failure
 

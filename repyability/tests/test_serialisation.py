@@ -138,3 +138,54 @@ def test_unsupported_model_raises_not_implemented():
     rbd = NonRepairableRBD([("s", 1), (1, "t")], {1: km})
     with pytest.raises(NotImplementedError, match="Cannot serialise"):
         rbd.to_dict()
+
+
+def test_tuple_node_names_survive_json():
+    # JSON has no tuples: they come back as lists, which are not hashable,
+    # so loading used to fail. Every place a node name can appear is
+    # covered: edges, k, the input/output nodes, the model entries, a
+    # repeated node's reference, and CCF group members.
+    from surpyval import FixedEventProbability as FEP
+
+    from repyability import BetaFactor, CCFGroup, PerfectReliability
+
+    p1, p2, ps, ps2 = ("pump", 1), ("pump", 2), ("ps", 0), ("ps", 1)
+    junction = ("v", ("nested", 0))
+    unit = W([100, 2])
+    rbd = NonRepairableRBD(
+        [
+            (("in",), ps),
+            (ps, p1),
+            (p1, junction),
+            (("in",), ps2),
+            (ps2, p2),
+            (p2, junction),
+            (junction, ("out",)),
+        ],
+        {
+            ps: FEP.from_params(0.05),
+            ps2: ps,
+            p1: unit,
+            p2: unit,
+            junction: PerfectReliability,
+        },
+        k={junction: 1},
+        input_node=("in",),
+        output_node=("out",),
+        ccf_groups=[CCFGroup([p1, p2], BetaFactor(0.1))],
+    )
+    clone = NonRepairableRBD.from_json(rbd.to_json())
+    assert clone.sf(30) == rbd.sf(30)
+    assert clone.repeated == {ps2: ps}
+    assert (clone.input_node, clone.output_node) == (("in",), ("out",))
+    assert tuple(clone.ccf_groups[0].members) == (p1, p2)
+
+    repairable = RepairableRBD(
+        [(("s",), p1), (p1, ("t",))],
+        {p1: {"reliability": E([0.1]), "repairability": E([1.0])}},
+    )
+    repairable_clone = RepairableRBD.from_json(repairable.to_json())
+    assert repairable_clone.nodes == [p1]
+    assert (
+        repairable_clone.mean_availability() == repairable.mean_availability()
+    )

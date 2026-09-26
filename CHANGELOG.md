@@ -181,6 +181,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exactly as separate objects would. (`rbd.components[node]` is that copy.
   Models given as `{"reliability": ..., "repairability": ...}` dicts always
   made a new object per node and are unchanged.)
+- **`random()` hung on a diagram with an edge straight from the input to the
+  output node.** Such a system never fails. The batched sampler returned
+  `inf` for it, but the one-at-a-time sampler (used when a node's model
+  cannot be sampled in blocks, e.g. a zero-inflated one) kept waiting for a
+  system failure after every node had failed, so `random()`, `mean()` and the
+  MTTF methods never returned. It now returns `inf` too.
+- **`NonRepairable` failed with a `StandbyModel` lifetime.** A closed-form
+  standby arrangement (identical Exponential units, or cold standby with
+  `k = 1`) made the constructor raise `AttributeError`, and for any
+  `StandbyModel` the cost methods (`avg_replacement_time`, `cost_rate`,
+  `find_optimal_replacement`, `optimal_replacement_policy`) raised
+  `AttributeError` too. Every form (closed form, convolution or simulation)
+  now works through the arrangement's survival function. The cycle length is
+  integrated by the trapezoidal rule on a fine grid (a simulated
+  arrangement's survival is a step function), and the optimal age is found
+  on a grid and refined; an arrangement that may never fail is never
+  replaced (`inf`).
+- **An `input_node` or `output_node` that is not the diagram's source or
+  sink was accepted.** Naming, say, a node in the middle of a series chain
+  silently analysed a different system (the nodes before it dropped out).
+  Both RBD classes now raise `ValueError` unless the named node has no
+  incoming (input) or no outgoing (output) edges.
+- **`improvement_allocation` could return invalid probabilities or miss its
+  target silently.** A target below the current system probability pushed
+  node probabilities below 0, and a target the free nodes could not reach
+  (because `fixed` nodes cap the system) returned the closest miss with no
+  error. The failure probabilities are now capped at 1, so a lower target
+  gives the lowest valid probabilities that meet it; the common factor is
+  found by a bracketed root search, which meets every reachable target
+  (including a target of 1, which `equal_allocation` used to meet only
+  approximately); an unreachable target raises `ValueError` giving the
+  reachable range; and each node probability must be a single value in
+  [0, 1]. `rbd.res` still holds the common exponent in `x`.
+- **Tuple node names did not survive JSON.** JSON writes a tuple as a list,
+  and loading used the list as the node name, which is not hashable, so
+  `from_json(to_json())` failed for an RBD with tuple node names. Loading
+  now turns lists in node names (edges, models, `k`, repeated nodes,
+  common-cause groups, input and output nodes) back into tuples.
+- **The simulated overhaul search returned its horizon as a false optimum
+  for near-minimal repair.** For a `Repairable` with imperfect repair and `q`
+  close to 1, the unit's virtual age reaches ages where the baseline
+  survival underflows; surpyval then ends those simulated histories early,
+  the estimated `E[N(t)]` stops growing, and the cost rate appeared to keep
+  falling to the end of the search. A Weibull(100, 2) with minimal repair
+  and costs 10 and 50 returned 1329 (the default horizon) instead of the
+  closed-form 224. When the simulation is cut short, the search now halves
+  its horizon until it is not, down to no less than the age at which the
+  baseline survival is 1e-10, and that example finds 219 (seed 0, the
+  default 1000 simulations). The warnings of
+  the discarded simulations are dropped, and an optimum on the horizon now
+  warns that the cost rate is still falling there (and whether raising
+  `max_interval` could help), where the horizon used to be returned in
+  silence.
 - `test_non_parametric_optimal_replacement` drew its data from the unseeded
   global RNG and failed about one run in 150; it is now seeded.
 - `test_weibull_no_optimal_replacement` no longer asserts that a warning is

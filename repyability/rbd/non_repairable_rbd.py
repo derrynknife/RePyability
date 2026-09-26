@@ -213,11 +213,13 @@ class NonRepairableRBD(RBD):
     input_node : Hashable, optional
         The input node. By default it is inferred as the unique node with
         no predecessors; naming it does not relax that requirement. A name
-        not in the diagram raises a ValueError.
+        not in the diagram, or a node with predecessors, raises a
+        ValueError.
     output_node : Hashable, optional
         The output node. By default it is inferred as the unique node with
         no successors; naming it does not relax that requirement. A name
-        not in the diagram raises a ValueError.
+        not in the diagram, or a node with successors, raises a
+        ValueError.
     on_infeasible_rbd : str, optional
         What to do if the diagram is invalid: ``"raise"`` (the default)
         raises a ValueError, while ``"warn"`` and ``"ignore"`` carry on,
@@ -1714,6 +1716,12 @@ class NonRepairableRBD(RBD):
             working_nodes = {k: True for k in self.G.nodes}
             system_working = True
             while system_working:
+                if event_queue.empty():
+                    # Every node has failed and the system still works: an
+                    # edge joins the input to the output directly, so it
+                    # never fails (as the batched path finds too).
+                    time = np.inf
+                    break
                 failure = event_queue.get()
                 time = failure.time
                 working_nodes[failure.node] = False

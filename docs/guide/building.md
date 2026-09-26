@@ -29,11 +29,9 @@ rbd.sf(50)   # -> 0.8393   system reliability at t = 50
 ```
 
 The input and output nodes are inferred as the unique node with no
-predecessors and the unique node with no successors, and need no model. There
-is rarely a reason to name them with `input_node=`/`output_node=`. If you do,
-name the actual source and sink: the constructor checks only that they are
-nodes of the graph, and naming another node (say, the last component before
-the real sink) silently builds a different system. Either way, the diagram
+predecessors and the unique node with no successors, and need no model. You
+can name them with `input_node=`/`output_node=`, but they must be that source
+and sink: naming any other node raises `ValueError`. Either way, the diagram
 must have exactly one source and one sink.
 
 A node model is anything that exposes `sf(t)` and `ff(t)`:

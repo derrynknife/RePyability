@@ -17,7 +17,7 @@ from typing import Any, Dict, Hashable, Iterable, Iterator, Optional
 import networkx as nx
 import numpy as np
 from numpy.typing import ArrayLike
-from scipy.optimize import minimize, root
+from scipy.optimize import OptimizeResult, brentq, minimize
 from scipy.special import expit as sigmoid
 
 from repyability.rbd.min_path_sets import min_path_sets as find_min_path_sets
@@ -409,10 +409,9 @@ class RBD:
         (every node has ``k = 1``).
     input_node : Any, optional
         The input node, by default None: it is found as the node with no
-        incoming edges. If given, it must be a node of the diagram and must
-        be that node; naming another node is not detected and gives a wrong
-        structure. It cannot make a diagram with several such nodes
-        feasible.
+        incoming edges. If given, it must be that node: a name not in the
+        diagram, or a node with incoming edges, raises a ValueError. It
+        cannot make a diagram with several such nodes feasible.
     output_node : Any, optional
         The output node, by default None: it is found as the node with no
         outgoing edges. The same rules as for ``input_node`` apply.
@@ -446,8 +445,9 @@ class RBD:
     Raises
     ------
     ValueError
-        If ``input_node`` or ``output_node`` is not a node of the diagram
-        (whatever ``on_infeasible_rbd`` is); if the structure is infeasible
+        If ``input_node`` or ``output_node`` is not a node of the diagram,
+        or is not its source or sink (whatever ``on_infeasible_rbd`` is);
+        if the structure is infeasible
         and ``on_infeasible_rbd`` is ``"raise"`` (the message does not
         list the problems: use ``"warn"`` to see them); if
         ``on_infeasible_rbd`` is not one of its three values (the base
@@ -518,14 +518,26 @@ class RBD:
         if input_node is not None:
             if input_node not in self.G.nodes:
                 raise ValueError("'input_node' not in RBD structure.")
-            else:
-                self.input_node = input_node
+            # Naming any other node would silently analyse a different
+            # system (the nodes before it would drop out).
+            if self.G.in_degree(input_node) > 0:
+                raise ValueError(
+                    f"'input_node' {input_node!r} has incoming edges; the "
+                    "input node must be the diagram's source (a node with "
+                    "no incoming edges)."
+                )
+            self.input_node = input_node
 
         if output_node is not None:
             if output_node not in self.G.nodes:
                 raise ValueError("'output_node' not in RBD structure.")
-            else:
-                self.output_node = output_node
+            if self.G.out_degree(output_node) > 0:
+                raise ValueError(
+                    f"'output_node' {output_node!r} has outgoing edges; the "
+                    "output node must be the diagram's sink (a node with "
+                    "no outgoing edges)."
+                )
+            self.output_node = output_node
 
         # Set whether k for KooN nodes
         has_excess_koon_nodes = False
@@ -1067,8 +1079,7 @@ class RBD:
 
             p_new = 1 - (1 - p) * exp(-x * w),
 
-        and ``x`` is solved for (``scipy.optimize.root``, Levenberg-Marquardt,
-        starting at ``x = 1``) so that
+        and ``x`` is solved for (by a bracketed root search) so that
         [`system_probability`][repyability.RBD.system_probability] of the
         new probabilities equals ``target``. With the default equal weights
         every free node's unreliability shrinks by the same factor, keeping
@@ -1076,26 +1087,25 @@ class RBD:
         leaves it unchanged, as does a probability of exactly 1.
 
         A ``target`` below the current system probability gives ``x < 0``,
-        which increases the unreliabilities. They are not capped at 1, so a
-        low enough target returns negative (invalid) probabilities. Nor is
-        the target checked to be reachable: if it cannot be met (e.g.
-        ``fixed`` nodes limit the system probability to less) the result is
-        the closest the scaling gets, with no error or warning. Check the
-        result with ``system_probability``. The scipy result is stored on
-        the RBD as ``res`` (``res.x`` holds ``x``), replacing any earlier
-        one.
+        which increases the unreliabilities, each capped at 1 (a node
+        probability of 0): the result is then the lowest node probabilities
+        that still meet the target. A target the scaling cannot reach
+        (e.g. because ``fixed`` nodes limit the system probability) raises a
+        ValueError giving the reachable range. A target equal to the best
+        reachable probability gives the free nodes probability 1. The
+        solver's result is stored on the RBD as ``res``, a scipy
+        ``OptimizeResult`` whose ``x`` holds ``x`` (``inf`` when the free
+        nodes are made perfect), replacing any earlier one.
 
         Parameters
         ----------
         target : float
-            The system probability to reach, in [0, 1]. The unreliabilities
-            never reach 0, so a target of 1 is only approached (unless it is
-            already met).
+            The system probability to reach, in [0, 1].
         node_probabilities : Dict
             The current probability that each node works, as a single float
-            per node, keyed by node name. An intermediate node with no entry
-            starts at 0.5. Any other keys (e.g. the input and output nodes)
-            are scaled like the rest and returned.
+            in [0, 1] per node, keyed by node name. An intermediate node
+            with no entry starts at 0.5. Any other keys (e.g. the input and
+            output nodes) are scaled like the rest and returned.
         fixed : list, optional
             Nodes whose probability is not changed, by default None (every
             node may change).
@@ -1113,8 +1123,8 @@ class RBD:
         Raises
         ------
         ValueError
-            If ``target`` is above 1 or below 0, or a node probability is an
-            array of more than one value.
+            If ``target`` is above 1 or below 0, if it cannot be reached, or
+            if a node probability is not a single value in [0, 1].
         KeyError
             If ``weights`` is given without an entry for a node that is not
             ``fixed``.
@@ -1140,49 +1150,69 @@ class RBD:
         >>> sorted({round((1 - new[k]) / (1 - current[k]), 4) for k in new})
         [0.1863]
         """
-        if fixed is None:
-            fixed = []
-        node_probabilities = copy(node_probabilities)
+        fixed_nodes = set() if fixed is None else set(fixed)
+        probabilities: Dict[Any, float] = {}
+        for node, value in node_probabilities.items():
+            value = np.asarray(value, dtype=float)
+            if value.size != 1:
+                raise ValueError(
+                    f"node_probabilities[{node!r}] must be a single "
+                    f"probability, got {value.size} values."
+                )
+            if not 0.0 <= value.item() <= 1.0:
+                raise ValueError(
+                    f"node_probabilities[{node!r}] must be in [0, 1], got "
+                    f"{value.item()}."
+                )
+            probabilities[node] = value.item()
+        for node in self.nodes:
+            probabilities.setdefault(node, 0.5)
 
-        for n, v in node_probabilities.items():
-            node_probabilities[n] = np.atleast_1d(v)
+        # Solve for the common multiplier m = exp(-x) of the free nodes'
+        # unreliabilities, q -> min(1, q * m ** w): unlike x it has a finite
+        # range, from m = 0 (every free node perfect) to the m at which every
+        # free node has failed, over which the system probability falls
+        # continuously, so the target can be bracketed exactly.
+        free = {
+            node: (1.0 - p, 1.0 if weights is None else weights[node])
+            for node, p in probabilities.items()
+            if node not in fixed_nodes
+        }
 
-        for n in self.nodes:
-            if n not in node_probabilities:
-                node_probabilities[n] = np.atleast_1d(0.5)
+        def allocated(m: float) -> Dict[Any, float]:
+            out = dict(probabilities)
+            for node, (q, w) in free.items():
+                out[node] = 1.0 - min(1.0, q * m**w)
+            return out
 
-        # for node in self.in_or_out:
-        # node_probabilities[node] = np.atleast_1d(1.0)
-
-        def func(x):
-            scaled_probabilities = scale_probability_dict(
-                {
-                    k: v
-                    for k, v in node_probabilities.items()
-                    if k not in fixed
-                },
-                x,
-                weights,
-            )
-            scaled_probabilities = {
-                **node_probabilities,
-                **scaled_probabilities,
+        def system(m: float) -> float:
+            node_arrays = {
+                k: np.atleast_1d(v) for k, v in allocated(m).items()
             }
+            return self.system_probability(node_arrays, method="p").item()
 
-            current = self.system_probability(scaled_probabilities, method="p")
-            return current - target
-
-        # Using root
-        res = root(func, 1.0, tol=1e-10, method="lm")
-        self.res = res
-        out = scale_probability_dict(
-            {k: v for k, v in node_probabilities.items() if k not in fixed},
-            res["x"].item(),
-            weights,
+        failing = [q ** (-1.0 / w) for q, w in free.values() if q > 0 < w]
+        m_max = max(failing, default=1.0)
+        best, worst = system(0.0), system(m_max)
+        if not worst - 1e-12 <= target <= best + 1e-12:
+            raise ValueError(
+                f"target {target} cannot be reached: with the fixed nodes "
+                "and weights given, the system probability can only range "
+                f"from {worst:.6g} to {best:.6g}."
+            )
+        if target >= best:
+            m = 0.0
+        elif target <= worst:
+            m = m_max
+        else:
+            m = brentq(lambda m: system(m) - target, 0.0, m_max, xtol=1e-15)
+        self.res = OptimizeResult(
+            x=np.array([-np.log(m) if m > 0.0 else np.inf]),
+            fun=np.array([system(m) - target]),
+            success=True,
+            message="The target is met.",
         )
-        out = {**node_probabilities, **out}
-        out = {k: v.item() for k, v in out.items()}
-        return out
+        return allocated(m)
 
     @check_probability
     def equal_allocation(self, target: float):
@@ -1195,8 +1225,8 @@ class RBD:
         Any node models are ignored. It runs
         [`improvement_allocation`][repyability.RBD.improvement_allocation]
         from 0.5 for every node, with equal weights and nothing fixed, so the
-        scipy result is stored on the RBD as ``res``. Targets of 0 and 1 are
-        met only approximately.
+        solver's result is stored on the RBD as ``res``. A target of 1 gives
+        every node probability 1.
 
         Parameters
         ----------
@@ -1479,9 +1509,9 @@ class RBD:
         """Serialise the RBD to a JSON string.
 
         Equivalent to ``json.dumps(self.to_dict(), **json_kwargs)``; see
-        [`to_dict`][repyability.RBD.to_dict] for what is stored. Node names
-        must survive JSON: strings and integers do, but tuples do not (they
-        come back as lists).
+        [`to_dict`][repyability.RBD.to_dict] for what is stored. String,
+        integer and tuple node names all survive: JSON turns a tuple into a
+        list, and loading turns it back.
 
         Parameters
         ----------

@@ -124,6 +124,21 @@ def minimal_repair_time_to_nth_failure(
 # horizon is bounded and exposed as ``max_interval``.
 _DEFAULT_HORIZON_MULTIPLE = 15.0
 
+# How many times the overhaul search may halve its horizon to stay within
+# what surpyval's simulator can resolve (see Repairable._optimise_simulated).
+_MAX_HORIZON_HALVINGS = 12
+
+
+def _cut_short(caught: warnings.WarningMessage) -> bool:
+    """Whether a caught warning says surpyval ended simulated sequences
+    before the horizon (they stalled, or reached ``max_events``), leaving
+    ``E[N(t)]`` underestimated beyond that point."""
+    message = str(caught.message)
+    return (
+        "near-zero interarrival time" in message
+        or "reached max_events" in message
+    )
+
 
 class Repairable:
     """Repairable component with optimal overhaul and failure-limit policies.
@@ -493,6 +508,25 @@ class Repairable:
                 pass
         return 1.0
 
+    def _resolvable_age(self) -> Optional[float]:
+        """An age up to which surpyval's simulator resolves every failure.
+
+        The simulator draws the next failure from the baseline survival at
+        the unit's virtual age, and stalls once that survival nears double
+        precision (about 1e-16). Kijima I or II repair with ``q <= 1`` never
+        takes the virtual age past the real age, so up to the baseline's
+        ``1 - 1e-10`` quantile a stall is practically impossible. ``None`` if
+        the model has no baseline quantile function.
+        """
+        baseline = getattr(self.model, "model", None)
+        if baseline is None or not hasattr(baseline, "qf"):
+            return None
+        try:
+            age = float(np.ravel(baseline.qf(1.0 - 1e-10))[0])
+        except Exception:
+            return None
+        return age if np.isfinite(age) and age > 0.0 else None
+
     def _optimise_simulated(
         self,
         seed: Optional[int],
@@ -504,25 +538,66 @@ class Repairable:
         The cost of a seeded ``mcf`` call scales with the sample size and the
         horizon, not the number of grid points, and a single seeded ``mcf``
         call over a grid is self-consistent (monotone), so this uses **one**
-        ``mcf`` evaluation over a log grid up to ``max_interval`` and takes the
+        ``mcf`` evaluation over a log grid up to the horizon and takes the
         minimum of the (unimodal) cost rate ``(cr*E[N(t)] + co)/t``.
 
-        ``max_interval`` bounds the search: imperfect repair pushes the
-        optimum to several times the baseline mean, and simulating much farther
-        is slow and numerically unstable, so effective-repair cases whose
-        optimum lies beyond the horizon return the horizon (raise
-        ``max_interval`` to search further).
+        The horizon is ``max_interval``, shortened to what the simulator can
+        resolve: close to minimal repair the virtual age reaches ages where
+        the baseline survival underflows, surpyval ends those sequences early
+        (and warns), and the estimated ``E[N(t)]`` stops growing, which would
+        drag the "optimum" to the horizon. So while the simulation is cut
+        short, the horizon is halved, but not below ``_resolvable_age``. An
+        optimum on the horizon warns that the cost rate is still falling
+        there.
         """
         with numpy_seed(seed):
-            if max_interval is None:
-                max_interval = _DEFAULT_HORIZON_MULTIPLE * self._timescale()
-
-            grid = max_interval * np.logspace(-2.5, 0.0, 250)
-            gr = np.asarray(
-                self.cost_rate(grid, seed=seed, n_simulations=n_simulations)
+            start = (
+                _DEFAULT_HORIZON_MULTIPLE * self._timescale()
+                if max_interval is None
+                else float(max_interval)
             )
-            i = int(np.nanargmin(gr))
-            return float(grid[i]), float(gr[i])
+            floor = self._resolvable_age()
+            horizon = start
+            for attempt in range(_MAX_HORIZON_HALVINGS + 1):
+                grid = horizon * np.logspace(-2.5, 0.0, 250)
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    rates = np.asarray(
+                        self.cost_rate(
+                            grid, seed=seed, n_simulations=n_simulations
+                        )
+                    )
+                if (
+                    not any(_cut_short(w) for w in caught)
+                    or attempt == _MAX_HORIZON_HALVINGS
+                    or (floor is not None and horizon <= floor)
+                ):
+                    break
+                horizon = horizon / 2.0
+                if floor is not None:
+                    horizon = max(horizon, floor)
+        for w in caught:
+            warnings.warn_explicit(w.message, w.category, w.filename, w.lineno)
+        i = int(np.nanargmin(rates))
+        if i == len(grid) - 1:
+            if horizon < start:
+                reason = (
+                    f"({horizon:.6g}), shortened from {start:.6g} to what the "
+                    "simulation can resolve for this model: the optimum lies "
+                    "beyond it, or overhauls never pay, and the simulation "
+                    "cannot tell which"
+                )
+            else:
+                reason = (
+                    f"({horizon:.6g}): the optimum lies beyond it, or "
+                    "overhauls never pay. Raise max_interval to search further"
+                )
+            warnings.warn(
+                "The cost rate is still falling at the search horizon "
+                f"{reason}; the horizon is returned.",
+                stacklevel=4,
+            )
+        return float(grid[i]), float(rates[i])
 
     def _optimise(
         self,
@@ -558,18 +633,20 @@ class Repairable:
 
         For a simulation-backed (imperfect-repair) model, ``E[N(t)]`` is
         estimated by a single simulation over 250 log-spaced ages from
-        ``max_interval / 10**2.5`` to ``max_interval``, and the cheapest of
-        those ages is returned (no refinement). The result is never
-        ``inf``: if the cost rate is still falling at ``max_interval`` (the
-        optimum lies beyond it, or there is none), ``max_interval`` itself
-        is returned, so a result equal to it calls for a longer horizon.
-        The horizon must also stay within what surpyval's simulator can
-        resolve: once the baseline survival function at the unit's virtual
-        age falls below about 1e-16 (double precision; surpyval then warns
-        that sequences stalled), the simulated ``E[N(t)]`` stops growing,
-        which can drag the optimum to the horizon. Near-minimal repair
-        (``q`` close to 1) can reach that point within the default
-        horizon; lower ``max_interval`` if it does.
+        ``horizon / 10**2.5`` to the search horizon, and the cheapest of
+        those ages is returned (no refinement). The horizon is
+        ``max_interval``, shortened if need be to what surpyval's simulator
+        can resolve: close to minimal repair (``q`` near 1) the unit's
+        virtual age can reach ages where the baseline survival function
+        underflows double precision, surpyval then ends those simulated
+        histories early, and the simulated ``E[N(t)]`` would stop growing
+        and drag the optimum out to the horizon. So while the simulation is
+        cut short, the horizon is halved, down to no less than the age at
+        which the baseline survival is 1e-10 (below which, for Kijima I or
+        II with ``q <= 1``, it resolves every failure). The result is never
+        ``inf``: if the cost rate is still falling at the horizon (the
+        optimum lies beyond it, or there is none), the horizon itself is
+        returned with a warning.
 
         Parameters
         ----------
@@ -580,8 +657,9 @@ class Repairable:
             Number of simulated histories used to estimate ``E[N(t)]``
             (default 1000; simulation-backed models only).
         max_interval : float, optional
-            The search horizon (simulation-backed models only). By default
-            15 times the mean of the model's baseline lifetime distribution
+            The search horizon (simulation-backed models only), shortened if
+            the simulation cannot resolve it (see above). By default 15
+            times the mean of the model's baseline lifetime distribution
             (``model.model.mean()``), or 15 if there is none.
 
         Returns
@@ -594,6 +672,15 @@ class Repairable:
         ------
         ValueError
             If the costs have not been set.
+
+        Warns
+        -----
+        UserWarning
+            For a simulation-backed model, if the cost rate is still falling
+            at the search horizon, so the horizon returned is not a true
+            optimum; the message says whether a larger ``max_interval``
+            could help, or the horizon was already shortened to what the
+            simulation can resolve.
 
         Examples
         --------
@@ -618,11 +705,9 @@ class Repairable:
         ... )
         >>> unit = Repairable(grp)
         >>> unit.set_repair_and_overhaul_costs(cr=1.0, co=5.0)
-        >>> t = unit.find_optimal_overhaul_interval(
-        ...     seed=1, n_simulations=100, max_interval=500.0
-        ... )
+        >>> t = unit.find_optimal_overhaul_interval(seed=1, n_simulations=100)
         >>> round(t)
-        239
+        224
         """
         return self._optimise(seed, n_simulations, max_interval)[0]
 
@@ -647,7 +732,8 @@ class Repairable:
             Number of simulated histories used to estimate ``E[N(t)]``
             (default 1000; simulation-backed models only).
         max_interval : float, optional
-            The search horizon (simulation-backed models only); see
+            The search horizon (simulation-backed models only), shortened if
+            the simulation cannot resolve it; see
             ``find_optimal_overhaul_interval()``.
 
         Returns
@@ -665,6 +751,12 @@ class Repairable:
         ------
         ValueError
             If the costs have not been set.
+
+        Warns
+        -----
+        UserWarning
+            As ``find_optimal_overhaul_interval()``: the cost rate is still
+            falling at a simulated search's horizon.
 
         Examples
         --------
