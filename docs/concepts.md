@@ -116,6 +116,22 @@ repeated events tie together is a core, solved exactly by the pivotal
 decomposition over its minimal path sets. The measures of importance are the
 diagram's, with the top event as the system failing.
 
+### Parameter uncertainty
+
+The node models are estimates, so the system reliability computed from them
+is uncertain too: *epistemic* uncertainty, about the models, as opposed to
+the *aleatory* variability they describe. `sf_uncertainty` propagates it by
+Monte Carlo over the parameters: each draw gives every uncertain node a
+plausible model and the system reliability is computed exactly, all draws
+at once (the node probabilities are arrays over draws and times), and the
+percentiles of the draws form an uncertainty interval. A maximum-likelihood
+fit's own estimate of its parameters' uncertainty (the inverse Hessian of
+the log-likelihood, from surpyval) gives the draws on a transformed scale
+(log for a positive parameter, logit for one in (0, 1)), which is the delta
+method's normal approximation. Nodes of one population share their
+parameters and so their draws: drawing them independently averages part of
+the uncertainty away.
+
 ## Reliability vs availability
 
 - **Reliability** `R(t)`: the probability the system has *never* failed by

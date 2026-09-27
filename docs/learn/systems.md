@@ -9,7 +9,8 @@
       and with `NonRepairableRBD`;
     - how component lifetimes become a system reliability curve, and why
       redundancy can make the hazard rise;
-    - how to find a system's mean time to failure, exactly and by simulation.
+    - how to find a system's mean time to failure, exactly and by simulation;
+    - how uncertainty about the component models carries to the system.
 
     **Before you start:** [Lesson 1](lifetimes.md). About 40 minutes.
 
@@ -503,6 +504,65 @@ circuit.bx_life(10)                    # -> 38.84   h, the same question
 The circuit lasts 94 h on average, yet one in ten has failed by 39 h. When a
 mission must succeed, ask for the time to a reliability target, not the mean.
 
+## How sure are you of the inputs?
+
+The circuit's reliability at 50 h is 0.8393, but that number rests on the
+models: a pump scale of exactly 100 h, a valve shape of exactly 1.5. Models
+are estimated from data, and a model fitted to twenty failures is not known
+exactly. So there are two kinds of uncertainty in the answer. The first is
+**aleatory**: the variability the models describe. A reliability of 0.84
+means that about 16 circuits in 100 fail by 50 h, and nobody can say which.
+The second is **epistemic**: not knowing the models exactly, so that the
+0.84 itself is uncertain. More circuits do not reduce the first; more data
+reduces the second.
+
+=== "By hand"
+
+    Suppose the pump's scale $\alpha$ is known only to lie between 80 and
+    120 h, equally likely anywhere in that range, and everything else is
+    known. A pump survives 50 h with probability $e^{-(50/\alpha)^2}$, and
+    the valve with $e^{-(50/200)^{1.5}} = 0.8825$. At the two ends of the
+    range:
+
+    | $\alpha$ | pump | pair $1 - (1 - R_p)^2$ | circuit |
+    |---|---|---|---|
+    | 80 h | 0.6766 | 0.8954 | 0.7902 |
+    | 120 h | 0.8406 | 0.9746 | 0.8601 |
+
+    The circuit's reliability rises with $\alpha$, so its percentiles are
+    those of $\alpha$: the 5th and 95th percentiles of $\alpha$, 82 and
+    118 h, give a 90% interval of 0.797 to 0.859.
+
+    Both pumps are the same type, so they share the one unknown $\alpha$:
+    if it is low, both pumps are worse. Treating each pump's $\alpha$ as a
+    separate unknown would let a bad draw for one pump be offset by a good
+    one for the other, and narrow the interval to 0.811 to 0.855, claiming
+    more certainty than you have.
+
+=== "In RePyability"
+
+    ```python
+    import scipy.stats as st
+
+    alpha = {"alpha": st.uniform(80, 40)}   # uniform between 80 and 120 h
+    same_type = circuit.sf_uncertainty(
+        50, {("pump1", "pump2"): alpha}, n_draws=10_000, seed=0
+    )
+    same_type.nominal                        # -> 0.8393   with alpha = 100 h
+    same_type.interval(0.9)                  # (0.7974, 0.8587)
+    separately = circuit.sf_uncertainty(
+        50, {"pump1": alpha, "pump2": alpha}, n_draws=10_000, seed=0
+    )
+    separately.interval(0.9)                 # (0.8111, 0.8553)   too narrow
+    ```
+
+`sf_uncertainty` draws a plausible model for each uncertain node,
+`n_draws` times, and computes the circuit exactly for each draw. A tuple of
+nodes shares one draw. The uncertainty can also come straight from a fit: for
+a model fitted in surpyval, `"fit"` draws its parameters from the fit's own
+estimate of how uncertain they are (see the
+[guide](../guide/reliability.md#uncertainty-in-the-component-models)).
+
 ## Pitfalls
 
 !!! warning "An RBD is not a wiring diagram"
@@ -555,6 +615,9 @@ mission must succeed, ask for the time to a reliability target, not the mean.
     - $\text{MTTF}_{\text{sys}} = \int_0^\infty R_{\text{sys}}(t)\,dt$, which
       is $1.5/\lambda$ for an exponential pair. RePyability estimates it by
       seeded simulation, with a small error you can quantify.
+    - The models themselves are uncertain (epistemic uncertainty):
+      `sf_uncertainty` carries that to the system reliability. Units of one
+      type share their uncertainty, and must be drawn together.
 
 ## Exercises
 
@@ -643,6 +706,35 @@ parallel. What is the MTTF of the pair? What would a third unit add?
         {x: u for x in "abc"},
     )
     trio.mean_time_to_failure(seed=0)   # -> 1834   simulated (standard error about 4 h)
+    ```
+
+**6.** In the circuit, the valve's shape is also uncertain: anywhere between
+1.2 and 1.8. With the pumps' scale known (100 h), what is the 90% interval
+for the circuit's reliability at 50 h? Compare it with the pumps' interval
+from the lesson, and then make both uncertain at once.
+
+??? success "Answer"
+    The valve survives 50 h with probability $e^{-0.25^{\beta}}$, which
+    rises with $\beta$: from 0.834 at $\beta = 1.23$ to 0.918 at 1.77 (the
+    5th and 95th percentiles). The pair of pumps is fixed at
+    $1 - (1 - e^{-0.25})^2 = 0.9511$, so the circuit's interval is
+    $0.9511 \times (0.834, 0.918) = (0.793, 0.873)$: wider than the pumps'
+    (0.797, 0.859), although the valve's shape is known about as well. The
+    valve is in series, so its uncertainty passes straight through, while
+    the pair damps its pumps': across the range of $\alpha$ one pump's
+    reliability moves by 0.16, the pair's by only 0.08. With both uncertain
+    the interval widens to (0.778, 0.883). Uncertainty, like unreliability,
+    matters most in the single points of failure, which is where more data
+    is worth most.
+
+    ```python
+    valve_beta = {"beta": st.uniform(1.2, 0.6)}   # uniform between 1.2 and 1.8
+    circuit.sf_uncertainty(50, {"valve": valve_beta}, n_draws=10_000, seed=0).interval(0.9)
+    # (0.7930, 0.8727)
+    circuit.sf_uncertainty(
+        50, {("pump1", "pump2"): alpha, "valve": valve_beta}, n_draws=10_000, seed=0
+    ).interval(0.9)
+    # (0.7777, 0.8828)
     ```
 
 ## Where next

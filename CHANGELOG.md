@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Parameter (epistemic) uncertainty (`NonRepairableRBD.sf_uncertainty`,
+  closes #43).** A node's model is estimated from data, so its parameters
+  are uncertain; `sf_uncertainty(x, uncertainty, n_draws, seed)` carries
+  that to the system reliability. Each draw gives every uncertain node a
+  plausible model and the system is computed exactly, all draws at once by
+  the vectorised exact engine; an `UncertaintyResult` holds the draws, the
+  nominal value, and their mean, median, spread, percentiles and
+  equal-tailed intervals, per time for an array of times. RePyability fits
+  nothing: a node's uncertainty is `"fit"` (its parameters drawn from the
+  normal approximation of its surpyval maximum-likelihood fit, `hess_inv`,
+  on the log or logit scale so that every draw is valid, keeping any
+  offset, zero-inflation or LFP parameter), distributions over named
+  parameters (anything with `qf` or `ppf`), or a list of models (e.g.
+  bootstrap refits or posterior draws made in surpyval). A tuple of nodes
+  (units of one population) shares one draw; drawing them independently
+  would understate the uncertainty. Tests check the draws against their
+  known distributions (the log-normal rate of an exponential fit, uniform
+  and normal priors, a beta prior on a fixed probability, surpyval's own
+  confidence bounds), every draw against the diagram rebuilt with the drawn
+  models, shared against independent draws, reproducibility and
+  validation; mutation testing catches all 14 mutations. Docs: a guide
+  section, a Lesson 2 section on aleatory and epistemic uncertainty with an
+  exercise, concepts and glossary.
 - **Fault tree analysis (`FaultTree`, closes #39).** Static fault trees:
   OR, AND and VOTE (k-out-of-n) gates over basic events, each a probability
   or a lifetime model, with events and gates that feed several gates

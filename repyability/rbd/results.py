@@ -16,7 +16,7 @@ False; use ``isinstance(result, Mapping)`` if you need such a check.)
 import dataclasses
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Dict, Hashable, Optional, Tuple
+from typing import Any, Dict, Hashable, Optional, Tuple
 
 import numpy as np
 from scipy.stats import norm
@@ -101,6 +101,132 @@ class ConfidenceInterval(_ResultMapping):
     confidence: float
     standard_error: float
     n_samples: int
+
+
+@dataclass
+class UncertaintyResult(_ResultMapping):
+    """The spread of a system quantity over plausible node models.
+
+    Returned by ``NonRepairableRBD.sf_uncertainty``. Each of the
+    ``n_draws`` draws gives every uncertain node a plausible model (its
+    parameters drawn from what is known about them), and the system
+    quantity is computed exactly for that draw. The samples therefore
+    describe *epistemic* uncertainty, about what the models are, and not
+    the aleatory variability that the models themselves describe. Their
+    percentiles give uncertainty (credible) intervals; they do not narrow
+    as ``n_draws`` grows, which only makes them more precise.
+
+    Attributes
+    ----------
+    samples : numpy.ndarray
+        One value per draw (``n_draws`` values) for a single time, or one
+        row per draw and one column per time for an array of times.
+    nominal : float or numpy.ndarray
+        The value with every node's own model: the point estimate.
+    n_draws : int
+        The number of draws.
+
+    Examples
+    --------
+    A pump whose Weibull model was fitted (by surpyval) to 50 failure
+    times, in series with a valve that is 99% reliable. The fit's parameter
+    covariance gives the draws:
+
+    >>> import numpy as np
+    >>> import surpyval as surv
+    >>> from repyability import NonRepairableRBD
+    >>> pump = surv.Weibull.fit(np.linspace(200, 1800, 50))
+    >>> valve = surv.FixedEventProbability.from_params(0.01)
+    >>> rbd = NonRepairableRBD(
+    ...     [("s", "pump"), ("pump", "valve"), ("valve", "t")],
+    ...     {"pump": pump, "valve": valve},
+    ... )
+    >>> result = rbd.sf_uncertainty(500, {"pump": "fit"}, n_draws=5000, seed=0)
+    >>> round(result.nominal, 3), round(result.median, 3)
+    (0.847, 0.846)
+    >>> lower, upper = result.interval(0.9)
+    >>> round(lower, 3), round(upper, 3)
+    (0.777, 0.906)
+    """
+
+    samples: np.ndarray
+    nominal: Any
+    n_draws: int
+
+    @property
+    def mean(self) -> Any:
+        """The mean over the draws (per time, for an array of times).
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The mean of ``samples`` over the draws.
+        """
+        return self._per_time(np.mean(self.samples, axis=0))
+
+    @property
+    def median(self) -> Any:
+        """The median over the draws (per time, for an array of times).
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The median of ``samples`` over the draws.
+        """
+        return self._per_time(np.median(self.samples, axis=0))
+
+    @property
+    def std(self) -> Any:
+        """The standard deviation over the draws (per time).
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The sample standard deviation of ``samples`` over the draws.
+        """
+        return self._per_time(np.std(self.samples, axis=0, ddof=1))
+
+    def percentile(self, q: float) -> Any:
+        """The ``q``-th percentile over the draws (per time).
+
+        Parameters
+        ----------
+        q : float
+            The percentile, in [0, 100].
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The percentile of ``samples`` over the draws.
+        """
+        return self._per_time(np.percentile(self.samples, q, axis=0))
+
+    def interval(self, level: float = 0.9) -> tuple:
+        """The equal-tailed uncertainty interval over the draws (per time).
+
+        Parameters
+        ----------
+        level : float, optional
+            The probability the interval holds, in (0, 1), by default 0.9:
+            from the 5th to the 95th percentile.
+
+        Returns
+        -------
+        tuple
+            ``(lower, upper)``: floats, or arrays for an array of times.
+
+        Raises
+        ------
+        ValueError
+            If ``level`` is not in (0, 1).
+        """
+        if not 0.0 < level < 1.0:
+            raise ValueError(f"level must be in (0, 1), got {level!r}.")
+        tail = 50.0 * (1.0 - level)
+        return self.percentile(tail), self.percentile(100.0 - tail)
+
+    def _per_time(self, values: np.ndarray) -> Any:
+        return float(values) if np.ndim(values) == 0 else values
 
 
 @dataclass

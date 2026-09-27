@@ -51,8 +51,10 @@ from .results import (
     ConfidenceInterval,
     RedundancyAllocation,
     ReliabilityRedundancyAllocation,
+    UncertaintyResult,
 )
 from .standby_node import StandbyModel
+from .uncertainty import draw_models
 
 
 # Event class for simulation
@@ -758,6 +760,229 @@ class NonRepairableRBD(RBD):
         0.01
         """
         return 1 - self.sf(x, *args, **kwargs)
+
+    def sf_uncertainty(
+        self,
+        x: Optional[ArrayLike] = None,
+        uncertainty: Optional[Dict[Hashable, Any]] = None,
+        *,
+        n_draws: int = 1000,
+        seed=None,
+    ) -> UncertaintyResult:
+        """System reliability over plausible node models (parameter
+        uncertainty).
+
+        A node's model is estimated from data, so its parameters are
+        uncertain: this is *epistemic* uncertainty, about what the model
+        is, as opposed to the aleatory variability the model describes.
+        Each of the ``n_draws`` draws gives every uncertain node a
+        plausible model, and the system reliability at ``x`` is computed
+        exactly for that draw (all draws at once, by the vectorised exact
+        engine). The spread of the results, and its percentiles
+        (``interval``), say how well the system reliability is known.
+
+        RePyability does not fit models: the draws use what the fit, done
+        in surpyval, provides. A node's uncertainty is one of:
+
+        - ``"fit"``: its parameters are drawn from the normal approximation
+          of its maximum-likelihood fit (surpyval's ``hess_inv``), on the
+          log scale for a parameter that must be positive and the logit
+          scale for one in (0, 1), so that every draw is valid; an offset,
+          zero-inflation or limited-failure-population parameter keeps its
+          fitted value;
+        - ``{parameter name: distribution}``: each named parameter is drawn
+          from its distribution (anything with ``qf`` or ``ppf``, such as a
+          surpyval or scipy.stats distribution), the others kept;
+        - a list of models (e.g. refits to bootstrap resamples, or
+          posterior draws, made in surpyval), drawn with replacement.
+
+        Nodes of one population, such as identical pumps fitted to the
+        same data, share their uncertainty: give them together as a tuple
+        of node names, and each draw gives them the same model. Drawing
+        them independently would understate the uncertainty, which is
+        about the one population's parameters.
+
+        Parameters
+        ----------
+        x : array_like, optional
+            Time/s, a number or an array. May be left out when every node
+            model, and every drawn model, is a fixed probability.
+        uncertainty : dict
+            ``{node or tuple of nodes: uncertainty}`` for the uncertain
+            nodes (see above). The other nodes keep their models.
+        n_draws : int, optional
+            The number of draws, by default 1000.
+        seed : int, optional
+            Seed for the draws, for reproducible results.
+
+        Returns
+        -------
+        UncertaintyResult
+            The system reliability of every draw (``samples``), the nominal
+            value with the nodes' own models, and summaries: ``mean``,
+            ``median``, ``std``, ``percentile`` and ``interval`` (see
+            [`UncertaintyResult`][repyability.UncertaintyResult]).
+
+        Raises
+        ------
+        ValueError
+            If ``uncertainty`` is empty, names an unknown, input, output or
+            repeated node, or names a node twice; if a tuple's nodes have
+            different models; if an uncertainty cannot be drawn (e.g.
+            ``"fit"`` for a model with no fitted covariance, or an unknown
+            parameter); if ``n_draws`` is not a positive integer; or if
+            ``x`` is left out for time-varying models.
+        NotImplementedError
+            If the RBD has common-cause groups.
+
+        Examples
+        --------
+        Two pumps in parallel, of one type whose exponential failure rate
+        is uncertain (known only to lie between 1 and 3 per 1000 h), in
+        series with a valve. Both pumps share the one uncertain rate:
+
+        >>> import scipy.stats as st
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "p1"), ("s", "p2"), ("p1", "v"), ("p2", "v"),
+        ...      ("v", "t")],
+        ...     {
+        ...         "p1": surv.Exponential.from_params([0.002]),
+        ...         "p2": surv.Exponential.from_params([0.002]),
+        ...         "v": surv.FixedEventProbability.from_params(0.01),
+        ...     },
+        ... )
+        >>> rate = {"failure_rate": st.uniform(0.001, 0.002)}
+        >>> result = rbd.sf_uncertainty(
+        ...     500, {("p1", "p2"): rate}, n_draws=10_000, seed=1
+        ... )
+        >>> round(result.nominal, 4)  # at the nominal rate, 2 per 1000 h
+        0.5944
+        >>> lower, upper = result.interval(0.9)
+        >>> round(lower, 3), round(upper, 3)
+        (0.409, 0.813)
+        """
+        self._require_no_ccf()
+        if isinstance(n_draws, bool) or not isinstance(
+            n_draws, (int, np.integer)
+        ):
+            raise ValueError(f"n_draws must be an integer, got {n_draws!r}.")
+        if n_draws < 1:
+            raise ValueError(f"n_draws must be at least 1, got {n_draws}.")
+        if not uncertainty:
+            raise ValueError(
+                "Give the uncertain nodes: uncertainty={node: 'fit'}, for "
+                "example."
+            )
+        components = set(self.nodes)
+        groups = []
+        seen: set = set()
+        for key, spec in uncertainty.items():
+            if key in components or not isinstance(key, tuple):
+                members = (key,)
+            else:
+                members = key
+            for node in members:
+                if node in self.repeated:
+                    raise ValueError(
+                        f"Node {node!r} is a repeat of {self.repeated[node]!r}"
+                        "; give the uncertainty of that node instead."
+                    )
+                if node not in components:
+                    raise ValueError(
+                        f"{node!r} in uncertainty is not a component node."
+                    )
+                if node in seen:
+                    raise ValueError(
+                        f"Node {node!r} is given an uncertainty twice."
+                    )
+                seen.add(node)
+            model = self.reliabilities[members[0]]
+            for node in members[1:]:
+                if not self._same_model(self.reliabilities[node], model):
+                    raise ValueError(
+                        f"Nodes {list(members)!r} share their uncertainty, "
+                        "so they must have the same model."
+                    )
+            groups.append((members, spec))
+
+        rng = np.random.default_rng(seed)
+        drawn: Dict[Hashable, list] = {}
+        for members, spec in groups:
+            label = (
+                f"Node {members[0]!r}"
+                if len(members) == 1
+                else f"Nodes {list(members)!r}"
+            )
+            models = draw_models(
+                self.reliabilities[members[0]], spec, n_draws, rng, label
+            )
+            for node in members:
+                drawn[node] = models
+
+        fixed = self.is_fixed and all(
+            self._model_is_fixed(m) for ms in drawn.values() for m in ms
+        )
+        if x is None:
+            if not fixed:
+                raise ValueError(
+                    "x is required: a node model's probability depends on "
+                    "time."
+                )
+            x = 1.0
+        scalar = np.ndim(x) == 0
+        times = np.atleast_1d(np.asarray(x, dtype=float))
+        probabilities: dict = {}
+        for node in self.nodes:
+            if node in drawn:
+                rows = [
+                    np.broadcast_to(
+                        np.asarray(m.sf(times), dtype=float), times.shape
+                    )
+                    for m in drawn[node]
+                ]
+                probabilities[node] = np.concatenate(rows)
+            else:
+                values = np.broadcast_to(
+                    np.asarray(self.reliabilities[node].sf(times), float),
+                    times.shape,
+                )
+                probabilities[node] = np.tile(values, n_draws)
+        samples = np.asarray(
+            self.system_probability(probabilities), dtype=float
+        ).reshape(n_draws, len(times))
+        nominal = np.asarray(self.sf(times), dtype=float)
+        if scalar:
+            return UncertaintyResult(
+                samples=samples[:, 0],
+                nominal=float(nominal.reshape(-1)[0]),
+                n_draws=n_draws,
+            )
+        return UncertaintyResult(
+            samples=samples, nominal=nominal, n_draws=n_draws
+        )
+
+    @staticmethod
+    def _same_model(a, b) -> bool:
+        """Whether two node models are the same: one object, or the same
+        distribution with the same parameters."""
+        if a is b:
+            return True
+        name_a = getattr(getattr(a, "dist", None), "name", None)
+        name_b = getattr(getattr(b, "dist", None), "name", None)
+        if name_a is None or name_a != name_b:
+            return False
+        params_a = np.ravel(np.asarray(getattr(a, "params", []), float))
+        params_b = np.ravel(np.asarray(getattr(b, "params", []), float))
+        return (
+            params_a.shape == params_b.shape
+            and bool(np.all(params_a == params_b))
+            and all(
+                getattr(a, extra, None) == getattr(b, extra, None)
+                for extra in ("gamma", "p", "f0")
+            )
+        )
 
     def allocate_redundancy(
         self,

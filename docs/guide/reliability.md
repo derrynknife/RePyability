@@ -167,3 +167,79 @@ Both accept the `sf` arguments (`working_nodes`, `broken_nodes`, `method`) and
 `upper_bound` to bound the search (found automatically otherwise). They raise
 `ValueError` if the target is not in (0, 1), if it is above the reliability at
 time zero, or if the RBD is fixed-probability (time plays no part).
+
+## Uncertainty in the component models
+
+A component's model is estimated from data, so its parameters are uncertain.
+This is *epistemic* uncertainty, about what the model is, as opposed to the
+*aleatory* variability the model itself describes (whether a given unit
+survives). `sf_uncertainty(x, uncertainty, n_draws=1000, seed=None)` carries
+it to the system: each draw gives every uncertain node a plausible model, the
+system reliability is computed exactly for that draw (all draws at once, by
+the vectorised exact engine), and the result says how well the system
+reliability is known. RePyability does not fit models; the draws use what the
+fit, made in surpyval, provides:
+
+```python
+data = surv.Weibull.from_params([100, 2]).qf(np.linspace(0.025, 0.975, 20))
+pump_fit = surv.Weibull.fit(data)              # 20 failure times, fitted by surpyval
+fitted = NonRepairableRBD(
+    [("s", "pump1"), ("s", "pump2"),
+     ("pump1", "valve"), ("pump2", "valve"),
+     ("valve", "t")],
+    {"pump1": pump_fit, "pump2": pump_fit,
+     "valve": surv.Weibull.from_params([200, 1.5])},
+)
+result = fitted.sf_uncertainty(50, {("pump1", "pump2"): "fit"}, n_draws=10_000, seed=0)
+result.nominal                # -> 0.8426   with the fitted models
+lower, upper = result.interval(0.9)
+lower, upper                  # (0.7785, 0.8728)   the 5th to 95th percentile
+```
+
+A node's uncertainty is one of:
+
+| Given | Draws |
+|---|---|
+| `"fit"` | The parameters, from the normal approximation of the model's maximum-likelihood fit (surpyval's `hess_inv`), on the log scale for a positive parameter and the logit scale for one in (0, 1), so every draw is valid. An offset, zero-inflation or limited-failure-population parameter keeps its fitted value. |
+| `{"alpha": distribution, ...}` | Each named parameter from its distribution (anything with `qf` or `ppf`: surpyval or `scipy.stats`); the others keep their values. |
+| A list of models | One of them, with replacement: for example refits to bootstrap resamples, or posterior draws, made in surpyval. |
+
+```python
+import scipy.stats as st
+
+known = {"alpha": st.uniform(80, 40)}    # the scale lies between 80 and 120 h
+rbd.sf_uncertainty(50, {("pump1", "pump2"): known}, n_draws=10_000, seed=0).interval(0.9)
+# (0.7974, 0.8587)
+
+rng = np.random.default_rng(1)
+refits = [surv.Weibull.fit(rng.choice(data, len(data))) for _ in range(100)]   # bootstrap, in surpyval
+fitted.sf_uncertainty(50, {("pump1", "pump2"): refits}, n_draws=10_000, seed=0).interval(0.9)
+# (0.7836, 0.8752)
+```
+
+**Nodes of one population share their uncertainty.** Two pumps of one type,
+fitted to the same data, have the same unknown parameters: give them together
+as a tuple of node names, and each draw gives both the same model. Giving
+them separately draws their parameters independently, which averages part of
+the uncertainty away: here the interval would narrow to (0.811, 0.855).
+
+The result is an [`UncertaintyResult`][repyability.UncertaintyResult]:
+`samples` (one value per draw, or one row per draw for an array of times),
+`nominal` (with the nodes' own models), `mean`, `median`, `std`,
+`percentile(q)` and `interval(level)`. For an array of times the summaries
+are per time, and the draws are the same at every time:
+
+```python
+hours = np.array([25.0, 50.0, 100.0])
+curve = fitted.sf_uncertainty(hours, {("pump1", "pump2"): "fit"}, n_draws=10_000, seed=0)
+lower, upper = curve.interval(0.9)
+np.round(lower, 4)            # array([0.9414, 0.7785, 0.291 ])
+np.round(upper, 4)            # array([0.9565, 0.8728, 0.5419])
+```
+
+The interval's width is a property of what is known about the models, and
+does not shrink with more draws, which only make its ends more precise. More
+failure data (a refit in surpyval) is what narrows it. Diagrams with
+common-cause groups raise `NotImplementedError`, and a node whose model is
+not a parametric distribution (a standby arrangement, a nested diagram) can
+only be given a list of models.

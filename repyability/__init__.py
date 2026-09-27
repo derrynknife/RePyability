@@ -34,6 +34,7 @@ from repyability.rbd.results import (
     ReliabilityRedundancyAllocation,
     RestorationCriticalityIndex,
     TotalCostAllocation,
+    UncertaintyResult,
     UpDownImportance,
 )
 from repyability.rbd.standby_node import StandbyModel
@@ -73,6 +74,7 @@ __all__ = [
     "RedundancyAllocation",
     "ReliabilityRedundancyAllocation",
     "TotalCostAllocation",
+    "UncertaintyResult",
     "Criticalities",
     "UpDownImportance",
     "FailureCriticalityIndex",

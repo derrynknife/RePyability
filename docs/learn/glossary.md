@@ -6,6 +6,10 @@ teaches it. Symbols follow the [notation table](index.md#notation).
 **Acquisition cost.** The one-off price of buying a unit, as opposed to the
 running costs it incurs while owned. [Lesson 7](costs.md)
 
+**Aleatory uncertainty.** The variability a model describes: which units
+fail, and when. More units do not reduce it. Compare epistemic uncertainty.
+[Lesson 2](systems.md)
+
 **Active redundancy.** Redundant units that all run at the same time, so
 each ages and can fail while the others work. A parallel block in a diagram.
 [Lesson 2](systems.md)
@@ -80,6 +84,10 @@ is a single point of failure. [Lesson 3](structure.md)
 
 **Density.** $f(t) = dF/dt$: the fraction of the original population that
 fails per unit time around age $t$. [Lesson 1](lifetimes.md)
+
+**Epistemic uncertainty.** Not knowing a model exactly, because its
+parameters are estimated from limited data; more data reduces it.
+[Lesson 2](systems.md)
 
 **Exponential distribution.** A lifetime with a constant hazard $\lambda$:
 $R(t) = e^{-\lambda t}$, MTTF $= 1/\lambda$. It has no memory.

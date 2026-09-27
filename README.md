@@ -16,7 +16,8 @@ taking already-fitted lifetime models (from
   events) evaluated exactly, with cut sets, importance measures and
   conversion to and from block diagrams.
 - **Reliability**: exact system reliability, hazard and conditional survival;
-  MTTF with confidence intervals; B*X* life.
+  MTTF with confidence intervals; B*X* life; uncertainty intervals from
+  uncertain (fitted) component models.
 - **Importance**: Birnbaum, improvement potential, RAW, RRW, criticality,
   Fussell–Vesely, structural importance and parameter sensitivity.
 - **Live state**: reliability, remaining life and importance given each
