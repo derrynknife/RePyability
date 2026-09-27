@@ -87,6 +87,7 @@ nav:
       - 7. What it costs: learn/costs.md
       - 8. Maintaining on purpose: learn/maintenance.md
       - 9. Designing for reliability: learn/design.md
+      - Glossary: learn/glossary.md
   - Tutorial: tutorial.md
   - User guide:
       - Overview: guide/index.md

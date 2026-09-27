@@ -132,7 +132,8 @@ p * p               # -> 0.81   both of two independent parts work
 | $c_p$, $c_u$ | Cost of a planned replacement and of a failure | 8 |
 
 Times are in hours throughout, but any unit works if you use it
-consistently.
+consistently. Every term is also defined, with a link to the lesson that
+teaches it, in the [glossary](glossary.md).
 
 ## The running example
 
