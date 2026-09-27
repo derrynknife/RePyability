@@ -1,5 +1,11 @@
 # Costs
 
+!!! tip "Learning this for the first time?"
+    This page is the reference. The ideas behind it are taught step by step,
+    with worked examples and exercises, in [Lesson 7](../learn/costs.md)
+    (what it costs) and [Lesson 8](../learn/maintenance.md) (preventive
+    maintenance).
+
 Availability says how often a system is up; the next question is usually
 what running it costs. Price the components, and the production lost while
 the system is down, and a [`RepairableRBD`][repyability.RepairableRBD] gives
@@ -42,10 +48,11 @@ plant = RepairableRBD(
 plant.has_costs   # True
 ```
 
-Every cost defaults to 0, so any subset can be priced. Costs are corrective
-only (every failure is repaired at the same price) and undiscounted. A cost
-must be finite and non-negative; an unknown key (such as `repair_costs`)
-raises `ValueError` rather than being priced at zero.
+Every cost defaults to 0, so any subset can be priced. Costs are
+undiscounted, and every failure is repaired at the same price (preventive
+replacement is [below](#preventive-maintenance)). A cost must be finite and
+non-negative; an unknown key (such as `repair_costs`) raises `ValueError`
+rather than being priced at zero.
 
 ## The long-run cost rate (exact)
 
@@ -88,7 +95,7 @@ costs.mean              # mean total cost of a window
 costs.cost_rate         # mean / t_simulation: converges to expected_cost_rate()
 costs.percentile(90)    # a planning budget: 9 windows in 10 cost less
 costs.std               # how much a window's cost varies
-costs.by_category       # mean repair, replace, component_downtime, system_downtime
+costs.by_category       # mean repair, replace, preventive, component_downtime, system_downtime
 costs.by_component      # mean cost attributable to each costed component
 ```
 
@@ -111,8 +118,8 @@ interval.lower < plant.expected_cost_rate() * 1000.0 < interval.upper   # True
 ```
 
 `by_category` sums to `mean`; `by_component` covers each component's repair,
-replace and own downtime cost (lost production is a system cost and is not
-attributed to components).
+replace, preventive and own downtime cost (lost production is a system cost
+and is not attributed to components).
 
 ## Costs drawn from distributions
 
@@ -157,4 +164,100 @@ fuse.expected_cost_rate()   # -> 4.0   = 40 × 0.1 failures per unit time
 fuse.mean_availability()    # -> 1.0
 ```
 
-Costs, including cost distributions, are saved with the RBD.
+## Preventive maintenance
+
+A component's dict can also schedule preventive replacement, under the key
+`"preventive"`, so that the cost and availability outputs price the trade
+between preventive and corrective maintenance:
+
+| Key | Meaning |
+|---|---|
+| `interval` | Required: the replacement interval `T` (`inf`: never). |
+| `policy` | `"age"` (the default): `T` after the unit was last put into service as new, so a failure restarts the clock. `"block"`: at `T, 2T, 3T, …` whatever the unit's age, skipped while it is down. |
+| `duration` | `"instant"` (the default): renewed in place, never down. Or a time-to-maintain model: the unit is down meanwhile, a *planned outage*. |
+| `cost` | Charged at each preventive replacement: a number or a distribution. |
+
+A replacement renews the unit, so the failure it was heading for never
+happens. A failure due at the same time as a replacement comes first.
+
+`NonRepairable.find_optimal_replacement()` finds a component's best
+replacement age on its own ([Maintenance policies](maintenance.md)). At
+system level the answer changes, because a planned stop of a unit with a
+standby costs almost no production, while the same stop of a single point of
+failure halts it. Take a pump that wears out, is repaired in about 23 h and
+replaced preventively in about 7 h, alone or with a standby, with lost
+production at 500 per hour:
+
+```python
+def pump(interval):
+    return {
+        "reliability": surv.Weibull.from_params([1000, 2.5]),        # MTTF 887 h
+        "repairability": surv.LogNormal.from_params([3.0, 0.5]),     # 23 h
+        "replace_cost": 5000.0,
+        "preventive": {
+            "interval": interval,
+            "duration": surv.Weibull.from_params([8, 3]),            # 7 h
+            "cost": 1000.0,
+        },
+    }
+
+def alone(interval):
+    return RepairableRBD(
+        [("s", "p"), ("p", "t")], {"p": pump(interval)}, downtime_cost_rate=500.0
+    )
+
+def with_standby(interval):
+    return RepairableRBD(
+        [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        {"a": pump(interval), "b": pump(interval)},
+        downtime_cost_rate=500.0,
+    )
+
+alone(float("inf")).expected_cost_rate()          # -> 18.0    run to failure
+alone(580).expected_cost_rate()                   # -> 13.14   the best interval
+with_standby(float("inf")).expected_cost_rate()   # -> 11.3
+with_standby(500).expected_cost_rate()            # -> 6.985   the best interval
+```
+
+| Interval (h) | 300 | 400 | 500 | 600 | 800 | never |
+|---|---|---|---|---|---|---|
+| Alone | 16.92 | 14.36 | 13.35 | 13.14 | 13.84 | 18.00 |
+| With a standby | 8.19 | 7.21 | 6.99 | 7.15 | 8.01 | 11.30 |
+
+Replacement pays in both, but not at the same interval: the lone pump's
+planned stops cost production, so it is best replaced less often, at about
+580 h; replacing a pump with a standby costs almost no production, so the
+pair is best replaced at about 500 h. Judged on its own, as `NonRepairable`
+judges it (`cp=1000`, `cu=5000`), the pump is best replaced at 493 h.
+Sweeping the interval like this is the way to choose one.
+
+`expected_cost_rate` prices an age-replaced component through its renewal
+cycle: it ends at a failure or a preventive replacement, whichever comes
+first, with mean length `C = ∫₀ᵀ R + F(T)·MTTR + R(T)·MTTP` (`MTTP` the mean
+maintenance time), so it fails `F(T) / C` times and is replaced `R(T) / C`
+times per unit time, and is up `∫₀ᵀ R / C` of the time:
+
+```
+cost rate = … + Σ R_i(T_i) / C_i · preventive cost_i     preventive actions
+```
+
+With instant repair and maintenance a component's own cost rate is
+`NonRepairable.cost_rate(T)`. `mean_availability`, `node_availability`, the
+frequencies, MUT, MDT and the importance measures account for it the same
+way. Block replacement has no exact long-run values (those methods raise
+`NotImplementedError`): simulate it.
+
+The simulation prices both policies. A replacement's cost is in
+`by_category["preventive"]`, and a planned outage counts as downtime, but not
+as a failure: `system_planned_outages` counts the times one took the system
+down.
+
+```python
+year = alone(580).availability(t_simulation=8760.0, N=500, seed=0)
+year.system_failures / year.n_simulations          # -> 3.666
+year.system_planned_outages / year.n_simulations   # -> 11.82
+year.cost.by_category["preventive"]                # -> 11824.0   1000 each
+```
+
+Costs, including cost distributions, and maintenance schedules are saved
+with the RBD.

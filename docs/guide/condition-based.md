@@ -1,5 +1,11 @@
 # Condition-based evaluation
 
+!!! tip "Learning this for the first time?"
+    This page is the reference. The ideas behind it are taught step by step,
+    with worked examples and exercises, in [Lesson 1](../learn/lifetimes.md)
+    (why a part's age matters) and [Lesson 4](../learn/importance.md)
+    (importance measures).
+
 The methods on [Reliability of a system](reliability.md) treat every
 component as new. In service, each component has already run for a while,
 and telemetry says how long. Condition-based evaluation conditions every
@@ -86,12 +92,18 @@ wear:
 ```python
 live = rbd.importances_given_state(20, state)
 live["birnbaum"]      # {'pump1': 0.0713, 'pump2': 0.2805, 'valve': 0.9768}
-live["criticality"]   # {'pump1': 0.0549, 'pump2': 0.2857, 'valve': 1.0}
+live["criticality"]   # {'pump1': 0.2302, 'pump2': 0.2302, 'valve': 0.752}
 live["birnbaum"]["pump2"]   # -> 0.2805
 rbd.birnbaum_importance(20)["pump2"]   # -> 0.038   as new, the pumps are equal
+live["criticality"]["valve"]   # -> 0.752
 ```
 
-With pump1 worn, the system now leans on pump2.
+With pump1 worn, the system now leans on pump2. The criticality is the
+failure-oriented form of `criticality_importance` (`kind="success"` gives the
+success-oriented one): the valve would cause three-quarters of the system
+failures over the next 20 hours. Each pump is critical in 23% of them, however
+worn: a pump is critical to a system failure only when both pumps have failed
+and the valve works.
 
 ## What can take a state
 

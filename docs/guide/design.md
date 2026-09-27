@@ -1,5 +1,10 @@
 # Design and allocation
 
+!!! tip "Learning this for the first time?"
+    This page is the reference. The ideas behind it are taught step by step,
+    with worked examples and exercises, in [Lesson 9](../learn/design.md)
+    (designing for reliability).
+
 Importance measures say *where* a system is weak. The methods on this page
 help decide what to do about it: how many redundant copies of each component
 to buy (redundancy allocation), what reliability each component must reach

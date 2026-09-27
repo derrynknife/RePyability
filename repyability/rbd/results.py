@@ -320,8 +320,9 @@ class CostResult(_ResultMapping):
     [`AvailabilityResult`][repyability.AvailabilityResult] of a priced RBD.
     Each of the ``n_simulations`` replications of the availability
     simulation yields one *total cost over the window*: repair/replace
-    costs charged at each component failure, plus any per-component
-    downtime cost, plus the system-downtime cost. ``samples`` is that
+    costs charged at each component failure, plus the cost of each
+    preventive replacement, plus any per-component downtime cost, plus the
+    system-downtime cost. ``samples`` is that
     distribution — the point of simulating rather than stopping at the
     exact ``RepairableRBD.expected_cost_rate()`` is the spread:
     ``percentile(90)`` answers "what could a bad window cost", which a mean
@@ -344,12 +345,13 @@ class CostResult(_ResultMapping):
         The number of replications.
     by_category : dict
         Mean per-replication cost split into ``"repair"`` and ``"replace"``
-        (both charged per failure), ``"component_downtime"`` and
-        ``"system_downtime"``. The four sum to ``mean``.
+        (both charged per failure), ``"preventive"`` (charged per
+        preventive replacement), ``"component_downtime"`` and
+        ``"system_downtime"``. The five sum to ``mean``.
     by_component : dict
         Mean per-replication cost attributable to each costed component (its
-        repair, replace and own downtime cost; the system-downtime cost is
-        not attributed to components).
+        repair, replace, preventive and own downtime cost; the
+        system-downtime cost is not attributed to components).
 
     Examples
     --------
@@ -671,15 +673,20 @@ class AvailabilityResult(_ResultMapping):
         Total system downtime summed over all simulations.
     system_failures : int
         Number of system failures observed across all simulations (changes
-        from up to down, including the zero-length outages an instantly
-        repaired component causes).
+        from up to down caused by a failure, including the zero-length
+        outages an instantly repaired component causes).
     system_restorations : int
-        Number of system restorations observed across all simulations.
+        Number of system restorations observed across all simulations
+        (changes from down to up, after a failure or a planned outage).
     n_simulations : int
         The number of simulations run (``N``).
     cost : CostResult, optional
         The simulated cost distribution, when the RBD declares any costs;
         ``None`` when nothing is priced (no cost model to run).
+    system_planned_outages : int
+        Number of planned outages of the system observed across all
+        simulations: changes from up to down caused by preventive
+        maintenance that takes time. 0 without such maintenance.
 
     Examples
     --------
@@ -720,6 +727,7 @@ class AvailabilityResult(_ResultMapping):
     system_restorations: int
     n_simulations: int
     cost: Optional[CostResult] = None
+    system_planned_outages: int = 0
 
     @property
     def availability_se(self) -> np.ndarray:
@@ -781,8 +789,9 @@ class AvailabilityResult(_ResultMapping):
     @property
     def mean_up_time(self) -> float:
         """Simulation estimate of the Mean Up Time,
-        ``system uptime / system failures``. Infinite if no failure was
-        observed (0.0 if the system was never up).
+        ``system uptime / (system failures + planned outages)``: an up
+        period ends at either. Infinite if the system was never observed to
+        go down (0.0 if it was never up).
 
         Note: estimated from a finite window, so each simulation's final
         (unfinished) up period is censored; for windows that are short
@@ -794,8 +803,9 @@ class AvailabilityResult(_ResultMapping):
         float
             The estimated mean up time, possibly ``inf``.
         """
-        if self.system_failures > 0:
-            return self.system_uptime / self.system_failures
+        outages = self.system_failures + self.system_planned_outages
+        if outages > 0:
+            return self.system_uptime / outages
         return float("inf") if self.system_uptime > 0 else 0.0
 
     @property
@@ -820,7 +830,8 @@ class AvailabilityResult(_ResultMapping):
     @property
     def failure_frequency(self) -> float:
         """Simulation estimate of the system failure frequency (failures per
-        unit time), ``system failures / total simulated time``.
+        unit time), ``system failures / total simulated time``. Planned
+        outages are not failures.
 
         The total simulated time is ``n_simulations * time_simulated_to``.
         The exact steady-state counterpart is

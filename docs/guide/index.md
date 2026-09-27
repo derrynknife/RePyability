@@ -2,9 +2,10 @@
 
 The user guide is the how-to reference: every capability, the arguments it
 takes, what it returns, and its limits. Each page is self-contained and its
-examples run as written. For the theory behind the numbers, see
-[Concepts](../concepts.md); for every signature and docstring, see the
-[API reference](../api.md).
+examples run as written. To learn the ideas step by step, with worked
+examples and exercises, take the [Learn](../learn/index.md) course; for a
+compact summary of the theory, see [Concepts](../concepts.md); for every
+signature and docstring, see the [API reference](../api.md).
 
 | Page | What it covers |
 |---|---|
@@ -15,7 +16,7 @@ examples run as written. For the theory behind the numbers, see
 | [Redundancy models](redundancy-models.md) | Cold, warm and hot standby, repeated nodes, repeated standby, and load-sharing groups. |
 | [Common-cause failures](common-cause.md) | Beta-factor and Multiple Greek Letter groups, and where they apply. |
 | [Repairable systems](repairable.md) | Availability over time by simulation, the simulated result and its criticality measures, long-run availability, failure frequency, MUT/MDT/MTBF, nested repairable RBDs, and stepping a simulation by hand. |
-| [Costs](costs.md) | The long-run cost rate in closed form, the simulated cost distribution, and costs drawn from distributions. |
+| [Costs](costs.md) | The long-run cost rate in closed form, the simulated cost distribution, costs drawn from distributions, and scheduled preventive maintenance. |
 | [Design and allocation](design.md) | How many redundant copies to fit (redundancy allocation), and apportioning a reliability target among components (reliability allocation). |
 | [Maintenance policies](maintenance.md) | Age replacement, overhaul under minimal or imperfect repair, failure-count replacement, and the expected time to the *n*-th failure. |
 | [Saving, reproducibility and performance](saving.md) | JSON round-trips, seeding, what is exact and what is simulated, and how the engine scales. |

@@ -1,5 +1,10 @@
 # Common-cause failures
 
+!!! tip "Learning this for the first time?"
+    This page is the reference. The ideas behind it are taught step by step,
+    with worked examples and exercises, in [Lesson
+    5](../learn/dependence.md) (when redundancy disappoints).
+
 Redundancy only helps while the redundant units fail for *independent*
 reasons. In practice they often share a cause: one manufacturing batch, one
 power supply, one maintenance error applied to every unit. The exact engine

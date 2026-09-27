@@ -3561,6 +3561,7 @@ class NonRepairableRBD(RBD):
         self,
         x: Optional[ArrayLike] = None,
         state: Optional[Dict[Hashable, NodeState]] = None,
+        kind: str = "failure",
     ) -> Dict[str, Dict[Any, Union[float, np.ndarray]]]:
         """Birnbaum and criticality importance given each node's state.
 
@@ -3570,16 +3571,19 @@ class NonRepairableRBD(RBD):
         the conditioned node reliabilities ``R_i(x | X_i)`` (see
         [`sf_given_state`][repyability.NonRepairableRBD.sf_given_state])
         rather than at the as-new reliabilities, so the rankings reflect
-        the current state:
+        the current state. With ``F = 1 - R``:
 
             birnbaum_i    = R_sys(x | state, i working)
                             - R_sys(x | state, i failed)
-            criticality_i = birnbaum_i * R_i(x | X_i) / R_sys(x | state)
+            criticality_i = birnbaum_i * F_i(x | X_i) / F_sys(x | state)
 
-        These are the conventions of ``birnbaum_importance`` and
-        ``criticality_importance``: they measure how much the system
-        reliability depends on each node *now*, not which node is most
-        likely to have failed. A failed node's criticality is 0.
+        the failure-oriented criticality: the share of the system failures
+        over the horizon that node ``i`` accounts for. ``kind="success"``
+        gives the success-oriented form,
+        ``birnbaum_i * R_i(x | X_i) / R_sys(x | state)``, instead. These
+        are the conventions of ``birnbaum_importance`` and
+        ``criticality_importance``, applied to the system as it is now. A
+        failed node's success-oriented criticality is 0.
 
         Parameters
         ----------
@@ -3590,6 +3594,9 @@ class NonRepairableRBD(RBD):
             ``{node: NodeState}``, the current state of some or all of the
             component nodes (see ``sf_given_state``). By default empty (all
             nodes new).
+        kind : str, optional
+            The criticality's form: ``"failure"`` (the default) or
+            ``"success"``, as for ``criticality_importance``.
 
         Returns
         -------
@@ -3603,8 +3610,9 @@ class NonRepairableRBD(RBD):
         TypeError
             If ``state`` is not a dict of ``NodeState`` values.
         ValueError
-            If ``x`` is omitted for a time-varying RBD, or ``state`` is
-            invalid (as for ``sf_given_state``).
+            If ``x`` is omitted for a time-varying RBD, ``state`` is
+            invalid (as for ``sf_given_state``), or ``kind`` is neither
+            ``"failure"`` nor ``"success"``.
         NotImplementedError
             If the RBD has common-cause (CCF) groups.
 
@@ -3638,7 +3646,7 @@ class NonRepairableRBD(RBD):
         x_arr = np.atleast_1d(np.asarray(x, dtype=float))
         node_probabilities = self._state_node_probabilities(x_arr, state)
         birnbaum = super()._birnbaum_importance(node_probabilities)
-        criticality = super()._criticality_importance(node_probabilities)
+        criticality = super()._criticality_importance(node_probabilities, kind)
 
         def _squeeze(measure):
             return {
@@ -4015,15 +4023,31 @@ class NonRepairableRBD(RBD):
         x: Optional[ArrayLike] = None,
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
+        kind: str = "failure",
     ) -> dict[Any, Union[float, np.ndarray]]:
         """Criticality importance of each node at time/s ``x``.
 
-        ``CI_i = B_i * R_i / R_sys``, with ``B_i`` the Birnbaum importance:
-        the probability that node ``i`` is working and critical, given that
-        the system works. This is the success-oriented form; the
-        failure-oriented criticality importance of some texts,
-        ``B_i * (1 - R_i) / (1 - R_sys)``, is not what is computed. Exact;
-        it assumes independent nodes.
+        With ``B_i`` the Birnbaum importance, ``R_i`` the node's reliability
+        and ``R_sys`` the system's:
+
+        - ``kind="failure"`` (the default) gives the failure-oriented form
+          (Rausand & Høyland), ``CI_i = B_i * (1 - R_i) / (1 - R_sys)``:
+          the probability that node ``i`` has failed and is critical, given
+          that the system has failed -- the share of system failures that
+          node ``i`` accounts for. It ranks nodes in series by how
+          unreliable they are. It is computed from the node
+          unreliabilities, through the minimal cut sets, so the system
+          unreliability is not lost to cancellation in ``1 - R_sys``
+          however reliable the system is. It is ``nan`` where the system
+          cannot fail (e.g. at ``x = 0``).
+        - ``kind="success"`` gives the success-oriented form,
+          ``CI_i = B_i * R_i / R_sys``: the probability that node ``i`` is
+          working and critical, given that the system works. It is 1 for
+          every node in series with the rest of the system, however
+          unreliable, so it cannot rank them. It is ``nan`` where the
+          system cannot work.
+
+        Exact; it assumes independent nodes.
 
         Parameters
         ----------
@@ -4034,6 +4058,8 @@ class NonRepairableRBD(RBD):
             Nodes to treat as working (reliability 1), by default none.
         broken_nodes : Collection[Hashable], optional
             Nodes to treat as failed (reliability 0), by default none.
+        kind : str, optional
+            ``"failure"`` (the default) or ``"success"``.
 
         Returns
         -------
@@ -4044,16 +4070,23 @@ class NonRepairableRBD(RBD):
         Raises
         ------
         ValueError
-            If ``x`` is omitted for a time-varying RBD, or a working/broken
-            node is invalid (as for ``sf``).
+            If ``x`` is omitted for a time-varying RBD, a working/broken
+            node is invalid (as for ``sf``), or ``kind`` is neither
+            ``"failure"`` nor ``"success"``.
         NotImplementedError
             If the RBD has common-cause (CCF) groups.
+
+        References
+        ----------
+        M. Rausand and A. Høyland, System Reliability Theory: Models,
+        Statistical Methods, and Applications, 2nd edition, Wiley, 2004.
 
         Examples
         --------
         Two pumps in parallel (each failing with probability 0.1) feeding a
-        valve in series (0.05): whenever the system works, the valve is
-        working and critical.
+        valve in series (0.05): the valve accounts for 83% of the system's
+        failures (the shares add to more than 1 here, as both pumps are
+        critical in the same failures).
 
         >>> from surpyval import FixedEventProbability
         >>> from repyability import NonRepairableRBD
@@ -4068,6 +4101,13 @@ class NonRepairableRBD(RBD):
         ... )
         >>> ci = rbd.criticality_importance()
         >>> {k: round(v, 4) for k, v in sorted(ci.items())}
+        {'p1': 0.1597, 'p2': 0.1597, 'v': 0.8319}
+
+        The success-oriented form gives the valve, like any node in series,
+        exactly 1:
+
+        >>> ci = rbd.criticality_importance(kind="success")
+        >>> {k: round(v, 4) for k, v in sorted(ci.items())}
         {'p1': 0.0909, 'p2': 0.0909, 'v': 1.0}
         """
         self._require_no_ccf()
@@ -4076,7 +4116,7 @@ class NonRepairableRBD(RBD):
         )
         return cast(
             Dict[Any, Union[float, np.ndarray]],
-            super()._criticality_importance(node_probabilities),
+            super()._criticality_importance(node_probabilities, kind),
         )
 
     @check_x

@@ -2327,30 +2327,87 @@ class RBD:
         return node_importance
 
     def _criticality_importance(
-        self, node_probabilities: dict[Any, ArrayLike]
+        self, node_probabilities: dict[Any, ArrayLike], kind: str = "failure"
     ) -> dict[Any, np.ndarray]:
-        """Returns the criticality importance of all nodes at time/s x.
+        """The criticality importance of every node.
+
+        ``kind="failure"`` (the default) gives the failure-oriented form
+        (Rausand & Høyland), ``I_B(i) * (1 - p_i) / (1 - P_sys)``: the
+        probability that node ``i`` has failed and is critical, given that
+        the system has failed, i.e. the share of system failures node ``i``
+        accounts for. It is computed from the node unreliabilities through
+        the minimal cut sets, so the system unreliability is not lost to
+        cancellation in ``1 - P_sys`` however reliable the system is; it is
+        ``nan`` where the system cannot fail.
+
+        ``kind="success"`` gives the success-oriented form,
+        ``I_B(i) * p_i / P_sys``: the probability that node ``i`` is working
+        and critical, given that the system works. It is 1 for every node in
+        series with the rest, so it cannot rank them; it is ``nan`` where
+        the system cannot work.
 
         Parameters
         ----------
-        x : int | float | Iterable[int  |  float]
-            Time/s as a number or iterable
+        node_probabilities : Dict
+            The probability that each node works (arrays of one length).
+        kind : str, optional
+            ``"failure"`` (the default) or ``"success"``.
 
         Returns
         -------
-        dict[Any, float]
-            Dictionary with node names as keys and criticality importances as
-            values
+        dict[Any, np.ndarray]
+            ``{node: criticality importance}``.
+
+        Raises
+        ------
+        ValueError
+            If ``kind`` is neither ``"failure"`` nor ``"success"``.
         """
-        bi: dict[Any, np.ndarray] = self._birnbaum_importance(
-            node_probabilities
-        )
-        node_importance: dict[Any, np.ndarray] = {}
-        system_sf: np.ndarray = self.system_probability(node_probabilities)
-        for node in self.nodes:
-            node_importance[node] = (
-                bi[node] * node_probabilities[node] / system_sf
+        if kind not in ("failure", "success"):
+            raise ValueError(
+                f"kind must be 'failure' or 'success', got {kind!r}."
             )
+        node_importance: dict[Any, np.ndarray] = {}
+        if kind == "success":
+            bi: dict[Any, np.ndarray] = self._birnbaum_importance(
+                node_probabilities
+            )
+            system_sf: np.ndarray = self.system_probability(node_probabilities)
+            for node in self.nodes:
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    node_importance[node] = np.where(
+                        system_sf > 0,
+                        bi[node] * node_probabilities[node] / system_sf,
+                        np.nan,
+                    )
+            return node_importance
+        # Failure-oriented: everything from the unreliabilities, through the
+        # cut sets, so that small system unreliabilities keep their
+        # precision (1 - P_sys would cancel).
+        q = {
+            node: 1.0
+            - np.atleast_1d(np.asarray(node_probabilities[node], dtype=float))
+            for node in self.nodes
+        }
+        lengths = {len(value) for value in q.values()}
+        if len(lengths) > 1:
+            raise ValueError("Probability arrays must be same length")
+        size = lengths.pop() if lengths else 1
+        plan = self._shannon_plan("c")
+        system_ff = _evaluate_shannon_plan(plan, q, size)
+        for node in self.nodes:
+            failed = _evaluate_shannon_plan(
+                plan, {**q, node: np.ones_like(q[node])}, size
+            )
+            working = _evaluate_shannon_plan(
+                plan, {**q, node: np.zeros_like(q[node])}, size
+            )
+            with np.errstate(divide="ignore", invalid="ignore"):
+                node_importance[node] = np.where(
+                    system_ff > 0,
+                    (failed - working) * q[node] / system_ff,
+                    np.nan,
+                )
         return node_importance
 
     def _fussell_vesely(

@@ -23,6 +23,7 @@ taking already-fitted lifetime models (from
 - **Repairable systems**: exact long-run availability, failure frequency and
   MUT/MDT/MTBF; simulated availability over time with criticality measures.
 - **Cost, design and maintenance**: exact and simulated running costs,
+  including scheduled (age or block) preventive replacement at system level,
   optimal redundancy allocation, reliability allocation by the classic named
   methods (equal and ARINC-style apportionment, minimum effort, cost-based),
   and age-replacement and overhaul policies.
@@ -42,6 +43,12 @@ rbd = NonRepairableRBD(
 rbd.sf(50)                     # 0.839: system reliability at t = 50
 rbd.birnbaum_importance(50)    # which component matters most
 ```
+
+New to reliability engineering? The documentation includes
+[Learn](https://derrynknife.github.io/RePyability/learn/), a short course
+that teaches system reliability from a single part's lifetime to designing
+and maintaining whole systems, working every idea out by hand and then with
+RePyability, with exercises and worked answers.
 
 ## Install
 RePyability can be installed via pip using the PyPI [repository](https://pypi.org/project/repyability/)

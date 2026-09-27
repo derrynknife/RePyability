@@ -9,6 +9,17 @@ main capabilities in the order you would reach for them; the
 [user guide](guide/index.md) covers each one in full. Every block below runs
 as written, in order.
 
+!!! tip "Meeting an idea for the first time?"
+    The tutorial moves quickly. Each idea it uses is taught step by step in
+    the [Learn](learn/index.md) course: lifetimes and the Weibull
+    ([Lesson 1](learn/lifetimes.md)), system reliability
+    ([Lessons 2](learn/systems.md) and [3](learn/structure.md)), importance
+    measures ([Lesson 4](learn/importance.md)), dependent failures
+    ([Lesson 5](learn/dependence.md)), availability and cost
+    ([Lessons 6](learn/availability.md) and [7](learn/costs.md)),
+    maintenance ([Lesson 8](learn/maintenance.md)) and design
+    ([Lesson 9](learn/design.md)).
+
 We will model a **pumping skid**:
 
 ```text
@@ -374,6 +385,8 @@ transient input you supply at evaluation time.
 
 ## Where to next
 
+- **[Learn](learn/index.md)**: the ideas behind each step, worked out by hand
+  and then with RePyability, with exercises.
 - **[User guide](guide/index.md)**: every method, argument and return
   contract, with runnable examples.
 - **[Concepts](concepts.md)**: the theory behind these numbers: path and cut

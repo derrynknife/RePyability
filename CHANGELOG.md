@@ -175,8 +175,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `equal_allocation` is equal apportionment, `improvement_allocation`
   ARINC-style proportional apportionment, and `simple_allocation`, which is
   not a named method, the smallest change in the node log-odds (see below).
+- **Failure-oriented criticality importance (closes #72).**
+  `criticality_importance` on `NonRepairableRBD` and `RepairableRBD`, and
+  `NonRepairableRBD.importances_given_state`, take `kind="failure"` (the
+  default) or `kind="success"`. The failure-oriented form (Rausand & Høyland),
+  `I_B(i) · (1 − p_i) / (1 − P_sys)`, is the probability that node *i* has
+  failed and is critical given that the system has failed: its share of the
+  system failures, or of the downtime at long-run availabilities. It is
+  computed from the node unreliabilities through the minimal cut sets, so it
+  keeps its precision for a highly reliable system where `1 − P_sys` would
+  cancel. Either form is `nan` (without a warning) where it is undefined: a
+  system that cannot fail, or cannot work. Tests check both forms against a
+  brute-force enumeration of a bridge network (non-repairable and
+  repairable), and the failure form against exact rational arithmetic on a
+  bridge that fails with probability ~1e-12.
+
+- **Scheduled preventive maintenance in `RepairableRBD` (closes #69).** A
+  component's dict takes `"preventive": {"interval": T, "policy": "age" |
+  "block", "duration": model | "instant", "cost": c_p}`. Under age
+  replacement the unit is replaced `T` after it was last put into service as
+  new (a failure restarts the clock); under block replacement at `T, 2T, …`
+  whatever its age (skipped while it is down). A replacement renews the unit,
+  so the failure it was heading for never happens; with a duration the unit
+  is down meanwhile, a planned outage, which counts as downtime in every
+  availability output but not as a failure (the result's new
+  `system_planned_outages` counts them); `"instant"` renews it in place.
+  `CostResult.by_category` gains `"preventive"`. The exact long-run methods
+  (`expected_cost_rate`, `mean_availability`, `node_availability`, the
+  frequencies, MUT/MDT and the importance measures) price an age-replaced
+  component through its renewal-reward cycle; block replacement has no exact
+  long-run values, so they raise `NotImplementedError` for it and the
+  simulation prices it. Nested RBDs report their planned outages to their
+  parent. Tests list the events of deterministic lifetimes by hand, hold
+  the exact cost rate of age replacement to `NonRepairable.cost_rate(T)`
+  and a long simulation to every exact value, check block replacement of an
+  exponential unit against `λ·c_u + c_p/T`, that an infinite interval gives
+  results identical to no maintenance, and that the batched and one-draw
+  simulations still agree. `NonRepairable.avg_replacement_time` now also
+  integrates models whose `sf` returns an array for a scalar age (such as
+  `ExactEventTime`).
 
 ### Changed
+- **`criticality_importance` now defaults to the failure-oriented form
+  (#72).** The success-oriented form it returned, `I_B(i) · p_i / P_sys`, is
+  exactly 1 for every node in series with the rest of the system, however
+  unreliable, so it could not rank the nodes in series. Pass
+  `kind="success"` for the old values; the `"criticality"` of
+  `importances_given_state` follows the same default.
 - **`simple_allocation` now finds the smallest change in the node log-odds.**
   It used to minimise the squared shortfall from the target with BFGS,
   starting every node at 0.5, and return wherever the optimiser stopped. On
@@ -280,6 +325,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   removed in a future release.
 
 ### Fixed
+- **`find_optimal_replacement` returned a spurious finite age (closes #68).**
+  For a lifetime without wear-out that the quick check does not recognise — a
+  Weibull of shape 1 or less with an offset, zero-inflation or a limited
+  failure population, or a Gamma with shape below 1 — the search ran along a
+  cost rate that only falls towards the run-to-failure rate, and returned
+  wherever it stopped (745,244 hours for a unit with a mean life of 2,001).
+  The best age found must now beat running to failure, or `inf` is returned.
+  Running to failure costs nothing in the long run when some units never fail
+  (a limited failure population), and `optimal_replacement_policy` now reports
+  that rate as 0 rather than `cu` over the failing units' mean life. With an
+  offset, replacing at the offset itself — the end of the failure-free period,
+  where the cost rate `cp / t` is lowest — is also considered; the search used
+  to stop short of it (986 against 1000 in the test). surpyval's spurious
+  `RuntimeWarning` when evaluating an offset model below its offset is
+  silenced in the cycle-length integral.
 - **Nested `RepairableRBD` simulations put the nested RBD's state changes at
   the wrong times.** A nested RBD's `next_event()` returns the time *of* its
   next state change, but the outer simulation added it to the current time as
@@ -402,6 +462,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged and still asserted.
 
 ### Documentation
+- **Learn: a short course in system reliability engineering.** A new
+  section of nine lessons teaches the ideas behind the library from first
+  principles: lifetimes (reliability, hazard, MTTF, the exponential and the
+  Weibull, the bathtub curve); series, parallel and k-out-of-n systems; path
+  and cut sets and how the exact engine works; importance measures, built
+  from the idea of a critical component, including both forms of criticality
+  importance; standby, load sharing and common-cause failures; repair and
+  availability; costs; preventive maintenance (age and block replacement,
+  when replacing early cannot pay, and why the best interval changes inside
+  a system); and reliability and redundancy allocation. Each lesson poses a
+  concrete question, works it out by hand with small numbers, repeats it with
+  RePyability, lists the usual pitfalls, and ends with a summary and
+  exercises with worked answers. Every code block runs in the documentation
+  tests and every number quoted in them is checked. The site now renders
+  formulas (MathJax) and diagrams and charts (Mermaid), and has collapsible
+  answers and tabs; each user-guide page links to the lessons behind it, and
+  a glossary defines every term with the lesson that teaches it.
 - **Reliability allocation has a full guide section.** The design guide now
   covers every allocation method: a table of what each needs and how it
   picks among the allocations that meet a target, how to choose between
