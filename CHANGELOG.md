@@ -27,6 +27,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   independent brute force on a (non-series-parallel) bridge network, and the
   `1 - (1 - p) ** n` model against an RBD with the copies drawn out
   explicitly. RBDs with CCF groups are not yet supported.
+- **Redundancy allocation with several resources, and by dynamic programming
+  (closes #76).** What one copy of each node uses may now be a dict of
+  resources (e.g. `{"cost": 4000, "weight": 30}`) with `budget` a dict of
+  limits on any of them — the multi-constraint problem of Fyffe, Hines & Lee
+  (1968) — and a `target` may be combined with a `budget` (the cheapest design
+  that meets the target within the limits). `minimise` names the resource a
+  target minimises, and the result's new `resources` field totals every
+  resource (`cost` is the total of the minimised one). When every costed node
+  is in series with the rest of the system, `method="exact"` now solves the
+  problem by a dominance-based dynamic program over the nodes (Kettelle-style,
+  with any number of resources), so a series of many subsystems — fourteen
+  with two limits, far beyond the exhaustive search — is solved exactly in a
+  fraction of a second; other structures keep the exhaustive search. The
+  greedy heuristic measures a copy by its total share of the limits when there
+  are several. Tests check the dynamic program's final front against every
+  design, and each form against an independent brute force with one, two and
+  three resources, on series systems and on a bridge network.
+- **Redundancy allocation with a choice of component types (closes #77).** A
+  node in `allocate_redundancy`'s `costs` may be given a list of
+  `ComponentOption(name, reliability, cost)` — candidate component types, each
+  with its own reliability (a model evaluated at the mission time, or a fixed
+  probability) and cost (a number or a dict of resources). Its copies are then
+  any mixture of types (`mixing=True`, the default; Coit & Smith, 1996) or all
+  of one type (`mixing=False`; Fyffe, Hines & Lee, 1968), `max_units` caps
+  them all together, and the result's new `mix` field gives the number of each
+  type per node. Both exact methods now work on each node's list of designs,
+  less those another design of the node beats (no more of any resource and at
+  least as reliable), and the dynamic program is vectorised; the greedy
+  heuristic can also change the type of a copy. The exact search returns the
+  best published reliabilities of the classic 14-subsystem benchmark with
+  mixing (0.986811, 0.986416, 0.985922 and 0.954565 at weight limits 191, 190,
+  189 and 159), in about two seconds each; tests also check both forms, with
+  and without mixing, against an independent brute force on series systems and
+  on a bridge network.
+- **Redundancy allocation with k-out-of-n nodes and standby spares (closes
+  #78).** `allocate_redundancy` gains `required` (how many of a node's copies
+  must work; Coit & Liu, 2000), `strategy` (`"active"`, the default; `"cold"`
+  standby, where spares wait unpowered and are switched in as units fail —
+  Coit, 2001; or `"choose"`, letting the optimiser pick for each node — Coit,
+  2003) and `switching_probability` (for cold standby), each for every node or
+  per node. Active k-out-of-n nodes are exact (binomial tails, or their
+  mixed-type generalisation); cold-standby nodes are `StandbyModel`s of their
+  copies (exact for identical Exponential units, numerical convolution for one
+  unit required, seeded simulation otherwise). The result's new `strategy`
+  field gives each node's strategy, and the documented "active copies only"
+  limit is gone. Tests check the node reliabilities against binomial tails and
+  Erlang and Poisson sums, and the allocations — including a choice that keeps
+  some nodes active and gives others cold spares under imperfect switching —
+  against an independent brute force.
+- **The cost-reliability trade-off (`NonRepairableRBD.redundancy_front`,
+  closes #80).** Returns every design that no other beats by using no more of
+  every resource while being at least as reliable (the Pareto front of
+  multi-objective redundancy allocation; Taboada et al., 2007), as a list of
+  `RedundancyAllocation` by increasing cost, taking the same arguments as
+  `allocate_redundancy` except `target`. Exact: from the dynamic program when
+  the costed nodes are in series, by evaluating every design within the budget
+  otherwise (`redundancy_allocation.exact_front`). Tests check it against the
+  non-dominated set of every allocation, with one and two resources and with
+  types and strategies, on series systems and bridge networks, and every point
+  against `allocate_redundancy` in both forms.
+- **Reliability-redundancy allocation
+  (`NonRepairableRBD.allocate_reliability_redundancy`, closes #79).** Chooses
+  each node's component reliability, within `bounds`, and its number of
+  copies together, to maximise system reliability when what the copies use is
+  a function of both (`uses[node](r, n)`, a number or a dict of resources,
+  within a `budget`; Tillman, Hwang & Kuo, 1977). Any structure works. It is
+  solved exactly over the copies by branch and bound — each copy vector that
+  fits at the lowest reliabilities is bounded by the system reliability with
+  every node at the most reliable component it could afford alone, and solved
+  in decreasing order of that bound until none beats the best found — with the
+  reliabilities for each vector found by SLSQP with the exact gradient (a local
+  optimum; global for a series system with convex costs). The result is a new
+  `ReliabilityRedundancyAllocation`. It returns the best published solutions
+  of the four classic benchmarks — series (0.931682), series–parallel
+  (0.99997665), bridge (0.99988964) and overspeed protection (0.99995467) —
+  which the tests check, along with plain redundancy allocation when the
+  reliabilities are fixed and a closed form for one node.
 - **Cost of a repairable system (`expected_cost_rate`).** `RepairableRBD`
   components may now carry `repair_cost` and `replace_cost` (charged per
   corrective action) and an optional `downtime_cost` rate, alongside a
@@ -79,7 +156,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are simulated. Spares are promoted in list order; the factor persists
   through serialisation. Imperfect switching remains cold-`k=1`-only.
 
+- **Named reliability-allocation methods.**
+  `minimum_effort_allocation(target, node_probabilities)` is Albert's (1958)
+  minimization-of-effort algorithm (MIL-HDBK-338B). For a series system it
+  raises the least reliable nodes to one common level, the least total
+  effort for any effort function meeting Albert's conditions, in closed form.
+  `cost_based_allocation(target, node_probabilities, max_probabilities=None,
+  feasibility=None)` is Mettas's (2000) cost-based allocation, for any
+  structure: the cheapest node probabilities meeting the target, with each
+  node's cost `exp((1 − f)(R − R_min)/(R_max − R))` rising from its current
+  probability towards its maximum, faster for a lower feasibility `f`. It
+  works on the log-odds scale from both ends of the exact engine, with exact
+  gradients, so it stays exact at any size (100 nodes in series or 30 in
+  parallel, say). Tests hold the first to
+  a direct minimisation of two different effort functions, and the second to
+  a direct minimisation of Mettas's problem and to the optimality conditions.
+  The design guide now maps each allocation helper to its named method:
+  `equal_allocation` is equal apportionment, `improvement_allocation`
+  ARINC-style proportional apportionment, and `simple_allocation`, which is
+  not a named method, the smallest change in the node log-odds (see below).
+
 ### Changed
+- **`simple_allocation` now finds the smallest change in the node log-odds.**
+  It used to minimise the squared shortfall from the target with BFGS,
+  starting every node at 0.5, and return wherever the optimiser stopped. On
+  asymmetric systems other optimisers met the target with quite different
+  allocations; a target out of reach (a node with weight 0 stays at 0.5) came
+  back as the closest miss, without an error; and on large systems the search
+  could not move at all: 30 nodes in parallel at 0.5 are within 1e-9 of
+  certain success, so a target of 0.5 returned every node at 0.5. It now
+  minimises the weighted change in log-odds, `sum(s_i ** 2 / w_i)`, subject
+  to meeting the target: a well-defined answer, in which nodes that matter
+  more and more heavily weighted nodes move further, exact at any size (it
+  is solved with `trust-constr` on the log-odds scale from both ends of the
+  exact engine, and tests hold it to its optimality conditions and to a
+  direct minimisation). A node's weight now scales its change directly: at
+  equal sensitivity, twice the weight moves it twice as far. Symmetric
+  allocations are unchanged; others differ (the docstring's example moves
+  from a, b = 0.911 and c = 0.998 to 0.940 and 0.994). An unreachable target
+  raises `ValueError` with the reachable range, a negative weight raises
+  `ValueError`, and `res.x` now holds the nodes' log-odds.
 - Require **surpyval >= 0.20**, and the requirement is now **uncapped** (was
   `>=0.16,<0.17`). 0.20 adds a first-class `Hypoexponential` distribution, so
   RePyability's private `_HypoexponentialSurvival` (the closed-form group
@@ -123,13 +239,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   component or contain it with a cut set of the failed branch) instead of
   Berge's algorithm, whose intermediate families could grow far beyond the
   answer, and they are computed once per RBD; the decomposition also runs on
-  an explicit stack, so `sf()` and cut sets now work on systems with more
-  than about a thousand components, where they used to hit Python's
-  recursion limit. Seeded results are unchanged, and unseeded runs leave the
-  global RNG in the same state. Models whose sampling cannot be reproduced
-  exactly this way (fixed-probability, limited-failure-population or
-  zero-inflated models) keep their original code path. Measured at default
-  settings:
+  an explicit stack, so `sf()` and cut sets now work on wide systems of more
+  than about a thousand components (1 100 units in parallel, say), where they
+  used to hit Python's recursion limit. (Finding the path sets is still
+  recursive, so a single chain of about a thousand nodes in series still
+  exceeds the limit when the RBD is built.) Seeded results are unchanged,
+  and unseeded runs leave the global RNG in the same state. Models whose
+  sampling cannot be reproduced exactly this way (fixed-probability,
+  limited-failure-population or zero-inflated models) keep their original
+  code path. Measured at default settings:
 
   | Workload | Before | After |
   |---|---|---|
@@ -156,6 +274,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   outputs, same final RNG state, exactly the same exact-engine probabilities,
   and the same minimal cut sets.
 
+### Deprecated
+- The `options` argument of `NonRepairable.find_optimal_replacement()` was
+  never used. Passing it now issues a `DeprecationWarning`; it will be
+  removed in a future release.
+
 ### Fixed
 - **Nested `RepairableRBD` simulations put the nested RBD's state changes at
   the wrong times.** A nested RBD's `next_event()` returns the time *of* its
@@ -179,6 +302,95 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exactly as separate objects would. (`rbd.components[node]` is that copy.
   Models given as `{"reliability": ..., "repairability": ...}` dicts always
   made a new object per node and are unchanged.)
+- **`random()` hung on a diagram with an edge straight from the input to the
+  output node.** Such a system never fails. The batched sampler returned
+  `inf` for it, but the one-at-a-time sampler (used when a node's model
+  cannot be sampled in blocks, e.g. a zero-inflated one) kept waiting for a
+  system failure after every node had failed, so `random()`, `mean()` and the
+  MTTF methods never returned. It now returns `inf` too.
+- **`NonRepairable` failed with a `StandbyModel` lifetime.** A closed-form
+  standby arrangement (identical Exponential units, or cold standby with
+  `k = 1`) made the constructor raise `AttributeError`, and for any
+  `StandbyModel` the cost methods (`avg_replacement_time`, `cost_rate`,
+  `find_optimal_replacement`, `optimal_replacement_policy`) raised
+  `AttributeError` too. Every form (closed form, convolution or simulation)
+  now works through the arrangement's survival function. The cycle length is
+  integrated by the trapezoidal rule on a fine grid (a simulated
+  arrangement's survival is a step function), and the optimal age is found
+  on a grid and refined; an arrangement that may never fail is never
+  replaced (`inf`).
+- **An `input_node` or `output_node` that is not the diagram's source or
+  sink was accepted.** Naming, say, a node in the middle of a series chain
+  silently analysed a different system (the nodes before it dropped out).
+  Both RBD classes now raise `ValueError` unless the named node has no
+  incoming (input) or no outgoing (output) edges.
+- **`improvement_allocation` could return invalid probabilities or miss its
+  target silently.** A target below the current system probability pushed
+  node probabilities below 0, and a target the free nodes could not reach
+  (because `fixed` nodes cap the system) returned the closest miss with no
+  error. The failure probabilities are now capped at 1, so a lower target
+  gives the lowest valid probabilities that meet it; the common factor is
+  found by a bracketed root search, which meets every reachable target
+  (including a target of 1, which `equal_allocation` used to meet only
+  approximately); an unreachable target raises `ValueError` giving the
+  reachable range; and each node probability must be a single value in
+  [0, 1]. `rbd.res` still holds the common exponent in `x`.
+- **Tuple node names did not survive JSON.** JSON writes a tuple as a list,
+  and loading used the list as the node name, which is not hashable, so
+  `from_json(to_json())` failed for an RBD with tuple node names. Loading
+  now turns lists in node names (edges, models, `k`, repeated nodes,
+  common-cause groups, input and output nodes) back into tuples.
+- **The simulated overhaul search returned its horizon as a false optimum
+  for near-minimal repair.** For a `Repairable` with imperfect repair and `q`
+  close to 1, the unit's virtual age reaches ages where the baseline
+  survival underflows; surpyval then ends those simulated histories early,
+  the estimated `E[N(t)]` stops growing, and the cost rate appeared to keep
+  falling to the end of the search. A Weibull(100, 2) with minimal repair
+  and costs 10 and 50 returned 1329 (the default horizon) instead of the
+  closed-form 224. When the simulation is cut short, the search now halves
+  its horizon until it is not, down to no less than the age at which the
+  baseline survival is 1e-10, and that example finds 219 (seed 0, the
+  default 1000 simulations). The warnings of
+  the discarded simulations are dropped, and an optimum on the horizon now
+  warns that the cost rate is still falling there (and whether raising
+  `max_interval` could help), where the horizon used to be returned in
+  silence.
+- **`NonRepairable` got the cycle length and survival of a non-parametric
+  lifetime wrong.** `avg_replacement_time` integrated from the estimate's
+  first time point instead of age 0 and stopped at the last time point below
+  `t`, and the survival function was linearly extrapolated beyond the data,
+  where it went negative. For a Kaplan-Meier fit to failures at 10, 20, 30
+  and 40, the cycle length to age 25 came out as 5 instead of 17.19, and the
+  search returned 21.6 with a policy cost rate of 0.63, where the optimum is
+  20 at 0.2. The survival function is now linear between the estimate's time
+  points, from 1 at age 0, and held at its last value beyond them (as
+  surpyval's own step function is); the cycle length is its exact integral,
+  and the search uses the same exact integral from age 0, so the policy's
+  cost rate agrees with it.
+- **Missing costs raised different errors in `NonRepairable`.** `cost_rate`
+  and `find_optimal_replacement()` raised `AttributeError` and
+  `optimal_replacement_policy()` `ValueError`; all three now raise
+  `ValueError` ("costs not set"). `find_optimal_replacement()` still returns
+  `inf` without costs when preventive replacement never pays.
+- **Negative and non-finite costs were accepted.**
+  `NonRepairable.set_costs_planned_and_unplanned` accepted a negative planned
+  cost and NaN or infinite costs, and `Repairable.set_repair_and_overhaul_costs`
+  NaN or infinite ones; both now raise `ValueError`. (`RepairableRBD`
+  already rejected them.)
+- **`system_probability` took any `method` other than `"p"` as cut sets.** It
+  now raises `ValueError` unless `method` is `"p"` or `"c"`, as
+  `is_system_working` does, and so do the methods that pass their `method`
+  on to it (`sf`, `mean_availability`, ...).
+- **An invalid `on_infeasible_rbd` passed unnoticed on a valid diagram.**
+  `RBD` and `RepairableRBD` checked the value only when the structure was
+  invalid; every RBD class now checks it on construction. The structure
+  warning's "Strucutral" typo is corrected.
+- **`find_optimal_replacement()` ran its search twice.** A helper meant to
+  minimise the log of the cost rate duplicated the plain one, so for a
+  parametric lifetime the same search ran twice and the second result could
+  never be chosen. It now runs once, with bit-identical results (checked on
+  200 lifetime and cost combinations). `PerfectUnreliability.random`'s first
+  parameter is renamed `cls`, as it is a class method.
 - `test_non_parametric_optimal_replacement` drew its data from the unseeded
   global RNG and failed about one run in 150; it is now seeded.
 - `test_weibull_no_optimal_replacement` no longer asserts that a warning is
@@ -190,6 +402,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged and still asserted.
 
 ### Documentation
+- **Reliability allocation has a full guide section.** The design guide now
+  covers every allocation method: a table of what each needs and how it
+  picks among the allocations that meet a target, how to choose between
+  them, what they share (one mission time, independent nodes, a node as a
+  block, requirements rather than designs), and each method's uses and
+  limits, with the methods compared side by side on a series system and on a
+  redundant one. It explains why `simple_allocation` is a structural
+  allocation: it uses no component data, and with every node at 0.5 the
+  Birnbaum importance is the structural importance, so small changes follow
+  each node's weight times its structural importance.
+- **Long chains in series are a documented known limit.** Finding the path
+  sets is recursive, so building an RBD with a chain of about a thousand or
+  more nodes in series exceeds Python's default recursion limit; the
+  performance section now says so, with the workaround
+  (`sys.setrecursionlimit(10_000)` handles chains of several thousand nodes).
+- **The documentation is rewritten for complete coverage.**
+  - **The user guide** is now eleven pages, one per task: building an RBD,
+    reliability, importance measures, condition-based evaluation, redundancy
+    models, common-cause failures, repairable systems, costs, design and
+    allocation, maintenance policies, and saving/reproducibility/performance.
+    Every public capability is covered, with the arguments it takes, what it
+    returns and its limits, including ones the old guide never mentioned:
+    - repeated components (one component drawn in several places);
+    - the structure check, irrelevant nodes and all path sets;
+    - density, hazard and per-node values;
+    - the simulated criticality measures;
+    - nested repairable RBDs, and stepping a simulation by hand;
+    - the reliability-allocation helpers.
+  - **Concepts** gains the theory of lifetimes by simulation, standby and
+    repeated nodes, availability (renewal, the frequency formula, MUT/MDT,
+    the simulation and its criticality measures), costs, allocation, and the
+    maintenance models.
+  - **The tutorial** now runs end to end, including the fits, and adds steps
+    on pricing redundancy and on the cost of the repairable skid. The home
+    page maps every capability to its guide page.
+  - **The API reference** now includes `FailureLimitPolicy` and
+    `minimal_repair_time_to_nth_failure`.
+- **Every public class, method and property has a complete numpy-style
+  docstring**, with parameters, returns, errors and examples, run as
+  doctests.
+- **The docs are now tested.** `test_docs_examples.py` runs every code block
+  on every page and checks each number quoted in a `# -> value` comment
+  against the code. `test_api_docstrings.py` requires every public member to
+  have a docstring that documents each of its parameters. The strict docs
+  build now also fails on broken links and anchors.
+- **Stale statements are corrected.** The tutorial's field-data snippets did
+  not run, and several guide examples used undefined names. The
+  performance entry above overstated which systems no longer hit the
+  recursion limit.
 - The common-cause (CCF) docs now state the models' assumption: they are the
   PRA basic-event models, which split each member's failure *probability*, and
   hold while that probability is small (a mission or proof-test interval, not

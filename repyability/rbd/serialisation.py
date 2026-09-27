@@ -161,6 +161,17 @@ def deserialise_model(d: dict) -> Any:
     raise ValueError(f"Unknown model kind {kind!r}.")
 
 
+def _node_name(name: Any) -> Any:
+    """A node name as read back from a document.
+
+    JSON has no tuples, so a tuple node name comes back as a list. Node names
+    are hashable and a list is not, so any list must have been a tuple.
+    """
+    if isinstance(name, list):
+        return tuple(_node_name(part) for part in name)
+    return name
+
+
 def _serialise_reliability_value(node, value, all_nodes) -> dict:
     # A repeated node's value is the name of the node it repeats, not a model.
     if value in all_nodes:
@@ -170,7 +181,7 @@ def _serialise_reliability_value(node, value, all_nodes) -> dict:
 
 def _deserialise_reliability_value(d: dict) -> Any:
     if d.get("kind") == "repeat_of":
-        return d["node"]
+        return _node_name(d["node"])
     return deserialise_model(d)
 
 
@@ -229,7 +240,9 @@ def _k_to_list(k):
 
 
 def _k_from_list(k_list):
-    return None if not k_list else {e["node"]: e["k"] for e in k_list}
+    if not k_list:
+        return None
+    return {_node_name(e["node"]): e["k"] for e in k_list}
 
 
 def _ccf_to_list(ccf_groups):
@@ -266,7 +279,8 @@ def _ccf_from_list(ccf_list):
             model = MGL(*model_dict["letters"])
         else:
             raise ValueError(f"Unknown CCF model kind {kind!r}.")
-        groups.append(CCFGroup(entry["members"], model))
+        members = [_node_name(m) for m in entry["members"]]
+        groups.append(CCFGroup(members, model))
     return groups
 
 
@@ -308,16 +322,16 @@ def rbd_from_dict(d: dict) -> RBD:
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     rbd_type = d["type"]
-    edges = [tuple(e) for e in d["edges"]]
+    edges = [tuple(_node_name(n) for n in e) for e in d["edges"]]
     common = dict(
         k=_k_from_list(d.get("k")),
-        input_node=d.get("input_node"),
-        output_node=d.get("output_node"),
+        input_node=_node_name(d.get("input_node")),
+        output_node=_node_name(d.get("output_node")),
         on_infeasible_rbd=d.get("on_infeasible_rbd", "raise"),
     )
     if rbd_type == "RepairableRBD":
         components = {
-            e["node"]: _deserialise_component(e["component"])
+            _node_name(e["node"]): _deserialise_component(e["component"])
             for e in d["components"]
         }
         return RepairableRBD(
@@ -328,7 +342,7 @@ def rbd_from_dict(d: dict) -> RBD:
         )
     if rbd_type == "NonRepairableRBD":
         reliabilities = {
-            e["node"]: _deserialise_reliability_value(e["model"])
+            _node_name(e["node"]): _deserialise_reliability_value(e["model"])
             for e in d["reliabilities"]
         }
         return NonRepairableRBD(

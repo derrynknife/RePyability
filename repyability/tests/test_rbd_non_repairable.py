@@ -1,3 +1,6 @@
+import threading
+
+import numpy as np
 import pytest
 import surpyval as surv
 
@@ -242,3 +245,31 @@ def test_repeated_node_in_cycle():
 
     with pytest.raises(ValueError):
         NonRepairableRBD(edges, reliabilities)
+
+
+def _within(seconds, func):
+    """``func()``'s result, failing (rather than hanging the suite) if it
+    does not return within ``seconds``."""
+    result: list = []
+    worker = threading.Thread(target=lambda: result.append(func()))
+    worker.daemon = True
+    worker.start()
+    worker.join(seconds)
+    assert not worker.is_alive(), f"did not return within {seconds} s"
+    return result[0]
+
+
+@pytest.mark.parametrize("path", ["batched", "event loop"])
+def test_a_system_that_cannot_fail_has_infinite_lifetimes(path):
+    # An edge joins the input straight to the output, so the system works
+    # even after every node has failed. A zero-inflated node cannot be
+    # batched, so it sends random() down the one-at-a-time event loop,
+    # which used to wait for ever for a system failure.
+    unit = surv.Weibull.from_params([100, 2])
+    if path == "event loop":
+        unit = surv.Weibull.from_params([100, 2], f0=0.1)
+    rbd = NonRepairableRBD([("s", "a"), ("a", "t"), ("s", "t")], {"a": unit})
+    assert rbd.sf(50) == 1.0
+    lifetimes = _within(20, lambda: rbd.random(5, seed=0))
+    assert np.all(np.isinf(lifetimes))
+    assert np.isinf(_within(20, lambda: rbd.mean(20, seed=0)))

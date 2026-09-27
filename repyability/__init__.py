@@ -18,6 +18,7 @@ from repyability.rbd.load_sharing_node import LoadSharingModel
 from repyability.rbd.node_state import NodeState
 from repyability.rbd.non_repairable_rbd import NonRepairableRBD
 from repyability.rbd.rbd import RBD
+from repyability.rbd.redundancy_allocation import ComponentOption
 from repyability.rbd.regression_node import RegressionNode
 from repyability.rbd.repairable_rbd import RepairableRBD
 from repyability.rbd.repeated_node import RepeatedNode
@@ -29,6 +30,7 @@ from repyability.rbd.results import (
     Criticalities,
     FailureCriticalityIndex,
     RedundancyAllocation,
+    ReliabilityRedundancyAllocation,
     RestorationCriticalityIndex,
     UpDownImportance,
 )
@@ -60,11 +62,13 @@ __all__ = [
     "MGL",
     "CCFGroup",
     "minimal_repair_time_to_nth_failure",
+    "ComponentOption",
     # Result types
     "AvailabilityResult",
     "ConfidenceInterval",
     "CostResult",
     "RedundancyAllocation",
+    "ReliabilityRedundancyAllocation",
     "Criticalities",
     "UpDownImportance",
     "FailureCriticalityIndex",
