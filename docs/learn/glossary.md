@@ -159,6 +159,12 @@ more. It only pays for parts that wear out. [Lesson 8](maintenance.md)
 sum, over the minimal cut sets, of the probability that all their components
 have failed. Accurate when failures are rare. [Lesson 3](structure.md)
 
+**Reduction.** Replacing a group of blocks purely in series, purely in
+parallel, or $k$-out-of-$n$, by one equivalent block, and repeating. A
+series-parallel system reduces to a single block; RePyability reduces every
+diagram as far as it goes before applying the pivotal decomposition to the
+rest. [Lessons 2](systems.md) and [3](structure.md)
+
 **Redundancy allocation.** Choosing how many redundant copies of each
 component to fit, to maximise reliability within a budget or to meet a
 target at least cost. [Lesson 9](design.md)

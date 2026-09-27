@@ -40,14 +40,31 @@ group).
 ### How the system quantity is computed
 
 Given each node's reliability, the system reliability is computed
-**exactly**, not by simulation. RePyability evaluates the probability that at
-least one path set is satisfied (or, equivalently with `method="c"`, that no
-cut set is), by a pivotal (Shannon) decomposition over the sets. The
-decomposition depends only on the structure, so it is worked out once per
+**exactly**, not by simulation, in two stages.
+
+1. **Reduction.** The diagram is reduced to *modules*: a series chain (a
+   node whose only successor has it as its only predecessor), a parallel
+   group (nodes with the same predecessors and successors, feeding nodes
+   that need one working input) and a *k*-out-of-*n* group (all the inputs
+   of a node with `k > 1`, when they share their own inputs) each become one
+   block, with the closed forms `R = ∏ R_i`, `R = 1 − ∏ (1 − R_i)` and a sum
+   over how many members work. A node that its own input bypasses by a
+   direct edge is dropped, as it is irrelevant. This repeats until nothing
+   more reduces; a series-parallel diagram becomes a single module.
+2. **Pivotal decomposition.** Whatever is left, the *core* (a bridge, a
+   shared node), is evaluated from its minimal path sets by a pivotal
+   (Shannon) decomposition, over its modules and nodes. Only the core pays
+   the combinatorial price.
+
+Both stages depend only on the structure, so they are worked out once per
 RBD and replayed for every evaluation: repeated evaluations (arrays of times,
 importance measures, allocation searches) cost little more than arithmetic.
-The two methods return the same value; the path-set method is the default
-because it does not need the cut sets.
+A series-parallel diagram is never expanded into its path sets, however many
+it has: thirty duplicated stages in series have `2^30` of them, and are
+evaluated in milliseconds. With `method="c"` the probability that the system
+fails is computed instead, and its complement returned; the two methods give
+the same value. Every step is a sum of products of node probabilities and
+their complements, so both keep their full relative precision.
 
 The identity that drives the decomposition, and the importance measures, is
 **pivotal decomposition** around any node *A*:
@@ -74,8 +91,11 @@ is
 T_sys = max over minimal path sets P of ( min over i in P of T_i )
 ```
 
-`random()` draws each component's lifetime and applies this rule;
-`mean_time_to_failure()` is the average of many such lifetimes. By the central
+`random()` draws each component's lifetime and applies this rule, through the
+modules (a series module fails at its first failure, a parallel one at its
+last, a *k*-out-of-*n* one when fewer than `k` are left) so that the path sets
+are only needed for the core; `mean_time_to_failure()` is the average of many
+such lifetimes. By the central
 limit theorem the average is approximately normal with standard error
 `s / √n` (the sample standard deviation over the square root of the number of
 samples), which gives `mean_time_to_failure_interval()`. The mean is estimated

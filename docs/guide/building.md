@@ -232,7 +232,9 @@ custom analyses.
   function: given `{node: True/False}` for every node, is the system up?
 - `system_probability(node_probabilities, method="p")` is the exact engine:
   given each node's probability of working (a number or an array, all the
-  same length), it returns the probability the system works.
+  same length), it returns the probability the system works. It reduces the
+  series, parallel and *k*-out-of-*n* parts to closed forms and decomposes
+  only the rest (see [Concepts](../concepts.md#how-the-system-quantity-is-computed)).
 - `path_set_probabilities(node_probabilities)` returns an array holding, for
   each minimal path set, the product of its members' probabilities. The
   entries are not labelled and come in no fixed order; pair them with the

@@ -11,7 +11,7 @@
     - why path probabilities cannot be added, and the **rare-event
       approximation** that safety analysts use instead;
     - the **pivotal decomposition**, and how RePyability builds its exact
-      engine on it.
+      engine on it, after reducing the series and parallel parts.
 
     **Before you start:** [Lesson 2](systems.md) (series, parallel and the
     reduction of series-parallel systems). About 30 minutes.
@@ -280,10 +280,22 @@ importance.
 
 ## How RePyability computes exactly
 
-RePyability's engine applies the pivotal decomposition over and over, to the
-minimal path sets:
+RePyability's engine works in two stages.
 
-1. Pick the component that appears in the most path sets, and split into two
+**First, it reduces what it can.** Any series chain, parallel group or
+$k$-out-of-$n$ group of blocks is replaced by one block, whose reliability
+comes from the formulas of [Lesson 2](systems.md): $p_1 p_2 \cdots$ in
+series, $1 - q_1 q_2 \cdots$ in parallel. The new blocks can form new chains
+and groups, so this repeats until nothing more can be reduced, exactly as you
+reduced the cooling circuit by hand in Lesson 2. A series-parallel diagram,
+however large, reduces to a single block.
+
+**Then it pivots on what is left.** The bridge does not reduce at all: the
+cross-tie `e` joins the two lines, so no two of its blocks are simply in
+series or in parallel. For such a *core* the engine applies the pivotal
+decomposition over and over, to the core's minimal path sets:
+
+1. Pick the block that appears in the most path sets, and split into two
    cases.
 2. If it works, remove it from every path set that contains it (it no longer
    needs to be satisfied). If it has failed, delete every path set that
@@ -293,11 +305,13 @@ minimal path sets:
    failed (probability 0).
 
 Many branches of this tree lead to the same sub-problem, and the engine
-solves each one only once and reuses its answer. The whole decomposition
-depends only on the diagram, not on the probabilities, so it is worked out
-once per RBD and then replayed for any probabilities: every time in an array,
-every importance measure, every step of an allocation search. The result is
-exact, with no approximation and no simulation.
+solves each one only once and reuses its answer. When a core sits inside a
+larger diagram, its blocks may themselves be reduced groups, and the rest of
+the diagram is reduced around it. Both stages depend only on the diagram,
+not on the probabilities, so they are worked out once per RBD and then
+replayed for any probabilities: every time in an array, every importance
+measure, every step of an allocation search. The result is exact, with no
+approximation and no simulation.
 
 You can hand the engine any component probabilities directly:
 
@@ -307,16 +321,37 @@ bridge.system_probability({"a": 0.9, "b": 0.9, "c": 0.9, "d": 0.9, "e": 0.9})
 bridge.system_probability({"a": 0.95, "b": 0.8, "c": 0.9, "d": 0.99, "e": 0.5})[0]   # -> 0.979425
 ```
 
-The same computation can run over the minimal cut sets with the components'
-unreliabilities (`method="c"`); the two give the same value.
+With `method="c"` the same computation gives the probability that the
+system fails, and returns its complement; the two give the same value.
+
+Reduction is what keeps large redundant plants cheap. Thirty stages in
+series, each a duplicated pair of units, have $2^{30}$ (over a billion)
+minimal path sets, one for each way of choosing a unit from every stage. The
+diagram reduces to a single block, so the engine never lists them:
+
+```python
+stages = 30
+edges, models, previous = [], {}, ["in"]
+for i in range(stages):
+    pair = [f"a{i}", f"b{i}"]
+    edges += [(p, unit) for p in previous for unit in pair]   # each stage feeds the next
+    models.update({unit: fail(0.1) for unit in pair})
+    previous = pair
+edges += [(p, "out") for p in previous]
+plant = NonRepairableRBD(edges, models)
+plant.sf()                    # -> 0.7397
+(1 - 0.1**2) ** stages        # -> 0.7397   each stage fails only if both units fail
+2**stages                     # -> 1073741824   minimal path sets, never listed
+```
 
 !!! note "What exactness costs"
-    The engine's work grows with the number of minimal path sets and how
-    they overlap, not with $2^n$. For most real diagrams that is modest:
-    hundreds of components in series or in parallel are routine. Densely
-    meshed structures are the hard case, because their path sets multiply. A
-    chain of $k$ bridges in series has $4^k$ minimal path sets (4, 16, 64,
-    ...), so long chains of meshes become expensive to evaluate exactly. The
+    Reducing is cheap, so series-parallel diagrams of any size are
+    evaluated at once. The work is in the core: it grows with the number of
+    the core's minimal path sets and how they overlap, not with $2^n$.
+    Densely meshed structures are the hard case, because nothing in them
+    reduces and their path sets multiply. A chain of $k$ bridges in series
+    has $4^k$ minimal path sets (4, 16, 64, ...), so long chains of meshes
+    become expensive to evaluate exactly. The
     [performance notes](../guide/saving.md#performance) in the guide say
     more.
 
@@ -351,8 +386,11 @@ unreliabilities (`method="c"`); the two give the same value.
     - The pivotal decomposition,
       $R = p_i R(i \text{ works}) + q_i R(i \text{ failed})$, splits any
       system into two simpler ones.
-    - RePyability applies it recursively to the path sets, reusing repeated
-      sub-problems, and computes every system reliability exactly.
+    - RePyability first reduces every series, parallel and $k$-out-of-$n$
+      group to one block, then applies the pivotal decomposition to the
+      path sets of whatever is left, reusing repeated sub-problems. Every
+      system reliability is exact, and series-parallel diagrams of any size
+      are fast.
 
 ## Exercises
 
@@ -424,9 +462,10 @@ components? Why is the exact engine not limited in the same way?
 
 ??? success "Answer"
     $2^{40} \approx 1.1 \times 10^{12}$ states. The engine never lists
-    states: it pivots on components and works on the path sets, whose
-    number depends on the structure. A series or parallel system of 40
-    components has 1 or 40 path sets, and is solved instantly.
+    states: it reduces the series and parallel parts to single blocks, and
+    pivots only on what is left, working on its path sets, whose number
+    depends on the structure. A series or parallel system of 40 components
+    reduces to one block, and is solved instantly.
 
     ```python
     2**40   # -> 1099511627776

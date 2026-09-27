@@ -216,6 +216,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ExactEventTime`).
 
 ### Changed
+- **Series–parallel (modular) reduction before exact evaluation, so large
+  redundant diagrams stay fast (closes #83).** The exact engine used to work
+  from every minimal path set, which multiply with redundancy: `n`
+  duplicated stages in series have `2 ** n`. On construction the diagram is
+  now reduced to modules, each with a closed form, until nothing more
+  reduces: series chains, parallel groups (nodes sharing their predecessors,
+  successors and `k`), k-out-of-n groups (all the inputs of a voting node,
+  when they share their own inputs) and nodes that a direct edge bypasses
+  (irrelevant, so left out). Only what is left, the part that is not
+  series-parallel (a bridge, a cross-tie), is evaluated from its minimal
+  path sets by the Shannon decomposition, over modules and nodes, and a
+  series-parallel diagram reduces to a single module and never needs its
+  path sets. Fourteen duplicated Weibull stages in series (16,384 path sets)
+  took 19 s to build, 11 s for the first `sf` over 400 times and 2 s for
+  the six importance measures at one time; each now takes a few
+  milliseconds, the six measures over all 400 times about 0.03 s, and
+  thirty stages (over 10^9 path sets) evaluate exactly just as fast.
+  Everything built on the engine benefits: `sf`/`ff`, the repairable
+  closed forms, every importance measure (still per original component),
+  redundancy and reliability allocation, `random`/`mean` (a module's
+  lifetime is the min, max or k-th longest of its members'), and
+  `get_min_cut_sets`, now built from the modules. The structure function
+  that simulations evaluate at every event is compiled to straight-line
+  Python, about twice as fast on small diagrams too (a pumps-and-valve
+  availability simulation runs 15% faster). Every probability is computed
+  with its complement as sums of products, so both keep their full relative
+  precision; `method="c"` now computes the unreliability by the same
+  decomposition rather than over the minimal cut sets. `get_min_path_sets`
+  expands the modules on first use instead of searching on construction, so
+  a long chain in series no longer reaches Python's recursion limit.
+  Diagrams with nothing to reduce (a bridge) are evaluated as before, and
+  structures that are not valid RBDs are not reduced. Results match the
+  unreduced engine to rounding: tests compare them with enumeration of every
+  state on 600 random diagrams (bridges, k-out-of-n nodes, bypasses, direct
+  edges), with the unreduced engine on nested series, parallel,
+  k-out-of-n and bridge compositions and through every public method, and
+  mutation testing confirms each reduction rule's conditions are needed.
 - **`criticality_importance` now defaults to the failure-oriented form
   (#72).** The success-oriented form it returned, `I_B(i) · p_i / P_sys`, is
   exactly 1 for every node in series with the rest of the system, however
@@ -462,6 +499,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged and still asserted.
 
 ### Documentation
+- **How the exact engine reduces a diagram.** Lesson 3 of the Learn course
+  now explains the two stages of the engine (reduce the series, parallel and
+  k-out-of-n parts, then pivot on what is left) with a thirty-stage plant
+  that has over a billion path sets yet is evaluated instantly, and Lesson 2
+  no longer says the library does not reduce diagrams. The concepts page,
+  the performance notes (the recursion limit now applies only to the part of
+  a diagram that does not reduce), the building and guide index pages and
+  the glossary describe the reduction.
 - **Learn: a short course in system reliability engineering.** A new
   section of nine lessons teaches the ideas behind the library from first
   principles: lifetimes (reliability, hazard, MTTF, the exponential and the

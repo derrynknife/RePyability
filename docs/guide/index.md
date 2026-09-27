@@ -50,9 +50,11 @@ failed. An unknown node, the input or output node, or a node named in both
 raises `ValueError` rather than being ignored.
 
 **Path sets or cut sets.** Exact system quantities accept
-`method="p"` (minimal path sets, the default) or `method="c"` (minimal cut
-sets). Both are exact and give the same answer; the path-set route is the
-default because it does not need the cut sets.
+`method="p"` (the default) or `method="c"`: whether the engine computes the
+probability that the system works, or that it fails and returns the
+complement. Both are exact and give the same answer. (In `is_system_working`
+they choose whether the part of the diagram that is not series-parallel is
+checked through its minimal path sets or cut sets.)
 
 **Seeds.** Every Monte-Carlo method takes a `seed`. surpyval samples from
 numpy's global random number generator, so a seed is applied to it for the

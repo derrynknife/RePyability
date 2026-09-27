@@ -106,16 +106,22 @@ results do not depend on which internal path a model takes.
 
 ## Performance
 
-- **The exact engine is fast and cached.** It decomposes the system once per
-  RBD and replays the decomposition for every evaluation, so importance
-  measures, allocation searches and array-valued times are cheap after the
-  first call. Minimal cut sets are also derived once per RBD.
-- **Structure size.** The number of minimal path and cut sets can grow very
-  fast with the size and meshing of a diagram; systems of a few hundred
-  nodes in series or parallel are routine, and wide ones of over a thousand
-  work, while densely meshed diagrams get expensive sooner (but see the
-  known limit below for long chains). `get_all_path_sets()` enumerates every
-  simple path and is the first thing to avoid on a large diagram.
+- **The exact engine is fast and cached.** On construction it reduces the
+  diagram's series, parallel and *k*-out-of-*n* parts to modules with closed
+  forms, and decomposes whatever is left once; every evaluation replays the
+  result, so importance measures, allocation searches and array-valued times
+  are cheap. Minimal path and cut sets are derived once per RBD, on first
+  use.
+- **Structure size.** Series-parallel diagrams stay fast at any size: they
+  reduce to a single module, and their path sets are never listed. Thirty
+  duplicated stages in series have `2**30` minimal path sets, yet `sf` over
+  400 times takes milliseconds. The cost is in the part that does not reduce
+  (bridges, cross-ties, shared nodes): it grows with that part's number of
+  minimal path sets, which multiplies with meshing, so a long chain of
+  bridges gets expensive. Only `get_min_path_sets()`, `path_set_probabilities`
+  and `fussell_vesely(fv_type="p")` list every path set, and
+  `get_all_path_sets()` every simple path: avoid them on large redundant
+  diagrams.
 - **Simulations** are vectorised where the models allow it: `mean()` of a
   system of parametric components draws 100 000 lifetimes in well under a
   second. Availability simulations step through events, so their cost grows
@@ -124,11 +130,12 @@ results do not depend on which internal path a model takes.
   (`mean_time_to_failure_interval`, `availability_interval`,
   `CostResult.mean_interval`) to choose `N`.
 
-!!! note "Known limit: long chains in series"
-    The minimal path sets are found recursively, one level per node along
-    the longest path, so building an RBD with a chain of about a thousand or
-    more nodes in series exceeds Python's default recursion limit of 1,000
-    and raises
+!!! note "Known limit: long paths through a mesh"
+    The minimal path sets of the part of a diagram that does not reduce are
+    found recursively, one level per node along its longest path, so a
+    non-series-parallel part with a path of about a thousand or more nodes
+    exceeds Python's default recursion limit of 1,000 and raises
     `RecursionError`. Raise the limit before building such an RBD:
-    `sys.setrecursionlimit(10_000)` handles chains of several thousand nodes.
-    Wide systems (many nodes in parallel) are not affected.
+    `sys.setrecursionlimit(10_000)` handles paths of several thousand nodes.
+    Series chains and parallel groups are reduced first, so long chains and
+    wide systems are not affected.

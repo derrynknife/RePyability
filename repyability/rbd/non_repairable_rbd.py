@@ -44,7 +44,7 @@ from .ccf import CCFGroup
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .load_sharing_node import LoadSharingModel
 from .node_state import NodeState
-from .rbd import RBD, _check_on_infeasible_rbd, _shannon_value_and_gradient
+from .rbd import RBD, _check_on_infeasible_rbd
 from .redundancy_allocation import ComponentOption, active_unreliability
 from .repeated_node import RepeatedNode
 from .repeated_standby_node import RepeatedStandbyNode
@@ -1511,10 +1511,11 @@ class NonRepairableRBD(RBD):
             None if node_ways == ("active",) else strategies[i]
             for i, node_ways in enumerate(ways)
         ]
-        in_series = method == "exact" and all(
-            set(nodes) <= set(path_set)
-            for path_set in self.get_min_path_sets(include_in_out_nodes=False)
-        )
+        # Whether every node is in series with the rest (alone a cut set).
+        in_series = False
+        if method == "exact":
+            cut_sets = self.get_min_cut_sets()
+            in_series = all(frozenset([node]) in cut_sets for node in nodes)
         return SimpleNamespace(
             nodes=nodes,
             options=options,
@@ -2297,14 +2298,14 @@ class NonRepairableRBD(RBD):
                 x, set(), set()
             ).items()
         }
-        plan = self._shannon_plan("p")
+        structure = self._decomposition()
 
         def system(reliabilities):
             p = dict(base)
             q = {node: 1.0 - value for node, value in base.items()}
             for node, value in zip(nodes, reliabilities):
                 p[node], q[node] = value, 1.0 - value
-            value, gradient = _shannon_value_and_gradient(plan, p, q)
+            value, _, gradient = structure.value_and_gradient(p, q)
             return value, tuple(gradient.get(node, 0.0) for node in nodes)
 
         reliability, units, components = (
@@ -2901,13 +2902,15 @@ class NonRepairableRBD(RBD):
         ``random``, and the system fails when its last working minimal path
         set breaks: each sample is the maximum, over the minimal path sets,
         of the minimum lifetime of the path set's members (k-out-of-n and
-        repeated nodes are handled through the path sets). When every
+        repeated nodes are accounted for). When every
         node's draws can be replayed as one block (e.g. surpyval parametric
         distributions, and composite nodes built from them), all samples
         are computed at once; otherwise they are simulated one at a time by
         failing nodes in time order until the system fails. Both paths draw
         the same random numbers in the same order, so they give identical
-        results.
+        results. Either way the system is worked out through the diagram's
+        modules, without listing its path sets, so a large redundant diagram
+        is sampled about as fast as a small one.
 
         Common-cause groups are ignored, without a warning: their
         basic-event model assumes a small failure probability, while a
@@ -2979,9 +2982,13 @@ class NonRepairableRBD(RBD):
 
         A coherent system fails when its last intact path set breaks, so its
         lifetime is the max over minimal path sets of the min of their
-        members' lifetimes: the same value the event loop finds. A sample in
-        which any node drew NaN comes out NaN, so that the caller falls back
-        to the event loop, which orders NaN times its own way.
+        members' lifetimes: the same value the event loop finds. It is
+        worked out through the diagram's modules, without listing the path
+        sets: a series module fails at its members' first failure, a
+        parallel one at their last, and a k-out-of-n one at the failure that
+        leaves fewer than ``k`` working. A sample in which any node drew NaN
+        comes out NaN, so that the caller falls back to the event loop,
+        which orders NaN times its own way.
         """
         nodes = list(self.G.nodes)
         samplers: list[RowSampler] = []
@@ -2990,7 +2997,7 @@ class NonRepairableRBD(RBD):
             if node_sampler is None:
                 return None
             samplers.append(node_sampler)
-        path_sets = self.get_min_path_sets(include_in_out_nodes=False)
+        structure = self._decomposition()
 
         def draw(u):
             size = len(u)
@@ -2999,12 +3006,7 @@ class NonRepairableRBD(RBD):
                 end = start + sampler.width
                 lifetimes[node] = sampler.draw(u[:, start:end])
                 start = end
-            out = np.full(size, -np.inf)
-            for path_set in path_sets:
-                path_life = np.full(size, np.inf)
-                for node in path_set:
-                    path_life = np.minimum(path_life, lifetimes[node])
-                out = np.maximum(out, path_life)
+            out = np.array(structure.lifetime(lifetimes, size), dtype=float)
             for lifetime in lifetimes.values():
                 out[np.isnan(lifetime)] = np.nan
             return out

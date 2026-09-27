@@ -267,10 +267,9 @@ rbd.ff()   # -> 0.0595
 
 Each edge is one arrow of the diagram: the two edges leaving `"in"` start
 two branches, the two entering `"valve"` join them, and the edge out of the
-valve puts it in series with everything before. RePyability does not reduce
-the diagram: it computes the probability that at least one path works,
-exactly, by a method that also handles diagrams that cannot be reduced
-([Lesson 3](structure.md)).
+valve puts it in series with everything before. RePyability reduces the
+diagram just as you did, and evaluates any part that cannot be reduced by a
+method that handles every diagram exactly ([Lesson 3](structure.md)).
 
 ## k-out-of-n: enough of them must work
 
