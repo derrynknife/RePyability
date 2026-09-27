@@ -435,7 +435,10 @@ with imperfect switching they need not, and choosing the strategy node by node
 is part of the optimisation (Coit, 2003). Both exact methods work on each
 node's list of designs, less those another design of the node beats (using no
 more of any resource while being at least as reliable), which can never be
-part of a better system.
+part of a better system. Instead of one optimum, the whole trade-off can be
+had: the designs no other beats on every resource and on reliability (the
+Pareto front), which the dynamic program yields directly and which is found
+by enumeration on other structures.
 
 When every costed node is in series with the rest of the system (it lies on
 every minimal path), the reliability factorises,

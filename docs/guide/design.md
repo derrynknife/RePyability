@@ -52,6 +52,41 @@ The result is a [`RedundancyAllocation`][repyability.RedundancyAllocation]
 (`units`, `reliability`, `cost`, `method`, and `resources`, the totals of
 every resource used).
 
+### The whole trade-off
+
+A budget or a target gives one design. `redundancy_front` gives every design
+that no other beats, being no more expensive (in every resource) while at
+least as reliable: the Pareto front of cost against reliability, so a design
+can be chosen by looking at the whole curve rather than guessing a budget.
+It takes the same arguments as `allocate_redundancy` (except `target`), and
+the budget, or `max_units`, bounds it.
+
+```python
+front = line.redundancy_front(costs, budget=50_000, t=5000)
+len(front)       # -> 41   designs from 16,900 (one of each) up
+[(d.cost, round(d.reliability, 5)) for d in front[26:33]]
+# [(37800.0, 0.93838), (38700.0, 0.94998), (39600.0, 0.95134),
+#  (40500.0, 0.9515), (41400.0, 0.95152), (41800.0, 0.96549),
+#  (42700.0, 0.97742)]
+```
+
+Each point is a `RedundancyAllocation` (`units`, `reliability`, `cost`,
+`resources`, …). The curve shows where money stops buying reliability: past
+39,600 two more valves add 0.0002, while 2,200 more buys a fourth pump (in
+place of two valves) and 0.0142. The best design within any budget, and the
+cheapest reaching any
+target, are on it:
+
+```python
+next(d for d in front if d.reliability >= 0.95).units
+# {'pump': 3, 'valve': 4, 'ctrl': 2}   as allocate_redundancy(target=0.95)
+```
+
+With several resources the front holds the best reliability for every
+combination of them. It is exact: on a series of costed nodes it comes from
+the dynamic program, and on other structures from evaluating every design
+within the budget (with the same size limit as the exact search).
+
 ### Options
 
 - **`t`** is the mission time at which reliability is scored. It is not

@@ -968,6 +968,106 @@ def exact_min_cost(
     return reliability, cost, tuple(menus[i][j] for i, j in enumerate(found))
 
 
+def exact_front(
+    evaluate: Evaluate,
+    menus: Sequence[Sequence[Design]],
+    budget: Union[None, float, Sequence[float]] = None,
+    primary: int = 0,
+) -> List[Allocation]:
+    """Every non-dominated allocation within ``budget``: the trade-off
+    between what the allocation uses and its reliability.
+
+    An allocation is dominated when another uses no more of any resource
+    and is at least as reliable; of allocations using the same and exactly
+    as reliable, one is kept. Every combination of node designs within the
+    budget is evaluated (``series_front`` is the fast alternative when the
+    costed nodes are in series).
+
+    Parameters
+    ----------
+    evaluate : callable
+        Maps a tuple of node reliabilities (in node order) to the system
+        reliability.
+    menus : Sequence
+        Each node's designs, from ``node_designs``.
+    budget : float or Sequence[float], optional
+        Limits on the resources (one per resource, ``math.inf`` for none).
+    primary : int, optional
+        The resource to sort by and whose total is returned (the first, by
+        default).
+
+    Returns
+    -------
+    list of tuple
+        ``(reliability, cost, designs)`` for each non-dominated allocation,
+        by increasing use of the primary resource (the most reliable first
+        among equals).
+
+    Raises
+    ------
+    ValueError
+        If there are more than ``EXACT_SEARCH_LIMIT`` (500,000) allocations
+        to examine; tighten the caps or the budget.
+
+    Examples
+    --------
+    Two components in series, 90% and 80% reliable, one cost unit each:
+
+    >>> from repyability.rbd.redundancy_allocation import (
+    ...     exact_front,
+    ...     node_designs,
+    ... )
+    >>> menus = [node_designs([(p, 1)], 3) for p in (0.9, 0.8)]
+    >>> def evaluate(reliabilities):
+    ...     return reliabilities[0] * reliabilities[1]
+    >>> for reliability, cost, designs in exact_front(evaluate, menus, 4):
+    ...     print(cost, [d.counts for d in designs], round(reliability, 4))
+    2.0 [(1,), (1,)] 0.72
+    3.0 [(1,), (2,)] 0.864
+    4.0 [(2,), (2,)] 0.9504
+    """
+    k = len(menus)
+    m = len(menus[0][0].use)
+    limits = _as_limits(budget, m)
+    slacks = [_slack(limit) for limit in limits]
+    reserve = _reserve(menus, m)
+    picks = [0] * k
+    found: list = []
+    examined = 0
+
+    def visit(i: int, remaining: List[float]) -> None:
+        nonlocal examined
+        if i == k:
+            examined += 1
+            _check_search_size(examined)
+            designs = tuple(menus[n][picks[n]] for n in range(k))
+            reliability = evaluate(tuple(d.reliability for d in designs))
+            use = tuple(math.fsum(d.use[r] for d in designs) for r in range(m))
+            found.append((use, reliability, designs))
+            return
+        for j, design in enumerate(menus[i]):
+            left = [remaining[r] - design.use[r] for r in range(m)]
+            if any(left[r] + slacks[r] < reserve[i + 1][r] for r in range(m)):
+                continue
+            picks[i] = j
+            visit(i + 1, left)
+        picks[i] = 0
+
+    visit(0, list(limits))
+    return _sorted_front(found, primary)
+
+
+def _sorted_front(found: list, primary: int = 0) -> List[Allocation]:
+    # The non-dominated (use, reliability, designs), as allocations by
+    # increasing use of the primary resource.
+    front = _pareto_front(found)
+    front.sort(key=lambda f: (f[0][primary], -f[1]))
+    return [
+        (reliability, use[primary], designs)
+        for use, reliability, designs in front
+    ]
+
+
 def _front_indices(use: np.ndarray, value: np.ndarray) -> np.ndarray:
     """The indices of the states that no other state dominates, in no
     particular order: state ``i`` uses ``use[i]`` (lower is better in every

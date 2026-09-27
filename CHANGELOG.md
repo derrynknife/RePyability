@@ -76,6 +76,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Erlang and Poisson sums, and the allocations — including a choice that keeps
   some nodes active and gives others cold spares under imperfect switching —
   against an independent brute force.
+- **The cost-reliability trade-off (`NonRepairableRBD.redundancy_front`,
+  closes #80).** Returns every design that no other beats by using no more of
+  every resource while being at least as reliable (the Pareto front of
+  multi-objective redundancy allocation; Taboada et al., 2007), as a list of
+  `RedundancyAllocation` by increasing cost, taking the same arguments as
+  `allocate_redundancy` except `target`. Exact: from the dynamic program when
+  the costed nodes are in series, by evaluating every design within the budget
+  otherwise (`redundancy_allocation.exact_front`). Tests check it against the
+  non-dominated set of every allocation, with one and two resources and with
+  types and strategies, on series systems and bridge networks, and every point
+  against `allocate_redundancy` in both forms.
 - **Cost of a repairable system (`expected_cost_rate`).** `RepairableRBD`
   components may now carry `repair_cost` and `replace_cost` (charged per
   corrective action) and an optional `downtime_cost` rate, alongside a

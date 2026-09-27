@@ -12,6 +12,7 @@ import warnings
 from copy import copy
 from dataclasses import dataclass, field
 from queue import PriorityQueue
+from types import SimpleNamespace
 from typing import (
     Any,
     Callable,
@@ -1043,6 +1044,189 @@ class NonRepairableRBD(RBD):
         """
         if budget is None and target is None:
             raise ValueError("Give a budget, a target, or both.")
+        problem = self._redundancy_problem(
+            costs,
+            budget,
+            target,
+            minimise,
+            t,
+            max_units,
+            required,
+            strategy,
+            switching_probability,
+            mixing,
+            method,
+        )
+        nodes, kinds, caps, limits = (
+            problem.nodes,
+            problem.kinds,
+            problem.caps,
+            problem.limits,
+        )
+        primary, fewest, ways = problem.primary, problem.fewest, problem.ways
+        evaluate, within, menus = (
+            problem.evaluate,
+            problem.within,
+            problem.menus,
+        )
+        greedy_strategies = problem.greedy_strategies
+        found: Optional[tuple]
+        if target is None:
+            if method == "greedy":
+                found = redundancy_allocation.greedy(
+                    evaluate,
+                    kinds,
+                    caps,
+                    budget=limits,
+                    primary=primary,
+                    mixing=mixing,
+                    fewest=fewest,
+                    strategies=greedy_strategies,
+                )
+                if not within(found[2]):
+                    raise ValueError(
+                        "The greedy search could not start within the "
+                        "budget (one copy of each node, of its cheapest "
+                        "option); use method='exact'."
+                    )
+            elif problem.in_series:
+                found = self._series_redundancy(
+                    nodes, menus(), limits, problem.base, evaluate, primary
+                )
+            else:
+                found = redundancy_allocation.exact_max_reliability(
+                    evaluate, menus(), limits, primary
+                )
+            if found is None:
+                raise ValueError(
+                    "No allocation fits within the budget (one copy of each "
+                    "node, of some option, does not fit)."
+                )
+        else:
+            target = float(target)
+            if not (0.0 < target < 1.0):
+                raise ValueError(f"target must be in (0, 1), got {target!r}.")
+            # The best reliability any allocation can reach: every costed node
+            # at its cap of its most reliable kind (unlimited active copies of
+            # a kind that can work reach 1; cold spares are taken to).
+            ceiling = evaluate(
+                tuple(
+                    (
+                        1.0
+                        if "cold" in ways[i]
+                        else 1.0
+                        - min(
+                            (
+                                float(p == 0.0)
+                                if caps[i] == math.inf
+                                else active_unreliability(
+                                    [1.0 - p], [caps[i]], fewest[i]
+                                )
+                            )
+                            for p, _ in kinds[i]
+                        )
+                    )
+                    for i in range(len(nodes))
+                )
+            )
+            if ceiling < target:
+                raise ValueError(
+                    f"target {target:g} is unreachable: the best achievable "
+                    f"system reliability is {ceiling:.6g}"
+                    + (
+                        " within max_units."
+                        if max_units is not None
+                        else " even with unlimited copies of the costed "
+                        "nodes."
+                    )
+                )
+            limited = any(math.isfinite(limit) for limit in limits)
+            amounts, m = problem.amounts, problem.m
+            start: Optional[tuple] = redundancy_allocation.greedy(
+                evaluate,
+                kinds,
+                caps,
+                budget=limits,
+                target=target,
+                primary=primary,
+                mixing=mixing,
+                fewest=fewest,
+                strategies=greedy_strategies,
+            )
+            assert start is not None
+            if start[0] < target or not within(start[2]):
+                if method == "greedy" or not limited:
+                    raise ValueError(
+                        f"target {target:g} could not be reached: adding "
+                        "copies stopped improving the system at reliability "
+                        f"{start[0]:.6g}"
+                        + (" within the budget." if limited else ".")
+                    )
+                start = None
+                for i, node in enumerate(nodes):
+                    if caps[i] == math.inf and not all(
+                        any(
+                            a[r] > 0.0 and math.isfinite(limits[r])
+                            for r in range(m)
+                        )
+                        for a in amounts[i]
+                    ):
+                        raise ValueError(
+                            f"The greedy search could not reach target "
+                            f"{target:g} within the budget, and node {node!r} "
+                            "is not limited by it; give it a max_units."
+                        )
+            if method == "greedy":
+                found = start
+            else:
+                bound = None if start is None else start[1]
+                if problem.in_series:
+                    found = self._series_redundancy(
+                        nodes,
+                        menus(bound),
+                        limits,
+                        problem.base,
+                        evaluate,
+                        primary,
+                        target=target,
+                        bound=bound,
+                    )
+                else:
+                    found = redundancy_allocation.exact_min_cost(
+                        evaluate,
+                        menus(bound),
+                        target,
+                        bound=math.inf if bound is None else bound,
+                        budget=limits,
+                        primary=primary,
+                    )
+                if found is None:
+                    found = start
+            if found is None:
+                raise ValueError(
+                    f"target {target:g} is unreachable within the budget."
+                )
+
+        return self._redundancy_result(problem, found, method)
+
+    def _redundancy_problem(
+        self,
+        costs,
+        budget,
+        target,
+        minimise,
+        t,
+        max_units,
+        required,
+        strategy,
+        switching_probability,
+        mixing,
+        method,
+    ) -> SimpleNamespace:
+        """Check the arguments of allocate_redundancy (and
+        redundancy_front) and set up the problem the searches solve: the
+        costed nodes, their kinds and designs, the limits and the exact
+        system evaluation."""
         if method not in ("exact", "greedy"):
             raise ValueError(
                 f"method must be 'exact' or 'greedy', got {method!r}."
@@ -1325,162 +1509,55 @@ class NonRepairableRBD(RBD):
             set(nodes) <= set(path_set)
             for path_set in self.get_min_path_sets(include_in_out_nodes=False)
         )
-        found: Optional[tuple]
-        if target is None:
-            if method == "greedy":
-                found = redundancy_allocation.greedy(
-                    evaluate,
-                    kinds,
-                    caps,
-                    budget=limits,
-                    primary=primary,
-                    mixing=mixing,
-                    fewest=fewest,
-                    strategies=greedy_strategies,
-                )
-                if not within(found[2]):
-                    raise ValueError(
-                        "The greedy search could not start within the "
-                        "budget (one copy of each node, of its cheapest "
-                        "option); use method='exact'."
-                    )
-            elif in_series:
-                found = self._series_redundancy(
-                    nodes, menus(), limits, base, evaluate, primary
-                )
-            else:
-                found = redundancy_allocation.exact_max_reliability(
-                    evaluate, menus(), limits, primary
-                )
-            if found is None:
-                raise ValueError(
-                    "No allocation fits within the budget (one copy of each "
-                    "node, of some option, does not fit)."
-                )
-        else:
-            target = float(target)
-            if not (0.0 < target < 1.0):
-                raise ValueError(f"target must be in (0, 1), got {target!r}.")
-            # The best reliability any allocation can reach: every costed node
-            # at its cap of its most reliable kind (unlimited active copies of
-            # a kind that can work reach 1; cold spares are taken to).
-            ceiling = evaluate(
-                tuple(
-                    (
-                        1.0
-                        if "cold" in ways[i]
-                        else 1.0
-                        - min(
-                            (
-                                float(p == 0.0)
-                                if caps[i] == math.inf
-                                else active_unreliability(
-                                    [1.0 - p], [caps[i]], fewest[i]
-                                )
-                            )
-                            for p, _ in kinds[i]
-                        )
-                    )
-                    for i in range(len(nodes))
-                )
-            )
-            if ceiling < target:
-                raise ValueError(
-                    f"target {target:g} is unreachable: the best achievable "
-                    f"system reliability is {ceiling:.6g}"
-                    + (
-                        " within max_units."
-                        if max_units is not None
-                        else " even with unlimited copies of the costed "
-                        "nodes."
-                    )
-                )
-            limited = any(math.isfinite(limit) for limit in limits)
-            start: Optional[tuple] = redundancy_allocation.greedy(
-                evaluate,
-                kinds,
-                caps,
-                budget=limits,
-                target=target,
-                primary=primary,
-                mixing=mixing,
-                fewest=fewest,
-                strategies=greedy_strategies,
-            )
-            assert start is not None
-            if start[0] < target or not within(start[2]):
-                if method == "greedy" or not limited:
-                    raise ValueError(
-                        f"target {target:g} could not be reached: adding "
-                        "copies stopped improving the system at reliability "
-                        f"{start[0]:.6g}"
-                        + (" within the budget." if limited else ".")
-                    )
-                start = None
-                for i, node in enumerate(nodes):
-                    if caps[i] == math.inf and not all(
-                        any(
-                            a[r] > 0.0 and math.isfinite(limits[r])
-                            for r in range(m)
-                        )
-                        for a in amounts[i]
-                    ):
-                        raise ValueError(
-                            f"The greedy search could not reach target "
-                            f"{target:g} within the budget, and node {node!r} "
-                            "is not limited by it; give it a max_units."
-                        )
-            if method == "greedy":
-                found = start
-            else:
-                bound = None if start is None else start[1]
-                if in_series:
-                    found = self._series_redundancy(
-                        nodes,
-                        menus(bound),
-                        limits,
-                        base,
-                        evaluate,
-                        primary,
-                        target=target,
-                        bound=bound,
-                    )
-                else:
-                    found = redundancy_allocation.exact_min_cost(
-                        evaluate,
-                        menus(bound),
-                        target,
-                        bound=math.inf if bound is None else bound,
-                        budget=limits,
-                        primary=primary,
-                    )
-                if found is None:
-                    found = start
-            if found is None:
-                raise ValueError(
-                    f"target {target:g} is unreachable within the budget."
-                )
+        return SimpleNamespace(
+            nodes=nodes,
+            options=options,
+            resources=resources,
+            amounts=amounts,
+            m=m,
+            limits=limits,
+            primary=primary,
+            caps=caps,
+            fewest=fewest,
+            ways=ways,
+            kinds=kinds,
+            base=base,
+            evaluate=evaluate,
+            within=within,
+            menus=menus,
+            greedy_strategies=greedy_strategies,
+            in_series=in_series,
+        )
 
+    @staticmethod
+    def _redundancy_result(problem, found, method) -> RedundancyAllocation:
+        """The RedundancyAllocation of a search result."""
         reliability, _, designs = found
         counts = [d.counts for d in designs]
-        used = self._redundancy_totals(amounts, counts, m)
-        totals = dict(zip(resources, used))
+        used = NonRepairableRBD._redundancy_totals(
+            problem.amounts, counts, problem.m
+        )
+        totals = dict(zip(problem.resources, used))
         return RedundancyAllocation(
-            units={node: int(sum(c)) for node, c in zip(nodes, counts)},
+            units={
+                node: int(sum(c)) for node, c in zip(problem.nodes, counts)
+            },
             reliability=reliability,
-            cost=totals[resources[primary]],
+            cost=totals[problem.resources[problem.primary]],
             method=method,
             resources=totals,
             mix={
                 node: {
                     option.name: int(k)
-                    for option, k in zip(options[node], c)
+                    for option, k in zip(problem.options[node], c)
                     if k
                 }
-                for node, c in zip(nodes, counts)
-                if node in options
+                for node, c in zip(problem.nodes, counts)
+                if node in problem.options
             },
-            strategy={node: d.strategy for node, d in zip(nodes, designs)},
+            strategy={
+                node: d.strategy for node, d in zip(problem.nodes, designs)
+            },
         )
 
     @staticmethod
@@ -1764,22 +1841,11 @@ class NonRepairableRBD(RBD):
         """The exact optimum when every costed node is in series with the
         rest of the system, by the dynamic program of
         ``redundancy_allocation.series_front`` over each node's designs."""
-        choices = [
-            [
-                (
-                    d.use,
-                    (
-                        math.log1p(-d.unreliability)
-                        if d.unreliability < 1.0
-                        else -math.inf
-                    ),
-                )
-                for d in menu
-            ]
-            for menu in menus
-        ]
         front = redundancy_allocation.series_front(
-            choices, budget=limits, bound=bound, primary=primary
+            self._design_choices(menus),
+            budget=limits,
+            bound=bound,
+            primary=primary,
         )
         if not front:
             return None
@@ -1808,6 +1874,167 @@ class NonRepairableRBD(RBD):
             if reliability >= target:
                 return reliability, use[primary], designs
         return None
+
+    @staticmethod
+    def _design_choices(menus) -> list:
+        """Each node's designs as (use, log-reliability) alternatives for
+        the dynamic program."""
+        return [
+            [
+                (
+                    d.use,
+                    (
+                        math.log1p(-d.unreliability)
+                        if d.unreliability < 1.0
+                        else -math.inf
+                    ),
+                )
+                for d in menu
+            ]
+            for menu in menus
+        ]
+
+    def redundancy_front(
+        self,
+        costs: Dict[
+            Hashable,
+            Union[float, Dict[Hashable, float], Sequence[ComponentOption]],
+        ],
+        *,
+        budget: Union[float, Dict[Hashable, float], None] = None,
+        t: Optional[float] = None,
+        max_units: Union[int, Dict[Hashable, int], None] = None,
+        required: Union[int, Dict[Hashable, int], None] = None,
+        strategy: Union[str, Dict[Hashable, str]] = "active",
+        switching_probability: Union[float, Dict[Hashable, float]] = 1.0,
+        mixing: bool = True,
+    ) -> List[RedundancyAllocation]:
+        """The whole cost-reliability trade-off of redundancy allocation.
+
+        Where ``allocate_redundancy`` returns the one best design for a
+        budget or a target, this returns every design that no other beats
+        by using no more of every resource while being at least as reliable
+        (the Pareto front of multi-objective redundancy allocation, e.g.
+        Taboada et al., 2007). With one resource
+        it is the best reliability for each level of spending, so a design
+        can be chosen by looking at the whole curve; the best design within
+        any budget, and the cheapest meeting any target, are on it. With
+        several resources it is the best reliability for each combination
+        of them.
+
+        The front is exact: when every costed node is in series with the
+        rest of the system it comes from the dynamic program behind
+        ``allocate_redundancy``, and otherwise from evaluating every
+        combination of node designs within the budget (giving up with an
+        explanatory error beyond 500,000 of them).
+
+        Parameters
+        ----------
+        costs : dict
+            What one copy of each costed node uses, as for
+            ``allocate_redundancy``: a number, a dict of resources, or a
+            list of [`ComponentOption`][repyability.ComponentOption].
+        budget : float or dict, optional
+            Limits on the resources, as for ``allocate_redundancy``. The
+            budget or ``max_units`` must bound every node's copies.
+        t : float, optional
+            The mission time, as for ``allocate_redundancy``.
+        max_units : int or dict, optional
+            The most copies of each node, as for ``allocate_redundancy``.
+        required : int or dict, optional
+            The copies of each node that must work, as for
+            ``allocate_redundancy``.
+        strategy : str or dict, optional
+            ``"active"``, ``"cold"`` or ``"choose"``, as for
+            ``allocate_redundancy``.
+        switching_probability : float or dict, optional
+            For cold standby, as for ``allocate_redundancy``.
+        mixing : bool, optional
+            Whether a node's copies may mix types, as for
+            ``allocate_redundancy``.
+
+        Returns
+        -------
+        list of RedundancyAllocation
+            One per non-dominated design, by increasing ``cost`` (the total
+            of ``"cost"``, or of the first resource), the most reliable
+            first among equals. With one resource the reliability rises
+            along the list.
+
+        Raises
+        ------
+        ValueError
+            On invalid input, as for ``allocate_redundancy``, if a node's
+            copies are not bounded by the budget or ``max_units``, or if
+            there are too many designs to evaluate.
+        NotImplementedError
+            If the RBD has common-cause (CCF) groups.
+
+        References
+        ----------
+        H. A. Taboada, F. Baheranwala, D. W. Coit and N. Wattanapongsakorn,
+        "Practical solutions for multi-objective optimization: an
+        application to system reliability design problems", Reliability
+        Engineering & System Safety, 92(3), 314-322, 2007.
+
+        Examples
+        --------
+        Two components in series, 90% and 80% reliable, one cost unit each,
+        spending up to 5:
+
+        >>> from surpyval import FixedEventProbability
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "a"), ("a", "b"), ("b", "t")],
+        ...     {
+        ...         "a": FixedEventProbability.from_params(0.1),
+        ...         "b": FixedEventProbability.from_params(0.2),
+        ...     },
+        ... )
+        >>> front = rbd.redundancy_front({"a": 1.0, "b": 1.0}, budget=5)
+        >>> for design in front:
+        ...     print(design.cost, design.units, round(design.reliability, 4))
+        2.0 {'a': 1, 'b': 1} 0.72
+        3.0 {'a': 1, 'b': 2} 0.864
+        4.0 {'a': 2, 'b': 2} 0.9504
+        5.0 {'a': 2, 'b': 3} 0.9821
+        """
+        problem = self._redundancy_problem(
+            costs,
+            budget,
+            None,
+            None,
+            t,
+            max_units,
+            required,
+            strategy,
+            switching_probability,
+            mixing,
+            "exact",
+        )
+        menus = problem.menus()
+        if problem.in_series:
+            found = []
+            for use, _, picks in redundancy_allocation.series_front(
+                self._design_choices(menus),
+                budget=problem.limits,
+                primary=problem.primary,
+            ):
+                designs = tuple(menu[j] for menu, j in zip(menus, picks))
+                reliability = problem.evaluate(
+                    tuple(d.reliability for d in designs)
+                )
+                found.append((use, reliability, designs))
+            # The same front, ordered by the exact system reliabilities.
+            front = redundancy_allocation._sorted_front(found, problem.primary)
+        else:
+            front = redundancy_allocation.exact_front(
+                problem.evaluate, menus, problem.limits, problem.primary
+            )
+        return [
+            self._redundancy_result(problem, allocation, "exact")
+            for allocation in front
+        ]
 
     @staticmethod
     def _redundancy_caps(nodes, max_units) -> list:
