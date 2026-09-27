@@ -27,6 +27,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   independent brute force on a (non-series-parallel) bridge network, and the
   `1 - (1 - p) ** n` model against an RBD with the copies drawn out
   explicitly. RBDs with CCF groups are not yet supported.
+- **Redundancy allocation with several resources, and by dynamic programming
+  (closes #76).** What one copy of each node uses may now be a dict of
+  resources (e.g. `{"cost": 4000, "weight": 30}`) with `budget` a dict of
+  limits on any of them — the multi-constraint problem of Fyffe, Hines & Lee
+  (1968) — and a `target` may be combined with a `budget` (the cheapest design
+  that meets the target within the limits). `minimise` names the resource a
+  target minimises, and the result's new `resources` field totals every
+  resource (`cost` is the total of the minimised one). When every costed node
+  is in series with the rest of the system, `method="exact"` now solves the
+  problem by a dominance-based dynamic program over the nodes (Kettelle-style,
+  with any number of resources), so a series of many subsystems — fourteen
+  with two limits, far beyond the exhaustive search — is solved exactly in a
+  fraction of a second; other structures keep the exhaustive search. The
+  greedy heuristic measures a copy by its total share of the limits when there
+  are several. Tests check the dynamic program's final front against every
+  design, and each form against an independent brute force with one, two and
+  three resources, on series systems and on a bridge network.
 - **Cost of a repairable system (`expected_cost_rate`).** `RepairableRBD`
   components may now carry `repair_cost` and `replace_cost` (charged per
   corrective action) and an optional `downtime_cost` rate, alongside a

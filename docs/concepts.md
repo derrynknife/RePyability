@@ -419,14 +419,26 @@ exact rate.
 
 **Redundancy allocation** chooses integers `n_i ≥ 1` (copies of each costed
 node) to maximise system reliability subject to `Σ c_i n_i ≤ budget`, or to
-minimise `Σ c_i n_i` subject to reliability `≥ target`. With `n_i` active
-independent copies, node *i*'s reliability is `1 − (1 − p_i)^{n_i}`, and each
-candidate is scored by the exact engine, so the structure is arbitrary.
-Because adding a copy never lowers a coherent system's reliability, the best
-design within a budget can always be found among the designs that cannot
-afford another copy, which is what makes the exact search practical. The greedy
-alternative adds the copy with the best gain in log-reliability per unit cost
-until the budget runs out; it is fast but can stop short of the optimum.
+minimise `Σ c_i n_i` subject to reliability `≥ target`. With several
+resources (cost, weight, volume, …) each has its own limit,
+`Σ c_ij n_i ≤ B_j`, and a target may be combined with limits. With `n_i`
+active independent copies, node *i*'s reliability is `1 − (1 − p_i)^{n_i}`,
+and each candidate is scored by the exact engine, so the structure is
+arbitrary.
+
+When every costed node is in series with the rest of the system (it lies on
+every minimal path), the reliability factorises,
+`R = R_rest · ∏ (1 − (1 − p_i)^{n_i})`, and a dynamic program over the nodes
+finds the optimum exactly. It keeps only the partial designs that no other
+beats on every resource and on log-reliability (dominance, as in Kettelle's
+1962 method): a dominated partial design can never be completed into a
+better one than the design dominating it. On other structures, because adding
+a copy never lowers a coherent system's reliability, the best design within a
+budget can always be found among the designs that cannot afford another copy,
+which is what makes the exhaustive search practical. The greedy alternative
+adds the copy with the best gain in log-reliability per unit cost (per unit
+of its total share of the limits, with several) until the budget runs out;
+it is fast but can stop short of the optimum.
 
 **Reliability allocation** apportions a system target among components.
 There are many allocations that meet a target; each rule picks one.

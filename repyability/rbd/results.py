@@ -15,7 +15,7 @@ False; use ``isinstance(result, Mapping)`` if you need such a check.)
 
 import dataclasses
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, Hashable, Optional, Tuple
 
 import numpy as np
@@ -526,10 +526,15 @@ class RedundancyAllocation(_ResultMapping):
         ``t``, for a time-varying RBD).
     cost : float
         Total cost of the allocation, ``sum(costs[node] * units[node])``.
-        Every copy is costed, including the original.
+        Every copy is costed, including the original. With several
+        resources, the total of the one a target minimised, of
+        ``"cost"``, or of the first resource.
     method : str
         ``"exact"`` (a proven optimum) or ``"greedy"`` (a fast heuristic
         solution, usually but not always optimal).
+    resources : dict
+        The total of every resource the copies use, keyed by resource
+        (``{"cost": ...}`` when ``costs`` gave numbers).
 
     Examples
     --------
@@ -548,6 +553,8 @@ class RedundancyAllocation(_ResultMapping):
     >>> best = rbd.allocate_redundancy({"a": 1.0, "b": 1.0}, budget=3)
     >>> best.units, round(best.reliability, 4), best.cost, best.method
     ({'a': 1, 'b': 2}, 0.864, 3.0, 'exact')
+    >>> best.resources
+    {'cost': 3.0}
     >>> best["units"] is best.units
     True
     """
@@ -556,6 +563,7 @@ class RedundancyAllocation(_ResultMapping):
     reliability: float
     cost: float
     method: str
+    resources: Dict[Hashable, float] = field(default_factory=dict)
 
 
 @dataclass

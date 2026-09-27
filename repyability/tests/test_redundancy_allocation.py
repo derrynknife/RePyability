@@ -221,15 +221,23 @@ def test_unreachable_target_even_unlimited():
         rbd.allocate_redundancy({"a": 1.0}, target=0.6)
 
 
-def test_oversized_exact_search_fails_fast(series_ab, monkeypatch):
+def test_oversized_exact_search_fails_fast(bridge, monkeypatch):
+    # The bridge is not a series of its costed nodes, so its exact answer
+    # comes from the exhaustive search, which gives up with guidance.
     monkeypatch.setattr(redundancy_allocation, "EXACT_SEARCH_LIMIT", 5)
     with pytest.raises(ValueError, match="greedy"):
-        series_ab.allocate_redundancy({"a": 1.0, "b": 1.0}, budget=30)
+        bridge.allocate_redundancy(BRIDGE_COSTS, budget=30.0, t=MISSION)
     # The heuristic still answers.
-    result = series_ab.allocate_redundancy(
-        {"a": 1.0, "b": 1.0}, budget=30, method="greedy"
+    result = bridge.allocate_redundancy(
+        BRIDGE_COSTS, budget=30.0, t=MISSION, method="greedy"
     )
     assert result.cost <= 30
+
+
+def test_oversized_dynamic_program_fails_fast(series_ab, monkeypatch):
+    monkeypatch.setattr(redundancy_allocation, "SERIES_STATE_LIMIT", 3)
+    with pytest.raises(ValueError, match="greedy"):
+        series_ab.allocate_redundancy({"a": 1.0, "b": 1.0}, budget=30)
 
 
 def test_no_budget_is_spent_on_useless_copies():
@@ -249,11 +257,23 @@ def test_no_budget_is_spent_on_useless_copies():
 # -- validation ------------------------------------------------------------
 
 
-def test_exactly_one_objective(series_ab):
-    with pytest.raises(ValueError, match="exactly one"):
+def test_budget_or_target_required(series_ab):
+    with pytest.raises(ValueError, match="a budget, a target, or both"):
         series_ab.allocate_redundancy({"a": 1.0})
-    with pytest.raises(ValueError, match="exactly one"):
-        series_ab.allocate_redundancy({"a": 1.0}, budget=3, target=0.9)
+
+
+@pytest.mark.parametrize("method", ["exact", "greedy"])
+def test_target_within_a_budget(series_ab, method):
+    # The cheapest design meeting 90% is (2, 2) at a cost of 4: a budget of
+    # 4 allows it, a budget of 3.5 does not.
+    result = series_ab.allocate_redundancy(
+        {"a": 1.0, "b": 1.0}, target=0.9, budget=4, method=method
+    )
+    assert result.units == {"a": 2, "b": 2}
+    with pytest.raises(ValueError, match="within the budget"):
+        series_ab.allocate_redundancy(
+            {"a": 1.0, "b": 1.0}, target=0.9, budget=3.5, method=method
+        )
 
 
 @pytest.mark.parametrize(
@@ -306,4 +326,451 @@ def test_ccf_rbd_not_supported():
 def test_result_is_a_mapping(series_ab):
     result = series_ab.allocate_redundancy({"a": 1.0, "b": 1.0}, budget=3)
     assert result["units"] == result.units
-    assert set(result) == {"units", "reliability", "cost", "method"}
+    assert set(result) == {
+        "units",
+        "reliability",
+        "cost",
+        "method",
+        "resources",
+    }
+    assert result.resources == {"cost": 3.0}
+
+
+# -- several resources (issue #76) -----------------------------------------
+
+BRIDGE_WEIGHTS = {"a": 4.0, "b": 1.0, "c": 3.0, "d": 5.0, "e": 2.0}
+BRIDGE_AMOUNTS = [list(BRIDGE_COSTS.values()), list(BRIDGE_WEIGHTS.values())]
+
+
+def two_resources(costs, weights):
+    return {n: {"cost": costs[n], "weight": weights[n]} for n in costs}
+
+
+def use_of(units, amounts):
+    return math.fsum(u * a for u, a in zip(units, amounts))
+
+
+def designs(amounts, limits):
+    # Every allocation within the limits (one list of amounts per
+    # resource, math.inf for a resource that is not limited): the
+    # independent brute force the exact answers are checked against.
+    ranges = []
+    for i in range(len(amounts[0])):
+        most = min(
+            math.floor((limit - sum(amounts[r])) / amounts[r][i] + 1e-9)
+            for r, limit in enumerate(limits)
+            if math.isfinite(limit) and amounts[r][i] > 0.0
+        )
+        ranges.append(range(1, most + 2))
+    for units in itertools.product(*ranges):
+        if all(
+            use_of(units, amounts[r]) <= limit + 1e-9
+            for r, limit in enumerate(limits)
+        ):
+            yield units
+
+
+@pytest.mark.parametrize("method", ["exact", "greedy"])
+def test_two_resources_budget_matches_brute_force(bridge, method):
+    limits = (22.0, 26.0)
+    best = max(
+        reliability_of(bridge, BRIDGE_COSTS, units, MISSION)
+        for units in designs(BRIDGE_AMOUNTS, limits)
+    )
+    result = bridge.allocate_redundancy(
+        two_resources(BRIDGE_COSTS, BRIDGE_WEIGHTS),
+        budget={"cost": limits[0], "weight": limits[1]},
+        t=MISSION,
+        method=method,
+    )
+    units = tuple(result.units.values())
+    assert result.resources == {
+        "cost": pytest.approx(use_of(units, BRIDGE_AMOUNTS[0])),
+        "weight": pytest.approx(use_of(units, BRIDGE_AMOUNTS[1])),
+    }
+    assert result.cost == result.resources["cost"]
+    assert result.resources["cost"] <= limits[0]
+    assert result.resources["weight"] <= limits[1]
+    assert result.reliability == pytest.approx(
+        reliability_of(bridge, BRIDGE_COSTS, units, MISSION), abs=1e-15
+    )
+    if method == "exact":
+        assert result.reliability == pytest.approx(best, abs=1e-12)
+    else:
+        assert result.reliability <= best + 1e-12
+
+
+@pytest.mark.parametrize("method", ["exact", "greedy"])
+def test_one_limit_of_two_resources(bridge, method):
+    # Only the weight is limited: the cost is recorded but free.
+    costs = two_resources(BRIDGE_COSTS, BRIDGE_WEIGHTS)
+    best = max(
+        reliability_of(bridge, BRIDGE_COSTS, units, MISSION)
+        for units in designs(BRIDGE_AMOUNTS, (math.inf, 24.0))
+    )
+    result = bridge.allocate_redundancy(
+        costs, budget={"weight": 24.0}, t=MISSION, method=method
+    )
+    assert result.resources["weight"] <= 24.0
+    if method == "exact":
+        assert result.reliability == pytest.approx(best, abs=1e-12)
+    else:
+        assert result.reliability <= best + 1e-12
+
+
+def test_two_resources_target_matches_brute_force(bridge):
+    costs = two_resources(BRIDGE_COSTS, BRIDGE_WEIGHTS)
+    # The cheapest design meeting the target with a weight of at most 21
+    # (the cheapest without the limit weighs 23).
+    cheapest = min(
+        use_of(units, BRIDGE_AMOUNTS[0])
+        for units in designs(BRIDGE_AMOUNTS, (math.inf, 21.0))
+        if reliability_of(bridge, BRIDGE_COSTS, units, MISSION) >= 0.92
+    )
+    result = bridge.allocate_redundancy(
+        costs, target=0.92, budget={"weight": 21.0}, t=MISSION
+    )
+    assert result.cost == pytest.approx(cheapest)
+    assert result.resources["weight"] <= 21.0
+    assert result.reliability >= 0.92
+    # minimise names the resource to minimise: the lightest design meeting
+    # the target. Every design lighter than the lightest one found within
+    # a weight of 30 is among those enumerated, so this is exhaustive.
+    meeting = [
+        units
+        for units in designs(BRIDGE_AMOUNTS, (math.inf, 30.0))
+        if reliability_of(bridge, BRIDGE_COSTS, units, MISSION) >= 0.92
+    ]
+    assert meeting
+    lightest = min(use_of(units, BRIDGE_AMOUNTS[1]) for units in meeting)
+    result = bridge.allocate_redundancy(
+        costs, target=0.92, minimise="weight", t=MISSION
+    )
+    assert result.cost == pytest.approx(lightest)
+    assert result.cost == result.resources["weight"]
+    assert result.reliability >= 0.92
+
+
+def series_rbd(reliabilities):
+    names = [f"n{i}" for i in range(len(reliabilities))]
+    edges = [("s", names[0])] + list(zip(names, names[1:]))
+    rbd = NonRepairableRBD(
+        edges + [(names[-1], "t")],
+        {n: fixed(p) for n, p in zip(names, reliabilities)},
+    )
+    return names, rbd
+
+
+@pytest.mark.parametrize("seed", range(8))
+def test_dynamic_program_matches_brute_force(seed):
+    # A series of costed nodes is solved by dynamic programming: check it
+    # against every allocation, with one resource and with two, in both
+    # forms.
+    rng = np.random.default_rng(seed)
+    reliabilities = rng.uniform(0.5, 0.95, 4)
+    names, rbd = series_rbd(reliabilities)
+    cost = rng.integers(1, 5, 4).astype(float)
+    weight = rng.uniform(0.5, 3.0, 4)
+    costs = two_resources(dict(zip(names, cost)), dict(zip(names, weight)))
+    limits = (cost.sum() + 6.0, weight.sum() + 4.0)
+    every = list(itertools.product(range(1, 6), repeat=4))
+
+    def reliability(units):
+        return math.prod(
+            1.0 - (1.0 - p) ** n for p, n in zip(reliabilities, units)
+        )
+
+    def fits(units, cost_limit, weight_limit):
+        return (
+            use_of(units, cost) <= cost_limit + 1e-9
+            and use_of(units, weight) <= weight_limit + 1e-9
+        )
+
+    result = rbd.allocate_redundancy(
+        dict(zip(names, cost)), budget=limits[0], max_units=5
+    )
+    assert result.reliability == pytest.approx(
+        max(reliability(u) for u in every if fits(u, limits[0], math.inf)),
+        abs=1e-12,
+    )
+    best = max(reliability(u) for u in every if fits(u, *limits))
+    result = rbd.allocate_redundancy(
+        costs,
+        budget={"cost": limits[0], "weight": limits[1]},
+        max_units=5,
+    )
+    assert result.reliability == pytest.approx(best, abs=1e-12)
+    assert fits(tuple(result.units.values()), *limits)
+    target = 0.9 * best
+    result = rbd.allocate_redundancy(
+        costs, target=target, budget={"weight": limits[1]}, max_units=5
+    )
+    assert result.reliability >= target
+    assert result.cost == pytest.approx(
+        min(
+            use_of(u, cost)
+            for u in every
+            if fits(u, math.inf, limits[1]) and reliability(u) >= target
+        )
+    )
+
+
+def test_dynamic_program_solves_large_series_problems():
+    # Fourteen subsystems with cost and weight limits: far beyond the
+    # exhaustive search, but quick for the dynamic program.
+    rng = np.random.default_rng(1)
+    names, rbd = series_rbd(rng.uniform(0.7, 0.95, 14))
+    costs = {
+        n: {"cost": float(c), "weight": float(w)}
+        for n, c, w in zip(
+            names, rng.integers(1, 6, 14), rng.integers(3, 10, 14)
+        )
+    }
+    budget = {"cost": 60.0, "weight": 150.0}
+    exact = rbd.allocate_redundancy(costs, budget=budget)
+    greedy = rbd.allocate_redundancy(costs, budget=budget, method="greedy")
+    assert exact.resources["cost"] <= 60.0
+    assert exact.resources["weight"] <= 150.0
+    assert exact.reliability >= greedy.reliability
+
+
+@pytest.mark.parametrize(
+    "costs, kwargs, match",
+    [
+        ({"a": 1.0, "b": {"cost": 1.0}}, {"budget": 3}, "not a mixture"),
+        (
+            {"a": {"cost": 1.0, "weight": 1.0}, "b": {"cost": 1.0}},
+            {"budget": {"cost": 3}},
+            "same resources",
+        ),
+        ({"a": {}}, {"budget": 3}, "at least one resource"),
+        ({"a": {"cost": -1.0}}, {"budget": {"cost": 3}}, "non-negative"),
+        (
+            {"a": {"cost": math.nan}},
+            {"budget": {"cost": 3}},
+            "non-negative",
+        ),
+        (
+            {"a": {"cost": 1.0, "weight": 1.0}},
+            {"budget": 3},
+            "dict of limits",
+        ),
+        ({"a": {"cost": 1.0}}, {"budget": {"volume": 3}}, "not use"),
+        ({"a": {"cost": 1.0}}, {"budget": {}}, "at least one resource"),
+        (
+            {"a": {"cost": 1.0, "weight": 1.0}},
+            {"budget": {"cost": 3, "weight": 0.5}},
+            r"budget\['weight'\] must be finite and at least 1",
+        ),
+        (
+            {"a": {"weight": 1.0, "volume": 1.0}},
+            {"target": 0.95},
+            "minimise must name",
+        ),
+        ({"a": 1.0}, {"budget": 3, "minimise": "cost"}, "give a target"),
+        ({"a": 1.0}, {"target": 0.95, "minimise": "mass"}, "one of the"),
+        (
+            {"a": {"cost": 1.0, "weight": 0.0}},
+            {"budget": {"weight": 3}},
+            "without limit",
+        ),
+    ],
+)
+def test_resource_validation(series_ab, costs, kwargs, match):
+    with pytest.raises(ValueError, match=match):
+        series_ab.allocate_redundancy(costs, **kwargs)
+
+
+def test_zero_use_is_fine_when_bounded(series_ab):
+    # b uses no weight, but its cost is limited, so the search is bounded.
+    result = series_ab.allocate_redundancy(
+        {"a": {"cost": 1.0, "weight": 2.0}, "b": {"cost": 1.0, "weight": 0.0}},
+        budget={"cost": 4, "weight": 2},
+    )
+    assert result.units == {"a": 1, "b": 3}
+    assert result.resources == {"cost": 4.0, "weight": 2.0}
+
+
+def test_resources_named_without_cost(series_ab):
+    # With a single resource of any name, it is the one minimised.
+    result = series_ab.allocate_redundancy(
+        {"a": {"mass": 1.0}, "b": {"mass": 1.0}}, target=0.9
+    )
+    assert result.units == {"a": 2, "b": 2}
+    assert result.cost == 4.0
+    assert result.resources == {"mass": 4.0}
+
+
+@pytest.mark.parametrize("method", ["exact", "greedy"])
+def test_copies_that_use_nothing(series_ab, method):
+    # Copies of b cost nothing, up to its max_units: both methods take them
+    # all (and the greedy heuristic takes them first).
+    costs = {"a": {"cost": 1.0}, "b": {"cost": 0.0}}
+    result = series_ab.allocate_redundancy(
+        costs, budget={"cost": 3}, max_units={"b": 2}, method=method
+    )
+    assert result.units == {"a": 3, "b": 2}
+    # Target form: (2, 2) and (2, 3) both cost 2; the tie goes to the more
+    # reliable.
+    result = series_ab.allocate_redundancy(
+        costs, target=0.9, max_units={"b": 3}, method=method
+    )
+    assert result.units == {"a": 2, "b": 3}
+    assert result.cost == 2.0
+
+
+def dominates(t, s):
+    return all(a <= b for a, b in zip(t[0], s[0])) and t[1] >= s[1]
+
+
+def naive_front(states):
+    # One representative of every (use, value) that nothing else beats.
+    unique = {(s[0], s[1]): s for s in states}
+    return {
+        key
+        for key, s in unique.items()
+        if not any(dominates(t, s) and t != key for t in unique)
+    }
+
+
+@pytest.mark.parametrize("m", [1, 2, 3])
+def test_pareto_front_matches_naive(m):
+    # Value rising with use gives a large front; integer amounts and values
+    # in exact steps of 1/256 give near-ties, exact ties and duplicates.
+    rng = np.random.default_rng(m)
+    high = {1: 30, 2: 12, 3: 6}[m]
+    states = []
+    for i in range(400):
+        use = tuple(rng.integers(0, high, m).astype(float))
+        states.append((use, (2 * sum(use) + rng.integers(3)) / 256, i))
+    kept = redundancy_allocation._pareto_front(list(states))
+    assert len(kept) > 10
+    assert len({(s[0], s[1]) for s in kept}) == len(kept)
+    assert {(s[0], s[1]) for s in kept} == naive_front(states)
+
+
+@pytest.mark.parametrize("m", [1, 2, 3])
+@pytest.mark.parametrize("seed", range(3))
+def test_series_front_is_the_front_of_every_design(m, seed):
+    # The dynamic program's final front is exactly the non-dominated set of
+    # all complete designs within the budget (and the bound).
+    rng = np.random.default_rng(10 * m + seed)
+    choices = []
+    for q in rng.uniform(0.05, 0.5, 4):
+        per_copy = rng.integers(1, 4, m).astype(float)
+        choices.append(
+            [(tuple(n * per_copy), math.log1p(-(q**n))) for n in range(1, 5)]
+        )
+    budget = tuple(
+        sum(node[0][0][r] for node in choices) + rng.uniform(3.0, 8.0)
+        for r in range(m)
+    )
+    bound = budget[0] - 1.0
+    designs_ = []
+    for picks in itertools.product(range(4), repeat=4):
+        use, value = (0.0,) * m, 0.0
+        for node, pick in zip(choices, picks):
+            use = tuple(u + e for u, e in zip(use, node[pick][0]))
+            value = value + node[pick][1]
+        if all(u <= b for u, b in zip(use, budget)) and use[0] <= bound:
+            designs_.append((use, value, picks))
+    front = redundancy_allocation.series_front(
+        choices, budget=budget, bound=bound
+    )
+    assert {(u, v) for u, v, _ in front} == naive_front(designs_)
+    for use, value, picks in front:
+        assert (use, value, picks) in designs_
+    assert [f[0][0] for f in front] == sorted(f[0][0] for f in front)
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_three_resources_match_brute_force(seed):
+    rng = np.random.default_rng(100 + seed)
+    reliabilities = rng.uniform(0.5, 0.95, 3)
+    names, rbd = series_rbd(reliabilities)
+    resources = ("cost", "weight", "volume")
+    amounts = rng.uniform(0.5, 3.0, (3, 3))  # [resource][node]
+    costs = {
+        n: {r: amounts[k][i] for k, r in enumerate(resources)}
+        for i, n in enumerate(names)
+    }
+    limits = amounts.sum(axis=1) + rng.uniform(2.0, 5.0, 3)
+    every = list(itertools.product(range(1, 6), repeat=3))
+
+    def reliability(units):
+        return math.prod(
+            1.0 - (1.0 - p) ** n for p, n in zip(reliabilities, units)
+        )
+
+    def fits(units, limits):
+        return all(
+            use_of(units, amounts[k]) <= limit + 1e-9
+            for k, limit in enumerate(limits)
+        )
+
+    best = max(reliability(u) for u in every if fits(u, limits))
+    result = rbd.allocate_redundancy(
+        costs, budget=dict(zip(resources, limits)), max_units=5
+    )
+    assert result.reliability == pytest.approx(best, abs=1e-12)
+    assert fits(tuple(result.units.values()), limits)
+    target = 0.95 * best
+    result = rbd.allocate_redundancy(
+        costs,
+        target=target,
+        budget={"weight": limits[1], "volume": limits[2]},
+        max_units=5,
+    )
+    free = (math.inf, limits[1], limits[2])
+    assert result.cost == pytest.approx(
+        min(
+            use_of(u, amounts[0])
+            for u in every
+            if fits(u, free) and reliability(u) >= target
+        )
+    )
+
+
+def test_target_equal_to_an_achievable_reliability(series_ab, bridge):
+    # A target exactly equal to a design's reliability is met by it: the
+    # cheapest design reaching the budget optimum's reliability costs no
+    # more than that optimum (dynamic program and exhaustive search).
+    for rbd, costs, budget, t in [
+        (series_ab, {"a": 1.0, "b": 1.0}, 4.0, None),
+        (bridge, BRIDGE_COSTS, 22.0, MISSION),
+    ]:
+        best = rbd.allocate_redundancy(costs, budget=budget, t=t)
+        cheapest = rbd.allocate_redundancy(costs, target=best.reliability, t=t)
+        assert cheapest.reliability >= best.reliability
+        assert cheapest.cost <= best.cost + 1e-9
+
+
+def test_large_budget_still_spent_on_small_gains(series_ab):
+    # With a budget of 14 the last copies add little reliability, but they
+    # still add some, and the optimum is the brute-force one.
+    best = max(
+        (1 - 0.1**a) * (1 - 0.2**b)
+        for a in range(1, 14)
+        for b in range(1, 15 - a)
+    )
+    result = series_ab.allocate_redundancy({"a": 1.0, "b": 1.0}, budget=14)
+    assert result.cost == 14
+    assert result.reliability == pytest.approx(best, abs=1e-15)
+
+
+def test_greedy_measures_copies_by_the_limited_resources():
+    # Only weight is limited, so copies of the light node b are the cheap
+    # ones, whatever their cost.
+    rbd = NonRepairableRBD(
+        [("s", "a"), ("a", "b"), ("b", "t")],
+        {"a": fixed(0.8), "b": fixed(0.8)},
+    )
+    costs = {
+        "a": {"cost": 1.0, "weight": 5.0},
+        "b": {"cost": 5.0, "weight": 1.0},
+    }
+    for method in ("exact", "greedy"):
+        result = rbd.allocate_redundancy(
+            costs, budget={"weight": 11}, method=method
+        )
+        assert result.units == {"a": 1, "b": 6}

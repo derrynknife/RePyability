@@ -49,7 +49,8 @@ cheapest.cost    # -> 39600.0
 ```
 
 The result is a [`RedundancyAllocation`][repyability.RedundancyAllocation]
-(`units`, `reliability`, `cost`, `method`).
+(`units`, `reliability`, `cost`, `method`, and `resources`, the totals of
+every resource used).
 
 ### Options
 
@@ -63,11 +64,15 @@ The result is a [`RedundancyAllocation`][repyability.RedundancyAllocation]
   # {'pump': 2, 'valve': 8, 'ctrl': 2}
   ```
 
-- **`method`**: `"exact"` (the default) returns a proven optimum. Because
-  adding a copy never lowers a coherent system's reliability, a budget search
-  only needs to score the designs that cannot afford another copy, which
-  keeps typical problems (a handful of nodes) fast; a problem too large to
-  search raises an explanatory error instead of running for ever.
+- **`method`**: `"exact"` (the default) returns a proven optimum. When
+  every costed node is in series with the rest of the system, as in `line`,
+  the system reliability is a product over them, and a dynamic program over
+  the nodes solves even a long series of subsystems in a fraction of a
+  second. On other structures, because adding a copy never lowers a coherent
+  system's reliability, a budget search only needs to score the designs that
+  cannot afford another copy, which keeps typical problems (a handful of
+  nodes) fast. Either way, a problem too large to solve raises an
+  explanatory error instead of running for ever.
   `"greedy"` adds one copy at a time, always the one with the largest gain in
   log-reliability per unit cost. It is fast at any size but not guaranteed
   optimal, even on a series system:
@@ -77,8 +82,63 @@ The result is a [`RedundancyAllocation`][repyability.RedundancyAllocation]
   # -> 0.919   against 0.9513 for the exact optimum at the same cost
   ```
 
-- The "cost" can be any additive resource: money, weight, volume, power.
+- The "cost" can be any additive resource: money, weight, volume, power;
+  or several at once (below).
 - Nodes not in `costs` are left as they are.
+
+### Several resources
+
+Copies use more than money: weight, volume, power, space. Give what one copy
+of each node uses as a dict of resources, and the budget as a dict of limits
+on any of them (the classic multi-constraint problem of Fyffe, Hines & Lee,
+1968). A resource that is not limited is still totalled.
+
+```python
+kit = {
+    "pump": {"cost": 4000, "weight": 30},
+    "valve": {"cost": 900, "weight": 12},
+    "ctrl": {"cost": 12000, "weight": 5},
+}
+light = line.allocate_redundancy(
+    kit, budget={"cost": 40_000, "weight": 120}, t=5000
+)
+light.units         # {'pump': 2, 'valve': 4, 'ctrl': 2}
+light.reliability   # -> 0.8726
+light.resources     # {'cost': 35600.0, 'weight': 118.0}
+```
+
+The weight limit costs reliability: 0.8726, against 0.9513 for the best
+design on money alone, which weighs 148. With several limits the greedy
+heuristic measures a copy by its total share of them, and falls further
+short here (0.8695).
+
+A **target and a budget together** ask for the cheapest design that meets
+the target without breaking any limit:
+
+```python
+line.allocate_redundancy(kit, target=0.9, t=5000).resources
+# {'cost': 30700.0, 'weight': 161.0}
+line.allocate_redundancy(
+    kit, target=0.9, budget={"weight": 130}, t=5000
+).resources
+# {'cost': 37800.0, 'weight': 124.0}
+```
+
+A target minimises `"cost"` (or the only resource) unless **`minimise`**
+names another. `cost` in the result is always the total of the minimised
+resource:
+
+```python
+lightest = line.allocate_redundancy(
+    kit, target=0.95, minimise="weight", t=5000
+)
+lightest.units       # {'pump': 3, 'valve': 3, 'ctrl': 3}
+lightest.cost        # -> 141.0   the weight
+lightest.resources   # {'cost': 50700.0, 'weight': 141.0}
+```
+
+The cheapest design meeting 0.95 weighs 148 (it is the 39,600 design above);
+the lightest weighs 141 but costs 50,700.
 
 ### The model and its limits
 
@@ -86,8 +146,10 @@ The result is a [`RedundancyAllocation`][repyability.RedundancyAllocation]
 reliability `1 − (1 − p)ⁿ`. That is the right model for identical parts added
 in parallel; it does not model standby spares or common-cause coupling (an
 RBD with common-cause groups raises `NotImplementedError`). A budget that
-cannot buy one of each costed node, or a target that no design within
-`max_units` reaches, raises `ValueError` with the numbers involved.
+cannot buy one of each costed node, a target that no design within
+`max_units` (or the budget) reaches, or a node that uses none of any limited
+resource and has no `max_units` (so could be copied without limit) raises
+`ValueError` with the numbers involved.
 
 ## Reliability allocation
 
