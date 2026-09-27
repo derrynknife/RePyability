@@ -269,8 +269,10 @@ class NonRepairable:
             # surpyval evaluates an offset model below its offset through a
             # fractional power of a negative number before masking it, which
             # warns although the survival (1) is right.
+            # (Through a float: some models' sf gives an array for a scalar
+            # age, which quad cannot take.)
             with np.errstate(invalid="ignore"):
-                out = quad(self.reliability_function, 0, t)[0]
+                out = quad(_scalar_sf(self.reliability), 0, t)[0]
         elif self.model_parameterization == "standby":
             # A simulated arrangement's survival function is a Kaplan-Meier
             # step function, which quadrature handles poorly: integrate on a

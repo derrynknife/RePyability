@@ -209,8 +209,38 @@ def _serialise_component(value) -> dict:
                 out[key] = serialise_model(cost)
             elif cost:
                 out[key] = float(cost)
+        if value.get("preventive") is not None:
+            out["preventive"] = _serialise_preventive(value["preventive"])
         return out
     return serialise_model(value)
+
+
+def _serialise_preventive(spec: dict) -> dict:
+    # A component's preventive-maintenance schedule: the interval and policy
+    # as they are, the duration ("instant" or a model) and the cost (a number
+    # or a distribution).
+    out: dict[str, Any] = {"interval": float(spec["interval"])}
+    if "policy" in spec:
+        out["policy"] = spec["policy"]
+    duration = spec.get("duration", "instant")
+    out["duration"] = (
+        "instant" if isinstance(duration, str) else serialise_model(duration)
+    )
+    cost = spec.get("cost")
+    if hasattr(cost, "qf"):
+        out["cost"] = serialise_model(cost)
+    elif cost:
+        out["cost"] = float(cost)
+    return out
+
+
+def _deserialise_preventive(d: dict) -> dict:
+    out = dict(d)
+    if isinstance(d["duration"], dict):
+        out["duration"] = deserialise_model(d["duration"])
+    if isinstance(d.get("cost"), dict):
+        out["cost"] = deserialise_model(d["cost"])
+    return out
 
 
 def _deserialise_component(d: dict) -> Any:
@@ -231,6 +261,8 @@ def _deserialise_component(d: dict) -> Any:
                 out[key] = (
                     deserialise_model(cost) if isinstance(cost, dict) else cost
                 )
+        if "preventive" in d:
+            out["preventive"] = _deserialise_preventive(d["preventive"])
         return out
     return deserialise_model(d)
 

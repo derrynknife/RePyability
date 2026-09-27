@@ -31,9 +31,10 @@ plant = RepairableRBD(edges, {"A": unit(0.1, 1.0), "B": unit(0.1, 1.0), "C": uni
 A component can be given as:
 
 - a dict with `"reliability"` and `"repairability"`, plus optional costs
-  (`"repair_cost"`, `"replace_cost"`, `"downtime_cost"`; see [Costs](costs.md)).
-  Any other key raises `ValueError`, so a mistyped cost key is never silently
-  priced at zero;
+  (`"repair_cost"`, `"replace_cost"`, `"downtime_cost"`; see [Costs](costs.md))
+  and scheduled preventive replacement (`"preventive"`; see
+  [Costs](costs.md#preventive-maintenance)). Any other key raises
+  `ValueError`, so a mistyped cost key is never silently priced at zero;
 - `"repairability": "instant"` for a component repaired in zero time (see
   [below](#instantly-repaired-components));
 - a [`NonRepairable`][repyability.NonRepairable]`(reliability,
@@ -123,6 +124,7 @@ lower[-1], upper[-1]                                  # (0.9472, 0.965)
 | `availability_se`, `availability_interval(confidence)` | Its sampling error. |
 | `system_uptime`, `system_downtime` | Total up and down time over all histories. |
 | `system_failures`, `system_restorations` | Counts over all histories. |
+| `system_planned_outages` | The times preventive maintenance took the system down (not failures). |
 | `node_uptime`, `node_downtime` | Per-node totals. |
 | `mean_up_time`, `mean_down_time`, `failure_frequency` | Simulation estimates of the exact MUT, MDT and frequency above. |
 | `n_simulations`, `time_simulated_to` | `N` and `t_simulation`. |

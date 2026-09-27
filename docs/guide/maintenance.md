@@ -102,6 +102,11 @@ from `reliability` (returned with `False`) and a time to repair from
 `time_to_replace` (returned with `True`), and `reset()` starts again with a
 failure.
 
+To price an age- or block-replacement policy for a component in its system
+(where a planned stop may or may not halt production), give the component a
+`"preventive"` schedule in a `RepairableRBD`: see
+[Costs](costs.md#preventive-maintenance).
+
 ## Overhaul under minimal repair (`Repairable`)
 
 Each failure is minimally repaired at cost `cr`; every `t` the unit is

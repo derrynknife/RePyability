@@ -750,10 +750,83 @@ def repairable_rbds():
                 "y": RepairableRBD([("s", "p"), ("p", "t")], {"p": shared}),
             },
         ),
+        # Scheduled preventive maintenance: age and block, taking time or
+        # none, with fixed and random costs, and inside a nested RBD.
+        "maintained": RepairableRBD(
+            [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")],
+            {
+                "a": {
+                    "reliability": W([60, 2.5]),
+                    "repairability": surv.Exponential.from_params([0.5]),
+                    "replace_cost": L([3.0, 0.4]),
+                    "preventive": {
+                        "interval": 30.0,
+                        "duration": W([2.0, 1.5]),
+                        "cost": L([1.0, 0.5]),
+                    },
+                },
+                "b": {
+                    "reliability": W([60, 2.5]),
+                    "repairability": surv.Exponential.from_params([0.5]),
+                    "preventive": {
+                        "interval": 25.0,
+                        "policy": "block",
+                        "cost": 2.0,
+                    },
+                },
+                "c": {
+                    "reliability": W([200, 1.5]),
+                    "repairability": "instant",
+                    "repair_cost": 10.0,
+                    "preventive": {
+                        "interval": 80.0,
+                        "policy": "block",
+                        "duration": L([0.0, 0.5]),
+                    },
+                },
+            },
+            downtime_cost_rate=3.0,
+        ),
+        "nested_maintained": RepairableRBD(
+            [("s", "a"), ("a", "sub"), ("sub", "t")],
+            {
+                "a": {
+                    "reliability": W([90, 2]),
+                    "repairability": surv.Exponential.from_params([0.8]),
+                    "preventive": {
+                        "interval": 40.0,
+                        "duration": L([0.5, 0.3]),
+                    },
+                },
+                "sub": RepairableRBD(
+                    [("s", "p"), ("s", "q"), ("p", "t"), ("q", "t")],
+                    {
+                        name: {
+                            "reliability": W([45, 3]),
+                            "repairability": L([0.2, 0.4]),
+                            "preventive": {
+                                "interval": interval,
+                                "policy": policy,
+                                "duration": W([1.5, 2.0]),
+                            },
+                        }
+                        for name, interval, policy in (
+                            ("p", 20.0, "age"),
+                            ("q", 30.0, "block"),
+                        )
+                    },
+                ),
+            },
+        ),
     }
 
 
-NESTED = ["nested_koon", "nested_one_level", "nested_two_levels"]
+NESTED = [
+    "nested_koon",
+    "nested_one_level",
+    "nested_two_levels",
+    "nested_maintained",
+]
 
 
 def simulate_both(monkeypatch, rbd, **kwargs):

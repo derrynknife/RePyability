@@ -190,6 +190,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   repairable), and the failure form against exact rational arithmetic on a
   bridge that fails with probability ~1e-12.
 
+- **Scheduled preventive maintenance in `RepairableRBD` (closes #69).** A
+  component's dict takes `"preventive": {"interval": T, "policy": "age" |
+  "block", "duration": model | "instant", "cost": c_p}`. Under age
+  replacement the unit is replaced `T` after it was last put into service as
+  new (a failure restarts the clock); under block replacement at `T, 2T, …`
+  whatever its age (skipped while it is down). A replacement renews the unit,
+  so the failure it was heading for never happens; with a duration the unit
+  is down meanwhile, a planned outage, which counts as downtime in every
+  availability output but not as a failure (the result's new
+  `system_planned_outages` counts them); `"instant"` renews it in place.
+  `CostResult.by_category` gains `"preventive"`. The exact long-run methods
+  (`expected_cost_rate`, `mean_availability`, `node_availability`, the
+  frequencies, MUT/MDT and the importance measures) price an age-replaced
+  component through its renewal-reward cycle; block replacement has no exact
+  long-run values, so they raise `NotImplementedError` for it and the
+  simulation prices it. Nested RBDs report their planned outages to their
+  parent. Tests list the events of deterministic lifetimes by hand, hold
+  the exact cost rate of age replacement to `NonRepairable.cost_rate(T)`
+  and a long simulation to every exact value, check block replacement of an
+  exponential unit against `λ·c_u + c_p/T`, that an infinite interval gives
+  results identical to no maintenance, and that the batched and one-draw
+  simulations still agree. `NonRepairable.avg_replacement_time` now also
+  integrates models whose `sf` returns an array for a scalar age (such as
+  `ExactEventTime`).
+
 ### Changed
 - **`criticality_importance` now defaults to the failure-oriented form
   (#72).** The success-oriented form it returned, `I_B(i) · p_i / P_sys`, is
