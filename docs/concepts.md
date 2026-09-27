@@ -454,6 +454,15 @@ adds the copy with the best gain in log-reliability per unit cost (per unit
 of its total share of the limits, with several) until the budget runs out;
 it is fast but can stop short of the optimum.
 
+**Reliability-redundancy allocation** chooses both at once: each node's
+component reliability `r_i`, within bounds, and its copies `n_i`, to maximise
+system reliability when what the copies use depends on both (a more reliable
+component costs more). It is a mixed-integer nonlinear problem. For fixed
+copies it is a continuous problem in the `r_i`, solved with the exact gradient
+of the system reliability; over the copies, a vector can be skipped when even
+the reliability with every node at the best component it could afford alone
+does not beat the best design found, which keeps the exact search short.
+
 **Reliability allocation** apportions a system target among components.
 There are many allocations that meet a target; each rule picks one.
 

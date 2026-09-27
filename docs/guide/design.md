@@ -2,8 +2,9 @@
 
 Importance measures say *where* a system is weak. The methods on this page
 help decide what to do about it: how many redundant copies of each component
-to buy (redundancy allocation), or what reliability each component must reach
-for the system to meet a target (reliability allocation). Theory:
+to buy (redundancy allocation), what reliability each component must reach
+for the system to meet a target (reliability allocation), or both at once
+(reliability-redundancy allocation). Theory:
 [Concepts](../concepts.md#allocation).
 
 ## Redundancy allocation
@@ -638,3 +639,74 @@ pumps_and_valve.simple_allocation(0.97)["v"]                     # -> 0.98108
   valve, one from the current values and costs, the other from the structure
   alone. Here they nearly agree, because the structure is what makes the
   valve matter.
+
+## Reliability and redundancy together
+
+`allocate_reliability_redundancy(uses, budget=..., bounds=...)` chooses each
+node's component reliability *and* its number of copies: the
+reliability-redundancy allocation problem (Tillman, Hwang & Kuo, 1977). A
+more reliable component costs more, so a budget can buy better parts or more
+of them. `uses[node](r, n)` gives what `n` copies of component reliability `r`
+use (a number, or a dict of resources), and `bounds` the range of `r`. The
+node reliability is `1 − (1 − r)ⁿ`.
+
+The classic benchmark has five subsystems in series; a copy's cost rises
+steeply with its reliability, its volume with the square of the number of
+copies, and its weight with the copies:
+
+```python
+import math
+from surpyval import FixedEventProbability
+
+alpha = [2.33e-5, 1.45e-5, 0.541e-5, 8.05e-5, 1.95e-5]
+volume = [1, 2, 3, 4, 2]
+weight = [7, 8, 8, 6, 9]
+
+
+def uses_of(i):
+    def use(r, n):
+        return {
+            "volume": volume[i] * n**2,
+            "cost": alpha[i] * (-1000 / math.log(r)) ** 1.5 * (n + math.exp(n / 4)),
+            "weight": weight[i] * n * math.exp(n / 4),
+        }
+
+    return use
+
+
+names = ["x1", "x2", "x3", "x4", "x5"]
+chain = NonRepairableRBD(
+    [("s", "x1"), ("x1", "x2"), ("x2", "x3"), ("x3", "x4"), ("x4", "x5"), ("x5", "t")],
+    {name: FixedEventProbability.from_params(0.1) for name in names},
+)
+best = chain.allocate_reliability_redundancy(
+    {name: uses_of(i) for i, name in enumerate(names)},
+    budget={"volume": 110, "cost": 175, "weight": 200},
+    bounds=(0.5, 1 - 1e-6),
+)
+best.units         # {'x1': 3, 'x2': 2, 'x3': 2, 'x4': 3, 'x5': 3}
+best.reliability   # -> 0.931682
+[round(r, 4) for r in best.component_reliability.values()]
+# [0.7794, 0.8718, 0.9029, 0.7114, 0.7878]
+```
+
+That is the best solution published for this problem. It is found exactly
+over the copies, by branch and bound: every copy vector that fits the budget
+at the lowest reliabilities is bounded above by the system reliability with
+each node at the most reliable component it could afford alone, and the
+vectors are solved in decreasing order of that bound, each a continuous
+problem for the reliabilities (SLSQP with the exact gradient), until no bound
+beats the best found. The continuous problem is solved to a local optimum,
+which is the global one for a series system with costs convex in the
+reliabilities; on the classic series–parallel, bridge and overspeed-protection
+benchmarks the method also returns the best published solutions. Any structure
+works, as elsewhere.
+
+- The uses must not decrease as `r` or `n` grows (the bounds and the search
+  rely on it), and the lowest reliabilities must fit the budget.
+- The costed nodes' own models are not used; the other nodes are evaluated
+  at the mission time `t`.
+- `max_units` caps the copies; by default the budget bounds them.
+- The result is a
+  [`ReliabilityRedundancyAllocation`][repyability.ReliabilityRedundancyAllocation]
+  (`units`, `component_reliability`, `reliability`, `cost`, `resources`).

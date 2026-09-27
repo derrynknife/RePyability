@@ -60,6 +60,7 @@ from typing import (
 )
 
 import numpy as np
+from scipy.optimize import minimize
 
 # What one copy uses: one amount, or one per resource.
 Amount = Union[float, Sequence[float]]
@@ -1247,3 +1248,240 @@ def series_front(
         )
     result.sort(key=lambda r: (r[0][primary], -r[1]))
     return result
+
+
+# -- reliability-redundancy allocation -------------------------------------
+
+# The system reliability, and its derivative with respect to each node's
+# reliability, for a tuple of node reliabilities.
+System = Callable[[Tuple[float, ...]], Tuple[float, Tuple[float, ...]]]
+# What n copies of a node of component reliability r use: one amount per
+# resource.
+Use = Callable[[float, int], Tuple[float, ...]]
+
+
+def reliability_redundancy(
+    system: System,
+    uses: Sequence[Use],
+    budget: Sequence[float],
+    bounds: Sequence[Tuple[float, float]],
+    caps: Sequence[float],
+) -> Tuple[float, Tuple[int, ...], Tuple[float, ...]]:
+    """The reliability-redundancy allocation problem (RRAP): the number of
+    copies of each node *and* the reliability of its components that
+    maximise system reliability within the budget.
+
+    A node of component reliability ``r`` fitted as ``n`` active copies has
+    reliability ``1 - (1 - r) ** n``, and ``uses[i](r, n)`` is what its
+    copies use (typically more for a higher ``r``, as a more reliable
+    component costs more, and for more copies). This is a mixed-integer
+    nonlinear problem (Tillman, Hwang & Kuo, 1977). It is solved exactly
+    over the copies by branch and bound: every copy vector that fits the
+    budget at the lowest reliabilities is bounded above by the system
+    reliability with each node at the highest reliability it could afford
+    alone, and the vectors are solved in decreasing order of that bound --
+    each a continuous problem for the reliabilities, solved by SLSQP with
+    the exact gradient from the lowest reliabilities -- until no bound
+    beats the best found. The continuous solve finds a local optimum, which
+    is the global one when the problem for fixed copies is convex, as for a
+    series system with convex costs.
+
+    The uses must not decrease with ``r`` or with ``n``: the bounds and the
+    pruning rely on it.
+
+    Parameters
+    ----------
+    system : callable
+        Maps a tuple of node reliabilities to ``(reliability,
+        derivatives)``: the system reliability and its derivative with
+        respect to each node's reliability.
+    uses : Sequence[callable]
+        For each node, a function of ``(r, n)`` giving what ``n`` copies of
+        component reliability ``r`` use: a tuple of one amount per resource.
+    budget : Sequence[float]
+        The most of each resource (``math.inf`` for no limit).
+    bounds : Sequence[tuple[float, float]]
+        The lowest and highest component reliability of each node, in
+        [0, 1].
+    caps : Sequence[float]
+        The most copies of each node (``math.inf`` for no limit; the budget
+        then bounds them).
+
+    Returns
+    -------
+    tuple
+        ``(reliability, units, component_reliabilities)``.
+
+    Raises
+    ------
+    ValueError
+        If even one copy of each node at its lowest reliability does not
+        fit the budget, if a node's copies are not bounded, or if more than
+        ``EXACT_SEARCH_LIMIT`` (500,000) copy vectors fit.
+
+    Examples
+    --------
+    Two components in series. Each copy costs 10 to fit, plus
+    ``(-1 / log(r)) ** 1.5`` for a component of reliability ``r``, which
+    rises steeply as ``r`` nears 1; the budget is 100:
+
+    >>> import math
+    >>> from repyability.rbd.redundancy_allocation import (
+    ...     reliability_redundancy,
+    ... )
+    >>> def system(p):
+    ...     return p[0] * p[1], (p[1], p[0])
+    >>> def use(r, n):
+    ...     return (n * (10 + (-1 / math.log(r)) ** 1.5),)
+    >>> reliability, units, r = reliability_redundancy(
+    ...     system, [use, use], [100.0], [(0.5, 0.999)] * 2, [math.inf] * 2
+    ... )
+    >>> units, [round(x, 3) for x in r], round(reliability, 4)
+    ((3, 3), [0.754, 0.754], 0.9705)
+    """
+    k = len(uses)
+    m = len(budget)
+    slacks = [_slack(limit) for limit in budget]
+    lows = [float(lo) for lo, _ in bounds]
+    highs = [float(hi) for _, hi in bounds]
+    limited = [r for r, limit in enumerate(budget) if math.isfinite(limit)]
+
+    def fits(total: Sequence[float]) -> bool:
+        return all(total[r] <= budget[r] + slacks[r] for r in limited)
+
+    # Every copy vector that fits at the lowest reliabilities (uses do not
+    # decrease with the copies, so the search can stop at the first misfit).
+    least = [uses[i](lows[i], 1) for i in range(k)]
+    reserve = [[0.0] * m for _ in range(k + 1)]
+    for i in reversed(range(k)):
+        reserve[i] = [least[i][r] + reserve[i + 1][r] for r in range(m)]
+    if not fits(reserve[0]):
+        raise ValueError(
+            "The budget cannot afford one copy of each node at its lowest "
+            "reliability."
+        )
+    vectors: List[Tuple[Tuple[int, ...], List[Tuple[float, ...]]]] = []
+
+    def visit(i: int, spent: List[float], chosen: list, low_uses: list):
+        if i == k:
+            if len(vectors) >= EXACT_SEARCH_LIMIT:
+                raise ValueError(
+                    f"More than {EXACT_SEARCH_LIMIT:,} copy vectors fit the "
+                    "budget; bound the search with max_units."
+                )
+            vectors.append((tuple(chosen), list(low_uses)))
+            return
+        n = 1
+        while n <= caps[i]:
+            amounts = uses[i](lows[i], n)
+            total = [spent[r] + amounts[r] for r in range(m)]
+            if not fits([total[r] + reserve[i + 1][r] for r in range(m)]):
+                break
+            if n > 10_000:
+                raise ValueError(
+                    "A node could be copied without limit: more than 10,000 "
+                    "copies fit the budget. Give it a max_units."
+                )
+            visit(i + 1, total, chosen + [n], low_uses + [amounts])
+            n += 1
+
+    visit(0, [0.0] * m, [], [])
+
+    def node_reliabilities(r: Sequence[float], n: Sequence[int]) -> tuple:
+        return tuple(1.0 - (1.0 - ri) ** ni for ri, ni in zip(r, n))
+
+    def highest(i: int, n: int, others: Sequence[float]) -> float:
+        # The highest reliability node i can afford with n copies, the
+        # others using ``others`` (bisection: uses rise with r).
+        def affordable(r: float) -> bool:
+            amounts = uses[i](r, n)
+            return fits([others[j] + amounts[j] for j in range(m)])
+
+        if affordable(highs[i]):
+            return highs[i]
+        lo, hi = lows[i], highs[i]
+        for _ in range(60):
+            mid = 0.5 * (lo + hi)
+            if affordable(mid):
+                lo = mid
+            else:
+                hi = mid
+        return lo
+
+    bounded = []
+    for n, low_uses in vectors:
+        total = [math.fsum(u[r] for u in low_uses) for r in range(m)]
+        tops = [
+            highest(i, n[i], [total[r] - low_uses[i][r] for r in range(m)])
+            for i in range(k)
+        ]
+        bound = system(node_reliabilities(tops, n))[0]
+        bounded.append((bound, n, tops))
+    bounded.sort(key=lambda b: -b[0])
+
+    def total_use(r: Sequence[float], n: Sequence[int]) -> List[float]:
+        amounts = [uses[i](r[i], n[i]) for i in range(k)]
+        return [math.fsum(a[j] for a in amounts) for j in range(m)]
+
+    def solve(n: Tuple[int, ...]):
+        def objective(r):
+            reliability, derivatives = system(node_reliabilities(r, n))
+            if reliability <= 0.0:
+                return 1e300, np.zeros(k)
+            gradient = [
+                -derivatives[i]
+                * n[i]
+                * (1.0 - r[i]) ** (n[i] - 1)
+                / reliability
+                for i in range(k)
+            ]
+            return -math.log(reliability), np.array(gradient)
+
+        def slack(r):
+            used = total_use(r, n)
+            return np.array([budget[j] - used[j] for j in limited])
+
+        def slack_gradient(r):
+            # Each node's use depends on its own reliability only, so one
+            # finite difference per node (backward at the upper bound).
+            columns = []
+            for i in range(k):
+                step = 1.5e-8 * max(1.0, abs(r[i]))
+                if r[i] + step > highs[i]:
+                    step = -step
+                before = uses[i](r[i], n[i])
+                after = uses[i](r[i] + step, n[i])
+                columns.append(
+                    [-(after[j] - before[j]) / step for j in limited]
+                )
+            return np.array(columns).T
+
+        constraints = [{"type": "ineq", "fun": slack, "jac": slack_gradient}]
+        # From the lowest reliabilities, which fit; if the solver ends
+        # outside the budget, they are the answer.
+        best = (system(node_reliabilities(lows, n))[0], tuple(lows))
+        found = minimize(
+            objective,
+            np.array(lows, dtype=float),
+            jac=True,
+            bounds=list(zip(lows, highs)),
+            constraints=constraints if limited else (),
+            method="SLSQP",
+            options={"ftol": 1e-12, "maxiter": 1000},
+        )
+        r = tuple(float(x) for x in np.clip(found.x, lows, highs))
+        if fits(total_use(r, n)):
+            reliability = system(node_reliabilities(r, n))[0]
+            if reliability > best[0]:
+                best = (reliability, r)
+        return best
+
+    best: Optional[Tuple[float, Tuple[int, ...], Tuple[float, ...]]] = None
+    for bound, n, tops in bounded:
+        if best is not None and bound <= best[0]:
+            break
+        reliability, r = solve(n)
+        if best is None or reliability > best[0]:
+            best = (reliability, n, r)
+    assert best is not None
+    return best

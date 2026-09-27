@@ -30,6 +30,7 @@ from repyability.rbd.results import (
     Criticalities,
     FailureCriticalityIndex,
     RedundancyAllocation,
+    ReliabilityRedundancyAllocation,
     RestorationCriticalityIndex,
     UpDownImportance,
 )
@@ -67,6 +68,7 @@ __all__ = [
     "ConfidenceInterval",
     "CostResult",
     "RedundancyAllocation",
+    "ReliabilityRedundancyAllocation",
     "Criticalities",
     "UpDownImportance",
     "FailureCriticalityIndex",

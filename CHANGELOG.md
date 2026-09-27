@@ -87,6 +87,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   non-dominated set of every allocation, with one and two resources and with
   types and strategies, on series systems and bridge networks, and every point
   against `allocate_redundancy` in both forms.
+- **Reliability-redundancy allocation
+  (`NonRepairableRBD.allocate_reliability_redundancy`, closes #79).** Chooses
+  each node's component reliability, within `bounds`, and its number of
+  copies together, to maximise system reliability when what the copies use is
+  a function of both (`uses[node](r, n)`, a number or a dict of resources,
+  within a `budget`; Tillman, Hwang & Kuo, 1977). Any structure works. It is
+  solved exactly over the copies by branch and bound — each copy vector that
+  fits at the lowest reliabilities is bounded by the system reliability with
+  every node at the most reliable component it could afford alone, and solved
+  in decreasing order of that bound until none beats the best found — with the
+  reliabilities for each vector found by SLSQP with the exact gradient (a local
+  optimum; global for a series system with convex costs). The result is a new
+  `ReliabilityRedundancyAllocation`. It returns the best published solutions
+  of the four classic benchmarks — series (0.931682), series–parallel
+  (0.99997665), bridge (0.99988964) and overspeed protection (0.99995467) —
+  which the tests check, along with plain redundancy allocation when the
+  reliabilities are fixed and a closed form for one node.
 - **Cost of a repairable system (`expected_cost_rate`).** `RepairableRBD`
   components may now carry `repair_cost` and `replace_cost` (charged per
   corrective action) and an optional `downtime_cost` rate, alongside a

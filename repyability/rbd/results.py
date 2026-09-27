@@ -509,6 +509,52 @@ class CostResult(_ResultMapping):
 
 
 @dataclass
+class ReliabilityRedundancyAllocation(_ResultMapping):
+    """The component reliability and number of copies chosen for each
+    node by ``NonRepairableRBD.allocate_reliability_redundancy``.
+
+    Attributes
+    ----------
+    units : dict
+        The number of active copies of each node.
+    component_reliability : dict
+        The reliability chosen for each node's components (every copy of a
+        node is the same).
+    reliability : float
+        The system reliability.
+    cost : float
+        The total of the ``"cost"`` resource (or of the first resource).
+    resources : dict
+        The total of each resource the copies use.
+
+    Examples
+    --------
+    >>> import math
+    >>> from surpyval import FixedEventProbability
+    >>> from repyability import NonRepairableRBD
+    >>> rbd = NonRepairableRBD(
+    ...     [("s", "a"), ("a", "t")],
+    ...     {"a": FixedEventProbability.from_params(0.1)},
+    ... )
+    >>> def cost(r, n):
+    ...     return n * (10 + (-1 / math.log(r)) ** 1.5)
+    >>> best = rbd.allocate_reliability_redundancy(
+    ...     {"a": cost}, budget=50, bounds=(0.5, 0.999)
+    ... )
+    >>> best.units, round(best.component_reliability["a"], 3)
+    ({'a': 3}, 0.754)
+    >>> round(best.reliability, 4), round(best.cost, 4)
+    (0.9851, 50.0)
+    """
+
+    units: Dict[Hashable, int]
+    component_reliability: Dict[Hashable, float]
+    reliability: float
+    cost: float
+    resources: Dict[Hashable, float]
+
+
+@dataclass
 class RedundancyAllocation(_ResultMapping):
     """The result of ``NonRepairableRBD.allocate_redundancy()``.
 

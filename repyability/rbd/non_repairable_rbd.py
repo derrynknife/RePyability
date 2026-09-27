@@ -23,6 +23,7 @@ from typing import (
     List,
     Optional,
     Sequence,
+    Tuple,
     Union,
     cast,
 )
@@ -43,11 +44,15 @@ from .ccf import CCFGroup
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .load_sharing_node import LoadSharingModel
 from .node_state import NodeState
-from .rbd import RBD, _check_on_infeasible_rbd
+from .rbd import RBD, _check_on_infeasible_rbd, _shannon_value_and_gradient
 from .repeated_node import RepeatedNode
 from .repeated_standby_node import RepeatedStandbyNode
 from .redundancy_allocation import ComponentOption, active_unreliability
-from .results import ConfidenceInterval, RedundancyAllocation
+from .results import (
+    ConfidenceInterval,
+    RedundancyAllocation,
+    ReliabilityRedundancyAllocation,
+)
 from .standby_node import StandbyModel
 
 
@@ -2035,6 +2040,292 @@ class NonRepairableRBD(RBD):
             self._redundancy_result(problem, allocation, "exact")
             for allocation in front
         ]
+
+    def allocate_reliability_redundancy(
+        self,
+        uses: Dict[
+            Hashable,
+            Callable[[float, int], Union[float, Dict[Hashable, float]]],
+        ],
+        *,
+        budget: Union[float, Dict[Hashable, float]],
+        bounds: Union[
+            Tuple[float, float], Dict[Hashable, Tuple[float, float]]
+        ],
+        t: Optional[float] = None,
+        max_units: Union[int, Dict[Hashable, int], None] = None,
+    ) -> ReliabilityRedundancyAllocation:
+        """Choose each node's component reliability and number of copies
+        together: the reliability-redundancy allocation problem (RRAP).
+
+        Joins reliability allocation (what each component must achieve) to
+        redundancy allocation (how many copies to fit): for each node in
+        ``uses``, pick a component reliability ``r`` within its ``bounds``
+        and a number of active copies ``n``, giving the node reliability
+        ``1 - (1 - r) ** n``, to maximise system reliability within the
+        budget. What the copies use is a function of both, typically rising
+        steeply as ``r`` approaches 1 (Tillman, Hwang & Kuo, 1977). The
+        node's own model in the RBD is not used; the other nodes stay as
+        they are, evaluated at the mission time ``t``. Any structure works:
+        the system reliability and its gradient come from the exact engine.
+
+        It is solved exactly over the copies by branch and bound: each copy
+        vector that fits the budget at the lowest reliabilities is bounded
+        above by the system reliability with every node at the highest
+        reliability it could afford alone, and the vectors are solved in
+        decreasing order of that bound -- each a continuous problem for the
+        reliabilities, solved by SLSQP with the exact gradient from the
+        lowest reliabilities -- until no bound beats the best found. The
+        continuous problem is solved to a local optimum, which for a series
+        system with costs convex in the reliabilities is the global one. On
+        the classic benchmarks (series, series-parallel, bridge and
+        overspeed protection systems) it returns the best published
+        solutions.
+
+        Parameters
+        ----------
+        uses : dict
+            ``{node: function}``: ``function(r, n)`` gives what ``n`` copies
+            of component reliability ``r`` use, a number (their cost) or a
+            dict of resource -> amount, naming the same resources for every
+            node. It must not decrease as ``r`` or ``n`` grows.
+        budget : float or dict
+            The limit on the one resource (a number), or on each resource a
+            dict names (resources it leaves out are not limited).
+        bounds : tuple or dict
+            The lowest and highest component reliability, ``(low, high)``
+            in [0, 1], for every node (a tuple) or for each node (a dict
+            naming every node in ``uses``). The lowest must be affordable.
+        t : float, optional
+            The mission time at which the other nodes' reliabilities are
+            evaluated. Required for a time-varying RBD.
+        max_units : int or dict, optional
+            The most copies of every node (an int) or of particular nodes
+            (a dict). By default the budget bounds them.
+
+        Returns
+        -------
+        ReliabilityRedundancyAllocation
+            The ``units`` and ``component_reliability`` of each node, the
+            system ``reliability``, and the total of each resource used
+            (``resources``; ``cost`` is the total of ``"cost"``, or of the
+            first resource).
+
+        Raises
+        ------
+        ValueError
+            On invalid input: empty ``uses``, a node that is not a component
+            node or is a repeated node, a use that is not a function or
+            returns something other than finite, non-negative amounts of the
+            same resources for every node, a ``budget`` naming an unknown
+            resource, invalid ``bounds`` or ``max_units``, ``t`` missing for
+            a time-varying RBD, a budget that cannot afford one copy of each
+            node at its lowest reliability, a node whose copies nothing
+            bounds, or more than 500,000 copy vectors to consider.
+        NotImplementedError
+            If the RBD has common-cause (CCF) groups.
+
+        References
+        ----------
+        F. A. Tillman, C.-L. Hwang and W. Kuo, "Determining component
+        reliability and redundancy for optimum system reliability", IEEE
+        Transactions on Reliability, 26(3), 162-165, 1977.
+
+        Examples
+        --------
+        Two components in series. A component's reliability ``r`` is
+        chosen in [0.5, 0.999]; each copy costs 10 to fit, plus
+        ``(-1 / log(r)) ** 1.5``, which rises steeply as ``r`` nears 1.
+        Within a budget of 100, three copies of each at ``r = 0.754`` is
+        best:
+
+        >>> import math
+        >>> from surpyval import FixedEventProbability
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "a"), ("a", "b"), ("b", "t")],
+        ...     {
+        ...         "a": FixedEventProbability.from_params(0.1),
+        ...         "b": FixedEventProbability.from_params(0.2),
+        ...     },
+        ... )
+        >>> def cost(r, n):
+        ...     return n * (10 + (-1 / math.log(r)) ** 1.5)
+        >>> best = rbd.allocate_reliability_redundancy(
+        ...     {"a": cost, "b": cost}, budget=100, bounds=(0.5, 0.999)
+        ... )
+        >>> best.units
+        {'a': 3, 'b': 3}
+        >>> [round(r, 3) for r in best.component_reliability.values()]
+        [0.754, 0.754]
+        >>> round(best.reliability, 4)
+        0.9705
+        """
+        if self.ccf_groups:
+            raise NotImplementedError(
+                "Reliability-redundancy allocation does not yet account for "
+                "common-cause (CCF) groups."
+            )
+        if not uses:
+            raise ValueError("uses must name at least one node.")
+        nodes = list(uses)
+        for node in nodes:
+            if node not in self.nodes:
+                raise ValueError(
+                    f"Node {node!r} in uses is not a component node of the "
+                    "RBD (the input and output nodes cannot be duplicated)."
+                )
+            if node in self.repeated:
+                raise ValueError(
+                    f"Node {node!r} is a repeat of node "
+                    f"{self.repeated[node]!r}; allocate to that node instead."
+                )
+            if not callable(uses[node]):
+                raise ValueError(
+                    f"uses[{node!r}] must be a function of (r, n), got "
+                    f"{uses[node]!r}."
+                )
+        if isinstance(bounds, dict):
+            missing = [node for node in nodes if node not in bounds]
+            unknown = [node for node in bounds if node not in uses]
+            if missing or unknown:
+                raise ValueError(
+                    "bounds must give (low, high) for exactly the nodes in "
+                    f"uses; missing {missing}, unknown {unknown}."
+                )
+            ranges = [bounds[node] for node in nodes]
+        else:
+            ranges = [bounds] * len(nodes)
+        limits_of = []
+        for node, pair in zip(nodes, ranges):
+            try:
+                low, high = (float(value) for value in pair)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"The bounds of node {node!r} must be a pair (low, "
+                    f"high), got {pair!r}."
+                ) from None
+            if not 0.0 <= low <= high <= 1.0:
+                raise ValueError(
+                    f"The bounds of node {node!r} must satisfy 0 <= low <= "
+                    f"high <= 1, got {pair!r}."
+                )
+            limits_of.append((low, high))
+        # The resources, from what one copy of each node uses at its lowest
+        # reliability.
+        labels = [f"node {node!r}" for node in nodes]
+        entries = [
+            uses[node](low, 1) for node, (low, _) in zip(nodes, limits_of)
+        ]
+        if all(isinstance(entry, dict) for entry in entries):
+            resources, _ = self._redundancy_amounts(labels, entries)
+        else:
+            resources = ["cost"]
+            for label, entry in zip(labels, entries):
+                if isinstance(entry, dict) or not np.isfinite(float(entry)):
+                    raise ValueError(
+                        f"The use of {label} must be a finite number or a "
+                        f"dict of resources for every node, got {entry!r}."
+                    )
+        m = len(resources)
+
+        def vector(node):
+            # The node's use as a tuple, one amount per resource.
+            function = uses[node]
+
+            def use(r: float, n: int) -> Tuple[float, ...]:
+                amount = function(r, n)
+                if isinstance(amount, dict):
+                    values = tuple(float(amount[x]) for x in resources)
+                else:
+                    values = (float(amount),)
+                if len(values) != m or not all(
+                    np.isfinite(v) and v >= 0.0 for v in values
+                ):
+                    raise ValueError(
+                        f"The use of node {node!r} at r={r!r}, n={n!r} must "
+                        "be finite and non-negative amounts of the resources "
+                        f"{resources}, got {amount!r}."
+                    )
+                return values
+
+            return use
+
+        use_vectors = [vector(node) for node in nodes]
+        limits = self._redundancy_limits(resources, budget)
+        caps = self._redundancy_caps(nodes, max_units)
+        for i, node in enumerate(nodes):
+            if caps[i] == math.inf:
+                # Unbounded unless a limited resource grows with the copies.
+                others = [
+                    math.fsum(
+                        use_vectors[j](limits_of[j][0], 1)[r]
+                        for j in range(len(nodes))
+                        if j != i
+                    )
+                    for r in range(m)
+                ]
+                n = 1
+                while all(
+                    others[r] + amount <= limits[r]
+                    for r, amount in enumerate(
+                        use_vectors[i](limits_of[i][0], n)
+                    )
+                ):
+                    n += 1
+                    if n > 10_000:
+                        raise ValueError(
+                            f"Node {node!r} could be copied without limit: "
+                            "its copies do not use enough of a limited "
+                            "resource. Give it a max_units."
+                        )
+        if t is not None and np.ndim(t) != 0:
+            raise ValueError("t must be a single mission time.")
+        if t is None:
+            if self.is_time_varying:
+                raise ValueError(
+                    "t (the mission time) is required: this RBD is "
+                    "time-varying, so its reliability depends on when it is "
+                    "evaluated."
+                )
+            t = 1.0
+        x = np.atleast_1d(np.asarray(t, dtype=float))
+        base = {
+            node: float(np.ravel(p)[0])
+            for node, p in self._base_node_probabilities(
+                x, set(), set()
+            ).items()
+        }
+        plan = self._shannon_plan("p")
+
+        def system(reliabilities):
+            p = dict(base)
+            q = {node: 1.0 - value for node, value in base.items()}
+            for node, value in zip(nodes, reliabilities):
+                p[node], q[node] = value, 1.0 - value
+            value, gradient = _shannon_value_and_gradient(plan, p, q)
+            return value, tuple(gradient.get(node, 0.0) for node in nodes)
+
+        reliability, units, components = (
+            redundancy_allocation.reliability_redundancy(
+                system, use_vectors, limits, limits_of, caps
+            )
+        )
+        amounts = [
+            use_vectors[i](components[i], units[i]) for i in range(len(nodes))
+        ]
+        totals = {
+            resource: math.fsum(a[r] for a in amounts)
+            for r, resource in enumerate(resources)
+        }
+        primary = resources.index("cost") if "cost" in resources else 0
+        return ReliabilityRedundancyAllocation(
+            units=dict(zip(nodes, map(int, units))),
+            component_reliability=dict(zip(nodes, components)),
+            reliability=reliability,
+            cost=totals[resources[primary]],
+            resources=totals,
+        )
 
     @staticmethod
     def _redundancy_caps(nodes, max_units) -> list:
