@@ -21,6 +21,7 @@ Costs are optional keys of a component's dict, plus one system-level rate:
 | Component | `repair_cost` | Per failure (labour, a callout). A number or a distribution. |
 | Component | `replace_cost` | Per failure (the spare part). A number or a distribution. |
 | Component | `downtime_cost` | Per unit time *this component* is down, even if the system is up (a degraded-mode or per-leg penalty). A number. |
+| Component | `acquisition_cost` | Once, to buy the unit. A number. Not a running cost: see [the total cost of ownership](#the-total-cost-of-ownership). |
 | System | `downtime_cost_rate=` | Per unit time the *system* is down (lost production). A number. |
 
 ```python
@@ -380,5 +381,102 @@ pump(283.0).expected_cost_rate()     # -> 14.08   near √(2 × 2000 / (1e-4 × 
 pump(1000.0).expected_cost_rate()    # -> 26.19   failures hidden too long
 ```
 
-Costs, including cost distributions, and maintenance and inspection
-schedules are saved with the RBD.
+## The total cost of ownership
+
+The costs so far are running costs. Buying the system is a one-off cost:
+give each component an `"acquisition_cost"`, and `total_cost(horizon)` adds
+the purchase to the running cost over the time the system is owned,
+
+```text
+total_cost(H) = acquisition_cost + expected_cost_rate() · H
+```
+
+(undiscounted). The acquisition cost is not a running cost, so it is left
+out of `has_costs`, `expected_cost_rate` and the simulated samples; a
+`CostResult` reports it beside them, as `acquisition_cost`.
+
+```python
+pump = {
+    "reliability": surv.Exponential.from_params([1e-3]),   # MTTF 1000 h
+    "repairability": surv.Exponential.from_params([0.1]),  # MTTR 10 h
+    "repair_cost": 500.0,
+    "acquisition_cost": 20000.0,
+}
+line = RepairableRBD([("s", "pump"), ("pump", "t")], {"pump": pump},
+                     downtime_cost_rate=100.0)
+line.acquisition_cost          # -> 20000.0
+line.expected_cost_rate()      # -> 1.4851   (500 + 100 × 10) / 1010 per hour
+line.total_cost(87600.0)       # -> 150099.0   ten years
+```
+
+### Buying redundancy
+
+A redundant copy is bought once and then runs: it fails, is repaired and
+costs money for as long as it is owned, while it saves the lost production
+of the outages it covers. `allocate_redundancy(horizon)` chooses how many
+identical, independently repaired, active copies of each component give the
+lowest total cost of ownership:
+
+```python
+best = line.allocate_redundancy(87600.0)
+best.units               # {'pump': 2}
+best.total_cost          # -> 127591.4   a second pump saves 22,508 over ten years
+best.acquisition_cost    # -> 40000.0
+best.availability        # -> 0.999902
+line.allocate_redundancy(8760.0).units   # {'pump': 1}   over one year it does not pay
+```
+
+The second pump costs `20000 + 0.495·H` (its price and its repairs) and saves
+`100 · (U − U²) · H = 0.980·H` of lost production, with `U = 10/1010` the
+fraction of the time one pump is down; it pays once `H` exceeds about 41,200
+hours. A third would save at most `100 · U² · (1 − U) = 0.0097` per hour,
+less than the 0.495 per hour its repairs cost, so it never pays, whatever it
+costs to buy.
+
+The result is a [`TotalCostAllocation`][repyability.TotalCostAllocation]:
+`units`, `total_cost`, `acquisition_cost`, `cost_rate` (the running cost
+per unit time) and `availability` of the design, the `horizon` and the
+`method`. Each design is scored exactly: `n` copies of a component of
+long-run availability `A` are all down `(1 − A)ⁿ` of the time, each copy has
+the running cost of the original, and the system's availability comes from
+the exact engine, so the result is what `total_cost`, `expected_cost_rate`
+and `mean_availability` give for the system with the copies drawn out as
+separate nodes. The arguments:
+
+| Argument | Meaning |
+|---|---|
+| `nodes` | The components that may be given copies; by default every one with an `"acquisition_cost"`. The others are counted once. |
+| `min_availability` | Only designs at least this available, in (0, 1): e.g. a contractual availability, met at the lowest total cost. |
+| `max_units` | The most copies of every node (an int) or of some (a dict). A node whose copies cost nothing needs one. |
+| `method` | `"exact"` (the default): a proven optimum. `"greedy"`: adds or removes one copy at a time while that lowers the total; fast, not guaranteed optimal. |
+
+```python
+line.allocate_redundancy(87600.0, min_availability=0.99999).units   # {'pump': 3}
+```
+
+Unlike the reliability of a non-repairable design, the total cost is not
+monotone in the copies: each copy costs as much as the one before and saves
+less. The exact search is bounded by two facts. The `k+1`-th copy of a
+component down a fraction `U` of the time can save at most
+`H · downtime_cost_rate · Uᵏ · (1 − U)` (all it could ever save, were
+everything else perfect), so no copy beyond the point where that falls below
+a copy's cost can pay (without a `min_availability`, which may need copies
+that do not pay). And a design no worse than the best found spends no more
+on copies than that design's total. When every node considered lies on every
+path (in series with the rest of the system) and has no hidden failures, the
+system's availability is theirs times the rest's, and a dynamic program over
+the nodes finds the optimum for any number of them; on other structures a
+branch and bound over the designs does, which suits a handful of nodes.
+
+The model and its limits: copies are active and repaired independently of
+each other (as many repair crews as failed copies), with no common-cause
+failures between them (see [Common-cause failures](common-cause.md)).
+Copies of a component with hidden failures are inspected together. A nested
+`RepairableRBD` cannot be given copies. Components under block replacement
+have no exact long-run cost and raise `NotImplementedError`. Costs are not
+discounted. For non-repairable systems, redundancy allocation within a
+budget or to a reliability target is in
+[Design and allocation](design.md#redundancy-allocation).
+
+Costs, including cost distributions and acquisition costs, and maintenance
+and inspection schedules are saved with the RBD.

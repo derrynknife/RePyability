@@ -18,6 +18,7 @@ from fractions import Fraction
 from typing import (
     Any,
     Collection,
+    Dict,
     Hashable,
     Iterable,
     Iterator,
@@ -25,6 +26,7 @@ from typing import (
     NamedTuple,
     Optional,
     Tuple,
+    Union,
 )
 
 import numpy as np
@@ -35,12 +37,17 @@ from repyability.non_repairable import NonRepairable
 from repyability.rbd._model_utils import model_mean
 from repyability.rbd._sampling import UniformStream, inverse_sampler
 from repyability.rbd.rbd import RBD, _check_on_infeasible_rbd
+from repyability.rbd.redundancy_allocation import (
+    lowest_total_cost,
+    redundancy_caps,
+)
 from repyability.rbd.results import (
     AvailabilityResult,
     CostResult,
     Criticalities,
     FailureCriticalityIndex,
     RestorationCriticalityIndex,
+    TotalCostAllocation,
     UpDownImportance,
 )
 
@@ -245,6 +252,19 @@ def _constant_rate(model) -> Optional[float]:
     constant = np.allclose(hazard, rate, rtol=1e-9, atol=0.0)
     exponential = np.allclose(survival, np.exp(-rate * t), rtol=1e-9)
     return rate if constant and exponential else None
+
+
+def _horizon(horizon) -> float:
+    """``horizon`` as a finite, non-negative float, or a ValueError."""
+    try:
+        value = float(horizon)
+    except (TypeError, ValueError):
+        value = float("nan")
+    if not (np.isfinite(value) and value >= 0.0):
+        raise ValueError(
+            f"horizon must be a finite, non-negative number, got {horizon!r}."
+        )
+    return value
 
 
 def _common_period(intervals: Iterable[float]) -> float:
@@ -757,6 +777,10 @@ class RepairableRBD(RBD):
           inspection is charged ``"cost"``, a number or a distribution
           drawn afresh each time. A component cannot have both a
           ``"preventive"`` schedule and an ``"inspection"``.
+          ``"acquisition_cost"`` is the one-off cost of buying the unit, a
+          number: it is not a running cost, so it is left out of
+          ``expected_cost_rate`` and the simulated costs, and counted by
+          ``total_cost`` and ``allocate_redundancy``.
         - A [`NonRepairable`][repyability.NonRepairable], pairing a
           reliability model with a time-to-replace model. Each node gets
           its own copy, so one object can be given for several identical
@@ -806,6 +830,9 @@ class RepairableRBD(RBD):
         ``"inspection_cost"``.
     downtime_cost_rate : float
         The system downtime cost rate.
+    acquisition_costs : dict
+        Node name -> the one-off cost of buying the unit, for the nodes that
+        declare a non-zero ``"acquisition_cost"``.
     input_node : Hashable
         The input node.
     output_node : Hashable
@@ -922,7 +949,7 @@ class RepairableRBD(RBD):
     COMPONENT_SPEC_KEYS = (
         ("reliability", "repairability")
         + COST_KEYS
-        + ("preventive", "inspection")
+        + ("preventive", "inspection", "acquisition_cost")
     )
     #: The keys of a component's ``"preventive"`` spec.
     PREVENTIVE_KEYS = ("interval", "policy", "duration", "cost")
@@ -970,6 +997,8 @@ class RepairableRBD(RBD):
         self._preventive: dict[Any, _Preventive] = {}
         # Periodic inspection, by node: the nodes whose failures are hidden.
         self._inspection: dict[Any, _Inspection] = {}
+        # One-off purchase costs, by node (only non-zero ones).
+        self.acquisition_costs: dict[Any, float] = {}
         components = copy(components)
         reliability = {}
         repairability = {}
@@ -1007,6 +1036,12 @@ class RepairableRBD(RBD):
                     if cost is not None:
                         node_costs["inspection_cost"] = cost
                     self._inspection[name] = inspection
+                if component.get("acquisition_cost") is not None:
+                    acquisition = self._validate_cost(
+                        name, "acquisition_cost", component["acquisition_cost"]
+                    )
+                    if acquisition:
+                        self.acquisition_costs[name] = acquisition
                 if node_costs:
                     self.costs[name] = node_costs
                 repair_model = component["repairability"]
@@ -1199,9 +1234,7 @@ class RepairableRBD(RBD):
             raise ValueError(
                 f"{node!r}: {key} must be a number, not a distribution. Only "
                 "the costs charged per action (repair_cost, replace_cost and "
-                "the preventive and inspection costs) may be distributions; "
-                "a downtime cost is a rate, and the outage durations already "
-                "make it random."
+                "the preventive and inspection costs) may be distributions."
             )
         try:
             cost = float(value)
@@ -1250,11 +1283,13 @@ class RepairableRBD(RBD):
         True if some component declares a non-zero ``"repair_cost"``,
         ``"replace_cost"``, ``"downtime_cost"``, or preventive-maintenance
         or inspection ``"cost"`` (a cost distribution always counts), or
-        ``downtime_cost_rate`` is non-zero. Costs of 0
-        price nothing, and costs declared inside a nested ``RepairableRBD``
-        do not count. When nothing is priced there is no cost model to
-        evaluate, so the cost methods short-circuit rather than doing the
-        work: ``expected_cost_rate`` returns 0.0, ``cost`` returns None, and
+        ``downtime_cost_rate`` is non-zero: whether running the system costs
+        anything. Costs of 0 price nothing, costs declared inside a nested
+        ``RepairableRBD`` do not count, and neither does an
+        ``"acquisition_cost"`` (a one-off cost, see ``total_cost``). When
+        nothing is priced there is no cost model to evaluate, so the cost
+        methods short-circuit rather than doing the work:
+        ``expected_cost_rate`` returns 0.0, ``cost`` returns None, and
         ``availability`` skips the cost accounting (its result's ``cost`` is
         None).
 
@@ -1467,32 +1502,391 @@ class RepairableRBD(RBD):
                 self.node_availability(), working_nodes, broken_nodes
             )
         )
-        for node, node_costs in self.costs.items():
-            # Corrective actions, charged per failure, and preventive ones.
-            # A forced node never changes state, so it never incurs either.
-            per_action = sum(
-                _mean_cost(node_costs[key])
-                for key in self.PER_FAILURE_COST_KEYS
-                if key in node_costs
+        for node in self.costs:
+            rate += self._node_cost_rate(
+                node, node_availability[node], node in forced
             )
-            preventive = node_costs.get("preventive_cost")
-            if (per_action or preventive is not None) and node not in forced:
-                failures, maintained, _ = self._node_frequencies(node)
-                rate += per_action * failures
-                if preventive is not None:
-                    rate += _mean_cost(preventive) * maintained
-            inspection = node_costs.get("inspection_cost")
-            if inspection is not None and node not in forced:
-                # One inspection per interval (none is skipped: repairs are
-                # instant, as the exact values require).
-                _, interval = self._inspected_rate(node)
-                rate += _mean_cost(inspection) / interval
-            # Optional cost of *this component* being down, whether or not
-            # the system as a whole is.
-            downtime_cost = node_costs.get("downtime_cost", 0.0)
-            if downtime_cost:
-                rate += downtime_cost * (1.0 - node_availability[node])
         return rate
+
+    def _node_cost_rate(
+        self, node, availability: float, forced: bool = False
+    ) -> float:
+        """A component's own running cost per unit time, in the long run:
+        its corrective, preventive and inspection actions, and its own
+        downtime (``availability`` its long-run availability). A forced node
+        never changes state, so it incurs no actions."""
+        node_costs = self.costs.get(node, {})
+        rate = 0.0
+        # Corrective actions, charged per failure, and preventive ones.
+        per_action = sum(
+            _mean_cost(node_costs[key])
+            for key in self.PER_FAILURE_COST_KEYS
+            if key in node_costs
+        )
+        preventive = node_costs.get("preventive_cost")
+        if (per_action or preventive is not None) and not forced:
+            failures, maintained, _ = self._node_frequencies(node)
+            rate += per_action * failures
+            if preventive is not None:
+                rate += _mean_cost(preventive) * maintained
+        inspection = node_costs.get("inspection_cost")
+        if inspection is not None and not forced:
+            # One inspection per interval (none is skipped: repairs are
+            # instant, as the exact values require).
+            _, interval = self._inspected_rate(node)
+            rate += _mean_cost(inspection) / interval
+        # Optional cost of *this component* being down, whether or not the
+        # system as a whole is.
+        downtime_cost = node_costs.get("downtime_cost", 0.0)
+        if downtime_cost:
+            rate += downtime_cost * (1.0 - availability)
+        return rate
+
+    @property
+    def acquisition_cost(self) -> float:
+        """The one-off cost of buying the components: the sum of their
+        ``"acquisition_cost"`` (0.0 if none is given). Only this RBD's own
+        components count, not those inside a nested ``RepairableRBD``."""
+        return float(sum(self.acquisition_costs.values()))
+
+    def total_cost(
+        self,
+        horizon: float,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> float:
+        """Returns the total cost of owning the system for ``horizon``.
+
+        The life-cycle cost, undiscounted: buying the components, then
+        running the system for ``horizon`` at the long-run cost rate,
+
+        ```text
+        total = acquisition_cost + expected_cost_rate() * horizon
+        ```
+
+        with ``acquisition_cost`` the sum of the components'
+        ``"acquisition_cost"``. The running cost is the long-run rate,
+        exact over a horizon long compared with the components' cycles;
+        ``cost`` simulates a finite window from new (whose ``CostResult``
+        gives the same ``acquisition_cost`` separately).
+
+        Parameters
+        ----------
+        horizon : float
+            How long the system is owned, in the time unit of the component
+            models: finite and non-negative.
+        working_nodes : Collection[Hashable], optional
+            As for ``expected_cost_rate``, by default None.
+        broken_nodes : Collection[Hashable], optional
+            As for ``expected_cost_rate``, by default None.
+
+        Returns
+        -------
+        float
+            The total cost over the horizon.
+
+        Raises
+        ------
+        ValueError
+            If ``horizon`` is not finite and non-negative, or as for
+            ``expected_cost_rate``.
+        NotImplementedError
+            As for ``expected_cost_rate``.
+
+        Examples
+        --------
+        A pump bought for 20,000, failing on average every 1000 hours,
+        repaired in 10 at 500 per repair, with lost production at 100 per
+        hour, owned for ten years:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> rbd = RepairableRBD(
+        ...     [("s", "p"), ("p", "t")],
+        ...     {
+        ...         "p": {
+        ...             "reliability": surv.Exponential.from_params([1e-3]),
+        ...             "repairability": surv.Exponential.from_params([0.1]),
+        ...             "repair_cost": 500.0,
+        ...             "acquisition_cost": 20000.0,
+        ...         }
+        ...     },
+        ...     downtime_cost_rate=100.0,
+        ... )
+        >>> round(rbd.expected_cost_rate(), 4)  # (500 + 100 * 10) / 1010
+        1.4851
+        >>> round(rbd.total_cost(87600.0))
+        150099
+        """
+        horizon = _horizon(horizon)
+        return self.acquisition_cost + horizon * self.expected_cost_rate(
+            working_nodes, broken_nodes
+        )
+
+    def allocate_redundancy(
+        self,
+        horizon: float,
+        *,
+        nodes: Optional[Collection[Hashable]] = None,
+        min_availability: Optional[float] = None,
+        max_units: Union[int, Dict[Hashable, int], None] = None,
+        method: str = "exact",
+    ) -> TotalCostAllocation:
+        """Choose the redundancy with the lowest total cost of ownership.
+
+        How many identical copies of each node to fit in active parallel so
+        that owning the system for ``horizon`` costs least: each copy costs
+        its ``"acquisition_cost"`` to buy and its running costs (repairs,
+        replacements, preventive maintenance, inspections, its own downtime
+        cost) to keep, and together the copies save the cost of the system
+        being down (``downtime_cost_rate``). That is ``total_cost`` for the
+        system with the copies drawn out:
+
+        ```text
+        total = sum_i n_i * (a_i + horizon * r_i)
+                + horizon * downtime_cost_rate * (1 - A_sys)
+                + the cost of the nodes not considered
+        ```
+
+        with ``n_i`` copies of node ``i``, each bought for ``a_i`` and
+        running at ``r_i`` per unit time, and ``A_sys`` the system's
+        long-run availability. The copies fail and are repaired
+        independently, so ``n`` copies of a node of long-run availability
+        ``A`` are all down a fraction ``(1 - A) ** n`` of the time, and each
+        design is scored exactly, with no simulation. (Copies of a
+        component with hidden failures are inspected together, and are
+        scored over the inspection period, as ``mean_availability`` does.)
+
+        More copies cost more and save less and less downtime, so the total
+        is not monotone in them. ``method="exact"`` finds a proven optimum
+        from the greedy solution: a design no worse than that spends no more
+        on copies than its total, which caps every node's copies, and
+        (without ``min_availability``) no node takes a copy that could not
+        pay for itself, since the ``k + 1``-th copy of a node of
+        unavailability ``U`` can save at most ``horizon *
+        downtime_cost_rate * U ** k * (1 - U)``. When every node considered
+        is in series with the rest of the system (it lies on every path)
+        and has no hidden failures, the system's availability is theirs
+        times the rest's, and a dynamic program over the nodes finds the
+        optimum however many there are; otherwise a branch and bound over
+        the designs does, which suits a handful of nodes.
+        ``method="greedy"`` adds or removes one copy at a time while that
+        lowers the total: fast, but not guaranteed optimal. Discounting is
+        not modelled.
+
+        Parameters
+        ----------
+        horizon : float
+            How long the system is owned, in the time unit of the component
+            models: finite and non-negative.
+        nodes : Collection[Hashable], optional
+            The components that may be given copies, by default every one
+            with an ``"acquisition_cost"``. The others stay as they are, and
+            their costs are counted once. Nested ``RepairableRBD`` nodes
+            cannot be given copies.
+        min_availability : float, optional
+            Only consider designs whose long-run availability is at least
+            this, in (0, 1), by default no limit.
+        max_units : int or dict, optional
+            The most copies (at least 1) of every node considered (an int)
+            or of particular ones (a dict; nodes it leaves out are
+            unlimited), by default unlimited. A node whose copies cost
+            nothing over the horizon needs one.
+        method : str, optional
+            ``"exact"`` (the default) or ``"greedy"``. The exact search
+            gives up with an explanatory error after examining 500,000
+            designs (the dynamic program, after holding 2,000,000 partial
+            ones).
+
+        Returns
+        -------
+        TotalCostAllocation
+            The chosen ``units`` per node, with the design's
+            ``total_cost``, ``acquisition_cost``, ``cost_rate`` and
+            ``availability`` (see
+            [`TotalCostAllocation`][repyability.TotalCostAllocation]).
+
+        Raises
+        ------
+        ValueError
+            If ``horizon``, ``nodes``, ``min_availability``, ``max_units``
+            or ``method`` is invalid; if no component has an acquisition
+            cost and ``nodes`` is not given; if a node's copies cost nothing
+            and are not capped; if ``min_availability`` cannot be reached;
+            if a component has a non-parametric reliability model; or if
+            the exact search examines more than 500,000 designs.
+        NotImplementedError
+            If a component is under block replacement, or has hidden
+            failures other than with a constant failure rate, instant tests
+            and instant repair: its long-run values are not known exactly.
+
+        Examples
+        --------
+        A pump that fails on average every 1000 hours and takes 10 to
+        repair, bought for 20,000 and repaired for 500, when an hour without
+        pumping costs 100. Over ten years (87,600 hours) a second pump pays
+        for itself; a third would not:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> rbd = RepairableRBD(
+        ...     [("s", "pump"), ("pump", "t")],
+        ...     {
+        ...         "pump": {
+        ...             "reliability": surv.Exponential.from_params([1e-3]),
+        ...             "repairability": surv.Exponential.from_params([0.1]),
+        ...             "repair_cost": 500.0,
+        ...             "acquisition_cost": 20000.0,
+        ...         }
+        ...     },
+        ...     downtime_cost_rate=100.0,
+        ... )
+        >>> round(rbd.total_cost(87600.0))  # one pump
+        150099
+        >>> best = rbd.allocate_redundancy(87600.0)
+        >>> best.units, round(best.total_cost)
+        ({'pump': 2}, 127591)
+
+        Over one year the second pump does not pay for itself:
+
+        >>> rbd.allocate_redundancy(8760.0).units
+        {'pump': 1}
+        """
+        horizon = _horizon(horizon)
+        if method not in ("exact", "greedy"):
+            raise ValueError(
+                f"method must be 'exact' or 'greedy', got {method!r}."
+            )
+        if nodes is None:
+            chosen = [
+                n for n in self.components if n in self.acquisition_costs
+            ]
+            if not chosen:
+                raise ValueError(
+                    "No component has an acquisition_cost, so there is "
+                    "nothing to buy copies of: give the components one, or "
+                    "name the nodes that may be given copies with `nodes`."
+                )
+        else:
+            chosen = list(dict.fromkeys(nodes))
+            if not chosen:
+                raise ValueError("nodes must name at least one component.")
+            for node in chosen:
+                if node not in self.components:
+                    raise ValueError(
+                        f"Node {node!r} in nodes is not a component of this "
+                        "RBD."
+                    )
+                if isinstance(self.components[node], RepairableRBD):
+                    raise ValueError(
+                        f"Node {node!r} is a nested RepairableRBD, which "
+                        "cannot be given copies here: its costs are not "
+                        "this RBD's."
+                    )
+        caps = redundancy_caps(chosen, max_units, named="nodes")
+        max_unavailability = None
+        if min_availability is not None:
+            try:
+                target = float(min_availability)
+            except (TypeError, ValueError):
+                target = float("nan")
+            if not 0.0 < target < 1.0:
+                raise ValueError(
+                    "min_availability must be a number in (0, 1), got "
+                    f"{min_availability!r}."
+                )
+            max_unavailability = 1.0 - target
+
+        # Every node's availability (and unavailability) over the times the
+        # long-run values average over, and each component's own cost.
+        times, weights = self._long_run_grid()
+        up = {
+            node: np.atleast_1d(np.asarray(a, dtype=float))
+            for node, a in self._availabilities_at(times).items()
+        }
+        down = {node: 1.0 - a for node, a in up.items()}
+        copy_cost = {}
+        for node in self.components:
+            rate = self._node_cost_rate(node, self._node_availability(node))
+            copy_cost[node] = (
+                self.acquisition_costs.get(node, 0.0),
+                rate,
+                self.acquisition_costs.get(node, 0.0) + horizon * rate,
+            )
+        for node, cap in zip(chosen, caps):
+            if copy_cost[node][2] <= 0.0 and cap == math.inf:
+                raise ValueError(
+                    f"A copy of {node!r} costs nothing over the horizon (it "
+                    "has no acquisition or running cost), so copies could be "
+                    "added without end: give it an acquisition_cost or a "
+                    "max_units."
+                )
+        decomposition = self._decomposition()
+        size = len(times)
+
+        def unavailability(counts) -> float:
+            p, q = dict(up), dict(down)
+            for node, n in zip(chosen, counts):
+                if n != 1:
+                    q[node] = down[node] ** n
+                    p[node] = 1.0 - q[node]
+            _, fails = decomposition.probabilities(
+                p, q, shape=size, works=False, fails=True
+            )
+            fails = np.broadcast_to(np.asarray(fails, dtype=float), (size,))
+            return float(weights @ fails)
+
+        def gain(node):
+            # The most the k + 1-th copy of the node can lower the system
+            # unavailability: the node's own fall in unavailability.
+            return lambda k: float(weights @ (down[node] ** k * up[node]))
+
+        def in_series(node) -> bool:
+            # Down alone, it takes the system down: it lies on every path.
+            alone = {n: np.ones(1) for n in self.nodes}
+            alone[node] = np.zeros(1)
+            return float(self.system_probability(alone)[0]) == 0.0
+
+        series = None
+        if all(
+            node not in self._inspection and in_series(node) for node in chosen
+        ):
+            # Each such node's availability is constant, and the system's is
+            # theirs times the rest's: the exact search is then a dynamic
+            # program over the nodes.
+            series = [
+                (lambda n, q=float(down[node][0]): q**n) for node in chosen
+            ]
+        counts, _, u = lowest_total_cost(
+            unavailability,
+            [copy_cost[node][2] for node in chosen],
+            horizon * self.downtime_cost_rate,
+            [gain(node) for node in chosen],
+            caps,
+            max_unavailability,
+            method,
+            series,
+        )
+        units = {node: int(n) for node, n in zip(chosen, counts)}
+        acquisition = math.fsum(
+            units.get(node, 1) * copy_cost[node][0] for node in self.components
+        )
+        cost_rate = (
+            math.fsum(
+                units.get(node, 1) * copy_cost[node][1]
+                for node in self.components
+            )
+            + self.downtime_cost_rate * u
+        )
+        return TotalCostAllocation(
+            units=units,
+            total_cost=acquisition + horizon * cost_rate,
+            acquisition_cost=acquisition,
+            cost_rate=cost_rate,
+            availability=1.0 - u,
+            horizon=horizon,
+            method=method,
+        )
 
     def initialize_event_queue(
         self,
@@ -2400,6 +2794,7 @@ class RepairableRBD(RBD):
                 samples=np.asarray(cost_samples, dtype=float),
                 t_simulation=t_simulation,
                 n_simulations=N,
+                acquisition_cost=self.acquisition_cost,
                 by_category={
                     k: float(v) / N for k, v in cost_by_category.items()
                 },

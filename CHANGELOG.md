@@ -8,6 +8,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Acquisition cost, total cost of ownership, and the redundancy that
+  minimises it (`RepairableRBD`, closes #71).** A component spec's new
+  `"acquisition_cost"` is the one-off price of the unit: `acquisition_cost`
+  sums them, and `total_cost(horizon)` gives the undiscounted cost of owning
+  the system, `acquisition_cost + expected_cost_rate() * horizon`. Buying is
+  not a running cost, so it stays out of `has_costs`, `expected_cost_rate`
+  and the simulated samples, and `CostResult` reports it separately, as
+  `acquisition_cost`. `allocate_redundancy(horizon)` chooses how many
+  identical, independently repaired, active copies of each component (by
+  default, each with an acquisition cost) give the lowest total cost over
+  the horizon, optionally with a `min_availability`: each copy costs its
+  price plus its running cost over the horizon and saves system downtime
+  cost, and every design is scored exactly (`n` copies down `(1 - A) ** n`
+  of the time, inspected components' copies tested together), so the result
+  is `total_cost`, `expected_cost_rate` and `mean_availability` of the
+  design drawn out. The total is not monotone in the copies; the exact
+  search is bounded because the `k+1`-th copy of a component of
+  unavailability `U` saves at most `H * downtime_cost_rate * U**k * (1 - U)`,
+  and a design no worse than the greedy one spends no more on copies than
+  its total. Components in series with the rest (and without hidden
+  failures) are allocated by #40's dynamic program, for any number of them;
+  other structures by branch and bound. The result is a typed
+  `TotalCostAllocation`. Tests check a hand calculation (one pump against
+  two, and the break-even horizon), the exact search against every design on
+  random priced bridges (with and without a minimum availability), the
+  dynamic program against the branch and bound, every scored design against
+  the RBD with the copies drawn out (mixing preventive maintenance and
+  inspection), and the chosen design's simulated running cost against its
+  closed-form rate; mutation testing confirms each bound and rule is needed.
 - **Hidden failures and periodic inspection in `RepairableRBD` (closes
   #70).** A component spec's new `"inspection"` key (`interval`, and
   optional `duration` and `cost`) makes its failures *hidden*: a failure

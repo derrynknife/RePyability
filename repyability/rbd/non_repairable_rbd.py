@@ -1280,7 +1280,7 @@ class NonRepairableRBD(RBD):
             flat = flat[count:]
         limits = self._redundancy_limits(resources, budget)
         primary = self._redundancy_primary(resources, minimise, target)
-        caps = self._redundancy_caps(nodes, max_units)
+        caps = redundancy_allocation.redundancy_caps(nodes, max_units)
         fewest = self._redundancy_required(nodes, required, caps)
         ways = self._redundancy_strategies(nodes, strategy)
         switching = self._redundancy_switching(
@@ -2255,7 +2255,7 @@ class NonRepairableRBD(RBD):
 
         use_vectors = [vector(node) for node in nodes]
         limits = self._redundancy_limits(resources, budget)
-        caps = self._redundancy_caps(nodes, max_units)
+        caps = redundancy_allocation.redundancy_caps(nodes, max_units)
         for i, node in enumerate(nodes):
             if caps[i] == math.inf:
                 # Unbounded unless a limited resource grows with the copies.
@@ -2328,41 +2328,6 @@ class NonRepairableRBD(RBD):
             cost=totals[resources[primary]],
             resources=totals,
         )
-
-    @staticmethod
-    def _redundancy_caps(nodes, max_units) -> list:
-        """Per-node copy limits for allocate_redundancy (inf = unlimited)."""
-        if max_units is None:
-            return [math.inf] * len(nodes)
-        if isinstance(max_units, dict):
-            unknown = set(max_units) - set(nodes)
-            if unknown:
-                raise ValueError(
-                    "max_units names node(s) not in costs: "
-                    f"{sorted(map(str, unknown))}."
-                )
-            limits = {n: max_units.get(n, math.inf) for n in nodes}
-        else:
-            limits = {n: max_units for n in nodes}
-        for node, limit in limits.items():
-            if limit is math.inf:
-                continue
-            if isinstance(limit, bool) or not isinstance(
-                limit, (int, np.integer)
-            ):
-                raise ValueError(
-                    f"max_units for node {node!r} must be an integer, got "
-                    f"{limit!r}."
-                )
-            if limit < 1:
-                raise ValueError(
-                    f"max_units for node {node!r} must be at least 1, got "
-                    f"{limit!r}."
-                )
-        return [
-            limits[n] if limits[n] is math.inf else int(limits[n])
-            for n in nodes
-        ]
 
     def unreliability(self, x: Optional[ArrayLike] = None, *args, **kwargs):
         """System unreliability at time/s ``x``; the same as ``ff``.

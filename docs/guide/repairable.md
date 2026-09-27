@@ -36,7 +36,8 @@ plant = RepairableRBD(edges, {"A": unit(0.1, 1.0), "B": unit(0.1, 1.0), "C": uni
 A component can be given as:
 
 - a dict with `"reliability"` and `"repairability"`, plus optional costs
-  (`"repair_cost"`, `"replace_cost"`, `"downtime_cost"`; see [Costs](costs.md)),
+  (`"repair_cost"`, `"replace_cost"`, `"downtime_cost"`, and the one-off
+  `"acquisition_cost"`; see [Costs](costs.md)),
   scheduled preventive replacement (`"preventive"`; see
   [Costs](costs.md#preventive-maintenance)) and, for a component whose
   failures are hidden until a proof test finds them, periodic inspection

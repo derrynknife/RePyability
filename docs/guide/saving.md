@@ -30,7 +30,8 @@ What is saved:
 - the structure: edges, `k`, input and output nodes, `on_infeasible_rbd`,
   repeated components and nested RBDs (of either kind);
 - common-cause groups, and for a `RepairableRBD` every cost, including cost
-  distributions, `"instant"` repairs and `NonRepairable` components;
+  distributions and acquisition costs, preventive and inspection schedules,
+  `"instant"` repairs and `NonRepairable` components;
 - the node models: surpyval parametric distributions and
   `FixedEventProbability` by name and parameters, `PerfectReliability` and
   `PerfectUnreliability`, and the standby, repeated, repeated-standby,
@@ -98,10 +99,10 @@ results do not depend on which internal path a model takes.
 | `time_to_reliability`, `bx_life`, `remaining_life` | Exact reliability, inverted by root-finding. |
 | `parameter_sensitivity` | Exact Birnbaum importance times a numerical parameter derivative. |
 | `random`, `mean`, `mean_time_to_failure(_interval)`, `node_mttf` (composite nodes) | Monte-Carlo. |
-| `mean_availability`, `system_failure_frequency`, MUT/MDT/MTBF, `expected_cost_rate`, the repairable importance measures | Exact, from the long-run node availabilities. |
+| `mean_availability`, `system_failure_frequency`, MUT/MDT/MTBF, `expected_cost_rate`, `total_cost`, the repairable importance measures | Exact, from the long-run node availabilities. |
 | `availability`, `cost`, the simulated criticality measures | Discrete-event simulation. |
 | Standby and load-sharing node reliability | Exact or numerical where a closed form or convolution applies, otherwise simulated (see [Redundancy models](redundancy-models.md#how-the-survival-function-is-obtained)). |
-| `allocate_redundancy` | Exact scoring; `method="exact"` is a proven optimum, `"greedy"` a heuristic. |
+| `allocate_redundancy` (both kinds of RBD) | Exact scoring; `method="exact"` is a proven optimum, `"greedy"` a heuristic. |
 | `Repairable` policies | Analytic for a power-law process, simulated for imperfect repair. |
 
 ## Performance

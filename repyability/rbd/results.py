@@ -353,6 +353,12 @@ class CostResult(_ResultMapping):
         Mean per-replication cost attributable to each costed component (its
         repair, replace, preventive, inspection and own downtime cost; the
         system-downtime cost is not attributed to components).
+    acquisition_cost : float
+        The one-off cost of buying the components (the sum of their
+        ``"acquisition_cost"``), 0.0 if none is given. It is not a running
+        cost, so it is *not* in ``samples`` or ``mean``: the cost of owning
+        the system for one window from new is
+        ``acquisition_cost + mean``.
 
     Examples
     --------
@@ -389,6 +395,7 @@ class CostResult(_ResultMapping):
     n_simulations: int
     by_category: Dict[str, float]
     by_component: Dict[Hashable, float]
+    acquisition_cost: float = 0.0
 
     @property
     def mean(self) -> float:
@@ -622,6 +629,77 @@ class RedundancyAllocation(_ResultMapping):
     resources: Dict[Hashable, float] = field(default_factory=dict)
     mix: Dict[Hashable, Dict[Hashable, int]] = field(default_factory=dict)
     strategy: Dict[Hashable, str] = field(default_factory=dict)
+
+
+@dataclass
+class TotalCostAllocation(_ResultMapping):
+    """The result of ``RepairableRBD.allocate_redundancy()``.
+
+    How many copies of each node give a repairable system the lowest total
+    cost of ownership over a horizon: buying the copies, running them
+    (repairs, replacements, maintenance, inspections, their own downtime),
+    and the cost of the system being down. Like the other result types it
+    is also a read-only mapping of its fields.
+
+    Attributes
+    ----------
+    units : dict
+        How many identical copies of each node considered to fit in active
+        parallel, each repaired independently. Always at least 1: the
+        original unit.
+    total_cost : float
+        The total cost of owning the system for ``horizon`` with those
+        copies, ``acquisition_cost + cost_rate * horizon``: what
+        ``RepairableRBD.total_cost(horizon)`` gives for the system with the
+        copies drawn out.
+    acquisition_cost : float
+        The one-off cost of buying every component, each copy included.
+    cost_rate : float
+        The long-run running cost per unit time: the ``expected_cost_rate``
+        of the system with the copies drawn out.
+    availability : float
+        The system's long-run availability with those copies: its
+        ``mean_availability``.
+    horizon : float
+        The horizon the total cost is taken over.
+    method : str
+        ``"exact"`` (a proven optimum) or ``"greedy"`` (a fast heuristic
+        solution, usually but not always optimal).
+
+    Examples
+    --------
+    A pump that fails on average every 1000 hours and takes 10 to repair,
+    bought for 20,000 and repaired for 500, when an hour without pumping
+    costs 100, over ten years (87,600 hours):
+
+    >>> import surpyval as surv
+    >>> from repyability import RepairableRBD
+    >>> rbd = RepairableRBD(
+    ...     [("s", "pump"), ("pump", "t")],
+    ...     {
+    ...         "pump": {
+    ...             "reliability": surv.Exponential.from_params([1e-3]),
+    ...             "repairability": surv.Exponential.from_params([0.1]),
+    ...             "repair_cost": 500.0,
+    ...             "acquisition_cost": 20000.0,
+    ...         }
+    ...     },
+    ...     downtime_cost_rate=100.0,
+    ... )
+    >>> best = rbd.allocate_redundancy(87600.0)
+    >>> best.units, round(best.total_cost), round(best.acquisition_cost)
+    ({'pump': 2}, 127591, 40000)
+    >>> round(best.availability, 6), best.method
+    (0.999902, 'exact')
+    """
+
+    units: Dict[Hashable, int]
+    total_cost: float
+    acquisition_cost: float
+    cost_rate: float
+    availability: float
+    horizon: float
+    method: str
 
 
 @dataclass

@@ -210,6 +210,8 @@ def _serialise_component(value) -> dict:
                 out[key] = serialise_model(cost)
             elif cost:
                 out[key] = float(cost)
+        if value.get("acquisition_cost"):
+            out["acquisition_cost"] = float(value["acquisition_cost"])
         for key in ("preventive", "inspection"):
             if value.get(key) is not None:
                 out[key] = _serialise_schedule(value[key])
@@ -263,6 +265,8 @@ def _deserialise_component(d: dict) -> Any:
                 out[key] = (
                     deserialise_model(cost) if isinstance(cost, dict) else cost
                 )
+        if "acquisition_cost" in d:
+            out["acquisition_cost"] = d["acquisition_cost"]
         for key in ("preventive", "inspection"):
             if key in d:
                 out[key] = _deserialise_schedule(d[key])

@@ -3,6 +3,9 @@
 Short definitions of the terms used in the course, each with the lesson that
 teaches it. Symbols follow the [notation table](index.md#notation).
 
+**Acquisition cost.** The one-off price of buying a unit, as opposed to the
+running costs it incurs while owned. [Lesson 7](costs.md)
+
 **Active redundancy.** Redundant units that all run at the same time, so
 each ages and can fail while the others work. A parallel block in a diagram.
 [Lesson 2](systems.md)
@@ -181,7 +184,8 @@ rest. [Lessons 2](systems.md) and [3](structure.md)
 
 **Redundancy allocation.** Choosing how many redundant copies of each
 component to fit, to maximise reliability within a budget or to meet a
-target at least cost. [Lesson 9](design.md)
+target at least cost; for a repairable system, to own it at the lowest
+total cost. [Lesson 9](design.md), [Lesson 7](costs.md)
 
 **Reliability.** $R(t) = \Pr(T > t)$: the probability that a unit (or a
 system) is still working at age $t$. Also called the survival function.
@@ -222,6 +226,10 @@ component is critical. It depends on the diagram alone.
 
 **Structure function.** $\varphi(x)$: 1 if the system works when its
 components are in states $x$, 0 otherwise. [Lesson 3](structure.md)
+
+**Total cost of ownership.** What owning a system costs over a horizon $H$:
+buying it plus $H$ times its cost rate (a *life-cycle cost*, here
+undiscounted). [Lesson 7](costs.md)
 
 **Unreliability.** $F(t) = 1 - R(t)$: the probability that a unit has failed
 by age $t$. [Lesson 1](lifetimes.md)

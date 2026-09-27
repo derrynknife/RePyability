@@ -440,6 +440,18 @@ is a property of the system; the **uncertainty of its mean** shrinks like
 `1/√N`. As the window grows, the simulated cost per unit time converges to the
 exact rate.
 
+The **total cost of ownership** over a horizon `H` adds the one-off cost of
+buying the components, `Σ a_i`, to `H` times the long-run cost rate
+(undiscounted). Redundancy that minimises it trades copies against downtime:
+`n_i` independently repaired active copies of component *i* each cost
+`a_i + H · r_i` (`r_i` its own running cost rate) and are all down
+`(1 − A_i)^{n_i}` of the time, so a design costs
+`Σ n_i (a_i + H r_i) + H · downtime_cost_rate · (1 − A_sys)`. The total is not
+monotone in the copies, but the `k+1`-th copy of a component of
+unavailability `U` saves at most `H · downtime_cost_rate · U^k (1 − U)`, which
+bounds the copies worth trying; the search then works as for redundancy
+allocation below.
+
 ## Allocation
 
 **Redundancy allocation** chooses integers `n_i ≥ 1` (copies of each costed
