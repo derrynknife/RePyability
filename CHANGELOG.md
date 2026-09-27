@@ -325,6 +325,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged and still asserted.
 
 ### Documentation
+- **Reliability allocation has a full guide section.** The design guide now
+  covers every allocation method: a table of what each needs and how it
+  picks among the allocations that meet a target, how to choose between
+  them, what they share (one mission time, independent nodes, a node as a
+  block, requirements rather than designs), and each method's uses and
+  limits, with the methods compared side by side on a series system and on a
+  redundant one. It explains why `simple_allocation` is a structural
+  allocation: it uses no component data, and with every node at 0.5 the
+  Birnbaum importance is the structural importance, so small changes follow
+  each node's weight times its structural importance.
 - **Long chains in series are a documented known limit.** Finding the path
   sets is recursive, so building an RBD with a chain of about a thousand or
   more nodes in series exceeds Python's default recursion limit; the

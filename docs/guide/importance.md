@@ -88,7 +88,9 @@ rbd.structural_importance()   # {'pump1': 0.25, 'pump2': 0.25, 'valve': 0.75}
 
 It is the same for a `NonRepairableRBD` and a `RepairableRBD` on the same
 diagram, takes no time argument, accepts `working_nodes`/`broken_nodes`, and
-works on RBDs with common-cause groups.
+works on RBDs with common-cause groups. It also drives the structural
+reliability allocation, `simple_allocation` (see
+[Design and allocation](design.md#smallest-log-odds-change-a-structural-allocation)).
 
 ## Parameter sensitivity
 

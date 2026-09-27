@@ -455,7 +455,11 @@ There are many allocations that meet a target; each rule picks one.
   component at 0.5 and minimises `Σ s_i² / w_i`, with `s_i` component *i*'s
   log-odds `log(p_i / (1 − p_i))` and `w_i` its weight, subject to the
   target. At the optimum `s_i ∝ w_i · p_i (1 − p_i) · I_B(i)`, so components
-  that matter more, and more heavily weighted ones, move further.
+  that matter more, and more heavily weighted ones, move further. It is a
+  *structural* allocation: it uses no component data, and with every
+  component at 0.5 the Birnbaum importance is the structural importance, so
+  small changes follow `w_i` times the structural importance exactly; larger
+  ones drift as the importances are re-evaluated along the way.
 
 ## Maintenance models
 

@@ -1334,8 +1334,16 @@ class RBD:
         twice as far), and a node with weight 0 stays at 0.5. With equal
         weights, nodes placed symmetrically (e.g. all in series, or all in
         parallel) get the same value, as
-        [`equal_allocation`][repyability.RBD.equal_allocation] gives. It is
-        not one of the classic named methods; see
+        [`equal_allocation`][repyability.RBD.equal_allocation] gives.
+
+        It is a structural allocation: it uses no component data, only the
+        diagram, the target and the weights. With every node at 0.5 the
+        Birnbaum importance equals the
+        [`structural_importance`][repyability.RBD.structural_importance], so
+        a small change moves each node in proportion to its weight times its
+        structural importance; for larger changes the importances are
+        re-evaluated at the new probabilities. It is not one of the classic
+        named methods; see
         [`cost_based_allocation`][repyability.RBD.cost_based_allocation] and
         [`minimum_effort_allocation`][repyability.RBD.minimum_effort_allocation]
         for those.
