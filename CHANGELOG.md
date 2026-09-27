@@ -8,6 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Hidden failures and periodic inspection in `RepairableRBD` (closes
+  #70).** A component spec's new `"inspection"` key (`interval`, and
+  optional `duration` and `cost`) makes its failures *hidden*: a failure
+  takes the component down, but nobody knows until an inspection (a proof
+  test) at a multiple of the interval finds it, and only then does its
+  repair start. A test that takes time takes a working component off-line
+  (a planned outage, during which it does not age); a failure found is
+  repaired once the test is done, and its repair and replace costs are
+  charged then; an inspection due during a repair is skipped. Hidden time
+  counts as downtime in every simulated output, and `CostResult.by_category`
+  gains `"inspection"`. The exact long-run methods cover hidden failures
+  with a constant failure rate, instant tests and instant repair: a
+  component is up `(1 - e^(-λτ)) / (λτ)` of the time, and because
+  components inspected at the same times go down together, the system's
+  availability, failure frequency, MUT/MDT, cost rate and importance
+  measures are averaged over one period of the inspection schedules (the
+  least common multiple of the intervals), by quadrature exact to rounding.
+  So `mean_unavailability` gives a safety function's PFDavg: `≈ λτ/2` for
+  one channel and `(1/τ)∫(1 - e^(-λt))² dt ≈ (λτ)²/3` for 1oo2 tested
+  together, not the product of the channels' averages. Other cases raise
+  `NotImplementedError` and are simulated. Tests check every event on
+  deterministic lifetimes, the exact values against the issue's closed
+  forms (one channel, 1oo2, 2oo3, mixed intervals, the cost trade-off
+  `c_i/τ + c_d·U(τ)` and its optimum near `√(2c_i/(λc_d))`) and the
+  simulation against them; an inspected system joins the fixtures that
+  prove batched and one-at-a-time draws identical. Inspection schedules
+  are saved with the RBD.
 - **Redundancy allocation (`NonRepairableRBD.allocate_redundancy`, closes
   #40).** Solves the Redundancy Allocation Problem: given a per-copy cost for
   the nodes that may be duplicated, choose how many identical, independent,
@@ -362,6 +389,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   removed in a future release.
 
 ### Fixed
+- **A deserialised `ExactEventTime` can be saved again.** Its parameter
+  came back as `[[T]]`, so saving an RBD read from a file failed on it.
 - **`find_optimal_replacement` returned a spurious finite age (closes #68).**
   For a lifetime without wear-out that the quick check does not recognise — a
   Weibull of shape 1 or less with an offset, zero-inflation or a limited
@@ -499,6 +528,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged and still asserted.
 
 ### Documentation
+- **Hidden failures and proof tests.** A new Costs section covers
+  `"inspection"`: a shutdown valve's PFDavg alone and in 1oo2, the test
+  interval, simultaneous testing and choosing an interval by cost. Lesson 8
+  of the Learn course derives `λτ/2`, the 1oo2 result and the best test
+  interval by hand, with a new exercise, and the glossary defines hidden
+  failure, proof test and PFDavg.
 - **How the exact engine reduces a diagram.** Lesson 3 of the Learn course
   now explains the two stages of the engine (reduce the series, parallel and
   k-out-of-n parts, then pivot on what is left) with a thirty-stage plant

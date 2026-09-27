@@ -345,12 +345,13 @@ class CostResult(_ResultMapping):
         The number of replications.
     by_category : dict
         Mean per-replication cost split into ``"repair"`` and ``"replace"``
-        (both charged per failure), ``"preventive"`` (charged per
-        preventive replacement), ``"component_downtime"`` and
-        ``"system_downtime"``. The five sum to ``mean``.
+        (both charged per failure; for a hidden failure, when an inspection
+        finds it), ``"preventive"`` (charged per preventive replacement),
+        ``"inspection"`` (charged per inspection), ``"component_downtime"``
+        and ``"system_downtime"``. The six sum to ``mean``.
     by_component : dict
         Mean per-replication cost attributable to each costed component (its
-        repair, replace, preventive and own downtime cost; the
+        repair, replace, preventive, inspection and own downtime cost; the
         system-downtime cost is not attributed to components).
 
     Examples
@@ -686,7 +687,7 @@ class AvailabilityResult(_ResultMapping):
     system_planned_outages : int
         Number of planned outages of the system observed across all
         simulations: changes from up to down caused by preventive
-        maintenance that takes time. 0 without such maintenance.
+        maintenance or an inspection that takes time. 0 without either.
 
     Examples
     --------

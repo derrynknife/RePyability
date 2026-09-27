@@ -301,7 +301,8 @@ The result also breaks the mean down:
 ```python
 year.by_category
 # {'repair': 402838.25, 'replace': 253923.75, 'preventive': 0.0,
-#  'component_downtime': 0.0, 'system_downtime': 408942.49}
+#  'inspection': 0.0, 'component_downtime': 0.0,
+#  'system_downtime': 408942.49}
 year.by_component
 # {'pump1': 159116.5, 'pump2': 159080.5, 'valve': 338565.0}
 sum(year.by_category.values())   # -> 1065704.5   the categories add up to the mean

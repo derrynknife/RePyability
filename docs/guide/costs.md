@@ -95,7 +95,7 @@ costs.mean              # mean total cost of a window
 costs.cost_rate         # mean / t_simulation: converges to expected_cost_rate()
 costs.percentile(90)    # a planning budget: 9 windows in 10 cost less
 costs.std               # how much a window's cost varies
-costs.by_category       # mean repair, replace, preventive, component_downtime, system_downtime
+costs.by_category       # mean repair, replace, preventive, inspection, component_downtime, system_downtime
 costs.by_component      # mean cost attributable to each costed component
 ```
 
@@ -259,5 +259,126 @@ year.system_planned_outages / year.n_simulations   # -> 11.82
 year.cost.by_category["preventive"]                # -> 11824.0   1000 each
 ```
 
-Costs, including cost distributions, and maintenance schedules are saved
-with the RBD.
+## Hidden failures and inspection
+
+Some failures announce themselves: a running pump stops, and the operators
+know. Others do not: a relief valve that has seized, a standby pump that will
+not start or a trip that no longer trips looks just like a working one until
+something tests it. Such a failure is *hidden* (or *unrevealed*): the
+component is down, nobody knows, and it stays down until a periodic
+*inspection* (a proof test) finds it. The key `"inspection"` in a
+component's dict makes its failures hidden:
+
+| Key | Meaning |
+|---|---|
+| `interval` | Required: the time `τ` between inspections, positive and finite. The component is inspected at `τ, 2τ, 3τ, …`. |
+| `duration` | `"instant"` (the default): the test takes no time. Or a time-to-test model: the component is off-line while it is tested (a planned outage), and does not age meanwhile. |
+| `cost` | Charged at each inspection: a number or a distribution. |
+
+A failure found by an inspection is repaired once the test is done (taking a
+time drawn from the component's `"repairability"`), and its repair and
+replace costs are charged when it is found. An inspection due while the
+component is being repaired is skipped. The time a failure lies hidden counts
+as downtime in every output, and each inspection's cost is in
+`by_category["inspection"]`. A component can have an inspection or a
+preventive schedule, but not both.
+
+### The average probability of failure on demand
+
+A protective function whose failure is hidden does not act when it is
+needed, so its long-run unavailability is its *average probability of
+failure on demand*, the PFDavg that safety-integrity (SIL) verification asks
+for (IEC 61508 and 61511). With a constant rate `λ` of such failures,
+inspected every `τ`, with instant tests and repairs, a single channel is
+down, after a failure, until the next test: half an interval on average, so
+`PFDavg = 1 − (1 − e^(−λτ)) / (λτ) ≈ λτ/2`. Take a shutdown valve with
+dangerous undetected failures at `2 × 10⁻⁶` per hour, proof-tested yearly:
+
+```python
+def valve(interval):
+    return {
+        "reliability": surv.Exponential.from_params([2e-6]),   # dangerous, undetected
+        "repairability": "instant",
+        "inspection": {"interval": interval},
+    }
+
+one = RepairableRBD([("s", "v"), ("v", "t")], {"v": valve(8760.0)})
+one.mean_unavailability()      # -> 0.008709   about λτ/2 = 0.00876
+pair = RepairableRBD(
+    [("s", "v1"), ("s", "v2"), ("v1", "t"), ("v2", "t")],
+    {"v1": valve(8760.0), "v2": valve(8760.0)},
+)
+pair.mean_unavailability()     # -> 1.0098e-4   about (λτ)²/3
+```
+
+Two valves in parallel (1oo2), tested together, are down only when both
+have failed since the last test: `PFDavg = (1/τ) ∫₀^τ (1 − e^(−λt))² dt ≈
+(λτ)²/3`. That is a third more than the `(λτ/2)²` of two channels that fail
+independently in time, because both have gone untested for the same time.
+The diagram supplies the voting, so 2oo3 and larger architectures follow in
+the same way (see [k-out-of-n nodes](building.md#k-out-of-n-nodes)). Halving
+the interval halves a single channel's PFDavg but quarters the pair's:
+
+| Test interval | 6 months | 1 year | 2 years |
+|---|---|---|---|
+| One valve | 0.00437 | 0.00871 | 0.0173 |
+| Two valves (1oo2) | 2.54 × 10⁻⁵ | 1.01 × 10⁻⁴ | 3.99 × 10⁻⁴ |
+
+These long-run values are exact. Components inspected at the same times go
+down together, so `mean_availability` and the other long-run methods average
+the system's availability over one period of the inspection schedules (the
+least common multiple of the intervals: components on different intervals
+can be mixed), and the importance measures are ratios of those averages.
+They need a constant failure rate, instant tests and instant repair, and
+raise `NotImplementedError` otherwise: then simulate. Testing both valves at
+once, for example, takes the whole function off-line during the test, which
+here costs far more than the hidden failures:
+
+```python
+def tested(interval):
+    return {
+        "reliability": surv.Exponential.from_params([2e-6]),
+        "repairability": surv.LogNormal.from_params([np.log(24), 0.5]),   # about a day
+        "inspection": {
+            "interval": interval,
+            "duration": surv.Weibull.from_params([4, 3]),                  # about 3.6 h
+        },
+    }
+
+both = RepairableRBD(
+    [("s", "v1"), ("s", "v2"), ("v1", "t"), ("v2", "t")],
+    {"v1": tested(8760.0), "v2": tested(8760.0)},
+)
+decade = both.availability(t_simulation=10 * 8760.0, N=20000, seed=0)
+1 - decade.system_uptime / (decade.n_simulations * decade.time_simulated_to)
+# -> 3.9e-4
+decade.system_planned_outages / decade.n_simulations   # -> 9.0   one per test
+```
+
+### Choosing the interval
+
+Each inspection costs `c_i`, and each unit of time the component lies failed
+costs `c_d` (its `"downtime_cost"`, or the system's `downtime_cost_rate`).
+Frequent tests cost more, and rare ones leave failures hidden for longer, so
+the cost rate `c_i/τ + c_d·U(τ)` is least in between, near
+`τ* = √(2c_i / (λc_d))`. `expected_cost_rate` prices it exactly:
+
+```python
+def pump(interval):
+    return RepairableRBD(
+        [("s", "p"), ("p", "t")],
+        {"p": {
+            "reliability": surv.Exponential.from_params([1e-4]),
+            "repairability": "instant",
+            "downtime_cost": 500.0,                               # per hour failed
+            "inspection": {"interval": interval, "cost": 2000.0},
+        }},
+    )
+
+pump(100.0).expected_cost_rate()     # -> 22.49   testing too often
+pump(283.0).expected_cost_rate()     # -> 14.08   near √(2 × 2000 / (1e-4 × 500)) = 283
+pump(1000.0).expected_cost_rate()    # -> 26.19   failures hidden too long
+```
+
+Costs, including cost distributions, and maintenance and inspection
+schedules are saved with the RBD.

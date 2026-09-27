@@ -141,6 +141,7 @@ def test_maintenance_that_takes_time_is_a_planned_outage():
         "repair": 0.0,
         "replace": 0.0,
         "preventive": 50.0,
+        "inspection": 0.0,
         "component_downtime": 60.0,
         "system_downtime": 140.0,
     }

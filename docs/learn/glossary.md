@@ -91,6 +91,11 @@ comes through minimal cut sets containing a component.
 survived to age $t$ fail, per unit time. Also called the failure rate.
 [Lesson 1](lifetimes.md)
 
+**Hidden failure.** A failure that nobody notices when it happens, such as
+a seized relief valve or a standby pump that will not start: the part is
+down until a proof test finds it. Also called an unrevealed or latent
+failure. [Lesson 8](maintenance.md)
+
 **Improvement potential.** $R(1_i) - R$: the gain in system reliability if
 component $i$ were made perfect. [Lesson 4](importance.md)
 
@@ -143,17 +148,26 @@ works: $R = 1 - \prod_i (1 - R_i)$; the unreliabilities multiply.
 *minimal* path set has no smaller path set inside it.
 [Lesson 3](structure.md)
 
+**PFDavg.** The average probability of failure on demand of a protective
+function: its long-run unavailability, when its failures are hidden until a
+proof test. About $\lambda\tau/2$ for one channel tested every $\tau$.
+[Lesson 8](maintenance.md)
+
 **Pivotal decomposition.** Conditioning on one component:
 $R = p_i\,R(1_i) + (1 - p_i)\,R(0_i)$. Applied repeatedly, it computes any
 system's reliability exactly; it is the basis of RePyability's engine (also
 called the Shannon expansion). [Lesson 3](structure.md)
 
-**Planned outage.** Downtime for preventive maintenance. It counts as
-downtime in availability, but not as a failure. [Lesson 8](maintenance.md)
+**Planned outage.** Downtime for preventive maintenance or a proof test. It
+counts as downtime in availability, but not as a failure.
+[Lesson 8](maintenance.md)
 
 **Preventive maintenance.** Maintenance done before a failure, on a schedule
 (such as age or block replacement), to prevent failures that would cost
 more. It only pays for parts that wear out. [Lesson 8](maintenance.md)
+
+**Proof test.** A periodic inspection that finds a part's hidden failures;
+the part is repaired if it is found failed. [Lesson 8](maintenance.md)
 
 **Rare-event approximation.** Approximating a system's unreliability by the
 sum, over the minimal cut sets, of the probability that all their components

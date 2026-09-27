@@ -8,11 +8,13 @@ restoration criticality index ratios.
 """
 
 import heapq
+import math
 import pprint
 import warnings
 from collections import defaultdict
 from copy import copy
 from dataclasses import dataclass, field
+from fractions import Fraction
 from typing import (
     Any,
     Collection,
@@ -108,7 +110,8 @@ class _StreamedComponent:
         self._stream = stream
         self._fails_next = True
         # The time-to-maintain sampler of a node under preventive
-        # maintenance (set by RepairableRBD._streamed_components).
+        # maintenance, or the time-to-test sampler of an inspected node (set
+        # by RepairableRBD._streamed_components).
         self.maintenance: Any = None
 
     def reset(self):
@@ -164,6 +167,12 @@ class Event:
         time, or a nested RBD's planned outage); with ``status`` True it
         ends one or, if the node is up, renews it in place (maintenance in
         zero time).
+    inspection : bool
+        True for an inspection of a node whose failures are hidden, by
+        default False. With ``status`` True it is a test in zero time of a
+        working node, or the end of a test that took time; with ``status``
+        False it starts such a test (a planned outage) or, if the node has
+        failed, finds the failure, and the repair starts.
 
     Examples
     --------
@@ -176,6 +185,7 @@ class Event:
     component: Hashable = field(compare=False)
     status: bool = field(compare=False)
     preventive: bool = field(default=False, compare=False)
+    inspection: bool = field(default=False, compare=False)
 
 
 class _Preventive(NamedTuple):
@@ -196,6 +206,65 @@ class _Preventive(NamedTuple):
         # renewed on the schedule is not renewed again there).
         due = float(np.floor(renewed / self.interval) + 1.0) * self.interval
         return due if due > renewed else due + self.interval
+
+
+class _Inspection(NamedTuple):
+    """A node's periodic inspection, which is what finds its (hidden)
+    failures: at every multiple of ``interval``, taking a time drawn from
+    ``duration`` (None: no time)."""
+
+    interval: float
+    duration: Any
+
+    def due(self, t: float) -> float:
+        """The first inspection after ``t``."""
+        k = np.floor(t / self.interval) + 1.0
+        due = float(k * self.interval)
+        return due if due > t else float((k + 1.0) * self.interval)
+
+    def finds(self, t: float) -> float:
+        """The inspection that finds a failure at ``t``: the first at or
+        after it."""
+        k = np.ceil(t / self.interval)
+        due = float(k * self.interval)
+        return due if due >= t else float((k + 1.0) * self.interval)
+
+
+def _constant_rate(model) -> Optional[float]:
+    """The failure rate of a model whose rate is constant (an exponential
+    life, or a Weibull of shape 1), or None."""
+    try:
+        t = model_mean(model) * np.array([0.01, 0.5, 1.0, 3.0])
+        hazard = np.asarray(model.hf(t), dtype=float).ravel()
+        survival = np.asarray(model.sf(t), dtype=float).ravel()
+    except Exception:
+        return None
+    rate = float(hazard[0])
+    if not (np.isfinite(rate) and rate > 0.0):
+        return None
+    constant = np.allclose(hazard, rate, rtol=1e-9, atol=0.0)
+    exponential = np.allclose(survival, np.exp(-rate * t), rtol=1e-9)
+    return rate if constant and exponential else None
+
+
+def _common_period(intervals: Iterable[float]) -> float:
+    """The least common multiple of the inspection intervals: the period
+    after which the schedules repeat together."""
+    intervals = sorted(set(intervals))
+    if len(intervals) == 1:
+        return intervals[0]
+    fractions = [Fraction(x).limit_denominator(10**6) for x in intervals]
+    if any(
+        abs(float(f) - x) > 1e-12 * x for f, x in zip(fractions, intervals)
+    ):
+        raise NotImplementedError(
+            f"The inspection intervals {intervals} have no common period, "
+            "so the long-run values cannot be averaged over one: estimate "
+            "them by simulation, with availability() or cost()."
+        )
+    numerator = math.lcm(*(f.numerator for f in fractions))
+    denominator = math.gcd(*(f.denominator for f in fractions))
+    return numerator / denominator
 
 
 def combined_timeline(
@@ -673,6 +742,21 @@ class RepairableRBD(RBD):
           or a distribution drawn afresh each time. The unit comes back as
           new: a failure it had yet to reach never happens. An
           ``interval`` of ``inf`` never maintains.
+          ``"inspection"`` makes the component's failures *hidden*: a
+          failure takes it down, but nobody knows until an inspection (a
+          proof test) finds it, and only then does its repair start. It
+          is a dict with an ``"interval"`` and optional ``"duration"`` and
+          ``"cost"``: the component is inspected at every multiple of the
+          (positive, finite) interval, from time 0. The test takes a time
+          drawn from ``"duration"``, a time-to-test model, during which the
+          component is off-line (a planned outage) and does not age;
+          ``"instant"`` (the default) takes no time. A failure found by a
+          test is repaired once the test is done, and the repair and
+          replace costs are charged when it is found. An inspection due
+          while the component is being repaired is skipped. Each
+          inspection is charged ``"cost"``, a number or a distribution
+          drawn afresh each time. A component cannot have both a
+          ``"preventive"`` schedule and an ``"inspection"``.
         - A [`NonRepairable`][repyability.NonRepairable], pairing a
           reliability model with a time-to-replace model. Each node gets
           its own copy, so one object can be given for several identical
@@ -718,7 +802,8 @@ class RepairableRBD(RBD):
     costs : dict
         Node name -> ``{cost key: number or distribution}``, for the nodes
         that declare at least one non-zero cost; a preventive-maintenance
-        cost is under ``"preventive_cost"``.
+        cost is under ``"preventive_cost"`` and an inspection cost under
+        ``"inspection_cost"``.
     downtime_cost_rate : float
         The system downtime cost rate.
     input_node : Hashable
@@ -740,6 +825,9 @@ class RepairableRBD(RBD):
     PREVENTIVE_KEYS : tuple[str, ...]
         The keys of a ``"preventive"`` spec: ``"interval"``, ``"policy"``,
         ``"duration"`` and ``"cost"``.
+    INSPECTION_KEYS : tuple[str, ...]
+        The keys of an ``"inspection"`` spec: ``"interval"``, ``"duration"``
+        and ``"cost"``.
 
     Raises
     ------
@@ -751,7 +839,10 @@ class RepairableRBD(RBD):
         appreciable probability on a negative cost (its 1e-12 quantile is
         below 0); if a ``"preventive"`` spec is not a dict of its keys with
         a positive ``interval``, a ``policy`` of ``"age"`` or ``"block"``
-        and a ``duration`` that is a model or ``"instant"``; if a
+        and a ``duration`` that is a model or ``"instant"``; if an
+        ``"inspection"`` spec is not a dict of its keys with a positive,
+        finite ``interval`` and a ``duration`` that is a model or
+        ``"instant"``, or a component has both; if a
         reliability model is not a surpyval parametric or
         non-parametric model or a ``StandbyModel``; if ``input_node`` or
         ``output_node`` is not in the diagram, or is not its source or sink;
@@ -829,13 +920,20 @@ class RepairableRBD(RBD):
     PER_FAILURE_COST_KEYS = ("repair_cost", "replace_cost")
     #: Every key a component spec dict may carry.
     COMPONENT_SPEC_KEYS = (
-        ("reliability", "repairability") + COST_KEYS + ("preventive",)
+        ("reliability", "repairability")
+        + COST_KEYS
+        + ("preventive", "inspection")
     )
     #: The keys of a component's ``"preventive"`` spec.
     PREVENTIVE_KEYS = ("interval", "policy", "duration", "cost")
-    #: The costs charged per action (per failure, or per preventive
-    #: replacement), which may be distributions.
-    _PER_ACTION_COST_KEYS = PER_FAILURE_COST_KEYS + ("preventive_cost",)
+    #: The keys of a component's ``"inspection"`` spec.
+    INSPECTION_KEYS = ("interval", "duration", "cost")
+    #: The costs charged per action (per failure, per preventive
+    #: replacement or per inspection), which may be distributions.
+    _PER_ACTION_COST_KEYS = PER_FAILURE_COST_KEYS + (
+        "preventive_cost",
+        "inspection_cost",
+    )
 
     def __init__(
         self,
@@ -870,6 +968,8 @@ class RepairableRBD(RBD):
         # Scheduled preventive maintenance, by node (only schedules that
         # maintain: an infinite interval never does).
         self._preventive: dict[Any, _Preventive] = {}
+        # Periodic inspection, by node: the nodes whose failures are hidden.
+        self._inspection: dict[Any, _Inspection] = {}
         components = copy(components)
         reliability = {}
         repairability = {}
@@ -894,6 +994,19 @@ class RepairableRBD(RBD):
                         node_costs["preventive_cost"] = cost
                     if np.isfinite(schedule.interval):
                         self._preventive[name] = schedule
+                if component.get("inspection") is not None:
+                    if name in self._preventive:
+                        raise ValueError(
+                            f"Component {name!r} has both a preventive "
+                            "schedule and an inspection; give it one or the "
+                            "other."
+                        )
+                    inspection, cost = self._validate_inspection(
+                        name, component["inspection"]
+                    )
+                    if cost is not None:
+                        node_costs["inspection_cost"] = cost
+                    self._inspection[name] = inspection
                 if node_costs:
                     self.costs[name] = node_costs
                 repair_model = component["repairability"]
@@ -1034,14 +1147,61 @@ class RepairableRBD(RBD):
         return _Preventive(interval, policy, duration), cost
 
     @classmethod
+    def _validate_inspection(cls, node, spec) -> Tuple[_Inspection, Any]:
+        """A component's ``"inspection"`` spec, validated: its schedule, and
+        its cost (None if it prices nothing)."""
+        if not isinstance(spec, dict):
+            raise ValueError(
+                f"Component {node!r}: inspection must be a dict with "
+                f"{', '.join(cls.INSPECTION_KEYS)}, got {spec!r}."
+            )
+        unknown = set(spec) - set(cls.INSPECTION_KEYS)
+        if unknown:
+            raise ValueError(
+                f"Component {node!r} has unknown inspection key(s) "
+                f"{sorted(map(str, unknown))}. An inspection spec takes "
+                f"{', '.join(cls.INSPECTION_KEYS)}."
+            )
+        try:
+            interval = float(spec["interval"])
+        except KeyError:
+            raise ValueError(
+                f"Component {node!r}: an inspection spec needs an interval."
+            ) from None
+        except (TypeError, ValueError):
+            interval = float("nan")
+        if not (interval > 0.0 and np.isfinite(interval)):
+            raise ValueError(
+                f"Component {node!r}: the inspection interval must be a "
+                f"positive, finite number, got {spec['interval']!r}. (A "
+                "hidden failure is found only by an inspection.)"
+            )
+        duration = spec.get("duration", "instant")
+        if isinstance(duration, str) and duration == "instant":
+            duration = None
+        elif not hasattr(duration, "random"):
+            raise ValueError(
+                f"Component {node!r}: the inspection duration must be a "
+                "time-to-test model (such as a fitted surpyval distribution) "
+                f"or 'instant', got {duration!r}."
+            )
+        cost = spec.get("cost")
+        if cost is not None:
+            cost = cls._validate_component_cost(node, "inspection_cost", cost)
+            if isinstance(cost, float) and cost == 0.0:
+                cost = None
+        return _Inspection(interval, duration), cost
+
+    @classmethod
     def _validate_cost(cls, node, key: str, value) -> float:
         """Coerce a cost to a finite, non-negative float."""
         if hasattr(value, "qf"):
             raise ValueError(
                 f"{node!r}: {key} must be a number, not a distribution. Only "
                 "the costs charged per action (repair_cost, replace_cost and "
-                "the preventive cost) may be distributions; a downtime cost "
-                "is a rate, and the outage durations already make it random."
+                "the preventive and inspection costs) may be distributions; "
+                "a downtime cost is a rate, and the outage durations already "
+                "make it random."
             )
         try:
             cost = float(value)
@@ -1088,8 +1248,8 @@ class RepairableRBD(RBD):
         """Whether any cost has been declared (per-component or system-wide).
 
         True if some component declares a non-zero ``"repair_cost"``,
-        ``"replace_cost"``, ``"downtime_cost"`` or preventive-maintenance
-        ``"cost"`` (a cost distribution always counts), or
+        ``"replace_cost"``, ``"downtime_cost"``, or preventive-maintenance
+        or inspection ``"cost"`` (a cost distribution always counts), or
         ``downtime_cost_rate`` is non-zero. Costs of 0
         price nothing, and costs declared inside a nested ``RepairableRBD``
         do not count. When nothing is priced there is no cost model to
@@ -1127,11 +1287,13 @@ class RepairableRBD(RBD):
             if made[id(component)] is None:
                 return None
             streamed[name] = made[id(component)]
-        # A maintained component draws its maintenance times from the same
-        # stream, at the same points.
-        for name, schedule in self._preventive.items():
-            if schedule.duration is not None:
-                sampler = inverse_sampler(schedule.duration)
+        # A maintained or inspected component draws its maintenance or test
+        # times from the same stream, at the same points.
+        durations: dict = {n: p.duration for n, p in self._preventive.items()}
+        durations.update({n: i.duration for n, i in self._inspection.items()})
+        for name, duration in durations.items():
+            if duration is not None:
+                sampler = inverse_sampler(duration)
                 if sampler is None:
                     return None
                 streamed[name].maintenance = sampler
@@ -1142,12 +1304,13 @@ class RepairableRBD(RBD):
     ) -> Tuple[
         dict[Any, list[tuple[str, Iterator[float]]]],
         dict[Any, Iterator[float]],
+        dict[Any, Iterator[float]],
     ]:
         """For each costed node, its ``("repair" | "replace", charges)``
         pairs: the stream of amounts charged at the node's successive
         failures in a simulation (see :func:`_charges`); and, for each node
-        with a preventive-maintenance cost, the stream charged at its
-        successive preventive actions.
+        with a preventive-maintenance or an inspection cost, the stream
+        charged at its successive preventive actions or inspections.
 
         A cost distribution draws from its own generator, seeded from -- but
         not consuming -- numpy's global RNG: a seeded run stays reproducible,
@@ -1170,7 +1333,12 @@ class RepairableRBD(RBD):
             for node, node_costs in self.costs.items()
             if "preventive_cost" in node_costs
         }
-        return failures, preventive
+        inspection = {
+            node: _charges(node_costs["inspection_cost"], rng)
+            for node, node_costs in self.costs.items()
+            if "inspection_cost" in node_costs
+        }
+        return failures, preventive, inspection
 
     def expected_cost_rate(
         self,
@@ -1185,6 +1353,7 @@ class RepairableRBD(RBD):
         rate = downtime_cost_rate * (1 - A_sys)
                + sum_i omega_i * (repair_cost_i + replace_cost_i)
                + sum_i nu_i * preventive_cost_i
+               + sum_i inspection_cost_i / tau_i
                + sum_i (1 - A_i) * downtime_cost_i
         ```
 
@@ -1206,6 +1375,15 @@ class RepairableRBD(RBD):
         and maintenance the component's own cost rate is
         ``(c_p * R(T) + c_u * F(T)) / integral_0^T R``, as
         ``NonRepairable.cost_rate`` computes.
+
+        A component with hidden failures is inspected every ``tau_i`` and,
+        with a constant failure rate ``lambda``, fails ``(1 - exp(-lambda *
+        tau_i)) / tau_i`` times per unit time (at most once per interval).
+        With inspection cost ``c_i`` and downtime cost rate ``c_d`` it
+        costs ``c_i / tau + c_d * U(tau)``, ``U`` its unavailability (see
+        ``node_availability``): frequent tests cost more, and rare ones
+        leave failures hidden for longer. The rate is least near ``tau =
+        sqrt(2 * c_i / (lambda * c_d))``.
 
         Every cost is optional and defaults to 0, so any subset can be
         priced; with nothing priced (see ``has_costs``) this is 0.0. Costs
@@ -1238,8 +1416,9 @@ class RepairableRBD(RBD):
             this returns 0.0 without any checks.)
         NotImplementedError
             If something is priced and a component is under block
-            replacement, which has no exact long-run cost rate: simulate
-            it with ``cost``.
+            replacement, which has no exact long-run cost rate, or has
+            hidden failures other than with a constant failure rate,
+            instant tests and instant repair: simulate it with ``cost``.
 
         Examples
         --------
@@ -1302,6 +1481,12 @@ class RepairableRBD(RBD):
                 rate += per_action * failures
                 if preventive is not None:
                     rate += _mean_cost(preventive) * maintained
+            inspection = node_costs.get("inspection_cost")
+            if inspection is not None and node not in forced:
+                # One inspection per interval (none is skipped: repairs are
+                # instant, as the exact values require).
+                _, interval = self._inspected_rate(node)
+                rate += _mean_cost(inspection) / interval
             # Optional cost of *this component* being down, whether or not
             # the system as a whole is.
             downtime_cost = node_costs.get("downtime_cost", 0.0)
@@ -1375,6 +1560,9 @@ class RepairableRBD(RBD):
 
         # The queue supplies failure/repair events in chronological order
         event_queue = _EventQueue()
+        # When each working node with hidden failures is due to fail (None
+        # once it has failed).
+        self._pending_failure: dict[Any, Optional[float]] = {}
 
         # For each component add in the initial failure
         for component_id in self.components.keys():
@@ -1395,6 +1583,12 @@ class RepairableRBD(RBD):
                 source.reset()
                 first = self._renewal(
                     component_id, 0.0, source, self._preventive[component_id]
+                )
+            elif component_id in self._inspection:
+                # Put into service as new at 0: it fails, or is inspected.
+                source.reset()
+                first = self._inspected_renewal(
+                    component_id, 0.0, source, self._inspection[component_id]
                 )
             else:
                 source.reset()
@@ -1457,6 +1651,19 @@ class RepairableRBD(RBD):
         up; for availability over time, from a start with everything
         working, use ``availability``.
 
+        A component with hidden failures is up with probability
+        ``exp(-lambda * u)`` at a time ``u`` since its last inspection, so
+        components inspected at the same times are down together more
+        often than independent ones would be. The system's availability is
+        then averaged over time, over one period of the inspection
+        schedules (the least common multiple of their intervals): for two
+        such components in parallel, inspected together every ``tau``, the
+        unavailability is ``(1 / tau) * integral_0^tau (1 -
+        exp(-lambda * t)) ** 2 dt``, about ``(lambda * tau) ** 2 / 3``: the
+        average probability of failure on demand (PFDavg) of a 1oo2 safety
+        function. This is exact for a constant failure rate, instant tests
+        and instant repair (see ``node_availability``).
+
         Parameters
         ----------
         working_nodes : Collection[Hashable], optional
@@ -1484,7 +1691,9 @@ class RepairableRBD(RBD):
             compute.
         NotImplementedError
             If a component is under block replacement, which has no exact
-            long-run availability: simulate it with ``availability``.
+            long-run availability, or has hidden failures other than with a
+            constant failure rate, instant tests and instant repair:
+            simulate it with ``availability``.
 
         Examples
         --------
@@ -1511,23 +1720,15 @@ class RepairableRBD(RBD):
         broken_nodes = set() if broken_nodes is None else set(broken_nodes)
         self._validate_node_overrides(working_nodes, broken_nodes)
 
-        # Cache all component availabilities for efficiency
-        component_availability: dict[Hashable, float] = {}
-        for comp in self.components:
-            if comp in working_nodes:
-                component_availability[comp] = 1.0
-            elif comp in broken_nodes:
-                component_availability[comp] = 0.0
-            else:
-                component_availability[comp] = self._node_availability(comp)
-
-        for comp in self.in_or_out:
-            component_availability[comp] = 1.0
-
-        mean_availability = self.system_probability(
-            component_availability, method=method
+        # Over one period of the inspection schedules, if any (see
+        # _long_run_grid); otherwise at one point, as the node availabilities
+        # are constant.
+        times, weights = self._long_run_grid()
+        availability = self._probabilities_with_overrides(
+            self._availabilities_at(times), working_nodes, broken_nodes
         )
-        return mean_availability.item()
+        system = self.system_probability(availability, method=method)
+        return float(weights @ system)
 
     def _follow_up(self, event: Event, source) -> Event:
         """The next event of ``event``'s component, drawn from ``source``.
@@ -1540,6 +1741,9 @@ class RepairableRBD(RBD):
         schedule = self._preventive.get(node)
         if schedule is not None:
             return self._maintained_follow_up(event, source, schedule)
+        inspection = self._inspection.get(node)
+        if inspection is not None:
+            return self._inspected_follow_up(event, source, inspection)
         t, status = source.next_event()
         if isinstance(self.components[node], RepairableRBD):
             return Event(t, node, status, _planned(source, status))
@@ -1580,6 +1784,59 @@ class RepairableRBD(RBD):
         # Maintenance that takes time is a planned outage; in zero time
         # the unit is renewed in place, and stays up.
         return Event(due, node, schedule.duration is None, True)
+
+    def _inspected_follow_up(
+        self, event: Event, source, inspection: _Inspection
+    ) -> Event:
+        """The next event of a component whose failures are hidden."""
+        node, t = event.component, event.time
+        if not event.inspection:
+            if event.status:
+                # Repaired: as new, from t.
+                return self._inspected_renewal(node, t, source, inspection)
+            # Failed, unseen: found by the first inspection at or after t.
+            self._pending_failure[node] = None
+            return Event(inspection.finds(t), node, False, inspection=True)
+        if event.status:
+            # Tested in zero time, or back from a test: working, with its
+            # failure still ahead of it.
+            return self._inspected_next(node, t, inspection)
+        # A test that takes time, of a failed unit (repaired once the test is
+        # done) or of a working one (off-line, and not ageing, until then).
+        duration = 0.0
+        if inspection.duration is not None:
+            if isinstance(source, _StreamedComponent):
+                duration = source.maintenance_time()
+            else:
+                duration = inspection.duration.random(1).item()
+        failure = self._pending_failure[node]
+        if failure is None:
+            repair, status = source.next_event()
+            return Event(t + duration + repair, node, status)
+        self._pending_failure[node] = failure + duration
+        return Event(t + duration, node, True, inspection=True)
+
+    def _inspected_renewal(
+        self, node, t: float, source, inspection: _Inspection
+    ) -> Event:
+        """The first event of a unit with hidden failures put into service
+        as new at ``t``."""
+        life, _ = source.next_event()
+        self._pending_failure[node] = t + life
+        return self._inspected_next(node, t, inspection)
+
+    def _inspected_next(
+        self, node, t: float, inspection: _Inspection
+    ) -> Event:
+        """The next event of a working unit with hidden failures, at ``t``:
+        its failure, or the next inspection if that comes first (a failure
+        at the same time comes first, and is found by it). A test that takes
+        time takes the unit off-line; one in zero time leaves it up."""
+        failure = self._pending_failure[node]
+        due = inspection.due(t)
+        if failure <= due:  # type: ignore[operator]
+            return Event(failure, node, False)  # type: ignore[arg-type]
+        return Event(due, node, inspection.duration is None, inspection=True)
 
     def next_event(self, method="p", sources: Optional[dict] = None):
         """Advance the current simulation to the system's next state change.
@@ -1681,8 +1938,10 @@ class RepairableRBD(RBD):
                 self._event_queue.put(next_event)
 
         self.system_state = new_system_state
-        # A system taken down by maintenance is a planned outage.
-        self.last_change_planned = event.preventive and not new_system_state
+        # A system taken down by maintenance or a test is a planned outage.
+        self.last_change_planned = (
+            event.preventive or event.inspection
+        ) and not new_system_state
 
         return event.time, self.system_state
 
@@ -1867,10 +2126,21 @@ class RepairableRBD(RBD):
             "repair": 0.0,
             "replace": 0.0,
             "preventive": 0.0,
+            "inspection": 0.0,
             "component_downtime": 0.0,
             "system_downtime": 0.0,
         }
         cost_by_component = {node: 0.0 for node in self.costs}
+
+        def pay(node, category: str, charges) -> float:
+            # The next amount of a stream of charges, booked to its node and
+            # category (a node or category with no stream costs nothing).
+            if charges is None:
+                return 0.0
+            charge = next(charges)
+            cost_by_category[category] += charge
+            cost_by_component[node] += charge
+            return charge
 
         # Perform N simulations. surpyval's ``.random`` draws from numpy's
         # global RNG, so seed it here (if a seed was given) to make the run
@@ -1880,8 +2150,8 @@ class RepairableRBD(RBD):
         if seed is not None:
             _rng_state = np.random.get_state()
             np.random.seed(seed)
-        failure_charges, preventive_charges = (
-            self._action_charges() if has_costs else ({}, {})
+        failure_charges, preventive_charges, inspection_charges = (
+            self._action_charges() if has_costs else ({}, {}, {})
         )
         stream = UniformStream()
         sources = self._streamed_components(stream) or self.components
@@ -1915,54 +2185,57 @@ class RepairableRBD(RBD):
                 # Get the next event and update the component's status
 
                 event = self._event_queue.get()
-                if (
-                    event.preventive
-                    and event.status
-                    and self.component_status[event.component]
+                node = event.component
+                if (event.preventive or event.inspection) and (
+                    event.status == self.component_status[node]
                 ):
-                    # Maintenance in zero time: the unit is renewed in
-                    # place, with no change of state.
-                    charges = preventive_charges.get(event.component)
-                    if charges is not None:
-                        charge = next(charges)
-                        rep_cost += charge
-                        cost_by_category["preventive"] += charge
-                        cost_by_component[event.component] += charge
-                    next_event = self._follow_up(
-                        event, sources[event.component]
-                    )
+                    # No change of state: maintenance or a test in zero time
+                    # of a working unit (renewed in place, or found
+                    # working), or a test that finds a hidden failure, whose
+                    # repair starts now.
+                    if event.preventive:
+                        rep_cost += pay(
+                            node, "preventive", preventive_charges.get(node)
+                        )
+                    else:
+                        rep_cost += pay(
+                            node, "inspection", inspection_charges.get(node)
+                        )
+                        if not event.status:
+                            for category, charges in failure_charges.get(
+                                node, ()
+                            ):
+                                rep_cost += pay(node, category, charges)
+                    next_event = self._follow_up(event, sources[node])
                     if next_event.time < t_simulation:
                         self._event_queue.put(next_event)
                     continue
                 # Update the component's status
-                self.component_status[event.component] = event.status
+                self.component_status[node] = event.status
                 if event.status:
-                    RCI[event.component]["component_restorations"] += 1
+                    RCI[node]["component_restorations"] += 1
                 elif event.preventive:
                     # A planned outage: charged the preventive cost (a
                     # nested RBD's own costs are not counted).
-                    charges = preventive_charges.get(event.component)
-                    if charges is not None:
-                        charge = next(charges)
-                        rep_cost += charge
-                        cost_by_category["preventive"] += charge
-                        cost_by_component[event.component] += charge
+                    rep_cost += pay(
+                        node, "preventive", preventive_charges.get(node)
+                    )
+                elif event.inspection:
+                    # A test that takes a working unit off-line.
+                    rep_cost += pay(
+                        node, "inspection", inspection_charges.get(node)
+                    )
                 else:
-                    FCI[event.component]["component_failures"] += 1
+                    FCI[node]["component_failures"] += 1
                     # Repair and replace are charged per corrective action,
-                    # at the failure that triggers it.
-                    for category, charges in failure_charges.get(
-                        event.component, ()
-                    ):
-                        charge = next(charges)
-                        rep_cost += charge
-                        cost_by_category[category] += charge
-                        cost_by_component[event.component] += charge
+                    # at the failure that triggers it (for a hidden failure,
+                    # when an inspection finds it).
+                    if node not in self._inspection:
+                        for category, charges in failure_charges.get(node, ()):
+                            rep_cost += pay(node, category, charges)
 
                 status = 1 if event.status else -1
-                component_timelines[event.component].append(
-                    (event.time, status)
-                )
+                component_timelines[node].append((event.time, status))
 
                 # Record new system state, it could still be the same as
                 # system_state in which case we don't bother changing
@@ -1978,14 +2251,14 @@ class RepairableRBD(RBD):
                         # System restored
                         aggregate_timeline[event.time] += 1
                         system_restorations += 1
-                        RCI[event.component]["system_restorations"] += 1
+                        RCI[node]["system_restorations"] += 1
                     else:
                         aggregate_timeline[event.time] -= 1
-                        if event.preventive:
+                        if event.preventive or event.inspection:
                             system_planned_outages += 1
                         else:
                             system_failures += 1
-                            FCI[event.component]["system_failures"] += 1
+                            FCI[node]["system_failures"] += 1
 
                     # Set the system_state to the new state
                     self.system_state = new_system_state
@@ -1994,7 +2267,7 @@ class RepairableRBD(RBD):
                 # If the component just got repaired then we need it's next
                 # failure event, otherwise it just broke and we need it's
                 # repair event
-                next_event = self._follow_up(event, sources[event.component])
+                next_event = self._follow_up(event, sources[node])
                 # But only queue up the event if it occurs before the end
                 # of the simulation
                 if next_event.time < t_simulation:
@@ -2116,6 +2389,7 @@ class RepairableRBD(RBD):
         del self.t_simulation
         del self.component_status
         del self.last_change_planned
+        del self._pending_failure
 
         cost_result = None
         if has_costs:
@@ -2273,6 +2547,14 @@ class RepairableRBD(RBD):
         ``integral_0^T R / (integral_0^T R + F(T) * MTTR + R(T) * MTTP)``,
         with ``MTTP`` the mean maintenance time (0 for ``"instant"``).
 
+        A component with hidden failures, a constant failure rate
+        ``lambda``, inspected every ``tau`` with instant tests and instant
+        repair, is up a fraction ``(1 - exp(-lambda * tau)) / (lambda *
+        tau)`` of the time, about ``1 - lambda * tau / 2``: it is down, from
+        a failure until the next inspection, half an interval on average.
+        Other hidden failures have no exact long-run values here: simulate
+        them.
+
         Returns
         -------
         dict[Hashable, float]
@@ -2285,7 +2567,8 @@ class RepairableRBD(RBD):
             MTTF this cannot compute.
         NotImplementedError
             If a component is under block replacement, which has no exact
-            long-run availability.
+            long-run availability, or has hidden failures other than with a
+            constant failure rate, instant tests and instant repair.
 
         Examples
         --------
@@ -2314,12 +2597,131 @@ class RepairableRBD(RBD):
 
     def _node_availability(self, node) -> float:
         """A component's long-run availability (see ``node_availability``)."""
+        if node in self._inspection:
+            rate, interval = self._inspected_rate(node)
+            return float(-np.expm1(-rate * interval) / (rate * interval))
         schedule = self._preventive.get(node)
         if schedule is None:
             component = self.components[node]
             return float(np.atleast_1d(component.mean_availability())[0])
         up, cycle, _ = self._maintenance_cycle(node, schedule)
         return up / cycle
+
+    def _inspected_rate(self, node) -> Tuple[float, float]:
+        """The constant failure rate and the inspection interval of a
+        component with hidden failures, for the exact long-run values,
+        which cover only a constant failure rate, instant tests and instant
+        repair."""
+        component = self.components[node]
+        rate = _constant_rate(component.reliability)
+        inspection = self._inspection[node]
+        if (
+            rate is None
+            or inspection.duration is not None
+            or model_mean(component.time_to_replace) != 0.0
+        ):
+            raise NotImplementedError(
+                f"Component {node!r} has hidden failures: its exact long-run "
+                "values are known only with a constant failure rate (an "
+                "exponential life), instant tests and instant repair. "
+                "Estimate them by simulation, with availability() or cost()."
+            )
+        return rate, inspection.interval
+
+    def _has_inspection(self) -> bool:
+        """Whether a component here, or in a nested RBD, has hidden
+        failures."""
+        return bool(self._inspection) or any(
+            isinstance(c, RepairableRBD) and c._has_inspection()
+            for c in self.components.values()
+        )
+
+    def _long_run_grid(self) -> Tuple[np.ndarray, np.ndarray]:
+        """The times, and their weights (which sum to 1), that the exact
+        long-run values average over.
+
+        Components with hidden failures are up with a probability that falls
+        between inspections and is restored at each one, and components
+        inspected at the same times are down together, so the system's
+        long-run values are averages over one period of the inspection
+        schedules: by Gauss-Legendre quadrature between consecutive
+        inspections, on pieces short enough (a failure rate times their
+        length at most 1) for it to be exact to rounding. With no such
+        components they are constant: one time, of weight 1. A nested RBD
+        with hidden failures enters through its own long-run values, which
+        is exact only if nothing else varies with the inspections.
+        """
+        nested = [
+            node
+            for node, c in self.components.items()
+            if isinstance(c, RepairableRBD) and c._has_inspection()
+        ]
+        if nested and len(nested) + len(self._inspection) > 1:
+            raise NotImplementedError(
+                f"Node(s) {sorted(nested, key=str)} are RBDs with hidden "
+                "failures, and other nodes' inspections here fall at the "
+                "same times: estimate the long-run values by simulation, "
+                "with availability() or cost()."
+            )
+        if not self._inspection:
+            return np.zeros(1), np.ones(1)
+        rates = {node: self._inspected_rate(node) for node in self._inspection}
+        intervals = {interval for _, interval in rates.values()}
+        period = _common_period(intervals)
+        breaks = {0.0, period}
+        for interval in intervals:
+            count = int(round(period / interval))
+            if count > 100_000:
+                raise NotImplementedError(
+                    f"The inspection intervals {sorted(intervals)} repeat "
+                    "together only after too many inspections to average "
+                    "over: estimate the long-run values by simulation, with "
+                    "availability() or cost()."
+                )
+            breaks.update(k * interval for k in range(1, count))
+        edges = np.array(sorted(breaks))
+        fastest = max(rate for rate, _ in rates.values())
+        points, weights = np.polynomial.legendre.leggauss(16)
+        times, masses = [], []
+        for a, b in zip(edges[:-1], edges[1:]):
+            pieces = np.linspace(
+                a, b, max(1, math.ceil((b - a) * fastest)) + 1
+            )
+            for lo, hi in zip(pieces[:-1], pieces[1:]):
+                half = 0.5 * (hi - lo)
+                times.append(lo + half * (points + 1.0))
+                masses.append(half * weights)
+        return np.concatenate(times), np.concatenate(masses) / period
+
+    def _availabilities_at(self, times: np.ndarray) -> dict:
+        """Every node's availability at each of ``times`` (see
+        ``_long_run_grid``): ``exp(-lambda * u)``, ``u`` the time since the
+        last inspection, for a component with hidden failures; its constant
+        long-run availability for any other."""
+        out: dict = {}
+        for node in self.components:
+            if node in self._inspection:
+                rate, interval = self._inspected_rate(node)
+                since = times - interval * np.floor(times / interval)
+                out[node] = np.exp(-rate * since)
+            else:
+                out[node] = np.full(len(times), self._node_availability(node))
+        for node in self.in_or_out:
+            out[node] = np.ones(len(times))
+        return out
+
+    def _long_run_probabilities(
+        self, working_nodes, broken_nodes
+    ) -> Tuple[dict, np.ndarray]:
+        """The node availabilities the long-run importance measures are
+        evaluated at (with the forced nodes held at 1 or 0), over the times
+        of ``_long_run_grid``, and those times' weights: each measure is
+        then a ratio of time-averaged system quantities."""
+        times, weights = self._long_run_grid()
+        probabilities = self._probabilities_with_overrides(
+            self._availabilities_at(times), working_nodes, broken_nodes
+        )
+        return probabilities, weights
 
     def _node_frequencies(self, node) -> Tuple[float, float, float]:
         """A component's long-run failures, preventive replacements and
@@ -2331,6 +2733,11 @@ class RepairableRBD(RBD):
         if isinstance(component, RepairableRBD):
             failures, planned = component._outage_frequencies()
             return failures, 0.0, planned
+        if node in self._inspection:
+            # At most one failure per inspection interval: the unit, down
+            # from its failure, is renewed at the inspection that finds it.
+            rate, interval = self._inspected_rate(node)
+            return float(-np.expm1(-rate * interval) / interval), 0.0, 0.0
         schedule = self._preventive.get(node)
         if schedule is None:
             return component.failure_frequency(), 0.0, 0.0
@@ -2447,8 +2854,9 @@ class RepairableRBD(RBD):
         over their planned outages (a node's outage takes the system down
         when the node is critical, which it is with probability
         ``I_B(i)``)."""
+        times, weights = self._long_run_grid()
         availability = self._probabilities_with_overrides(
-            self.node_availability(), working_nodes, broken_nodes
+            self._availabilities_at(times), working_nodes, broken_nodes
         )
         forced = (set() if working_nodes is None else set(working_nodes)) | (
             set() if broken_nodes is None else set(broken_nodes)
@@ -2460,10 +2868,16 @@ class RepairableRBD(RBD):
                 # A forced node never changes state, so it contributes no
                 # system failures.
                 continue
-            importance = np.asarray(birnbaum[node]).item()
-            node_failures, _, node_planned = self._node_frequencies(node)
-            failures += importance * node_failures
-            planned += importance * node_planned
+            importance = np.asarray(birnbaum[node])
+            if node in self._inspection:
+                # It fails at its constant rate whenever it is up.
+                rate, _ = self._inspected_rate(node)
+                node_failures: Any = rate * availability[node]
+                node_planned: Any = 0.0
+            else:
+                node_failures, _, node_planned = self._node_frequencies(node)
+            failures += float(weights @ (importance * node_failures))
+            planned += float(weights @ (importance * node_planned))
         return failures, planned
 
     def mean_time_between_failures(
@@ -2703,11 +3117,11 @@ class RepairableRBD(RBD):
         >>> round(rbd.birnbaum_importance(working_nodes=["a"])["b"], 4)
         1.0
         """
-        node_probabilities = self._probabilities_with_overrides(
-            self.node_availability(), working_nodes, broken_nodes
+        node_probabilities, weights = self._long_run_probabilities(
+            working_nodes, broken_nodes
         )
         return _squeeze_values(
-            super()._birnbaum_importance(node_probabilities)
+            super()._birnbaum_importance(node_probabilities, weights)
         )
 
     def improvement_potential(
@@ -2760,11 +3174,11 @@ class RepairableRBD(RBD):
         >>> {node: round(p, 4) for node, p in potential.items()}
         {'a': 0.1111, 'b': 0.2778}
         """
-        node_probabilities = self._probabilities_with_overrides(
-            self.node_availability(), working_nodes, broken_nodes
+        node_probabilities, weights = self._long_run_probabilities(
+            working_nodes, broken_nodes
         )
         return _squeeze_values(
-            super()._improvement_potential(node_probabilities)
+            super()._improvement_potential(node_probabilities, weights)
         )
 
     def risk_achievement_worth(
@@ -2825,11 +3239,11 @@ class RepairableRBD(RBD):
         >>> {node: round(r, 4) for node, r in raw.items()}
         {'a': 2.25, 'b': 2.25}
         """
-        node_probabilities = self._probabilities_with_overrides(
-            self.node_availability(), working_nodes, broken_nodes
+        node_probabilities, weights = self._long_run_probabilities(
+            working_nodes, broken_nodes
         )
         return _squeeze_values(
-            super()._risk_achievement_worth(node_probabilities)
+            super()._risk_achievement_worth(node_probabilities, weights)
         )
 
     def risk_reduction_worth(
@@ -2888,11 +3302,11 @@ class RepairableRBD(RBD):
         >>> {node: round(r, 4) for node, r in rrw.items()}
         {'a': 1.3333, 'b': 2.6667}
         """
-        node_probabilities = self._probabilities_with_overrides(
-            self.node_availability(), working_nodes, broken_nodes
+        node_probabilities, weights = self._long_run_probabilities(
+            working_nodes, broken_nodes
         )
         return _squeeze_values(
-            super()._risk_reduction_worth(node_probabilities)
+            super()._risk_reduction_worth(node_probabilities, weights)
         )
 
     def criticality_importance(
@@ -2980,11 +3394,13 @@ class RepairableRBD(RBD):
         >>> {node: round(c, 4) for node, c in criticality.items()}
         {'a': 1.0, 'b': 1.0}
         """
-        node_probabilities = self._probabilities_with_overrides(
-            self.node_availability(), working_nodes, broken_nodes
+        node_probabilities, weights = self._long_run_probabilities(
+            working_nodes, broken_nodes
         )
         return _squeeze_values(
-            super()._criticality_importance(node_probabilities, kind)
+            super()._criticality_importance(
+                node_probabilities, kind, weights=weights
+            )
         )
 
     def fussell_vesely(
@@ -3061,11 +3477,13 @@ class RepairableRBD(RBD):
         >>> {node: round(v, 4) for node, v in fv.items()}
         {'a': 0.375, 'b': 0.75}
         """
-        node_probabilities = self._probabilities_with_overrides(
-            self.node_availability(), working_nodes, broken_nodes
+        node_probabilities, weights = self._long_run_probabilities(
+            working_nodes, broken_nodes
         )
         return _squeeze_values(
-            super()._fussell_vesely(node_probabilities, fv_type)
+            super()._fussell_vesely(
+                node_probabilities, fv_type, weights=weights
+            )
         )
 
     def fussel_vesely(self, fv_type: str = "c") -> dict[Any, float]:

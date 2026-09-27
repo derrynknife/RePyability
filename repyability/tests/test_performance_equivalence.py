@@ -791,6 +791,32 @@ def repairable_rbds():
             },
             downtime_cost_rate=3.0,
         ),
+        "inspected": RepairableRBD(
+            [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")],
+            {
+                "a": {
+                    "reliability": W([60, 1.5]),
+                    "repairability": L([0.3, 0.5]),
+                    "repair_cost": L([3.0, 0.4]),
+                    "inspection": {
+                        "interval": 25.0,
+                        "duration": W([0.5, 2.0]),
+                        "cost": L([1.0, 0.5]),
+                    },
+                },
+                "b": {
+                    "reliability": surv.Exponential.from_params([0.02]),
+                    "repairability": "instant",
+                    "inspection": {"interval": 25.0, "cost": 2.0},
+                },
+                "c": {
+                    "reliability": W([200, 1.5]),
+                    "repairability": surv.Exponential.from_params([0.5]),
+                    "downtime_cost": 4.0,
+                },
+            },
+            downtime_cost_rate=3.0,
+        ),
         "nested_maintained": RepairableRBD(
             [("s", "a"), ("a", "sub"), ("sub", "t")],
             {
