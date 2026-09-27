@@ -79,6 +79,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are simulated. Spares are promoted in list order; the factor persists
   through serialisation. Imperfect switching remains cold-`k=1`-only.
 
+- **Named reliability-allocation methods.**
+  `minimum_effort_allocation(target, node_probabilities)` is Albert's (1958)
+  minimization-of-effort algorithm (MIL-HDBK-338B). For a series system it
+  raises the least reliable nodes to one common level, the least total
+  effort for any effort function meeting Albert's conditions, in closed form.
+  `cost_based_allocation(target, node_probabilities, max_probabilities=None,
+  feasibility=None)` is Mettas's (2000) cost-based allocation, for any
+  structure: the cheapest node probabilities meeting the target, with each
+  node's cost `exp((1 − f)(R − R_min)/(R_max − R))` rising from its current
+  probability towards its maximum, faster for a lower feasibility `f`. It
+  works on the log-odds scale from both ends of the exact engine, with exact
+  gradients, so it stays exact at any size (100 nodes in series or 30 in
+  parallel, where the least-squares heuristic stalls). Tests hold the first to
+  a direct minimisation of two different effort functions, and the second to
+  a direct minimisation of Mettas's problem and to the optimality conditions.
+  The design guide now maps each allocation helper to its named method:
+  `equal_allocation` is equal apportionment, `improvement_allocation`
+  ARINC-style proportional apportionment, and `simple_allocation` a
+  least-squares heuristic.
+
 ### Changed
 - Require **surpyval >= 0.20**, and the requirement is now **uncapped** (was
   `>=0.16,<0.17`). 0.20 adds a first-class `Hypoexponential` distribution, so

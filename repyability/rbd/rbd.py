@@ -19,6 +19,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.optimize import OptimizeResult, brentq, minimize
 from scipy.special import expit as sigmoid
+from scipy.special import logit, logsumexp, softmax
 
 from repyability.rbd.min_path_sets import min_path_sets as find_min_path_sets
 from repyability.rbd.rbd_graph import RBDGraph
@@ -290,6 +291,49 @@ def _evaluate_shannon_plan(
         p = element_probabilities[pivot]
         values.append(p * values[active] + (1 - p) * values[inactive])
     return values[root]
+
+
+def _shannon_value_and_gradient(
+    plan: tuple[list, int],
+    probabilities: Dict[Any, float],
+    complements: Dict[Any, float],
+) -> tuple[float, Dict[Any, float]]:
+    """A plan's value for scalar element probabilities, and its derivative
+    with respect to each element's probability (the element's Birnbaum
+    importance), by one forward and one reverse pass. ``complements`` holds
+    each element's ``1 - p``, computed without cancellation, so the value
+    keeps its full relative precision however small it is."""
+    steps, root = plan
+    values = [0.0, 1.0]
+    for pivot, active, inactive in steps:
+        values.append(
+            probabilities[pivot] * values[active]
+            + complements[pivot] * values[inactive]
+        )
+    adjoints = [0.0] * len(values)
+    adjoints[root] = 1.0
+    gradient: Dict[Any, float] = defaultdict(float)
+    for index in range(len(steps) - 1, -1, -1):
+        adjoint = adjoints[index + 2]
+        if adjoint:
+            pivot, active, inactive = steps[index]
+            gradient[pivot] += adjoint * (values[active] - values[inactive])
+            adjoints[active] += adjoint * probabilities[pivot]
+            adjoints[inactive] += adjoint * complements[pivot]
+    return values[root], gradient
+
+
+def _probability_value(label: str, value: Any) -> float:
+    """``value`` as a single probability in [0, 1], or a ValueError naming
+    ``label``."""
+    array = np.asarray(value, dtype=float)
+    if array.size != 1:
+        raise ValueError(
+            f"{label} must be a single probability, got {array.size} values."
+        )
+    if not 0.0 <= array.item() <= 1.0:
+        raise ValueError(f"{label} must be in [0, 1], got {array.item()}.")
+    return array.item()
 
 
 def minimal_cut_sets_from_path_sets(
@@ -1160,20 +1204,10 @@ class RBD:
         [0.1863]
         """
         fixed_nodes = set() if fixed is None else set(fixed)
-        probabilities: Dict[Any, float] = {}
-        for node, value in node_probabilities.items():
-            value = np.asarray(value, dtype=float)
-            if value.size != 1:
-                raise ValueError(
-                    f"node_probabilities[{node!r}] must be a single "
-                    f"probability, got {value.size} values."
-                )
-            if not 0.0 <= value.item() <= 1.0:
-                raise ValueError(
-                    f"node_probabilities[{node!r}] must be in [0, 1], got "
-                    f"{value.item()}."
-                )
-            probabilities[node] = value.item()
+        probabilities: Dict[Any, float] = {
+            node: _probability_value(f"node_probabilities[{node!r}]", value)
+            for node, value in node_probabilities.items()
+        }
         for node in self.nodes:
             probabilities.setdefault(node, 0.5)
 
@@ -1381,6 +1415,375 @@ class RBD:
                 "equal_allocation and improvement_allocation are exact."
             )
         return node_probabilities
+
+    def _allocation_start(self, node_probabilities: Dict) -> Dict[Any, float]:
+        """The current probability of every intermediate node, validated.
+        Other keys (e.g. the input and output nodes) are not used."""
+        missing = [n for n in self.nodes if n not in node_probabilities]
+        if missing:
+            raise ValueError(
+                "node_probabilities needs the current probability of every "
+                f"intermediate node; missing {missing}."
+            )
+        return {
+            node: _probability_value(
+                f"node_probabilities[{node!r}]", node_probabilities[node]
+            )
+            for node in self.nodes
+        }
+
+    def _node_overrides(self, name: str, mapping: Optional[Dict]) -> Dict:
+        """A per-node option dict, checked to name intermediate nodes only
+        (so a typo cannot fall back to the default unnoticed)."""
+        if mapping is None:
+            return {}
+        nodes = set(self.nodes)
+        unknown = [n for n in mapping if n not in nodes]
+        if unknown:
+            raise ValueError(
+                f"{name} has entries for {unknown}, which are not "
+                "intermediate nodes."
+            )
+        return dict(mapping)
+
+    def _log_odds(
+        self, p: Dict[Any, float], q: Dict[Any, float]
+    ) -> tuple[float, Dict[Any, float]]:
+        """The log-odds ``log(R / (1 - R))`` that the system works, and its
+        derivative with respect to each node's probability, from the node
+        probabilities ``p`` and their complements ``q``. ``R`` comes from
+        the path sets and ``1 - R`` from the cut sets, so both keep their
+        full relative precision, even within 1e-300 of 0 or 1."""
+        R, dR = _shannon_value_and_gradient(self._shannon_plan("p"), p, q)
+        Q, dQ = _shannon_value_and_gradient(self._shannon_plan("c"), q, p)
+        # Each node's Birnbaum importance, from whichever end is accurate.
+        importance = dR if R <= Q else dQ
+        with np.errstate(divide="ignore"):
+            log_odds = float(np.log(R) - np.log(Q))
+        scale = R * Q
+        return log_odds, {
+            n: importance.get(n, 0.0) / scale if scale else 0.0
+            for n in self.nodes
+        }
+
+    @check_probability
+    def minimum_effort_allocation(
+        self, target: float, node_probabilities: Dict
+    ) -> Dict[Any, float]:
+        """Albert's minimum-effort allocation for a series system.
+
+        The minimization-of-effort algorithm (Albert, 1958; MIL-HDBK-338B)
+        raises a series system to ``target`` with the least total effort:
+        with the current probabilities in ascending order ``R_1 <= ... <=
+        R_n``, it raises the ``k`` least reliable nodes to one common level
+
+            R_0 = (target / (R_{k+1} * ... * R_n)) ** (1 / k),
+
+        where ``k`` is the largest ``j`` with ``R_j`` below
+        ``(target / (R_{j+1} * ... * R_n)) ** (1 / j)``, and leaves the other
+        nodes unchanged. The result holds for any effort function the nodes
+        share that meets Albert's conditions (the effort of raising a
+        reliability from ``x`` to ``y`` is non-negative, grows with ``y``
+        and adds up over successive steps, among others), such as
+        ``y - x`` or ``log((1 - x) / (1 - y))``: the answer does not depend
+        on which. It needs no solver, so ``res`` is not changed.
+
+        Parameters
+        ----------
+        target : float
+            The system probability to reach, in [0, 1].
+        node_probabilities : Dict
+            The current probability that each intermediate node works (a
+            single value in [0, 1] per node), keyed by node name. Every
+            intermediate node needs an entry; other keys are not used.
+
+        Returns
+        -------
+        dict
+            The allocated probability (a float) of every intermediate node,
+            keyed by node name. A target the system already meets returns
+            the current probabilities.
+
+        Raises
+        ------
+        ValueError
+            If ``target`` is above 1 or below 0; if the diagram is not a
+            series system (one path through every intermediate node; use
+            [`cost_based_allocation`][repyability.RBD.cost_based_allocation]
+            for other structures); or if a node has no probability, or one
+            that is not a single value in [0, 1].
+
+        References
+        ----------
+        A. Albert, "A measure of the effort required to increase
+        reliability", Technical Report No. 43, Applied Mathematics and
+        Statistics Laboratory, Stanford University, 1958.
+
+        MIL-HDBK-338B, Electronic Reliability Design Handbook, 1998:
+        "Minimization of effort algorithm".
+
+        Examples
+        --------
+        The two weakest of four nodes in series are raised together; the
+        others are already good enough:
+
+        >>> from repyability import RBD
+        >>> rbd = RBD([("s", "a"), ("a", "b"), ("b", "c"), ("c", "d"),
+        ...            ("d", "t")])
+        >>> current = {"a": 0.7, "b": 0.8, "c": 0.9, "d": 0.95}
+        >>> new = rbd.minimum_effort_allocation(0.6, current)
+        >>> {k: round(v, 4) for k, v in new.items()}
+        {'a': 0.8377, 'b': 0.8377, 'c': 0.9, 'd': 0.95}
+        >>> round(float(rbd.system_probability(new)[0]), 4)
+        0.6
+        """
+        current = self._allocation_start(node_probabilities)
+        path_sets = self.get_min_path_sets(include_in_out_nodes=False)
+        if len(path_sets) != 1 or set(next(iter(path_sets))) != set(
+            self.nodes
+        ):
+            raise ValueError(
+                "the minimum-effort algorithm applies to a series system (a "
+                "single path through every intermediate node); use "
+                "cost_based_allocation for other structures."
+            )
+        # In logs, so long chains cannot underflow; zeros sort first.
+        order = sorted(self.nodes, key=lambda n: current[n])
+        with np.errstate(divide="ignore", invalid="ignore"):
+            logs = np.log([current[n] for n in order])
+            log_target = np.log(target)
+            # rest[j]: the log of the product of the nodes after the j-th.
+            rest = np.append(np.cumsum(logs[::-1])[::-1][1:], 0.0)
+            raised = 0
+            for j in range(len(order), 0, -1):
+                if logs[j - 1] < (log_target - rest[j - 1]) / j:
+                    raised = j
+                    break
+            allocation = dict(current)
+            if raised:
+                level = float(np.exp((log_target - rest[raised - 1]) / raised))
+                for node in order[:raised]:
+                    allocation[node] = level
+        return allocation
+
+    @check_probability
+    def cost_based_allocation(
+        self,
+        target: float,
+        node_probabilities: Dict,
+        max_probabilities: Optional[Dict] = None,
+        feasibility: Optional[Dict] = None,
+    ) -> Dict[Any, float]:
+        """Mettas's cost-based allocation: the cheapest way to a target.
+
+        Reliability allocation as an optimisation (Mettas, 2000): find the
+        node probabilities ``R_i`` that meet the system target at the least
+        total cost ``sum_i c_i(R_i)``, where each node's cost of improvement
+        is
+
+            c_i(R_i) = exp((1 - f_i) * (R_i - R_min_i) / (R_max_i - R_i)),
+
+        ``R_min_i`` is its current probability, ``R_max_i`` the most it can
+        reach and ``f_i`` in [0, 1) its feasibility: how easily it can be
+        improved relative to the others (the cost rises faster for a lower
+        ``f_i``). The cost is 1 at the current probability and grows without
+        bound towards the maximum, so every node stays within its bounds and
+        none reaches its maximum. It works on any structure: the system
+        probability is exact, and the improvement goes where it is cheapest
+        per unit of system probability, which depends on each node's
+        importance, current value, maximum and feasibility.
+
+        It is solved with ``scipy.optimize.minimize`` (SLSQP), from the
+        point where every node has closed the same fraction of its gap to
+        its maximum, using exact gradients. The system probability is
+        handled on the log-odds scale, computed from both ends of the exact
+        engine, and the cost as the log of its sum, so neither loses
+        precision nor overflows, however near 0 or 1 the probabilities are.
+        The allocation returned meets the target. The solver's result is
+        stored on the RBD as ``res``, replacing any earlier one; its ``fun``
+        is the log of the total cost of the nodes allowed to change.
+
+        Parameters
+        ----------
+        target : float
+            The system probability to reach, in [0, 1].
+        node_probabilities : Dict
+            The current probability that each intermediate node works (a
+            single value in [0, 1] per node), keyed by node name: the lower
+            bound ``R_min``. Every intermediate node needs an entry; other
+            keys are not used.
+        max_probabilities : dict, optional
+            The most each node's probability can be raised to, ``R_max``
+            (at least its current probability; equal to it holds the node
+            fixed). A node without an entry can approach 1.
+        feasibility : dict, optional
+            Each node's feasibility ``f`` in [0, 1): higher is easier to
+            improve. A node without an entry gets 0.5.
+
+        Returns
+        -------
+        dict
+            The allocated probability (a float) of every intermediate node,
+            keyed by node name. A target the system already meets returns
+            the current probabilities.
+
+        Raises
+        ------
+        ValueError
+            If ``target`` is above 1 or below 0; if it cannot be reached
+            (the message gives the reachable range: the maximum is only
+            approached, at an ever-growing cost); if a node has no
+            probability, or one that is not a single value in [0, 1]; if a
+            maximum is below its node's current probability or a
+            feasibility is outside [0, 1); or if ``max_probabilities`` or
+            ``feasibility`` names a node that is not an intermediate node.
+
+        Warns
+        -----
+        UserWarning
+            If the solver stops before converging; the allocation returned
+            still meets the target, but may not be the cheapest.
+
+        References
+        ----------
+        A. Mettas, "Reliability allocation and optimization for complex
+        systems", Proceedings of the Annual Reliability and Maintainability
+        Symposium, 2000, pp. 216-221.
+
+        Examples
+        --------
+        Two parallel pumps in series with a valve, all at 0.9, to reach
+        0.99. The valve is on every path, so it must reach 0.99 itself; the
+        cheapest allocation takes it only a little further and raises the
+        pumps to supply the rest:
+
+        >>> from repyability import RBD
+        >>> rbd = RBD([("s", "p1"), ("s", "p2"), ("p1", "v"), ("p2", "v"),
+        ...            ("v", "t")])
+        >>> current = {"p1": 0.9, "p2": 0.9, "v": 0.9}
+        >>> new = rbd.cost_based_allocation(0.99, current)
+        >>> {k: round(v, 4) for k, v in new.items()}
+        {'p1': 0.9808, 'p2': 0.9808, 'v': 0.9904}
+
+        A valve that is harder to improve stops even closer to 0.99, and the
+        pumps do more:
+
+        >>> new = rbd.cost_based_allocation(
+        ...     0.99, current, feasibility={"v": 0.1}
+        ... )
+        >>> {k: round(v, 4) for k, v in new.items()}
+        {'p1': 0.9896, 'p2': 0.9896, 'v': 0.9901}
+        """
+        current = self._allocation_start(node_probabilities)
+        maximum = {node: 1.0 for node in self.nodes}
+        for node, value in self._node_overrides(
+            "max_probabilities", max_probabilities
+        ).items():
+            maximum[node] = _probability_value(
+                f"max_probabilities[{node!r}]", value
+            )
+            if maximum[node] < current[node]:
+                raise ValueError(
+                    f"max_probabilities[{node!r}] ({maximum[node]}) is below "
+                    f"the node's current probability ({current[node]})."
+                )
+        ease = {node: 0.5 for node in self.nodes}
+        for node, value in self._node_overrides(
+            "feasibility", feasibility
+        ).items():
+            ease[node] = float(value)
+            if not 0.0 <= ease[node] < 1.0:
+                raise ValueError(
+                    f"feasibility[{node!r}] must be in [0, 1), got {value}."
+                )
+        free = [n for n in self.nodes if maximum[n] > current[n]]
+        steepness = np.array([1.0 - ease[n] for n in free])
+        gap = np.array([maximum[n] - current[n] for n in free])
+
+        # Each free node is placed by v >= 0, the log of the factor by which
+        # its gap to its maximum has shrunk: R = R_max - gap * exp(-v), so
+        # (R - R_min) / (R_max - R) = expm1(v) and its cost is
+        # exp((1 - f) * expm1(v)).
+        def probabilities(v: np.ndarray) -> tuple[Dict, Dict]:
+            p = dict(current)
+            q = {n: 1.0 - current[n] for n in self.nodes}
+            shrunk = gap * np.exp(-v)
+            for i, n in enumerate(free):
+                p[n] = maximum[n] - shrunk[i]
+                q[n] = (1.0 - maximum[n]) + shrunk[i]
+            return p, q
+
+        goal = float(logit(target))
+        now = self._log_odds(*probabilities(np.zeros(len(free))))[0]
+        if goal <= now:
+            self.res = OptimizeResult(
+                x=np.zeros(len(free)),
+                fun=0.0,
+                success=True,
+                message="The target is already met.",
+            )
+            return dict(current)
+        best = self._log_odds(*probabilities(np.full(len(free), np.inf)))[0]
+        # The maximum is only approached (at an ever-growing cost), so a
+        # target at it, to within rounding, cannot be met either.
+        if goal >= best - 1e-9:
+            raise ValueError(
+                f"target {target} cannot be reached: from the current "
+                f"probabilities ({sigmoid(now):.6g}) the system can only "
+                f"approach {sigmoid(best):.6g}, with every node at its "
+                "maximum."
+            )
+
+        def shortfall(v: np.ndarray) -> float:
+            return self._log_odds(*probabilities(v))[0] - goal
+
+        def shortfall_gradient(v: np.ndarray) -> np.ndarray:
+            derivative = self._log_odds(*probabilities(v))[1]
+            dp = gap * np.exp(-v)
+            return np.array([derivative[n] for n in free]) * dp
+
+        def log_total_cost(v: np.ndarray) -> tuple[float, np.ndarray]:
+            costs = steepness * np.expm1(v)
+            return float(logsumexp(costs)), softmax(
+                costs
+            ) * steepness * np.exp(v)
+
+        def common_shift(start: np.ndarray) -> np.ndarray:
+            """The start moved up by the least common v meeting the target
+            (it exists, as the target is below the reachable maximum)."""
+            high = 1.0
+            while shortfall(start + high) < 0.0 and high < 1e6:
+                high *= 2.0
+            return start + brentq(
+                lambda d: shortfall(start + d), 0.0, high, xtol=1e-14
+            )
+
+        res = minimize(
+            log_total_cost,
+            common_shift(np.zeros(len(free))),
+            jac=True,
+            method="SLSQP",
+            bounds=[(0.0, None)] * len(free),
+            constraints=[
+                {"type": "ineq", "fun": shortfall, "jac": shortfall_gradient}
+            ],
+            options={"ftol": 1e-12, "maxiter": 1000},
+        )
+        v = np.maximum(res.x, 0.0)
+        if shortfall(v) < 0.0:
+            # Close the solver's last sliver of constraint tolerance.
+            v = common_shift(v)
+        res.x = v
+        res.fun = log_total_cost(v)[0]
+        self.res = res
+        if not res.success:
+            warnings.warn(
+                "the cost minimisation stopped before converging "
+                f"({res.message}); the allocation meets the target but may "
+                "not be the cheapest.",
+                stacklevel=3,
+            )
+        return {n: float(v) for n, v in probabilities(v)[0].items()}
 
     def node_names(self) -> list[Hashable]:
         """Return the names of the intermediate (component) nodes.

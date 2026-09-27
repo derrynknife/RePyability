@@ -428,13 +428,31 @@ afford another copy, which is what makes the exact search practical. The greedy
 alternative adds the copy with the best gain in log-reliability per unit cost
 until the budget runs out; it is fast but can stop short of the optimum.
 
-**Reliability allocation** apportions a system target among components. The
-proportional-improvement rule scales every adjustable component's failure
-probability by a common factor (`q_i → q_i · e^{−x w_i}` with optional
-weights `w_i`) and solves for `x`; equal allocation is the special case of
-identical starting points, so every component gets the same reliability. The
-least-squares rule searches any combination that meets the target. There are
-many allocations that meet a target; each rule picks one.
+**Reliability allocation** apportions a system target among components.
+There are many allocations that meet a target; each rule picks one.
+
+- *Equal apportionment* gives every component the same reliability.
+- *Proportional improvement* (ARINC-style) scales every adjustable
+  component's failure probability by a common factor (`q_i → q_i · e^{−x w_i}`
+  with optional weights `w_i`) and solves for `x`. The ARINC method scales
+  failure rates instead, which is the same for small failure probabilities.
+- *Minimization of effort* (Albert, 1958) is for a series system. If raising a
+  component's reliability from `x` to `y` takes effort `G(x, y)`, the same
+  function for every component, growing with `y` and adding up over
+  successive steps (with Albert's regularity condition), the least total
+  effort raises the `k` least reliable components to one common level
+  `R_0 = (R* / ∏_{i>k} R_i)^{1/k}` and leaves the others, with `k` the largest
+  number for which the `k`-th reliability is below that level.
+- *Cost-based allocation* (Mettas, 2000) minimises `Σ c_i(R_i)` subject to
+  the system reliability reaching the target and
+  `R_min,i ≤ R_i < R_max,i`, with
+  `c_i(R) = exp((1 − f_i)(R − R_min,i)/(R_max,i − R))`. At the optimum, every
+  improved component buys system reliability at the same marginal cost,
+  `c_i'(R_i) / I_B(i) = λ` with `I_B(i)` its Birnbaum importance, and a
+  component left unchanged would cost more than `λ` per unit: the
+  improvement goes where it is cheapest per unit of system reliability.
+- The least-squares rule is a heuristic that searches for any combination
+  meeting the target.
 
 ## Maintenance models
 
