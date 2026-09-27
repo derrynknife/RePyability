@@ -8,6 +8,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Fault tree analysis (`FaultTree`, closes #39).** Static fault trees:
+  OR, AND and VOTE (k-out-of-n) gates over basic events, each a probability
+  or a lifetime model, with events and gates that feed several gates
+  (repeated events). The tree is evaluated exactly by the diagrams' engine:
+  every gate below which nothing is shared is a closed-form module, and what
+  the repeated events tie together is solved by the Shannon decomposition,
+  with no rare-event or min-cut approximation. `top_event_probability(t)`,
+  `minimal_cut_sets()`, `ranked_cut_sets(t)`, `minimal_path_sets()`,
+  `occurs(events)`, and the Birnbaum, criticality, Fussell–Vesely, RAW and
+  RRW importance measures (the diagrams' definitions). `FaultTree.from_rbd`
+  turns a `NonRepairableRBD` into the tree of its failure (series blocks OR
+  gates, parallel blocks AND gates, k-out-of-n blocks VOTE gates, a bridge an
+  OR over its cut sets; perfect junctions drop out), and `to_rbd` turns any
+  tree into a diagram with the same logic (repeated events as repeated
+  nodes, votes through perfect junctions). Trees are saved as JSON. Tests
+  check 150 random trees with repeated events and shared gates against the
+  enumerated definition (probability, cut and path sets, every state, every
+  importance measure), conversion both ways (every random tree, random
+  diagrams, a bridge round trip), validation and saving; mutation testing
+  catches all 21 mutations of the logic. Docs: a Fault trees guide page, a
+  Lesson 3 section with worked examples and an exercise, concepts and
+  glossary.
 - **Acquisition cost, total cost of ownership, and the redundancy that
   minimises it (`RepairableRBD`, closes #71).** A component spec's new
   `"acquisition_cost"` is the one-off price of the unit: `acquisition_cost`

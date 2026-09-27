@@ -171,12 +171,12 @@ diagram.sf()                      # -> 0.9405
 shared.to_rbd().repeated          # {'supply (2)': 'supply'}
 ```
 
-A diagram draws a repeated node once, joined into one block, and that can
-add paths the tree does not have. `to_rbd()` therefore checks the diagram's
-minimal cut sets against the tree's, and raises `ValueError` for a tree a
-diagram cannot draw exactly, for example the tree of a bridge from
-`from_rbd`, whose events each appear in several cut sets. Such a tree is
-analysed as a fault tree.
+An event or gate that feeds several gates is drawn once for each place,
+its later appearances as repeated nodes that the diagram treats as the one
+component, so every tree converts exactly: the diagram's reliability is one
+minus the tree's top event probability. The tree of a bridge, for example,
+whose events each appear in several cut sets, converts back to a diagram
+with the bridge's logic.
 
 ## Saving
 
