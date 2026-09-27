@@ -424,7 +424,12 @@ resources (cost, weight, volume, …) each has its own limit,
 `Σ c_ij n_i ≤ B_j`, and a target may be combined with limits. With `n_i`
 active independent copies, node *i*'s reliability is `1 − (1 − p_i)^{n_i}`,
 and each candidate is scored by the exact engine, so the structure is
-arbitrary.
+arbitrary. A node may instead choose among component types: `k_j` copies of
+each type `j` give `1 − ∏_j (1 − p_j)^{k_j}`, all of one type or, with
+mixing, any combination. Both exact methods work on each node's list of
+designs, less those another design of the node beats (using no more of any
+resource while being at least as reliable), which can never be part of a
+better system.
 
 When every costed node is in series with the rest of the system (it lies on
 every minimal path), the reliability factorises,

@@ -44,6 +44,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are several. Tests check the dynamic program's final front against every
   design, and each form against an independent brute force with one, two and
   three resources, on series systems and on a bridge network.
+- **Redundancy allocation with a choice of component types (closes #77).** A
+  node in `allocate_redundancy`'s `costs` may be given a list of
+  `ComponentOption(name, reliability, cost)` — candidate component types, each
+  with its own reliability (a model evaluated at the mission time, or a fixed
+  probability) and cost (a number or a dict of resources). Its copies are then
+  any mixture of types (`mixing=True`, the default; Coit & Smith, 1996) or all
+  of one type (`mixing=False`; Fyffe, Hines & Lee, 1968), `max_units` caps
+  them all together, and the result's new `mix` field gives the number of each
+  type per node. Both exact methods now work on each node's list of designs,
+  less those another design of the node beats (no more of any resource and at
+  least as reliable), and the dynamic program is vectorised; the greedy
+  heuristic can also change the type of a copy. The exact search returns the
+  best published reliabilities of the classic 14-subsystem benchmark with
+  mixing (0.986811, 0.986416, 0.985922 and 0.954565 at weight limits 191, 190,
+  189 and 159), in about two seconds each; tests also check both forms, with
+  and without mixing, against an independent brute force on series systems and
+  on a bridge network.
 - **Cost of a repairable system (`expected_cost_rate`).** `RepairableRBD`
   components may now carry `repair_cost` and `replace_cost` (charged per
   corrective action) and an optional `downtime_cost` rate, alongside a

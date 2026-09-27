@@ -332,8 +332,10 @@ def test_result_is_a_mapping(series_ab):
         "cost",
         "method",
         "resources",
+        "mix",
     }
     assert result.resources == {"cost": 3.0}
+    assert result.mix == {}
 
 
 # -- several resources (issue #76) -----------------------------------------

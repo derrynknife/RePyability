@@ -33,6 +33,10 @@ models provided here (see [Building an RBD](guide/building.md) and
 
 ::: repyability.PerfectUnreliability
 
+## Design inputs
+
+::: repyability.ComponentOption
+
 ## Common-cause failures
 
 ::: repyability.CCFGroup

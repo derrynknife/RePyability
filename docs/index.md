@@ -110,7 +110,7 @@ result.criticalities.iou.up  # intersection-over-union importance (system up)
 | Dependence | Beta-factor and Multiple Greek Letter common-cause groups | [Common-cause failures](guide/common-cause.md) |
 | Availability | Long-run availability, failure frequency, MUT/MDT/MTBF; simulated availability over time with criticality measures | [Repairable systems](guide/repairable.md) |
 | Cost | Exact long-run cost rate; simulated cost distributions with percentiles; costs drawn from distributions | [Costs](guide/costs.md) |
-| Design | Optimal redundancy allocation within a budget (of one or several resources) or to a target; reliability allocation by equal and ARINC-style apportionment, minimum effort (Albert) and cost-based (Mettas) methods | [Design and allocation](guide/design.md) |
+| Design | Optimal redundancy allocation within a budget (of one or several resources) or to a target, with a choice of component types; reliability allocation by equal and ARINC-style apportionment, minimum effort (Albert) and cost-based (Mettas) methods | [Design and allocation](guide/design.md) |
 | Maintenance | Age replacement; overhaul under minimal or imperfect repair; replace at the *N*-th failure | [Maintenance policies](guide/maintenance.md) |
 | Persistence | JSON round-trips, seeded reproducibility | [Saving, reproducibility and performance](guide/saving.md) |
 

@@ -535,6 +535,10 @@ class RedundancyAllocation(_ResultMapping):
     resources : dict
         The total of every resource the copies use, keyed by resource
         (``{"cost": ...}`` when ``costs`` gave numbers).
+    mix : dict
+        For each node given a choice of component types, how many copies
+        of each type it uses, ``{node: {type name: copies}}`` (types it
+        does not use are left out).
 
     Examples
     --------
@@ -564,6 +568,7 @@ class RedundancyAllocation(_ResultMapping):
     cost: float
     method: str
     resources: Dict[Hashable, float] = field(default_factory=dict)
+    mix: Dict[Hashable, Dict[Hashable, int]] = field(default_factory=dict)
 
 
 @dataclass

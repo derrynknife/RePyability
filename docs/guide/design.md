@@ -140,12 +140,55 @@ lightest.resources   # {'cost': 50700.0, 'weight': 141.0}
 The cheapest design meeting 0.95 weighs 148 (it is the 39,600 design above);
 the lightest weighs 141 but costs 50,700.
 
+### Choosing between component types
+
+A node can often be built from one of several component types, each with its
+own reliability and cost. Give it a list of
+[`ComponentOption`][repyability.ComponentOption] instead of a cost. Its model
+in the diagram is then not used, so list it as an option too if it is a
+candidate.
+
+```python
+from repyability import ComponentOption
+
+pumps = [
+    ComponentOption("standard", surv.Weibull.from_params([8000, 1.8]), cost=4000),
+    ComponentOption("premium", surv.Weibull.from_params([15000, 2.2]), cost=9000),
+]
+choice = {"pump": pumps, "valve": 900, "ctrl": 12000}
+mixed = line.allocate_redundancy(choice, budget=40_000, t=5000)
+mixed.units         # {'pump': 2, 'valve': 3, 'ctrl': 2}
+mixed.mix           # {'pump': {'standard': 1, 'premium': 1}}
+mixed.reliability   # -> 0.9626
+```
+
+By default the copies of a node may mix types (Coit & Smith, 1996): here one
+premium pump backed by a standard one. With `mixing=False` every copy of a
+node is of one type (Fyffe, Hines & Lee, 1968), which can be simpler to stock
+and maintain. The best single-type design here is three standard pumps, the
+same as without the premium option:
+
+```python
+single = line.allocate_redundancy(choice, budget=40_000, t=5000, mixing=False)
+single.mix           # {'pump': {'standard': 3}}
+single.reliability   # -> 0.9513
+```
+
+`mix` gives the number of each type used, for the nodes with options.
+`max_units` caps a node's copies of all types together, and options can use
+several resources (every option then names the same ones). The exact search
+is checked against the classic benchmark of 14 subsystems with three or four
+component types each, with mixing (Fyffe, Hines & Lee's data, in Coit &
+Smith's form): it returns the best reliabilities published for it, such as
+0.986811 within a cost of 130 and a weight of 191, in seconds.
+
 ### The model and its limits
 
 `n` copies of a node with reliability `p`, all active and independent, have
-reliability `1 − (1 − p)ⁿ`. That is the right model for identical parts added
-in parallel; it does not model standby spares or common-cause coupling (an
-RBD with common-cause groups raises `NotImplementedError`). A budget that
+reliability `1 − (1 − p)ⁿ` (with mixed types, `1 − (1 − p₁)(1 − p₂)…`). That
+is the right model for parts added in active parallel; it does not model
+standby spares or common-cause coupling (an RBD with common-cause groups
+raises `NotImplementedError`). A budget that
 cannot buy one of each costed node, a target that no design within
 `max_units` (or the budget) reaches, or a node that uses none of any limited
 resource and has no `max_units` (so could be copied without limit) raises
