@@ -17,7 +17,14 @@ from typing import Any, Dict, Hashable, Iterable, Iterator, Optional
 import networkx as nx
 import numpy as np
 from numpy.typing import ArrayLike
-from scipy.optimize import OptimizeResult, brentq, minimize
+from scipy.optimize import (
+    BFGS,
+    NonlinearConstraint,
+    OptimizeResult,
+    brentq,
+    minimize,
+)
+from scipy.sparse import diags
 from scipy.special import expit as sigmoid
 from scipy.special import logit, logsumexp, softmax
 
@@ -1309,57 +1316,61 @@ class RBD:
         target: float,
         weights=None,
     ):
-        """Find node probabilities that meet a target, by optimisation.
+        """Meet a target with the smallest change in the node log-odds.
 
-        Searches for node probabilities ``p_i = sigmoid(w_i * z_i)`` (which
-        keeps them in (0, 1)), with ``w_i`` the node's weight, that minimise
-        ``(target - R) ** 2``, where ``R`` is
-        [`system_probability`][repyability.RBD.system_probability].
-        ``scipy.optimize.minimize`` (BFGS) starts from ``z = 0``, i.e. every
-        node at 0.5. Any node models are ignored.
+        Starting from 0.5 for every node, finds the node probabilities that
+        meet the target with the least weighted change on the log-odds
+        scale. With ``s_i = log(p_i / (1 - p_i))`` a node's log-odds (0 at
+        0.5) and ``w_i`` its weight, it minimises ``sum_i s_i ** 2 / w_i``
+        subject to [`system_probability`][repyability.RBD.system_probability]
+        equalling ``target``. Any node models are ignored.
 
-        Many allocations meet a target; this returns the one the optimiser
-        reaches. The error's gradient for a node scales with its weight and
-        its Birnbaum importance, so nodes that matter more to the system
-        (e.g. a node in series with a redundant pair) and nodes with larger
-        weights move further from 0.5; a weight of 0 keeps a node at 0.5.
-        With equal weights, nodes placed symmetrically (e.g. all in series,
-        or all in parallel) get the same value.
+        At the solution each node's change is proportional to its weight
+        times the sensitivity of the system's log-odds to it,
+        ``p_i (1 - p_i) I_B(i) / (R (1 - R))`` with ``I_B(i)`` its Birnbaum
+        importance: nodes that matter more to the system (e.g. a node in
+        series with a redundant pair), and nodes with larger weights, move
+        further from 0.5 (at equal sensitivity, twice the weight moves a node
+        twice as far), and a node with weight 0 stays at 0.5. With equal
+        weights, nodes placed symmetrically (e.g. all in series, or all in
+        parallel) get the same value, as
+        [`equal_allocation`][repyability.RBD.equal_allocation] gives. It is
+        not one of the classic named methods; see
+        [`cost_based_allocation`][repyability.RBD.cost_based_allocation] and
+        [`minimum_effort_allocation`][repyability.RBD.minimum_effort_allocation]
+        for those.
 
-        The allocation found is checked: if its system probability misses
-        the target by more than one part in a million (of the target, or of
-        ``1 - target`` if that is smaller; 1e-6 for a target of 0 or 1), a
-        ValueError is raised. That happens when the target is out of reach
-        (a node with weight 0 stays at 0.5), and on large systems: the
-        search starts with every node at 0.5, which puts the probability of
-        a large series or parallel system so near 0 or 1 that the search
-        stalls. [`equal_allocation`][repyability.RBD.equal_allocation] and
-        [`improvement_allocation`][repyability.RBD.improvement_allocation]
-        are exact at any size. The scipy result is stored on the RBD as
-        ``res`` (also when the check fails), replacing any earlier one;
-        ``res.success`` is often False ("precision loss") even when the
-        target is met, as the tolerance is very tight.
+        It is solved with ``scipy.optimize.minimize`` (``trust-constr``),
+        from the point that moves every node in proportion to its weight
+        just far enough to meet the target, with exact gradients; the
+        system probability is handled on the log-odds scale from both ends
+        of the exact engine, so it stays exact at any size. A target of 0
+        or 1 is approached to within 1e-12. The solver's result is stored
+        on the RBD as ``res``, replacing any earlier one; its ``x`` holds
+        the log-odds of the nodes with a positive weight, in node order.
 
         Parameters
         ----------
         target : float
-            The system probability to reach, in [0, 1]; 0 and 1 can only be
-            approached.
+            The system probability to reach, in [0, 1].
         weights : dict, optional
-            A weight per intermediate node, by default None (1.0 for every
-            node). If given, it needs an entry for every intermediate node.
+            A non-negative weight per intermediate node, by default None
+            (1.0 for every node). If given, it needs an entry for every
+            intermediate node.
 
         Returns
         -------
         dict
-            The allocated probability (a numpy float) of every intermediate
-            node, keyed by node name.
+            The allocated probability (a float) of every intermediate node,
+            keyed by node name.
 
         Raises
         ------
         ValueError
-            If ``target`` is above 1 or below 0, or the allocation found
-            misses it (see above).
+            If ``target`` is above 1 or below 0; if it cannot be reached
+            because nodes with weight 0 hold the system back (the message
+            gives the reachable range); or if a weight is negative or not
+            finite.
         KeyError
             If ``weights`` is given without an entry for an intermediate
             node.
@@ -1367,54 +1378,98 @@ class RBD:
         Examples
         --------
         With two parallel nodes ``"a"`` and ``"b"`` in series with ``"c"``,
-        the series node ``"c"`` gets the highest probability:
+        the series node ``"c"`` moves furthest:
 
         >>> from repyability import RBD
         >>> rbd = RBD(
         ...     [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")]
         ... )
         >>> new = rbd.simple_allocation(0.99)
-        >>> {k: round(float(v), 4) for k, v in sorted(new.items())}
-        {'a': 0.9112, 'b': 0.9112, 'c': 0.9979}
+        >>> {k: round(v, 4) for k, v in sorted(new.items())}
+        {'a': 0.9395, 'b': 0.9395, 'c': 0.9936}
         >>> round(float(rbd.system_probability(new)[0]), 4)
         0.99
         """
-        node_array_indices = {k: i for i, k in enumerate(self.nodes)}
-
-        if weights is None:
-            weights = {n: 1.0 for n in self.nodes}
-
-        def func(node_probabilities_array):
-            node_probabilities = {
-                node: sigmoid(
-                    weights[node]
-                    * node_probabilities_array[node_array_indices[node]]
-                )
-                for node in self.nodes
-            }
-            system_probability = self.system_probability(node_probabilities)
-            loss = target - system_probability
-            return loss**2
-
-        res = minimize(func, np.zeros(len(self.nodes)), tol=1e-20)
-
-        node_probabilities = {
-            node: sigmoid(weights[node] * res["x"][node_array_indices[node]])
-            for node in self.nodes
+        weight_of = {
+            n: 1.0 if weights is None else float(weights[n])
+            for n in self.nodes
         }
+        for node, value in weight_of.items():
+            if not (np.isfinite(value) and value >= 0.0):
+                raise ValueError(
+                    f"weights[{node!r}] must be a finite, non-negative "
+                    f"number, got {value}."
+                )
+        free = [n for n in self.nodes if weight_of[n] > 0.0]
+        weight = np.array([weight_of[n] for n in free])
 
-        self.res = res
-        achieved = self.system_probability(node_probabilities).item()
-        tail = min(target, 1.0 - target)
-        if abs(achieved - target) > (1e-6 * tail if tail > 0.0 else 1e-6):
+        def probabilities(log_odds: np.ndarray) -> tuple[Dict, Dict]:
+            p = {n: 0.5 for n in self.nodes}
+            q = dict(p)
+            for i, n in enumerate(free):
+                p[n] = float(sigmoid(log_odds[i]))
+                q[n] = float(sigmoid(-log_odds[i]))
+            return p, q
+
+        def system(log_odds: np.ndarray) -> tuple[float, np.ndarray]:
+            """The system's log-odds, and its gradient."""
+            p, q = probabilities(log_odds)
+            value, derivative = self._log_odds(p, q)
+            return value, np.array([derivative[n] * p[n] * q[n] for n in free])
+
+        goal = float(logit(np.clip(target, 1e-12, 1.0 - 1e-12)))
+        low = system(np.full(len(free), -np.inf))[0]
+        high = system(np.full(len(free), np.inf))[0]
+        if not low < goal < high:
             raise ValueError(
-                f"the search did not reach target {target}: its allocation "
-                f"gives {achieved:.6g}. It starts every node at 0.5, which on "
-                "a large system puts the system probability so near 0 or 1 "
-                "that it stalls, and a node with weight 0 stays at 0.5. "
-                "equal_allocation and improvement_allocation are exact."
+                f"target {target} cannot be reached: with the weights given "
+                "(a node with weight 0 stays at 0.5), the system probability "
+                f"can only lie strictly between {sigmoid(low):.6g} and "
+                f"{sigmoid(high):.6g}."
             )
-        return node_probabilities
+
+        def along_weights(start: np.ndarray) -> np.ndarray:
+            """``start`` moved along the weights just far enough to meet
+            the target (the system's log-odds is monotone along them)."""
+            low_c, high_c = -1.0, 1.0
+            while system(start + low_c * weight)[0] > goal:
+                low_c *= 2.0
+            while system(start + high_c * weight)[0] < goal:
+                high_c *= 2.0
+            c = brentq(
+                lambda c: system(start + c * weight)[0] - goal,
+                low_c,
+                high_c,
+                xtol=1e-14,
+            )
+            return start + c * weight
+
+        constraint = NonlinearConstraint(
+            lambda x: system(x)[0],
+            goal,
+            goal,
+            jac=lambda x: system(x)[1][None, :],
+            hess=BFGS(),
+        )
+        with warnings.catch_warnings():
+            # The quasi-Newton update notes a vanishing step once converged.
+            warnings.filterwarnings("ignore", message="delta_grad == 0.0")
+            res = minimize(
+                lambda x: (float(np.sum(x * x / weight)), 2.0 * x / weight),
+                along_weights(np.zeros(len(free))),
+                jac=True,
+                hess=lambda x: diags(2.0 / weight),
+                method="trust-constr",
+                constraints=[constraint],
+                options={"gtol": 1e-12, "xtol": 1e-14, "maxiter": 2000},
+            )
+        log_odds = res.x
+        if abs(system(log_odds)[0] - goal) > 1e-10:
+            # Close the solver's last sliver of constraint tolerance.
+            log_odds = along_weights(log_odds)
+            res.x = log_odds
+        self.res = res
+        return {n: float(v) for n, v in probabilities(log_odds)[0].items()}
 
     def _allocation_start(self, node_probabilities: Dict) -> Dict[Any, float]:
         """The current probability of every intermediate node, validated.

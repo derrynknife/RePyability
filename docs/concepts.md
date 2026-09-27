@@ -451,8 +451,11 @@ There are many allocations that meet a target; each rule picks one.
   `c_i'(R_i) / I_B(i) = λ` with `I_B(i)` its Birnbaum importance, and a
   component left unchanged would cost more than `λ` per unit: the
   improvement goes where it is cheapest per unit of system reliability.
-- The least-squares rule is a heuristic that searches for any combination
-  meeting the target.
+- The *smallest log-odds change* (not a named method) starts every
+  component at 0.5 and minimises `Σ s_i² / w_i`, with `s_i` component *i*'s
+  log-odds `log(p_i / (1 − p_i))` and `w_i` its weight, subject to the
+  target. At the optimum `s_i ∝ w_i · p_i (1 − p_i) · I_B(i)`, so components
+  that matter more, and more heavily weighted ones, move further.
 
 ## Maintenance models
 

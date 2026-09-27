@@ -104,7 +104,7 @@ and all but one are the classic named methods:
 | `improvement_allocation` | ARINC-style proportional apportionment | Any | Current reliabilities |
 | `minimum_effort_allocation` | Minimization of effort (Albert, 1958) | Series | Current reliabilities |
 | `cost_based_allocation` | Cost-based allocation (Mettas, 2000) | Any | Current reliabilities |
-| `simple_allocation` | None: a least-squares heuristic | Any | 0.5 for every node |
+| `simple_allocation` | None: the smallest weighted change in log-odds | Any | 0.5 for every node |
 
 ```python
 from surpyval import FixedEventProbability
@@ -237,32 +237,31 @@ pumps_and_valve.cost_based_allocation(0.99, {"p1": 0.9, "p2": 0.9, "v": 0.9})
 # {'p1': 0.98081, 'p2': 0.98081, 'v': 0.99036}: the valve must reach 0.99 on its own
 ```
 
-### Least-squares allocation (a heuristic)
+### Smallest log-odds change
 
-`simple_allocation(target, weights=None)` searches the node reliabilities
-(on a logistic scale, starting from 0.5 each) for any combination whose
-system reliability equals the target, minimising the squared shortfall.
-`weights` scales how strongly each node is moved; with no weights, similar
-nodes end up equal:
+`simple_allocation(target, weights=None)` starts every node at 0.5 and finds
+the node reliabilities that meet the target with the smallest weighted change
+on the log-odds scale, `log(p / (1 − p))`: it minimises `Σ s_i² / w_i`, with
+`s_i` node *i*'s log-odds and `w_i` its weight (1 by default). With no
+weights, similar nodes end up equal:
 
 ```python
 three_in_series.simple_allocation(0.95)   # {'a': 0.98305, 'b': 0.98305, 'c': 0.98305}
 three_in_series.simple_allocation(0.95, weights={"a": 1.0, "b": 1.0, "c": 3.0})
-# {'a': 0.97468, 'b': 0.97468, 'c': 1.0}
+# {'a': 0.97893, 'b': 0.97893, 'c': 0.99133}
+three_in_series.simple_allocation(0.95, weights={"a": 1.0, "b": 1.0, "c": 3.0})["c"]   # -> 0.99133
 ```
 
-The weighted answer shows the method's character: it finds *an* allocation
-that meets the target, and heavily weighted nodes can be driven to
-perfection. It is not a named method, and which of the many allocations that
-meet the target it returns depends on the optimiser, so prefer the named
-methods above.
-
-`simple_allocation` checks the allocation it finds and raises `ValueError`
-if it misses the target (by more than one part in a million). That happens
-when the target is out of reach (a node with weight 0 stays at 0.5), and on
-large systems: the search starts with every node at 0.5, which puts the
-probability of, say, 30 nodes in parallel so near 1 that it cannot move.
-`equal_allocation` and `improvement_allocation` are exact at any size.
+At the solution, each node's change is proportional to its weight times the
+sensitivity of the system's log-odds to it. Nodes that matter more to the
+system, and more heavily weighted nodes, therefore move further; at equal
+sensitivity, twice the weight moves a node twice as far. A weight of 0 holds
+a node at 0.5, and a target that such nodes put out of reach raises
+`ValueError` with the reachable range. The answer is exact at any size, as
+the method works on the log-odds scale from both ends of the exact engine; a
+target of 0 or 1 is approached to within 1e-12. It is not one of the classic
+named methods, but it suits a first allocation when nothing is known about
+the nodes but their place in the structure.
 
 All of them raise `ValueError` for a target outside [0, 1]. All but
 `minimum_effort_allocation` work on any structure and keep the solver's

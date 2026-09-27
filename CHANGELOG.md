@@ -91,15 +91,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   probability towards its maximum, faster for a lower feasibility `f`. It
   works on the log-odds scale from both ends of the exact engine, with exact
   gradients, so it stays exact at any size (100 nodes in series or 30 in
-  parallel, where the least-squares heuristic stalls). Tests hold the first to
+  parallel, say). Tests hold the first to
   a direct minimisation of two different effort functions, and the second to
   a direct minimisation of Mettas's problem and to the optimality conditions.
   The design guide now maps each allocation helper to its named method:
   `equal_allocation` is equal apportionment, `improvement_allocation`
-  ARINC-style proportional apportionment, and `simple_allocation` a
-  least-squares heuristic.
+  ARINC-style proportional apportionment, and `simple_allocation`, which is
+  not a named method, the smallest change in the node log-odds (see below).
 
 ### Changed
+- **`simple_allocation` now finds the smallest change in the node log-odds.**
+  It used to minimise the squared shortfall from the target with BFGS,
+  starting every node at 0.5, and return wherever the optimiser stopped. On
+  asymmetric systems other optimisers met the target with quite different
+  allocations; a target out of reach (a node with weight 0 stays at 0.5) came
+  back as the closest miss, without an error; and on large systems the search
+  could not move at all: 30 nodes in parallel at 0.5 are within 1e-9 of
+  certain success, so a target of 0.5 returned every node at 0.5. It now
+  minimises the weighted change in log-odds, `sum(s_i ** 2 / w_i)`, subject
+  to meeting the target: a well-defined answer, in which nodes that matter
+  more and more heavily weighted nodes move further, exact at any size (it
+  is solved with `trust-constr` on the log-odds scale from both ends of the
+  exact engine, and tests hold it to its optimality conditions and to a
+  direct minimisation). A node's weight now scales its change directly: at
+  equal sensitivity, twice the weight moves it twice as far. Symmetric
+  allocations are unchanged; others differ (the docstring's example moves
+  from a, b = 0.911 and c = 0.998 to 0.940 and 0.994). An unreachable target
+  raises `ValueError` with the reachable range, a negative weight raises
+  `ValueError`, and `res.x` now holds the nodes' log-odds.
 - Require **surpyval >= 0.20**, and the requirement is now **uncapped** (was
   `>=0.16,<0.17`). 0.20 adds a first-class `Hypoexponential` distribution, so
   RePyability's private `_HypoexponentialSurvival` (the closed-form group
@@ -281,15 +300,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cost and NaN or infinite costs, and `Repairable.set_repair_and_overhaul_costs`
   NaN or infinite ones; both now raise `ValueError`. (`RepairableRBD`
   already rejected them.)
-- **`simple_allocation` never checked that it met the target.** A target out
-  of reach (a node with weight 0 stays at 0.5) came back as the closest miss,
-  and on large systems the search could not move at all: it starts every node
-  at 0.5, which puts, say, 30 nodes in parallel within 1e-9 of certain
-  success, so a target of 0.5 returned every node at 0.5. It now raises
-  `ValueError` when the allocation misses the target by more than one part in
-  a million (of the target, or of `1 - target` if smaller);
-  `equal_allocation` and `improvement_allocation` are exact at any size.
-  Allocations that met their target are unchanged.
 - **`system_probability` took any `method` other than `"p"` as cut sets.** It
   now raises `ValueError` unless `method` is `"p"` or `"c"`, as
   `is_system_working` does, and so do the methods that pass their `method`

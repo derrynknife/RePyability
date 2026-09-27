@@ -108,23 +108,108 @@ def test_simple_allocation_raises_when_the_target_is_out_of_reach():
     # A node with weight 0 stays at 0.5, so a series system cannot beat
     # 0.5; the closest miss used to come back with res.success True.
     rbd = _series()
-    with pytest.raises(ValueError, match="did not reach target 0.9"):
+    with pytest.raises(ValueError, match="cannot be reached.*0 and 0.5"):
         rbd.simple_allocation(0.9, weights={1: 0.0, 2: 1.0, 3: 1.0})
-    assert rbd.res is not None
+    with pytest.raises(ValueError, match="non-negative"):
+        rbd.simple_allocation(0.9, weights={1: -1.0, 2: 1.0, 3: 1.0})
 
 
-def test_simple_allocation_raises_when_the_search_stalls():
-    # Thirty nodes in parallel at 0.5 each work with probability
-    # 1 - 0.5 ** 30, so near 1 that the search cannot move: it used to
-    # return every node at 0.5 for a target of 0.5.
-    parallel = RBD(
-        [("s", i) for i in range(30)] + [(i, "t") for i in range(30)]
+@pytest.mark.parametrize("shape", ["series", "parallel"])
+def test_simple_allocation_works_on_large_systems(shape):
+    # From 0.5 each, 100 nodes in series or 30 in parallel have a system
+    # probability within 1e-9 of 0 or 1, where the old least-squares search
+    # could not move. By symmetry the answer is equal_allocation's.
+    if shape == "series":
+        rbd = _chain(list(range(100)))
+    else:
+        rbd = RBD(
+            [("s", i) for i in range(30)] + [(i, "t") for i in range(30)]
+        )
+    new = rbd.simple_allocation(0.5)
+    assert rbd.system_probability(new).item() == pytest.approx(0.5)
+    equal = rbd.equal_allocation(0.5)
+    assert [new[n] for n in rbd.nodes] == pytest.approx(
+        [equal[n] for n in rbd.nodes]
     )
-    with pytest.raises(ValueError, match="improvement_allocation"):
-        parallel.simple_allocation(0.5)
-    # The exact method has no such limit.
-    new = parallel.equal_allocation(0.5)
-    assert parallel.system_probability(new).item() == pytest.approx(0.5)
+
+
+def _log_odds_sensitivity(rbd, new, node):
+    """d log(R / (1 - R)) / d s_i, with s_i the node's log-odds."""
+    R = rbd.system_probability(new).item()
+    up = rbd.system_probability({**new, node: 1.0}).item()
+    down = rbd.system_probability({**new, node: 0.0}).item()
+    p = new[node]
+    return p * (1 - p) * (up - down) / (R * (1 - R))
+
+
+_WEIGHTED_CASES = [
+    ("a || b, then c", None, 0.99),
+    ("a || b, then c", {"a": 1.0, "b": 2.0, "c": 0.5}, 0.95),
+    ("bridge", None, 0.99),
+    ("bridge", {1: 2.0, 2: 1.0, 3: 0.5, 4: 1.0, 5: 3.0}, 0.9),
+]
+
+
+def _structure(name):
+    if name == "bridge":
+        return _bridge()
+    return RBD([("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")])
+
+
+@pytest.mark.parametrize("name, weights, target", _WEIGHTED_CASES)
+def test_simple_allocation_meets_the_optimality_conditions(
+    name, weights, target
+):
+    # Minimising sum(s_i ** 2 / w_i) subject to the target: at the optimum
+    # every node's change s_i is proportional to w_i times the system's
+    # log-odds sensitivity to it.
+    rbd = _structure(name)
+    new = rbd.simple_allocation(target, weights)
+    assert rbd.system_probability(new).item() == pytest.approx(target)
+    ratios = [
+        np.log(new[n] / (1 - new[n]))
+        / (
+            (1.0 if weights is None else weights[n])
+            * _log_odds_sensitivity(rbd, new, n)
+        )
+        for n in rbd.nodes
+    ]
+    assert max(ratios) == pytest.approx(min(ratios), rel=1e-5)
+
+
+@pytest.mark.parametrize("name, weights, target", _WEIGHTED_CASES)
+def test_simple_allocation_matches_a_direct_minimisation(
+    name, weights, target
+):
+    rbd = _structure(name)
+    nodes = list(rbd.nodes)
+    w = np.array([1.0 if weights is None else weights[n] for n in nodes])
+
+    def system(x):
+        probabilities = dict(zip(nodes, 1 / (1 + np.exp(-x))))
+        return rbd.system_probability(probabilities).item()
+
+    direct = minimize(
+        lambda x: np.sum(x * x / w),
+        np.zeros(len(nodes)),
+        method="SLSQP",
+        constraints=[{"type": "eq", "fun": lambda x: system(x) - target}],
+        options={"ftol": 1e-15, "maxiter": 1000},
+    )
+    new = rbd.simple_allocation(target, weights)
+    assert [new[n] for n in nodes] == pytest.approx(
+        1 / (1 + np.exp(-direct.x)), abs=1e-6
+    )
+
+
+def test_simple_allocation_weights():
+    # A weight of 0 holds a node at 0.5, and in a symmetric position the
+    # heavier node moves further.
+    rbd = _chain("abc")
+    new = rbd.simple_allocation(0.2, weights={"a": 0.0, "b": 1.0, "c": 2.0})
+    assert new["a"] == 0.5
+    assert 0.5 < new["b"] < new["c"]
+    assert rbd.system_probability(new).item() == pytest.approx(0.2)
 
 
 @pytest.mark.parametrize("target", [0.0, 1e-6, 0.5, 0.999999, 1.0])
