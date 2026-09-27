@@ -102,7 +102,7 @@ forced working/failed.
 | **Improvement potential** `improvement_potential` | How much could I gain by making this node perfect? `R(1_i) − R` | Bounding the upside of fixing one component. |
 | **Risk achievement worth** `risk_achievement_worth` | How much more likely is system failure if this node fails? `Q(0_i) / Q` | Finding components you must *keep working*: surveillance and protection targets. |
 | **Risk reduction worth** `risk_reduction_worth` | By what factor would perfecting this node reduce system unreliability? `Q / Q(1_i)` | Prioritising which single fix removes the most risk. |
-| **Criticality** `criticality_importance` | Birnbaum weighted by the node's reliability relative to the system's: `I_B · R_i / R` | Ranking that accounts for how reliable each node already is, not just its structural leverage. |
+| **Criticality** `criticality_importance` | Given that the system has failed, how likely is it that this node has failed and is critical? `I_B · (1 − R_i) / Q`, its share of the system failures (`kind="success"` gives `I_B · R_i / R`, which is 1 for every node in series) | Ranking the culprits, series nodes included, by how much each contributes to system failure; on a repairable system, its share of the downtime. |
 | **Fussell–Vesely** `fussell_vesely` | What fraction of system-failure probability involves this node? `Σ_{cut sets C ∋ i} Π_{j ∈ C} (1 − R_j) / Q` | A cut-set-based culprit ranking; standard in PRA/PSA. |
 
 Two more answer *design-time* and *data-targeting* questions rather than

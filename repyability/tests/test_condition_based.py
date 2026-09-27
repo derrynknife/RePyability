@@ -189,9 +189,15 @@ def test_importances_empty_state_matches_base_measures():
     imp = rbd.importances_given_state(5.0, {})
     birnbaum = rbd.birnbaum_importance(5.0)
     criticality = rbd.criticality_importance(5.0)
+    success = rbd.importances_given_state(5.0, {}, kind="success")
+    success_criticality = rbd.criticality_importance(5.0, kind="success")
     for node in birnbaum:
         assert imp["birnbaum"][node] == pytest.approx(birnbaum[node])
         assert imp["criticality"][node] == pytest.approx(criticality[node])
+        assert success["criticality"][node] == pytest.approx(
+            success_criticality[node]
+        )
+        assert criticality[node] != pytest.approx(success_criticality[node])
 
 
 def test_importances_structure_and_state_dependence():

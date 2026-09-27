@@ -175,8 +175,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `equal_allocation` is equal apportionment, `improvement_allocation`
   ARINC-style proportional apportionment, and `simple_allocation`, which is
   not a named method, the smallest change in the node log-odds (see below).
+- **Failure-oriented criticality importance (closes #72).**
+  `criticality_importance` on `NonRepairableRBD` and `RepairableRBD`, and
+  `NonRepairableRBD.importances_given_state`, take `kind="failure"` (the
+  default) or `kind="success"`. The failure-oriented form (Rausand & Høyland),
+  `I_B(i) · (1 − p_i) / (1 − P_sys)`, is the probability that node *i* has
+  failed and is critical given that the system has failed: its share of the
+  system failures, or of the downtime at long-run availabilities. It is
+  computed from the node unreliabilities through the minimal cut sets, so it
+  keeps its precision for a highly reliable system where `1 − P_sys` would
+  cancel. Either form is `nan` (without a warning) where it is undefined: a
+  system that cannot fail, or cannot work. Tests check both forms against a
+  brute-force enumeration of a bridge network (non-repairable and
+  repairable), and the failure form against exact rational arithmetic on a
+  bridge that fails with probability ~1e-12.
 
 ### Changed
+- **`criticality_importance` now defaults to the failure-oriented form
+  (#72).** The success-oriented form it returned, `I_B(i) · p_i / P_sys`, is
+  exactly 1 for every node in series with the rest of the system, however
+  unreliable, so it could not rank the nodes in series. Pass
+  `kind="success"` for the old values; the `"criticality"` of
+  `importances_given_state` follows the same default.
 - **`simple_allocation` now finds the smallest change in the node log-odds.**
   It used to minimise the squared shortfall from the target with BFGS,
   starting every node at 0.5, and return wherever the optimiser stopped. On

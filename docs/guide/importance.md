@@ -31,7 +31,7 @@ rbd.birnbaum_importance(50)      # {'pump1': 0.1952, 'pump2': 0.1952, 'valve': 0
 rbd.improvement_potential(50)    # {'pump1': 0.0432, 'pump2': 0.0432, 'valve': 0.1118}
 rbd.risk_achievement_worth(50)   # {'pump1': 1.9461, 'pump2': 1.9461, 'valve': 6.2234}
 rbd.risk_reduction_worth(50)     # {'pump1': 1.3675, 'pump2': 1.3675, 'valve': 3.284}
-rbd.criticality_importance(50)   # {'pump1': 0.1811, 'pump2': 0.1811, 'valve': 1.0}
+rbd.criticality_importance(50)   # {'pump1': 0.2687, 'pump2': 0.2687, 'valve': 0.6955}
 rbd.fussell_vesely(50)           # {'pump1': 0.3045, 'pump2': 0.3045, 'valve': 0.7313}
 rbd.birnbaum_importance(50)["valve"]   # -> 0.9511
 ```
@@ -46,7 +46,7 @@ With `R` the system reliability, `Q = 1 − R` its unreliability, `R_i` node
 | `improvement_potential` | `R(1_i) − R`: the reliability gained by making node *i* perfect. |
 | `risk_achievement_worth` | `Q(0_i) / Q`: how many times more likely the system is to fail if node *i* has failed. |
 | `risk_reduction_worth` | `Q / Q(1_i)`: by what factor perfecting node *i* would divide the system unreliability. |
-| `criticality_importance` | `birnbaum_i · R_i / R`: Birnbaum weighted by the node's reliability relative to the system's (the success-oriented form). |
+| `criticality_importance` | `birnbaum_i · (1 − R_i) / Q`: the probability that node *i* has failed and is critical, given that the system has failed (the failure-oriented form; see below). |
 | `fussell_vesely` | Sum over the minimal cut sets containing *i* of the probability that every member has failed, divided by `Q` (the usual rare-event form). |
 
 `fussell_vesely(t, fv_type="p")` substitutes the minimal *path* sets into the
@@ -54,6 +54,31 @@ same formula: the sum, over the path sets containing *i*, of the probability
 that all their members have failed, divided by `Q`. `fv_type="c"` (cut sets)
 is the default and the standard measure. `fussel_vesely` (misspelled) is a
 deprecated alias that warns.
+
+### Failure- or success-oriented criticality
+
+`criticality_importance` returns the failure-oriented form by default
+(Rausand & Høyland): each node's share of the system failures. By t = 50 the
+valve accounts for 70% of them, and each pump for 27% (the failures in which
+both pumps are down and the valve works). The shares need not add to 1: both
+pumps are critical in the same failures, and a failure of all three has no
+single critical node.
+
+`kind="success"` gives the success-oriented form, `birnbaum_i · R_i / R`: the
+probability that node *i* is working and critical, given that the system
+works. It is exactly 1 for every node in series with the rest of the system,
+however unreliable, so it cannot rank the nodes in series:
+
+```python
+rbd.criticality_importance(50)["valve"]                  # -> 0.6955
+rbd.criticality_importance(50, kind="success")["valve"]  # -> 1.0
+```
+
+The failure-oriented form is computed from the node unreliabilities through
+the minimal cut sets, so it keeps its precision for a highly reliable
+system, where `1 − R` would cancel. It is `nan` where the system cannot fail
+(at t = 0, or with enough nodes held working), and the success-oriented form
+is `nan` where the system cannot work.
 
 An array of times gives arrays:
 
@@ -136,9 +161,13 @@ plant = RepairableRBD(
 plant.birnbaum_importance()      # {'A': 0.0891, 'B': 0.0891, 'C': 0.9917}
 plant.risk_achievement_worth()   # {'A': 3.924, 'B': 3.924, 'C': 36.0877}
 plant.risk_achievement_worth()["C"]   # -> 36.09
+plant.criticality_importance()   # {'A': 0.2924, 'B': 0.2924, 'C': 0.7018}
+plant.criticality_importance()["C"]   # -> 0.7018
 ```
 
-`plant.node_availability()` gives the availabilities used. The simulation
+`plant.node_availability()` gives the availabilities used. On a repairable
+system the failure-oriented criticality is each node's share of the system's
+downtime: C, in series, causes 70% of it. The simulation
 also produces time-weighted criticality measures from the simulated histories;
 see [Repairable systems](repairable.md#criticality-measures).
 

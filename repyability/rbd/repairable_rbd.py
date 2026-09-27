@@ -2562,19 +2562,31 @@ class RepairableRBD(RBD):
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
+        kind: str = "failure",
     ) -> dict[Any, float]:
         """Returns the criticality importance of all nodes, evaluated at the
         nodes' long-run availabilities.
 
-        Exact, with no simulation: ``I_B(i) * A_i / A_sys``, the Birnbaum
-        importance weighted by node i's availability over the system's: the
-        probability that node i is working and critical, given the system
-        is working. (This is the success form of the measure; the failure
-        form, ``I_B(i) * (1 - A_i) / (1 - A_sys)``, is not what is
-        returned.) The node availabilities are those of
-        ``node_availability``, with ``working_nodes`` and ``broken_nodes``
-        held at 1 and 0. If the system is never up, the ratio is ``nan``,
-        with a numpy warning.
+        Exact, with no simulation. With ``I_B(i)`` the Birnbaum importance,
+        ``A_i`` node i's availability and ``A_sys`` the system's:
+
+        - ``kind="failure"`` (the default) gives the failure-oriented form
+          (Rausand & Høyland), ``I_B(i) * (1 - A_i) / (1 - A_sys)``: the
+          probability that node i is down and critical, given that the
+          system is down -- the share of the system's downtime that node i
+          accounts for. It ranks nodes in series by their unavailability.
+          It is computed from the node unavailabilities, through the
+          minimal cut sets, so the system unavailability is not lost to
+          cancellation in ``1 - A_sys`` however available the system is.
+          It is ``nan`` if the system is never down.
+        - ``kind="success"`` gives the success-oriented form,
+          ``I_B(i) * A_i / A_sys``: the probability that node i is working
+          and critical, given that the system is working. It is 1 for every
+          node in series with the rest of the system, so it cannot rank
+          them. It is ``nan`` if the system is never up.
+
+        The node availabilities are those of ``node_availability``, with
+        ``working_nodes`` and ``broken_nodes`` held at 1 and 0.
 
         Parameters
         ----------
@@ -2583,6 +2595,8 @@ class RepairableRBD(RBD):
             None.
         broken_nodes : Collection[Hashable], optional
             Condition on these nodes being failed, by default None.
+        kind : str, optional
+            ``"failure"`` (the default) or ``"success"``.
 
         Returns
         -------
@@ -2594,13 +2608,20 @@ class RepairableRBD(RBD):
         ------
         ValueError
             If a working/broken node is unknown, is the input or output
-            node, or is in both sets; or if a component has a
-            non-parametric reliability model.
+            node, or is in both sets; if a component has a non-parametric
+            reliability model; or if ``kind`` is neither ``"failure"`` nor
+            ``"success"``.
+
+        References
+        ----------
+        M. Rausand and A. Høyland, System Reliability Theory: Models,
+        Statistical Methods, and Applications, 2nd edition, Wiley, 2004.
 
         Examples
         --------
-        In series every node is working and critical whenever the system
-        works:
+        Two nodes in series, ``b`` down twice as often as ``a``: ``b``
+        accounts for more of the system's downtime (the shares add to less
+        than 1, as neither is critical while both are down):
 
         >>> import surpyval as surv
         >>> from repyability import RepairableRBD
@@ -2614,13 +2635,19 @@ class RepairableRBD(RBD):
         ... )
         >>> criticality = rbd.criticality_importance()
         >>> {node: round(c, 4) for node, c in criticality.items()}
+        {'a': 0.25, 'b': 0.625}
+
+        The success-oriented form cannot tell them apart:
+
+        >>> criticality = rbd.criticality_importance(kind="success")
+        >>> {node: round(c, 4) for node, c in criticality.items()}
         {'a': 1.0, 'b': 1.0}
         """
         node_probabilities = self._probabilities_with_overrides(
             self.node_availability(), working_nodes, broken_nodes
         )
         return _squeeze_values(
-            super()._criticality_importance(node_probabilities)
+            super()._criticality_importance(node_probabilities, kind)
         )
 
     def fussell_vesely(
