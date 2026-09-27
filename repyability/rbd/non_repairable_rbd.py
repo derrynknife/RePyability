@@ -45,9 +45,9 @@ from .helper_classes import PerfectReliability, PerfectUnreliability
 from .load_sharing_node import LoadSharingModel
 from .node_state import NodeState
 from .rbd import RBD, _check_on_infeasible_rbd, _shannon_value_and_gradient
+from .redundancy_allocation import ComponentOption, active_unreliability
 from .repeated_node import RepeatedNode
 from .repeated_standby_node import RepeatedStandbyNode
-from .redundancy_allocation import ComponentOption, active_unreliability
 from .results import (
     ConfidenceInterval,
     RedundancyAllocation,
