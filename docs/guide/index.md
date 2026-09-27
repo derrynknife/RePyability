@@ -10,6 +10,7 @@ signature and docstring, see the [API reference](../api.md).
 | Page | What it covers |
 |---|---|
 | [Building an RBD](building.md) | Edges and node models, k-out-of-n nodes, a component that appears in several places, nested RBDs, validation, path and cut sets, and the structural checks. |
+| [Fault trees](fault-trees.md) | Static fault trees (OR, AND and VOTE gates, repeated events): the exact top event probability, minimal cut sets ranked by probability, importance measures, and conversion to and from block diagrams. |
 | [Reliability of a system](reliability.md) | `sf`/`ff`, density and hazard, conditional survival, per-node values, forcing nodes working or failed, lifetimes and MTTF, and inverting reliability to a time (B*X* life). |
 | [Importance measures](importance.md) | Birnbaum, improvement potential, risk achievement and reduction worth, criticality, Fussell–Vesely, structural importance, and parameter sensitivity. |
 | [Condition-based evaluation](condition-based.md) | Reliability, remaining life and importance given each component's current age, and covariate-dependent components (fixed operating conditions or a load schedule). |

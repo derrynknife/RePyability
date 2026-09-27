@@ -7,6 +7,7 @@ directly from the top-level package, e.g.::
 """
 
 from repyability._version import __version__
+from repyability.fault_tree import FaultTree
 from repyability.maintenance import FailureLimitPolicy, MaintenancePolicy
 from repyability.non_repairable import NonRepairable
 from repyability.rbd.ccf import MGL, BetaFactor, CCFGroup
@@ -47,6 +48,7 @@ __all__ = [
     "RBD",
     "NonRepairableRBD",
     "RepairableRBD",
+    "FaultTree",
     # Component models
     "NonRepairable",
     "Repairable",

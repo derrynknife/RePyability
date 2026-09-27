@@ -103,6 +103,7 @@ result.criticalities.iou.up  # intersection-over-union importance (system up)
 | Area | Capabilities | Guide |
 |---|---|---|
 | Structure | Series, parallel, *k*-out-of-*n*, shared components, nested subsystems, path and cut sets, validation | [Building an RBD](guide/building.md) |
+| Fault trees | OR, AND and VOTE gates with repeated events; exact top event probability, minimal cut sets ranked by probability, importance measures; conversion to and from block diagrams | [Fault trees](guide/fault-trees.md) |
 | Reliability | Exact `sf`/`ff`, density, hazard, conditional survival, MTTF with confidence intervals, B*X* life | [Reliability of a system](guide/reliability.md) |
 | Importance | Birnbaum, improvement potential, RAW, RRW, criticality, Fussell–Vesely, structural importance, parameter sensitivity | [Importance measures](guide/importance.md) |
 | Live state | Reliability, remaining life and importance given each component's age; covariate-dependent components and load schedules | [Condition-based evaluation](guide/condition-based.md) |

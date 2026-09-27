@@ -102,6 +102,20 @@ samples), which gives `mean_time_to_failure_interval()`. The mean is estimated
 rather than integrated because the system lifetime distribution of a general
 diagram, especially with composite nodes, has no convenient closed form.
 
+### Fault trees
+
+A fault tree describes the same structure from the side of failure: the top
+event occurs through OR gates (any input), AND gates (every input) and VOTE
+gates (at least `k` of `n` inputs) over the basic events. Its logic is the
+dual of a diagram's: an OR gate is a series block, an AND gate a parallel
+block, and a VOTE gate on `k` of `n` failures a block needing `n − k + 1` of
+`n` working; the tree's minimal cut sets are the diagram's. A tree is
+evaluated by the same engine: each gate below which no event or gate is
+shared with the rest of the tree is a module with a closed form, and what the
+repeated events tie together is a core, solved exactly by the pivotal
+decomposition over its minimal path sets. The measures of importance are the
+diagram's, with the top event as the system failing.
+
 ## Reliability vs availability
 
 - **Reliability** `R(t)`: the probability the system has *never* failed by

@@ -12,6 +12,9 @@ taking already-fitted lifetime models (from
 [surpyval](https://github.com/derrynknife/SurPyval) or anything exposing
 `sf`/`ff`) as its components:
 
+- **Fault trees**: static fault trees (OR, AND and VOTE gates, repeated
+  events) evaluated exactly, with cut sets, importance measures and
+  conversion to and from block diagrams.
 - **Reliability**: exact system reliability, hazard and conditional survival;
   MTTF with confidence intervals; B*X* life.
 - **Importance**: Birnbaum, improvement potential, RAW, RRW, criticality,

@@ -13,6 +13,8 @@ explanations and runnable examples, see the [user guide](guide/index.md).
 
 ::: repyability.RepairableRBD
 
+::: repyability.FaultTree
+
 ## Node models
 
 Anything exposing `sf`/`ff` can be a node; these are the composite and helper

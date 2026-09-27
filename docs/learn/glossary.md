@@ -22,6 +22,9 @@ $A = \text{MTTF} / (\text{MTTF} + \text{MTTR})$. [Lesson 6](availability.md)
 **B-life.** The age by which a given fraction of units has failed: $B_{10}$
 is the age at which $F(t) = 0.1$. [Lesson 1](lifetimes.md)
 
+**Basic event.** A leaf of a fault tree: a component failure, with a
+probability or a lifetime model. [Lesson 3](structure.md)
+
 **Bathtub curve.** A hazard rate that falls early in life (early failures),
 stays flat (random failures) and then rises (wear-out).
 [Lesson 1](lifetimes.md)
@@ -85,6 +88,10 @@ $R(t) = e^{-\lambda t}$, MTTF $= 1/\lambda$. It has no memory.
 **Failure frequency.** The long-run number of failures per unit time of a
 repairable unit, $1/(\text{MTTF} + \text{MTTR})$, or of a system,
 $\sum_i I_B(i)\,\omega_i$. [Lesson 6](availability.md)
+
+**Fault tree.** A diagram of how a system fails: a top event, worked down
+through OR, AND and VOTE gates to basic events. The dual of a reliability
+block diagram. [Lesson 3](structure.md)
 
 **Fussell–Vesely importance.** The share of the system's unreliability that
 comes through minimal cut sets containing a component.
@@ -204,6 +211,10 @@ identical cycles, the long-run cost (or reward) per unit time is the
 expected cost of a cycle divided by the expected length of a cycle.
 [Lessons 6](availability.md), [7](costs.md) and [8](maintenance.md)
 
+**Repeated event.** A basic event that feeds several gates of a fault
+tree, such as a shared power supply; it must be counted once, not as
+independent copies. [Lesson 3](structure.md)
+
 **Risk achievement worth (RAW).** $Q(0_i)/Q$: how many times more likely the
 system is to fail while component $i$ is failed or out of service.
 [Lesson 4](importance.md)
@@ -226,6 +237,9 @@ component is critical. It depends on the diagram alone.
 
 **Structure function.** $\varphi(x)$: 1 if the system works when its
 components are in states $x$, 0 otherwise. [Lesson 3](structure.md)
+
+**Top event.** The undesired event at the top of a fault tree, usually
+the system failing. [Lesson 3](structure.md)
 
 **Total cost of ownership.** What owning a system costs over a horizon $H$:
 buying it plus $H$ times its cost rate (a *life-cycle cost*, here
