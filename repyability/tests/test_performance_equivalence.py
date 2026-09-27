@@ -907,6 +907,32 @@ def test_nested_rbd_that_cannot_be_streamed_falls_back_entirely(monkeypatch):
     assert_same(fast, reference)
 
 
+def test_a_maintenance_time_that_cannot_be_streamed_falls_back(monkeypatch):
+    # A zero-inflated maintenance time draws through np.random.binomial, so
+    # nothing is streamed; the one-draw simulation still runs.
+    rbd = RepairableRBD(
+        [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        {
+            name: {
+                "reliability": W([70, 2]),
+                "repairability": surv.Exponential.from_params([0.8]),
+                "preventive": {
+                    "interval": 30.0,
+                    "duration": W([2, 1.5], f0=0.2),
+                    "cost": 5.0,
+                },
+            }
+            for name in "ab"
+        },
+    )
+    assert rbd._streamed_components(_sampling.UniformStream()) is None
+    fast, reference = simulate_both(
+        monkeypatch, rbd, t_simulation=200.0, N=30, seed=31
+    )
+    assert_same(fast, reference)
+    assert fast.system_planned_outages > 0
+
+
 def test_subclassed_components_keep_their_own_event_methods():
     # A subclass may draw its events its own way, so the simulation calls
     # the component itself rather than streaming its draws.
