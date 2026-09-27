@@ -477,7 +477,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   exercises with worked answers. Every code block runs in the documentation
   tests and every number quoted in them is checked. The site now renders
   formulas (MathJax) and diagrams and charts (Mermaid), and has collapsible
-  answers and tabs; each user-guide page links to the lessons behind it.
+  answers and tabs; each user-guide page links to the lessons behind it, and
+  a glossary defines every term with the lesson that teaches it.
 - **Reliability allocation has a full guide section.** The design guide now
   covers every allocation method: a table of what each needs and how it
   picks among the allocations that meet a target, how to choose between
