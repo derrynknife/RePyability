@@ -1238,6 +1238,7 @@ class NonRepairableRBD(RBD):
             )
         if not isinstance(mixing, (bool, np.bool_)):
             raise ValueError(f"mixing must be True or False, got {mixing!r}.")
+        mixing = bool(mixing)
         if self.ccf_groups:
             raise NotImplementedError(
                 "Redundancy allocation does not yet account for common-cause "
