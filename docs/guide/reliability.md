@@ -1,5 +1,11 @@
 # Reliability of a system
 
+!!! tip "Learning this for the first time?"
+    This page is the reference. The ideas behind it are taught step by step,
+    with worked examples and exercises, in [Lesson 1](../learn/lifetimes.md)
+    (lifetimes, hazard and MTTF) and [Lesson 2](../learn/systems.md)
+    (systems of components).
+
 A [`NonRepairableRBD`][repyability.NonRepairableRBD] answers questions about a
 system that is not repaired: the probability it survives to a time, its
 lifetime distribution, its mean time to failure, and the time by which it

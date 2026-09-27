@@ -1,5 +1,10 @@
 # Maintenance policies
 
+!!! tip "Learning this for the first time?"
+    This page is the reference. The ideas behind it are taught step by step,
+    with worked examples and exercises, in [Lesson
+    8](../learn/maintenance.md) (maintaining on purpose).
+
 Two component-level classes price preventive maintenance. They sit at the two
 ends of how effective a repair is:
 

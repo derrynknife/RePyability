@@ -1,5 +1,10 @@
 # Repairable systems
 
+!!! tip "Learning this for the first time?"
+    This page is the reference. The ideas behind it are taught step by step,
+    with worked examples and exercises, in [Lesson
+    6](../learn/availability.md) (repair and availability).
+
 A [`RepairableRBD`][repyability.RepairableRBD] models a system whose
 components are repaired when they fail. The question changes from "has it
 failed yet?" to "is it up?": **availability**. Long-run quantities have exact

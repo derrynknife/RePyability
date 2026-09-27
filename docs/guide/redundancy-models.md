@@ -1,5 +1,10 @@
 # Redundancy models
 
+!!! tip "Learning this for the first time?"
+    This page is the reference. The ideas behind it are taught step by step,
+    with worked examples and exercises, in [Lesson
+    5](../learn/dependence.md) (when redundancy disappoints).
+
 Parallel branches in a diagram model *active* redundancy: every unit runs,
 and each fails independently. Real redundancy is often not like that. Spares
 wait in standby, identical parts are replicated, and units that share a load

@@ -1,5 +1,11 @@
 # Importance measures
 
+!!! tip "Learning this for the first time?"
+    This page is the reference. The ideas behind it are taught step by step,
+    with worked examples and exercises, in [Lesson
+    4](../learn/importance.md), which builds every measure on this page from
+    one idea.
+
 An importance measure ranks the nodes of a system by how much they matter.
 "Matter" has several meanings, and the measures disagree on purpose;
 [Concepts](../concepts.md#importance-measures-which-one-and-why) explains when

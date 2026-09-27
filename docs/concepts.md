@@ -5,6 +5,11 @@ computed, what each model assumes, and how to choose among the importance
 measures. The [tutorial](tutorial.md) shows these in action and the
 [user guide](guide/index.md) shows how to call them; this page explains them.
 
+!!! tip "New to the theory?"
+    This page is a compact summary. The [Learn](learn/index.md) course
+    teaches the same ideas step by step: each one worked out by hand with
+    small numbers, then with RePyability, with exercises.
+
 ## Reliability block diagrams
 
 A **reliability block diagram** models a system as a directed graph from a

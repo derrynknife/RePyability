@@ -1,5 +1,11 @@
 # Building an RBD
 
+!!! tip "Learning this for the first time?"
+    This page is the reference. The ideas behind it are taught step by step,
+    with worked examples and exercises, in [Lesson 2](../learn/systems.md)
+    (series, parallel and $k$-out-of-$n$) and [Lesson
+    3](../learn/structure.md) (path and cut sets).
+
 A reliability block diagram is a directed graph from one **input** node to one
 **output** node, plus a model for every node in between. The system works
 while at least one path of working nodes connects the input to the output.

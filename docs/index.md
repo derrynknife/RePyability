@@ -116,6 +116,11 @@ result.criticalities.iou.up  # intersection-over-union importance (system up)
 
 ## Where to next
 
+- **[Learn](learn/index.md)**: a short course in system reliability
+  engineering, from a single part's lifetime to designing and maintaining
+  whole systems. Each lesson works the ideas out by hand and then with
+  RePyability, with exercises and worked answers. Start here if the theory is
+  new to you.
 - **[Tutorial](tutorial.md)**: a start-to-finish worked example. Model a
   system, find its weak link, price extra redundancy, read its remaining life
   from live state, and cost it.

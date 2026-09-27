@@ -1,5 +1,11 @@
 # Costs
 
+!!! tip "Learning this for the first time?"
+    This page is the reference. The ideas behind it are taught step by step,
+    with worked examples and exercises, in [Lesson 7](../learn/costs.md)
+    (what it costs) and [Lesson 8](../learn/maintenance.md) (preventive
+    maintenance).
+
 Availability says how often a system is up; the next question is usually
 what running it costs. Price the components, and the production lost while
 the system is down, and a [`RepairableRBD`][repyability.RepairableRBD] gives

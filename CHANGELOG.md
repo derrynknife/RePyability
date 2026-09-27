@@ -462,6 +462,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unchanged and still asserted.
 
 ### Documentation
+- **Learn: a short course in system reliability engineering.** A new
+  section of nine lessons teaches the ideas behind the library from first
+  principles: lifetimes (reliability, hazard, MTTF, the exponential and the
+  Weibull, the bathtub curve); series, parallel and k-out-of-n systems; path
+  and cut sets and how the exact engine works; importance measures, built
+  from the idea of a critical component, including both forms of criticality
+  importance; standby, load sharing and common-cause failures; repair and
+  availability; costs; preventive maintenance (age and block replacement,
+  when replacing early cannot pay, and why the best interval changes inside
+  a system); and reliability and redundancy allocation. Each lesson poses a
+  concrete question, works it out by hand with small numbers, repeats it with
+  RePyability, lists the usual pitfalls, and ends with a summary and
+  exercises with worked answers. Every code block runs in the documentation
+  tests and every number quoted in them is checked. The site now renders
+  formulas (MathJax) and diagrams and charts (Mermaid), and has collapsible
+  answers and tabs; each user-guide page links to the lessons behind it.
 - **Reliability allocation has a full guide section.** The design guide now
   covers every allocation method: a table of what each needs and how it
   picks among the allocations that meet a target, how to choose between

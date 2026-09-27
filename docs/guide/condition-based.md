@@ -1,5 +1,11 @@
 # Condition-based evaluation
 
+!!! tip "Learning this for the first time?"
+    This page is the reference. The ideas behind it are taught step by step,
+    with worked examples and exercises, in [Lesson 1](../learn/lifetimes.md)
+    (why a part's age matters) and [Lesson 4](../learn/importance.md)
+    (importance measures).
+
 The methods on [Reliability of a system](reliability.md) treat every
 component as new. In service, each component has already run for a while,
 and telemetry says how long. Condition-based evaluation conditions every
