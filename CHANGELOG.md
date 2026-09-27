@@ -418,6 +418,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   removed in a future release.
 
 ### Fixed
+- **A repeated node could change a diagram's logic.** `NonRepairableRBD`
+  joined a repeated node (one component drawn in several places) into the
+  node it repeats, redirecting its edges. That can add paths the diagram does
+  not have: with `X` drawn before `A` and again after `Y` on the way to `B`,
+  the joined node gave the path `{X, B}`, leaving `Y` out, and a reliability
+  of 0.891 instead of 0.8829, silently. Joining could also create a loop and
+  reject a valid diagram, or drop a repeated voting node's own `k`. A repeated
+  node now stays where it is drawn, and every calculation treats its
+  appearances as the one component: the exact engine keeps them out of the
+  closed-form modules and solves them together in the core, and the
+  structure function, path and cut sets, importance measures and simulated
+  lifetimes follow. Diagrams whose repeats joining left unchanged give the
+  same results; seeded simulations of diagrams with repeated nodes may draw
+  in a different order. Tests check 200 random diagrams with repeated nodes
+  against the enumerated structure function (probability, path and cut
+  sets, every state, Birnbaum importance, irrelevant components) and the
+  simulated lifetimes against the exact reliability; mutation testing
+  confirms each part of the fix is needed.
 - **A deserialised `ExactEventTime` can be saved again.** Its parameter
   came back as `[[T]]`, so saving an RBD read from a file failed on it.
 - **`find_optimal_replacement` returned a spurious finite age (closes #68).**

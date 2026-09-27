@@ -37,7 +37,11 @@ W = surv.Weibull.from_params
 def unreduced(rbd):
     """``rbd``, switched to the engine with no reduction."""
     rbd._modules = decompose(
-        rbd.G, rbd.input_node, rbd.output_node, reduce=False
+        rbd.G,
+        rbd.input_node,
+        rbd.output_node,
+        reduce=False,
+        aliases=rbd._component_aliases(),
     )
     for cached in ("_min_path_sets", "_min_cut_sets"):
         rbd.__dict__.pop(cached, None)

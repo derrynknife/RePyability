@@ -426,6 +426,15 @@ class Decomposition:
         return self._sets(False)
 
 
+def _minimal_sets(sets: Iterable[frozenset]) -> list:
+    """The distinct sets that contain no other."""
+    kept: list = []
+    for s in sorted(set(sets), key=len):
+        if not any(k <= s for k in kept):
+            kept.append(s)
+    return kept
+
+
 def _joint(families: Sequence[Sequence[frozenset]]) -> list:
     """One set from each family, joined, in every combination."""
     return [frozenset().union(*chosen) for chosen in product(*families)]
@@ -480,15 +489,28 @@ def _koon_partials(R: Sequence[float], Q: Sequence[float], k: int) -> list:
 
 class _Reduction:
     """The reduction rules, applied to a working copy of the diagram whose
-    vertices are term positions (and the input and output)."""
+    vertices are term positions (and the input and output).
 
-    def __init__(self, graph: RBDGraph, input_node, output_node):
+    The ``pinned`` nodes (those that stand for a component drawn in more
+    than one place) never become members of a module: a module's closed
+    form assumes its members are independent of everything outside it.
+    They may still be bypassed: an appearance that can never make a
+    difference is dropped, whichever component it stands for."""
+
+    def __init__(
+        self,
+        graph: RBDGraph,
+        input_node,
+        output_node,
+        pinned: Iterable[Hashable] = (),
+    ):
         self.terms: list = []
         vertex: Dict[Hashable, int] = {input_node: _SOURCE, output_node: _SINK}
         for node in graph.nodes:
             if node not in vertex:
                 vertex[node] = len(self.terms)
                 self.terms.append((NODE, node))
+        self.pinned = {vertex[n] for n in pinned if n in vertex}
         self.pred: Dict[int, set] = {v: set() for v in vertex.values()}
         self.succ: Dict[int, set] = {v: set() for v in vertex.values()}
         for a, b in graph.edges:
@@ -569,13 +591,13 @@ class _Reduction:
     def _series(self, v: int) -> list:
         # The longest chain through v in which each node's only successor
         # has it as its only predecessor.
-        if v < 0:
+        if v < 0 or v in self.pinned:
             return []
         before: list = []
         u = v
         while len(self.pred[u]) == 1:
             (p,) = self.pred[u]
-            if p < 0 or len(self.succ[p]) != 1:
+            if p < 0 or len(self.succ[p]) != 1 or p in self.pinned:
                 break
             before.append(p)
             u = p
@@ -583,7 +605,7 @@ class _Reduction:
         w = v
         while len(self.succ[w]) == 1:
             (x,) = self.succ[w]
-            if x < 0 or len(self.pred[x]) != 1:
+            if x < 0 or len(self.pred[x]) != 1 or x in self.pinned:
                 break
             chain.append(x)
             w = x
@@ -605,6 +627,7 @@ class _Reduction:
             u
             for u in self.succ[next(iter(pred))]
             if u >= 0
+            and u not in self.pinned
             and self.k[u] == k
             and self.pred[u] == pred
             and self.succ[u] == succ
@@ -623,7 +646,8 @@ class _Reduction:
         members, k = list(self.pred[w]), self.k[w]
         pred, member_k = self.pred[members[0]], self.k[members[0]]
         if not all(
-            self.succ[u] == {w}
+            u not in self.pinned
+            and self.succ[u] == {w}
             and self.k[u] == member_k
             and self.pred[u] == pred
             for u in members
@@ -673,13 +697,40 @@ def _tree(terms: list, roots: Iterable[int]) -> tuple[list, Dict[int, int]]:
 
 
 def _from_path_sets(
-    terms: list, path_sets: Sequence[set], ends: tuple
+    terms: list,
+    path_sets: Sequence[set],
+    ends: tuple,
+    aliases: Optional[Dict[Hashable, Hashable]] = None,
 ) -> Decomposition:
     """The decomposition whose core has the given minimal path sets (over
-    term positions, including the input and output ``ends``)."""
+    term positions, including the input and output ``ends``).
+
+    With ``aliases`` (``{node: component}`` for the nodes that stand for a
+    component drawn in several places), every appearance of a component
+    becomes one term, named after the component, and the path sets are
+    made minimal again: a component is one random variable, wherever it is
+    drawn."""
     if not path_sets:
         raise ValueError(NO_PATHS)
     core = [frozenset(ps) - set(ends) for ps in path_sets]
+    if aliases:
+        terms = list(terms)
+        appearing = set().union(*core)
+        canonical: Dict[Hashable, int] = {}
+        rename: Dict[int, int] = {}
+        for v in sorted(appearing):
+            if terms[v][0] != NODE:
+                continue
+            node = terms[v][1]
+            component = aliases.get(node, node)
+            if component not in canonical:
+                canonical[component] = v
+                terms[v] = (NODE, component)
+            else:
+                rename[v] = canonical[component]
+        core = _minimal_sets(
+            [frozenset(rename.get(v, v) for v in ps) for ps in core]
+        )
     if frozenset() in core:
         # A path set of the input and output alone: always works.
         return Decomposition([])
@@ -691,7 +742,11 @@ def _from_path_sets(
 
 
 def decompose(
-    graph: RBDGraph, input_node, output_node, reduce: bool = True
+    graph: RBDGraph,
+    input_node,
+    output_node,
+    reduce: bool = True,
+    aliases: Optional[Dict[Hashable, Hashable]] = None,
 ) -> Decomposition:
     """The modular decomposition of the RBD diagram ``graph``.
 
@@ -699,6 +754,11 @@ def decompose(
     diagram, with the minimal path sets found by the memoised search (for
     structures that are not valid RBDs, whose semantics are those of that
     search).
+
+    ``aliases`` maps each node that stands for a component drawn in more
+    than one place (a repeated node) to that component. Every appearance
+    of such a component stays out of the modules, and the core treats all
+    its appearances as one component, named after it.
 
     Raises
     ------
@@ -715,10 +775,12 @@ def decompose(
             position[n] for n in (input_node, output_node) if n in position
         )
         return _from_path_sets(
-            terms, [{position[n] for n in ps} for ps in found], ends
+            terms, [{position[n] for n in ps} for ps in found], ends, aliases
         )
 
-    reduction = _Reduction(graph, input_node, output_node)
+    aliases = aliases or {}
+    shared = set(aliases) | set(aliases.values())
+    reduction = _Reduction(graph, input_node, output_node, pinned=shared)
     reduction.run()
     alive = reduction.alive
     if not alive:
@@ -729,9 +791,15 @@ def decompose(
         # which may also have a direct edge from the input: then the output
         # needs both (with one, the module would have been bypassed).
         (v,) = alive
-        tree, position = _tree(reduction.terms, [v])
+        terms = list(reduction.terms)
+        if terms[v][0] == NODE:
+            # One appearance of a component is left: it is the system.
+            terms[v] = (NODE, aliases.get(terms[v][1], terms[v][1]))
+        tree, position = _tree(terms, [v])
         return Decomposition(tree, root=position[v])
     path_sets = find_min_path_sets(
         rbd_graph=reduction.core_graph(), curr_node=_SINK, solns={}
     )
-    return _from_path_sets(reduction.terms, path_sets, (_SOURCE, _SINK))
+    return _from_path_sets(
+        reduction.terms, path_sets, (_SOURCE, _SINK), aliases
+    )

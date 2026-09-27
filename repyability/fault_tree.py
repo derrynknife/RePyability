@@ -841,23 +841,16 @@ class FaultTree:
         ``FixedEventProbability`` of ``p``); junctions are
         ``PerfectReliability`` nodes named after their gates.
 
-        An event or gate that feeds several gates is drawn once for each,
-        as a repeated node, which a diagram joins into one node; that can
-        add paths the tree does not have. The diagram's minimal cut sets are
-        therefore checked against the tree's, and a tree that a diagram
-        cannot draw exactly raises an error: analyse it as a fault tree.
+        An event or gate that feeds several gates is drawn once for each
+        place: an event's later appearances are repeated nodes (named
+        ``"event (2)"``, ...), which the diagram treats as the one
+        component. So every tree converts exactly.
 
         Returns
         -------
         NonRepairableRBD
             The diagram, from input node ``"input"`` to output node
             ``"output"`` (renamed if an event has that name).
-
-        Raises
-        ------
-        ValueError
-            If the tree's repeated events or gates cannot be drawn in a
-            block diagram without changing its logic.
 
         Examples
         --------
@@ -889,7 +882,6 @@ class FaultTree:
         models: dict = {}
         k: dict = {}
         seen: Dict[Hashable, int] = {}
-        junctions: set = set()
 
         def place(event) -> Hashable:
             count = seen.get(event, 0)
@@ -906,7 +898,6 @@ class FaultTree:
 
         def junction(label) -> Hashable:
             node = fresh(label)
-            junctions.add(node)
             models[node] = PerfectReliability
             return node
 
@@ -945,30 +936,9 @@ class FaultTree:
         source, sink = fresh("input"), fresh("output")
         edges.extend((source, v) for v in entries)
         edges.extend((u, sink) for u in exits)
-        failure = ValueError(
-            "The fault tree's repeated events or gates "
-            f"({sorted(map(str, self._repeated()))}) cannot be drawn in a "
-            "block diagram without changing its logic: analyse it as a "
-            "fault tree."
+        return NonRepairableRBD(
+            edges, models, k=k or None, input_node=source, output_node=sink
         )
-        try:
-            rbd = NonRepairableRBD(
-                edges,
-                models,
-                k=k or None,
-                input_node=source,
-                output_node=sink,
-            )
-        except ValueError:
-            raise failure from None
-        cuts = {c for c in rbd.get_min_cut_sets() if not (c & junctions)}
-        if cuts != set(self.minimal_cut_sets()):
-            raise failure
-        return rbd
-
-    def _repeated(self) -> set:
-        """The events and gates that feed more than one gate."""
-        return {x for x, ps in self._parents.items() if len(ps) > 1}
 
     @classmethod
     def from_rbd(cls, rbd) -> "FaultTree":

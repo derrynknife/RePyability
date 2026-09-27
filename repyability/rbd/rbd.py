@@ -518,7 +518,14 @@ class RBD:
         self.input_node = structure_check["input_node"]
         self.output_node = structure_check["output_node"]
         self.in_or_out = [self.input_node, self.output_node]
-        self.nodes = [n for n in self.G.nodes if n not in self.in_or_out]
+        # A repeated node (a subclass's ``_aliases``) is the component it
+        # repeats, so it is not a component of its own.
+        aliases = self._component_aliases()
+        self.nodes = [
+            n
+            for n in self.G.nodes
+            if n not in self.in_or_out and n not in aliases
+        ]
         self.structure_check["has_irrelevant_nodes"] = False
         self.structure_check["irrelevant_nodes"] = set()
 
@@ -567,7 +574,7 @@ class RBD:
         {'b'}
         """
         relevant = self._decomposition().nodes
-        return set(self.G.nodes) - relevant - set(self.in_or_out)
+        return set(self.nodes) - relevant
 
     def get_all_path_sets(self) -> Iterator[list[Hashable]]:
         """Iterate over every path from the input node to the output node.
@@ -953,9 +960,19 @@ class RBD:
                 self.G.nodes[node]["k"] >= 1 for node in self.G.nodes
             )
             self._modules = decompose(
-                self.G, self.input_node, self.output_node, reduce=reducible
+                self.G,
+                self.input_node,
+                self.output_node,
+                reduce=reducible,
+                aliases=self._component_aliases(),
             )
         return self._modules
+
+    def _component_aliases(self) -> dict:
+        """``{node: component}`` for the nodes that stand for a component
+        drawn in more than one place (a ``NonRepairableRBD``'s repeated
+        nodes); none in a plain RBD."""
+        return getattr(self, "_aliases", {})
 
     @check_probability
     def improvement_allocation(
@@ -1687,8 +1704,8 @@ class RBD:
         Every node of the diagram except the input and output nodes, in the
         order the nodes were added to the graph (for a feasible RBD, the
         order of first appearance in ``edges``). Irrelevant nodes are
-        included. In a ``NonRepairableRBD`` a repeated node is merged into
-        the node it repeats, so only the latter is listed.
+        included. In a ``NonRepairableRBD`` a repeated node is the
+        component it repeats, so only the latter is listed.
 
         Returns
         -------

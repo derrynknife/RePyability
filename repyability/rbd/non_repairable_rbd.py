@@ -28,7 +28,6 @@ from typing import (
     cast,
 )
 
-import networkx as nx
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.optimize import brentq
@@ -208,11 +207,11 @@ class NonRepairableRBD(RBD):
         ``{node: model}`` for every component node (see above). A value
         that is the name of another node in this dict makes the key a
         *repeated* node: the same physical component drawn a second time.
-        Its edges are redirected to the node it repeats, so both places
-        share one component. That node cannot itself be a repeat, and the
-        redirected edges must not form a cycle. The input and output nodes
-        need no entry: they are always perfectly reliable, and a model
-        given for them is replaced.
+        It stays where it is drawn, and every appearance is the one
+        component: it works, or has failed, in all of them at once. That
+        node cannot itself be a repeat. The input and output nodes need no
+        entry: they are always perfectly reliable, and a model given for
+        them is replaced.
     k : dict[Any, int], optional
         ``{node: k}`` for k-out-of-n nodes: a node with ``n`` predecessors
         is reached only when at least ``k`` of them are reached through
@@ -265,7 +264,7 @@ class NonRepairableRBD(RBD):
         The validated common-cause groups.
     nodes : list
         The component nodes: every node except the input and output nodes
-        (repeated nodes are merged into the node they repeat).
+        and the repeated nodes (each is the component it repeats).
     input_node : Hashable
         The input node.
     output_node : Hashable
@@ -380,50 +379,20 @@ class NonRepairableRBD(RBD):
             if v not in reliabilities.keys()
         }
 
-        if repeated == {}:
-            super().__init__(
-                edges,
-                set(reliabilities.keys()),
-                k,
-                input_node,
-                output_node,
-                on_infeasible_rbd,
-            )
-            self.structure_check["has_repeated_node_in_cycle"] = False
-        else:
-            new_edges = []
-            for start, stop in edges:
-                if start in repeated:
-                    start = repeated[start]
-                if stop in repeated:
-                    stop = repeated[stop]
-                new_edges.append((start, stop))
-            super().__init__(
-                new_edges,
-                set(reliabilities.keys()),
-                k,
-                input_node,
-                output_node,
-                on_infeasible_rbd,
-            )
-            self.structure_check["has_repeated_node_in_cycle"] = False
-            if self.structure_check["has_cycles"]:
-                # Need to find if cycles are due to repeated components.
-                G = nx.DiGraph()
-                G.add_edges_from(edges)
-                cycles = {
-                    frozenset(cycle) for cycle in list(nx.simple_cycles(G))
-                }
-                non_repeated_node_cycles = copy(self.structure_check["cycles"])
-                for cycle in self.structure_check["cycles"]:
-                    if cycle not in cycles:
-                        non_repeated_node_cycles.remove(cycle)
-                        self.structure_check["has_repeated_node_in_cycle"] = (
-                            True
-                        )
-                if len(non_repeated_node_cycles) == 0:
-                    self.structure_check["has_cycles"] = False
-                self.structure_check["cycles"] = non_repeated_node_cycles
+        # A repeated node stays where it is drawn, and the exact engine
+        # treats every appearance as the one component it repeats (joining
+        # the nodes in the graph instead would add paths the diagram does
+        # not have). Set before the base class works out the structure.
+        self._aliases = dict(repeated)
+        super().__init__(
+            edges,
+            set(reliabilities.keys()),
+            k,
+            input_node,
+            output_node,
+            on_infeasible_rbd,
+        )
+        self.structure_check["has_repeated_node_in_cycle"] = False
 
         # Check for repeated cycles or non-repeated cycles
         if self.structure_check["has_unique_input_node"]:
@@ -438,7 +407,7 @@ class NonRepairableRBD(RBD):
         self.structure_check["is_missing_distributions"] = False
         self.structure_check["nodes_with_no_reliability_distribution"] = []
         for n in self.G.nodes:
-            if n not in reliabilities:
+            if n not in reliabilities and n not in repeated:
                 self.structure_check["is_valid"] = False
                 self.structure_check["is_missing_distributions"] = True
                 self.structure_check[
@@ -2955,7 +2924,7 @@ class NonRepairableRBD(RBD):
         comes out NaN, so that the caller falls back to the event loop,
         which orders NaN times its own way.
         """
-        nodes = list(self.G.nodes)
+        nodes = self._components()
         samplers: list[RowSampler] = []
         for node in nodes:
             node_sampler = row_sampler(self.reliabilities[node])
@@ -2978,13 +2947,20 @@ class NonRepairableRBD(RBD):
 
         return RowSampler(sum(s.width for s in samplers), draw)
 
+    def _components(self) -> list:
+        """Every node of the diagram that is a component of its own (the
+        input and output included), in the diagram's order: a repeated node
+        is the component it repeats, which fails once for all its
+        appearances."""
+        return [n for n in self.G.nodes if n not in self.repeated]
+
     def _random_by_events(self, size) -> np.ndarray:
         """``random(size)`` by stepping through each sample's failures in
         time order until the system fails; works for any node model."""
         out = np.zeros(size)
         for i in range(size):
             event_queue: PriorityQueue = PriorityQueue()
-            for node in self.G.nodes:
+            for node in self._components():
                 # .random(1) returns a 1-element array; take the scalar so
                 # the event time orders the PriorityQueue and assigns into
                 # ``out`` (NumPy >= 2 rejects assigning a 1-element array to
@@ -2993,7 +2969,7 @@ class NonRepairableRBD(RBD):
                 time = float(draw.reshape(-1)[0])
                 event_queue.put(NodeFailure(time, node))
 
-            working_nodes = {k: True for k in self.G.nodes}
+            working_nodes = {k: True for k in self._components()}
             system_working = True
             while system_working:
                 if event_queue.empty():

@@ -273,19 +273,16 @@ def test_random_trees_match_the_definition(seed):
 
 
 @pytest.mark.parametrize("seed", range(150))
-def test_random_trees_convert_to_diagrams_when_they_can(seed):
+def test_random_trees_convert_to_diagrams(seed):
+    # Repeated events and gates included: a diagram's repeated node is the
+    # one component wherever it is drawn.
     rng = np.random.default_rng(1000 + seed)
     gates, probabilities, top = random_tree(
         rng, int(rng.integers(3, 8)), int(rng.integers(1, 6))
     )
     tree = FaultTree(gates, probabilities)
     probability = tree.top_event_probability()
-    try:
-        rbd = tree.to_rbd()
-    except ValueError as error:
-        # Only a tree with something repeated may fail to convert.
-        assert tree._repeated(), error
-        return
+    rbd = tree.to_rbd()
     assert 1 - rbd.sf() == pytest.approx(probability, rel=1e-12, abs=1e-15)
     junctions = {
         n for n, m in rbd.reliabilities.items() if m is PerfectReliability
@@ -325,16 +322,15 @@ def test_trees_without_repeats_always_convert():
             gates["g0"] = ("or", pool)
         probabilities = {e: float(rng.uniform(0.05, 0.5)) for e in events}
         tree = FaultTree(gates, probabilities)
-        assert not tree._repeated()
         rbd = tree.to_rbd()
         assert 1 - rbd.sf() == pytest.approx(
             tree.top_event_probability(), rel=1e-12
         )
 
 
-def test_a_tree_a_diagram_cannot_draw_is_refused():
-    # "shared" feeds an OR and an AND below a vote: a diagram that draws
-    # it once for both adds paths the tree does not have.
+def test_a_shared_gate_converts_exactly():
+    # "shared" feeds an OR and an AND below a vote: drawn in both places,
+    # its events are repeated nodes, the one component each.
     tree = FaultTree(
         {
             "top": ("vote", 2, ["g1", "g2", "c"]),
@@ -344,17 +340,37 @@ def test_a_tree_a_diagram_cannot_draw_is_refused():
         },
         {"a": 0.1, "b": 0.2, "c": 0.3, "x": 0.05, "y": 0.02},
     )
-    with pytest.raises(ValueError, match="analyse it as a fault tree"):
-        tree.to_rbd()
-    # The tree itself is exact all the same.
-    gates = tree.gates
-    probability, cut_sets, _ = enumerated(
-        gates, {e: m for e, m in tree.events.items()}, "top"
-    )
+    probability, cut_sets, _ = enumerated(tree.gates, dict(tree.events), "top")
     assert tree.top_event_probability() == pytest.approx(
         probability, rel=1e-13
     )
     assert set(tree.minimal_cut_sets()) == cut_sets
+    rbd = tree.to_rbd()
+    assert rbd.repeated == {"x (2)": "x", "y (2)": "y"}
+    assert 1 - rbd.sf() == pytest.approx(probability, rel=1e-13)
+
+
+def test_a_bridge_round_trips():
+    # The tree of a bridge repeats every event across its cut sets; it
+    # converts back to a diagram with the same logic.
+    fail = FixedEventProbability.from_params
+    bridge = NonRepairableRBD(
+        [
+            ("s", "a"),
+            ("s", "b"),
+            ("a", "c"),
+            ("b", "c"),
+            ("a", "d"),
+            ("c", "d"),
+            ("b", "e"),
+            ("d", "t"),
+            ("e", "t"),
+        ],
+        {n: fail(0.1 + 0.05 * i) for i, n in enumerate("abcde")},
+    )
+    back = FaultTree.from_rbd(bridge).to_rbd()
+    assert back.sf() == pytest.approx(bridge.sf(), rel=1e-13)
+    assert back.get_min_cut_sets() == bridge.get_min_cut_sets()
 
 
 def test_a_repeated_event_a_diagram_can_draw_converts():
