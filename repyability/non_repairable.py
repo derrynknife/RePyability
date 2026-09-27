@@ -266,7 +266,11 @@ class NonRepairable:
         63.21
         """
         if self.model_parameterization == "parametric":
-            out = quad(self.reliability_function, 0, t)[0]
+            # surpyval evaluates an offset model below its offset through a
+            # fractional power of a negative number before masking it, which
+            # warns although the survival (1) is right.
+            with np.errstate(invalid="ignore"):
+                out = quad(self.reliability_function, 0, t)[0]
         elif self.model_parameterization == "standby":
             # A simulated arrangement's survival function is a Kaplan-Meier
             # step function, which quadrature handles poorly: integrate on a
@@ -421,12 +425,16 @@ class NonRepairable:
 
         - Parametric model: an exponential lifetime, or a Weibull with
           shape ``beta <= 1``, does not wear out, so preventive
-          replacement never pays and ``inf`` is returned (unless the model
-          has an offset ``gamma``, zero-inflation ``f0`` or a limited
-          failure population ``p``). Otherwise ``scipy.optimize.minimize``
-          (BFGS) searches over ``log(t)``, starting from the mean life,
-          and its result is kept in the ``optimisation_results``
-          attribute.
+          replacement never pays and ``inf`` is returned at once (unless
+          the model has an offset ``gamma``, zero-inflation ``f0`` or a
+          limited failure population ``p``). Otherwise
+          ``scipy.optimize.minimize`` (BFGS) searches over ``log(t)``,
+          starting from the mean life, and its result is kept in the
+          ``optimisation_results`` attribute. With an offset ``gamma`` no
+          unit can fail before that age, so the cost rate falls as
+          ``cp / t`` up to it and replacing at ``gamma`` itself is also
+          considered. If the best age found is no cheaper than running to
+          failure (see below), ``inf`` is returned.
         - Non-parametric model: the cost rate is evaluated exactly at
           10,001 evenly spaced ages from 0 to the estimate's last time
           point, and at its time points, and the cheapest age is
@@ -438,12 +446,15 @@ class NonRepairable:
           neighbours. If survival never falls that far, ``inf`` is
           returned.
 
-        Only the two cases above give ``inf``. For another lifetime
-        without wear-out (e.g. a Gamma with shape below 1) the cost rate
-        keeps falling towards the run-to-failure rate ``cu / MTTF``, and
-        the search stops at a large, finite age where the curve has
-        flattened; if in doubt, compare ``cost_rate`` over a range of
-        ages.
+        Preventive replacement must beat running to failure, whose long-run
+        cost rate is ``cu / MTTF`` -- or 0 when some units never fail (a
+        limited failure population): the units that never fail are then
+        kept. Without wear-out (e.g. a Weibull or Gamma with shape below 1,
+        with or without an offset, zero-inflation or a limited failure
+        population) the cost rate only falls towards that rate as the age
+        grows, so ``inf`` is returned rather than wherever the search
+        stopped on the flattening curve. A replacement age must save more
+        than one part in a million to count.
 
         Parameters
         ----------
@@ -518,9 +529,23 @@ class NonRepairable:
             mean = self.reliability.mean()
             old_err_state = np.seterr(all="ignore")
             res = minimize(self._cost_rate_with_log_x, np.log(mean), tol=1e-10)
-            np.seterr(**old_err_state)
             self.optimisation_results = res
-            optimal = np.exp(res.x[0])
+            optimal = float(np.exp(res.x[0]))
+            rate = self._cost_rate(optimal) if np.isfinite(optimal) else np.inf
+            # No unit fails before an offset, so up to it the cost rate is
+            # cp / t, lowest at the offset itself; the search can stop short
+            # of that kink.
+            offset = float(getattr(self.reliability, "gamma", 0) or 0)
+            if getattr(self.reliability, "offset", False) and offset > 0:
+                at_offset = self._cost_rate(offset)
+                if at_offset < rate:
+                    optimal, rate = offset, at_offset
+            np.seterr(**old_err_state)
+            # Replacing must beat running to failure; without wear-out the
+            # cost rate only falls towards that rate, and the search stops
+            # wherever the curve has flattened.
+            if not rate < self._run_to_failure_rate() * (1 - 1e-6):
+                return np.inf
         elif self.model_parameterization == "standby":
             optimal = self._optimal_standby_replacement()
         else:
@@ -534,6 +559,16 @@ class NonRepairable:
             )
             optimal = float(ages[int(np.nanargmin(rates))])
         return optimal
+
+    def _run_to_failure_rate(self) -> float:
+        """The long-run cost rate with no preventive replacement,
+        ``cu / MTTF``: 0 when some units never fail (a limited failure
+        population), since those are then kept for good."""
+        with np.errstate(all="ignore"):
+            never_fail = float(self.reliability_function(np.inf))
+        if never_fail > 0.0:
+            return 0.0
+        return self.cu / model_mean(self.reliability)
 
     def _optimal_standby_replacement(self) -> float:
         """The cheapest replacement age for a standby arrangement.
@@ -577,10 +612,10 @@ class NonRepairable:
 
         Finds the replacement age with ``find_optimal_replacement()`` (see
         there for the search and its limits) and evaluates ``cost_rate``
-        at it. When preventive replacement never pays (no wear-out: an
-        exponential lifetime, or a Weibull with shape ``<= 1``) the
+        at it. When preventive replacement never pays (no wear-out, e.g.
+        an exponential lifetime or a Weibull with shape ``<= 1``) the
         interval is ``inf`` and the cost rate is the run-to-failure rate
-        ``cu / MTTF``.
+        ``cu / MTTF``, or 0 when some units never fail.
 
         Returns
         -------
@@ -615,7 +650,7 @@ class NonRepairable:
         self._require_costs()
         interval = self.find_optimal_replacement()
         if np.isinf(interval):
-            rate = self.cu / model_mean(self.reliability)
+            rate = self._run_to_failure_rate()
         else:
             rate = float(self._cost_rate(interval))
         return MaintenancePolicy(interval=float(interval), cost_rate=rate)

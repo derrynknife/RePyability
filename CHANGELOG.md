@@ -280,6 +280,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   removed in a future release.
 
 ### Fixed
+- **`find_optimal_replacement` returned a spurious finite age (closes #68).**
+  For a lifetime without wear-out that the quick check does not recognise — a
+  Weibull of shape 1 or less with an offset, zero-inflation or a limited
+  failure population, or a Gamma with shape below 1 — the search ran along a
+  cost rate that only falls towards the run-to-failure rate, and returned
+  wherever it stopped (745,244 hours for a unit with a mean life of 2,001).
+  The best age found must now beat running to failure, or `inf` is returned.
+  Running to failure costs nothing in the long run when some units never fail
+  (a limited failure population), and `optimal_replacement_policy` now reports
+  that rate as 0 rather than `cu` over the failing units' mean life. With an
+  offset, replacing at the offset itself — the end of the failure-free period,
+  where the cost rate `cp / t` is lowest — is also considered; the search used
+  to stop short of it (986 against 1000 in the test). surpyval's spurious
+  `RuntimeWarning` when evaluating an offset model below its offset is
+  silenced in the cycle-length integral.
 - **Nested `RepairableRBD` simulations put the nested RBD's state changes at
   the wrong times.** A nested RBD's `next_event()` returns the time *of* its
   next state change, but the outer simulation added it to the current time as

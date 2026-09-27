@@ -43,9 +43,23 @@ bearing.avg_replacement_time(493.05)    # -> 470.15  ∫₀ᵗ R(u) du, the mean
 
 For an exponential lifetime, or a Weibull with shape 1 or less, the unit
 does not wear out and preventive replacement never pays: the interval is
-`inf` and the cost rate is the run-to-failure rate `cu / MTTF`. Only these two
-cases are recognised. Another lifetime without wear-out (a Gamma with shape
-below 1, say) gets a large, finite age at nearly that rate.
+`inf` and the cost rate is the run-to-failure rate `cu / MTTF`. The same goes
+for any lifetime whose best replacement age is no cheaper than running to
+failure (a Gamma with shape below 1, say, or a Weibull of shape 1 or less with
+zero-inflation or an offset). When some units never fail (a limited failure
+population), running to failure costs nothing in the long run, since those
+units are kept, so the interval is `inf` at a cost rate of 0.
+
+An offset (a failure-free period) can make replacement pay even without
+wear-out: no unit fails before the offset, so replacing just as it ends
+avoids the failures that follow.
+
+```python
+dormant = NonRepairable(surv.Weibull.from_params([10, 0.5], gamma=1000))
+dormant.set_costs_planned_and_unplanned(1, 5)
+dormant.find_optimal_replacement()                 # -> 1000.0   at the offset
+dormant.optimal_replacement_policy().cost_rate     # -> 0.001    cp / 1000
+```
 
 ```python
 steady = NonRepairable(surv.Exponential.from_params([0.001]))

@@ -9,6 +9,8 @@ import warnings
 import numpy as np
 import pytest
 import surpyval as surv
+from scipy.special import gamma as gamma_function
+from scipy.special import gammainc
 from surpyval import KaplanMeier, LogNormal, Weibull
 
 from repyability.non_repairable import NonRepairable
@@ -79,29 +81,75 @@ def test_weibull_no_optimal_replacement():
 
     assert nr_model.find_optimal_replacement() == np.inf
 
-    # An offset (3-parameter) Weibull is not short-circuited to inf even when
-    # beta <= 1: the offset shifts the support, so the numerical optimisation
-    # runs and returns a finite (very large) age. Older surpyval builds
-    # happened to emit a numerical RuntimeWarning evaluating this model's mean;
-    # that is incidental upstream noise rather than a contract of this method,
-    # so only the finite result is asserted.
-    surv_model = Weibull.from_params((1000, 0.5), gamma=1)
-    nr_model = NonRepairable(surv_model)
-    nr_model.set_costs_planned_and_unplanned(1, 5)
+    # An offset (3-parameter), zero-inflated or limited-failure-population
+    # Weibull with beta <= 1 still does not wear out: the search runs, but
+    # finds nothing cheaper than running to failure, so the answer is inf
+    # (issue #68: it used to return wherever the search stopped, e.g.
+    # 745,244 for the offset model below, whose mean life is 2001). The
+    # policy's cost rate is then the run-to-failure rate: cu / MTTF, or 0
+    # when some units never fail.
+    for model, rate in [
+        (Weibull.from_params((1000, 0.5), gamma=1), 5 / 2001),
+        (Weibull.from_params((1000, 0.5), f0=0.1), 5 / 1800),
+        (Weibull.from_params((1000, 0.5), p=0.9), 0.0),
+        (Weibull.from_params((1000, 3.0), p=0.9), 0.0),
+        (surv.Gamma.from_params((0.5, 0.001)), 5 / 500),
+    ]:
+        nr_model = NonRepairable(model)
+        nr_model.set_costs_planned_and_unplanned(1, 5)
+        assert nr_model.find_optimal_replacement() == np.inf
+        policy = nr_model.optimal_replacement_policy()
+        assert policy.interval == np.inf
+        assert policy.cost_rate == pytest.approx(rate, rel=1e-9)
 
-    assert nr_model.find_optimal_replacement() != np.inf
 
-    surv_model = Weibull.from_params((1000, 0.5), p=0.9)
-    nr_model = NonRepairable(surv_model)
-    nr_model.set_costs_planned_and_unplanned(1, 5)
+def weibull_cost_rates(ages, eta, beta, cp, cu, gamma=0.0, f0=0.0):
+    """Closed-form age-replacement cost rates of a Weibull with an offset
+    ``gamma`` or zero-inflation ``f0``: the cycle length, the integral of R
+    up to the age, is a regularised incomplete gamma function."""
+    ages = np.asarray(ages, dtype=float)
+    shifted = np.clip(ages - gamma, 0.0, None)
+    R = (1 - f0) * np.exp(-((shifted / eta) ** beta))
+    tail = eta * gamma_function(1 + 1 / beta)
+    tail = tail * gammainc(1 / beta, (shifted / eta) ** beta)
+    cycle = (1 - f0) * (np.minimum(ages, gamma) + tail)
+    return (cp * R + cu * (1 - R)) / cycle
 
-    assert nr_model.find_optimal_replacement() != np.inf
 
-    surv_model = Weibull.from_params((1000, 0.5), f0=0.1)
-    nr_model = NonRepairable(surv_model)
-    nr_model.set_costs_planned_and_unplanned(1, 5)
+def test_replacing_at_the_end_of_a_failure_free_period():
+    # No unit fails before the offset, so up to it the cost rate is cp / t,
+    # and here replacing right at the offset beats both running to failure
+    # (5 / 1020) and any later age; the search used to stop at 986.
+    unit = NonRepairable(Weibull.from_params((10, 0.5), gamma=1000))
+    unit.set_costs_planned_and_unplanned(1, 5)
+    assert unit.find_optimal_replacement() == 1000
+    policy = unit.optimal_replacement_policy()
+    assert policy.cost_rate == pytest.approx(1 / 1000)
+    ages = np.unique(np.concatenate([np.linspace(1, 5000, 100_000), [1000]]))
+    rates = weibull_cost_rates(ages, 10, 0.5, 1, 5, gamma=1000)
+    assert ages[np.argmin(rates)] == 1000
+    assert policy.cost_rate == pytest.approx(rates.min(), rel=1e-12)
 
-    assert nr_model.find_optimal_replacement() != np.inf
+
+@pytest.mark.parametrize(
+    "gamma, f0",
+    [(0.0, 0.0), (100.0, 0.0), (0.0, 0.1)],
+)
+def test_wear_out_optimum_matches_the_closed_form(gamma, f0):
+    # With wear-out a finite age pays, with or without an offset or
+    # zero-inflation: the search's optimum is that of the closed-form cost
+    # rate on a fine grid.
+    model = Weibull.from_params(
+        (1000, 2.5), gamma=gamma or None, f0=f0 or None
+    )
+    unit = NonRepairable(model)
+    unit.set_costs_planned_and_unplanned(1, 5)
+    optimal = unit.find_optimal_replacement()
+    ages = np.linspace(1, 3000, 300_000)
+    rates = weibull_cost_rates(ages, 1000, 2.5, 1, 5, gamma=gamma, f0=f0)
+    assert optimal == pytest.approx(ages[np.argmin(rates)], abs=0.02)
+    assert unit.cost_rate(optimal) == pytest.approx(rates.min(), rel=1e-9)
+    assert rates.min() < 5 / float(np.ravel(model.mean())[0])
 
 
 def test_incorrect_args():
