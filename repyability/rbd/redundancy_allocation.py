@@ -11,10 +11,13 @@ A node may have a choice of component types (*kinds*), each with its own
 reliability and use of the resources (Fyffe, Hines & Lee, 1968). Its copies
 are then all of one kind or, with mixing, any combination of kinds (Coit &
 Smith, 1996). Copies of reliabilities ``p_1, ..., p_n`` in active parallel
-have reliability ``1 - (1 - p_1) ... (1 - p_n)``; substituting that into the
-exact system computation scores any allocation on any RBD structure, not
-only the textbook series of subsystems. A more reliable node never lowers a
-coherent system's reliability, which is what keeps the exact search small.
+have reliability ``1 - (1 - p_1) ... (1 - p_n)``, or, when ``k`` of them
+must work, the probability that at least ``k`` do; other redundancy
+strategies (such as cold standby) supply their own node reliability.
+Substituting the node reliability into the exact system computation scores
+any allocation on any RBD structure, not only the textbook series of
+subsystems. A more reliable node never lowers a coherent system's
+reliability, which is what keeps the exact search small.
 
 This is distinct from the reliability-allocation methods on ``RBD``, which
 apportion a target reliability among existing components rather than
@@ -29,8 +32,8 @@ are its *designs* (``node_designs``). ``evaluate`` maps a tuple of node
 reliabilities (in node order) to the system reliability. The objective, and
 the tie-break between equally reliable allocations, use the ``primary``
 resource (the first by default). Each search returns ``(reliability, cost,
-counts)``: ``cost`` is the total of the primary resource, and ``counts``
-holds, for each node, its number of copies of each of its kinds.
+designs)``: ``cost`` is the total of the primary resource, and ``designs``
+holds the ``Design`` chosen for each node.
 
 When every costed node is in series with the rest of the system, the system
 reliability is the product of the costed nodes' reliabilities (times the
@@ -39,6 +42,7 @@ dynamic programming over the nodes instead.
 """
 
 import bisect
+import functools
 import math
 from dataclasses import dataclass
 from typing import (
@@ -61,10 +65,8 @@ import numpy as np
 Amount = Union[float, Sequence[float]]
 # One kind of copy of a node: (reliability of one copy, what it uses).
 Kind = Tuple[float, Amount]
-# For each node, its number of copies of each of its kinds.
-Counts = Tuple[Tuple[int, ...], ...]
-# A search result: (system reliability, total primary use, counts).
-Allocation = Tuple[float, float, Counts]
+# A node's unreliability for a given number of copies of each kind.
+NodeUnreliability = Callable[[Tuple[int, ...]], float]
 # Maps a tuple of node reliabilities (in node order) to the system
 # reliability.
 Evaluate = Callable[[Tuple[float, ...]], float]
@@ -135,8 +137,15 @@ class Design(NamedTuple):
     reliability: float
     #: The number of copies of each kind.
     counts: Tuple[int, ...]
-    #: The product of the copies' unreliabilities.
+    #: The probability that the node fails.
     unreliability: float
+    #: The redundancy strategy, e.g. ``"active"`` or ``"cold"``.
+    strategy: str = "active"
+
+
+# A search result: (system reliability, total primary use, the design of
+# each node).
+Allocation = Tuple[float, float, Tuple[Design, ...]]
 
 
 def _slack(scale: float) -> float:
@@ -191,6 +200,49 @@ def _unreliability(qs: Sequence[float], counts: Sequence[int]) -> float:
     return q
 
 
+def active_unreliability(
+    qs: Sequence[float], counts: Sequence[int], fewest: int = 1
+) -> float:
+    """The probability that fewer than ``fewest`` of the copies work, with
+    ``counts[j]`` active copies of each kind of unreliability ``qs[j]``.
+
+    Parameters
+    ----------
+    qs : Sequence[float]
+        The unreliability of one copy of each kind.
+    counts : Sequence[int]
+        The number of copies of each kind.
+    fewest : int, optional
+        The number of copies that must work, by default 1.
+
+    Returns
+    -------
+    float
+        The node's unreliability.
+
+    Examples
+    --------
+    Two of three copies of 90% reliability must work:
+
+    >>> from repyability.rbd.redundancy_allocation import (
+    ...     active_unreliability,
+    ... )
+    >>> round(active_unreliability([0.1], [3], fewest=2), 6)
+    0.028
+    """
+    if fewest == 1:
+        return _unreliability(qs, counts)
+    # The distribution of the number of working copies, below ``fewest``.
+    below = [1.0] + [0.0] * (fewest - 1)
+    for q, k in zip(qs, counts):
+        p = 1.0 - q
+        for _ in range(k):
+            for w in range(fewest - 1, 0, -1):
+                below[w] = below[w] * q + below[w - 1] * p
+            below[0] *= q
+    return math.fsum(below)
+
+
 def _useful_copies(q: float) -> int:
     """Copies of a kind of unreliability ``q`` past which more add nothing
     in double precision (one, for a perfect or a useless kind)."""
@@ -206,15 +258,19 @@ def node_designs(
     spare: Union[None, float, Sequence[float]] = None,
     mixing: bool = True,
     primary: int = 0,
+    fewest: int = 1,
+    unreliability: Optional[NodeUnreliability] = None,
+    strategy: str = "active",
 ) -> List[Design]:
     """The designs of one node worth considering.
 
-    Every combination of one to ``most`` copies -- all of one kind, or with
-    ``mixing`` any mixture of kinds -- whose use fits within ``spare``, less
-    those another design beats (using no more of any resource while being
-    at least as reliable), sorted by use of the primary resource, the most
-    reliable first among equals. Copies of a kind past the point where more
-    add nothing in double precision are not considered.
+    Every combination of ``fewest`` to ``most`` copies -- all of one kind,
+    or with ``mixing`` any mixture of kinds -- whose use fits within
+    ``spare``, less those another design beats (using no more of any
+    resource while being at least as reliable), sorted by use of the primary
+    resource, the most reliable first among equals. Copies of a kind past
+    the point where that many alone make the node perfectly reliable in
+    double precision are not considered.
 
     Parameters
     ----------
@@ -231,11 +287,20 @@ def node_designs(
         must all be of one kind.
     primary : int, optional
         The resource to sort by (the first, by default).
+    fewest : int, optional
+        The fewest copies in all, by default 1.
+    unreliability : callable, optional
+        Maps the number of copies of each kind to the node's unreliability;
+        it must not rise when a copy is added. By default the copies are
+        active and ``fewest`` of them must work.
+    strategy : str, optional
+        The name recorded in each design, by default ``"active"``.
 
     Returns
     -------
     list of Design
-        ``(use, reliability, counts, unreliability)`` for each design.
+        ``(use, reliability, counts, unreliability, strategy)`` for each
+        design.
 
     Raises
     ------
@@ -257,34 +322,30 @@ def node_designs(
     (3.0,) (3, 0) 0.999
     (4.0,) (2, 1) 0.9998
     (5.0,) (1, 2) 0.99996
+
+    Two of the copies must work (a 2-out-of-n node):
+
+    >>> for d in node_designs([(0.9, 1)], 4, fewest=2):
+    ...     print(d.counts, round(d.reliability, 4))
+    (2,) 0.81
+    (3,) 0.972
+    (4,) 0.9963
     """
     amounts = [_as_tuple(a) for _, a in kinds]
     m = len(amounts[0])
     limits = _as_limits(spare, m)
     slacks = [_slack(limit) for limit in limits]
     qs = [1.0 - float(p) for p, _ in kinds]
-    tops = [min(most, _useful_copies(q)) for q in qs]
-    found: List[Design] = []
-    counts = [0] * len(kinds)
+    size = len(kinds)
+    known: Dict[Tuple[int, ...], float] = {}
 
-    def add() -> None:
-        if len(found) >= DESIGN_LIMIT:
-            raise ValueError(
-                f"there are more than {DESIGN_LIMIT:,} designs to consider "
-                f"({len(kinds)} kinds, up to {most} copies). Give it a "
-                "max_units"
-                + (
-                    ", or set mixing=False."
-                    if mixing and len(kinds) > 1
-                    else "."
-                )
-            )
-        use = tuple(
-            math.fsum(k * a[r] for k, a in zip(counts, amounts) if k)
-            for r in range(m)
-        )
-        q = _unreliability(qs, counts)
-        found.append(Design(use, 1.0 - q, tuple(counts), q))
+    def unreliable(counts: Tuple[int, ...]) -> float:
+        if counts not in known:
+            if unreliability is None:
+                known[counts] = active_unreliability(qs, counts, fewest)
+            else:
+                known[counts] = float(unreliability(counts))
+        return known[counts]
 
     def fits(n: int, j: int, used: Sequence[float]) -> bool:
         return all(
@@ -292,11 +353,43 @@ def node_designs(
             for r in range(m)
         )
 
+    def alone(j: int, n: int) -> Tuple[int, ...]:
+        return tuple(n if i == j else 0 for i in range(size))
+
+    tops: List[float] = []
+    if unreliability is None and fewest == 1:
+        tops = [min(most, _useful_copies(q)) for q in qs]
+    else:
+        # The copies of each kind that alone make the node perfect.
+        for j in range(size):
+            n = fewest
+            while n <= most and fits(n, j, [0.0] * m):
+                if 1.0 - unreliable(alone(j, n)) == 1.0:
+                    break
+                n += 1
+            tops.append(min(n, most))
+    found: List[Design] = []
+    counts = [0] * size
+
+    def add() -> None:
+        if len(found) >= DESIGN_LIMIT:
+            raise ValueError(
+                f"there are more than {DESIGN_LIMIT:,} designs to consider "
+                f"({size} kinds, up to {most} copies). Give it a max_units"
+                + (", or set mixing=False." if mixing and size > 1 else ".")
+            )
+        use = tuple(
+            math.fsum(k * a[r] for k, a in zip(counts, amounts) if k)
+            for r in range(m)
+        )
+        q = unreliable(tuple(counts))
+        found.append(Design(use, 1.0 - q, tuple(counts), q, strategy))
+
     if mixing:
 
         def visit(j: int, total: int, used: List[float]) -> None:
-            if j == len(kinds):
-                if total:
+            if j == size:
+                if total >= fewest:
                     add()
                 return
             n = 0
@@ -312,14 +405,45 @@ def node_designs(
 
         visit(0, 0, [0.0] * m)
     else:
-        for j in range(len(kinds)):
-            n = 1
+        for j in range(size):
+            n = fewest
             while n <= tops[j] and fits(n, j, [0.0] * m):
                 counts[j] = n
                 add()
                 n += 1
             counts[j] = 0
-    front = _pareto_front(found)
+    return best_designs(found, primary)
+
+
+def best_designs(designs: List[Design], primary: int = 0) -> List[Design]:
+    """The designs no other beats (using no more of any resource while
+    being at least as reliable), sorted by use of the primary resource, the
+    most reliable first among equals: e.g. to merge the designs of one node
+    under several redundancy strategies.
+
+    Parameters
+    ----------
+    designs : list of Design
+        The candidate designs of one node.
+    primary : int, optional
+        The resource to sort by (the first, by default).
+
+    Returns
+    -------
+    list of Design
+
+    Examples
+    --------
+    >>> from repyability.rbd.redundancy_allocation import best_designs, Design
+    >>> designs = [
+    ...     Design((2.0,), 0.9, (2,), 0.1, "active"),
+    ...     Design((2.0,), 0.95, (2,), 0.05, "cold"),
+    ...     Design((1.0,), 0.8, (1,), 0.2, "active"),
+    ... ]
+    >>> [(d.use, d.strategy) for d in best_designs(designs)]
+    [((1.0,), 'active'), ((2.0,), 'cold')]
+    """
+    front = _pareto_front(list(designs))
     front.sort(key=lambda d: (d.use[primary], -d.reliability))
     return front
 
@@ -374,23 +498,27 @@ def greedy(
     target: Optional[float] = None,
     primary: int = 0,
     mixing: bool = True,
+    fewest: Optional[Sequence[int]] = None,
+    strategies: Optional[
+        Sequence[Optional[Dict[str, NodeUnreliability]]]
+    ] = None,
 ) -> Allocation:
     """Greedy allocation: take the most cost-effective step, one at a time.
 
-    Starts from one copy of each node (of its cheapest kind), and repeatedly
-    takes the step with the largest gain in log-reliability per unit of
-    what it uses (the plain reliability gain while the reliability is 0),
-    skipping nodes at their cap and steps the budget cannot afford. A step
-    adds one copy to a node or, for a node with several kinds, changes the
-    kind of one of its copies (with ``mixing``) or of all of them (without).
-    What a step uses is measured in its cost with one
-    resource, or with a ``target`` in the primary resource; to maximise
-    reliability within several limits it is the sum of its shares of the
-    limits (the marginal-gain rule of this family of heuristics); steps that
-    use none of that come first. It stops when the target is met, or when
-    no affordable step raises the reliability. Ties go to the node listed
-    first. Fast and usually optimal or close to it, but not guaranteed
-    optimal.
+    Starts from the fewest copies of each node (of its cheapest kind, under
+    its first strategy), and repeatedly takes the step with the largest gain
+    in log-reliability per unit of what it uses (the plain reliability gain
+    while the reliability is 0), skipping nodes at their cap and steps the
+    budget cannot afford. A step adds one copy to a node, changes the kind
+    of one of its copies (with ``mixing``) or of all of them (without), or
+    changes its redundancy strategy. What a step uses is measured in its
+    cost with one resource, or with a ``target`` in the primary resource;
+    to maximise reliability within several limits it is the sum of its
+    shares of the limits (the marginal-gain rule of this family of
+    heuristics); steps that use none of that come first. It stops when the
+    target is met, or when no affordable step raises the reliability. Ties
+    go to the node listed first. Fast and usually optimal or close to it,
+    but not guaranteed optimal.
 
     Parameters
     ----------
@@ -404,8 +532,8 @@ def greedy(
         The most copies allowed of each node (``math.inf`` for no limit).
     budget : float or Sequence[float], optional
         Never exceed this total (one limit per resource, ``math.inf`` for
-        none), up to a tiny tolerance. The starting allocation, one copy of
-        each, is not checked against it.
+        none), up to a tiny tolerance. The starting allocation is not
+        checked against it.
     target : float, optional
         Stop as soon as the reliability reaches this value.
     primary : int, optional
@@ -413,11 +541,19 @@ def greedy(
         one whose total is returned (the first, by default).
     mixing : bool, optional
         Whether a node's copies may be of different kinds (the default).
+    fewest : Sequence[int], optional
+        The fewest copies of each node (such as the number that must work),
+        by default one each.
+    strategies : Sequence, optional
+        For each node, ``None`` or its redundancy strategies: a dict of
+        name to a function mapping the number of copies of each kind to the
+        node's unreliability. By default every node is active, with
+        ``fewest`` of its copies needed.
 
     Returns
     -------
-    tuple[float, float, tuple]
-        ``(reliability, cost, counts)`` of the allocation reached. With a
+    tuple[float, float, tuple of Design]
+        ``(reliability, cost, designs)`` of the allocation reached. With a
         ``target`` this may still fall short of it, if no step helps any
         more; check the returned reliability.
 
@@ -429,19 +565,32 @@ def greedy(
     >>> from repyability.rbd.redundancy_allocation import greedy
     >>> def evaluate(reliabilities):
     ...     return reliabilities[0] * reliabilities[1]
-    >>> reliability, cost, counts = greedy(
+    >>> reliability, cost, designs = greedy(
     ...     evaluate, [[(0.9, 1)], [(0.8, 1)]], [math.inf, math.inf], budget=3
     ... )
-    >>> counts, round(reliability, 4), cost
-    (((1,), (2,)), 0.864, 3.0)
+    >>> [d.counts for d in designs], round(reliability, 4), cost
+    ([(1,), (2,)], 0.864, 3.0)
     """
     amounts = [[_as_tuple(a) for _, a in node] for node in kinds]
     qs = [[1.0 - float(p) for p, _ in node] for node in kinds]
+    size = len(kinds)
+    least = [1] * size if fewest is None else list(fewest)
+    ways: List[List[Tuple[str, NodeUnreliability]]] = []
+    for i in range(size):
+        given = None if strategies is None else strategies[i]
+        if given is None:
+            given = {
+                "active": functools.partial(
+                    active_unreliability, qs[i], fewest=least[i]
+                )
+            }
+        ways.append(list(given.items()))
     m = len(amounts[0][0])
     limits = _as_limits(budget, m)
     slacks = [_slack(limit) for limit in limits]
     limited = [r for r, limit in enumerate(limits) if math.isfinite(limit)]
     shares = target is None and m > 1
+    known: Dict[Tuple[int, int, Tuple[int, ...]], float] = {}
 
     def measure(use: Sequence[float]) -> float:
         # Several limits: a step's use is its total share of them.
@@ -449,14 +598,23 @@ def greedy(
             return math.fsum(use[r] / limits[r] for r in limited)
         return use[primary]
 
+    def unreliable(i: int, way: int, counts: Tuple[int, ...]) -> float:
+        if (i, way, counts) not in known:
+            known[i, way, counts] = float(ways[i][way][1](counts))
+        return known[i, way, counts]
+
     counts: List[Tuple[int, ...]] = []
-    for node_amounts, node_qs in zip(amounts, qs):
+    for node_amounts, node_qs, n in zip(amounts, qs, least):
         first = min(
             range(len(node_qs)),
             key=lambda j: (measure(node_amounts[j]), node_qs[j]),
         )
-        counts.append(tuple(int(j == first) for j in range(len(node_qs))))
-    reliabilities = [1.0 - _unreliability(q, c) for q, c in zip(qs, counts)]
+        counts.append(
+            tuple(n if j == first else 0 for j in range(len(node_qs)))
+        )
+    chosen = [0] * size
+    unreliabilities = [unreliable(i, 0, counts[i]) for i in range(size)]
+    reliabilities = [1.0 - q for q in unreliabilities]
     reliability = evaluate(tuple(reliabilities))
     spent = [
         math.fsum(
@@ -468,17 +626,27 @@ def greedy(
         for r in range(m)
     ]
     while target is None or reliability < target:
-        # (score, node, new counts, extra use, node reliability, system)
+        # (score, node, strategy, counts, extra use, unreliability, system)
         best = None
-        for i in range(len(kinds)):
-            for new, extra in _moves(counts[i], amounts[i], caps[i], mixing):
+        for i in range(size):
+            steps = [
+                (chosen[i], new, extra)
+                for new, extra in _moves(
+                    counts[i], amounts[i], caps[i], mixing
+                )
+            ] + [
+                (way, counts[i], (0.0,) * m)
+                for way in range(len(ways[i]))
+                if way != chosen[i]
+            ]
+            for way, new, extra in steps:
                 if not _fits(spent, extra, limits, slacks):
                     continue
-                p = 1.0 - _unreliability(qs[i], new)
-                if p <= reliabilities[i]:
+                q = unreliable(i, way, new)
+                if 1.0 - q <= reliabilities[i]:
                     continue
                 trial = list(reliabilities)
-                trial[i] = p
+                trial[i] = 1.0 - q
                 candidate = evaluate(tuple(trial))
                 if candidate <= reliability:
                     continue
@@ -489,18 +657,27 @@ def greedy(
                 used = measure(extra)
                 score = (1, gain) if used <= 0.0 else (0, gain / used)
                 if best is None or score > best[0]:
-                    best = (score, i, new, extra, p, candidate)
+                    best = (score, i, way, new, extra, q, candidate)
         if best is None:
             break
-        _, i, counts[i], extra, reliabilities[i], reliability = best
+        _, i, chosen[i], counts[i], extra, q, reliability = best
+        unreliabilities[i], reliabilities[i] = q, 1.0 - q
         spent = [u + e for u, e in zip(spent, extra)]
-    cost = math.fsum(
-        a[primary] * k
-        for node_amounts, c in zip(amounts, counts)
-        for a, k in zip(node_amounts, c)
-        if k
+    designs = tuple(
+        Design(
+            tuple(
+                math.fsum(k * a[r] for a, k in zip(amounts[i], counts[i]) if k)
+                for r in range(m)
+            ),
+            reliabilities[i],
+            counts[i],
+            unreliabilities[i],
+            ways[i][chosen[i]][0],
+        )
+        for i in range(size)
     )
-    return reliability, cost, tuple(counts)
+    cost = math.fsum(d.use[primary] for d in designs)
+    return reliability, cost, designs
 
 
 def _reserve(menus: Sequence[Sequence[Design]], m: int) -> List[List[float]]:
@@ -548,8 +725,8 @@ def exact_max_reliability(
 
     Returns
     -------
-    tuple[float, float, tuple] or None
-        ``(reliability, cost, counts)`` of the optimal allocation, or
+    tuple[float, float, tuple of Design] or None
+        ``(reliability, cost, designs)`` of the optimal allocation, or
         ``None`` if no combination of designs fits the budget.
 
     Raises
@@ -569,11 +746,11 @@ def exact_max_reliability(
     >>> menus = [node_designs([(p, 1)], 3) for p in (0.9, 0.8)]
     >>> def evaluate(reliabilities):
     ...     return reliabilities[0] * reliabilities[1]
-    >>> reliability, cost, counts = exact_max_reliability(
+    >>> reliability, cost, designs = exact_max_reliability(
     ...     evaluate, menus, budget=4
     ... )
-    >>> counts, round(reliability, 4), cost
-    (((2,), (2,)), 0.9504, 4.0)
+    >>> [d.counts for d in designs], round(reliability, 4), cost
+    ([(2,), (2,)], 0.9504, 4.0)
     """
     k = len(menus)
     m = len(menus[0][0].use)
@@ -671,9 +848,9 @@ def _cheapen(
             if evaluate(tuple(trial)) >= reliability:
                 picks[i], used = j, trial_use
                 break
-    designs = [menus[i][picks[i]] for i in range(k)]
+    designs = tuple(menus[i][picks[i]] for i in range(k))
     cost = math.fsum(d.use[primary] for d in designs)
-    return reliability, cost, tuple(d.counts for d in designs)
+    return reliability, cost, designs
 
 
 def exact_min_cost(
@@ -712,8 +889,8 @@ def exact_min_cost(
 
     Returns
     -------
-    tuple[float, float, tuple] or None
-        ``(reliability, cost, counts)`` of the cheapest allocation meeting
+    tuple[float, float, tuple of Design] or None
+        ``(reliability, cost, designs)`` of the cheapest allocation meeting
         the target, or ``None`` if none does within the bound and budget.
 
     Raises
@@ -734,11 +911,11 @@ def exact_min_cost(
     >>> menus = [node_designs([(p, 1)], 5) for p in (0.9, 0.8)]
     >>> def evaluate(reliabilities):
     ...     return reliabilities[0] * reliabilities[1]
-    >>> reliability, cost, counts = exact_min_cost(
+    >>> reliability, cost, designs = exact_min_cost(
     ...     evaluate, menus, 0.9, bound=6
     ... )
-    >>> counts, round(reliability, 4), cost
-    (((2,), (2,)), 0.9504, 4.0)
+    >>> [d.counts for d in designs], round(reliability, 4), cost
+    ([(2,), (2,)], 0.9504, 4.0)
     """
     k = len(menus)
     m = len(menus[0][0].use)
@@ -788,8 +965,7 @@ def exact_min_cost(
     if best is None:
         return None
     reliability, cost, found = best
-    counts = tuple(menus[i][j].counts for i, j in enumerate(found))
-    return reliability, cost, counts
+    return reliability, cost, tuple(menus[i][j] for i, j in enumerate(found))
 
 
 def _front_indices(use: np.ndarray, value: np.ndarray) -> np.ndarray:

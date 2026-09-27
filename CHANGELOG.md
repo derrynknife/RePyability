@@ -61,6 +61,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   189 and 159), in about two seconds each; tests also check both forms, with
   and without mixing, against an independent brute force on series systems and
   on a bridge network.
+- **Redundancy allocation with k-out-of-n nodes and standby spares (closes
+  #78).** `allocate_redundancy` gains `required` (how many of a node's copies
+  must work; Coit & Liu, 2000), `strategy` (`"active"`, the default; `"cold"`
+  standby, where spares wait unpowered and are switched in as units fail —
+  Coit, 2001; or `"choose"`, letting the optimiser pick for each node — Coit,
+  2003) and `switching_probability` (for cold standby), each for every node or
+  per node. Active k-out-of-n nodes are exact (binomial tails, or their
+  mixed-type generalisation); cold-standby nodes are `StandbyModel`s of their
+  copies (exact for identical Exponential units, numerical convolution for one
+  unit required, seeded simulation otherwise). The result's new `strategy`
+  field gives each node's strategy, and the documented "active copies only"
+  limit is gone. Tests check the node reliabilities against binomial tails and
+  Erlang and Poisson sums, and the allocations — including a choice that keeps
+  some nodes active and gives others cold spares under imperfect switching —
+  against an independent brute force.
 - **Cost of a repairable system (`expected_cost_rate`).** `RepairableRBD`
   components may now carry `repair_cost` and `replace_cost` (charged per
   corrective action) and an optional `downtime_cost` rate, alongside a

@@ -182,13 +182,65 @@ component types each, with mixing (Fyffe, Hines & Lee's data, in Coit &
 Smith's form): it returns the best reliabilities published for it, such as
 0.986811 within a cost of 130 and a weight of 191, in seconds.
 
+### Several units required, and standby spares
+
+**`required`** sets how many of a node's copies must work (k-out-of-n; Coit &
+Liu, 2000). If the line needs two pumps running, the budget buys fewer spares
+for the rest:
+
+```python
+two = line.allocate_redundancy(costs, budget=40_000, t=5000, required={"pump": 2})
+two.units         # {'pump': 6, 'valve': 4, 'ctrl': 1}
+two.reliability   # -> 0.9004
+```
+
+**`strategy`** arranges a node's spares: `"active"` (the default) runs every
+copy; `"cold"` keeps the spares unpowered until one is switched in to replace a
+failed unit (Coit, 2001), which makes the node a
+[`StandbyModel`][repyability.StandbyModel] of its copies; `"choose"` lets the
+optimiser pick, node by node (Coit, 2003). Cold spares do not age, so with
+perfect switching they always beat active ones:
+
+```python
+cold = line.allocate_redundancy(
+    costs, budget=40_000, t=5000, strategy={"pump": "cold"}
+)
+cold.strategy      # {'pump': 'cold', 'valve': 'active', 'ctrl': 'active'}
+cold.reliability   # -> 0.9922   the same design as active: 0.9513
+```
+
+With imperfect switching (**`switching_probability`**, the chance that
+switching onto a spare succeeds) that is no longer so, and `"choose"` weighs
+one against the other. Here cold spares still win, narrowly:
+
+```python
+unsure = line.allocate_redundancy(
+    costs,
+    budget=40_000,
+    t=5000,
+    strategy={"pump": "choose"},
+    switching_probability={"pump": 0.9},
+)
+unsure.strategy["pump"]   # 'cold'
+unsure.reliability        # -> 0.955
+```
+
+Cold standby needs lifetime models (not fixed probabilities). Its reliability
+comes from `StandbyModel`: exact for identical Exponential units, a numerical
+convolution (accurate to about 1e-3) for one unit required, and simulated
+(seeded, so reproducible) otherwise; imperfect switching needs one unit
+required. Each cold design is evaluated this way, which is slower than active
+copies, so give cheap cold-standby nodes a `max_units`. A node without spares
+(only the copies it requires) is the same either way, and is reported as
+active.
+
 ### The model and its limits
 
 `n` copies of a node with reliability `p`, all active and independent, have
 reliability `1 − (1 − p)ⁿ` (with mixed types, `1 − (1 − p₁)(1 − p₂)…`). That
-is the right model for parts added in active parallel; it does not model
-standby spares or common-cause coupling (an RBD with common-cause groups
-raises `NotImplementedError`). A budget that
+is the right model for parts added in active parallel; standby spares are
+modelled with `strategy` (above), but common-cause coupling is not (an RBD
+with common-cause groups raises `NotImplementedError`). A budget that
 cannot buy one of each costed node, a target that no design within
 `max_units` (or the budget) reaches, or a node that uses none of any limited
 resource and has no `max_units` (so could be copied without limit) raises

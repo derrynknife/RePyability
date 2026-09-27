@@ -539,6 +539,9 @@ class RedundancyAllocation(_ResultMapping):
         For each node given a choice of component types, how many copies
         of each type it uses, ``{node: {type name: copies}}`` (types it
         does not use are left out).
+    strategy : dict
+        The redundancy strategy of each costed node, ``"active"`` or
+        ``"cold"`` (standby).
 
     Examples
     --------
@@ -569,6 +572,7 @@ class RedundancyAllocation(_ResultMapping):
     method: str
     resources: Dict[Hashable, float] = field(default_factory=dict)
     mix: Dict[Hashable, Dict[Hashable, int]] = field(default_factory=dict)
+    strategy: Dict[Hashable, str] = field(default_factory=dict)
 
 
 @dataclass

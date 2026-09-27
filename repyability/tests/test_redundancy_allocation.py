@@ -333,9 +333,11 @@ def test_result_is_a_mapping(series_ab):
         "method",
         "resources",
         "mix",
+        "strategy",
     }
     assert result.resources == {"cost": 3.0}
     assert result.mix == {}
+    assert result.strategy == {"a": "active", "b": "active"}
 
 
 # -- several resources (issue #76) -----------------------------------------

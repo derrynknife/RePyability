@@ -426,10 +426,16 @@ active independent copies, node *i*'s reliability is `1 − (1 − p_i)^{n_i}`,
 and each candidate is scored by the exact engine, so the structure is
 arbitrary. A node may instead choose among component types: `k_j` copies of
 each type `j` give `1 − ∏_j (1 − p_j)^{k_j}`, all of one type or, with
-mixing, any combination. Both exact methods work on each node's list of
-designs, less those another design of the node beats (using no more of any
-resource while being at least as reliable), which can never be part of a
-better system.
+mixing, any combination. A node may need `k` of its copies working
+(k-out-of-n: the probability that at least `k` work, a binomial tail for
+identical copies), and its spares may be *cold standby*, unpowered until
+switched in, so that they do not age: the node is then a standby arrangement
+of its copies. With perfect switching cold spares always beat active ones;
+with imperfect switching they need not, and choosing the strategy node by node
+is part of the optimisation (Coit, 2003). Both exact methods work on each
+node's list of designs, less those another design of the node beats (using no
+more of any resource while being at least as reliable), which can never be
+part of a better system.
 
 When every costed node is in series with the rest of the system (it lies on
 every minimal path), the reliability factorises,
