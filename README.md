@@ -26,6 +26,8 @@ taking already-fitted lifetime models (from
   load sharing; beta-factor and MGL common-cause groups.
 - **Repairable systems**: exact long-run availability, failure frequency and
   MUT/MDT/MTBF; simulated availability over time with criticality measures.
+- **Simulation**: seeded Monte-Carlo run to a tolerance, antithetic pairs,
+  parallel runs, and comparisons of designs with common random numbers.
 - **Cost, design and maintenance**: exact and simulated running costs,
   including scheduled (age or block) preventive replacement at system level
   and hidden failures found by periodic inspection, the total cost of

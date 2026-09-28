@@ -8,6 +8,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Monte-Carlo precision and speed (closes #35).** The simulations of both
+  kinds of RBD can now run to a tolerance, reduce their variance and run in
+  parallel, and two designs can be compared with common random numbers.
+  - *Simulating to a tolerance.* `RepairableRBD.availability` and `cost`,
+    and `NonRepairableRBD.mean`, `mean_time_to_failure` and
+    `mean_time_to_failure_interval`, take `tolerance` and `confidence`:
+    after the first `N` (`mc_samples`), and each further batch of that
+    size, the run stops once the half-width of the mean's confidence
+    interval (the mean availability over the window, the mean cost, or the
+    MTTF) is at most the tolerance, or at `max_N` (`max_samples`, by default
+    100 times the first batch) with a `RuntimeWarning`. Without `n_jobs`, a
+    run that stops after `n` gives exactly the result of a run of `n`.
+  - *Antithetic pairs* (`antithetic=True`, on the same methods and
+    `NonRepairableRBD.random`): the second of each pair uses `1 - u` for
+    every uniform `u` of the first. In a `RepairableRBD` each component
+    draws from a stream of its own, so its `k`-th draw is paired whatever
+    the order of the events. Intervals are worked out from the pairs' means.
+    On the examples, pairing cuts the standard error of an MTTF by a quarter
+    and of a window's availability and cost by a fifth to a third.
+  - *Parallel runs* (`n_jobs`, -1 for one process per CPU): the simulations
+    run in blocks (250 availability simulations, 10 000 lifetimes), seeded
+    in turn from one `SeedSequence`, so the results depend on the seed and
+    not on the number of processes.
+  - *Common random numbers.* `RepairableRBD.compare(other, t_simulation,
+    ...)` (availability or cost) and `NonRepairableRBD.compare(other, ...)`
+    (MTTF) simulate both designs with each component drawing the same
+    numbers in both (by name, and by place in nested RBDs), and return a
+    `ConfidenceInterval` of the difference: seven times smaller a standard
+    error than two separate runs when two plants differ only in their pumps'
+    repair times.
+  - `AvailabilityResult` gains `uptimes` (each simulation's up time),
+    `antithetic` and `mean_availability_interval(confidence)`, the interval
+    of the mean availability over the window; `CostResult` gains
+    `antithetic`.
+
+  Tests (66): runs to a tolerance against runs of their size, the
+  non-convergence warning, antithetic pairs sample by sample (each
+  component's draws add to one) and against exact values (the transient
+  availability of exponential components, averaged over the window, a
+  window's expected cost, and MTTFs as integrals of the reliability),
+  parallel results across numbers of processes, comparisons against the
+  exact differences and sample-path dominance (a spare pump never leaves the
+  system up for less time, in any simulation), and validation. Mutation
+  testing catches all 32 mutations. Docs: a Simulation precision and speed
+  guide page, a Lesson 6 section with an exercise, concepts, glossary and
+  overview pages.
 - **Parameter (epistemic) uncertainty (`NonRepairableRBD.sf_uncertainty`,
   closes #43).** A node's model is estimated from data, so its parameters
   are uncertain; `sf_uncertainty(x, uncertainty, n_draws, seed)` carries

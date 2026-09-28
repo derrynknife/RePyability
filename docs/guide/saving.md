@@ -63,8 +63,8 @@ Every Monte-Carlo method takes a `seed`:
 
 | Where | Methods |
 |---|---|
-| `NonRepairableRBD` | `random`, `mean`, `mean_time_to_failure`, `mean_time_to_failure_interval`, `node_mttf` |
-| `RepairableRBD` | `availability`, `cost` |
+| `NonRepairableRBD` | `random`, `mean`, `mean_time_to_failure`, `mean_time_to_failure_interval`, `compare`, `node_mttf` |
+| `RepairableRBD` | `availability`, `cost`, `compare` |
 | Node models | `StandbyModel(seed=...)`, `LoadSharingModel(seed=...)`, `RepeatedNode.random`/`mean`, `RepeatedStandbyNode.random`, `StandbyModel.random`, `LoadSharingModel.random` |
 | `Repairable` | every simulation-backed method |
 
@@ -88,7 +88,10 @@ unaffected.
 
 The simulations draw the same random numbers in the same order however they
 are computed internally (in blocks for speed, or one at a time), so seeded
-results do not depend on which internal path a model takes.
+results do not depend on which internal path a model takes. A parallel run
+(`n_jobs`) seeds each block of simulations in turn from `seed`, so its
+results do not depend on the number of processes; they differ from a run
+without `n_jobs` (see [Parallel runs](simulation.md#parallel-runs)).
 
 ## What is exact and what is simulated
 
@@ -128,8 +131,12 @@ results do not depend on which internal path a model takes.
   second. Availability simulations step through events, so their cost grows
   with `N` times the number of failures and repairs in the window.
 - **Monte-Carlo error** shrinks like `1/√N`: use the confidence intervals
-  (`mean_time_to_failure_interval`, `availability_interval`,
-  `CostResult.mean_interval`) to choose `N`.
+  (`mean_time_to_failure_interval`, `mean_availability_interval`,
+  `availability_interval`, `CostResult.mean_interval`) to judge `N`, or pass
+  a `tolerance` to simulate until they are narrow enough. Antithetic pairs
+  and common random numbers (`compare`) get more precision from each
+  simulation, and `n_jobs` spreads the simulations over several processes:
+  see [Simulation precision and speed](simulation.md).
 
 !!! note "Known limit: long paths through a mesh"
     The minimal path sets of the part of a diagram that does not reduce are

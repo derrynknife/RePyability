@@ -18,6 +18,12 @@ each ages and can fail while the others work. A parallel block in a diagram.
 age $T$, whichever comes first; a failure restarts the clock.
 [Lesson 8](maintenance.md)
 
+**Antithetic pairs.** Simulations run in pairs, the second of each drawing
+$1 - u$ wherever the first drew the random number $u$: a late failure where
+the first had an early one. Each is still a correct simulation, but the two
+tend to err in opposite directions, so their mean is more precise than two
+independent simulations'. [Lesson 6](availability.md#precise-enough-sooner)
+
 **Availability.** The probability that a repairable system is working at a
 given time (*point availability* $A(t)$), or the long-run fraction of time
 it is working (*long-run* or *steady-state availability* $A$). For one unit,
@@ -61,6 +67,11 @@ while waiting. [Lesson 5](dependence.md)
 **Common-cause failure.** One cause (a shared design flaw, environment or
 maintenance error) failing several redundant units at once, so that they do
 not fail independently. [Lesson 5](dependence.md)
+
+**Common random numbers.** Comparing two designs by simulating both with
+the same random numbers, component by component, so that the difference
+between their results comes from the designs rather than from chance.
+[Lesson 6](availability.md#precise-enough-sooner)
 
 **Cost rate.** The long-run cost per unit time of running a system or a
 maintenance policy. [Lessons 7](costs.md) and [8](maintenance.md)
@@ -237,6 +248,11 @@ $R = \prod_i R_i$. [Lesson 2](systems.md)
 **Single point of failure.** A component whose failure alone fails the
 system: a minimal cut set of one. [Lessons 3](structure.md) and
 [4](importance.md)
+
+**Standard error.** The standard deviation of an estimate: how far a
+simulated mean is likely to be from the true value. For the mean of $N$
+independent simulations it is their standard deviation over $\sqrt{N}$, so
+it halves when $N$ is quadrupled. [Lesson 6](availability.md)
 
 **Structural importance.** Birnbaum importance with every component working
 with probability ½: the fraction of the other components' states in which a

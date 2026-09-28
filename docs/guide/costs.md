@@ -101,7 +101,9 @@ costs.by_component      # mean cost attributable to each costed component
 ```
 
 `cost()` takes the same arguments as `availability()` (`working_nodes`,
-`broken_nodes`, `method`, `N`, `verbose`, `seed`). The same result comes with
+`broken_nodes`, `method`, `N`, `verbose`, `seed`, and `tolerance`,
+`antithetic` and `n_jobs`: see
+[Simulation precision and speed](simulation.md)). The same result comes with
 `availability(...)` as `result.cost`, so one simulation gives both answers.
 With nothing priced, `cost()` returns `None` and `result.cost` is `None`.
 
@@ -111,7 +113,8 @@ With nothing priced, `cost()` returns `None` and `result.cost` is `None`.
   is a property of the system; more simulations will not shrink it.
 - `mean_se` and `mean_interval(confidence)` describe how precisely the
   **expected** cost has been estimated. They shrink like `1/√N`; check them
-  before quoting the mean.
+  before quoting the mean, or pass `tolerance` to `cost()` to simulate until
+  the interval is narrow enough.
 
 ```python
 interval = costs.mean_interval(confidence=0.95)

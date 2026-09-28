@@ -111,6 +111,9 @@ np.interp(50, result.timeline, result.availability)   # -> 0.9531   at t = 50
 | `working_nodes`, `broken_nodes` | Components that never fail, or that are down throughout. |
 | `method` | `"p"` or `"c"`, for deciding whether the system is up; same result. |
 | `verbose` | Show a progress bar. |
+| `tolerance`, `confidence`, `max_N` | Simulate until the mean availability over the window is known to within `tolerance` (see [Simulation precision and speed](simulation.md#simulating-to-a-tolerance)). |
+| `antithetic` | Simulate in antithetic pairs, for a more precise mean from the same `N` (see [Antithetic pairs](simulation.md#antithetic-pairs)). |
+| `n_jobs` | Run the simulations over several processes (see [Parallel runs](simulation.md#parallel-runs)). |
 
 The curve starts at 1 and settles towards the long-run availability
 (`0.9536` here). Its sampling error is available pointwise:
@@ -121,7 +124,20 @@ lower, upper = result.availability_interval(confidence=0.95)   # Wilson band
 lower[-1], upper[-1]                                  # (0.9472, 0.965)
 ```
 
-`lower`/`upper` align with `result.timeline`, ready to draw as a band.
+`lower`/`upper` align with `result.timeline`, ready to draw as a band. The
+mean availability over the whole window, the fraction of it the system was
+up, has an interval of its own:
+
+```python
+window = result.mean_availability_interval(confidence=0.95)
+window.estimate                   # -> 0.9539   the exact mean over 100 h is 0.9544
+window.lower, window.upper        # (0.9523, 0.9556)
+```
+
+To compare two designs, simulate them with common random numbers:
+`faster.compare(plant, t_simulation)` estimates how much more of the window
+one is up than the other far more precisely than two separate runs (see
+[Comparing two designs](simulation.md#comparing-two-designs)).
 
 ### What the result holds
 
@@ -131,6 +147,8 @@ lower[-1], upper[-1]                                  # (0.9472, 0.965)
 |---|---|
 | `timeline`, `availability` | The mean availability curve. |
 | `availability_se`, `availability_interval(confidence)` | Its sampling error. |
+| `uptimes`, `mean_availability_interval(confidence)` | Each history's up time, and the interval of the mean availability over the window. |
+| `antithetic` | Whether the histories ran in antithetic pairs. |
 | `system_uptime`, `system_downtime` | Total up and down time over all histories. |
 | `system_failures`, `system_restorations` | Counts over all histories. |
 | `system_planned_outages` | The times preventive maintenance or a test took the system down (not failures). |

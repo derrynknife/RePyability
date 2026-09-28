@@ -102,6 +102,45 @@ samples), which gives `mean_time_to_failure_interval()`. The mean is estimated
 rather than integrated because the system lifetime distribution of a general
 diagram, especially with composite nodes, has no convenient closed form.
 
+### Simulation error, and making it smaller
+
+A simulated mean of `N` independent results has standard error `s / √N`, so
+its error halves when `N` is quadrupled. Given a `tolerance`, a simulation
+adds `N` results at a time until the confidence interval's half-width,
+`z · s / √N`, is at most the tolerance. (The stopping point depends on the
+estimated `s`, which makes a sequential rule's coverage slightly below the
+nominal level when `N` is small; checking only after each batch of `N`
+keeps the effect small.)
+
+Two classical variance-reduction techniques make the error smaller for the
+same `N`, without biasing the estimate:
+
+- **Antithetic variates.** A result is a function `f(U)` of uniform random
+  numbers. `f(U)` and `f(1 − U)` have the same distribution, and when `f` is
+  monotone in each number (in either direction) their covariance is at most
+  zero, so the mean of the pair varies at most half as much as one result.
+  A coherent system's lifetime increases with every component's lifetime,
+  and each lifetime with its uniform (by inverse transform), so pairing
+  always helps a lifetime. The availability and cost of a window are not
+  monotone in the draws (a longer up time moves a component's later
+  repairs, which may then overlap another component's), so they gain less,
+  though usually still a useful amount.
+- **Common random numbers.** The difference of two designs' results has
+  variance `Var(A) + Var(B) − 2 Cov(A, B)`. Simulated independently, the
+  covariance is zero; driven by the same random numbers wherever the
+  designs share a component, the results move together, and the covariance
+  removes most of the variance.
+
+In a `RepairableRBD` both work component by component: each component draws
+from a stream of its own, keyed by the seed, its place in the diagram and
+the simulation (or the pair), so its `k`-th draw is matched, or paired,
+however the components' events interleave.
+
+A parallel run splits the simulations into blocks seeded in turn from one
+`numpy.random.SeedSequence`, whose spawned seeds give independent streams.
+The block, not the process that runs it, fixes the random numbers, so the
+results do not depend on the number of processes.
+
 ### Fault trees
 
 A fault tree describes the same structure from the side of failure: the top

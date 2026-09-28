@@ -113,6 +113,7 @@ result.criticalities.iou.up  # intersection-over-union importance (system up)
 | Cost | Exact long-run cost rate; simulated cost distributions with percentiles; costs drawn from distributions; scheduled preventive maintenance (age or block replacement) priced at system level; hidden failures found by periodic inspection (PFDavg); total cost of ownership, and the redundancy that minimises it | [Costs](guide/costs.md) |
 | Design | Optimal redundancy allocation within a budget (of one or several resources) or to a target, with a choice of component types, k-out-of-n nodes and cold standby spares, and the whole cost-reliability trade-off; reliability-redundancy allocation; reliability allocation by equal and ARINC-style apportionment, minimum effort (Albert) and cost-based (Mettas) methods | [Design and allocation](guide/design.md) |
 | Maintenance | Age replacement; overhaul under minimal or imperfect repair; replace at the *N*-th failure | [Maintenance policies](guide/maintenance.md) |
+| Simulation | Simulating to a tolerance, antithetic pairs, parallel runs, and comparing designs with common random numbers | [Simulation precision and speed](guide/simulation.md) |
 | Persistence | JSON round-trips, seeded reproducibility | [Saving, reproducibility and performance](guide/saving.md) |
 
 ## Where to next

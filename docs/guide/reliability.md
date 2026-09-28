@@ -152,6 +152,14 @@ The interval narrows like `1/√mc_samples`. Common-cause groups are not
 included in these simulated quantities (see
 [Common-cause failures](common-cause.md#what-honours-a-ccf-group)).
 
+To simulate until the MTTF is known to a given precision, pass a
+`tolerance`: `mean_time_to_failure_interval(tolerance=0.5)` keeps adding
+`mc_samples` lifetimes until the interval is at most 0.5 either side. The
+same methods draw antithetic pairs (`antithetic=True`) and run over several
+processes (`n_jobs`), and `compare(other)` estimates how much longer one
+design's MTTF is than another's, with common random numbers: see
+[Simulation precision and speed](simulation.md).
+
 ## From a target reliability to a time
 
 `time_to_reliability(target)` solves `R(t) = target`; `bx_life(x)` is the time

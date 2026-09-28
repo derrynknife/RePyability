@@ -9,6 +9,8 @@ import functools
 import math
 import pprint
 import warnings
+import zlib
+from concurrent.futures import ProcessPoolExecutor
 from copy import copy
 from dataclasses import dataclass, field
 from queue import PriorityQueue
@@ -31,11 +33,11 @@ from typing import (
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.optimize import brentq
-from scipy.stats import norm
 from surpyval import NonParametric
 
 from repyability.utils.wrappers import conditional_survival, numpy_seed
 
+from . import _montecarlo as montecarlo
 from . import redundancy_allocation
 from ._model_utils import is_fixed_probability, parametric_spec
 from ._sampling import RowSampler, row_sampler
@@ -56,8 +58,28 @@ from .results import (
 from .standby_node import StandbyModel
 from .uncertainty import draw_models
 
-
 # Event class for simulation
+#: Lifetimes per block of a parallel draw (see ``NonRepairableRBD.random``):
+#: each block is seeded by its position, so a parallel draw does not depend
+#: on the number of processes.
+RANDOM_BLOCK = 10_000
+
+
+def _random_block(task) -> np.ndarray:
+    """One block of a parallel draw (in its own process)."""
+    rbd, size, seed, antithetic = task
+    with numpy_seed(seed):
+        return rbd._draw(size, antithetic)
+
+
+def _check_lifetimes(lifetimes: np.ndarray) -> None:
+    if np.isnan(lifetimes).any():
+        raise ValueError(
+            "A node drew a NaN lifetime, which antithetic and common random "
+            "number draws cannot order; draw without them."
+        )
+
+
 @dataclass(order=True)
 class NodeFailure:
     """A node failure scheduled in the event-driven lifetime simulation.
@@ -3054,7 +3076,14 @@ class NonRepairableRBD(RBD):
         """
         return len(self.get_non_analytic_nodes()) == 0
 
-    def random(self, size, seed=None):
+    def random(
+        self,
+        size,
+        seed=None,
+        *,
+        antithetic: bool = False,
+        n_jobs: Optional[int] = None,
+    ):
         """Draw ``size`` random system lifetimes (Monte-Carlo).
 
         Each node's lifetime is drawn independently from its own model's
@@ -3090,12 +3119,40 @@ class NonRepairableRBD(RBD):
             None (non-reproducible). It cannot make surpyval non-parametric
             node models (e.g. a Kaplan-Meier fit) reproducible: surpyval
             draws those from a fresh, OS-seeded generator on every call.
+        antithetic : bool, optional
+            Draw the lifetimes in antithetic pairs, by default False: the
+            second of each pair (samples ``2i`` and ``2i + 1``) is drawn
+            from ``1 - u`` for every uniform ``u`` the first drew. Each
+            lifetime is still a correct draw, but the two of a pair are
+            negatively correlated (for a system whose lifetime rises with
+            its nodes'), so their mean varies less than two independent
+            draws'. The pairs, not the lifetimes, are independent: estimate
+            a standard error from the pairs' means. ``size`` must be even,
+            and every node's draws must be replayable (as for the batched
+            sampling above), else ``NotImplementedError``.
+        n_jobs : int, optional
+            Draw in parallel, in blocks of ``RANDOM_BLOCK`` (10_000)
+            lifetimes, each seeded in turn from ``seed``, over ``n_jobs``
+            processes (-1: one per CPU). The blocks are the same however
+            many processes draw them, so the lifetimes do not depend on
+            ``n_jobs`` (any number, 1 included), but they differ from a
+            draw without it. By default None: one draw in this process.
 
         Returns
         -------
         numpy.ndarray
             ``size`` system lifetimes; ``inf`` in a sample where the system
             never fails (e.g. through a perfectly reliable path).
+
+        Raises
+        ------
+        ValueError
+            If ``size`` is not a positive integer (even, with
+            ``antithetic``) when ``antithetic`` or ``n_jobs`` is given, or
+            ``n_jobs`` is not a positive integer or -1.
+        NotImplementedError
+            If ``antithetic`` is asked for and a node's draws cannot be
+            replayed from uniforms (a node model sampled its own way).
 
         Examples
         --------
@@ -3112,11 +3169,85 @@ class NonRepairableRBD(RBD):
         >>> bool((lifetimes == rbd.random(5, seed=1)).all())
         True
         """
-        with numpy_seed(seed):
-            fast = self._random_vectorised(size)
-            if fast is not None:
-                return fast
-            return self._random_by_events(size)
+        if not antithetic and n_jobs is None:
+            with numpy_seed(seed):
+                return self._draw(size)
+        montecarlo.check_count(size, antithetic, "size")
+        jobs = None if n_jobs is None else montecarlo.jobs(n_jobs)
+        return self._simulate_lifetimes(size, seed, antithetic, jobs, None)
+
+    def _draw(self, size, antithetic: bool = False) -> np.ndarray:
+        """``size`` lifetimes from numpy's global RNG as it stands."""
+        if antithetic:
+            return self._random_antithetic(size)
+        fast = self._random_vectorised(size)
+        if fast is not None:
+            return fast
+        return self._random_by_events(size)
+
+    def _random_antithetic(self, size) -> np.ndarray:
+        """``size`` (even) lifetimes in antithetic pairs: the second of
+        each pair drawn from ``1 - u`` for the first's uniforms ``u``."""
+        sampler = self._row_sampler()
+        if sampler is None:
+            raise NotImplementedError(
+                "Antithetic sampling needs every node's draws to be "
+                "replayable from uniforms (surpyval parametric distributions "
+                "and the composite nodes built from them)."
+            )
+        u = np.random.random_sample((size // 2, sampler.width))
+        out = np.empty(size)
+        out[0::2] = sampler.draw(u)
+        out[1::2] = sampler.draw(1.0 - u)
+        _check_lifetimes(out)
+        return out
+
+    def _simulate_lifetimes(
+        self,
+        n: int,
+        seed,
+        antithetic: bool,
+        jobs: Optional[int],
+        stop: Optional[Callable[[np.ndarray], int]],
+    ) -> np.ndarray:
+        """``n`` lifetimes, then more while ``stop`` (given those so far)
+        asks for them: in this process from numpy's global RNG (seeded,
+        then restored, with a seed), or, with ``jobs``, in seeded blocks
+        over that many processes. Either way a run that stops at ``m``
+        lifetimes draws those it would in a run of ``m`` from the start,
+        in blocks of that run's first ``n``."""
+        seeds = np.random.SeedSequence(seed) if jobs is not None else None
+        executor = (
+            ProcessPoolExecutor(max_workers=jobs)
+            if jobs is not None and jobs > 1
+            else None
+        )
+        parts: List[np.ndarray] = []
+        try:
+            with numpy_seed(seed if jobs is None else None):
+                batch = n
+                while batch:
+                    if seeds is None:
+                        parts.append(self._draw(batch, antithetic))
+                    else:
+                        tasks = [
+                            (
+                                self,
+                                size,
+                                montecarlo.block_seed(seeds),
+                                antithetic,
+                            )
+                            for size in montecarlo.blocks(batch, RANDOM_BLOCK)
+                        ]
+                        if executor is None:
+                            parts.extend(map(_random_block, tasks))
+                        else:
+                            parts.extend(executor.map(_random_block, tasks))
+                    batch = 0 if stop is None else stop(np.concatenate(parts))
+        finally:
+            if executor is not None:
+                executor.shutdown()
+        return np.concatenate(parts)
 
     def _random_vectorised(self, size) -> Optional[np.ndarray]:
         """``random(size)`` without the per-sample event loop, when every
@@ -3212,7 +3343,17 @@ class NonRepairableRBD(RBD):
             out[i] = time
         return out
 
-    def mean(self, mc_samples: int = 100_000, seed=None):
+    def mean(
+        self,
+        mc_samples: int = 100_000,
+        seed=None,
+        *,
+        tolerance: Optional[float] = None,
+        confidence: float = 0.95,
+        max_samples: Optional[int] = None,
+        antithetic: bool = False,
+        n_jobs: Optional[int] = None,
+    ):
         """Mean time to failure (MTTF) of the system, by Monte-Carlo.
 
         The average of ``random(mc_samples, seed=seed)`` (see
@@ -3230,11 +3371,38 @@ class NonRepairableRBD(RBD):
             Number of system lifetimes to simulate, by default 100_000.
         seed : int or None, optional
             Seed for reproducibility (see ``random``), by default None.
+        tolerance : float, optional
+            Simulate until the MTTF is known to within ``tolerance`` (in
+            the lifetimes' units) either side, at ``confidence``: after the
+            first ``mc_samples`` lifetimes, and each further ``mc_samples``,
+            the run stops once the half-width of the confidence interval
+            of the mean is at most ``tolerance``, or ``max_samples`` have
+            been drawn (then with a RuntimeWarning). By default None: exactly
+            ``mc_samples``. A run that stops at ``m`` lifetimes gives the
+            result of a run of ``m`` from the start (without ``n_jobs``).
+        confidence : float, optional
+            The confidence level ``tolerance`` is judged at, by default
+            0.95.
+        max_samples : int, optional
+            The most lifetimes a run to ``tolerance`` draws, by default 100
+            times ``mc_samples``.
+        antithetic : bool, optional
+            Draw the lifetimes in antithetic pairs (see ``random``), by
+            default False. ``mc_samples`` must then be even.
+        n_jobs : int, optional
+            Draw in parallel over ``n_jobs`` processes (see ``random``), by
+            default None.
 
         Returns
         -------
         float
             The MTTF estimate.
+
+        Raises
+        ------
+        ValueError
+            If an option is invalid (see ``random``; ``max_samples``
+            without a ``tolerance``, or smaller than ``mc_samples``).
 
         Examples
         --------
@@ -3250,9 +3418,28 @@ class NonRepairableRBD(RBD):
         >>> print(f"{rbd.mean(mc_samples=10_000, seed=1):.1f}")
         98.9
         """
-        return self.random(mc_samples, seed=seed).mean().item()
+        samples = self._mttf_samples(
+            mc_samples,
+            seed,
+            tolerance,
+            confidence,
+            max_samples,
+            antithetic,
+            n_jobs,
+        )
+        return samples.mean().item()
 
-    def mean_time_to_failure(self, mc_samples: int = 100_000, seed=None):
+    def mean_time_to_failure(
+        self,
+        mc_samples: int = 100_000,
+        seed=None,
+        *,
+        tolerance: Optional[float] = None,
+        confidence: float = 0.95,
+        max_samples: Optional[int] = None,
+        antithetic: bool = False,
+        n_jobs: Optional[int] = None,
+    ):
         """Mean time to failure (MTTF) of the system; the same as ``mean``.
 
         A Monte-Carlo estimate from ``mc_samples`` simulated lifetimes (see
@@ -3265,19 +3452,47 @@ class NonRepairableRBD(RBD):
             Number of system lifetimes to simulate, by default 100_000.
         seed : int or None, optional
             Seed for reproducibility (see ``random``), by default None.
+        tolerance : float, optional
+            Simulate until the MTTF is known to within ``tolerance`` either
+            side (see ``mean``), by default None.
+        confidence : float, optional
+            The confidence level ``tolerance`` is judged at, by default
+            0.95.
+        max_samples : int, optional
+            The most lifetimes a run to ``tolerance`` draws, by default 100
+            times ``mc_samples``.
+        antithetic : bool, optional
+            Draw the lifetimes in antithetic pairs (see ``random``), by
+            default False.
+        n_jobs : int, optional
+            Draw in parallel over ``n_jobs`` processes (see ``random``), by
+            default None.
 
         Returns
         -------
         float
             The MTTF estimate.
         """
-        return self.mean(mc_samples, seed=seed)
+        return self.mean(
+            mc_samples,
+            seed=seed,
+            tolerance=tolerance,
+            confidence=confidence,
+            max_samples=max_samples,
+            antithetic=antithetic,
+            n_jobs=n_jobs,
+        )
 
     def mean_time_to_failure_interval(
         self,
         mc_samples: int = 100_000,
         confidence: float = 0.95,
         seed=None,
+        *,
+        tolerance: Optional[float] = None,
+        max_samples: Optional[int] = None,
+        antithetic: bool = False,
+        n_jobs: Optional[int] = None,
     ) -> ConfidenceInterval:
         """Monte-Carlo MTTF estimate with a confidence interval.
 
@@ -3285,10 +3500,11 @@ class NonRepairableRBD(RBD):
         (see [`random`][repyability.NonRepairableRBD.random]; common-cause
         groups are ignored). By the central limit theorem its sampling
         error is normal with standard error
-        ``sample std / sqrt(mc_samples)``, from which the two-sided
-        interval ``estimate +/- z * standard_error`` is built; the lower
-        bound is clipped at 0. The interval describes the simulation
-        error only, not uncertainty in the node models.
+        ``sample std / sqrt(mc_samples)`` (of the antithetic pairs' means,
+        over the square root of their number, with ``antithetic``), from
+        which the two-sided interval ``estimate +/- z * standard_error`` is
+        built; the lower bound is clipped at 0. The interval describes the
+        simulation error only, not uncertainty in the node models.
 
         Parameters
         ----------
@@ -3298,6 +3514,26 @@ class NonRepairableRBD(RBD):
             The confidence level, in (0, 1), by default 0.95.
         seed : int or None, optional
             Seed for reproducibility (see ``random``), by default None.
+        tolerance : float, optional
+            Simulate until the interval is at most ``tolerance`` either side
+            of the estimate: after the first ``mc_samples`` lifetimes, and
+            each further ``mc_samples``, the run stops once it is, or once
+            ``max_samples`` have been drawn (then with a RuntimeWarning). By
+            default None: exactly ``mc_samples``. Without ``n_jobs``, a run
+            that stops at ``m`` lifetimes gives the result of a run of ``m``
+            from the start.
+        max_samples : int, optional
+            The most lifetimes a run to ``tolerance`` draws, by default 100
+            times ``mc_samples``.
+        antithetic : bool, optional
+            Draw the lifetimes in antithetic pairs (see ``random``), by
+            default False: a narrower interval for the same number of
+            lifetimes, when the system's lifetime rises with its nodes' (as
+            a coherent system's does). ``mc_samples`` must then be even.
+        n_jobs : int, optional
+            Draw in parallel over ``n_jobs`` processes (-1: one per CPU; see
+            ``random``), by default None. The result does not depend on the
+            number of processes.
 
         Returns
         -------
@@ -3309,7 +3545,11 @@ class NonRepairableRBD(RBD):
         Raises
         ------
         ValueError
-            If ``confidence`` is not in (0, 1).
+            If ``confidence`` is not in (0, 1), or another option is invalid
+            (see ``mean``).
+        NotImplementedError
+            With ``antithetic``, if a node's draws cannot be replayed from
+            uniforms.
 
         Examples
         --------
@@ -3322,21 +3562,198 @@ class NonRepairableRBD(RBD):
         >>> ci = rbd.mean_time_to_failure_interval(mc_samples=10_000, seed=1)
         >>> print(f"{ci.estimate:.1f} ({ci.lower:.1f}, {ci.upper:.1f})")
         98.9 (96.9, 100.8)
+
+        Simulate until the MTTF is known to within 0.5 either side:
+
+        >>> ci = rbd.mean_time_to_failure_interval(
+        ...     mc_samples=10_000, seed=1, tolerance=0.5
+        ... )
+        >>> ci.n_samples, round(ci.upper - ci.estimate, 2)
+        (160000, 0.49)
         """
         if not 0.0 < confidence < 1.0:
             raise ValueError("confidence must be between 0 and 1.")
-        samples = self.random(mc_samples, seed=seed)
+        samples = self._mttf_samples(
+            mc_samples,
+            seed,
+            tolerance,
+            confidence,
+            max_samples,
+            antithetic,
+            n_jobs,
+        )
         estimate = float(samples.mean())
-        standard_error = float(samples.std(ddof=1) / np.sqrt(len(samples)))
-        z = float(norm.ppf(0.5 + confidence / 2.0))
+        standard_error = montecarlo.standard_error(samples, antithetic)
+        z = montecarlo.z_value(confidence)
         return ConfidenceInterval(
             estimate=estimate,
             lower=max(0.0, estimate - z * standard_error),
             upper=estimate + z * standard_error,
             confidence=confidence,
             standard_error=standard_error,
+            n_samples=len(samples),
+        )
+
+    def _mttf_samples(
+        self,
+        mc_samples,
+        seed,
+        tolerance,
+        confidence,
+        max_samples,
+        antithetic: bool,
+        n_jobs,
+    ) -> np.ndarray:
+        """The simulated lifetimes an MTTF estimate is the mean of."""
+        if (
+            tolerance is None
+            and max_samples is None
+            and not antithetic
+            and n_jobs is None
+        ):
+            return self.random(mc_samples, seed=seed)
+        montecarlo.check_count(mc_samples, antithetic, "mc_samples")
+        montecarlo.check_confidence(confidence)
+        limit = montecarlo.sample_limit(
+            mc_samples,
+            tolerance,
+            max_samples,
+            antithetic,
+            ("mc_samples", "max_samples"),
+        )
+        jobs = None if n_jobs is None else montecarlo.jobs(n_jobs)
+
+        def more(values: np.ndarray) -> int:
+            return montecarlo.more_samples(
+                values,
+                mc_samples,
+                tolerance,
+                confidence,
+                limit,  # type: ignore[arg-type]
+                antithetic,
+                "MTTF",
+                "max_samples",
+            )
+
+        stop = None if limit is None else more
+        return self._simulate_lifetimes(
+            mc_samples, seed, antithetic, jobs, stop
+        )
+
+    def compare(
+        self,
+        other: "NonRepairableRBD",
+        mc_samples: int = 100_000,
+        seed=None,
+        *,
+        confidence: float = 0.95,
+    ) -> ConfidenceInterval:
+        """How much longer (or shorter) this system's mean time to failure
+        is than ``other``'s, by simulation with common random numbers.
+
+        Both systems' lifetimes are simulated ``mc_samples`` times, and in
+        each sample a component with the same name in both draws the same
+        random numbers in both: the same lifetime where its model is the
+        same, and a matching one (the same quantile of its own model) where
+        it is not. The differences between the two systems' lifetimes then
+        come from how the systems differ, not from chance, so their mean is
+        a more precise estimate of the difference in MTTF than the
+        difference of two independent estimates of the same size (the more
+        the systems share, the more precise). The reliabilities themselves
+        need no simulation: compare ``sf`` for those.
+
+        Parameters
+        ----------
+        other : NonRepairableRBD
+            The system to compare with.
+        mc_samples : int, optional
+            The number of lifetimes of each system, by default 100_000.
+        seed : int, optional
+            Seed for a reproducible comparison, by default None.
+        confidence : float, optional
+            The confidence level of the interval, by default 0.95.
+
+        Returns
+        -------
+        ConfidenceInterval
+            The mean difference (this system's lifetime minus ``other``'s)
+            over the samples, with its standard error and a normal
+            confidence interval (not clipped: the difference may be
+            negative). Common-cause groups are ignored, as by ``random``.
+
+        Raises
+        ------
+        ValueError
+            If ``mc_samples`` or ``confidence`` is invalid.
+        NotImplementedError
+            If a node's draws cannot be replayed from uniforms (a node
+            model sampled its own way). A non-parametric model (a
+            Kaplan-Meier fit, say) draws its own random numbers, which the
+            two systems do not share.
+
+        Examples
+        --------
+        A third unit in parallel with two:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> unit = surv.Weibull.from_params([100, 2])
+        >>> def parallel(n):
+        ...     names = [f"u{i}" for i in range(n)]
+        ...     edges = [("s", u) for u in names] + [(u, "t") for u in names]
+        ...     return NonRepairableRBD(edges, {u: unit for u in names})
+        >>> gain = parallel(3).compare(parallel(2), mc_samples=20_000, seed=0)
+        >>> round(gain.estimate, 1), round(gain.standard_error, 2)
+        (14.8, 0.21)
+
+        The exact difference, the integral of the difference in
+        reliability, is 14.46. Two independent estimates from 20_000
+        lifetimes each would give it with a standard error of about 0.42.
+        """
+        montecarlo.check_count(mc_samples, False, "mc_samples")
+        montecarlo.check_confidence(confidence)
+        key = int(np.random.SeedSequence(seed).generate_state(1, np.uint64)[0])
+        differences = self._keyed_lifetimes(
+            mc_samples, key
+        ) - other._keyed_lifetimes(mc_samples, key)
+        estimate = float(np.mean(differences))
+        standard_error = montecarlo.standard_error(differences, False)
+        z = montecarlo.z_value(confidence)
+        return ConfidenceInterval(
+            estimate=estimate,
+            lower=estimate - z * standard_error,
+            upper=estimate + z * standard_error,
+            confidence=confidence,
+            standard_error=standard_error,
             n_samples=mc_samples,
         )
+
+    def _keyed_lifetimes(self, n: int, key: int) -> np.ndarray:
+        """``n`` lifetimes in which each component draws its uniforms from
+        streams of its own, keyed by ``key``, its name and the uniform's
+        place in its draw (common random numbers, see ``compare``)."""
+        lifetimes = {}
+        for node in self._components():
+            sampler = row_sampler(self.reliabilities[node])
+            if sampler is None:
+                raise NotImplementedError(
+                    "Common random numbers need every node's draws to be "
+                    "replayable from uniforms (surpyval parametric "
+                    f"distributions and the composite nodes built from "
+                    f"them); node {node!r}'s are not."
+                )
+            name = zlib.crc32(repr(node).encode())
+            u = np.empty((n, sampler.width))
+            for j in range(sampler.width):
+                u[:, j] = np.random.default_rng([key, name, j]).random(n)
+            lifetimes[node] = sampler.draw(u)
+        out = np.array(
+            self._decomposition().lifetime(lifetimes, n), dtype=float
+        )
+        for lifetime in lifetimes.values():
+            out[np.isnan(lifetime)] = np.nan
+        _check_lifetimes(out)
+        return out
 
     def time_to_reliability(
         self,

@@ -21,6 +21,8 @@ from typing import Any, Dict, Hashable, Optional, Tuple
 import numpy as np
 from scipy.stats import norm
 
+from repyability.rbd import _montecarlo as montecarlo
+
 
 class _ResultMapping(Mapping):
     """Read-only ``Mapping`` view over a dataclass's fields.
@@ -485,6 +487,12 @@ class CostResult(_ResultMapping):
         cost, so it is *not* in ``samples`` or ``mean``: the cost of owning
         the system for one window from new is
         ``acquisition_cost + mean``.
+    antithetic : bool
+        Whether the replications ran in antithetic pairs (replications
+        ``2i`` and ``2i + 1``; see ``RepairableRBD.availability``), by
+        default False. Each sample is still a correct draw of a window's
+        cost, but only the pairs are independent, so ``mean_se`` and
+        ``mean_interval`` are worked out from the pairs' means.
 
     Examples
     --------
@@ -522,6 +530,7 @@ class CostResult(_ResultMapping):
     by_category: Dict[str, float]
     by_component: Dict[Hashable, float]
     acquisition_cost: float = 0.0
+    antithetic: bool = False
 
     @property
     def mean(self) -> float:
@@ -555,13 +564,17 @@ class CostResult(_ResultMapping):
     @property
     def mean_se(self) -> float:
         """Standard error of ``mean``, ``std / sqrt(n_simulations)``: how far
-        the simulated mean is likely to be from the true expected cost.
+        the simulated mean is likely to be from the true expected cost. For
+        an antithetic run, the standard deviation of the pairs' means over
+        the square root of their number.
 
         Returns
         -------
         float
             The standard error of the mean.
         """
+        if self.antithetic:
+            return montecarlo.standard_error(self.samples, True)
         return self.std / float(np.sqrt(len(self.samples)))
 
     def mean_interval(self, confidence: float = 0.95) -> ConfidenceInterval:
@@ -845,7 +858,8 @@ class AvailabilityResult(_ResultMapping):
     ``RepairableRBD.mean_up_time()``, ``mean_down_time()`` and
     ``system_failure_frequency()`` methods. ``availability_se`` and
     ``availability_interval`` give the sampling uncertainty of the
-    availability curve.
+    availability curve, and ``mean_availability_interval`` that of the
+    mean availability over the window.
 
     Like the other result types it is also a read-only mapping of its
     fields, so dict-style access (``result["availability"]``,
@@ -892,6 +906,15 @@ class AvailabilityResult(_ResultMapping):
         Number of planned outages of the system observed across all
         simulations: changes from up to down caused by preventive
         maintenance or an inspection that takes time. 0 without either.
+    uptimes : numpy.ndarray, optional
+        The system's up time in each simulation, in order (they sum to
+        ``system_uptime``); None in a result built without them.
+    antithetic : bool
+        Whether the simulations ran in antithetic pairs (simulations ``2i``
+        and ``2i + 1``; see ``RepairableRBD.availability``), by default
+        False. ``mean_availability_interval`` then works from the pairs'
+        means; the pointwise ``availability_se`` and
+        ``availability_interval`` treat the simulations as independent.
 
     Examples
     --------
@@ -933,6 +956,61 @@ class AvailabilityResult(_ResultMapping):
     n_simulations: int
     cost: Optional[CostResult] = None
     system_planned_outages: int = 0
+    uptimes: Optional[np.ndarray] = None
+    antithetic: bool = False
+
+    def mean_availability_interval(
+        self, confidence: float = 0.95
+    ) -> ConfidenceInterval:
+        """Confidence interval for the expected availability over the window.
+
+        The estimate is the fraction of the window the system was up,
+        ``system_uptime / (n_simulations * time_simulated_to)``: the mean,
+        over the simulations, of each one's fraction up. By the central
+        limit theorem that mean is normal with standard error
+        ``std / sqrt(n)`` of the simulations' fractions (of antithetic
+        pairs' means, for an antithetic run), from which the interval
+        ``estimate +/- z * standard_error`` is built, clipped to [0, 1]. It
+        describes the simulation error, and narrows like ``1 / sqrt(n)``;
+        ``availability(tolerance=...)`` runs until it is narrow enough.
+
+        Parameters
+        ----------
+        confidence : float, optional
+            The confidence level, strictly between 0 and 1, by default 0.95.
+
+        Returns
+        -------
+        ConfidenceInterval
+            The estimate, bounds, standard error and number of simulations.
+
+        Raises
+        ------
+        ValueError
+            If ``confidence`` is not in (0, 1), or the result has no
+            per-simulation up times (one built by hand without them).
+        """
+        if not 0.0 < confidence < 1.0:
+            raise ValueError("confidence must be between 0 and 1.")
+        if self.uptimes is None:
+            raise ValueError(
+                "This result has no per-simulation up times to estimate "
+                "the interval from."
+            )
+        fractions = np.asarray(self.uptimes, dtype=float) / (
+            self.time_simulated_to
+        )
+        estimate = float(np.mean(fractions))
+        se = montecarlo.standard_error(fractions, self.antithetic)
+        z = montecarlo.z_value(confidence)
+        return ConfidenceInterval(
+            estimate=estimate,
+            lower=max(0.0, estimate - z * se),
+            upper=min(1.0, estimate + z * se),
+            confidence=confidence,
+            standard_error=se,
+            n_samples=len(fractions),
+        )
 
     @property
     def availability_se(self) -> np.ndarray:
@@ -942,7 +1020,8 @@ class AvailabilityResult(_ResultMapping):
         the ``n_simulations`` systems that were up, so its sampling standard
         error is the binomial ``sqrt(A (1 - A) / n)``. It is 0 where the
         estimate is 0 or 1; ``availability_interval`` stays informative
-        there.
+        there. It treats the simulations as independent, which antithetic
+        ones are not.
 
         Returns
         -------
