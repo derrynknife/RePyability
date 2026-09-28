@@ -58,9 +58,7 @@ unchanged.
 - surpyval#405 (zero-inflated `df(0)` is the point mass):
   `rbd/numerical_convolution.py`, `_continuous_part`.
 - surpyval#406 (no rebuild with new parameters keeping `gamma`, `p`, `f0`):
-  `rbd/_model_utils.py`, `model_extras` (used by sensitivity, uncertainty and
-  saving).
+  `rbd/_model_utils.py`, `model_extras` (used by sensitivity and
+  uncertainty).
 - surpyval#407 (zero-inflated `ff`/`sf` nonzero before time 0): no
   workaround; only a diagram's `sf(t)` at `t < 0` is affected.
-- #85: save parametric models through surpyval's `to_dict`/`from_dict`;
-  RePyability's own format duplicates it.

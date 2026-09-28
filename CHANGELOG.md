@@ -32,6 +32,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Node models are saved in surpyval's own format** (#85):
+  `{"kind": "surpyval", "model": model.to_dict()}`, loaded with
+  `surpyval.from_dict`, instead of RePyability's name-and-parameters format.
+  Everything surpyval keeps round-trips, including a fit's covariance, so
+  parameter uncertainty can still be propagated after loading. Files saved
+  by earlier versions still load, but files saved by 0.10.0 do not load in
+  earlier versions.
 - The simulated numbers of imperfect repair in the maintenance guide and the
   `Repairable` examples are quoted as approximate: surpyval's next release
   simulates recurrent events differently, so the same seed gives slightly
@@ -39,6 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Non-parametric node models can be saved** (#85): Kaplan–Meier,
+  Nelson–Aalen and the other surpyval non-parametric fits, which used to
+  raise `NotImplementedError`.
 - An `upstream` workflow runs the tests against surpyval's development
   branch on pull requests, on pushes to dev and master, and daily, so a
   surpyval change that breaks RePyability shows before surpyval releases it.

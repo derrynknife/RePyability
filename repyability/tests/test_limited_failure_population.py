@@ -403,14 +403,32 @@ def test_saving_keeps_the_extras(model):
     assert model_extras(back.reliabilities["c"]) == model_extras(model)
 
 
-def test_a_plain_model_is_saved_as_before():
-    rbd = NonRepairableRBD([("s", "c"), ("c", "t")], {"c": W([100, 2])})
+def test_models_are_saved_in_surpyval_format():
+    rbd = NonRepairableRBD([("s", "c"), ("c", "t")], {"c": BOTH})
     (entry,) = rbd.to_dict()["reliabilities"]
-    assert entry["model"] == {
-        "kind": "parametric",
-        "dist": "Weibull",
-        "params": [100.0, 2.0],
-    }
+    assert entry["model"] == {"kind": "surpyval", "model": BOTH.to_dict()}
+
+
+@pytest.mark.parametrize(
+    "extras", [{}, {"gamma": 5.0, "p": 0.9, "f0": 0.1}], ids=["plain", "all"]
+)
+def test_files_saved_before_0_10_still_load(extras):
+    saved = {"kind": "parametric", "dist": "Weibull", "params": [100.0, 2.0]}
+    if extras:
+        saved["extras"] = extras
+    rbd = NonRepairableRBD([("s", "c"), ("c", "t")], {"c": W([100, 2])})
+    data = rbd.to_dict()
+    data["reliabilities"][0]["model"] = saved
+    back = RBD.from_dict(data)
+    t = np.array([0.0, 4.0, 50.0, 1e9])
+    np.testing.assert_allclose(
+        back.sf(t),
+        NonRepairableRBD(
+            [("s", "c"), ("c", "t")], {"c": W([100, 2], **extras)}
+        ).sf(t),
+        rtol=0,
+        atol=1e-15,
+    )
 
 
 def test_sensitivity_keeps_the_extras():
