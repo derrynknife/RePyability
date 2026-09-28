@@ -16,6 +16,8 @@ import numpy as np
 from scipy.integrate import cumulative_trapezoid, trapezoid
 from scipy.signal import fftconvolve
 
+from ._model_utils import distribution_name, model_extras, never_fails
+
 
 def _scalar(value) -> float:
     """Return a plain float from a surpyval scalar/array result."""
@@ -23,25 +25,58 @@ def _scalar(value) -> float:
 
 
 def _upper_time(model, eps: float = 1e-10) -> float:
-    """A time by which ``model``'s survival has effectively reached zero.
+    """A time by which ``model``'s survival has effectively reached its
+    floor: zero, or the fraction of units that never fail.
 
-    Found by doubling from the mean until sf <= eps, so it is robust for any
-    distribution exposing sf() and mean() (it does not rely on a quantile
-    function).
+    Found by doubling from the mean until sf <= eps (above that floor), so
+    it is robust for any distribution exposing sf() and mean() (it does not
+    rely on a quantile function).
     """
+    floor = never_fails(model)
     t = max(_scalar(model.mean()), 1.0)
     for _ in range(200):
-        if _scalar(model.sf(t)) <= eps:
+        if _scalar(model.sf(t)) - floor <= eps:
             break
         t *= 2.0
     return t
 
 
+def _dead_on_arrival(model) -> float:
+    """The fraction of units dead on arrival (failed at time 0): a
+    zero-inflated surpyval model's ``f0``, and 0 for any other."""
+    if distribution_name(model) is None:
+        return 0.0
+    return float(getattr(model, "f0", 0.0) or 0.0)
+
+
+def _continuous_part(model):
+    """The model without its units dead on arrival, whose density is the
+    model's own away from 0. (surpyval's density of a zero-inflated model
+    gives the dead-on-arrival fraction itself at exactly 0.) ``None`` when
+    nothing is left: every unit is dead on arrival or never fails."""
+    f0 = _dead_on_arrival(model)
+    if f0 == 0.0:
+        return model
+    import surpyval
+
+    extras = model_extras(model)
+    del extras["f0"]
+    extras["p"] = float(getattr(model, "p", 1.0)) - f0
+    if extras["p"] <= 0.0:
+        return None
+    cls = getattr(surpyval, cast(str, distribution_name(model)))
+    return cls.from_params(list(np.ravel(model.params)), **extras)
+
+
 def _density_on_grid(model, t: np.ndarray) -> np.ndarray:
-    """The model's density on the grid, with any non-finite values (e.g. an
+    """The density of the model's continuous part on the grid (see
+    :func:`_continuous_part`), with any non-finite values (e.g. an
     infinite density at t=0 for some shapes) replaced by zero. The negligible
     mass lost is restored by the later CDF normalisation."""
-    pdf = np.asarray(model.df(t), dtype=float)
+    part = _continuous_part(model)
+    if part is None:
+        return np.zeros_like(t)
+    pdf = np.asarray(part.df(t), dtype=float)
     return np.nan_to_num(pdf, nan=0.0, posinf=0.0, neginf=0.0)
 
 
@@ -144,14 +179,20 @@ def _switching_weights(switching_probability, n) -> list:
     return weights
 
 
-def _sf_from_pdf(pdf: np.ndarray, t: np.ndarray) -> np.ndarray:
-    """Survival function on the grid from a (possibly un-normalised) density,
-    normalising away discretisation drift."""
+def _sf_from_pdf(
+    pdf: np.ndarray, t: np.ndarray, at_zero: float = 0.0, finite: float = 1.0
+) -> np.ndarray:
+    """Survival function on the grid of a lifetime that is 0 with
+    probability ``at_zero``, finite with probability ``finite`` (the rest
+    never fail) and otherwise has the (possibly un-normalised) density
+    ``pdf``, scaled to its mass ``finite - at_zero`` to normalise away
+    discretisation drift."""
     cdf = cumulative_trapezoid(pdf, t, initial=0.0)
     total = cdf[-1]
-    if total <= 0.0:
-        return np.ones_like(t)
-    return np.clip(1.0 - cdf / total, 0.0, 1.0)
+    mass = finite - at_zero
+    if total <= 0.0 or mass <= 0.0:
+        return np.full_like(t, 1.0 - at_zero)
+    return np.clip(1.0 - at_zero - cdf / total * mass, 0.0, 1.0)
 
 
 class ConvolvedSurvival:
@@ -172,6 +213,15 @@ class ConvolvedSurvival:
     at most ``eps``). The densities are evaluated on it (non-finite values
     set to 0), convolved by FFT, and each partial sum's distribution is
     normalised to total probability 1 before the mixture is formed.
+
+    A component may be a limited-failure-population or zero-inflated
+    surpyval model: a fraction ``1 - p`` of its units never fail, and a
+    fraction ``f0`` fail at 0. A sum with a unit that never fails never
+    fails, and one of units all dead on arrival is 0, so a partial sum is
+    finite with probability ``prod(p)``, 0 with probability ``prod(f0)``,
+    and continuous otherwise: the convolution carries the three parts, and
+    ``sf`` levels off at the probability that the arrangement never fails
+    (``mean`` is then infinite).
 
     Parameters
     ----------
@@ -242,31 +292,51 @@ class ConvolvedSurvival:
         dt = t[1] - t[0]
 
         # Incrementally convolve to get the density of each partial sum
-        # T_1 + ... + T_k (k = 1..n).
-        partial_pdfs = []
+        # T_1 + ... + T_k (k = 1..n), with the probabilities that it is 0
+        # (every unit dead on arrival) and finite (none never fails): the
+        # continuous part of T + T_k is the continuous parts convolved, plus
+        # each one's continuous part while the other is 0.
+        partials = []
+        at_zero = _dead_on_arrival(models[0])
+        finite = 1.0 - never_fails(models[0])
         pdf = _density_on_grid(models[0], t)
-        partial_pdfs.append(pdf)
+        partials.append((at_zero, finite, pdf))
         for model in models[1:]:
-            pdf = fftconvolve(pdf, _density_on_grid(model, t))[:n_points] * dt
-            partial_pdfs.append(pdf)
+            density = _density_on_grid(model, t)
+            zero = _dead_on_arrival(model)
+            summed = fftconvolve(pdf, density)[:n_points] * dt
+            if at_zero:
+                summed = summed + at_zero * density
+            if zero:
+                summed = summed + zero * pdf
+            pdf = summed
+            at_zero *= zero
+            finite *= 1.0 - never_fails(model)
+            partials.append((at_zero, finite, pdf))
 
         # Survival function is the weighted mixture of the partial-sum survival
         # functions (zero-weight partials are skipped, so perfect switching
         # only evaluates the full convolution).
         sf = np.zeros(n_points)
-        for weight, partial_pdf in zip(weights, partial_pdfs):
+        never = 0.0
+        for weight, (at_zero, finite, partial_pdf) in zip(weights, partials):
             if weight == 0.0:
                 continue
-            sf += weight * _sf_from_pdf(partial_pdf, t)
+            sf += weight * _sf_from_pdf(partial_pdf, t, at_zero, finite)
+            never += weight * (1.0 - finite)
 
         self._t = t
         self._sf = np.clip(sf, 0.0, 1.0)
+        #: The probability that the arrangement never fails.
+        self.never_fails = never
 
     def sf(self, x):
-        """Survival function at x (1 at/below 0, ~0 beyond the grid).
+        """Survival function at x (1 below 0, ~0 beyond the grid).
 
         Linear interpolation of the pre-computed curve: 1 for ``x`` below
-        the grid (``x < 0``) and 0 beyond its end.
+        the grid (``x < 0``) and, beyond its end, the probability that the
+        arrangement never fails (0 unless a component has units that never
+        fail).
 
         Parameters
         ----------
@@ -279,7 +349,9 @@ class ConvolvedSurvival:
             The survival probability: a numpy float for a scalar ``x``, an
             array of the same shape for an array ``x``.
         """
-        return np.interp(x, self._t, self._sf, left=1.0, right=0.0)
+        return np.interp(
+            x, self._t, self._sf, left=1.0, right=self.never_fails
+        )
 
     def ff(self, x):
         """Cumulative failure probability (CDF) at x.
@@ -299,7 +371,8 @@ class ConvolvedSurvival:
     def mean(self, *args, **kwargs) -> float:
         """Mean lifetime, E[T] = integral of the survival function.
 
-        Integrated over the grid with the trapezoidal rule.
+        Integrated over the grid with the trapezoidal rule; infinite when
+        the arrangement may never fail.
 
         Parameters
         ----------
@@ -311,4 +384,6 @@ class ConvolvedSurvival:
         float
             The mean lifetime.
         """
+        if self.never_fails > 0.0:
+            return float("inf")
         return float(trapezoid(self._sf, self._t))

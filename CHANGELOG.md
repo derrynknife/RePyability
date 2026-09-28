@@ -509,6 +509,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   removed in a future release.
 
 ### Fixed
+- **Limited-failure-population and zero-inflated node models.** A surpyval
+  model with `p < 1` (a fraction `1 - p` of units never fail) or `f0 > 0` (a
+  fraction dead on arrival) was mishandled in several places:
+  - every simulation crashed on a limited-failure-population model
+    (`NonRepairableRBD.random`/`mean`, `RepairableRBD.availability`/`cost`,
+    and the standby, repeated and load-sharing nodes' own draws), because
+    surpyval's `random` returns survival data for it, not lifetimes. Its
+    lifetimes (and a zero-inflated model's) are now drawn by its quantile
+    function, one uniform each: infinite for a unit that never fails, 0 for
+    one dead on arrival. They are drawn in blocks like any parametric
+    model's, so they also support antithetic pairs and `compare`;
+  - `NonRepairable.mean_availability` and `failure_frequency`, and through
+    them `RepairableRBD`'s long-run values, used surpyval's *defective*
+    mean (0.9 of the failing units' mean, for `p = 0.9`) as the MTTF: a
+    unit that may never fail got an availability of 0.988 instead of 1 (it
+    ends up with a replacement that never fails) and a failure frequency of
+    0.012 instead of 0. With replacements that may never finish too, the
+    availability is now the probability of ending up for good;
+  - `node_mttf` reported the defective mean (79.8 for a Weibull(100, 2)
+    with `p = 0.9`) instead of an infinite MTTF;
+  - a cold-standby arrangement of such units (`StandbyModel`,
+    `RepeatedStandbyNode`) had `sf = 1.0` everywhere: the numerical
+    convolution's grid search never ended, as the survival never falls
+    below `1 - p`. The convolution now carries each unit's mass at 0 and at
+    infinity. Identical exponential units with an offset, `p` or `f0` no
+    longer take the plain exponentials' closed form either (whose rate,
+    `1 / mean`, was wrong for them);
+  - warm standby of such units produced NaN lifetimes (`inf - inf`);
+  - saving a diagram dropped the offset, `p` and `f0` (the model reloaded as
+    a plain one), and parameter sensitivity rebuilt the model without them.
+
+  Seeded simulations of zero-inflated models draw different (equally
+  valid) numbers than before. Tests (37) hold the draws to the fractions
+  that never fail or are dead on arrival, cold-standby sums of such
+  exponentials to their closed forms (with imperfect switching too), the
+  never-failing probabilities of warm, k-out-of-n and repeated nodes, a
+  repaired unit's geometric number of failures and its absorption
+  probabilities, and saving and sensitivity to the models themselves.
 - **A repeated node could change a diagram's logic.** `NonRepairableRBD`
   joined a repeated node (one component drawn in several places) into the
   node it repeats, redirecting its edges. That can add paths the diagram does

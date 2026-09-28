@@ -10,7 +10,9 @@ from repyability.rbd._model_utils import (
     distribution_name,
     is_exponential,
     model_mean,
+    never_fails,
 )
+from repyability.rbd._sampling import draw
 from repyability.rbd.standby_node import StandbyModel
 
 FAILURE = 1
@@ -345,6 +347,15 @@ class NonRepairable:
         estimate drawn from numpy's global RNG, so it varies slightly
         between calls.
 
+        If some units never fail (a limited-failure-population model,
+        ``p < 1``), sooner or later a replacement is one of them, and the
+        unit is then up for good: the long-run availability is 1. Likewise,
+        if some replacements never finish, the unit ends down for good.
+        With both, it ends up for good with probability
+        ``u / (u + (1 - u) * d)``, for ``u`` the fraction of units that
+        never fail and ``d`` the fraction of replacements that never finish,
+        and that is its long-run availability.
+
         Returns
         -------
         float
@@ -367,14 +378,35 @@ class NonRepairable:
         ... )
         >>> round(unit.mean_availability(), 4)
         0.9804
+
+        One in ten units never fails, so in the long run the unit is up:
+
+        >>> cured = NonRepairable(
+        ...     surv.Exponential.from_params([0.01], p=0.9),
+        ...     surv.Exponential.from_params([0.5]),
+        ... )
+        >>> cured.mean_availability(), cured.failure_frequency()
+        (1.0, 0.0)
         """
         if isinstance(self.reliability, NonParametric):
             raise ValueError(
                 "Mean Availability requires a parametric reliability model"
             )
+        return self._long_run()[0]
+
+    def _long_run(self) -> tuple:
+        """The long-run availability and failure frequency (see
+        ``mean_availability`` and ``failure_frequency``)."""
+        up_for_good = never_fails(self.reliability)
+        down_for_good = never_fails(self.time_to_replace)
+        if up_for_good or down_for_good:
+            # Each cycle ends up for good, down for good, or in another
+            # cycle: after finitely many failures the unit stays put.
+            fails = 1.0 - up_for_good
+            return up_for_good / (up_for_good + fails * down_for_good), 0.0
         mttf = model_mean(self.reliability)
         mttr = model_mean(self.time_to_replace)
-        return mttf / (mttr + mttf)
+        return mttf / (mttr + mttf), 1.0 / (mttf + mttr)
 
     def failure_frequency(self) -> float:
         """Long-run failure frequency (failures per unit time).
@@ -382,7 +414,9 @@ class NonRepairable:
         For an alternating renewal process (fail, replace, fail, ...) this
         is ``1 / (MTTF + MTTR)``: one failure per mean up-down cycle, with
         ``MTTF`` the mean of ``reliability`` and ``MTTR`` the mean of
-        ``time_to_replace``.
+        ``time_to_replace``. It is 0 if some units never fail or some
+        replacements never finish: the unit then fails only finitely often
+        (see ``mean_availability``).
 
         Returns
         -------
@@ -411,9 +445,7 @@ class NonRepairable:
             raise ValueError(
                 "Failure frequency requires a parametric reliability model"
             )
-        mttf = model_mean(self.reliability)
-        mttr = model_mean(self.time_to_replace)
-        return 1.0 / (mttf + mttr)
+        return self._long_run()[1]
 
     def _cost_rate_with_log_x(self, x):
         return self._cost_rate(np.exp(x))
@@ -717,7 +749,7 @@ class NonRepairable:
         """
         if self.__next_event_type == FAILURE:
             self.__next_event_type = REPLACE
-            return self.reliability.random(1).item(), False
+            return draw(self.reliability, 1).item(), False
         elif self.__next_event_type == REPLACE:
             self.__next_event_type = FAILURE
-            return self.time_to_replace.random(1).item(), True
+            return draw(self.time_to_replace, 1).item(), True

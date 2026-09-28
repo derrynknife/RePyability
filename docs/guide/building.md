@@ -54,6 +54,24 @@ A node model is anything that exposes `sf(t)` and `ff(t)`:
 | [`RegressionNode`][repyability.RegressionNode] | A component whose life depends on its operating conditions (see [Condition-based evaluation](condition-based.md#covariate-dependent-components)). |
 | Another `NonRepairableRBD` | A subsystem, nested as a single node. |
 
+A surpyval parametric model can carry an offset (`gamma`), a limited
+failure population (`p < 1`: a fraction `1 - p` of the units never fail) or
+zero inflation (`f0 > 0`: a fraction dead on arrival). Every calculation
+honours them. Simulations draw an infinite lifetime for a unit that never
+fails and 0 for one dead on arrival, so a system that can outlast its failing
+units has an infinite MTTF, as has the node itself:
+
+```python
+cured = surv.Weibull.from_params([100, 2], p=0.9)   # one unit in ten never fails
+one = NonRepairableRBD([("s", "c"), ("c", "t")], {"c": cured})
+one.sf(1e6)             # -> 0.1   the units that never fail
+one.node_mttf()["c"]    # inf
+```
+
+(surpyval's own `mean()` of such a model is the *defective* mean, its
+failing units' mean weighted by their fraction: RePyability never uses it as
+a lifetime.)
+
 ## k-out-of-n nodes
 
 A node with `k` greater than 1 works only while at least `k` of its incoming

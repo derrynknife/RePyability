@@ -318,10 +318,27 @@ def test_inverse_sampler_reproduces_surpyval(name):
 
 @pytest.mark.parametrize(
     "model",
+    [W([100, 2], p=0.9), W([100, 2], f0=0.1), W([100, 2], p=0.9, f0=0.1)],
+    ids=["lfp", "zi", "both"],
+)
+def test_inverse_sampler_draws_defective_models_by_their_quantiles(model):
+    # surpyval's own random returns survival data for these models, so
+    # every path draws their lifetimes by the quantile function instead,
+    # one global uniform each: the batched sampler and single draws agree.
+    sampler = _sampling.inverse_sampler(model)
+    assert sampler is not None
+    np.random.seed(3)
+    expected = np.concatenate([_sampling.draw(model, 1) for _ in range(50)])
+    after_single_draws = rng_state()
+    np.random.seed(3)
+    assert np.array_equal(sampler(np.random.random_sample(50)), expected)
+    assert_same_rng_state(rng_state(), after_single_draws)
+
+
+@pytest.mark.parametrize(
+    "model",
     [
         FixedEventProbability.from_params(0.1),
-        W([100, 2], p=0.9),  # limited failure population
-        W([100, 2], f0=0.1),  # zero-inflated
         surv.KaplanMeier.fit(np.array([1.0, 2.0, 3.0, 4.0])),
         StandbyModel([W([100, 2])] * 2, k=1),
         PerfectReliability,
@@ -379,12 +396,29 @@ def test_random_mean_and_interval_use_the_fast_path_unchanged(monkeypatch):
     assert_same(rbd.mean_time_to_failure_interval(3000, seed=9), fast_interval)
 
 
+class BinomialFirst(surv.Parametric):
+    """A Weibull life whose ``random`` draws a binomial count before the
+    lifetimes (as surpyval's zero-inflated models once did): no block of
+    uniforms replays that, so the simulations draw from it one call at a
+    time."""
+
+    def random(self, size):
+        np.random.binomial(1, 0.5)
+        return surv.Parametric.random(self, size)
+
+
+def binomial_first(params):
+    model = W(params)
+    model.__class__ = BinomialFirst
+    return model
+
+
 def test_random_falls_back_for_nodes_it_cannot_reproduce():
-    # A zero-inflated model draws through np.random.binomial, which cannot be
-    # replayed from a block of uniforms.
+    # A model that draws through np.random.binomial cannot be replayed from
+    # a block of uniforms.
     rbd = NonRepairableRBD(
         [("s", "a"), ("a", "z"), ("z", "t")],
-        {"a": W([900, 1.4]), "z": W([300, 2.0], f0=0.05)},
+        {"a": W([900, 1.4]), "z": binomial_first([300, 2.0])},
     )
     np.random.seed(10)
     before = rng_state()
@@ -482,25 +516,32 @@ class FixedDraws:
         return self.values[:size]
 
 
-def test_warm_standby_with_infinite_budgets_uses_the_per_sample_loop(
+def test_warm_standby_plays_infinite_budgets_out_sample_by_sample(
     monkeypatch,
 ):
+    # A unit that never fails has an infinite budget: its samples go through
+    # the per-sample loop, the rest all at once, with the same results.
     model = StandbyModel(
         [W([100, 2.0])] * 3, k=1, dormancy_factor=0.3, n_sims=10, seed=0
     )
     budgets = budgets_with_ties(20, 3)
     budgets[3, 1] = np.inf
     model.reliabilities = [FixedDraws(column) for column in budgets.T]
-    monkeypatch.setattr(
-        StandbyModel,
-        "_warm_lifetimes",
-        lambda self, b: pytest.fail(
-            "the vectorised loop needs finite budgets"
-        ),
-    )
+    vectorised = StandbyModel._warm_lifetimes
+    rows = []
+
+    def finite_only(self, b):
+        assert np.all(
+            np.isfinite(b)
+        ), "the vectorised loop needs finite budgets"
+        rows.append(len(b))
+        return vectorised(self, b)
+
+    monkeypatch.setattr(StandbyModel, "_warm_lifetimes", finite_only)
     assert np.array_equal(
         model._random_warm(20), model._warm_lifetimes_by_sample(budgets)
     )
+    assert rows == [19]
 
 
 @pytest.fixture(scope="module")
@@ -917,9 +958,9 @@ def test_forcing_a_nested_rbd_is_identical(name, forced, monkeypatch):
 
 
 def test_nested_rbd_that_cannot_be_streamed_falls_back_entirely(monkeypatch):
-    # A zero-inflated model draws through np.random.binomial, which the
-    # stream cannot reproduce. Streaming the other components' draws would
-    # change their order, so nothing is streamed.
+    # A model that draws through np.random.binomial cannot be reproduced by
+    # the stream. Streaming the other components' draws would change their
+    # order, so nothing is streamed.
     rbd = RepairableRBD(
         [("s", "a"), ("a", "sub"), ("sub", "t")],
         {
@@ -927,7 +968,7 @@ def test_nested_rbd_that_cannot_be_streamed_falls_back_entirely(monkeypatch):
                 "reliability": W([70, 1.5]),
                 "repairability": surv.Exponential.from_params([0.8]),
             },
-            "sub": repairable_pair(40, W([40, 2], f0=0.1)),
+            "sub": repairable_pair(40, binomial_first([40, 2])),
         },
     )
     assert rbd._streamed_components(_sampling.UniformStream()) is None
@@ -938,8 +979,8 @@ def test_nested_rbd_that_cannot_be_streamed_falls_back_entirely(monkeypatch):
 
 
 def test_a_maintenance_time_that_cannot_be_streamed_falls_back(monkeypatch):
-    # A zero-inflated maintenance time draws through np.random.binomial, so
-    # nothing is streamed; the one-draw simulation still runs.
+    # A maintenance time drawn through np.random.binomial cannot be
+    # streamed, so nothing is; the one-draw simulation still runs.
     rbd = RepairableRBD(
         [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
         {
@@ -948,7 +989,7 @@ def test_a_maintenance_time_that_cannot_be_streamed_falls_back(monkeypatch):
                 "repairability": surv.Exponential.from_params([0.8]),
                 "preventive": {
                     "interval": 30.0,
-                    "duration": W([2, 1.5], f0=0.2),
+                    "duration": binomial_first([2, 1.5]),
                     "cost": 5.0,
                 },
             }

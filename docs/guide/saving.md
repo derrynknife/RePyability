@@ -33,10 +33,11 @@ What is saved:
   distributions and acquisition costs, preventive and inspection schedules,
   `"instant"` repairs and `NonRepairable` components;
 - the node models: surpyval parametric distributions and
-  `FixedEventProbability` by name and parameters, `PerfectReliability` and
-  `PerfectUnreliability`, and the standby, repeated, repeated-standby,
-  load-sharing, regression and `NonRepairable` wrappers recursively (a
-  regression model through `surpyval.from_dict`).
+  `FixedEventProbability` by name and parameters (with any offset,
+  limited-failure-population or zero-inflation parameter),
+  `PerfectReliability` and `PerfectUnreliability`, and the standby, repeated,
+  repeated-standby, load-sharing, regression and `NonRepairable` wrappers
+  recursively (a regression model through `surpyval.from_dict`).
 
 String, integer and tuple node names all survive JSON (JSON turns a tuple
 into a list, and loading turns it back). Loading with the wrong class
