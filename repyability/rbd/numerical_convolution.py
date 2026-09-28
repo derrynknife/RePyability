@@ -16,7 +16,12 @@ import numpy as np
 from scipy.integrate import cumulative_trapezoid, trapezoid
 from scipy.signal import fftconvolve
 
-from ._model_utils import distribution_name, model_extras, never_fails
+from ._model_utils import (
+    distribution_name,
+    failure_time_scale,
+    model_extras,
+    never_fails,
+)
 
 
 def _scalar(value) -> float:
@@ -28,12 +33,14 @@ def _upper_time(model, eps: float = 1e-10) -> float:
     """A time by which ``model``'s survival has effectively reached its
     floor: zero, or the fraction of units that never fail.
 
-    Found by doubling from the mean until sf <= eps (above that floor), so
-    it is robust for any distribution exposing sf() and mean() (it does not
-    rely on a quantile function).
+    Found by doubling from a typical failure time (the mean lifetime, or
+    that of the units that fail when some never do) until sf <= eps above
+    that floor, so it is robust for any distribution exposing sf() and
+    mean() (it does not rely on a quantile function).
     """
     floor = never_fails(model)
-    t = max(_scalar(model.mean()), 1.0)
+    scale = failure_time_scale(model)
+    t = max(scale, 1.0) if np.isfinite(scale) else 1.0
     for _ in range(200):
         if _scalar(model.sf(t)) - floor <= eps:
             break

@@ -58,7 +58,21 @@ coverage report                # enforces the coverage fail_under gate
 
 ## Releases (maintainers)
 
-Versioning follows [SemVer](https://semver.org/). To release: bump
-`repyability/_version.py`, update `CHANGELOG.md`, tag the commit
-(`git tag vX.Y.Z && git push --tags`), and publish a GitHub Release — the
-`release` workflow builds and publishes to PyPI via trusted publishing.
+Versioning follows [SemVer](https://semver.org/). To release:
+
+1. On a branch, bump `repyability/_version.py` and roll the `CHANGELOG.md`
+   `[Unreleased]` section into a dated `## [X.Y.Z] - YYYY-MM-DD` section. Its
+   opening paragraphs become the summary at the top of the release notes.
+   Update any version shown in the docs, then merge to `dev`, and `dev` to
+   `master`.
+2. Once CI has passed on master, run the `release` workflow on master with
+   the version: Actions → release → Run workflow, or
+   `gh workflow run release.yml --ref master -f version=X.Y.Z`. Add
+   `-f dry_run=true` to check and build without publishing. The workflow
+   checks the version, the CHANGELOG section, that the tag is new, that CI
+   passed and that PyPI does not have the version. Then it builds, publishes
+   to PyPI via trusted publishing, and creates the tag `vX.Y.Z` and a GitHub
+   Release.
+
+Publishing a GitHub Release by hand for a new tag also works: the workflow
+then builds that tag and publishes it to PyPI.

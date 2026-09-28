@@ -76,6 +76,19 @@ def is_exponential(model) -> bool:
     )
 
 
+def shaped(function, x, *args, **kwargs):
+    """``function`` (a model's ``sf``, ``ff``, ...) at the times ``x``, in
+    the shape of ``x``: a numpy float for a single time.
+
+    It is evaluated at ``x`` flattened and reshaped, because surpyval 0.20's
+    non-parametric estimates give a 1-element array for a single time and
+    spread a 2-D query into the wrong shape (surpyval#381, fixed on its
+    ``develop``: every model returns the shape it is given).
+    """
+    values = function(np.ravel(x), *args, **kwargs)
+    return np.asarray(values, dtype=float).reshape(np.shape(x))[()]
+
+
 def model_mean(model) -> float:
     """The model's mean as a plain float.
 
@@ -94,6 +107,31 @@ def model_mean(model) -> float:
         if distribution_name(model) == "ExactEventTime":
             return float(np.atleast_1d(model.params)[0])
         raise
+
+
+def failure_time_scale(model) -> float:
+    """A typical failure time of ``model``, to size grids and searches by.
+
+    Its mean lifetime; or, when some of its units never fail (so that mean
+    is infinite), the mean lifetime of the units that do fail: the same
+    distribution with its offset but without ``p`` and ``f0``. NaN when
+    neither is finite. (surpyval's ``mean()`` of a limited-failure-population
+    model was the defective mean before surpyval#404 and is infinite since,
+    so it is not used for that.)
+    """
+    mean = model_mean(model)
+    if np.isfinite(mean):
+        return mean
+    if never_fails(model) > 0.0:
+        import surpyval
+
+        offset = {k: v for k, v in model_extras(model).items() if k == "gamma"}
+        cls = getattr(surpyval, str(distribution_name(model)))
+        failing = cls.from_params(list(np.ravel(model.params)), **offset)
+        mean = float(np.atleast_1d(failing.mean())[0])
+        if np.isfinite(mean):
+            return mean
+    return float("nan")
 
 
 def parametric_spec(model):

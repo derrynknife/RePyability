@@ -193,27 +193,30 @@ replaced preventively in about 7 h, alone or with a standby, with lost
 production at 500 per hour:
 
 ```python
-def pump(interval):
+def pump(interval, policy="age"):
     return {
         "reliability": surv.Weibull.from_params([1000, 2.5]),        # MTTF 887 h
         "repairability": surv.LogNormal.from_params([3.0, 0.5]),     # 23 h
         "replace_cost": 5000.0,
         "preventive": {
             "interval": interval,
+            "policy": policy,
             "duration": surv.Weibull.from_params([8, 3]),            # 7 h
             "cost": 1000.0,
         },
     }
 
-def alone(interval):
+def alone(interval, policy="age"):
     return RepairableRBD(
-        [("s", "p"), ("p", "t")], {"p": pump(interval)}, downtime_cost_rate=500.0
+        [("s", "p"), ("p", "t")],
+        {"p": pump(interval, policy)},
+        downtime_cost_rate=500.0,
     )
 
-def with_standby(interval):
+def with_standby(interval, policy="age"):
     return RepairableRBD(
         [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
-        {"a": pump(interval), "b": pump(interval)},
+        {"a": pump(interval, policy), "b": pump(interval, policy)},
         downtime_cost_rate=500.0,
     )
 
@@ -233,7 +236,39 @@ planned stops cost production, so it is best replaced less often, at about
 580 h; replacing a pump with a standby costs almost no production, so the
 pair is best replaced at about 500 h. Judged on its own, as `NonRepairable`
 judges it (`cp=1000`, `cu=5000`), the pump is best replaced at 493 h.
-Sweeping the interval like this is the way to choose one.
+
+### Choosing the intervals
+
+`optimal_replacement_intervals` finds the best interval of every component
+under age replacement at once, from the exact long-run values, rather than
+sweeping them one at a time. The components are chosen together: the one
+alone in the line is replaced later than the ones with a standby, because
+its own replacements stop the plant:
+
+```python
+alone(1000).optimal_replacement_intervals().intervals["p"]   # -> 589.6
+plan = with_standby(1000).optimal_replacement_intervals()
+plan.intervals["a"]     # -> 497.1   and the same for "b"
+plan.cost_rate          # -> 6.985
+```
+
+It can also keep the system's long-run availability to a target at the least
+cost (`min_availability`), or give the most availability within a cost rate
+(`max_cost_rate`):
+
+```python
+plan = alone(1000).optimal_replacement_intervals(min_availability=0.9807)
+plan.intervals["p"]     # -> 604.8   a little later than the cheapest
+plan.cost_rate          # -> 13.139  against 13.134
+```
+
+It returns a [`MaintenancePlan`][repyability.MaintenancePlan]: the intervals
+(`inf` for a component better never replaced), and the system's cost rate
+and availability with them. The search starts from the intervals given, and
+from others around each component's mean life, and keeps the best; a target
+no intervals can meet raises `ValueError`, with the best they can do. The
+cost rate is usually flat near its minimum, so an interval some way from the
+one found costs almost the same.
 
 `expected_cost_rate` prices an age-replaced component through its renewal
 cycle: it ends at a failure or a preventive replacement, whichever comes
@@ -248,8 +283,30 @@ cost rate = … + Σ R_i(T_i) / C_i · preventive cost_i     preventive actions
 With instant repair and maintenance a component's own cost rate is
 `NonRepairable.cost_rate(T)`. `mean_availability`, `node_availability`, the
 frequencies, MUT, MDT and the importance measures account for it the same
-way. Block replacement has no exact long-run values (those methods raise
-`NotImplementedError`): simulate it.
+way.
+
+Under block replacement the renewals are the block times at which the unit is
+up: it is replaced there, and a replacement due while it is down is skipped.
+Between two of them it fails and is repaired as usual, and a repair can run
+over a block time. `expected_cost_rate` and the other long-run methods compute
+its mean up time, failures and length between renewals numerically, from the
+renewal equations of its lives and repairs within an interval, to about one
+part in a million. With instant repair and replacement the cost rate is
+`(c_p + c_u · M(T)) / T`, `M` the renewal function of the lives. Components
+replaced at the same block times go down together, so the system's long-run
+values average over the block interval (over the time the schedules take to
+repeat together, for different intervals), rather than combining each
+component's own average:
+
+```python
+alone(580, "block").expected_cost_rate()          # -> 14.06   against 13.14 for age
+with_standby(580, "block").mean_availability()    # -> 0.9901  both replaced at once
+with_standby(580).mean_availability()             # -> 0.9996
+```
+
+The exact block-replacement values need a surpyval parametric lifetime with a
+density (no units dead on arrival), and repairs that always end; otherwise
+they raise `NotImplementedError`, and the simulation still applies.
 
 The simulation prices both policies. A replacement's cost is in
 `by_category["preventive"]`, and a planned outage counts as downtime, but not
@@ -384,6 +441,48 @@ pump(283.0).expected_cost_rate()     # -> 14.08   near √(2 × 2000 / (1e-4 × 
 pump(1000.0).expected_cost_rate()    # -> 26.19   failures hidden too long
 ```
 
+`optimal_inspection_intervals` finds it, and with a target, the cheapest
+intervals that meet it. Tests are made on a calendar, and components tested
+at the same times are down together, so with several components the
+intervals are chosen from those allowed (`allowed`): every combination when
+there are at most 2000, a local search otherwise. With one inspected
+component, any interval can be chosen:
+
+```python
+pump(100.0).optimal_inspection_intervals().intervals["p"]   # -> 285.5   the formula gives 283
+```
+
+For a safety function, `min_availability=1 - PFDavg target` gives the
+cheapest tests that meet the target. With the valves above, each test costing
+500, and tests monthly, quarterly, half-yearly, yearly or every two years:
+
+```python
+def priced_valve():
+    return {
+        "reliability": surv.Exponential.from_params([2e-6]),
+        "repairability": "instant",
+        "inspection": {"interval": 8760.0, "cost": 500.0},
+    }
+
+calendar = [730.0, 2190.0, 4380.0, 8760.0, 17520.0]   # hours
+single = RepairableRBD([("s", "v"), ("v", "t")], {"v": priced_valve()})
+single.optimal_inspection_intervals(
+    allowed=calendar, min_availability=1 - 1e-3
+).intervals["v"]                                        # -> 730.0   monthly
+redundant = RepairableRBD(
+    [("s", "v1"), ("s", "v2"), ("v1", "t"), ("v2", "t")],
+    {"v1": priced_valve(), "v2": priced_valve()},
+)
+redundant.optimal_inspection_intervals(
+    allowed=calendar, min_availability=1 - 1e-3
+).intervals["v1"]                                       # -> 17520.0 every two years
+```
+
+Redundancy relaxes the tests: one valve needs them monthly to keep the
+PFDavg at most `10⁻³`, two in parallel every two years. The result is a
+[`MaintenancePlan`][repyability.MaintenancePlan], as for
+[age-replacement intervals](#choosing-the-intervals).
+
 ## The total cost of ownership
 
 The costs so far are running costs. Buying the system is a one-off cost:
@@ -475,8 +574,8 @@ The model and its limits: copies are active and repaired independently of
 each other (as many repair crews as failed copies), with no common-cause
 failures between them (see [Common-cause failures](common-cause.md)).
 Copies of a component with hidden failures are inspected together. A nested
-`RepairableRBD` cannot be given copies. Components under block replacement
-have no exact long-run cost and raise `NotImplementedError`. Costs are not
+`RepairableRBD` cannot be given copies. Copies of a component under block
+replacement are replaced together, at the same block times. Costs are not
 discounted. For non-repairable systems, redundancy allocation within a
 budget or to a reliability target is in
 [Design and allocation](design.md#redundancy-allocation).

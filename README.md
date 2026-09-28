@@ -29,12 +29,14 @@ taking already-fitted lifetime models (from
 - **Simulation**: seeded Monte-Carlo run to a tolerance, antithetic pairs,
   parallel runs, and comparisons of designs with common random numbers.
 - **Cost, design and maintenance**: exact and simulated running costs,
-  including scheduled (age or block) preventive replacement at system level
-  and hidden failures found by periodic inspection, the total cost of
-  ownership, optimal redundancy allocation (for the lowest total cost of a
-  repairable system, too), reliability allocation by the classic named
-  methods (equal and ARINC-style apportionment, minimum effort, cost-based),
-  and age-replacement and overhaul policies.
+  including scheduled (age or block) preventive replacement at system level,
+  with its intervals chosen for a cost or availability target, hidden
+  failures found by periodic inspection, with the test intervals chosen for a
+  PFDavg target, the total cost of ownership, optimal redundancy allocation
+  (for the lowest total cost of a repairable system, too), reliability
+  allocation by the classic named methods (equal and ARINC-style
+  apportionment, minimum effort, cost-based), availability allocation to
+  MTTF and MTTR targets, and age-replacement and overhaul policies.
 
 ```python
 import surpyval as surv

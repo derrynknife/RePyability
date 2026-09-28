@@ -25,11 +25,13 @@ from repyability.rbd.repairable_rbd import RepairableRBD
 from repyability.rbd.repeated_node import RepeatedNode
 from repyability.rbd.repeated_standby_node import RepeatedStandbyNode
 from repyability.rbd.results import (
+    AvailabilityAllocation,
     AvailabilityResult,
     ConfidenceInterval,
     CostResult,
     Criticalities,
     FailureCriticalityIndex,
+    MaintenancePlan,
     RedundancyAllocation,
     ReliabilityRedundancyAllocation,
     RestorationCriticalityIndex,
@@ -81,4 +83,6 @@ __all__ = [
     "RestorationCriticalityIndex",
     "MaintenancePolicy",
     "FailureLimitPolicy",
+    "MaintenancePlan",
+    "AvailabilityAllocation",
 ]

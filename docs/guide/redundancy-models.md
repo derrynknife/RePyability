@@ -40,8 +40,8 @@ warm = StandbyModel([pump, pump], dormancy_factor=0.3, seed=0)
 hot = StandbyModel([pump, pump], dormancy_factor=1.0, seed=0)
 
 cold.sf(150)      # -> 0.6342   the spare only starts ageing when switched in
-warm.sf(150)[0]   # -> 0.4735   the spare ages at 30% of the rate while dormant
-hot.sf(150)[0]    # -> 0.2006   the same as two units in parallel (0.1997)
+warm.sf(150)      # -> 0.4735   the spare ages at 30% of the rate while dormant
+hot.sf(150)       # -> 0.2006   the same as two units in parallel (0.1997)
 ```
 
 - **Cold** (`0`, the default): a dormant spare does not age. With `k = 1`,
@@ -56,7 +56,7 @@ hot.sf(150)[0]    # -> 0.2006   the same as two units in parallel (0.1997)
 
 ```python
 two_of_three = StandbyModel([pump, pump, pump], k=2, n_sims=20_000, seed=0)
-two_of_three.sf(100)[0]   # -> 0.512
+two_of_three.sf(100)   # -> 0.512
 ```
 
 ### Imperfect switching

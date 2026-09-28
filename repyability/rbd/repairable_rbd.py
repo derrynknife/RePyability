@@ -8,6 +8,7 @@ restoration criticality index ratios.
 """
 
 import heapq
+import itertools
 import math
 import pprint
 import warnings
@@ -33,12 +34,15 @@ from typing import (
 )
 
 import numpy as np
+from scipy.optimize import OptimizeResult, brentq, minimize
+from scipy.special import expit, logit, logsumexp, softmax
 from surpyval import ExactEventTime
 from tqdm import tqdm
 
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import _montecarlo as montecarlo
-from repyability.rbd._model_utils import model_mean
+from repyability.rbd._block_replacement import BlockCycle, block_cycle
+from repyability.rbd._model_utils import failure_time_scale, model_mean
 from repyability.rbd._sampling import UniformStream, draw, inverse_sampler
 from repyability.rbd.rbd import RBD, _check_on_infeasible_rbd
 from repyability.rbd.redundancy_allocation import (
@@ -46,11 +50,13 @@ from repyability.rbd.redundancy_allocation import (
     redundancy_caps,
 )
 from repyability.rbd.results import (
+    AvailabilityAllocation,
     AvailabilityResult,
     ConfidenceInterval,
     CostResult,
     Criticalities,
     FailureCriticalityIndex,
+    MaintenancePlan,
     RestorationCriticalityIndex,
     TotalCostAllocation,
     UpDownImportance,
@@ -483,6 +489,222 @@ def _horizon(horizon) -> float:
             f"horizon must be a finite, non-negative number, got {horizon!r}."
         )
     return value
+
+
+def _objective(cost: float, availability: float, max_cost_rate) -> float:
+    """What an interval choice minimises: the cost rate, or the
+    unavailability when the cost rate is capped."""
+    return 1.0 - availability if max_cost_rate is not None else cost
+
+
+def _meets(cost, availability, min_availability, max_cost_rate) -> bool:
+    """Whether long-run values meet an interval choice's target."""
+    if min_availability is not None and availability < min_availability:
+        return False
+    if max_cost_rate is not None and cost > max_cost_rate:
+        return False
+    return True
+
+
+def _allocation_target(target) -> float:
+    """An availability allocation's target, checked to be in [0, 1]."""
+    value = _as_float(target)
+    if not 0.0 <= value <= 1.0:
+        raise ValueError(f"target must be a number in [0, 1], got {target!r}.")
+    return value
+
+
+def _as_float(value) -> float:
+    """``value`` as a float, or NaN if it is not a number."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float("nan")
+
+
+def _choose_intervals(
+    nodes: list,
+    evaluate,
+    starts: list,
+    bounds: Tuple[np.ndarray, np.ndarray],
+    min_availability: Optional[float],
+    max_cost_rate: Optional[float],
+) -> dict:
+    """The intervals (by node) that minimise the cost rate, or, with a cost
+    cap, the unavailability, subject to the target: SLSQP over the
+    logarithms of the intervals from each of ``starts``, keeping the best
+    that meets the target. ``evaluate(intervals)`` gives their exact
+    ``(cost rate, availability)``. A ValueError if no intervals in
+    ``bounds`` meet the target, giving the best they can do."""
+    low, high = bounds
+    box = list(zip(low, high))
+    options = {"ftol": 1e-10, "maxiter": 200, "eps": 1e-6}
+    cache: dict = {}
+
+    def point(x) -> tuple:
+        """``x`` rounded: the intervals evaluated, and returned."""
+        return tuple(np.round(np.asarray(x, dtype=float), 12))
+
+    def values(x) -> Tuple[float, float]:
+        key = point(x)
+        if key not in cache:
+            cache[key] = evaluate(
+                {node: math.exp(xi) for node, xi in zip(nodes, key)}
+            )
+        return cache[key]
+
+    # The objective and the constraint, scaled to be about 1.
+    cost0, availability0 = values(high)
+    down0 = max(1.0 - availability0, 1e-300)
+    rate0 = max(abs(cost0), 1e-300)
+
+    def unavailable(x):
+        return (1.0 - values(x)[1]) / down0
+
+    def cost(x):
+        return values(x)[0] / rate0
+
+    if max_cost_rate is not None:
+        objective = unavailable
+
+        def slack(x):
+            return (max_cost_rate * (1.0 - 1e-12) - values(x)[0]) / (
+                max_cost_rate
+            )
+
+    else:
+        objective = cost
+
+        def slack(x):
+            return (values(x)[1] - min_availability - 1e-12) / (
+                1.0 - min_availability
+            )
+
+    constrained = min_availability is not None or max_cost_rate is not None
+    if constrained and not any(
+        _meets(*values(start), min_availability, max_cost_rate)
+        for start in starts
+    ):
+        # Can the target be met at all? The most available intervals, or
+        # the cheapest, from the starts nearest to it first.
+        extreme = unavailable if min_availability is not None else cost
+        found = []
+        for start in sorted(starts, key=extreme):
+            reach = minimize(
+                extreme, start, method="SLSQP", bounds=box, options=options
+            ).x
+            found.append(reach)
+            if _meets(*values(reach), min_availability, max_cost_rate):
+                break
+        else:
+            best_cost, best_availability = values(
+                min(found + list(starts), key=extreme)
+            )
+            if min_availability is not None:
+                raise ValueError(
+                    f"min_availability {min_availability} cannot be met: the "
+                    f"most any intervals give is {best_availability:.6g}."
+                )
+            raise ValueError(
+                f"max_cost_rate {max_cost_rate} cannot be met: the least any "
+                f"intervals cost is {best_cost:.6g} per unit time."
+            )
+        starts = [reach] + list(starts)
+    best, best_value = None, math.inf
+    for start in starts:
+        found = minimize(
+            objective,
+            start,
+            method="SLSQP",
+            bounds=box,
+            constraints=(
+                [{"type": "ineq", "fun": slack}] if constrained else []
+            ),
+            options=options,
+        )
+        for x in (found.x, start):
+            rate, availability = values(x)
+            if not _meets(rate, availability, min_availability, max_cost_rate):
+                continue
+            value = _objective(rate, availability, max_cost_rate)
+            if value < best_value:
+                best, best_value = np.asarray(x, dtype=float), value
+    assert best is not None  # the start that meets the target is kept
+    return {node: math.exp(xi) for node, xi in zip(nodes, point(best))}
+
+
+#: Allowed intervals are chosen by trying every combination, up to this many;
+#: by a local search beyond.
+_MAX_COMBINATIONS = 2000
+
+
+def _choose_from(
+    nodes: list,
+    options: dict,
+    evaluate,
+    min_availability: Optional[float],
+    max_cost_rate: Optional[float],
+) -> dict:
+    """The intervals, each from its node's ``options``, that minimise the
+    cost rate, or with a cost cap the unavailability, subject to the target:
+    every combination when there are at most 2000, a local search (one
+    interval changed at a time, from several starts) otherwise. A
+    ValueError if none meets the target, giving the best any does."""
+
+    def merit(intervals: dict) -> Tuple[float, float]:
+        """(How far from the target, the objective): lower is better."""
+        cost, availability = evaluate(intervals)
+        if min_availability is not None:
+            short = max(0.0, min_availability - availability)
+        elif max_cost_rate is not None:
+            short = max(0.0, cost - max_cost_rate)
+        else:
+            short = 0.0
+        return short, _objective(cost, availability, max_cost_rate)
+
+    count = math.prod(len(options[node]) for node in nodes)
+    if count <= _MAX_COMBINATIONS:
+        candidates = (
+            dict(zip(nodes, combination))
+            for combination in itertools.product(
+                *(options[node] for node in nodes)
+            )
+        )
+        best = min(candidates, key=merit)
+    else:
+        starts = [
+            {node: options[node][0] for node in nodes},
+            {node: options[node][-1] for node in nodes},
+            {node: options[node][len(options[node]) // 2] for node in nodes},
+        ]
+        best = None
+        for current in starts:
+            value = merit(current)
+            improved = True
+            while improved:
+                improved = False
+                for node in nodes:
+                    for option in options[node]:
+                        candidate = {**current, node: option}
+                        candidate_value = merit(candidate)
+                        if candidate_value < value:
+                            current, value = candidate, candidate_value
+                            improved = True
+            if best is None or value < merit(best):
+                best = current
+    assert best is not None
+    cost, availability = evaluate(best)
+    if not _meets(cost, availability, min_availability, max_cost_rate):
+        if min_availability is not None:
+            raise ValueError(
+                f"min_availability {min_availability} cannot be met: the "
+                f"most the allowed intervals give is {availability:.6g}."
+            )
+        raise ValueError(
+            f"max_cost_rate {max_cost_rate} cannot be met: the least the "
+            f"allowed intervals cost is {cost:.6g} per unit time."
+        )
+    return best
 
 
 def _common_period(intervals: Iterable[float]) -> float:
@@ -933,10 +1155,9 @@ class RepairableRBD(RBD):
       ``1 / (MTTF + MTTR)``: ``mean_availability``, ``node_availability``,
       ``system_failure_frequency``, ``mean_up_time``, ``mean_down_time``,
       ``mean_time_between_failures``, ``expected_cost_rate`` and the
-      importance measures. A component under age replacement enters
-      through its renewal cycle instead (see ``node_availability``); block
-      replacement has no exact long-run values, so with it these methods
-      raise NotImplementedError.
+      importance measures. A component under age or block replacement
+      enters through its renewal cycle instead (see
+      ``node_availability``).
     - Monte-Carlo simulation of a finite window ``[0, t_simulation]`` that
       starts with every component working: ``availability`` (availability
       over time, and criticality measures) and ``cost`` (the distribution
@@ -1631,6 +1852,13 @@ class RepairableRBD(RBD):
         ``(c_p * R(T) + c_u * F(T)) / integral_0^T R``, as
         ``NonRepairable.cost_rate`` computes.
 
+        Under block replacement at ``T`` the renewals are the block times at
+        which the component is up (see ``node_availability``): with ``L``
+        the mean time between them and ``N`` the mean number of failures in
+        between, ``omega_i = N / L`` and ``nu_i = 1 / L``. With instant
+        repair and replacement that is ``(c_p + c_u * M(T)) / T``, ``M`` the
+        renewal function of the lives.
+
         A component with hidden failures is inspected every ``tau_i`` and,
         with a constant failure rate ``lambda``, fails ``(1 - exp(-lambda *
         tau_i)) / tau_i`` times per unit time (at most once per interval).
@@ -1671,8 +1899,9 @@ class RepairableRBD(RBD):
             this returns 0.0 without any checks.)
         NotImplementedError
             If something is priced and a component is under block
-            replacement, which has no exact long-run cost rate, or has
-            hidden failures other than with a constant failure rate,
+            replacement with models its exact values do not cover (see
+            ``node_availability``), or has hidden failures other than with
+            a constant failure rate,
             instant tests and instant repair: simulate it with ``cost``.
 
         Examples
@@ -1936,7 +2165,8 @@ class RepairableRBD(RBD):
             if a component has a non-parametric reliability model; or if
             the exact search examines more than 500,000 designs.
         NotImplementedError
-            If a component is under block replacement, or has hidden
+            If a component is under block replacement with models its exact
+            values do not cover (see ``node_availability``), or has hidden
             failures other than with a constant failure rate, instant tests
             and instant repair: its long-run values are not known exactly.
 
@@ -2068,9 +2298,8 @@ class RepairableRBD(RBD):
             return float(self.system_probability(alone)[0]) == 0.0
 
         series = None
-        if all(
-            node not in self._inspection and in_series(node) for node in chosen
-        ):
+        varying = set(self._inspection) | set(self._block_nodes())
+        if all(node not in varying and in_series(node) for node in chosen):
             # Each such node's availability is constant, and the system's is
             # theirs times the rest's: the exact search is then a dynamic
             # program over the nodes.
@@ -2107,6 +2336,1145 @@ class RepairableRBD(RBD):
             horizon=horizon,
             method=method,
         )
+
+    def availability_allocation(
+        self,
+        target: float,
+        method: str = "cost_based",
+        *,
+        fixed: Optional[Collection[Hashable]] = None,
+        weights: Optional[Dict] = None,
+        max_availabilities: Optional[Dict] = None,
+        feasibility: Optional[Dict] = None,
+    ) -> AvailabilityAllocation:
+        """What availability each component needs for the system to meet a
+        target, and the MTTF or MTTR that gives it.
+
+        Availability allocation: one of the reliability allocation methods
+        (see ``cost_based_allocation``), run on the components' long-run
+        availabilities (``node_availability``), with the system scored as
+        ``mean_availability`` scores it. A component's availability is
+        ``MTTF / (MTTF + MTTR)``, so the availability ``A`` allocated to it
+        is met by an MTTF of ``MTTR * A / (1 - A)`` at its current MTTR, or
+        by an MTTR of ``MTTF * (1 - A) / A`` at its current MTTF (or by any
+        pair in the same ratio): both are reported. To choose the cheapest
+        pair instead, use ``mttf_mttr_allocation``.
+
+        Only components with corrective repair alone are allocated an
+        availability: those that fail and take time to repair, with no
+        ``"preventive"`` or ``"inspection"`` schedule. The others keep
+        theirs: components with a schedule (whose intervals
+        ``optimal_replacement_intervals`` and
+        ``optimal_inspection_intervals`` choose), components repaired
+        instantly (never down), nested ``RepairableRBD`` nodes, components
+        with units that never fail or repairs that may never end, and the
+        components in ``fixed``. A held component that is inspected or
+        block-replaced is up with a probability that varies over its
+        schedule, together with the others on the same calendar; it enters
+        with that variation, as it does in ``mean_availability``, so that
+        the allocation meets the target exactly.
+
+        Parameters
+        ----------
+        target : float
+            The system's long-run availability to reach, in [0, 1].
+        method : str, optional
+            How to allocate it, from the current availabilities:
+            ``"cost_based"`` (the default) for Mettas's cheapest allocation
+            (see ``cost_based_allocation``); ``"improvement"`` to scale
+            every unavailability by one factor (``improvement_allocation``);
+            ``"minimum_effort"``, for a series system, to raise the least
+            available components to one level
+            (``minimum_effort_allocation``); or ``"equal"`` to give every
+            component allocated an availability the same one.
+        fixed : Collection[Hashable], optional
+            Components that keep their availability.
+        weights : dict, optional
+            With ``"improvement"`` only: a weight for each component
+            allocated an availability (see ``improvement_allocation``).
+        max_availabilities : dict, optional
+            With ``"cost_based"`` only: the most a component's availability
+            can reach. A component without one can approach 1.
+        feasibility : dict, optional
+            With ``"cost_based"`` only: a component's feasibility, in
+            [0, 1), 0.5 without one: the higher, the easier to improve.
+
+        Returns
+        -------
+        AvailabilityAllocation
+            The ``availability`` of every component; for each one allocated
+            an availability, the ``mttf`` that gives it at the current MTTR
+            and the ``mttr`` that gives it at the current MTTF; and the
+            ``system_availability`` with them. The solver's result is
+            stored on the RBD as ``res``, as the method run stores it.
+
+        Raises
+        ------
+        ValueError
+            If ``target`` is not in [0, 1] or cannot be reached (the message
+            gives how far the system can go); if ``method`` is unknown, or
+            an option is given to a method that does not take it; if
+            ``fixed`` or an option names a node that is not a component, or
+            an option names a component that keeps its availability; if no
+            component can be allocated an availability; if
+            ``"minimum_effort"`` is asked of a system that is not a series;
+            or if a component has a non-parametric reliability model.
+        KeyError
+            If ``weights`` has no entry for a component allocated an
+            availability.
+        NotImplementedError
+            As for ``mean_availability``.
+
+        Examples
+        --------
+        Two pumps in parallel, each with an MTTF of 10 h and an MTTR of
+        1 h, in series with a valve with an MTTF of 50 h and an MTTR of
+        2 h, are up 95.4% of the time. For 98%, the cheapest allocation
+        asks most of the valve, which every path goes through:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> def unit(mttf, mttr):
+        ...     return {
+        ...         "reliability": surv.Exponential.from_params([1 / mttf]),
+        ...         "repairability": surv.Exponential.from_params([1 / mttr]),
+        ...     }
+        >>> plant = RepairableRBD(
+        ...     [("s", "p1"), ("s", "p2"), ("p1", "v"), ("p2", "v"),
+        ...      ("v", "t")],
+        ...     {"p1": unit(10, 1), "p2": unit(10, 1), "v": unit(50, 2)},
+        ... )
+        >>> round(plant.mean_availability(), 4)
+        0.9536
+        >>> need = plant.availability_allocation(0.98)
+        >>> {node: round(a, 4) for node, a in need.availability.items()}
+        {'p1': 0.9318, 'p2': 0.9318, 'v': 0.9846}
+
+        The valve needs an MTTF of 128 h at its 2 h repairs, or repairs of
+        0.78 h at its 50 h MTTF:
+
+        >>> round(need.mttf["v"]), round(need.mttr["v"], 2)
+        (128, 0.78)
+        """
+        methods = ("cost_based", "improvement", "minimum_effort", "equal")
+        if method not in methods:
+            raise ValueError(
+                "method must be one of "
+                f"{', '.join(repr(m) for m in methods)}, got {method!r}."
+            )
+        options = {
+            "weights": (weights, "improvement"),
+            "max_availabilities": (max_availabilities, "cost_based"),
+            "feasibility": (feasibility, "cost_based"),
+        }
+        for name, (value, owner) in options.items():
+            if value is not None and method != owner:
+                raise ValueError(f"{name} applies to method={owner!r} only.")
+        target = _allocation_target(target)
+        current, free, held = self._allocatable(fixed)
+        for name, (value, _) in options.items():
+            self._allocation_option(name, value, held)
+        view = self._allocation_view(held)
+        start = {node: current[node] for node in self.nodes}
+        if method == "cost_based":
+            maxima = {node: current[node] for node in held}
+            maxima.update(max_availabilities or {})
+            allocated = view.cost_based_allocation(
+                target,
+                start,
+                max_probabilities=maxima,
+                feasibility=feasibility,
+            )
+        elif method == "improvement":
+            allocated = view.improvement_allocation(
+                target, start, fixed=list(held), weights=weights
+            )
+        elif method == "equal":
+            # From 0.5 for every component allocated, scaled alike, so they
+            # all end up the same.
+            allocated = view.improvement_allocation(
+                target,
+                {
+                    node: current[node] if node in held else 0.5
+                    for node in self.nodes
+                },
+                fixed=list(held),
+            )
+        else:
+            allocated = view._minimum_effort_held(target, current, held)
+        if view is not self and method != "minimum_effort":
+            self.res = view.res
+        mttf, mttr = {}, {}
+        for node, (up, down) in free.items():
+            a = allocated[node]
+            mttf[node] = down * a / (1.0 - a) if a < 1.0 else math.inf
+            mttr[node] = up * (1.0 - a) / a if a > 0.0 else math.inf
+        return self._allocation_result(view, allocated, mttf, mttr)
+
+    def mttf_mttr_allocation(
+        self,
+        target: float,
+        *,
+        levers: str = "both",
+        fixed: Optional[Collection[Hashable]] = None,
+        max_mttf: Optional[Dict] = None,
+        min_mttr: Optional[Dict] = None,
+        mttf_feasibility: Optional[Dict] = None,
+        mttr_feasibility: Optional[Dict] = None,
+    ) -> AvailabilityAllocation:
+        """The cheapest MTTFs and MTTRs that meet a system availability
+        target.
+
+        A component's availability, ``MTTF / (MTTF + MTTR)``, can be raised
+        with a longer MTTF (reliability) or a shorter MTTR
+        (maintainability), which cost different amounts. This is Mettas's
+        cost-based allocation (see ``cost_based_allocation``) with both
+        levers: it finds each component's MTTF and MTTR that meet the target
+        at the least total cost, where lowering its failure rate
+        ``lambda = 1 / MTTF`` from ``lambda_0`` towards its least,
+        ``lambda_min = 1 / max_mttf``, costs
+
+            exp((1 - f) * (lambda_0 - lambda) / (lambda - lambda_min)),
+
+        and cutting its MTTR from ``MTTR_0`` towards its least,
+        ``min_mttr``, costs
+
+            exp((1 - f) * (MTTR_0 - MTTR) / (MTTR - min_mttr)),
+
+        each with its own feasibility ``f`` in [0, 1): the lower it is, the
+        faster the cost rises. Each cost is 1 while its lever is unused and
+        grows without bound towards its limit. Without limits, raising the
+        MTTF by a factor ``k`` costs ``exp((1 - f) * (k - 1))``, and so
+        does cutting the MTTR by one: the availability depends on the ratio
+        of the two alone, so at equal feasibilities both are used alike.
+        The cheaper lever is used first, and the dearer one only once the
+        cheaper one costs as much at the margin.
+
+        With ``levers="mttr"`` the failure behaviour is held and only the
+        repairs are allocated (maintainability allocation): a shorter
+        repair is worth most on a component that is often down, so, other
+        things equal, the components that fail most often get the shortest
+        repairs. With ``levers="mttf"`` only the MTTFs change.
+
+        The components allocated, and those that keep their availability,
+        are as for ``availability_allocation``, and the system is scored as
+        ``mean_availability`` scores it. It is solved with
+        ``scipy.optimize.minimize`` (SLSQP) with exact gradients, from the
+        point where every lever has closed the same fraction of its gap to
+        its limit, and the design returned meets the target. The solver's
+        result is stored on the RBD as ``res``, replacing any earlier one;
+        its ``fun`` is the log of the total cost of the levers that may
+        change.
+
+        Parameters
+        ----------
+        target : float
+            The system's long-run availability to reach, in [0, 1].
+        levers : str, optional
+            ``"both"`` (the default), ``"mttr"`` to change only the MTTRs, or
+            ``"mttf"`` to change only the MTTFs.
+        fixed : Collection[Hashable], optional
+            Components that keep their MTTF and MTTR.
+        max_mttf : dict, optional
+            The most a component's MTTF can reach, at least its current
+            MTTF (which holds it). A component without one has no limit.
+        min_mttr : dict, optional
+            The least a component's MTTR can reach, from 0 (the default for
+            a component without one) to its current MTTR (which holds it).
+        mttf_feasibility : dict, optional
+            The feasibility of raising a component's MTTF, in [0, 1), 0.5
+            without one.
+        mttr_feasibility : dict, optional
+            The feasibility of cutting a component's MTTR, in [0, 1), 0.5
+            without one.
+
+        Returns
+        -------
+        AvailabilityAllocation
+            Every component's ``availability``; for each one allocated, its
+            ``mttf`` and ``mttr`` in the cheapest design (together); and the
+            ``system_availability``. A target the system already meets
+            returns the current values.
+
+        Raises
+        ------
+        ValueError
+            If ``target`` is not in [0, 1] or cannot be reached (the message
+            gives the most the limits allow: they are only approached, at an
+            ever-growing cost); if ``levers`` is unknown; if ``fixed`` or an
+            option names a node that is not a component, or an option names
+            one that keeps its availability; if a limit is on the wrong side
+            of the current value, or a feasibility is outside [0, 1); if no
+            lever can change; or if a component has a non-parametric
+            reliability model.
+        NotImplementedError
+            As for ``mean_availability``.
+
+        Warns
+        -----
+        UserWarning
+            If the solver stops before converging; the design returned
+            still meets the target, but may not be the cheapest.
+
+        Examples
+        --------
+        The pumps and valve of ``availability_allocation``, to 98%: at
+        equal feasibilities each component's MTTF rises by the factor its
+        MTTR falls by, and the valve's the most:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> def unit(mttf, mttr):
+        ...     return {
+        ...         "reliability": surv.Exponential.from_params([1 / mttf]),
+        ...         "repairability": surv.Exponential.from_params([1 / mttr]),
+        ...     }
+        >>> plant = RepairableRBD(
+        ...     [("s", "p1"), ("s", "p2"), ("p1", "v"), ("p2", "v"),
+        ...      ("v", "t")],
+        ...     {"p1": unit(10, 1), "p2": unit(10, 1), "v": unit(50, 2)},
+        ... )
+        >>> design = plant.mttf_mttr_allocation(0.98)
+        >>> {node: round(t, 1) for node, t in design.mttf.items()}
+        {'p1': 10.6, 'p2': 10.6, 'v': 85.5}
+        >>> {node: round(t, 2) for node, t in design.mttr.items()}
+        {'p1': 0.94, 'p2': 0.94, 'v': 1.17}
+        >>> round(design.system_availability, 4)
+        0.98
+
+        Holding the failure behaviour, only the repairs change:
+
+        >>> repairs = plant.mttf_mttr_allocation(0.98, levers="mttr")
+        >>> {node: round(t, 2) for node, t in repairs.mttr.items()}
+        {'p1': 0.74, 'p2': 0.74, 'v': 0.78}
+        """
+        if levers not in ("both", "mttf", "mttr"):
+            raise ValueError(
+                f"levers must be 'both', 'mttf' or 'mttr', got {levers!r}."
+            )
+        target = _allocation_target(target)
+        current, free, held = self._allocatable(fixed)
+        most = self._allocation_option("max_mttf", max_mttf, held)
+        least = self._allocation_option("min_mttr", min_mttr, held)
+        ease = (
+            self._allocation_option(
+                "mttf_feasibility", mttf_feasibility, held
+            ),
+            self._allocation_option(
+                "mttr_feasibility", mttr_feasibility, held
+            ),
+        )
+        names = ("mttf_feasibility", "mttr_feasibility")
+        # Each component's failure rate and repair time, as (start, floor):
+        # each falls from its start towards its floor as its lever is used,
+        # to floor + (start - floor) * exp(-v) for the lever's v >= 0.
+        span: Dict[Hashable, Tuple[Tuple[float, float], ...]] = {}
+        variables: List[Tuple[Hashable, int, float]] = []
+        for node, (mttf, mttr) in free.items():
+            top = _as_float(most.get(node, math.inf))
+            if not top >= mttf * (1.0 - 1e-12):
+                raise ValueError(
+                    f"max_mttf[{node!r}] must be at least the component's "
+                    f"MTTF, {mttf:.6g}, got {most[node]!r}."
+                )
+            bottom = _as_float(least.get(node, 0.0))
+            if not 0.0 <= bottom <= mttr * (1.0 + 1e-12):
+                raise ValueError(
+                    f"min_mttr[{node!r}] must be between 0 and the "
+                    f"component's MTTR, {mttr:.6g}, got {least[node]!r}."
+                )
+            span[node] = (
+                (1.0 / mttf, 1.0 / max(top, mttf)),
+                (mttr, min(bottom, mttr)),
+            )
+            for lever, name in enumerate(names):
+                f = _as_float(ease[lever].get(node, 0.5))
+                if not 0.0 <= f < 1.0:
+                    raise ValueError(
+                        f"{name}[{node!r}] must be in [0, 1), got "
+                        f"{ease[lever][node]!r}."
+                    )
+                start, floor = span[node][lever]
+                if levers in ("both", ("mttf", "mttr")[lever]) and (
+                    start > floor
+                ):
+                    variables.append((node, lever, 1.0 - f))
+        if not variables:
+            raise ValueError(
+                "No MTTF or MTTR can change: every lever is held (by levers, "
+                "max_mttf or min_mttr)."
+            )
+        steepness = np.array([s for _, _, s in variables])
+        size = len(variables)
+
+        def design(v) -> Dict[Hashable, List[float]]:
+            """Each component's failure rate and repair time."""
+            values = {
+                node: [ends[0][0], ends[1][0]] for node, ends in span.items()
+            }
+            for (node, lever, _), x in zip(variables, v):
+                if x > 0.0:
+                    start, floor = span[node][lever]
+                    gap = (start - floor) * math.exp(-x)
+                    values[node][lever] = floor + gap
+            return values
+
+        def probabilities(v) -> Tuple[Dict, Dict]:
+            p = {node: current[node] for node in self.nodes}
+            q = {node: 1.0 - current[node] for node in self.nodes}
+            for node, (rate, repair) in design(v).items():
+                odds = rate * repair  # of being down
+                p[node] = 1.0 / (1.0 + odds)
+                q[node] = odds / (1.0 + odds)
+            return p, q
+
+        def result(v) -> AvailabilityAllocation:
+            values = design(v)
+            mttf = {}
+            for node, (rate, _) in values.items():
+                if rate == span[node][0][0]:
+                    mttf[node] = free[node][0]  # unchanged, exactly
+                else:
+                    mttf[node] = 1.0 / rate if rate > 0.0 else math.inf
+            return self._allocation_result(
+                view,
+                probabilities(v)[0],
+                mttf,
+                {node: repair for node, (_, repair) in values.items()},
+            )
+
+        view = self._allocation_view(held)
+        goal = float(logit(target))
+        now = view._log_odds(*probabilities(np.zeros(size)))[0]
+        if goal <= now:
+            self.res = OptimizeResult(
+                x=np.zeros(size),
+                fun=float(np.log(size)),
+                success=True,
+                message="The target is already met.",
+            )
+            return result(np.zeros(size))
+        best = view._log_odds(*probabilities(np.full(size, np.inf)))[0]
+        # The limits are only approached (at an ever-growing cost), so a
+        # target at them, to within rounding, cannot be met either.
+        if goal >= best - 1e-9:
+            raise ValueError(
+                f"target {target} cannot be reached: from the current "
+                f"availability ({expit(now):.6g}) the system can only "
+                f"approach {expit(best):.6g}, with every MTTF and MTTR that "
+                "may change at its limit."
+            )
+
+        def shortfall(v: np.ndarray) -> float:
+            return view._log_odds(*probabilities(v))[0] - goal
+
+        def shortfall_gradient(v: np.ndarray) -> np.ndarray:
+            p, q = probabilities(v)
+            derivative = view._log_odds(p, q)[1]
+            values = design(v)
+            gradient = np.empty(size)
+            for i, ((node, lever, _), x) in enumerate(zip(variables, v)):
+                start, floor = span[node][lever]
+                # The lever lowers the odds of being down, rate * repair, at
+                # the other quantity times its own fall; p = 1 / (1 + odds).
+                other = values[node][1 - lever]
+                fall = other * (start - floor) * math.exp(-x)
+                gradient[i] = derivative[node] * p[node] ** 2 * fall
+            return gradient
+
+        def log_total_cost(v: np.ndarray) -> Tuple[float, np.ndarray]:
+            costs = steepness * np.expm1(v)
+            return float(logsumexp(costs)), softmax(
+                costs
+            ) * steepness * np.exp(v)
+
+        def common_shift(start: np.ndarray, along: np.ndarray) -> np.ndarray:
+            """The start moved up by the least common v, on the levers
+            ``along`` marks, meeting the target (it exists, as the target is
+            below what the limits allow)."""
+            high = 1.0
+            while shortfall(start + high * along) < 0.0 and high < 1e6:
+                high *= 2.0
+            return start + along * brentq(
+                lambda d: shortfall(start + d * along), 0.0, high, xtol=1e-14
+            )
+
+        every = np.ones(size)
+        res = minimize(
+            log_total_cost,
+            common_shift(np.zeros(size), every),
+            jac=True,
+            method="SLSQP",
+            bounds=[(0.0, None)] * size,
+            constraints=[
+                {"type": "ineq", "fun": shortfall, "jac": shortfall_gradient}
+            ],
+            options={"ftol": 1e-12, "maxiter": 1000},
+        )
+        # A lever the solver left within a hair of its bound is unused.
+        v = np.where(res.x < 1e-9, 0.0, res.x)
+        if shortfall(v) < 0.0:
+            # Close the solver's last sliver of constraint tolerance, with
+            # the levers in use.
+            used = (v > 0.0).astype(float)
+            v = common_shift(v, used if used.any() else every)
+        res.x = v
+        res.fun = log_total_cost(v)[0]
+        self.res = res
+        if not res.success:
+            warnings.warn(
+                "the cost minimisation stopped before converging "
+                f"({res.message}); the design meets the target but may not "
+                "be the cheapest.",
+                stacklevel=2,
+            )
+        return result(v)
+
+    def _allocatable(
+        self, fixed
+    ) -> Tuple[
+        Dict[Hashable, float], Dict[Hashable, Tuple[float, float]], set
+    ]:
+        """For an availability allocation: every component's long-run
+        availability; the MTTF and MTTR of those allocated one (with
+        corrective repair alone: they fail and take time to repair, with no
+        preventive or inspection schedule, and are not in ``fixed``); and
+        the set of the others, which keep theirs."""
+        held = set()
+        if fixed is not None:
+            held = set(fixed)
+            unknown = [node for node in held if node not in self.components]
+            if unknown:
+                raise ValueError(
+                    f"fixed names {sorted(unknown, key=str)}, which are not "
+                    "components of this RBD."
+                )
+        current: Dict[Hashable, float] = {}
+        free: Dict[Hashable, Tuple[float, float]] = {}
+        for node, component in self.components.items():
+            current[node] = self._node_availability(node)
+            if (
+                node in held
+                or isinstance(component, RepairableRBD)
+                or node in self._preventive
+                or node in self._inspection
+            ):
+                held.add(node)
+                continue
+            mttf = model_mean(component.reliability)
+            mttr = model_mean(component.time_to_replace)
+            if not (0.0 < mttf < math.inf and 0.0 < mttr < math.inf):
+                # Never down, down for good in the end, or up for good.
+                held.add(node)
+                continue
+            free[node] = (mttf, mttr)
+            current[node] = mttf / (mttf + mttr)
+        if not free:
+            raise ValueError(
+                "No component can be allocated an availability: only "
+                "components with corrective repair alone (that fail and take "
+                "time to repair, with no preventive or inspection schedule), "
+                "not in fixed, can."
+            )
+        return current, free, held
+
+    def _allocation_option(self, name: str, mapping, held: set) -> dict:
+        """A per-component option of an availability allocation, checked to
+        name only components allocated an availability."""
+        values = self._node_overrides(name, mapping)
+        kept = [node for node in values if node in held]
+        if kept:
+            raise ValueError(
+                f"{name} names {sorted(kept, key=str)}, which keep their "
+                "availability: only components with corrective repair alone, "
+                "not in fixed, are allocated one."
+            )
+        return values
+
+    def _allocation_view(self, held: set) -> "RepairableRBD":
+        """This RBD as an availability allocation scores it. The components
+        allocated an availability have a constant one, so when every held
+        component does too the system's availability is the structure
+        function of theirs, and the RBD itself will do. A held component
+        that is inspected or block-replaced is up with a probability that
+        varies over its schedule, together with the others on the calendar:
+        the system's availability is then averaged over the long-run grid,
+        as ``mean_availability`` averages it, by a view of the RBD whose
+        ``_allocation_probability`` and ``_log_odds`` do so."""
+        times, weights = self._long_run_grid()
+        if len(times) == 1:
+            return self
+        profiles = self._availabilities_at(times)
+        view = copy(self)
+        view.__dict__["_allocation_calendar"] = (
+            weights,
+            {node: profiles[node] for node in held},
+            [node for node in self.nodes if node not in held],
+        )
+        return view
+
+    def _calendar_arrays(
+        self, p: Dict, q: Optional[Dict]
+    ) -> Tuple[Dict, Dict]:
+        """Node probabilities ``p`` and their complements ``q`` (by default
+        ``1 - p``) over the allocation calendar's grid, with the held
+        components' own availabilities there."""
+        weights, profiles, _ = self.__dict__["_allocation_calendar"]
+        size = len(weights)
+        works = {node: np.full(size, float(p[node])) for node in p}
+        fails = {
+            node: np.full(
+                size, 1.0 - float(p[node]) if q is None else float(q[node])
+            )
+            for node in p
+        }
+        for node, profile in profiles.items():
+            works[node] = profile
+            fails[node] = 1.0 - profile
+        for node in self.in_or_out:
+            works[node] = np.ones(size)
+            fails[node] = np.zeros(size)
+        return works, fails
+
+    def _calendar_means(self, works: Dict, fails: Dict) -> Tuple[float, float]:
+        """The system's probabilities of working and of failing over the
+        allocation calendar's grid, averaged over it."""
+        weights = self.__dict__["_allocation_calendar"][0]
+        size = len(weights)
+        up, down = self._decomposition().probabilities(
+            works, fails, shape=size
+        )
+        return (
+            float(weights @ np.broadcast_to(up, (size,))),
+            float(weights @ np.broadcast_to(down, (size,))),
+        )
+
+    def _allocation_probability(
+        self, probabilities: Dict[Any, float]
+    ) -> float:
+        if "_allocation_calendar" not in self.__dict__:
+            return super()._allocation_probability(probabilities)
+        return self._calendar_means(
+            *self._calendar_arrays(probabilities, None)
+        )[0]
+
+    def _log_odds(
+        self, p: Dict[Any, float], q: Dict[Any, float]
+    ) -> Tuple[float, Dict[Any, float]]:
+        if "_allocation_calendar" not in self.__dict__:
+            return super()._log_odds(p, q)
+        weights, _, free = self.__dict__["_allocation_calendar"]
+        works, fails = self._calendar_arrays(p, q)
+        up, down = self._calendar_means(works, fails)
+        with np.errstate(divide="ignore"):
+            log_odds = float(np.log(up) - np.log(down))
+        scale = up * down
+        gradient = dict.fromkeys(self.nodes, 0.0)
+        if scale:
+            ones, zeros = np.ones(len(weights)), np.zeros(len(weights))
+            for node in free:
+                # The system's availability is linear in the node's, with
+                # slope P(down | node down) - P(down | node up).
+                if_up = self._calendar_means(
+                    {**works, node: ones}, {**fails, node: zeros}
+                )[1]
+                if_down = self._calendar_means(
+                    {**works, node: zeros}, {**fails, node: ones}
+                )[1]
+                gradient[node] = (if_down - if_up) / scale
+        return log_odds, gradient
+
+    def _minimum_effort_held(self, target: float, current: Dict, held: set):
+        """Albert's minimum-effort allocation to the components not
+        ``held``: in series, the held components' availabilities (averaged
+        over their calendars) are a factor of the system's, and the others
+        make up the rest."""
+        self._require_series()
+        limit = self._allocation_probability(
+            {
+                node: current[node] if node in held else 1.0
+                for node in self.nodes
+            }
+        )
+        if target > limit:
+            raise ValueError(
+                f"target {target} cannot be reached: the components that "
+                "keep their availability hold the system to at most "
+                f"{limit:.6g}."
+            )
+        raised = self.minimum_effort_allocation(
+            target / limit if limit > 0.0 else 0.0,
+            {
+                node: 1.0 if node in held else current[node]
+                for node in self.nodes
+            },
+        )
+        return {
+            node: current[node] if node in held else raised[node]
+            for node in self.nodes
+        }
+
+    def _allocation_result(
+        self, view: "RepairableRBD", allocated: Dict, mttf: Dict, mttr: Dict
+    ) -> AvailabilityAllocation:
+        """An availability allocation's result, scored as ``view`` scores
+        it."""
+        return AvailabilityAllocation(
+            availability={
+                node: float(allocated[node]) for node in self.components
+            },
+            mttf=mttf,
+            mttr=mttr,
+            system_availability=view._allocation_probability(
+                {node: allocated[node] for node in self.nodes}
+            ),
+        )
+
+    def _with_intervals(
+        self, preventive=None, inspection=None
+    ) -> "RepairableRBD":
+        """This RBD with the intervals of some of its preventive or
+        inspection schedules changed, for the exact long-run values: a
+        shallow copy, sharing everything else, including the renewal cycles
+        already worked out (kept by interval)."""
+        self.__dict__.setdefault("_age_cycles", {})
+        self.__dict__.setdefault("_block_cycles", {})
+        plan = copy(self)
+        if preventive:
+            plan._preventive = dict(self._preventive)
+            for node, interval in preventive.items():
+                plan._preventive[node] = self._preventive[node]._replace(
+                    interval=float(interval)
+                )
+        if inspection:
+            plan._inspection = dict(self._inspection)
+            for node, interval in inspection.items():
+                plan._inspection[node] = self._inspection[node]._replace(
+                    interval=float(interval)
+                )
+        return plan
+
+    def _interval_targets(self, min_availability, max_cost_rate):
+        """The checked targets of an interval choice."""
+        if min_availability is not None and max_cost_rate is not None:
+            raise ValueError(
+                "Give at most one of min_availability and max_cost_rate."
+            )
+        if not self.has_costs:
+            raise ValueError(
+                "Nothing is priced, so no interval costs more than another: "
+                "give the components costs (or a downtime_cost_rate)."
+            )
+        if min_availability is not None:
+            if not 0.0 < float(min_availability) < 1.0:
+                raise ValueError(
+                    "min_availability must be a number in (0, 1), got "
+                    f"{min_availability!r}."
+                )
+            return float(min_availability), None
+        if max_cost_rate is not None:
+            if not 0.0 < float(max_cost_rate) < math.inf:
+                raise ValueError(
+                    "max_cost_rate must be a positive number, got "
+                    f"{max_cost_rate!r}."
+                )
+            return None, float(max_cost_rate)
+        return None, None
+
+    def optimal_replacement_intervals(
+        self,
+        nodes: Optional[Collection[Hashable]] = None,
+        *,
+        min_availability: Optional[float] = None,
+        max_cost_rate: Optional[float] = None,
+    ) -> MaintenancePlan:
+        """Choose the age-replacement intervals for the system as a whole.
+
+        ``NonRepairable.find_optimal_replacement`` chooses one unit's
+        replacement age on its own. In a system the components should be
+        chosen together: a unit whose failure stops the system is worth
+        replacing sooner than one with a standby, and replacing a unit takes
+        the system down if its replacement takes time and nothing covers
+        for it. This chooses the age-replacement interval of each component
+        in ``nodes`` for:
+
+        - the lowest long-run cost rate (``expected_cost_rate``), by
+          default;
+        - the lowest cost rate that keeps the system's long-run availability
+          (``mean_availability``) at least ``min_availability``;
+        - or the highest availability within a cost rate of
+          ``max_cost_rate``.
+
+        The long-run values are exact (see ``expected_cost_rate``), so the
+        choice is too, to the precision of the search: a gradient search
+        (SLSQP) over the logarithms of the intervals, from several starting
+        points, keeping the best. Each interval ranges from a thousandth to a
+        thousand times the component's mean life; one found at the top of
+        that range is compared with never replacing the component (an
+        interval of ``inf``), which is taken if no worse. The cost rate is
+        usually flat near its minimum, so intervals some way from the ones
+        found cost almost the same.
+
+        Parameters
+        ----------
+        nodes : Collection[Hashable], optional
+            The components whose intervals to choose, each under age
+            replacement (a ``"preventive"`` schedule with ``"policy":
+            "age"``; its interval is one of the starting points). By default
+            every component under age replacement. The others keep their
+            schedules.
+        min_availability : float, optional
+            The least long-run system availability allowed, in (0, 1).
+        max_cost_rate : float, optional
+            The highest long-run cost rate allowed: the intervals then give
+            the highest availability within it.
+
+        Returns
+        -------
+        MaintenancePlan
+            The interval of each component in ``nodes`` (``inf`` for never),
+            and the system's cost rate and availability with them.
+
+        Raises
+        ------
+        ValueError
+            If a node is not a component under age replacement; if nothing
+            is priced; if both targets are given, or one is out of range;
+            or if no intervals meet the target (the message gives the best
+            they can do).
+        NotImplementedError
+            If the long-run values are not known exactly (see
+            ``expected_cost_rate``).
+
+        Examples
+        --------
+        A pump that wears out, in series with a pair of them in parallel;
+        repairs take about 23 hours and replacements about 7, and the plant
+        loses 500 an hour while it is down:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> def pump():
+        ...     return {
+        ...         "reliability": surv.Weibull.from_params([1000, 2.5]),
+        ...         "repairability": surv.LogNormal.from_params([3.0, 0.5]),
+        ...         "replace_cost": 5000.0,
+        ...         "preventive": {
+        ...             "interval": 1000.0,
+        ...             "duration": surv.Weibull.from_params([8, 3]),
+        ...             "cost": 1000.0,
+        ...         },
+        ...     }
+        >>> plant = RepairableRBD(
+        ...     [("s", "a"), ("a", "b1"), ("a", "b2"), ("b1", "t"),
+        ...      ("b2", "t")],
+        ...     {"a": pump(), "b1": pump(), "b2": pump()},
+        ...     downtime_cost_rate=500.0,
+        ... )
+        >>> plan = plant.optimal_replacement_intervals()
+        >>> {node: round(t) for node, t in plan.intervals.items()}
+        {'a': 590, 'b1': 497, 'b2': 497}
+        >>> round(plan.cost_rate, 2), round(plan.availability, 4)
+        (20.12, 0.9803)
+
+        The pump alone in the line is replaced later than those with a
+        standby: its replacements stop the plant too.
+        """
+        chosen = self._maintained(nodes)
+        min_availability, max_cost_rate = self._interval_targets(
+            min_availability, max_cost_rate
+        )
+        scale = {}
+        for node in chosen:
+            life = failure_time_scale(self.components[node].reliability)
+            scale[node] = life if np.isfinite(life) and life > 0.0 else 1.0
+        low = np.array([math.log(1e-3 * scale[n]) for n in chosen])
+        high = np.array([math.log(1e3 * scale[n]) for n in chosen])
+        current = [
+            math.log(min(self._preventive[n].interval, 1e3 * scale[n]))
+            for n in chosen
+        ]
+        starts = [
+            np.clip(current, low, high),
+            np.array([math.log(scale[n]) for n in chosen]),
+            np.array([math.log(0.3 * scale[n]) for n in chosen]),
+            high.copy(),
+        ]
+
+        def evaluate(intervals: dict) -> Tuple[float, float]:
+            plan = self._with_intervals(preventive=intervals)
+            return plan.expected_cost_rate(), plan.mean_availability()
+
+        best = _choose_intervals(
+            chosen,
+            evaluate,
+            starts,
+            (low, high),
+            min_availability,
+            max_cost_rate,
+        )
+        # An interval at the top of its range may be better never used.
+        for i, node in enumerate(chosen):
+            if best[node] >= 0.99 * math.exp(high[i]):
+                never = {**best, node: math.inf}
+                cost, availability = evaluate(never)
+                if _meets(
+                    cost, availability, min_availability, max_cost_rate
+                ) and _objective(
+                    cost, availability, max_cost_rate
+                ) <= _objective(
+                    *evaluate(best), max_cost_rate
+                ):
+                    best = never
+        cost, availability = evaluate(best)
+        return MaintenancePlan(
+            {node: float(best[node]) for node in chosen}, cost, availability
+        )
+
+    def optimal_inspection_intervals(
+        self,
+        nodes: Optional[Collection[Hashable]] = None,
+        *,
+        allowed=None,
+        min_availability: Optional[float] = None,
+        max_cost_rate: Optional[float] = None,
+    ) -> MaintenancePlan:
+        """Choose the proof-test intervals of components with hidden
+        failures, for the system as a whole.
+
+        Testing a component with hidden failures more often costs more
+        tests, and testing it less often leaves its failures hidden for
+        longer (see ``node_availability``). This chooses the inspection
+        interval of each component in ``nodes`` for:
+
+        - the lowest long-run cost rate (``expected_cost_rate``: tests,
+          repairs and downtime), by default;
+        - the lowest cost rate that keeps the system's long-run availability
+          at least ``min_availability``: for a safety function, whose
+          unavailability is its average probability of failure on demand,
+          a PFDavg of at most ``1 - min_availability``;
+        - or the highest availability within a cost rate of
+          ``max_cost_rate``.
+
+        Tests are usually made on a calendar (monthly, quarterly, yearly),
+        and components tested at the same times are down together, so the
+        long-run values depend on how the schedules line up. So the
+        intervals are chosen from ``allowed``: every combination is tried
+        when there are at most 2000 of them, which gives the optimum, and a
+        local search (changing one interval at a time, from several
+        starting points) is made otherwise. With ``allowed`` left out, the
+        RBD must have one component with hidden failures, whose interval
+        is then searched continuously, as by
+        ``optimal_replacement_intervals``.
+
+        The exact long-run values need a constant failure rate, instant
+        tests and instant repair (see ``node_availability``).
+
+        Parameters
+        ----------
+        nodes : Collection[Hashable], optional
+            The components whose intervals to choose, each with hidden
+            failures (an ``"inspection"`` schedule). By default every
+            component with one. The others keep their intervals.
+        allowed : sequence of float or dict, optional
+            The intervals to choose from: one sequence for every node, or a
+            dict of a sequence per node. Left out, the one component with
+            hidden failures has its interval chosen from all.
+        min_availability : float, optional
+            The least long-run system availability allowed, in (0, 1).
+        max_cost_rate : float, optional
+            The highest long-run cost rate allowed: the intervals then give
+            the highest availability within it.
+
+        Returns
+        -------
+        MaintenancePlan
+            The interval of each component in ``nodes``, and the system's
+            cost rate and availability (1 - PFDavg) with them.
+
+        Raises
+        ------
+        ValueError
+            If a node has no hidden failures; if ``allowed`` is left out
+            with more than one component with hidden failures, or holds
+            something other than positive, finite intervals; if nothing is
+            priced; if both targets are given, or one is out of range; or if
+            no intervals meet the target (the message gives the best they
+            can do).
+        NotImplementedError
+            If a component's hidden failures have no exact long-run values
+            (see ``node_availability``), or the intervals repeat together
+            only after too many tests to average over.
+
+        Examples
+        --------
+        A shutdown valve whose dangerous failures are hidden, at ``2e-6``
+        per hour, each proof test costing 500: the cheapest monthly,
+        quarterly, half-yearly, yearly or two-yearly tests (in hours) that
+        keep the PFDavg at most ``1e-3``, for one valve and for two in
+        parallel (1oo2):
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> def valve():
+        ...     return {
+        ...         "reliability": surv.Exponential.from_params([2e-6]),
+        ...         "repairability": "instant",
+        ...         "inspection": {"interval": 8760.0, "cost": 500.0},
+        ...     }
+        >>> calendar = [730.0, 2190.0, 4380.0, 8760.0, 17520.0]
+        >>> one = RepairableRBD([("s", "v"), ("v", "t")], {"v": valve()})
+        >>> one.optimal_inspection_intervals(
+        ...     allowed=calendar, min_availability=1 - 1e-3
+        ... ).intervals
+        {'v': 730.0}
+        >>> pair = RepairableRBD(
+        ...     [("s", "v1"), ("s", "v2"), ("v1", "t"), ("v2", "t")],
+        ...     {"v1": valve(), "v2": valve()},
+        ... )
+        >>> plan = pair.optimal_inspection_intervals(
+        ...     allowed=calendar, min_availability=1 - 1e-3
+        ... )
+        >>> plan.intervals
+        {'v1': 17520.0, 'v2': 17520.0}
+        >>> round(1 - plan.availability, 6)
+        0.000399
+
+        The redundant pair meets the target with tests every two years; the
+        single valve needs them monthly.
+        """
+        chosen = self._inspected(nodes)
+        min_availability, max_cost_rate = self._interval_targets(
+            min_availability, max_cost_rate
+        )
+        rates = {node: self._inspected_rate(node)[0] for node in chosen}
+
+        def evaluate(intervals: dict) -> Tuple[float, float]:
+            plan = self._with_intervals(inspection=intervals)
+            return plan.expected_cost_rate(), plan.mean_availability()
+
+        if allowed is None:
+            if len(self._inspection) > 1:
+                raise ValueError(
+                    "More than one component has hidden failures: give the "
+                    "intervals to choose from in allowed (tests are made on "
+                    "a calendar, and the long-run values depend on how the "
+                    "schedules line up)."
+                )
+            (node,) = chosen
+            rate = rates[node]
+            low = np.array([math.log(1e-4 / rate)])
+            high = np.array([math.log(10.0 / rate)])
+            current = math.log(self._inspection[node].interval)
+            starts = [
+                np.clip([current], low, high),
+                np.array([math.log(0.01 / rate)]),
+                np.array([math.log(0.1 / rate)]),
+                np.array([math.log(1.0 / rate)]),
+            ]
+            best = _choose_intervals(
+                chosen,
+                evaluate,
+                starts,
+                (low, high),
+                min_availability,
+                max_cost_rate,
+            )
+        else:
+            best = _choose_from(
+                chosen,
+                self._allowed_intervals(allowed, chosen),
+                evaluate,
+                min_availability,
+                max_cost_rate,
+            )
+        cost, availability = evaluate(best)
+        return MaintenancePlan(
+            {node: float(best[node]) for node in chosen}, cost, availability
+        )
+
+    def _inspected(self, nodes) -> list:
+        """The components with hidden failures named by ``nodes`` (all of
+        them by default), checked."""
+        if nodes is None:
+            if not self._inspection:
+                raise ValueError(
+                    "No component has hidden failures: give the components "
+                    "an 'inspection' schedule to have its interval chosen."
+                )
+            return list(self._inspection)
+        chosen = list(nodes)
+        if not chosen:
+            raise ValueError("nodes is empty.")
+        for node in chosen:
+            if node not in self._inspection:
+                raise ValueError(
+                    f"Node {node!r} has no hidden failures: give it an "
+                    "'inspection' schedule to have its interval chosen."
+                )
+        return chosen
+
+    @staticmethod
+    def _allowed_intervals(allowed, chosen: list) -> dict:
+        """``allowed`` as a sorted tuple of intervals per chosen node."""
+        per_node = (
+            allowed
+            if isinstance(allowed, dict)
+            else {node: allowed for node in chosen}
+        )
+        options = {}
+        for node in chosen:
+            if node not in per_node:
+                raise ValueError(
+                    f"allowed gives no intervals for node {node!r}."
+                )
+            values = []
+            for value in per_node[node]:
+                try:
+                    interval = float(value)
+                except (TypeError, ValueError):
+                    interval = float("nan")
+                if not 0.0 < interval < math.inf:
+                    raise ValueError(
+                        "allowed intervals must be positive, finite "
+                        f"numbers, got {value!r} for node {node!r}."
+                    )
+                values.append(interval)
+            if not values:
+                raise ValueError(
+                    f"allowed gives no intervals for node {node!r}."
+                )
+            options[node] = tuple(sorted(set(values)))
+        return options
+
+    def _maintained(self, nodes) -> list:
+        """The components under age replacement named by ``nodes`` (all of
+        them by default), checked."""
+        if nodes is None:
+            chosen = [
+                node
+                for node, schedule in self._preventive.items()
+                if schedule.policy == "age"
+            ]
+            if not chosen:
+                raise ValueError(
+                    "No component is under age replacement: give the "
+                    "components a 'preventive' schedule to have its "
+                    "interval chosen."
+                )
+            return chosen
+        chosen = list(nodes)
+        if not chosen:
+            raise ValueError("nodes is empty.")
+        for node in chosen:
+            schedule = self._preventive.get(node)
+            if schedule is None or schedule.policy != "age":
+                raise ValueError(
+                    f"Node {node!r} is not a component under age "
+                    "replacement: give it a 'preventive' schedule with "
+                    "'policy': 'age' to have its interval chosen."
+                )
+        return chosen
 
     def initialize_event_queue(
         self,
@@ -2304,9 +3672,10 @@ class RepairableRBD(RBD):
             non-parametric reliability model, whose MTTF this cannot
             compute.
         NotImplementedError
-            If a component is under block replacement, which has no exact
-            long-run availability, or has hidden failures other than with a
-            constant failure rate, instant tests and instant repair:
+            If a component is under block replacement with models its exact
+            values do not cover (see ``node_availability``), or has hidden
+            failures other than with a constant failure rate, instant tests
+            and instant repair:
             simulate it with ``availability``.
 
         Examples
@@ -3510,6 +4879,20 @@ class RepairableRBD(RBD):
         ``integral_0^T R / (integral_0^T R + F(T) * MTTR + R(T) * MTTP)``,
         with ``MTTP`` the mean maintenance time (0 for ``"instant"``).
 
+        Under block replacement every ``T`` a unit is replaced at each
+        multiple of ``T`` at which it is up, and in between it fails and is
+        repaired as usual; a replacement due while it is down is skipped.
+        The block times at which it is up are its renewals, so its
+        availability is its mean up time between two of them over their
+        mean distance apart. That needs the expected up time and number of
+        failures of an alternating renewal process of lives and repairs
+        within an interval, and what a repair still going on at a block time
+        carries into the next: they are computed numerically, with an error
+        falling as the square of the grid step (about 1e-6 or less). With
+        instant repair and replacement the unit is always up, and it fails
+        ``M(T)`` times per interval, ``M`` the renewal function of its
+        lives.
+
         A component with hidden failures, a constant failure rate
         ``lambda``, inspected every ``tau`` with instant tests and instant
         repair, is up a fraction ``(1 - exp(-lambda * tau)) / (lambda *
@@ -3529,8 +4912,11 @@ class RepairableRBD(RBD):
             If a component has a non-parametric reliability model, whose
             MTTF this cannot compute.
         NotImplementedError
-            If a component is under block replacement, which has no exact
-            long-run availability, or has hidden failures other than with a
+            If a component is under block replacement with models its exact
+            values do not cover (a lifetime that is not a surpyval
+            parametric model with a density, dead-on-arrival units, repairs
+            that may never end, or repairs or maintenance far longer than
+            the interval), or has hidden failures other than with a
             constant failure rate, instant tests and instant repair.
 
         Examples
@@ -3567,8 +4953,8 @@ class RepairableRBD(RBD):
         if schedule is None:
             component = self.components[node]
             return float(np.atleast_1d(component.mean_availability())[0])
-        up, cycle, _ = self._maintenance_cycle(node, schedule)
-        return up / cycle
+        up, cycle, _, _ = self._maintenance_cycle(node, schedule)
+        return min(1.0, up / cycle)
 
     def _inspected_rate(self, node) -> Tuple[float, float]:
         """The constant failure rate and the inspection interval of a
@@ -3591,13 +4977,164 @@ class RepairableRBD(RBD):
             )
         return rate, inspection.interval
 
-    def _has_inspection(self) -> bool:
-        """Whether a component here, or in a nested RBD, has hidden
-        failures."""
-        return bool(self._inspection) or any(
-            isinstance(c, RepairableRBD) and c._has_inspection()
-            for c in self.components.values()
+    def _block_nodes(self) -> list:
+        """The components under block replacement."""
+        return [
+            node
+            for node, schedule in self._preventive.items()
+            if schedule.policy == "block"
+        ]
+
+    def _block_cycle(self, node) -> BlockCycle:
+        """The renewal cycle of a component under block replacement (see
+        ``_block_replacement``), computed once and kept."""
+        component = self.components[node]
+        schedule = self._preventive[node]
+        cache = self.__dict__.setdefault("_block_cycles", {})
+        key = (
+            node,
+            id(component.reliability),
+            id(component.time_to_replace),
+            float(schedule.interval),
+            id(schedule.duration),
         )
+        if key not in cache:
+            cache[key] = block_cycle(
+                component.reliability,
+                component.time_to_replace,
+                schedule.duration,
+                schedule.interval,
+                node,
+            )
+        return cache[key]
+
+    def _has_calendar(self) -> bool:
+        """Whether a component here, or in a nested RBD, is inspected or
+        replaced on a calendar: its long-run availability then varies with
+        the time of the schedule."""
+        return (
+            bool(self._inspection)
+            or bool(self._block_nodes())
+            or any(
+                isinstance(c, RepairableRBD) and c._has_calendar()
+                for c in self.components.values()
+            )
+        )
+
+    def _calendar_grid(self, blocks: list) -> Tuple[np.ndarray, np.ndarray]:
+        """``_long_run_grid`` with components under block replacement: the
+        middles of cells over one common period of the block and inspection
+        intervals. The cells' edges are those of every block-replaced
+        component's profile (its long-run availability over its interval,
+        cell by cell), the block and inspection times, and enough points in
+        between for an inspected component's availability to vary little
+        across a cell; so each cell lies in one cell of every profile, and
+        the mean over the cells is as exact as the profiles."""
+        intervals = {self._preventive[node].interval for node in blocks}
+        intervals |= {
+            self._inspection[node].interval for node in self._inspection
+        }
+        period = _common_period(intervals)
+        pieces = [np.array([0.0, period])]
+        for interval in intervals:
+            count = int(round(period / interval))
+            if count > 100_000:
+                raise NotImplementedError(
+                    f"The block-replacement and inspection intervals "
+                    f"{sorted(intervals)} repeat together only after too many "
+                    "intervals to average over: estimate the long-run values "
+                    "by simulation, with availability() or cost()."
+                )
+            pieces.append(interval * np.arange(count))
+        for node in blocks:
+            phase = self._block_cycle(node).phase
+            repeats = int(round(period / phase[-1]))
+            pieces.append(
+                (
+                    phase[-1] * np.arange(repeats)[:, None] + phase[None, :-1]
+                ).ravel()
+            )
+        for node in self._inspection:
+            rate, interval = self._inspected_rate(node)
+            per_interval = int(np.ceil(256.0 * rate * interval))
+            pieces.append(
+                np.linspace(
+                    0.0,
+                    period,
+                    1 + per_interval * int(round(period / interval)),
+                )
+            )
+        edges = np.concatenate(pieces)
+        if len(edges) > 4_000_000:
+            raise NotImplementedError(
+                f"The block-replacement and inspection intervals "
+                f"{sorted(intervals)} repeat together only after too long a "
+                "time to average over finely enough: estimate the long-run "
+                "values by simulation, with availability() or cost()."
+            )
+        # Edges closer than rounding are one.
+        edges = np.unique(np.round(edges / period, 12)) * period
+        return 0.5 * (edges[1:] + edges[:-1]), np.diff(edges) / period
+
+    def _block_profile(self, node, times: np.ndarray, rates: bool = False):
+        """A block-replaced component's long-run availability (or failure
+        intensity) at each of ``times``: the value of its profile's cell
+        (over a block interval) that the time falls in."""
+        cycle = self._block_cycle(node)
+        interval = float(cycle.phase[-1])
+        values = cycle.failure_rate if rates else cycle.availability
+        phase = times - interval * np.floor(times / interval)
+        cell = np.searchsorted(cycle.phase, phase, side="right") - 1
+        return values[np.clip(cell, 0, len(values) - 1)]
+
+    def _block_outages(self, working_nodes, broken_nodes) -> float:
+        """The system's planned outages per unit time, in the long run,
+        from the replacements at block times that take time: at each block
+        time, the probability that the system is up just before the
+        replacements due then start and down just after, which (as they
+        only take units down) is the fall in the system availability. Units
+        due at the same time go down together. An inspection due at the
+        same time comes first."""
+        blocks = [
+            node
+            for node in self._block_nodes()
+            if self._preventive[node].duration is not None
+        ]
+        if not blocks:
+            return 0.0
+        intervals = {self._preventive[node].interval for node in blocks}
+        intervals |= {
+            self._inspection[node].interval for node in self._inspection
+        }
+        period = _common_period(intervals)
+        due: dict = {}
+        for node in blocks:
+            interval = self._preventive[node].interval
+            for k in range(int(round(period / interval))):
+                instant = round(k * interval / period, 12)
+                due.setdefault(instant, []).append(node)
+        instants = np.array(sorted(due)) * period
+        # Just after each block time, before its replacements start (an
+        # inspection due then is done).
+        base = self._availabilities_at(instants + 1e-9 * period)
+        before, after = dict(base), dict(base)
+        for column, key in enumerate(sorted(due)):
+            for node in due[key]:
+                cycle = self._block_cycle(node)
+                before[node] = np.array(before[node], dtype=float)
+                after[node] = np.array(after[node], dtype=float)
+                before[node][column] = cycle.before
+                after[node][column] = cycle.after
+        before = self._probabilities_with_overrides(
+            before, working_nodes, broken_nodes
+        )
+        after = self._probabilities_with_overrides(
+            after, working_nodes, broken_nodes
+        )
+        fall = np.asarray(self.system_probability(before)) - np.asarray(
+            self.system_probability(after)
+        )
+        return float(np.sum(fall)) / period
 
     def _long_run_grid(self) -> Tuple[np.ndarray, np.ndarray]:
         """The times, and their weights (which sum to 1), that the exact
@@ -3617,15 +5154,19 @@ class RepairableRBD(RBD):
         nested = [
             node
             for node, c in self.components.items()
-            if isinstance(c, RepairableRBD) and c._has_inspection()
+            if isinstance(c, RepairableRBD) and c._has_calendar()
         ]
-        if nested and len(nested) + len(self._inspection) > 1:
+        blocks = self._block_nodes()
+        if nested and len(nested) + len(self._inspection) + len(blocks) > 1:
             raise NotImplementedError(
                 f"Node(s) {sorted(nested, key=str)} are RBDs with hidden "
-                "failures, and other nodes' inspections here fall at the "
-                "same times: estimate the long-run values by simulation, "
-                "with availability() or cost()."
+                "failures or block replacement, and other nodes' inspections "
+                "or block replacements here fall at the same times: "
+                "estimate the long-run values by simulation, with "
+                "availability() or cost()."
             )
+        if blocks:
+            return self._calendar_grid(blocks)
         if not self._inspection:
             return np.zeros(1), np.ones(1)
         rates = {node: self._inspected_rate(node) for node in self._inspection}
@@ -3662,11 +5203,14 @@ class RepairableRBD(RBD):
         last inspection, for a component with hidden failures; its constant
         long-run availability for any other."""
         out: dict = {}
+        blocks = set(self._block_nodes())
         for node in self.components:
             if node in self._inspection:
                 rate, interval = self._inspected_rate(node)
                 since = times - interval * np.floor(times / interval)
                 out[node] = np.exp(-rate * since)
+            elif node in blocks:
+                out[node] = self._block_profile(node, times)
             else:
                 out[node] = np.full(len(times), self._node_availability(node))
         for node in self.in_or_out:
@@ -3704,25 +5248,40 @@ class RepairableRBD(RBD):
         schedule = self._preventive.get(node)
         if schedule is None:
             return component.failure_frequency(), 0.0, 0.0
-        _, cycle, survives = self._maintenance_cycle(node, schedule)
-        maintained = survives / cycle
+        _, cycle, failures, maintenances = self._maintenance_cycle(
+            node, schedule
+        )
+        maintained = maintenances / cycle
         planned = 0.0 if schedule.duration is None else maintained
-        return (1.0 - survives) / cycle, maintained, planned
+        return failures / cycle, maintained, planned
 
     def _maintenance_cycle(
         self, node, schedule: _Preventive
-    ) -> Tuple[float, float, float]:
-        """A component's renewal cycle under age replacement: its mean up
-        time and mean length, and the probability that it ends in a
-        preventive replacement (the rest end in a failure)."""
-        if schedule.policy == "block":
-            raise NotImplementedError(
-                f"Component {node!r} is under block replacement, which has "
-                "no exact long-run availability, failure frequency or cost "
-                "rate: estimate them by simulation, with availability() or "
-                "cost()."
-            )
+    ) -> Tuple[float, float, float, float]:
+        """A component's renewal cycle under preventive maintenance: its mean
+        up time, mean length, mean number of failures and mean number of
+        preventive replacements.
+
+        Under age replacement a cycle ends at a failure or at a preventive
+        replacement, whichever comes first. Under block replacement it runs
+        from one block time at which the unit is up (and replaced) to the
+        next, with any failures and repairs in between (see
+        ``_block_replacement``); it is computed once and kept."""
         component = self.components[node]
+        if schedule.policy == "block":
+            block = self._block_cycle(node)
+            return block.up, block.length, block.failures, 1.0
+        # Kept by interval, as a search over intervals revisits them.
+        cache = self.__dict__.setdefault("_age_cycles", {})
+        key = (
+            node,
+            id(component.reliability),
+            id(component.time_to_replace),
+            float(schedule.interval),
+            id(schedule.duration),
+        )
+        if key in cache:
+            return cache[key]
         up = float(component.avg_replacement_time(schedule.interval))
         survives = float(
             np.ravel(component.reliability_function(schedule.interval))[0]
@@ -3735,7 +5294,8 @@ class RepairableRBD(RBD):
             + (1.0 - survives) * model_mean(component.time_to_replace)
             + survives * maintenance
         )
-        return up, cycle, survives
+        cache[key] = (up, cycle, 1.0 - survives, survives)
+        return cache[key]
 
     def system_failure_frequency(
         self,
@@ -3756,7 +5316,9 @@ class RepairableRBD(RBD):
         ``omega_i`` is node i's long-run failure frequency: ``1 / (MTTF_i +
         MTTR_i)`` for a component, ``F(T) / C`` for one under age
         replacement at ``T`` (``C`` its mean renewal cycle, see
-        ``expected_cost_rate``), and a nested ``RepairableRBD``'s own
+        ``expected_cost_rate``), its mean failures per renewal cycle over
+        the cycle's mean length for one under block replacement, and a
+        nested ``RepairableRBD``'s own
         ``system_failure_frequency``. Exact for independent repairable
         nodes, with no simulation. Every system failure counts, including
         the zero-length outages an instantly repaired component causes;
@@ -3784,7 +5346,8 @@ class RepairableRBD(RBD):
             node, or is in both sets; or if a component has a
             non-parametric reliability model.
         NotImplementedError
-            If a component is under block replacement.
+            If a component is under block replacement with models its exact
+            values do not cover (see ``node_availability``).
 
         Examples
         --------
@@ -3826,6 +5389,7 @@ class RepairableRBD(RBD):
         )
         birnbaum = super()._birnbaum_importance(availability)
         failures = planned = 0.0
+        blocks = set(self._block_nodes())
         for node in self.components:
             if node in forced:
                 # A forced node never changes state, so it contributes no
@@ -3837,10 +5401,17 @@ class RepairableRBD(RBD):
                 rate, _ = self._inspected_rate(node)
                 node_failures: Any = rate * availability[node]
                 node_planned: Any = 0.0
+            elif node in blocks:
+                # Its failure intensity varies over its block interval; its
+                # replacements fall at block times (counted below).
+                node_failures = self._block_profile(node, times, rates=True)
+                node_planned = 0.0
             else:
                 node_failures, _, node_planned = self._node_frequencies(node)
             failures += float(weights @ (importance * node_failures))
             planned += float(weights @ (importance * node_planned))
+        if blocks:
+            planned += self._block_outages(working_nodes, broken_nodes)
         return failures, planned
 
     def mean_time_between_failures(

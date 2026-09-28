@@ -159,12 +159,14 @@ def test_an_optimum_beyond_max_interval_warns():
     assert interval == pytest.approx(100.0 * 5000.0**0.5, rel=0.012)
 
 
-def test_an_optimum_the_simulation_cannot_resolve_warns():
+def test_an_optimum_beyond_the_horizon_warns():
     """With overhauls 1000 times dearer than repairs, the minimal-repair
-    optimum (3162) lies far beyond the ages whose failures the simulation can
-    resolve. The search shortens its horizon to the age at which the
-    baseline survival is 1e-10 and warns that the cost rate is still falling
-    there, rather than returning a false optimum."""
+    optimum (3162) lies beyond the default horizon (15 times the mean,
+    1329.34). The search returns at most the horizon and warns, once, that
+    the cost rate is still falling there, rather than returning a false
+    optimum. A simulator that cannot resolve failures that far (surpyval
+    0.20's) makes it shorten the horizon first, to where the baseline
+    survival is 1e-10, and say so."""
     rep = Repairable(_gr(1.0, kijima="i"))
     rep.set_repair_and_overhaul_costs(1.0, 1000.0)
     with warnings.catch_warnings(record=True) as caught:
@@ -174,19 +176,46 @@ def test_an_optimum_the_simulation_cannot_resolve_warns():
         )
     messages = [str(w.message) for w in caught]
     assert len(messages) == 1
-    assert "shortened from 1329.34" in messages[0]
-    assert interval == pytest.approx(100.0 * np.log(1e10) ** 0.5)
+    assert "still falling at the search horizon" in messages[0]
+    if "shortened from 1329.34" in messages[0]:
+        assert interval == pytest.approx(100.0 * np.log(1e10) ** 0.5)
+    else:
+        assert "Raise max_interval" in messages[0]
+        assert interval == pytest.approx(15.0 * 100.0 * np.sqrt(np.pi) / 2)
 
 
 def test_stalls_the_search_cannot_avoid_are_reported():
-    """With q > 1 (repairs leave the unit older than before the failure) the
-    virtual age outruns the real age, so the simulation stalls even within
-    the shortest horizon the search uses. surpyval's warning must then reach
-    the caller, not be swallowed with those of the discarded attempts."""
+    """When the simulation is cut short at every horizon the search tries
+    (as surpyval 0.20's was for q > 1, where the virtual age outruns the
+    real age), the simulator's warning must reach the caller, not be
+    swallowed with those of the discarded attempts."""
+    rep = Repairable(
+        _CutShort(
+            1e-9,
+            "Some sequences produced a near-zero interarrival time (< tol) "
+            "before reaching T; they were ended early at their last event.",
+        )
+    )
+    rep.set_repair_and_overhaul_costs(10.0, 50.0)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        rep.find_optimal_overhaul_interval(max_interval=2000.0)
+    messages = [str(w.message) for w in caught]
+    assert any("near-zero interarrival time" in m for m in messages)
+
+
+def test_repairs_that_age_the_unit_bring_the_overhaul_forward():
+    """With q > 1 each repair leaves the unit older than before the
+    failure, so it wears out faster than under minimal repair and should be
+    overhauled sooner than minimal repair's optimum, 100 * sqrt(5)."""
     rep = Repairable(_gr(1.5, kijima="i"))
     rep.set_repair_and_overhaul_costs(10.0, 50.0)
-    with pytest.warns(UserWarning, match="near-zero interarrival time"):
-        rep.find_optimal_overhaul_interval(seed=0, n_simulations=100)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # surpyval 0.20's simulator stalls
+        interval = rep.find_optimal_overhaul_interval(
+            seed=0, n_simulations=100
+        )
+    assert 100.0 < interval < 100.0 * 5.0**0.5
 
 
 def test_reproducible_with_seed():

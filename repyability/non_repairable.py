@@ -460,8 +460,10 @@ class NonRepairable:
         - Parametric model: an exponential lifetime, or a Weibull with
           shape ``beta <= 1``, does not wear out, so preventive
           replacement never pays and ``inf`` is returned at once (unless
-          the model has an offset ``gamma``, zero-inflation ``f0`` or a
-          limited failure population ``p``). Otherwise
+          the model has an offset ``gamma`` or zero-inflation ``f0``). So
+          does a limited failure population (``p < 1``), whatever its
+          shape: running to failure then costs nothing in the long run
+          (see below). Otherwise
           ``scipy.optimize.minimize`` (BFGS) searches over ``log(t)``,
           starting from the mean life, and its result is kept in the
           ``optimisation_results`` attribute. With an offset ``gamma`` no
@@ -537,6 +539,11 @@ class NonRepairable:
                 stacklevel=2,
             )
         if self.model_parameterization == "parametric":
+            if never_fails(self.reliability) > 0.0:
+                # Some units never fail: in the long run one of them is in
+                # place for good, so running to failure costs nothing per
+                # unit time and any replacement age costs more.
+                return np.inf
             if is_exponential(self.reliability) and not (
                 getattr(self.reliability, "offset", False)
                 or getattr(self.reliability, "zi", False)
@@ -560,7 +567,7 @@ class NonRepairable:
             # When using a parametric distribution the optimisation is
             # straight forward. Simply find the point in the support where
             # the cost rate is minimised. Uses quadrature to integrate!
-            mean = self.reliability.mean()
+            mean = model_mean(self.reliability)
             old_err_state = np.seterr(all="ignore")
             res = minimize(self._cost_rate_with_log_x, np.log(mean), tol=1e-10)
             self.optimisation_results = res

@@ -7,6 +7,131 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-28
+
+Meet a repairable system's availability and cost targets. Choose the
+age-replacement intervals of its components together
+(`optimal_replacement_intervals`), the proof-test intervals that keep a
+safety function's PFDavg within its target (`optimal_inspection_intervals`),
+and the availability, MTTF and MTTR each component needs
+(`availability_allocation`, `mttf_mttr_allocation`). Block replacement now
+has exact long-run values, like age replacement and inspection, averaged
+over the schedules of components maintained or tested together. Node models
+are saved in surpyval's own format, and RePyability works with surpyval's
+next release as well as with 0.20.
+
+Behaviour changes: node models are saved in surpyval's format, which earlier
+versions cannot load (files they saved still load); a `RegressionNode` on a
+Cox model raises from `mean()` and `random()`, as documented, instead of
+returning a number; one with a proportional-odds model and a covariate
+schedule follows surpyval (see Fixed); and a simulated `StandbyModel` or
+`LoadSharingModel` gives a float for a single time, as the others do, where
+it gave a 1-element array.
+
+### Added
+
+- **Availability allocation** (#107):
+  `RepairableRBD.availability_allocation(target, method=...)` runs a
+  reliability allocation method (`"cost_based"`, `"improvement"`,
+  `"minimum_effort"` or `"equal"`) on the components' long-run
+  availabilities, scoring the system as `mean_availability` does, and gives
+  for each component the MTTF that meets its share at the current MTTR and
+  the MTTR that meets it at the current MTTF.
+  `RepairableRBD.mttf_mttr_allocation(target)` chooses the cheapest MTTFs
+  and MTTRs together: Mettas's cost-based allocation with both levers, each
+  with its own feasibility and limit; `levers="mttr"` holds the failure
+  behaviour (maintainability allocation). Only components with corrective
+  repair alone are allocated; those with preventive maintenance or
+  inspection keep their availability, and enter over their calendar, so the
+  allocation meets the target exactly. The results are
+  `AvailabilityAllocation`s.
+- **Choosing proof-test intervals**:
+  `RepairableRBD.optimal_inspection_intervals()` chooses the inspection
+  interval of components with hidden failures for the lowest cost rate, the
+  lowest that keeps the system availability to a target (for a safety
+  function, a PFDavg of at most `1 - min_availability`), or the highest
+  availability within a cost rate (#94). Components tested at the same times
+  are down together, so the intervals are chosen from a calendar
+  (`allowed`): every combination when there are at most 2000, a local search
+  otherwise. One inspected component's interval can be chosen freely. A
+  1oo2 pair of shutdown valves meets a PFDavg of `1e-3` with tests every two
+  years, where one valve needs them monthly.
+- **Choosing maintenance intervals for the system**:
+  `RepairableRBD.optimal_replacement_intervals()` chooses the age-replacement
+  interval of every component (or of those named) together, for the lowest
+  long-run cost rate, the lowest that keeps the system availability to a
+  target (`min_availability`), or the highest availability within a cost
+  rate (`max_cost_rate`) (#93). The long-run values are exact, and the search
+  is a gradient search from several starting points; it returns a
+  `MaintenancePlan`. A component alone in the line comes out replaced later
+  than the same component with a standby, whose replacements cost the plant
+  nothing.
+- **Exact long-run values for block replacement** (#92). A `RepairableRBD`
+  with components under block replacement now has an exact
+  `mean_availability`, `system_failure_frequency`, MUT, MDT, MTBF,
+  `expected_cost_rate`, `total_cost`, importance measures and
+  `allocate_redundancy`, which used to raise `NotImplementedError`. A
+  component's renewals are the block times at which it is up; between two of
+  them it is an alternating renewal process of lives and repairs, and a
+  repair can run over a block time. The renewal equations are solved on a
+  grid, to about one part in a million. Components replaced at the same
+  block times go down together, so the system's values average over the
+  block interval (over the time the schedules take to repeat together, with
+  different intervals) instead of combining each component's own average: a
+  pair of pumps in parallel, both replaced at the same block times, is down
+  for every replacement, which the per-component average misses entirely.
+  The exact values need a surpyval parametric lifetime with a density and
+  repairs that always end; the simulation covers the rest.
+- **Non-parametric node models can be saved** (#85): Kaplan–Meier,
+  Nelson–Aalen and the other surpyval non-parametric fits, which used to
+  raise `NotImplementedError`.
+- An `upstream` workflow runs the tests against surpyval's development
+  branch on pull requests, on pushes to dev and master, and daily, so a
+  surpyval change that breaks RePyability shows before surpyval releases it.
+
+### Changed
+
+- A simulated `StandbyModel` or `LoadSharingModel` (a Kaplan–Meier fit to
+  simulated lifetimes) answers `sf` and `ff` in the shape of the query, a
+  float for a single time, as the closed forms do. It gave a 1-element array
+  on surpyval 0.20 and a float on surpyval's next release, which returns
+  every model's values in the shape of the query (surpyval#381); now it
+  gives the same on both, and a 2-D query keeps its shape.
+- **Node models are saved in surpyval's own format** (#85):
+  `{"kind": "surpyval", "model": model.to_dict()}`, loaded with
+  `surpyval.from_dict`, instead of RePyability's name-and-parameters format.
+  Everything surpyval keeps round-trips, including a fit's covariance, so
+  parameter uncertainty can still be propagated after loading. Files saved
+  by earlier versions still load, but files saved by 0.10.0 do not load in
+  earlier versions.
+- The simulated numbers of imperfect repair in the maintenance guide and the
+  `Repairable` examples are quoted as approximate: surpyval's next release
+  simulates recurrent events differently, so the same seed gives slightly
+  different estimates.
+
+### Fixed
+
+- **Works with surpyval's next release** (#106). surpyval's development
+  branch makes `mean()` infinite when some units never fail (`p < 1`),
+  refuses infinite observations, and fixes a Cox model's survival before its
+  first event. RePyability relied on the old behaviour in three places,
+  which now work on surpyval 0.20 and on its next release alike:
+  - a cold standby (and a `RepeatedStandbyNode`) of units that may never fail
+    gave `nan`: its grid is now sized by the mean lifetime of the units
+    that fail;
+  - a warm standby, or a simulated k-out-of-n standby, of such units raised
+    `ValueError`: the arrangements that never fail are now right-censored in
+    the Kaplan-Meier fit;
+  - a `RegressionNode`'s `mean()` and `random()` on a Cox model returned a
+    number instead of raising as documented: a semiparametric model is now
+    recognised by its type, not by the shape of its curve.
+- `NonRepairable.find_optimal_replacement()` returns `inf` at once for a
+  model some of whose units never fail, instead of reaching it by a search
+  that started from `log(mean())`.
+- A `RegressionNode` with a proportional-odds model and a covariate
+  `schedule` follows surpyval: refused where surpyval cannot evaluate it
+  (0.20), and surpyval's survival along the path where it can.
+
 ## [0.9.0] - 2026-09-28
 
 The **Design and Maintenance** milestone. Choose redundancy and component
