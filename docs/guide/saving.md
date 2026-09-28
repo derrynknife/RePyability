@@ -30,7 +30,8 @@ What is saved:
 - the structure: edges, `k`, input and output nodes, `on_infeasible_rbd`,
   repeated components and nested RBDs (of either kind);
 - common-cause groups, and for a `RepairableRBD` every cost, including cost
-  distributions, `"instant"` repairs and `NonRepairable` components;
+  distributions and acquisition costs, preventive and inspection schedules,
+  `"instant"` repairs and `NonRepairable` components;
 - the node models: surpyval parametric distributions and
   `FixedEventProbability` by name and parameters, `PerfectReliability` and
   `PerfectUnreliability`, and the standby, repeated, repeated-standby,
@@ -62,8 +63,8 @@ Every Monte-Carlo method takes a `seed`:
 
 | Where | Methods |
 |---|---|
-| `NonRepairableRBD` | `random`, `mean`, `mean_time_to_failure`, `mean_time_to_failure_interval`, `node_mttf` |
-| `RepairableRBD` | `availability`, `cost` |
+| `NonRepairableRBD` | `random`, `mean`, `mean_time_to_failure`, `mean_time_to_failure_interval`, `compare`, `node_mttf` |
+| `RepairableRBD` | `availability`, `cost`, `compare` |
 | Node models | `StandbyModel(seed=...)`, `LoadSharingModel(seed=...)`, `RepeatedNode.random`/`mean`, `RepeatedStandbyNode.random`, `StandbyModel.random`, `LoadSharingModel.random` |
 | `Repairable` | every simulation-backed method |
 
@@ -87,7 +88,10 @@ unaffected.
 
 The simulations draw the same random numbers in the same order however they
 are computed internally (in blocks for speed, or one at a time), so seeded
-results do not depend on which internal path a model takes.
+results do not depend on which internal path a model takes. A parallel run
+(`n_jobs`) seeds each block of simulations in turn from `seed`, so its
+results do not depend on the number of processes; they differ from a run
+without `n_jobs` (see [Parallel runs](simulation.md#parallel-runs)).
 
 ## What is exact and what is simulated
 
@@ -98,37 +102,48 @@ results do not depend on which internal path a model takes.
 | `time_to_reliability`, `bx_life`, `remaining_life` | Exact reliability, inverted by root-finding. |
 | `parameter_sensitivity` | Exact Birnbaum importance times a numerical parameter derivative. |
 | `random`, `mean`, `mean_time_to_failure(_interval)`, `node_mttf` (composite nodes) | Monte-Carlo. |
-| `mean_availability`, `system_failure_frequency`, MUT/MDT/MTBF, `expected_cost_rate`, the repairable importance measures | Exact, from the long-run node availabilities. |
+| `mean_availability`, `system_failure_frequency`, MUT/MDT/MTBF, `expected_cost_rate`, `total_cost`, the repairable importance measures | Exact, from the long-run node availabilities. |
 | `availability`, `cost`, the simulated criticality measures | Discrete-event simulation. |
 | Standby and load-sharing node reliability | Exact or numerical where a closed form or convolution applies, otherwise simulated (see [Redundancy models](redundancy-models.md#how-the-survival-function-is-obtained)). |
-| `allocate_redundancy` | Exact scoring; `method="exact"` is a proven optimum, `"greedy"` a heuristic. |
+| `allocate_redundancy` (both kinds of RBD) | Exact scoring; `method="exact"` is a proven optimum, `"greedy"` a heuristic. |
 | `Repairable` policies | Analytic for a power-law process, simulated for imperfect repair. |
 
 ## Performance
 
-- **The exact engine is fast and cached.** It decomposes the system once per
-  RBD and replays the decomposition for every evaluation, so importance
-  measures, allocation searches and array-valued times are cheap after the
-  first call. Minimal cut sets are also derived once per RBD.
-- **Structure size.** The number of minimal path and cut sets can grow very
-  fast with the size and meshing of a diagram; systems of a few hundred
-  nodes in series or parallel are routine, and wide ones of over a thousand
-  work, while densely meshed diagrams get expensive sooner (but see the
-  known limit below for long chains). `get_all_path_sets()` enumerates every
-  simple path and is the first thing to avoid on a large diagram.
+- **The exact engine is fast and cached.** On construction it reduces the
+  diagram's series, parallel and *k*-out-of-*n* parts to modules with closed
+  forms, and decomposes whatever is left once; every evaluation replays the
+  result, so importance measures, allocation searches and array-valued times
+  are cheap. Minimal path and cut sets are derived once per RBD, on first
+  use.
+- **Structure size.** Series-parallel diagrams stay fast at any size: they
+  reduce to a single module, and their path sets are never listed. Thirty
+  duplicated stages in series have `2**30` minimal path sets, yet `sf` over
+  400 times takes milliseconds. The cost is in the part that does not reduce
+  (bridges, cross-ties, shared nodes): it grows with that part's number of
+  minimal path sets, which multiplies with meshing, so a long chain of
+  bridges gets expensive. Only `get_min_path_sets()`, `path_set_probabilities`
+  and `fussell_vesely(fv_type="p")` list every path set, and
+  `get_all_path_sets()` every simple path: avoid them on large redundant
+  diagrams.
 - **Simulations** are vectorised where the models allow it: `mean()` of a
   system of parametric components draws 100 000 lifetimes in well under a
   second. Availability simulations step through events, so their cost grows
   with `N` times the number of failures and repairs in the window.
 - **Monte-Carlo error** shrinks like `1/√N`: use the confidence intervals
-  (`mean_time_to_failure_interval`, `availability_interval`,
-  `CostResult.mean_interval`) to choose `N`.
+  (`mean_time_to_failure_interval`, `mean_availability_interval`,
+  `availability_interval`, `CostResult.mean_interval`) to judge `N`, or pass
+  a `tolerance` to simulate until they are narrow enough. Antithetic pairs
+  and common random numbers (`compare`) get more precision from each
+  simulation, and `n_jobs` spreads the simulations over several processes:
+  see [Simulation precision and speed](simulation.md).
 
-!!! note "Known limit: long chains in series"
-    The minimal path sets are found recursively, one level per node along
-    the longest path, so building an RBD with a chain of about a thousand or
-    more nodes in series exceeds Python's default recursion limit of 1,000
-    and raises
+!!! note "Known limit: long paths through a mesh"
+    The minimal path sets of the part of a diagram that does not reduce are
+    found recursively, one level per node along its longest path, so a
+    non-series-parallel part with a path of about a thousand or more nodes
+    exceeds Python's default recursion limit of 1,000 and raises
     `RecursionError`. Raise the limit before building such an RBD:
-    `sys.setrecursionlimit(10_000)` handles chains of several thousand nodes.
-    Wide systems (many nodes in parallel) are not affected.
+    `sys.setrecursionlimit(10_000)` handles paths of several thousand nodes.
+    Series chains and parallel groups are reduced first, so long chains and
+    wide systems are not affected.

@@ -12,8 +12,12 @@ taking already-fitted lifetime models (from
 [surpyval](https://github.com/derrynknife/SurPyval) or anything exposing
 `sf`/`ff`) as its components:
 
+- **Fault trees**: static fault trees (OR, AND and VOTE gates, repeated
+  events) evaluated exactly, with cut sets, importance measures and
+  conversion to and from block diagrams.
 - **Reliability**: exact system reliability, hazard and conditional survival;
-  MTTF with confidence intervals; B*X* life.
+  MTTF with confidence intervals; B*X* life; uncertainty intervals from
+  uncertain (fitted) component models.
 - **Importance**: Birnbaum, improvement potential, RAW, RRW, criticality,
   Fussell–Vesely, structural importance and parameter sensitivity.
 - **Live state**: reliability, remaining life and importance given each
@@ -22,9 +26,13 @@ taking already-fitted lifetime models (from
   load sharing; beta-factor and MGL common-cause groups.
 - **Repairable systems**: exact long-run availability, failure frequency and
   MUT/MDT/MTBF; simulated availability over time with criticality measures.
+- **Simulation**: seeded Monte-Carlo run to a tolerance, antithetic pairs,
+  parallel runs, and comparisons of designs with common random numbers.
 - **Cost, design and maintenance**: exact and simulated running costs,
-  including scheduled (age or block) preventive replacement at system level,
-  optimal redundancy allocation, reliability allocation by the classic named
+  including scheduled (age or block) preventive replacement at system level
+  and hidden failures found by periodic inspection, the total cost of
+  ownership, optimal redundancy allocation (for the lowest total cost of a
+  repairable system, too), reliability allocation by the classic named
   methods (equal and ARINC-style apportionment, minimum effort, cost-based),
   and age-replacement and overhaul policies.
 

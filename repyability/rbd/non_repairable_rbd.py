@@ -9,6 +9,8 @@ import functools
 import math
 import pprint
 import warnings
+import zlib
+from concurrent.futures import ProcessPoolExecutor
 from copy import copy
 from dataclasses import dataclass, field
 from queue import PriorityQueue
@@ -28,15 +30,14 @@ from typing import (
     cast,
 )
 
-import networkx as nx
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.optimize import brentq
-from scipy.stats import norm
 from surpyval import NonParametric
 
 from repyability.utils.wrappers import conditional_survival, numpy_seed
 
+from . import _montecarlo as montecarlo
 from . import redundancy_allocation
 from ._model_utils import is_fixed_probability, parametric_spec
 from ._sampling import RowSampler, row_sampler
@@ -44,7 +45,7 @@ from .ccf import CCFGroup
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .load_sharing_node import LoadSharingModel
 from .node_state import NodeState
-from .rbd import RBD, _check_on_infeasible_rbd, _shannon_value_and_gradient
+from .rbd import RBD, _check_on_infeasible_rbd
 from .redundancy_allocation import ComponentOption, active_unreliability
 from .repeated_node import RepeatedNode
 from .repeated_standby_node import RepeatedStandbyNode
@@ -52,11 +53,33 @@ from .results import (
     ConfidenceInterval,
     RedundancyAllocation,
     ReliabilityRedundancyAllocation,
+    UncertaintyResult,
 )
 from .standby_node import StandbyModel
-
+from .uncertainty import draw_models
 
 # Event class for simulation
+#: Lifetimes per block of a parallel draw (see ``NonRepairableRBD.random``):
+#: each block is seeded by its position, so a parallel draw does not depend
+#: on the number of processes.
+RANDOM_BLOCK = 10_000
+
+
+def _random_block(task) -> np.ndarray:
+    """One block of a parallel draw (in its own process)."""
+    rbd, size, seed, antithetic = task
+    with numpy_seed(seed):
+        return rbd._draw(size, antithetic)
+
+
+def _check_lifetimes(lifetimes: np.ndarray) -> None:
+    if np.isnan(lifetimes).any():
+        raise ValueError(
+            "A node drew a NaN lifetime, which antithetic and common random "
+            "number draws cannot order; draw without them."
+        )
+
+
 @dataclass(order=True)
 class NodeFailure:
     """A node failure scheduled in the event-driven lifetime simulation.
@@ -208,11 +231,11 @@ class NonRepairableRBD(RBD):
         ``{node: model}`` for every component node (see above). A value
         that is the name of another node in this dict makes the key a
         *repeated* node: the same physical component drawn a second time.
-        Its edges are redirected to the node it repeats, so both places
-        share one component. That node cannot itself be a repeat, and the
-        redirected edges must not form a cycle. The input and output nodes
-        need no entry: they are always perfectly reliable, and a model
-        given for them is replaced.
+        It stays where it is drawn, and every appearance is the one
+        component: it works, or has failed, in all of them at once. That
+        node cannot itself be a repeat. The input and output nodes need no
+        entry: they are always perfectly reliable, and a model given for
+        them is replaced.
     k : dict[Any, int], optional
         ``{node: k}`` for k-out-of-n nodes: a node with ``n`` predecessors
         is reached only when at least ``k`` of them are reached through
@@ -265,7 +288,7 @@ class NonRepairableRBD(RBD):
         The validated common-cause groups.
     nodes : list
         The component nodes: every node except the input and output nodes
-        (repeated nodes are merged into the node they repeat).
+        and the repeated nodes (each is the component it repeats).
     input_node : Hashable
         The input node.
     output_node : Hashable
@@ -380,50 +403,20 @@ class NonRepairableRBD(RBD):
             if v not in reliabilities.keys()
         }
 
-        if repeated == {}:
-            super().__init__(
-                edges,
-                set(reliabilities.keys()),
-                k,
-                input_node,
-                output_node,
-                on_infeasible_rbd,
-            )
-            self.structure_check["has_repeated_node_in_cycle"] = False
-        else:
-            new_edges = []
-            for start, stop in edges:
-                if start in repeated:
-                    start = repeated[start]
-                if stop in repeated:
-                    stop = repeated[stop]
-                new_edges.append((start, stop))
-            super().__init__(
-                new_edges,
-                set(reliabilities.keys()),
-                k,
-                input_node,
-                output_node,
-                on_infeasible_rbd,
-            )
-            self.structure_check["has_repeated_node_in_cycle"] = False
-            if self.structure_check["has_cycles"]:
-                # Need to find if cycles are due to repeated components.
-                G = nx.DiGraph()
-                G.add_edges_from(edges)
-                cycles = {
-                    frozenset(cycle) for cycle in list(nx.simple_cycles(G))
-                }
-                non_repeated_node_cycles = copy(self.structure_check["cycles"])
-                for cycle in self.structure_check["cycles"]:
-                    if cycle not in cycles:
-                        non_repeated_node_cycles.remove(cycle)
-                        self.structure_check["has_repeated_node_in_cycle"] = (
-                            True
-                        )
-                if len(non_repeated_node_cycles) == 0:
-                    self.structure_check["has_cycles"] = False
-                self.structure_check["cycles"] = non_repeated_node_cycles
+        # A repeated node stays where it is drawn, and the exact engine
+        # treats every appearance as the one component it repeats (joining
+        # the nodes in the graph instead would add paths the diagram does
+        # not have). Set before the base class works out the structure.
+        self._aliases = dict(repeated)
+        super().__init__(
+            edges,
+            set(reliabilities.keys()),
+            k,
+            input_node,
+            output_node,
+            on_infeasible_rbd,
+        )
+        self.structure_check["has_repeated_node_in_cycle"] = False
 
         # Check for repeated cycles or non-repeated cycles
         if self.structure_check["has_unique_input_node"]:
@@ -438,7 +431,7 @@ class NonRepairableRBD(RBD):
         self.structure_check["is_missing_distributions"] = False
         self.structure_check["nodes_with_no_reliability_distribution"] = []
         for n in self.G.nodes:
-            if n not in reliabilities:
+            if n not in reliabilities and n not in repeated:
                 self.structure_check["is_valid"] = False
                 self.structure_check["is_missing_distributions"] = True
                 self.structure_check[
@@ -789,6 +782,229 @@ class NonRepairableRBD(RBD):
         0.01
         """
         return 1 - self.sf(x, *args, **kwargs)
+
+    def sf_uncertainty(
+        self,
+        x: Optional[ArrayLike] = None,
+        uncertainty: Optional[Dict[Hashable, Any]] = None,
+        *,
+        n_draws: int = 1000,
+        seed=None,
+    ) -> UncertaintyResult:
+        """System reliability over plausible node models (parameter
+        uncertainty).
+
+        A node's model is estimated from data, so its parameters are
+        uncertain: this is *epistemic* uncertainty, about what the model
+        is, as opposed to the aleatory variability the model describes.
+        Each of the ``n_draws`` draws gives every uncertain node a
+        plausible model, and the system reliability at ``x`` is computed
+        exactly for that draw (all draws at once, by the vectorised exact
+        engine). The spread of the results, and its percentiles
+        (``interval``), say how well the system reliability is known.
+
+        RePyability does not fit models: the draws use what the fit, done
+        in surpyval, provides. A node's uncertainty is one of:
+
+        - ``"fit"``: its parameters are drawn from the normal approximation
+          of its maximum-likelihood fit (surpyval's ``hess_inv``), on the
+          log scale for a parameter that must be positive and the logit
+          scale for one in (0, 1), so that every draw is valid; an offset,
+          zero-inflation or limited-failure-population parameter keeps its
+          fitted value;
+        - ``{parameter name: distribution}``: each named parameter is drawn
+          from its distribution (anything with ``qf`` or ``ppf``, such as a
+          surpyval or scipy.stats distribution), the others kept;
+        - a list of models (e.g. refits to bootstrap resamples, or
+          posterior draws, made in surpyval), drawn with replacement.
+
+        Nodes of one population, such as identical pumps fitted to the
+        same data, share their uncertainty: give them together as a tuple
+        of node names, and each draw gives them the same model. Drawing
+        them independently would understate the uncertainty, which is
+        about the one population's parameters.
+
+        Parameters
+        ----------
+        x : array_like, optional
+            Time/s, a number or an array. May be left out when every node
+            model, and every drawn model, is a fixed probability.
+        uncertainty : dict
+            ``{node or tuple of nodes: uncertainty}`` for the uncertain
+            nodes (see above). The other nodes keep their models.
+        n_draws : int, optional
+            The number of draws, by default 1000.
+        seed : int, optional
+            Seed for the draws, for reproducible results.
+
+        Returns
+        -------
+        UncertaintyResult
+            The system reliability of every draw (``samples``), the nominal
+            value with the nodes' own models, and summaries: ``mean``,
+            ``median``, ``std``, ``percentile`` and ``interval`` (see
+            [`UncertaintyResult`][repyability.UncertaintyResult]).
+
+        Raises
+        ------
+        ValueError
+            If ``uncertainty`` is empty, names an unknown, input, output or
+            repeated node, or names a node twice; if a tuple's nodes have
+            different models; if an uncertainty cannot be drawn (e.g.
+            ``"fit"`` for a model with no fitted covariance, or an unknown
+            parameter); if ``n_draws`` is not a positive integer; or if
+            ``x`` is left out for time-varying models.
+        NotImplementedError
+            If the RBD has common-cause groups.
+
+        Examples
+        --------
+        Two pumps in parallel, of one type whose exponential failure rate
+        is uncertain (known only to lie between 1 and 3 per 1000 h), in
+        series with a valve. Both pumps share the one uncertain rate:
+
+        >>> import scipy.stats as st
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "p1"), ("s", "p2"), ("p1", "v"), ("p2", "v"),
+        ...      ("v", "t")],
+        ...     {
+        ...         "p1": surv.Exponential.from_params([0.002]),
+        ...         "p2": surv.Exponential.from_params([0.002]),
+        ...         "v": surv.FixedEventProbability.from_params(0.01),
+        ...     },
+        ... )
+        >>> rate = {"failure_rate": st.uniform(0.001, 0.002)}
+        >>> result = rbd.sf_uncertainty(
+        ...     500, {("p1", "p2"): rate}, n_draws=10_000, seed=1
+        ... )
+        >>> round(result.nominal, 4)  # at the nominal rate, 2 per 1000 h
+        0.5944
+        >>> lower, upper = result.interval(0.9)
+        >>> round(lower, 3), round(upper, 3)
+        (0.409, 0.813)
+        """
+        self._require_no_ccf()
+        if isinstance(n_draws, bool) or not isinstance(
+            n_draws, (int, np.integer)
+        ):
+            raise ValueError(f"n_draws must be an integer, got {n_draws!r}.")
+        if n_draws < 1:
+            raise ValueError(f"n_draws must be at least 1, got {n_draws}.")
+        if not uncertainty:
+            raise ValueError(
+                "Give the uncertain nodes: uncertainty={node: 'fit'}, for "
+                "example."
+            )
+        components = set(self.nodes)
+        groups = []
+        seen: set = set()
+        for key, spec in uncertainty.items():
+            if key in components or not isinstance(key, tuple):
+                members = (key,)
+            else:
+                members = key
+            for node in members:
+                if node in self.repeated:
+                    raise ValueError(
+                        f"Node {node!r} is a repeat of {self.repeated[node]!r}"
+                        "; give the uncertainty of that node instead."
+                    )
+                if node not in components:
+                    raise ValueError(
+                        f"{node!r} in uncertainty is not a component node."
+                    )
+                if node in seen:
+                    raise ValueError(
+                        f"Node {node!r} is given an uncertainty twice."
+                    )
+                seen.add(node)
+            model = self.reliabilities[members[0]]
+            for node in members[1:]:
+                if not self._same_model(self.reliabilities[node], model):
+                    raise ValueError(
+                        f"Nodes {list(members)!r} share their uncertainty, "
+                        "so they must have the same model."
+                    )
+            groups.append((members, spec))
+
+        rng = np.random.default_rng(seed)
+        drawn: Dict[Hashable, list] = {}
+        for members, spec in groups:
+            label = (
+                f"Node {members[0]!r}"
+                if len(members) == 1
+                else f"Nodes {list(members)!r}"
+            )
+            models = draw_models(
+                self.reliabilities[members[0]], spec, n_draws, rng, label
+            )
+            for node in members:
+                drawn[node] = models
+
+        fixed = self.is_fixed and all(
+            self._model_is_fixed(m) for ms in drawn.values() for m in ms
+        )
+        if x is None:
+            if not fixed:
+                raise ValueError(
+                    "x is required: a node model's probability depends on "
+                    "time."
+                )
+            x = 1.0
+        scalar = np.ndim(x) == 0
+        times = np.atleast_1d(np.asarray(x, dtype=float))
+        probabilities: dict = {}
+        for node in self.nodes:
+            if node in drawn:
+                rows = [
+                    np.broadcast_to(
+                        np.asarray(m.sf(times), dtype=float), times.shape
+                    )
+                    for m in drawn[node]
+                ]
+                probabilities[node] = np.concatenate(rows)
+            else:
+                values = np.broadcast_to(
+                    np.asarray(self.reliabilities[node].sf(times), float),
+                    times.shape,
+                )
+                probabilities[node] = np.tile(values, n_draws)
+        samples = np.asarray(
+            self.system_probability(probabilities), dtype=float
+        ).reshape(n_draws, len(times))
+        nominal = np.asarray(self.sf(times), dtype=float)
+        if scalar:
+            return UncertaintyResult(
+                samples=samples[:, 0],
+                nominal=float(nominal.reshape(-1)[0]),
+                n_draws=n_draws,
+            )
+        return UncertaintyResult(
+            samples=samples, nominal=nominal, n_draws=n_draws
+        )
+
+    @staticmethod
+    def _same_model(a, b) -> bool:
+        """Whether two node models are the same: one object, or the same
+        distribution with the same parameters."""
+        if a is b:
+            return True
+        name_a = getattr(getattr(a, "dist", None), "name", None)
+        name_b = getattr(getattr(b, "dist", None), "name", None)
+        if name_a is None or name_a != name_b:
+            return False
+        params_a = np.ravel(np.asarray(getattr(a, "params", []), float))
+        params_b = np.ravel(np.asarray(getattr(b, "params", []), float))
+        return (
+            params_a.shape == params_b.shape
+            and bool(np.all(params_a == params_b))
+            and all(
+                getattr(a, extra, None) == getattr(b, extra, None)
+                for extra in ("gamma", "p", "f0")
+            )
+        )
 
     def allocate_redundancy(
         self,
@@ -1280,7 +1496,7 @@ class NonRepairableRBD(RBD):
             flat = flat[count:]
         limits = self._redundancy_limits(resources, budget)
         primary = self._redundancy_primary(resources, minimise, target)
-        caps = self._redundancy_caps(nodes, max_units)
+        caps = redundancy_allocation.redundancy_caps(nodes, max_units)
         fewest = self._redundancy_required(nodes, required, caps)
         ways = self._redundancy_strategies(nodes, strategy)
         switching = self._redundancy_switching(
@@ -1511,10 +1727,11 @@ class NonRepairableRBD(RBD):
             None if node_ways == ("active",) else strategies[i]
             for i, node_ways in enumerate(ways)
         ]
-        in_series = method == "exact" and all(
-            set(nodes) <= set(path_set)
-            for path_set in self.get_min_path_sets(include_in_out_nodes=False)
-        )
+        # Whether every node is in series with the rest (alone a cut set).
+        in_series = False
+        if method == "exact":
+            cut_sets = self.get_min_cut_sets()
+            in_series = all(frozenset([node]) in cut_sets for node in nodes)
         return SimpleNamespace(
             nodes=nodes,
             options=options,
@@ -2254,7 +2471,7 @@ class NonRepairableRBD(RBD):
 
         use_vectors = [vector(node) for node in nodes]
         limits = self._redundancy_limits(resources, budget)
-        caps = self._redundancy_caps(nodes, max_units)
+        caps = redundancy_allocation.redundancy_caps(nodes, max_units)
         for i, node in enumerate(nodes):
             if caps[i] == math.inf:
                 # Unbounded unless a limited resource grows with the copies.
@@ -2297,14 +2514,14 @@ class NonRepairableRBD(RBD):
                 x, set(), set()
             ).items()
         }
-        plan = self._shannon_plan("p")
+        structure = self._decomposition()
 
         def system(reliabilities):
             p = dict(base)
             q = {node: 1.0 - value for node, value in base.items()}
             for node, value in zip(nodes, reliabilities):
                 p[node], q[node] = value, 1.0 - value
-            value, gradient = _shannon_value_and_gradient(plan, p, q)
+            value, _, gradient = structure.value_and_gradient(p, q)
             return value, tuple(gradient.get(node, 0.0) for node in nodes)
 
         reliability, units, components = (
@@ -2327,41 +2544,6 @@ class NonRepairableRBD(RBD):
             cost=totals[resources[primary]],
             resources=totals,
         )
-
-    @staticmethod
-    def _redundancy_caps(nodes, max_units) -> list:
-        """Per-node copy limits for allocate_redundancy (inf = unlimited)."""
-        if max_units is None:
-            return [math.inf] * len(nodes)
-        if isinstance(max_units, dict):
-            unknown = set(max_units) - set(nodes)
-            if unknown:
-                raise ValueError(
-                    "max_units names node(s) not in costs: "
-                    f"{sorted(map(str, unknown))}."
-                )
-            limits = {n: max_units.get(n, math.inf) for n in nodes}
-        else:
-            limits = {n: max_units for n in nodes}
-        for node, limit in limits.items():
-            if limit is math.inf:
-                continue
-            if isinstance(limit, bool) or not isinstance(
-                limit, (int, np.integer)
-            ):
-                raise ValueError(
-                    f"max_units for node {node!r} must be an integer, got "
-                    f"{limit!r}."
-                )
-            if limit < 1:
-                raise ValueError(
-                    f"max_units for node {node!r} must be at least 1, got "
-                    f"{limit!r}."
-                )
-        return [
-            limits[n] if limits[n] is math.inf else int(limits[n])
-            for n in nodes
-        ]
 
     def unreliability(self, x: Optional[ArrayLike] = None, *args, **kwargs):
         """System unreliability at time/s ``x``; the same as ``ff``.
@@ -2894,20 +3076,29 @@ class NonRepairableRBD(RBD):
         """
         return len(self.get_non_analytic_nodes()) == 0
 
-    def random(self, size, seed=None):
+    def random(
+        self,
+        size,
+        seed=None,
+        *,
+        antithetic: bool = False,
+        n_jobs: Optional[int] = None,
+    ):
         """Draw ``size`` random system lifetimes (Monte-Carlo).
 
         Each node's lifetime is drawn independently from its own model's
         ``random``, and the system fails when its last working minimal path
         set breaks: each sample is the maximum, over the minimal path sets,
         of the minimum lifetime of the path set's members (k-out-of-n and
-        repeated nodes are handled through the path sets). When every
+        repeated nodes are accounted for). When every
         node's draws can be replayed as one block (e.g. surpyval parametric
         distributions, and composite nodes built from them), all samples
         are computed at once; otherwise they are simulated one at a time by
         failing nodes in time order until the system fails. Both paths draw
         the same random numbers in the same order, so they give identical
-        results.
+        results. Either way the system is worked out through the diagram's
+        modules, without listing its path sets, so a large redundant diagram
+        is sampled about as fast as a small one.
 
         Common-cause groups are ignored, without a warning: their
         basic-event model assumes a small failure probability, while a
@@ -2928,12 +3119,40 @@ class NonRepairableRBD(RBD):
             None (non-reproducible). It cannot make surpyval non-parametric
             node models (e.g. a Kaplan-Meier fit) reproducible: surpyval
             draws those from a fresh, OS-seeded generator on every call.
+        antithetic : bool, optional
+            Draw the lifetimes in antithetic pairs, by default False: the
+            second of each pair (samples ``2i`` and ``2i + 1``) is drawn
+            from ``1 - u`` for every uniform ``u`` the first drew. Each
+            lifetime is still a correct draw, but the two of a pair are
+            negatively correlated (for a system whose lifetime rises with
+            its nodes'), so their mean varies less than two independent
+            draws'. The pairs, not the lifetimes, are independent: estimate
+            a standard error from the pairs' means. ``size`` must be even,
+            and every node's draws must be replayable (as for the batched
+            sampling above), else ``NotImplementedError``.
+        n_jobs : int, optional
+            Draw in parallel, in blocks of ``RANDOM_BLOCK`` (10_000)
+            lifetimes, each seeded in turn from ``seed``, over ``n_jobs``
+            processes (-1: one per CPU). The blocks are the same however
+            many processes draw them, so the lifetimes do not depend on
+            ``n_jobs`` (any number, 1 included), but they differ from a
+            draw without it. By default None: one draw in this process.
 
         Returns
         -------
         numpy.ndarray
             ``size`` system lifetimes; ``inf`` in a sample where the system
             never fails (e.g. through a perfectly reliable path).
+
+        Raises
+        ------
+        ValueError
+            If ``size`` is not a positive integer (even, with
+            ``antithetic``) when ``antithetic`` or ``n_jobs`` is given, or
+            ``n_jobs`` is not a positive integer or -1.
+        NotImplementedError
+            If ``antithetic`` is asked for and a node's draws cannot be
+            replayed from uniforms (a node model sampled its own way).
 
         Examples
         --------
@@ -2950,11 +3169,85 @@ class NonRepairableRBD(RBD):
         >>> bool((lifetimes == rbd.random(5, seed=1)).all())
         True
         """
-        with numpy_seed(seed):
-            fast = self._random_vectorised(size)
-            if fast is not None:
-                return fast
-            return self._random_by_events(size)
+        if not antithetic and n_jobs is None:
+            with numpy_seed(seed):
+                return self._draw(size)
+        montecarlo.check_count(size, antithetic, "size")
+        jobs = None if n_jobs is None else montecarlo.jobs(n_jobs)
+        return self._simulate_lifetimes(size, seed, antithetic, jobs, None)
+
+    def _draw(self, size, antithetic: bool = False) -> np.ndarray:
+        """``size`` lifetimes from numpy's global RNG as it stands."""
+        if antithetic:
+            return self._random_antithetic(size)
+        fast = self._random_vectorised(size)
+        if fast is not None:
+            return fast
+        return self._random_by_events(size)
+
+    def _random_antithetic(self, size) -> np.ndarray:
+        """``size`` (even) lifetimes in antithetic pairs: the second of
+        each pair drawn from ``1 - u`` for the first's uniforms ``u``."""
+        sampler = self._row_sampler()
+        if sampler is None:
+            raise NotImplementedError(
+                "Antithetic sampling needs every node's draws to be "
+                "replayable from uniforms (surpyval parametric distributions "
+                "and the composite nodes built from them)."
+            )
+        u = np.random.random_sample((size // 2, sampler.width))
+        out = np.empty(size)
+        out[0::2] = sampler.draw(u)
+        out[1::2] = sampler.draw(1.0 - u)
+        _check_lifetimes(out)
+        return out
+
+    def _simulate_lifetimes(
+        self,
+        n: int,
+        seed,
+        antithetic: bool,
+        jobs: Optional[int],
+        stop: Optional[Callable[[np.ndarray], int]],
+    ) -> np.ndarray:
+        """``n`` lifetimes, then more while ``stop`` (given those so far)
+        asks for them: in this process from numpy's global RNG (seeded,
+        then restored, with a seed), or, with ``jobs``, in seeded blocks
+        over that many processes. Either way a run that stops at ``m``
+        lifetimes draws those it would in a run of ``m`` from the start,
+        in blocks of that run's first ``n``."""
+        seeds = np.random.SeedSequence(seed) if jobs is not None else None
+        executor = (
+            ProcessPoolExecutor(max_workers=jobs)
+            if jobs is not None and jobs > 1
+            else None
+        )
+        parts: List[np.ndarray] = []
+        try:
+            with numpy_seed(seed if jobs is None else None):
+                batch = n
+                while batch:
+                    if seeds is None:
+                        parts.append(self._draw(batch, antithetic))
+                    else:
+                        tasks = [
+                            (
+                                self,
+                                size,
+                                montecarlo.block_seed(seeds),
+                                antithetic,
+                            )
+                            for size in montecarlo.blocks(batch, RANDOM_BLOCK)
+                        ]
+                        if executor is None:
+                            parts.extend(map(_random_block, tasks))
+                        else:
+                            parts.extend(executor.map(_random_block, tasks))
+                    batch = 0 if stop is None else stop(np.concatenate(parts))
+        finally:
+            if executor is not None:
+                executor.shutdown()
+        return np.concatenate(parts)
 
     def _random_vectorised(self, size) -> Optional[np.ndarray]:
         """``random(size)`` without the per-sample event loop, when every
@@ -2979,18 +3272,22 @@ class NonRepairableRBD(RBD):
 
         A coherent system fails when its last intact path set breaks, so its
         lifetime is the max over minimal path sets of the min of their
-        members' lifetimes: the same value the event loop finds. A sample in
-        which any node drew NaN comes out NaN, so that the caller falls back
-        to the event loop, which orders NaN times its own way.
+        members' lifetimes: the same value the event loop finds. It is
+        worked out through the diagram's modules, without listing the path
+        sets: a series module fails at its members' first failure, a
+        parallel one at their last, and a k-out-of-n one at the failure that
+        leaves fewer than ``k`` working. A sample in which any node drew NaN
+        comes out NaN, so that the caller falls back to the event loop,
+        which orders NaN times its own way.
         """
-        nodes = list(self.G.nodes)
+        nodes = self._components()
         samplers: list[RowSampler] = []
         for node in nodes:
             node_sampler = row_sampler(self.reliabilities[node])
             if node_sampler is None:
                 return None
             samplers.append(node_sampler)
-        path_sets = self.get_min_path_sets(include_in_out_nodes=False)
+        structure = self._decomposition()
 
         def draw(u):
             size = len(u)
@@ -2999,17 +3296,19 @@ class NonRepairableRBD(RBD):
                 end = start + sampler.width
                 lifetimes[node] = sampler.draw(u[:, start:end])
                 start = end
-            out = np.full(size, -np.inf)
-            for path_set in path_sets:
-                path_life = np.full(size, np.inf)
-                for node in path_set:
-                    path_life = np.minimum(path_life, lifetimes[node])
-                out = np.maximum(out, path_life)
+            out = np.array(structure.lifetime(lifetimes, size), dtype=float)
             for lifetime in lifetimes.values():
                 out[np.isnan(lifetime)] = np.nan
             return out
 
         return RowSampler(sum(s.width for s in samplers), draw)
+
+    def _components(self) -> list:
+        """Every node of the diagram that is a component of its own (the
+        input and output included), in the diagram's order: a repeated node
+        is the component it repeats, which fails once for all its
+        appearances."""
+        return [n for n in self.G.nodes if n not in self.repeated]
 
     def _random_by_events(self, size) -> np.ndarray:
         """``random(size)`` by stepping through each sample's failures in
@@ -3017,7 +3316,7 @@ class NonRepairableRBD(RBD):
         out = np.zeros(size)
         for i in range(size):
             event_queue: PriorityQueue = PriorityQueue()
-            for node in self.G.nodes:
+            for node in self._components():
                 # .random(1) returns a 1-element array; take the scalar so
                 # the event time orders the PriorityQueue and assigns into
                 # ``out`` (NumPy >= 2 rejects assigning a 1-element array to
@@ -3026,7 +3325,7 @@ class NonRepairableRBD(RBD):
                 time = float(draw.reshape(-1)[0])
                 event_queue.put(NodeFailure(time, node))
 
-            working_nodes = {k: True for k in self.G.nodes}
+            working_nodes = {k: True for k in self._components()}
             system_working = True
             while system_working:
                 if event_queue.empty():
@@ -3044,7 +3343,17 @@ class NonRepairableRBD(RBD):
             out[i] = time
         return out
 
-    def mean(self, mc_samples: int = 100_000, seed=None):
+    def mean(
+        self,
+        mc_samples: int = 100_000,
+        seed=None,
+        *,
+        tolerance: Optional[float] = None,
+        confidence: float = 0.95,
+        max_samples: Optional[int] = None,
+        antithetic: bool = False,
+        n_jobs: Optional[int] = None,
+    ):
         """Mean time to failure (MTTF) of the system, by Monte-Carlo.
 
         The average of ``random(mc_samples, seed=seed)`` (see
@@ -3062,11 +3371,38 @@ class NonRepairableRBD(RBD):
             Number of system lifetimes to simulate, by default 100_000.
         seed : int or None, optional
             Seed for reproducibility (see ``random``), by default None.
+        tolerance : float, optional
+            Simulate until the MTTF is known to within ``tolerance`` (in
+            the lifetimes' units) either side, at ``confidence``: after the
+            first ``mc_samples`` lifetimes, and each further ``mc_samples``,
+            the run stops once the half-width of the confidence interval
+            of the mean is at most ``tolerance``, or ``max_samples`` have
+            been drawn (then with a RuntimeWarning). By default None: exactly
+            ``mc_samples``. A run that stops at ``m`` lifetimes gives the
+            result of a run of ``m`` from the start (without ``n_jobs``).
+        confidence : float, optional
+            The confidence level ``tolerance`` is judged at, by default
+            0.95.
+        max_samples : int, optional
+            The most lifetimes a run to ``tolerance`` draws, by default 100
+            times ``mc_samples``.
+        antithetic : bool, optional
+            Draw the lifetimes in antithetic pairs (see ``random``), by
+            default False. ``mc_samples`` must then be even.
+        n_jobs : int, optional
+            Draw in parallel over ``n_jobs`` processes (see ``random``), by
+            default None.
 
         Returns
         -------
         float
             The MTTF estimate.
+
+        Raises
+        ------
+        ValueError
+            If an option is invalid (see ``random``; ``max_samples``
+            without a ``tolerance``, or smaller than ``mc_samples``).
 
         Examples
         --------
@@ -3082,9 +3418,28 @@ class NonRepairableRBD(RBD):
         >>> print(f"{rbd.mean(mc_samples=10_000, seed=1):.1f}")
         98.9
         """
-        return self.random(mc_samples, seed=seed).mean().item()
+        samples = self._mttf_samples(
+            mc_samples,
+            seed,
+            tolerance,
+            confidence,
+            max_samples,
+            antithetic,
+            n_jobs,
+        )
+        return samples.mean().item()
 
-    def mean_time_to_failure(self, mc_samples: int = 100_000, seed=None):
+    def mean_time_to_failure(
+        self,
+        mc_samples: int = 100_000,
+        seed=None,
+        *,
+        tolerance: Optional[float] = None,
+        confidence: float = 0.95,
+        max_samples: Optional[int] = None,
+        antithetic: bool = False,
+        n_jobs: Optional[int] = None,
+    ):
         """Mean time to failure (MTTF) of the system; the same as ``mean``.
 
         A Monte-Carlo estimate from ``mc_samples`` simulated lifetimes (see
@@ -3097,19 +3452,47 @@ class NonRepairableRBD(RBD):
             Number of system lifetimes to simulate, by default 100_000.
         seed : int or None, optional
             Seed for reproducibility (see ``random``), by default None.
+        tolerance : float, optional
+            Simulate until the MTTF is known to within ``tolerance`` either
+            side (see ``mean``), by default None.
+        confidence : float, optional
+            The confidence level ``tolerance`` is judged at, by default
+            0.95.
+        max_samples : int, optional
+            The most lifetimes a run to ``tolerance`` draws, by default 100
+            times ``mc_samples``.
+        antithetic : bool, optional
+            Draw the lifetimes in antithetic pairs (see ``random``), by
+            default False.
+        n_jobs : int, optional
+            Draw in parallel over ``n_jobs`` processes (see ``random``), by
+            default None.
 
         Returns
         -------
         float
             The MTTF estimate.
         """
-        return self.mean(mc_samples, seed=seed)
+        return self.mean(
+            mc_samples,
+            seed=seed,
+            tolerance=tolerance,
+            confidence=confidence,
+            max_samples=max_samples,
+            antithetic=antithetic,
+            n_jobs=n_jobs,
+        )
 
     def mean_time_to_failure_interval(
         self,
         mc_samples: int = 100_000,
         confidence: float = 0.95,
         seed=None,
+        *,
+        tolerance: Optional[float] = None,
+        max_samples: Optional[int] = None,
+        antithetic: bool = False,
+        n_jobs: Optional[int] = None,
     ) -> ConfidenceInterval:
         """Monte-Carlo MTTF estimate with a confidence interval.
 
@@ -3117,10 +3500,11 @@ class NonRepairableRBD(RBD):
         (see [`random`][repyability.NonRepairableRBD.random]; common-cause
         groups are ignored). By the central limit theorem its sampling
         error is normal with standard error
-        ``sample std / sqrt(mc_samples)``, from which the two-sided
-        interval ``estimate +/- z * standard_error`` is built; the lower
-        bound is clipped at 0. The interval describes the simulation
-        error only, not uncertainty in the node models.
+        ``sample std / sqrt(mc_samples)`` (of the antithetic pairs' means,
+        over the square root of their number, with ``antithetic``), from
+        which the two-sided interval ``estimate +/- z * standard_error`` is
+        built; the lower bound is clipped at 0. The interval describes the
+        simulation error only, not uncertainty in the node models.
 
         Parameters
         ----------
@@ -3130,6 +3514,26 @@ class NonRepairableRBD(RBD):
             The confidence level, in (0, 1), by default 0.95.
         seed : int or None, optional
             Seed for reproducibility (see ``random``), by default None.
+        tolerance : float, optional
+            Simulate until the interval is at most ``tolerance`` either side
+            of the estimate: after the first ``mc_samples`` lifetimes, and
+            each further ``mc_samples``, the run stops once it is, or once
+            ``max_samples`` have been drawn (then with a RuntimeWarning). By
+            default None: exactly ``mc_samples``. Without ``n_jobs``, a run
+            that stops at ``m`` lifetimes gives the result of a run of ``m``
+            from the start.
+        max_samples : int, optional
+            The most lifetimes a run to ``tolerance`` draws, by default 100
+            times ``mc_samples``.
+        antithetic : bool, optional
+            Draw the lifetimes in antithetic pairs (see ``random``), by
+            default False: a narrower interval for the same number of
+            lifetimes, when the system's lifetime rises with its nodes' (as
+            a coherent system's does). ``mc_samples`` must then be even.
+        n_jobs : int, optional
+            Draw in parallel over ``n_jobs`` processes (-1: one per CPU; see
+            ``random``), by default None. The result does not depend on the
+            number of processes.
 
         Returns
         -------
@@ -3141,7 +3545,11 @@ class NonRepairableRBD(RBD):
         Raises
         ------
         ValueError
-            If ``confidence`` is not in (0, 1).
+            If ``confidence`` is not in (0, 1), or another option is invalid
+            (see ``mean``).
+        NotImplementedError
+            With ``antithetic``, if a node's draws cannot be replayed from
+            uniforms.
 
         Examples
         --------
@@ -3154,21 +3562,198 @@ class NonRepairableRBD(RBD):
         >>> ci = rbd.mean_time_to_failure_interval(mc_samples=10_000, seed=1)
         >>> print(f"{ci.estimate:.1f} ({ci.lower:.1f}, {ci.upper:.1f})")
         98.9 (96.9, 100.8)
+
+        Simulate until the MTTF is known to within 0.5 either side:
+
+        >>> ci = rbd.mean_time_to_failure_interval(
+        ...     mc_samples=10_000, seed=1, tolerance=0.5
+        ... )
+        >>> ci.n_samples, round(ci.upper - ci.estimate, 2)
+        (160000, 0.49)
         """
         if not 0.0 < confidence < 1.0:
             raise ValueError("confidence must be between 0 and 1.")
-        samples = self.random(mc_samples, seed=seed)
+        samples = self._mttf_samples(
+            mc_samples,
+            seed,
+            tolerance,
+            confidence,
+            max_samples,
+            antithetic,
+            n_jobs,
+        )
         estimate = float(samples.mean())
-        standard_error = float(samples.std(ddof=1) / np.sqrt(len(samples)))
-        z = float(norm.ppf(0.5 + confidence / 2.0))
+        standard_error = montecarlo.standard_error(samples, antithetic)
+        z = montecarlo.z_value(confidence)
         return ConfidenceInterval(
             estimate=estimate,
             lower=max(0.0, estimate - z * standard_error),
             upper=estimate + z * standard_error,
             confidence=confidence,
             standard_error=standard_error,
+            n_samples=len(samples),
+        )
+
+    def _mttf_samples(
+        self,
+        mc_samples,
+        seed,
+        tolerance,
+        confidence,
+        max_samples,
+        antithetic: bool,
+        n_jobs,
+    ) -> np.ndarray:
+        """The simulated lifetimes an MTTF estimate is the mean of."""
+        if (
+            tolerance is None
+            and max_samples is None
+            and not antithetic
+            and n_jobs is None
+        ):
+            return self.random(mc_samples, seed=seed)
+        montecarlo.check_count(mc_samples, antithetic, "mc_samples")
+        montecarlo.check_confidence(confidence)
+        limit = montecarlo.sample_limit(
+            mc_samples,
+            tolerance,
+            max_samples,
+            antithetic,
+            ("mc_samples", "max_samples"),
+        )
+        jobs = None if n_jobs is None else montecarlo.jobs(n_jobs)
+
+        def more(values: np.ndarray) -> int:
+            return montecarlo.more_samples(
+                values,
+                mc_samples,
+                tolerance,
+                confidence,
+                limit,  # type: ignore[arg-type]
+                antithetic,
+                "MTTF",
+                "max_samples",
+            )
+
+        stop = None if limit is None else more
+        return self._simulate_lifetimes(
+            mc_samples, seed, antithetic, jobs, stop
+        )
+
+    def compare(
+        self,
+        other: "NonRepairableRBD",
+        mc_samples: int = 100_000,
+        seed=None,
+        *,
+        confidence: float = 0.95,
+    ) -> ConfidenceInterval:
+        """How much longer (or shorter) this system's mean time to failure
+        is than ``other``'s, by simulation with common random numbers.
+
+        Both systems' lifetimes are simulated ``mc_samples`` times, and in
+        each sample a component with the same name in both draws the same
+        random numbers in both: the same lifetime where its model is the
+        same, and a matching one (the same quantile of its own model) where
+        it is not. The differences between the two systems' lifetimes then
+        come from how the systems differ, not from chance, so their mean is
+        a more precise estimate of the difference in MTTF than the
+        difference of two independent estimates of the same size (the more
+        the systems share, the more precise). The reliabilities themselves
+        need no simulation: compare ``sf`` for those.
+
+        Parameters
+        ----------
+        other : NonRepairableRBD
+            The system to compare with.
+        mc_samples : int, optional
+            The number of lifetimes of each system, by default 100_000.
+        seed : int, optional
+            Seed for a reproducible comparison, by default None.
+        confidence : float, optional
+            The confidence level of the interval, by default 0.95.
+
+        Returns
+        -------
+        ConfidenceInterval
+            The mean difference (this system's lifetime minus ``other``'s)
+            over the samples, with its standard error and a normal
+            confidence interval (not clipped: the difference may be
+            negative). Common-cause groups are ignored, as by ``random``.
+
+        Raises
+        ------
+        ValueError
+            If ``mc_samples`` or ``confidence`` is invalid.
+        NotImplementedError
+            If a node's draws cannot be replayed from uniforms (a node
+            model sampled its own way). A non-parametric model (a
+            Kaplan-Meier fit, say) draws its own random numbers, which the
+            two systems do not share.
+
+        Examples
+        --------
+        A third unit in parallel with two:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> unit = surv.Weibull.from_params([100, 2])
+        >>> def parallel(n):
+        ...     names = [f"u{i}" for i in range(n)]
+        ...     edges = [("s", u) for u in names] + [(u, "t") for u in names]
+        ...     return NonRepairableRBD(edges, {u: unit for u in names})
+        >>> gain = parallel(3).compare(parallel(2), mc_samples=20_000, seed=0)
+        >>> round(gain.estimate, 1), round(gain.standard_error, 2)
+        (14.8, 0.21)
+
+        The exact difference, the integral of the difference in
+        reliability, is 14.46. Two independent estimates from 20_000
+        lifetimes each would give it with a standard error of about 0.42.
+        """
+        montecarlo.check_count(mc_samples, False, "mc_samples")
+        montecarlo.check_confidence(confidence)
+        key = int(np.random.SeedSequence(seed).generate_state(1, np.uint64)[0])
+        differences = self._keyed_lifetimes(
+            mc_samples, key
+        ) - other._keyed_lifetimes(mc_samples, key)
+        estimate = float(np.mean(differences))
+        standard_error = montecarlo.standard_error(differences, False)
+        z = montecarlo.z_value(confidence)
+        return ConfidenceInterval(
+            estimate=estimate,
+            lower=estimate - z * standard_error,
+            upper=estimate + z * standard_error,
+            confidence=confidence,
+            standard_error=standard_error,
             n_samples=mc_samples,
         )
+
+    def _keyed_lifetimes(self, n: int, key: int) -> np.ndarray:
+        """``n`` lifetimes in which each component draws its uniforms from
+        streams of its own, keyed by ``key``, its name and the uniform's
+        place in its draw (common random numbers, see ``compare``)."""
+        lifetimes = {}
+        for node in self._components():
+            sampler = row_sampler(self.reliabilities[node])
+            if sampler is None:
+                raise NotImplementedError(
+                    "Common random numbers need every node's draws to be "
+                    "replayable from uniforms (surpyval parametric "
+                    f"distributions and the composite nodes built from "
+                    f"them); node {node!r}'s are not."
+                )
+            name = zlib.crc32(repr(node).encode())
+            u = np.empty((n, sampler.width))
+            for j in range(sampler.width):
+                u[:, j] = np.random.default_rng([key, name, j]).random(n)
+            lifetimes[node] = sampler.draw(u)
+        out = np.array(
+            self._decomposition().lifetime(lifetimes, n), dtype=float
+        )
+        for lifetime in lifetimes.values():
+            out[np.isnan(lifetime)] = np.nan
+        _check_lifetimes(out)
+        return out
 
     def time_to_reliability(
         self,

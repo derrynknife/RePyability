@@ -39,6 +39,12 @@ When every costed node is in series with the rest of the system, the system
 reliability is the product of the costed nodes' reliabilities (times the
 reliability of the rest), and ``series_front`` solves the problem exactly by
 dynamic programming over the nodes instead.
+
+For a repairable system, ``lowest_total_cost`` chooses the copies that
+minimise a total cost of ownership instead: every copy costs money to buy
+and to run, and the copies together save the cost of the system being down.
+That total is not monotone in the number of copies, so its search bounds the
+copies worth considering.
 """
 
 import bisect
@@ -182,12 +188,51 @@ def _fits(
     )
 
 
-def _check_search_size(examined: int) -> None:
+def redundancy_caps(
+    nodes: Sequence[Hashable], max_units, named: str = "costs"
+) -> List[float]:
+    """Each node's most copies from ``max_units`` (an int for every node, a
+    dict for some, or None), ``math.inf`` where unlimited; a ValueError for
+    an invalid cap, or a dict naming nodes not among ``nodes`` (which the
+    message says are ``named``)."""
+    if max_units is None:
+        return [math.inf] * len(nodes)
+    if isinstance(max_units, dict):
+        unknown = set(max_units) - set(nodes)
+        if unknown:
+            raise ValueError(
+                f"max_units names node(s) not in {named}: "
+                f"{sorted(map(str, unknown))}."
+            )
+        limits = {n: max_units.get(n, math.inf) for n in nodes}
+    else:
+        limits = {n: max_units for n in nodes}
+    for node, limit in limits.items():
+        if limit is math.inf:
+            continue
+        if isinstance(limit, bool) or not isinstance(limit, (int, np.integer)):
+            raise ValueError(
+                f"max_units for node {node!r} must be an integer, got "
+                f"{limit!r}."
+            )
+        if limit < 1:
+            raise ValueError(
+                f"max_units for node {node!r} must be at least 1, got "
+                f"{limit!r}."
+            )
+    return [
+        limits[n] if limits[n] is math.inf else int(limits[n]) for n in nodes
+    ]
+
+
+def _check_search_size(
+    examined: int, bound: str = "max_units (or a smaller budget)"
+) -> None:
     if examined > EXACT_SEARCH_LIMIT:
         raise ValueError(
             f"The exact search examined more than {EXACT_SEARCH_LIMIT:,} "
             "allocations without finishing. Use method='greedy', or bound "
-            "the search with max_units (or a smaller budget)."
+            f"the search with {bound}."
         )
 
 
@@ -1485,3 +1530,301 @@ def reliability_redundancy(
             best = (reliability, n, r)
     assert best is not None
     return best
+
+
+# Maps a tuple of copy counts (in node order; ``math.inf`` for a node made
+# perfect) to the system unavailability.
+Unavailability = Callable[[Tuple[float, ...]], float]
+
+
+def lowest_total_cost(
+    unavailability: Unavailability,
+    copy_costs: Sequence[float],
+    downtime_cost: float,
+    copy_gains: Sequence[Callable[[int], float]],
+    max_units: Sequence[float],
+    max_unavailability: Optional[float] = None,
+    method: str = "exact",
+    series: Optional[Sequence[Callable[[int], float]]] = None,
+) -> Tuple[Tuple[int, ...], float, float]:
+    """The numbers of copies with the lowest total cost.
+
+    Node ``i`` fitted with ``n_i`` copies costs ``n_i * copy_costs[i]``
+    (every copy is bought and run, the original included), and the system
+    being down costs ``downtime_cost`` times its unavailability, so a
+    design costs
+
+    ```text
+    total = sum_i n_i * copy_costs[i] + downtime_cost * unavailability(n)
+    ```
+
+    optionally subject to ``unavailability(n) <= max_unavailability``. More
+    copies cost more and lower the unavailability, so the total is not
+    monotone in them. Two bounds keep the exact search finite:
+
+    - copies cost: a design no worse than a known one (the greedy solution)
+      spends no more on copies than that design's total less the lowest
+      possible downtime cost, which caps every node's copies;
+    - useful copies (without ``max_unavailability``): the ``k + 1``-th copy
+      of node ``i`` lowers the system unavailability by at most
+      ``copy_gains[i](k)``, whatever the other nodes' copies. Those gains
+      fall as ``k`` grows, so once ``downtime_cost * copy_gains[i](k)``
+      is at most ``copy_costs[i]`` no further copy of node ``i`` lowers the
+      total.
+
+    ``method="exact"`` then searches every design within the caps by branch
+    and bound, from the greedy solution: each partial design is bounded
+    below by its copies' cost, one copy of each node still to choose, and
+    the downtime cost with those nodes at their caps (the lowest they can
+    make it), and is dropped if that cannot beat the best found (or, with
+    ``max_unavailability``, if even that unavailability is too high). With
+    ``series`` -- every node in series with the rest of the system, which
+    then works when all of them and the rest do -- the system availability
+    is the product of the nodes' and the rest's, and the best design is
+    among those that no other beats by costing no more while being at
+    least as available: ``series_front`` lists them by dynamic programming
+    over the nodes, for any number of nodes.
+    ``method="greedy"`` starts from one copy of each node, first (with
+    ``max_unavailability``) adds the copy with the largest fall in
+    unavailability per unit cost until the limit is met, then takes the
+    single step (a copy more or, while the limit holds, a copy fewer) that
+    lowers the total most, until none does.
+
+    Parameters
+    ----------
+    unavailability : callable
+        Maps a tuple of copy counts, one per node (``math.inf`` for a node
+        made perfect), to the system unavailability. The system must be
+        coherent: more copies never raise it.
+    copy_costs : Sequence[float]
+        What one copy of each node costs, finite and non-negative. A node
+        whose copies cost nothing needs a finite ``max_units``.
+    downtime_cost : float
+        What the system costs down for the whole horizon, finite and
+        non-negative.
+    copy_gains : Sequence[callable]
+        For each node, a function of ``k`` bounding above how much its
+        ``k + 1``-th copy can lower the system unavailability, falling
+        with ``k``: e.g. the node's own unavailability with ``k`` copies
+        less that with ``k + 1``.
+    max_units : Sequence[float]
+        The most copies of each node (``math.inf`` for no limit).
+    max_unavailability : float, optional
+        The most system unavailability allowed, by default no limit.
+    method : str, optional
+        ``"exact"`` (the default) or ``"greedy"``.
+    series : Sequence[callable], optional
+        When every node is in series with the rest of the system, each
+        node's unavailability as a function of its number of copies: the
+        exact search is then a dynamic program.
+
+    Returns
+    -------
+    tuple[tuple of int, float, float]
+        ``(counts, copies_cost, unavailability)`` of the design found: its
+        copies of each node, what the copies cost and its unavailability.
+
+    Raises
+    ------
+    ValueError
+        If a node's copies cost nothing and are not capped (so the search
+        could add them without end), if ``max_unavailability`` cannot be
+        met within the caps, or if the exact search examines more than
+        ``EXACT_SEARCH_LIMIT`` (500,000) designs (with ``series``, holds
+        more than ``SERIES_STATE_LIMIT``, 2,000,000, partial designs).
+
+    Examples
+    --------
+    One node, a copy costing 10, available 90% of the time (so ``n``
+    copies are down ``0.1 ** n`` of the time), with a downtime cost of
+    1,000 over the horizon. A second copy saves 90 of downtime cost, a
+    third 9:
+
+    >>> import math
+    >>> from repyability.rbd.redundancy_allocation import lowest_total_cost
+    >>> counts, copies, u = lowest_total_cost(
+    ...     lambda n: 0.1 ** n[0],
+    ...     [10.0],
+    ...     1000.0,
+    ...     [lambda k: 0.1 ** k * 0.9],
+    ...     [math.inf],
+    ... )
+    >>> counts, copies, round(copies + 1000.0 * u, 6)
+    ((2,), 20.0, 30.0)
+    """
+    m = len(copy_costs)
+    costs = [float(c) for c in copy_costs]
+    caps = list(max_units)
+    evaluations = 0
+
+    def unavailable(counts: Sequence[float]) -> float:
+        nonlocal evaluations
+        evaluations += 1
+        if method == "exact":
+            _check_search_size(evaluations, "max_units")
+        return float(unavailability(tuple(counts)))
+
+    for i in range(m):
+        if costs[i] <= 0.0 and caps[i] == math.inf:
+            raise ValueError(
+                f"A copy of node {i} costs nothing, so copies could be added "
+                "without end: give it a cost or a cap."
+            )
+    feasible = (
+        (lambda u: True)
+        if max_unavailability is None
+        else (lambda u: u <= max_unavailability)
+    )
+    best_possible = unavailable(caps)
+    if not feasible(best_possible) or (
+        max_unavailability is not None
+        and best_possible == max_unavailability
+        and math.inf in caps
+    ):
+        raise ValueError(
+            f"The unavailability cannot be brought down to "
+            f"{max_unavailability!r}: the lowest it can reach within the "
+            f"caps is {best_possible!r}."
+        )
+
+    def copies_cost(counts: Sequence[int]) -> float:
+        return math.fsum(n * c for n, c in zip(counts, costs))
+
+    # The greedy solution: the answer for "greedy", and the incumbent the
+    # exact search starts from.
+    counts = [1] * m
+    u = unavailable(counts)
+    while not feasible(u):
+        # The copy with the largest fall in unavailability per unit cost.
+        step, step_u, step_value = -1, u, -math.inf
+        for i in range(m):
+            if counts[i] >= caps[i]:
+                continue
+            counts[i] += 1
+            trial = unavailable(counts)
+            counts[i] -= 1
+            fall = u - trial
+            if fall <= 0.0:
+                continue
+            value = fall / costs[i] if costs[i] > 0.0 else math.inf
+            if value > step_value:
+                step, step_u, step_value = i, trial, value
+        if step < 0:
+            raise ValueError(
+                f"The unavailability cannot be brought down to "
+                f"{max_unavailability!r}: another copy no longer lowers it."
+            )
+        counts[step] += 1
+        u = step_u
+    total = copies_cost(counts) + downtime_cost * u
+    while True:
+        # The single step (a copy more, or fewer) that lowers the total
+        # most, keeping to the limit; ties go to the node listed first.
+        moves = []
+        for i in range(m):
+            for by in (1, -1):
+                if 1 <= counts[i] + by <= caps[i]:
+                    design = list(counts)
+                    design[i] += by
+                    trial_u = unavailable(design)
+                    if feasible(trial_u):
+                        trial_total = (
+                            copies_cost(design) + downtime_cost * trial_u
+                        )
+                        moves.append((trial_total, design, trial_u))
+        if not moves:
+            break
+        move = min(moves, key=lambda move: move[0])
+        if move[0] >= total - _slack(total):
+            break
+        total, counts, u = move
+    if method == "greedy":
+        return tuple(counts), copies_cost(counts), u
+
+    # Caps for the exact search. Useful copies: without a limit on the
+    # unavailability, a copy beyond the k-th of node i cannot pay for itself
+    # once downtime_cost * copy_gains[i](k) <= copy_costs[i].
+    if max_unavailability is None:
+        for i in range(m):
+            k = 1
+            while k < caps[i] and downtime_cost * copy_gains[i](k) > costs[i]:
+                k += 1
+            caps[i] = min(caps[i], k)
+    # Copies cost: a design no worse than the incumbent spends at most its
+    # total, less the lowest downtime cost, on copies.
+    floor = downtime_cost * best_possible
+    one_each = math.fsum(costs)
+    for i in range(m):
+        if costs[i] > 0.0:
+            spare = (total - floor - one_each) / costs[i]
+            caps[i] = min(caps[i], 1 + math.floor(spare + 1e-9))
+    best, best_total, best_u = list(counts), total, u
+    slack = _slack(total)
+    if series is not None:
+        # The rest of the system's availability (every node perfect), and
+        # the designs that no other beats on cost and availability at once:
+        # the best is among them.
+        others = 1.0 - unavailable([math.inf] * m)
+        choices = []
+        for i in range(m):
+            node = []
+            for n in range(1, int(caps[i]) + 1):
+                q = series[i](n)
+                node.append(
+                    (n * costs[i], math.log1p(-q) if q < 1 else -math.inf)
+                )
+            choices.append(node)
+        try:
+            front = series_front(choices, bound=total - floor)
+        except ValueError:
+            raise ValueError(
+                f"The dynamic program held more than {SERIES_STATE_LIMIT:,} "
+                "partial designs without finishing. Use method='greedy', "
+                "or bound the search with max_units."
+            ) from None
+
+        def approximate(point) -> float:
+            # 1 - others * exp(value), keeping small values precise.
+            use, value, _ = point
+            u = (1.0 - others) - others * math.expm1(value)
+            return use[0] + downtime_cost * u
+
+        for point in sorted(front, key=approximate):
+            if approximate(point) >= best_total + slack:
+                break
+            design = [j + 1 for j in point[2]]
+            trial = unavailable(design)
+            if not feasible(trial):
+                continue
+            trial_total = copies_cost(design) + downtime_cost * trial
+            if trial_total < best_total - slack:
+                best, best_total, best_u = design, trial_total, trial
+        return tuple(best), copies_cost(best), best_u
+    # The least the nodes from i on can cost: one copy each.
+    rest = [math.fsum(costs[i:]) for i in range(m + 1)]
+    picks = [1] * m
+
+    def visit(i: int, spent: float) -> None:
+        nonlocal best, best_total, best_u
+        # The lowest downtime cost from here: nodes i on at their caps.
+        low = downtime_cost * unavailable(picks[:i] + caps[i:])
+        for n in range(1, int(caps[i]) + 1):
+            cost = spent + n * costs[i]
+            if cost + rest[i + 1] + low >= best_total - slack:
+                break
+            picks[i] = n
+            later = i + 1
+            trial = unavailable(picks[:later] + caps[later:])
+            if not feasible(trial):
+                continue
+            bound = cost + rest[i + 1] + downtime_cost * trial
+            if bound >= best_total - slack:
+                continue
+            if i + 1 == m:
+                best, best_total, best_u = list(picks), bound, trial
+            else:
+                visit(i + 1, cost)
+        picks[i] = 1
+
+    visit(0, 0.0)
+    return tuple(best), copies_cost(best), best_u

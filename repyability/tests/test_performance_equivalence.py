@@ -239,7 +239,7 @@ def reference_probability_any_set_satisfied(
 
 @pytest.mark.parametrize("name", sorted(rbds()))
 @pytest.mark.parametrize("method", ["p", "c"])
-def test_exact_engine_is_identical_to_the_original_recursion(name, method):
+def test_exact_engine_matches_the_original_recursion(name, method):
     rbd = rbds()[name]
     rng = np.random.default_rng(0)
     # The recorded plan is reused across calls with different probabilities.
@@ -256,7 +256,11 @@ def test_exact_engine_is_identical_to_the_original_recursion(name, method):
             expected = 1 - reference_probability_any_set_satisfied(
                 sets, unreliability, shape
             )
-        assert np.array_equal(rbd.system_probability(probs, method), expected)
+        # The series-parallel parts are reduced to closed forms first, which
+        # round differently from the recursion over every path set.
+        np.testing.assert_allclose(
+            rbd.system_probability(probs, method), expected, rtol=1e-13
+        )
 
 
 def test_probability_any_set_satisfied_is_unchanged():
@@ -787,6 +791,32 @@ def repairable_rbds():
             },
             downtime_cost_rate=3.0,
         ),
+        "inspected": RepairableRBD(
+            [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")],
+            {
+                "a": {
+                    "reliability": W([60, 1.5]),
+                    "repairability": L([0.3, 0.5]),
+                    "repair_cost": L([3.0, 0.4]),
+                    "inspection": {
+                        "interval": 25.0,
+                        "duration": W([0.5, 2.0]),
+                        "cost": L([1.0, 0.5]),
+                    },
+                },
+                "b": {
+                    "reliability": surv.Exponential.from_params([0.02]),
+                    "repairability": "instant",
+                    "inspection": {"interval": 25.0, "cost": 2.0},
+                },
+                "c": {
+                    "reliability": W([200, 1.5]),
+                    "repairability": surv.Exponential.from_params([0.5]),
+                    "downtime_cost": 4.0,
+                },
+            },
+            downtime_cost_rate=3.0,
+        ),
         "nested_maintained": RepairableRBD(
             [("s", "a"), ("a", "sub"), ("sub", "t")],
             {
@@ -1309,9 +1339,13 @@ def test_deep_decomposition_is_identical_to_the_recursion(edges_of):
     )
     probs = rbd._base_node_probabilities(np.array([400.0]), set(), set())
     sets = rbd.get_min_path_sets(include_in_out_nodes=False)
+    expected = reference_probability_any_set_satisfied(sets, probs, 1)
     assert np.array_equal(
-        rbd.system_probability(probs),
-        reference_probability_any_set_satisfied(sets, probs, 1),
+        probability_any_set_satisfied(sets, probs, 1), expected
+    )
+    # The RBD reduces the chain (or the group) to one module instead.
+    np.testing.assert_allclose(
+        rbd.system_probability(probs), expected, rtol=1e-13
     )
 
 

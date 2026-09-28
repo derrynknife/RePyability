@@ -7,6 +7,7 @@ directly from the top-level package, e.g.::
 """
 
 from repyability._version import __version__
+from repyability.fault_tree import FaultTree
 from repyability.maintenance import FailureLimitPolicy, MaintenancePolicy
 from repyability.non_repairable import NonRepairable
 from repyability.rbd.ccf import MGL, BetaFactor, CCFGroup
@@ -32,6 +33,8 @@ from repyability.rbd.results import (
     RedundancyAllocation,
     ReliabilityRedundancyAllocation,
     RestorationCriticalityIndex,
+    TotalCostAllocation,
+    UncertaintyResult,
     UpDownImportance,
 )
 from repyability.rbd.standby_node import StandbyModel
@@ -46,6 +49,7 @@ __all__ = [
     "RBD",
     "NonRepairableRBD",
     "RepairableRBD",
+    "FaultTree",
     # Component models
     "NonRepairable",
     "Repairable",
@@ -69,6 +73,8 @@ __all__ = [
     "CostResult",
     "RedundancyAllocation",
     "ReliabilityRedundancyAllocation",
+    "TotalCostAllocation",
+    "UncertaintyResult",
     "Criticalities",
     "UpDownImportance",
     "FailureCriticalityIndex",

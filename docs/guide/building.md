@@ -106,10 +106,14 @@ shared_supply.repeated    # {'ps2': 'ps'}
 ```
 
 Treating the two supply nodes as independent would give `(1 − 0.05 · 0.1)² =
-0.99`, a large over-estimate. A repeated node cannot be forced working or
-broken on its own, and cannot be a member of a common-cause group. This is
-different from [`RepeatedNode`][repyability.RepeatedNode], which models *n
-distinct, identical* copies.
+0.99`, a large over-estimate. Each appearance keeps its place in the diagram,
+its edges and its own `k`, so the paths are exactly as drawn, and every
+calculation treats the appearances as the one component: the result is
+exact however they are arranged. A repeated node cannot be forced working or
+broken on its own (force the component it repeats), and cannot be a member
+of a common-cause group. This is different from
+[`RepeatedNode`][repyability.RepeatedNode], which models *n distinct,
+identical* copies.
 
 ## Nested RBDs
 
@@ -232,7 +236,9 @@ custom analyses.
   function: given `{node: True/False}` for every node, is the system up?
 - `system_probability(node_probabilities, method="p")` is the exact engine:
   given each node's probability of working (a number or an array, all the
-  same length), it returns the probability the system works.
+  same length), it returns the probability the system works. It reduces the
+  series, parallel and *k*-out-of-*n* parts to closed forms and decomposes
+  only the rest (see [Concepts](../concepts.md#how-the-system-quantity-is-computed)).
 - `path_set_probabilities(node_probabilities)` returns an array holding, for
   each minimal path set, the product of its members' probabilities. The
   entries are not labelled and come in no fixed order; pair them with the

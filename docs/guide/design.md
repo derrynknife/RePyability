@@ -19,6 +19,14 @@ active copies of each costed node to fit: the classic Redundancy Allocation
 Problem. It works on any diagram, not only a series of subsystems, because
 each candidate design is scored with the exact system computation.
 
+!!! note "Repairable systems"
+    This section is about `NonRepairableRBD`, where a design is judged by its
+    reliability at a mission time. For a repairable system, every copy also
+    costs money to run and saves lost production, and
+    `RepairableRBD.allocate_redundancy(horizon)` finds the design with the
+    lowest total cost of ownership: see
+    [Costs: buying redundancy](costs.md#buying-redundancy).
+
 ```python
 import surpyval as surv
 from repyability import NonRepairableRBD

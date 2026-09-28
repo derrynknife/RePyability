@@ -40,14 +40,31 @@ group).
 ### How the system quantity is computed
 
 Given each node's reliability, the system reliability is computed
-**exactly**, not by simulation. RePyability evaluates the probability that at
-least one path set is satisfied (or, equivalently with `method="c"`, that no
-cut set is), by a pivotal (Shannon) decomposition over the sets. The
-decomposition depends only on the structure, so it is worked out once per
+**exactly**, not by simulation, in two stages.
+
+1. **Reduction.** The diagram is reduced to *modules*: a series chain (a
+   node whose only successor has it as its only predecessor), a parallel
+   group (nodes with the same predecessors and successors, feeding nodes
+   that need one working input) and a *k*-out-of-*n* group (all the inputs
+   of a node with `k > 1`, when they share their own inputs) each become one
+   block, with the closed forms `R = ∏ R_i`, `R = 1 − ∏ (1 − R_i)` and a sum
+   over how many members work. A node that its own input bypasses by a
+   direct edge is dropped, as it is irrelevant. This repeats until nothing
+   more reduces; a series-parallel diagram becomes a single module.
+2. **Pivotal decomposition.** Whatever is left, the *core* (a bridge, a
+   shared node), is evaluated from its minimal path sets by a pivotal
+   (Shannon) decomposition, over its modules and nodes. Only the core pays
+   the combinatorial price.
+
+Both stages depend only on the structure, so they are worked out once per
 RBD and replayed for every evaluation: repeated evaluations (arrays of times,
 importance measures, allocation searches) cost little more than arithmetic.
-The two methods return the same value; the path-set method is the default
-because it does not need the cut sets.
+A series-parallel diagram is never expanded into its path sets, however many
+it has: thirty duplicated stages in series have `2^30` of them, and are
+evaluated in milliseconds. With `method="c"` the probability that the system
+fails is computed instead, and its complement returned; the two methods give
+the same value. Every step is a sum of products of node probabilities and
+their complements, so both keep their full relative precision.
 
 The identity that drives the decomposition, and the importance measures, is
 **pivotal decomposition** around any node *A*:
@@ -74,13 +91,85 @@ is
 T_sys = max over minimal path sets P of ( min over i in P of T_i )
 ```
 
-`random()` draws each component's lifetime and applies this rule;
-`mean_time_to_failure()` is the average of many such lifetimes. By the central
+`random()` draws each component's lifetime and applies this rule, through the
+modules (a series module fails at its first failure, a parallel one at its
+last, a *k*-out-of-*n* one when fewer than `k` are left) so that the path sets
+are only needed for the core; `mean_time_to_failure()` is the average of many
+such lifetimes. By the central
 limit theorem the average is approximately normal with standard error
 `s / √n` (the sample standard deviation over the square root of the number of
 samples), which gives `mean_time_to_failure_interval()`. The mean is estimated
 rather than integrated because the system lifetime distribution of a general
 diagram, especially with composite nodes, has no convenient closed form.
+
+### Simulation error, and making it smaller
+
+A simulated mean of `N` independent results has standard error `s / √N`, so
+its error halves when `N` is quadrupled. Given a `tolerance`, a simulation
+adds `N` results at a time until the confidence interval's half-width,
+`z · s / √N`, is at most the tolerance. (The stopping point depends on the
+estimated `s`, which makes a sequential rule's coverage slightly below the
+nominal level when `N` is small; checking only after each batch of `N`
+keeps the effect small.)
+
+Two classical variance-reduction techniques make the error smaller for the
+same `N`, without biasing the estimate:
+
+- **Antithetic variates.** A result is a function `f(U)` of uniform random
+  numbers. `f(U)` and `f(1 − U)` have the same distribution, and when `f` is
+  monotone in each number (in either direction) their covariance is at most
+  zero, so the mean of the pair varies at most half as much as one result.
+  A coherent system's lifetime increases with every component's lifetime,
+  and each lifetime with its uniform (by inverse transform), so pairing
+  always helps a lifetime. The availability and cost of a window are not
+  monotone in the draws (a longer up time moves a component's later
+  repairs, which may then overlap another component's), so they gain less,
+  though usually still a useful amount.
+- **Common random numbers.** The difference of two designs' results has
+  variance `Var(A) + Var(B) − 2 Cov(A, B)`. Simulated independently, the
+  covariance is zero; driven by the same random numbers wherever the
+  designs share a component, the results move together, and the covariance
+  removes most of the variance.
+
+In a `RepairableRBD` both work component by component: each component draws
+from a stream of its own, keyed by the seed, its place in the diagram and
+the simulation (or the pair), so its `k`-th draw is matched, or paired,
+however the components' events interleave.
+
+A parallel run splits the simulations into blocks seeded in turn from one
+`numpy.random.SeedSequence`, whose spawned seeds give independent streams.
+The block, not the process that runs it, fixes the random numbers, so the
+results do not depend on the number of processes.
+
+### Fault trees
+
+A fault tree describes the same structure from the side of failure: the top
+event occurs through OR gates (any input), AND gates (every input) and VOTE
+gates (at least `k` of `n` inputs) over the basic events. Its logic is the
+dual of a diagram's: an OR gate is a series block, an AND gate a parallel
+block, and a VOTE gate on `k` of `n` failures a block needing `n − k + 1` of
+`n` working; the tree's minimal cut sets are the diagram's. A tree is
+evaluated by the same engine: each gate below which no event or gate is
+shared with the rest of the tree is a module with a closed form, and what the
+repeated events tie together is a core, solved exactly by the pivotal
+decomposition over its minimal path sets. The measures of importance are the
+diagram's, with the top event as the system failing.
+
+### Parameter uncertainty
+
+The node models are estimates, so the system reliability computed from them
+is uncertain too: *epistemic* uncertainty, about the models, as opposed to
+the *aleatory* variability they describe. `sf_uncertainty` propagates it by
+Monte Carlo over the parameters: each draw gives every uncertain node a
+plausible model and the system reliability is computed exactly, all draws
+at once (the node probabilities are arrays over draws and times), and the
+percentiles of the draws form an uncertainty interval. A maximum-likelihood
+fit's own estimate of its parameters' uncertainty (the inverse Hessian of
+the log-likelihood, from surpyval) gives the draws on a transformed scale
+(log for a positive parameter, logit for one in (0, 1)), which is the delta
+method's normal approximation. Nodes of one population share their
+parameters and so their draws: drawing them independently averages part of
+the uncertainty away.
 
 ## Reliability vs availability
 
@@ -419,6 +508,18 @@ and the downtime it incurs. Its **spread** (standard deviation, percentiles)
 is a property of the system; the **uncertainty of its mean** shrinks like
 `1/√N`. As the window grows, the simulated cost per unit time converges to the
 exact rate.
+
+The **total cost of ownership** over a horizon `H` adds the one-off cost of
+buying the components, `Σ a_i`, to `H` times the long-run cost rate
+(undiscounted). Redundancy that minimises it trades copies against downtime:
+`n_i` independently repaired active copies of component *i* each cost
+`a_i + H · r_i` (`r_i` its own running cost rate) and are all down
+`(1 − A_i)^{n_i}` of the time, so a design costs
+`Σ n_i (a_i + H r_i) + H · downtime_cost_rate · (1 − A_sys)`. The total is not
+monotone in the copies, but the `k+1`-th copy of a component of
+unavailability `U` saves at most `H · downtime_cost_rate · U^k (1 − U)`, which
+bounds the copies worth trying; the search then works as for redundancy
+allocation below.
 
 ## Allocation
 

@@ -34,8 +34,8 @@ def test_analytic_rbd1(rbd1: NonRepairableRBD):
 def test_repeated_component_still_analytic(
     rbd_repeated_component_parallel: NonRepairableRBD,
 ):
-    # A repeated *component* (shared node) is merged into one node and remains
-    # analytically solvable.
+    # A repeated *component* (one component drawn in several places) is
+    # solved exactly, like any other.
     assert rbd_repeated_component_parallel.is_analytically_solvable()
 
 

@@ -42,7 +42,8 @@ from repyability.rbd.standby_node import StandbyModel
 
 
 def _params_list(model) -> list:
-    return [float(p) for p in np.atleast_1d(model.params)]
+    # Flat: a deserialised ExactEventTime holds its parameter as [[T]].
+    return [float(p) for p in np.ravel(model.params)]
 
 
 def serialise_model(model: Any) -> dict:
@@ -209,16 +210,19 @@ def _serialise_component(value) -> dict:
                 out[key] = serialise_model(cost)
             elif cost:
                 out[key] = float(cost)
-        if value.get("preventive") is not None:
-            out["preventive"] = _serialise_preventive(value["preventive"])
+        if value.get("acquisition_cost"):
+            out["acquisition_cost"] = float(value["acquisition_cost"])
+        for key in ("preventive", "inspection"):
+            if value.get(key) is not None:
+                out[key] = _serialise_schedule(value[key])
         return out
     return serialise_model(value)
 
 
-def _serialise_preventive(spec: dict) -> dict:
-    # A component's preventive-maintenance schedule: the interval and policy
-    # as they are, the duration ("instant" or a model) and the cost (a number
-    # or a distribution).
+def _serialise_schedule(spec: dict) -> dict:
+    # A component's preventive-maintenance or inspection schedule: the
+    # interval (and policy) as they are, the duration ("instant" or a model)
+    # and the cost (a number or a distribution).
     out: dict[str, Any] = {"interval": float(spec["interval"])}
     if "policy" in spec:
         out["policy"] = spec["policy"]
@@ -234,7 +238,7 @@ def _serialise_preventive(spec: dict) -> dict:
     return out
 
 
-def _deserialise_preventive(d: dict) -> dict:
+def _deserialise_schedule(d: dict) -> dict:
     out = dict(d)
     if isinstance(d["duration"], dict):
         out["duration"] = deserialise_model(d["duration"])
@@ -261,8 +265,11 @@ def _deserialise_component(d: dict) -> Any:
                 out[key] = (
                     deserialise_model(cost) if isinstance(cost, dict) else cost
                 )
-        if "preventive" in d:
-            out["preventive"] = _deserialise_preventive(d["preventive"])
+        if "acquisition_cost" in d:
+            out["acquisition_cost"] = d["acquisition_cost"]
+        for key in ("preventive", "inspection"):
+            if key in d:
+                out[key] = _deserialise_schedule(d[key])
         return out
     return deserialise_model(d)
 

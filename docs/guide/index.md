@@ -10,15 +10,17 @@ signature and docstring, see the [API reference](../api.md).
 | Page | What it covers |
 |---|---|
 | [Building an RBD](building.md) | Edges and node models, k-out-of-n nodes, a component that appears in several places, nested RBDs, validation, path and cut sets, and the structural checks. |
-| [Reliability of a system](reliability.md) | `sf`/`ff`, density and hazard, conditional survival, per-node values, forcing nodes working or failed, lifetimes and MTTF, and inverting reliability to a time (B*X* life). |
+| [Fault trees](fault-trees.md) | Static fault trees (OR, AND and VOTE gates, repeated events): the exact top event probability, minimal cut sets ranked by probability, importance measures, and conversion to and from block diagrams. |
+| [Reliability of a system](reliability.md) | `sf`/`ff`, density and hazard, conditional survival, per-node values, forcing nodes working or failed, lifetimes and MTTF, inverting reliability to a time (B*X* life), and the uncertainty that uncertain component models give the system reliability. |
 | [Importance measures](importance.md) | Birnbaum, improvement potential, risk achievement and reduction worth, criticality, Fussell–Vesely, structural importance, and parameter sensitivity. |
 | [Condition-based evaluation](condition-based.md) | Reliability, remaining life and importance given each component's current age, and covariate-dependent components (fixed operating conditions or a load schedule). |
 | [Redundancy models](redundancy-models.md) | Cold, warm and hot standby, repeated nodes, repeated standby, and load-sharing groups. |
 | [Common-cause failures](common-cause.md) | Beta-factor and Multiple Greek Letter groups, and where they apply. |
 | [Repairable systems](repairable.md) | Availability over time by simulation, the simulated result and its criticality measures, long-run availability, failure frequency, MUT/MDT/MTBF, nested repairable RBDs, and stepping a simulation by hand. |
-| [Costs](costs.md) | The long-run cost rate in closed form, the simulated cost distribution, costs drawn from distributions, and scheduled preventive maintenance. |
+| [Costs](costs.md) | The long-run cost rate in closed form, the simulated cost distribution, costs drawn from distributions, scheduled preventive maintenance, hidden failures found by periodic inspection (PFDavg for safety functions), and the total cost of ownership with the redundancy that minimises it. |
 | [Design and allocation](design.md) | How many redundant copies to fit (redundancy allocation), and apportioning a reliability target among components (reliability allocation). |
 | [Maintenance policies](maintenance.md) | Age replacement, overhaul under minimal or imperfect repair, failure-count replacement, and the expected time to the *n*-th failure. |
+| [Simulation precision and speed](simulation.md) | Simulating until an estimate is precise enough, antithetic pairs, parallel runs, and comparing two designs with common random numbers. |
 | [Saving, reproducibility and performance](saving.md) | JSON round-trips, seeding, what is exact and what is simulated, and how the engine scales. |
 
 ## Conventions used throughout
@@ -50,9 +52,11 @@ failed. An unknown node, the input or output node, or a node named in both
 raises `ValueError` rather than being ignored.
 
 **Path sets or cut sets.** Exact system quantities accept
-`method="p"` (minimal path sets, the default) or `method="c"` (minimal cut
-sets). Both are exact and give the same answer; the path-set route is the
-default because it does not need the cut sets.
+`method="p"` (the default) or `method="c"`: whether the engine computes the
+probability that the system works, or that it fails and returns the
+complement. Both are exact and give the same answer. (In `is_system_working`
+they choose whether the part of the diagram that is not series-parallel is
+checked through its minimal path sets or cut sets.)
 
 **Seeds.** Every Monte-Carlo method takes a `seed`. surpyval samples from
 numpy's global random number generator, so a seed is applied to it for the

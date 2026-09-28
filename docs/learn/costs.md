@@ -12,7 +12,9 @@
     - to simulate a year's cost with `cost()` and budget with its
       percentiles;
     - to tell how much a year's cost varies from how precisely its mean is
-      known, and what uncertain prices change.
+      known, and what uncertain prices change;
+    - to add the price of buying the system, and to find how much
+      redundancy gives the lowest **total cost of ownership**.
 
     **Before you start:** [Lesson 6](availability.md). About 35 minutes.
 
@@ -301,7 +303,8 @@ The result also breaks the mean down:
 ```python
 year.by_category
 # {'repair': 402838.25, 'replace': 253923.75, 'preventive': 0.0,
-#  'component_downtime': 0.0, 'system_downtime': 408942.49}
+#  'inspection': 0.0, 'component_downtime': 0.0,
+#  'system_downtime': 408942.49}
 year.by_component
 # {'pump1': 159116.5, 'pump2': 159080.5, 'valve': 338565.0}
 sum(year.by_category.values())   # -> 1065704.5   the categories add up to the mean
@@ -441,6 +444,97 @@ out. Only the per-failure prices may be distributions: `downtime_cost` and
 `downtime_cost_rate` must be numbers, since they are rates and the outage
 lengths already make them random.
 
+## Buying redundancy
+
+So far the plant was already built. When you design one, the question is how
+much redundancy to buy, and the answer depends on how long you will own it.
+A redundant unit is bought once, and then it runs: it fails, is repaired
+and costs money for as long as you own it, while it saves the lost
+production of the outages it covers. The **total cost of ownership** over a
+horizon $H$ counts both:
+
+$$
+\text{total} = \underbrace{\sum_i a_i}_{\text{buying}} + \underbrace{H \times \text{cost rate}}_{\text{running}},
+$$
+
+with $a_i$ each component's price, its `acquisition_cost`. Take a transfer
+pump with an MTTF of 1000 h and an MTTR of 10 h, 500 per repair, bought for
+20,000, where an hour without pumping loses 100. Is a second pump, in
+parallel, worth buying?
+
+=== "By hand"
+
+    One pump is down $U = 10/1010 = 0.0099$ of the hours and fails
+    $\omega = 1/1010$ times per hour. It costs $500/1010 = 0.495$ per hour
+    in repairs and $100 \times 0.0099 = 0.990$ per hour in lost production:
+    1.485 per hour. Over ten years (87,600 h) that is
+    $20{,}000 + 87{,}600 \times 1.485 = 150{,}099$.
+
+    Two pumps fail and are repaired independently, so both are down
+    $U^2 = 9.8 \times 10^{-5}$ of the hours: lost production falls to
+    $100 \times U^2 = 0.0098$ per hour, while the repairs double to 0.990.
+    Over ten years: $40{,}000 + 87{,}600 \times 0.9999 = 127{,}591$. The
+    second pump saves 22,508.
+
+    Per hour it saves $100 \times (U - U^2) = 0.980$ of lost production and
+    costs 0.495 of repairs, a net 0.485, which repays its 20,000 after
+    $20{,}000 / 0.485 = 41{,}200$ hours, about 4.7 years. Over one year it
+    does not pay.
+
+    A third pump would cover only the times both others are down: it saves
+    at most $100 \times U^2 (1 - U) = 0.0097$ per hour, less than the 0.495
+    its own repairs cost. It never pays, whatever its price and however long
+    you own the plant.
+
+=== "In RePyability"
+
+    ```python
+    pump = {
+        "reliability": surv.Exponential.from_params([1 / 1000]),
+        "repairability": surv.Exponential.from_params([1 / 10]),
+        "repair_cost": 500,
+        "acquisition_cost": 20000,   # paid once
+    }
+    line = RepairableRBD([("s", "pump"), ("pump", "t")], {"pump": pump},
+                         downtime_cost_rate=100)
+    line.expected_cost_rate()   # -> 1.4851   per hour: buying is not a running cost
+    line.total_cost(87600)      # -> 150099.0   one pump, ten years
+
+    best = line.allocate_redundancy(87600)
+    best.units                  # {'pump': 2}
+    best.total_cost             # -> 127591.4
+    best.acquisition_cost       # -> 40000.0
+    line.allocate_redundancy(8760).units   # {'pump': 1}   one year
+    ```
+
+`allocate_redundancy` weighs every design this way: for each component that
+has an `acquisition_cost`, how many copies give the lowest total over the
+horizon. Each design is scored exactly, as you just did by hand, so it works
+on any diagram.
+
+The third pump shows why this is a harder search than the one in
+[Lesson 9](design.md). There, a more reliable design was always better, and
+only the budget stopped the copies. Here each copy costs as much as the one
+before and saves a fraction $U$ of what the one before saved, so the total
+falls and then rises. The rule you used for the third pump bounds the
+search: the $k{+}1$-th copy of a unit down a fraction $U$ of the time saves
+at most $H \times c_{\text{sys}} \times U^k (1 - U)$ (what it would save
+were everything else perfect), so once that is less than a copy's price and
+running cost, no further copy is worth trying. Within those bounds the
+search is exhaustive, and its answer a proven optimum.
+
+A contract may instead demand a minimum availability. Then the cheapest
+design that meets it may need copies that do not pay for themselves:
+
+```python
+line.allocate_redundancy(87600, min_availability=0.99999).units   # {'pump': 3}
+```
+
+Two cautions. The copies are assumed to fail independently: a common cause
+(Lesson 5) sets a floor that no number of copies gets below, so price it in
+before trusting a design with many copies. And money spent in ten years
+counts the same as money spent now (see the pitfall below).
+
 ## Pitfalls
 
 !!! warning "Costs are not discounted"
@@ -487,6 +581,11 @@ lengths already make them random.
       $1/\sqrt{N}$.
     - An uncertain price enters the exact rate through its mean; in a
       simulation it widens the spread without changing the failures.
+    - The **total cost of ownership** over $H$ hours is the price of buying
+      the components (`acquisition_cost`) plus $H$ times the cost rate:
+      `total_cost(H)`. A redundant copy pays when the lost production it
+      saves over the horizon exceeds its price and its own running cost;
+      `allocate_redundancy(H)` finds the design with the lowest total.
 
 ## Exercises
 
@@ -590,6 +689,44 @@ this plant? At what price of lost production would it start to?
     (2000 / 52) / (plant.mean_unavailability() - two_valves.mean_unavailability())   # -> 1048.7
     ```
 
+**5.** The plant's valve (MTTF 50 h, MTTR 2 h, 500 + 1500 per failure)
+costs 30,000 to buy. Over ten years (87,600 h), is a second valve in
+parallel worth buying (a) as priced, at 1000 per hour of lost production;
+(b) at 5000? (c) From what price of lost production does it pay?
+
+??? success "Answer"
+    With both pumps as they are, a second valve lowers the plant's
+    unavailability by $A_{\text{pumps}} (U_v - U_v^2) = 0.99174 \times
+    (1/26 - 1/26^2) = 0.03668$, and adds $2000/52 = 38.46$ per hour of bills.
+    Over $H$ hours it pays when $c_{\text{sys}} \times 0.03668 \times H$
+    exceeds $30{,}000 + 38.46\,H$: for ten years, when
+    $c_{\text{sys}} > (30{,}000/87{,}600 + 38.46) / 0.03668 = 1058$.
+
+    (a) At 1000 per hour, no: it saves 36.68 per hour and costs 38.46 before
+    its price (Exercise 4). (b) At 5000, yes: it saves 183.38 per hour,
+    and pays for itself in about 207 hours. (c) From about 1058 per hour,
+    only a little above Exercise 4's 1049: over ten years its price adds
+    only 0.34 per hour. A third valve would save at most
+    $5000 \times (1/26)^2 (25/26) = 7.11$ per hour, less than its bills,
+    so even at 5000 two valves are best.
+
+    ```python
+    def plant_at(price_of_an_hour):
+        return RepairableRBD(
+            edges,
+            {"pump1": unit(10, 1, repair_cost=200),
+             "pump2": unit(10, 1, repair_cost=200),
+             "valve": unit(50, 2, repair_cost=500, replace_cost=1500,
+                           acquisition_cost=30000)},
+            downtime_cost_rate=price_of_an_hour,
+        )
+
+    plant_at(1000).allocate_redundancy(87600).units   # {'valve': 1}
+    plant_at(5000).allocate_redundancy(87600).units   # {'valve': 2}
+    plant_at(1057).allocate_redundancy(87600).units   # {'valve': 1}
+    plant_at(1059).allocate_redundancy(87600).units   # {'valve': 2}
+    ```
+
 ## Where next
 
 - [Lesson 8: Maintaining on purpose](maintenance.md). So far a part is
@@ -598,7 +735,8 @@ this plant? At what price of lost production would it start to?
   failures, but planned stops. Lesson 8 prices that trade with the same two
   tools.
 - [Costs](../guide/costs.md) in the user guide: every pricing option, costs
-  drawn from distributions, instant repair and preventive maintenance.
+  drawn from distributions, instant repair, preventive maintenance and the
+  total cost of ownership.
 - [Concepts: Costs](../concepts.md#costs) for the theory in brief, and
   [Repairable systems](../guide/repairable.md) for the simulation that
   `cost()` runs.

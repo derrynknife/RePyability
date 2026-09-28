@@ -11,7 +11,9 @@
     - **block replacement**, its appeal and its waste;
     - why the best interval changes once the part sits in a system, and how
       RePyability prices a maintenance policy for a whole system, exactly and
-      by simulation.
+      by simulation;
+    - **hidden failures**, found only by a periodic test, and how the test
+      interval sets a safety function's probability of failing on demand.
 
     **Before you start:** [Lesson 1](lifetimes.md) (the hazard rate and the
     Weibull shape), [Lesson 6](availability.md) (availability) and
@@ -392,6 +394,77 @@ several parts.
     See [Costs](../guide/costs.md#preventive-maintenance) in the user guide
     for every detail of the schedule.
 
+## Failures nobody sees
+
+So far a failure has been noticed at once: the pump stops, and its repair
+starts. Some failures are silent. A relief valve that has seized, a standby
+pump that will not start or a smoke detector with a dead sensor looks just
+like a working one, until it is needed, or until someone tests it. Such a
+failure is **hidden**: the part is down, and nobody knows. The maintenance
+that finds it is a periodic **proof test** (an inspection), every $\tau$
+hours.
+
+**By hand.** Take a part whose hidden failures come at a constant rate
+$\lambda$, tested every $\tau$, with the test and any repair taking no time.
+At a time $t$ after a test it has failed, unseen, with probability
+$1 - e^{-\lambda t} \approx \lambda t$. Averaged over the interval, that is
+
+$$
+U = \frac{1}{\tau}\int_0^\tau \left(1 - e^{-\lambda t}\right) dt
+  = 1 - \frac{1 - e^{-\lambda\tau}}{\lambda\tau}
+  \approx \frac{\lambda\tau}{2}:
+$$
+
+a failure lies hidden for half an interval on average. For a safety device
+this is its average **probability of failure on demand** (PFDavg): the chance
+that it does not act when called on. With $\lambda = 2 \times 10^{-6}$ per
+hour and a yearly test ($\tau = 8760$ h), $\lambda\tau/2 = 0.00876$.
+
+Two such devices in parallel (1oo2), tested together, are down only when
+both have failed since the last test:
+$\frac{1}{\tau}\int_0^\tau (1 - e^{-\lambda t})^2\,dt \approx (\lambda\tau)^2/3$.
+That is more than the $(\lambda\tau/2)^2$ you would get by multiplying their
+average unavailabilities, because both have gone untested for the same time:
+their failures are independent, but their exposure is not.
+
+In RePyability an `"inspection"` in a component's dict makes its failures
+hidden, found only by a test every `interval`:
+
+```python
+def valve(interval):
+    return {
+        "reliability": surv.Exponential.from_params([2e-6]),   # hidden failures
+        "repairability": "instant",
+        "inspection": {"interval": interval},
+    }
+
+one = RepairableRBD([("s", "v"), ("v", "t")], {"v": valve(8760.0)})
+one.mean_unavailability()     # -> 0.008709   PFDavg, about λτ/2
+pair = RepairableRBD(
+    [("s", "v1"), ("s", "v2"), ("v1", "t"), ("v2", "t")],
+    {"v1": valve(8760.0), "v2": valve(8760.0)},
+)
+pair.mean_unavailability()    # -> 1.01e-4    about (λτ)²/3 = 1.02e-4
+```
+
+Redundancy did far more than halve the PFDavg here: it cut it by a factor
+of 86, and halving the test interval would quarter it again. Tests with a
+duration, and repairs that take time, are simulated (see
+[Costs](../guide/costs.md#hidden-failures-and-inspection)).
+
+**Choosing the test interval.** Each test costs $c_i$, and each hour the part
+lies failed costs $c_d$. The cost rate is then about
+$c_i/\tau + c_d\,\lambda\tau/2$: the first term falls as the interval grows,
+the second rises. Setting its derivative to zero gives the best interval,
+
+$$
+\tau^* \approx \sqrt{\frac{2\,c_i}{\lambda\,c_d}}.
+$$
+
+Unlike age replacement, testing pays even for a constant hazard: a test does
+not make the part younger, it finds the failures that have already
+happened.
+
 ## Repair that does not renew
 
 Everything above assumes a replacement (or repair) makes the part as good as
@@ -418,6 +491,11 @@ unplanned costs.
     - **Reading a short simulation as the long run.** Simulated windows start
       with new parts; use a long window, or the exact rate, for long-run
       comparisons.
+    - **Multiplying the PFDs of redundant channels.** Channels tested
+      together have gone untested for the same time; average the product over
+      the interval, as RePyability does.
+    - **Testing every channel at once.** A test that takes a channel off-line
+      takes the whole function off-line if every channel is tested together.
 
 ## Summary
 
@@ -435,6 +513,10 @@ unplanned costs.
       structure and the cost of downtime. RePyability prices age replacement
       exactly, and any policy by simulation, with planned outages counted as
       downtime but not as failures.
+    - A hidden failure lies unseen until a proof test: half an interval on
+      average, so a tested part's PFDavg is about $\lambda\tau/2$, and the
+      test interval trades test costs against hidden downtime, near
+      $\tau^* = \sqrt{2c_i/(\lambda c_d)}$.
 
 ## Exercises
 
@@ -516,6 +598,30 @@ policy cost per hour, and what would running to failure cost?
     mttp = surv.Weibull.from_params([8, 3]).mean()        # about 7.1 h
     mttr = surv.LogNormal.from_params([3.0, 0.5]).mean()  # about 22.8 h
     (5000 + 500 * mttr) / (1000 + 500 * mttp)   # -> 3.58
+    ```
+
+**6.** A fire pump's hidden failures come at $10^{-4}$ per hour. A test
+costs 2000, and each hour the pump lies failed is valued at 500. How often
+should it be tested, and what does that cost per hour?
+
+??? success "Answer"
+    $\tau^* \approx \sqrt{2 \times 2000 / (10^{-4} \times 500)} = 283$ hours,
+    about every 12 days. The cost rate is then about
+    $2000/283 + 500 \times 10^{-4} \times 283 / 2 = 14.1$ per hour: half
+    tests, half hidden downtime, as at any such optimum. RePyability's exact
+    rate agrees:
+
+    ```python
+    fire_pump = RepairableRBD(
+        [("s", "p"), ("p", "t")],
+        {"p": {
+            "reliability": surv.Exponential.from_params([1e-4]),
+            "repairability": "instant",
+            "downtime_cost": 500.0,
+            "inspection": {"interval": 283.0, "cost": 2000.0},
+        }},
+    )
+    fire_pump.expected_cost_rate()   # -> 14.08
     ```
 
 ## Where next

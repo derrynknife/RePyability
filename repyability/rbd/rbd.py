@@ -2,16 +2,17 @@
 
 ``RBD`` holds a diagram's structure and the computations that need only the
 structure and per-node probabilities; ``NonRepairableRBD`` and
-``RepairableRBD`` build on it. The module-level functions are the engine it
-uses: the exact probability that at least one set of elements fully works
-(a memoised Shannon decomposition), minimal cut sets from minimal path sets,
-and the probability scaling used by reliability allocation.
+``RepairableRBD`` build on it. Its exact engine reduces the diagram to
+series, parallel and k-out-of-n modules (``modular.py``) and works out what
+is left from its minimal path sets by a memoised Shannon decomposition
+(``shannon.py``). The module-level functions here are the exact probability
+that at least one set of elements fully works, minimal cut sets from minimal
+path sets, and the probability scaling used by reliability allocation.
 """
 
 import pprint
 import warnings
 from collections import defaultdict
-from copy import copy
 from typing import Any, Dict, Hashable, Iterable, Iterator, Optional
 
 import networkx as nx
@@ -28,8 +29,13 @@ from scipy.sparse import diags
 from scipy.special import expit as sigmoid
 from scipy.special import logit, logsumexp, softmax
 
-from repyability.rbd.min_path_sets import min_path_sets as find_min_path_sets
+from repyability.rbd.modular import Decomposition, decompose
 from repyability.rbd.rbd_graph import RBDGraph
+from repyability.rbd.shannon import (
+    _evaluate_shannon_plan,
+    _minimal_cut_sets,
+    _shannon_plan,
+)
 from repyability.utils.wrappers import check_probability
 
 _ON_INFEASIBLE_RBD = ("raise", "warn", "ignore")
@@ -210,124 +216,12 @@ def probability_any_set_satisfied(
     )
 
 
-# Value slots 0 and 1 of a Shannon plan hold the constant 0 and 1 arrays.
-_ZERO, _ONE = 0, 1
-
-
-def _shannon_plan(sets: Iterable[frozenset]) -> tuple[list, int]:
-    """Record the Shannon decomposition used by
-    :func:`probability_any_set_satisfied` as a replayable plan.
-
-    The decomposition -- which element to pivot on, and which sub-problems
-    recur -- depends only on the sets, not on the probabilities, so it can be
-    worked out once and replayed for any probabilities. Returns ``(steps,
-    root)``: step ``i`` fills value slot ``i + 2`` with
-    ``p[pivot] * value[active] + (1 - p[pivot]) * value[inactive]``, and
-    ``root`` is the slot holding the answer.
-
-    The decomposition is a depth-first recursion (the active branch, then
-    the inactive one, then the step itself), run on an explicit stack so
-    that systems with a thousand or more components do not reach Python's
-    recursion limit.
-    """
-    sets = [frozenset(s) for s in sets]
-    slots: Dict[frozenset, int] = {}
-    steps: list[tuple[Any, int, int]] = []
-
-    def known(state: frozenset) -> Optional[int]:
-        # state is a frozenset of frozensets: the sets still to be satisfied,
-        # with already-active elements removed.
-        if not state:
-            # No set can be satisfied any more -> probability 0.
-            return _ZERO
-        if frozenset() in state:
-            # A set has had all its elements satisfied -> probability 1.
-            return _ONE
-        return slots.get(state)
-
-    def split(state: frozenset) -> list:
-        # Pivot on the element appearing in the most sets, which tends to
-        # collapse the problem (and the memo table) fastest.
-        counts: Dict[Any, int] = {}
-        for s in state:
-            for element in s:
-                counts[element] = counts.get(element, 0) + 1
-        pivot = max(counts, key=lambda e: counts[e])
-
-        # Pivot active: it satisfies its requirement, so drop it from every
-        # set that contained it (other sets are unaffected).
-        state_active = frozenset(s - {pivot} for s in state)
-        # Pivot inactive: any set needing it can never be satisfied -> drop it.
-        state_inactive = frozenset(s for s in state if pivot not in s)
-        # [state, pivot, (branches still to solve), their solved slots]
-        return [state, pivot, [state_active, state_inactive], []]
-
-    root_state = frozenset(sets)
-    root = known(root_state)
-    stack = [] if root is not None else [split(root_state)]
-    while stack:
-        state, pivot, branches, solved = stack[-1]
-        if len(solved) < 2:
-            branch = branches[len(solved)]
-            slot = known(branch)
-            if slot is None:
-                stack.append(split(branch))
-            else:
-                solved.append(slot)
-            continue
-        steps.append((pivot, solved[0], solved[1]))
-        slots[state] = len(steps) + 1
-        stack.pop()
-        if stack:
-            stack[-1][3].append(slots[state])
-        else:
-            root = slots[state]
-    assert root is not None
-    return steps, root
-
-
-def _evaluate_shannon_plan(
-    plan: tuple[list, int],
-    element_probabilities: Dict[Any, np.ndarray],
-    array_shape,
-) -> np.ndarray:
-    """Replay a :func:`_shannon_plan` for the given probabilities."""
-    steps, root = plan
-    values = [np.zeros(array_shape), np.ones(array_shape)]
-    for pivot, active, inactive in steps:
-        p = element_probabilities[pivot]
-        values.append(p * values[active] + (1 - p) * values[inactive])
-    return values[root]
-
-
-def _shannon_value_and_gradient(
-    plan: tuple[list, int],
-    probabilities: Dict[Any, float],
-    complements: Dict[Any, float],
-) -> tuple[float, Dict[Any, float]]:
-    """A plan's value for scalar element probabilities, and its derivative
-    with respect to each element's probability (the element's Birnbaum
-    importance), by one forward and one reverse pass. ``complements`` holds
-    each element's ``1 - p``, computed without cancellation, so the value
-    keeps its full relative precision however small it is."""
-    steps, root = plan
-    values = [0.0, 1.0]
-    for pivot, active, inactive in steps:
-        values.append(
-            probabilities[pivot] * values[active]
-            + complements[pivot] * values[inactive]
-        )
-    adjoints = [0.0] * len(values)
-    adjoints[root] = 1.0
-    gradient: Dict[Any, float] = defaultdict(float)
-    for index in range(len(steps) - 1, -1, -1):
-        adjoint = adjoints[index + 2]
-        if adjoint:
-            pivot, active, inactive = steps[index]
-            gradient[pivot] += adjoint * (values[active] - values[inactive])
-            adjoints[active] += adjoint * probabilities[pivot]
-            adjoints[inactive] += adjoint * complements[pivot]
-    return values[root], gradient
+def _averaged(values: Any, weights: Optional[np.ndarray]) -> Any:
+    """``values`` averaged over their first axis with ``weights`` (e.g. over
+    time), as a one-element array; unchanged without weights."""
+    if weights is None:
+        return values
+    return np.atleast_1d(np.asarray(weights) @ np.asarray(values))
 
 
 def _probability_value(label: str, value: Any) -> float:
@@ -356,7 +250,7 @@ def minimal_cut_sets_from_path_sets(
     structures, whose k-of-n behaviour is already encoded in the path sets.
 
     The cut sets are read off the same Shannon decomposition the exact engine
-    uses (see ``_shannon_plan``), which shares every repeated
+    uses (see ``_shannon_plan`` in ``shannon.py``), which shares every repeated
     sub-problem. At a step pivoting on component ``x``, the system works as
     ``f1`` if ``x`` works and ``f0`` if it has failed, with ``f0 <= f1`` (a
     coherent system never works *better* for a failure). A minimal cut set
@@ -394,32 +288,6 @@ def minimal_cut_sets_from_path_sets(
     return _minimal_cut_sets(_shannon_plan(path_sets))
 
 
-def _minimal_cut_sets(plan: tuple[list, int]) -> set[frozenset]:
-    """The minimal cut sets of the structure a :func:`_shannon_plan` was
-    built from (see :func:`minimal_cut_sets_from_path_sets`)."""
-    steps, root = plan
-    # Cut sets as bitmasks (one bit per component), so each union and subset
-    # test is a single integer operation.
-    components = list(dict.fromkeys(pivot for pivot, _, _ in steps))
-    bit = {component: 1 << i for i, component in enumerate(components)}
-    # Value slots as in the plan: 0 never works (the empty set is a cut),
-    # 1 always works (nothing is a cut), then one per step.
-    cuts: list[list[int]] = [[0], []]
-    for pivot, active, inactive in steps:
-        spare_pivot = cuts[active]
-        cuts.append(
-            spare_pivot
-            + [
-                bit[pivot] | rest
-                for rest in cuts[inactive]
-                if not any(cut & rest == cut for cut in spare_pivot)
-            ]
-        )
-    return {
-        frozenset(c for c in components if cut & bit[c]) for cut in cuts[root]
-    }
-
-
 class RBD:
     """Reliability block diagram structure: the base of the RBD classes.
 
@@ -452,9 +320,14 @@ class RBD:
     no edge); if a ``k`` is 0 or greater than the node's number of incoming
     edges; or if ``k`` names a node not in the diagram. ``on_infeasible_rbd``
     sets what then happens, and the full report is kept in
-    ``structure_check``. The minimal path sets are found on construction and
-    cached, as are the cut sets and the exact engine's decomposition on
-    first use, so repeated evaluations are cheap.
+    ``structure_check``. On construction the diagram is also reduced to its
+    modules: the series, parallel and k-out-of-n parts, each of which has a
+    closed form, leaving only the rest (e.g. a bridge) to be worked out from
+    its minimal path sets. This keeps large redundant diagrams fast, and a
+    series-parallel diagram never needs its path sets, however many there
+    are (see [`system_probability`][repyability.RBD.system_probability]).
+    The minimal path and cut sets are found on first use and cached, so
+    repeated evaluations are cheap.
 
     Parameters
     ----------
@@ -645,7 +518,14 @@ class RBD:
         self.input_node = structure_check["input_node"]
         self.output_node = structure_check["output_node"]
         self.in_or_out = [self.input_node, self.output_node]
-        self.nodes = [n for n in self.G.nodes if n not in self.in_or_out]
+        # A repeated node (a subclass's ``_aliases``) is the component it
+        # repeats, so it is not a component of its own.
+        aliases = self._component_aliases()
+        self.nodes = [
+            n
+            for n in self.G.nodes
+            if n not in self.in_or_out and n not in aliases
+        ]
         self.structure_check["has_irrelevant_nodes"] = False
         self.structure_check["irrelevant_nodes"] = set()
 
@@ -653,7 +533,8 @@ class RBD:
             not structure_check["has_cycles"]
             and not structure_check["has_nodes_with_no_successor"]
         ):
-            self.get_min_path_sets()
+            # Reduces the diagram, and raises if nothing reaches the output.
+            self._decomposition()
             irrelevant_nodes = self.find_irrelevant_components()
             if len(irrelevant_nodes) != 0:
                 self.structure_check["has_irrelevant_nodes"] = True
@@ -666,8 +547,9 @@ class RBD:
         A node is irrelevant when it is in no minimal path set, e.g. a node
         in parallel with a direct edge, which is a connection that never
         fails. Whether such a node works never changes whether the system
-        works, so its Birnbaum and structural importance are zero. It is
-        still a node of the RBD (it is in
+        works, so its Birnbaum and structural importance are zero. They are
+        found by the reduction to modules, without listing the path sets.
+        An irrelevant node is still a node of the RBD (it is in
         [`node_names`][repyability.RBD.node_names]). The same set is found on
         construction and stored in ``structure_check["irrelevant_nodes"]``,
         with ``structure_check["has_irrelevant_nodes"]``.
@@ -691,8 +573,8 @@ class RBD:
         >>> rbd.find_irrelevant_components()
         {'b'}
         """
-        combined_nodes: set = set().union(*self.get_min_path_sets())
-        return set(self.G.nodes).symmetric_difference(combined_nodes)
+        relevant = self._decomposition().nodes
+        return set(self.nodes) - relevant
 
     def get_all_path_sets(self) -> Iterator[list[Hashable]]:
         """Iterate over every path from the input node to the output node.
@@ -731,9 +613,13 @@ class RBD:
         to work; it is minimal when no node can be left out. k-out-of-n
         values are accounted for: a minimal path set through a node with
         k-out-of-n value ``k`` combines path sets reaching ``k`` of its
-        predecessors. The sets are found by a memoised search back from the
-        output node, on construction, and cached; each call returns a new
-        set.
+        predecessors. The sets are expanded from the diagram's modules (see
+        [`system_probability`][repyability.RBD.system_probability]) on first
+        use and cached; each call returns a new set. Their number can grow
+        exponentially with redundancy (``n`` stages of duplicated units in
+        series have ``2 ** n``), but nothing else needs them: the system
+        probability, the importance measures and the cut sets are found
+        without listing them.
 
         Parameters
         ----------
@@ -771,52 +657,38 @@ class RBD:
         >>> sorted(sorted(p) for p in paths)
         [['a', 'b', 'v'], ['a', 'c', 'v'], ['b', 'c', 'v']]
         """
-        # Run min_path_sets() but convert all the inner sets to frozensets
-        # and remove the input/output nodes if requested
-        if hasattr(self, "_min_path_sets"):
-            min_path_sets = self._min_path_sets
-        else:
-            min_path_sets = find_min_path_sets(
-                rbd_graph=self.G,
-                curr_node=self.output_node,
-                solns={},
+        if not hasattr(self, "_min_path_sets"):
+            self._min_path_sets: set[frozenset[Hashable]] = (
+                self._decomposition().path_sets()
             )
-            self._min_path_sets: list[set[Hashable]] = min_path_sets
-
-        if min_path_sets == []:
-            raise ValueError(
-                "RBD has no paths through! Need to re-evaluate the KooN nodes."
-            )
-
-        ret_set = set()
-        for min_path_set in min_path_sets:
-            min_path_set = set(min_path_set)
-            if not include_in_out_nodes:
-                min_path_set.remove(self.input_node)
-                min_path_set.remove(self.output_node)
-            ret_set.add(frozenset(min_path_set))
-
-        return ret_set
+        if not include_in_out_nodes:
+            return set(self._min_path_sets)
+        ends = {node for node in self.in_or_out if node in self.G}
+        return {path_set | ends for path_set in self._min_path_sets}
 
     def is_system_working(
         self, component_status: dict[Any, bool], method: str
     ) -> bool:
         """Return whether the system works, given which components work.
 
-        This is the structure function. With ``method="p"`` the system works
-        when every node of at least one minimal path set works; with
-        ``method="c"`` when at least one node of every minimal cut set
-        works. Both give the same answer; ``"p"`` is typically faster as it
-        does not need the cut sets. The input and output nodes need no
-        entry. The sets are cached on first use, so repeated calls (as in
-        the simulations) are cheap.
+        This is the structure function. It is evaluated through the
+        diagram's modules (see
+        [`system_probability`][repyability.RBD.system_probability]): a
+        series module works when all of its members do, a parallel one when
+        any does, a k-out-of-n one when at least ``k`` do, and what is left
+        (e.g. a bridge) through its minimal path sets (``method="p"``: some
+        path set has every member working) or cut sets (``method="c"``:
+        every cut set has a member working). Both give the same answer;
+        ``"p"`` is typically faster as it does not need the cut sets. The
+        input and output nodes need no entry. The layout is worked out once,
+        so repeated calls (as in the simulations) are cheap.
 
         Parameters
         ----------
         component_status : dict[Any, bool]
             Whether each component is working (truthy) or failed (falsy),
-            keyed by node name. Every node in a minimal path (or cut) set
-            needs an entry; other keys are ignored.
+            keyed by node name. Every node in a minimal path set needs an
+            entry; other keys are ignored.
         method : str
             ``"p"`` (path sets) or ``"c"`` (cut sets). There is no default.
 
@@ -846,43 +718,9 @@ class RBD:
         >>> rbd.is_system_working({"a": True, "b": True, "c": False}, "c")
         False
         """
-        # The system structure function is evaluated directly from the minimal
-        # path/cut sets, which is plenty fast for the rate at which this is
-        # called in the simulations (no Binary Decision Diagram required).
-        #
-        # - path-set ("p"): the system works iff at least one minimal path set
-        #   has all of its components working.
-        # - cut-set ("c"): the system works iff every minimal cut set has at
-        #   least one of its components working.
-        #
-        # The path/cut sets (excluding the input/output nodes) are cached on
-        # first use so repeated calls during a simulation are cheap.
-        if method == "p":
-            if not hasattr(self, "_eval_path_sets"):
-                self._eval_path_sets = [
-                    tuple(path_set)
-                    for path_set in self.get_min_path_sets(
-                        include_in_out_nodes=False
-                    )
-                ]
-            status = component_status.__getitem__
-            return any(
-                all(map(status, path_set)) for path_set in self._eval_path_sets
-            )
-        elif method == "c":
-            if not hasattr(self, "_eval_cut_sets"):
-                self._eval_cut_sets = [
-                    tuple(cut_set)
-                    for cut_set in self.get_min_cut_sets(
-                        include_in_out_nodes=False
-                    )
-                ]
-            status = component_status.__getitem__
-            return all(
-                any(map(status, cut_set)) for cut_set in self._eval_cut_sets
-            )
-        else:
+        if method not in ("p", "c"):
             raise ValueError("`method` must be either 'p' or 'c'")
+        return self._decomposition().works(component_status, method)
 
     def get_min_cut_sets(
         self, include_in_out_nodes=False
@@ -892,11 +730,15 @@ class RBD:
         A cut set is a set of nodes whose failure is enough for the system
         to fail; it is minimal when no node can be left out. The minimal cut
         sets are the minimal transversals (hitting sets) of the minimal path
-        sets, read off the exact engine's Shannon decomposition (see
-        ``minimal_cut_sets_from_path_sets`` in this module), so k-out-of-n
-        values are accounted for. They are worked out on first use and
-        cached for each value of ``include_in_out_nodes``; each call returns
-        a new set.
+        sets, and k-out-of-n values are accounted for. They are built from
+        the diagram's modules without listing the path sets: a series
+        module's cut sets are its members', a parallel module's combine one
+        of each member's, and a k-out-of-n module's combine one of each of
+        ``n - k + 1`` members'; the part that is not series-parallel (e.g. a
+        bridge) has its own read off the exact engine's Shannon
+        decomposition (see ``minimal_cut_sets_from_path_sets`` in this
+        module). They are worked out on first use and cached; each call
+        returns a new set.
 
         Parameters
         ----------
@@ -931,22 +773,17 @@ class RBD:
         >>> sorted(sorted(c) for c in cuts)
         [['a', 'b'], ['c'], ['s'], ['t']]
         """
-        # The structure is fixed once built (the path sets are cached too),
-        # so the cut sets are worked out once per RBD; each call gets its own
-        # copy of the set.
+        # The structure is fixed once built, so the cut sets are worked out
+        # once per RBD; each call gets its own copy of the set.
         if not hasattr(self, "_min_cut_sets"):
-            self._min_cut_sets: dict[bool, set[frozenset[Hashable]]] = {}
-        key = bool(include_in_out_nodes)
-        if key not in self._min_cut_sets:
-            if key:
-                plan = _shannon_plan(
-                    self.get_min_path_sets(include_in_out_nodes=True)
-                )
-            else:
-                # The exact engine's own plan (built on first use).
-                plan = self._shannon_plan("p")
-            self._min_cut_sets[key] = _minimal_cut_sets(plan)
-        return set(self._min_cut_sets[key])
+            self._min_cut_sets: set[frozenset[Hashable]] = (
+                self._decomposition().cut_sets()
+            )
+        if not include_in_out_nodes:
+            return set(self._min_cut_sets)
+        # Failing the input or the output alone fails the system.
+        ends = {frozenset([node]) for node in self.in_or_out if node in self.G}
+        return self._min_cut_sets | ends
 
     def path_set_probabilities(self, node_probabilities):
         """Return the probability that each minimal path set fully works.
@@ -1013,14 +850,27 @@ class RBD:
         engine behind the subclasses' reliability, availability and
         importance calculations.
 
-        The result is exact. The structure function is expanded by a
-        Shannon (pivotal) decomposition over the minimal path sets
-        (``method="p"``) or, with the node unreliabilities ``1 - p``, over
-        the minimal cut sets (``method="c"``); repeated sub-problems are
-        solved once. The decomposition depends only on the structure, so it
-        is built on the first call for each method and reused. Both methods
-        give the same result; ``"p"`` is the default as it does not need the
-        cut sets.
+        The result is exact. On construction the diagram is reduced to
+        modules, each with a closed form: a series chain works with
+        probability ``p1 * p2 * ...``, a parallel group with
+        ``1 - (1 - p1) * (1 - p2) * ...``, and a k-out-of-n group by summing
+        over how many of its members work. Whatever is not series-parallel
+        (e.g. a bridge) is left as a core over modules and single nodes, and
+        is expanded by a Shannon (pivotal) decomposition over its minimal
+        path sets, with repeated sub-problems solved once. So a
+        series-parallel diagram is evaluated without listing its path sets,
+        however many there are (``n`` stages of duplicated units in series
+        have ``2 ** n``), and only the core pays the combinatorial price.
+        Both depend only on the structure, so they are worked out once and
+        reused.
+
+        With ``method="p"`` the probability that the system works is
+        computed, and with ``method="c"`` the probability that it fails,
+        whose complement is returned. Both give the same result (up to
+        rounding); ``"p"`` is the default. Every step is a sum of products
+        of node probabilities and their complements, so the probability
+        computed keeps its full relative precision however close to 0 it
+        is.
 
         Parameters
         ----------
@@ -1031,7 +881,8 @@ class RBD:
             input and output nodes, and any other keys, are not used. The
             dict is not modified.
         method : str, optional
-            ``"p"`` (path sets, the default) or ``"c"`` (cut sets).
+            ``"p"`` (the default) or ``"c"``: whether to compute the
+            probability that the system works or that it fails.
 
         Returns
         -------
@@ -1077,50 +928,51 @@ class RBD:
         if method not in ("p", "c"):
             raise ValueError("`method` must be either 'p' or 'c'")
 
-        node_probabilities = copy(node_probabilities)
-        lengths = np.array([], dtype=np.int64)
-        for node in self.nodes:
-            node_array = np.atleast_1d(node_probabilities[node])
-            node_probabilities[node] = node_array
-            lengths = np.append(lengths, len(node_array))
-
-        if np.any(lengths[0] != lengths[1:]):
-            raise ValueError("Probability arrays must be same length")
-        else:
-            # get shape of input array
-            array_shape = lengths[0]
-
-        if method == "p":
-            # The system reliability is the probability that at least one
-            # minimal path set has all of its components working.
-            return _evaluate_shannon_plan(
-                self._shannon_plan("p"), node_probabilities, array_shape
-            )
-
-        # method == "c": work with cut sets and node unreliabilities. The
-        # system unreliability is the probability that at least one minimal
-        # cut set has all of its components failed.
-        node_unreliability = {k: 1 - v for k, v in node_probabilities.items()}
-        system_unreliability = _evaluate_shannon_plan(
-            self._shannon_plan("c"), node_unreliability, array_shape
+        arrays, size = self._node_arrays(node_probabilities)
+        works, fails = self._decomposition().probabilities(
+            arrays, shape=size, works=method == "p", fails=method == "c"
         )
-        return 1 - system_unreliability
+        if method == "p":
+            return np.array(works, dtype=float)
+        return 1 - np.asarray(fails, dtype=float)
 
-    def _shannon_plan(self, method: str) -> tuple[list, int]:
-        """The exact engine's plan over the minimal path sets (``"p"``) or
-        cut sets (``"c"``). It depends only on the structure, so it is built
-        on first use and reused by every later evaluation (importance
-        measures, redundancy allocation and the repairable closed forms call
-        the engine many times)."""
-        if not hasattr(self, "_shannon_plans"):
-            self._shannon_plans: dict[str, tuple[list, int]] = {}
-        if method not in self._shannon_plans:
-            if method == "p":
-                sets = self.get_min_path_sets(include_in_out_nodes=False)
-            else:
-                sets = self.get_min_cut_sets(include_in_out_nodes=False)
-            self._shannon_plans[method] = _shannon_plan(sets)
-        return self._shannon_plans[method]
+    def _node_arrays(self, node_probabilities: Dict) -> tuple[dict, int]:
+        """Each intermediate node's probability as a 1-d array, and their
+        common length."""
+        arrays: dict = {}
+        lengths = set()
+        for node in self.nodes:
+            arrays[node] = np.atleast_1d(node_probabilities[node])
+            lengths.add(len(arrays[node]))
+        if len(lengths) > 1:
+            raise ValueError("Probability arrays must be same length")
+        return arrays, lengths.pop() if lengths else 1
+
+    def _decomposition(self) -> Decomposition:
+        """The diagram reduced to modules (see ``modular.py``): the exact
+        engine behind the probabilities, the structure function and the
+        path and cut sets. It depends only on the structure, so it is built
+        once, on construction for a feasible structure. A structure that is
+        not a valid RBD is not reduced: its core is the whole diagram, with
+        the path sets the memoised search finds."""
+        if not hasattr(self, "_modules"):
+            reducible = self.structure_check["is_valid"] and all(
+                self.G.nodes[node]["k"] >= 1 for node in self.G.nodes
+            )
+            self._modules = decompose(
+                self.G,
+                self.input_node,
+                self.output_node,
+                reduce=reducible,
+                aliases=self._component_aliases(),
+            )
+        return self._modules
+
+    def _component_aliases(self) -> dict:
+        """``{node: component}`` for the nodes that stand for a component
+        drawn in more than one place (a ``NonRepairableRBD``'s repeated
+        nodes); none in a plain RBD."""
+        return getattr(self, "_aliases", {})
 
     @check_probability
     def improvement_allocation(
@@ -1514,13 +1366,11 @@ class RBD:
     ) -> tuple[float, Dict[Any, float]]:
         """The log-odds ``log(R / (1 - R))`` that the system works, and its
         derivative with respect to each node's probability, from the node
-        probabilities ``p`` and their complements ``q``. ``R`` comes from
-        the path sets and ``1 - R`` from the cut sets, so both keep their
-        full relative precision, even within 1e-300 of 0 or 1."""
-        R, dR = _shannon_value_and_gradient(self._shannon_plan("p"), p, q)
-        Q, dQ = _shannon_value_and_gradient(self._shannon_plan("c"), q, p)
-        # Each node's Birnbaum importance, from whichever end is accurate.
-        importance = dR if R <= Q else dQ
+        probabilities ``p`` and their complements ``q``. ``R`` and
+        ``1 - R`` are each computed as sums of products, so both keep their
+        full relative precision, even within 1e-300 of 0 or 1, as does each
+        node's Birnbaum importance."""
+        R, Q, importance = self._decomposition().value_and_gradient(p, q)
         with np.errstate(divide="ignore"):
             log_odds = float(np.log(R) - np.log(Q))
         scale = R * Q
@@ -1601,10 +1451,10 @@ class RBD:
         0.6
         """
         current = self._allocation_start(node_probabilities)
-        path_sets = self.get_min_path_sets(include_in_out_nodes=False)
-        if len(path_sets) != 1 or set(next(iter(path_sets))) != set(
-            self.nodes
-        ):
+        # In series, every node alone is a cut set (and so is in the only
+        # path set).
+        cut_sets = self.get_min_cut_sets()
+        if any(frozenset([node]) not in cut_sets for node in self.nodes):
             raise ValueError(
                 "the minimum-effort algorithm applies to a series system (a "
                 "single path through every intermediate node); use "
@@ -1854,8 +1704,8 @@ class RBD:
         Every node of the diagram except the input and output nodes, in the
         order the nodes were added to the graph (for a feasible RBD, the
         order of first appearance in ``edges``). Irrelevant nodes are
-        included. In a ``NonRepairableRBD`` a repeated node is merged into
-        the node it repeats, so only the latter is listed.
+        included. In a ``NonRepairableRBD`` a repeated node is the
+        component it repeats, so only the latter is listed.
 
         Returns
         -------
@@ -2204,7 +2054,9 @@ class RBD:
                     )
 
     def _birnbaum_importance(
-        self, node_probabilities: dict[Any, ArrayLike]
+        self,
+        node_probabilities: dict[Any, ArrayLike],
+        weights: Optional[np.ndarray] = None,
     ) -> dict[Any, np.ndarray]:
         """Returns the Birnbaum measure of importance for all nodes.
 
@@ -2218,6 +2070,11 @@ class RBD:
             node in the RBDGraph. Probability is to be either the reliability
             or the availability (or some other probability that I can't
             conceive).
+        weights : np.ndarray, optional
+            Weights to average the arrays' elements with (e.g. over time,
+            see ``RepairableRBD._long_run_grid``), by default None: one
+            value per element. The same for every importance helper here;
+            each ratio is then of averages.
 
         Returns
         -------
@@ -2240,11 +2097,15 @@ class RBD:
             guaranteed_not: np.ndarray = self.system_probability(
                 node_probabilities_i
             )
-            node_importance[node] = guaranteed - guaranteed_not
+            node_importance[node] = _averaged(
+                guaranteed - guaranteed_not, weights
+            )
         return node_importance
 
     def _improvement_potential(
-        self, node_probabilities: dict[Any, ArrayLike]
+        self,
+        node_probabilities: dict[Any, ArrayLike],
+        weights: Optional[np.ndarray] = None,
     ) -> dict[Any, np.ndarray]:
         """Returns the improvement potential of all nodes.
 
@@ -2267,11 +2128,13 @@ class RBD:
             }
             when_working = self.system_probability(node_probabilities_i)
             as_is: np.ndarray = self.system_probability(node_probabilities)
-            node_importance[node] = when_working - as_is
+            node_importance[node] = _averaged(when_working - as_is, weights)
         return node_importance
 
     def _risk_achievement_worth(
-        self, node_probabilities: dict[Any, ArrayLike]
+        self,
+        node_probabilities: dict[Any, ArrayLike],
+        weights: Optional[np.ndarray] = None,
     ) -> dict[Any, np.ndarray]:
         """Returns the RAW importance per Modarres & Kaminskiy. That is RAW_i =
         (unreliability of system given i failed) /
@@ -2295,11 +2158,15 @@ class RBD:
                 **{node: np.zeros_like(node_probabilities[node])},
             }
             when_failed = 1 - self.system_probability(node_probabilities_i)
-            node_importance[node] = when_failed / as_is
+            node_importance[node] = _averaged(
+                when_failed, weights
+            ) / _averaged(as_is, weights)
         return node_importance
 
     def _risk_reduction_worth(
-        self, node_probabilities: dict[Any, ArrayLike]
+        self,
+        node_probabilities: dict[Any, ArrayLike],
+        weights: Optional[np.ndarray] = None,
     ) -> dict[Any, np.ndarray]:
         """Returns the RRW importance per Modarres & Kaminskiy. That is RRW_i =
         (nominal unreliability of system) /
@@ -2323,11 +2190,16 @@ class RBD:
                 **{node: np.ones_like(node_probabilities[node])},
             }
             working = 1 - self.system_probability(node_probabilities_i)
-            node_importance[node] = as_is / working
+            node_importance[node] = _averaged(as_is, weights) / _averaged(
+                working, weights
+            )
         return node_importance
 
     def _criticality_importance(
-        self, node_probabilities: dict[Any, ArrayLike], kind: str = "failure"
+        self,
+        node_probabilities: dict[Any, ArrayLike],
+        kind: str = "failure",
+        weights: Optional[np.ndarray] = None,
     ) -> dict[Any, np.ndarray]:
         """The criticality importance of every node.
 
@@ -2335,8 +2207,8 @@ class RBD:
         (Rausand & Høyland), ``I_B(i) * (1 - p_i) / (1 - P_sys)``: the
         probability that node ``i`` has failed and is critical, given that
         the system has failed, i.e. the share of system failures node ``i``
-        accounts for. It is computed from the node unreliabilities through
-        the minimal cut sets, so the system unreliability is not lost to
+        accounts for. It is computed from the system unreliability directly
+        (a sum of products, like the reliability), so it is not lost to
         cancellation in ``1 - P_sys`` however reliable the system is; it is
         ``nan`` where the system cannot fail.
 
@@ -2372,41 +2244,49 @@ class RBD:
             bi: dict[Any, np.ndarray] = self._birnbaum_importance(
                 node_probabilities
             )
-            system_sf: np.ndarray = self.system_probability(node_probabilities)
+            system_sf = _averaged(
+                self.system_probability(node_probabilities), weights
+            )
             for node in self.nodes:
+                critical = _averaged(
+                    bi[node] * node_probabilities[node], weights
+                )
                 with np.errstate(divide="ignore", invalid="ignore"):
                     node_importance[node] = np.where(
-                        system_sf > 0,
-                        bi[node] * node_probabilities[node] / system_sf,
-                        np.nan,
+                        system_sf > 0, critical / system_sf, np.nan
                     )
             return node_importance
-        # Failure-oriented: everything from the unreliabilities, through the
-        # cut sets, so that small system unreliabilities keep their
-        # precision (1 - P_sys would cancel).
-        q = {
-            node: 1.0
-            - np.atleast_1d(np.asarray(node_probabilities[node], dtype=float))
-            for node in self.nodes
-        }
-        lengths = {len(value) for value in q.values()}
-        if len(lengths) > 1:
-            raise ValueError("Probability arrays must be same length")
-        size = lengths.pop() if lengths else 1
-        plan = self._shannon_plan("c")
-        system_ff = _evaluate_shannon_plan(plan, q, size)
+        # Failure-oriented: from the system unreliability itself, so that
+        # small unreliabilities keep their precision (1 - P_sys would
+        # cancel).
+        p, size = self._node_arrays(
+            {
+                node: np.asarray(node_probabilities[node], dtype=float)
+                for node in self.nodes
+            }
+        )
+        q = {node: 1.0 - value for node, value in p.items()}
+        structure = self._decomposition()
+
+        def unreliability(node=None, failed=False):
+            # The system unreliability, with ``node`` failed or working.
+            if node is None:
+                return structure.probabilities(p, q, size, works=False)[1]
+            one, zero = np.ones_like(p[node]), np.zeros_like(p[node])
+            forced_p = {**p, node: zero if failed else one}
+            forced_q = {**q, node: one if failed else zero}
+            return structure.probabilities(
+                forced_p, forced_q, size, works=False
+            )[1]
+
+        system_ff = _averaged(unreliability(), weights)
         for node in self.nodes:
-            failed = _evaluate_shannon_plan(
-                plan, {**q, node: np.ones_like(q[node])}, size
-            )
-            working = _evaluate_shannon_plan(
-                plan, {**q, node: np.zeros_like(q[node])}, size
-            )
+            failed = unreliability(node, failed=True)
+            working = unreliability(node, failed=False)
+            critical = _averaged((failed - working) * q[node], weights)
             with np.errstate(divide="ignore", invalid="ignore"):
                 node_importance[node] = np.where(
-                    system_ff > 0,
-                    (failed - working) * q[node] / system_ff,
-                    np.nan,
+                    system_ff > 0, critical / system_ff, np.nan
                 )
         return node_importance
 
@@ -2415,6 +2295,7 @@ class RBD:
         node_probabilities: dict[Any, ArrayLike],
         fv_type: str = "c",
         approx: bool = True,
+        weights: Optional[np.ndarray] = None,
     ) -> dict[Any, np.ndarray]:
         """Calculate Fussell-Vesely importance of all components at time/s x.
 
@@ -2517,7 +2398,7 @@ class RBD:
             node_fv_numerator = (
                 node_fv_numerator if approx else 1 - node_fv_numerator
             )
-            node_importance[this_node] = (
-                node_fv_numerator / system_probability_complement
-            )
+            node_importance[this_node] = _averaged(
+                node_fv_numerator, weights
+            ) / _averaged(system_probability_complement, weights)
         return node_importance

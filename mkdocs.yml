@@ -92,6 +92,7 @@ nav:
   - User guide:
       - Overview: guide/index.md
       - Building an RBD: guide/building.md
+      - Fault trees: guide/fault-trees.md
       - Reliability of a system: guide/reliability.md
       - Importance measures: guide/importance.md
       - Condition-based evaluation: guide/condition-based.md
@@ -101,6 +102,7 @@ nav:
       - Costs: guide/costs.md
       - Design and allocation: guide/design.md
       - Maintenance policies: guide/maintenance.md
+      - Simulation precision and speed: guide/simulation.md
       - Saving, reproducibility and performance: guide/saving.md
   - Concepts: concepts.md
   - API reference: api.md

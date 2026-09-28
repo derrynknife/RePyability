@@ -11,6 +11,8 @@
       $\omega = 1/(\text{MTTF} + \text{MTTR})$;
     - how availability changes after start-up, and how to simulate it and
       judge the simulation's error;
+    - how to simulate until an answer is precise enough, and how to compare
+      two designs far more precisely (common random numbers);
     - the availability of a system, how often it fails (from Birnbaum
       importance) and how long its outages last;
     - the pitfalls: availability is not reliability, and the long run is not
@@ -19,7 +21,7 @@
     **Before you start:** Lessons 1 to 4: [lifetimes and the
     MTTF](lifetimes.md), [series and parallel systems](systems.md), [the
     exact system probability](structure.md) and [Birnbaum
-    importance](importance.md). About 35 minutes.
+    importance](importance.md). About 40 minutes.
 
 ## The question
 
@@ -240,6 +242,83 @@ Two arguments govern the error. `N` sets its size: the error shrinks like
 $1/\sqrt{N}$, so halving it takes four times as many histories. The `seed`
 makes a run reproducible: the same seed gives the same numbers, and another
 seed gives different numbers that are equally valid, within the same error.
+
+### Precise enough, sooner
+
+The band says how precise a run turned out to be. You can instead say how
+precise it must be, and let the simulation decide how long to run. Suppose
+you need the pump's **mean availability over its first 5 hours**, the
+fraction of those hours it is up, to within ±0.001 at 95% confidence. Each
+history has its own fraction up. Over 10 000 histories those fractions have
+a standard deviation of about $s = 0.14$, so their mean has a standard error
+of $s/\sqrt{N}$, and its 95% interval reaches $1.96\,s/\sqrt{N}$ either
+side. For ±0.001 you need
+
+$$
+N \ge \left(\frac{1.96 \times 0.14}{0.001}\right)^2 \approx 75\,700.
+$$
+
+`tolerance` does this for you: it runs `N` histories, checks the interval,
+and runs another `N` until the interval is narrow enough:
+
+```python
+precise = one_pump.availability(t_simulation=5.0, N=10_000, seed=0, tolerance=0.001)
+precise.n_simulations            # -> 80000
+window = precise.mean_availability_interval()
+window.estimate                  # -> 0.926
+window.upper - window.estimate   # -> 0.00097
+```
+
+The exact answer is the average of the formula for $A(t)$ over the window,
+
+$$
+\frac{1}{5}\int_0^5 A(t)\,dt
+= \frac{\mu}{\lambda + \mu}
++ \frac{\lambda}{5(\lambda + \mu)^2}\left(1 - e^{-5(\lambda + \mu)}\right)
+= 0.9091 + 0.0165 = 0.9256,
+$$
+
+inside the interval.
+
+Two ideas get more precision out of each history, without changing what is
+estimated.
+
+**Comparing designs with the same random numbers.** Would a crew that
+repairs the pump in half an hour on average, instead of an hour, be worth
+it? Simulate each design separately and each estimate carries its own error,
+so their difference carries both. Instead, simulate both with the *same*
+random numbers: in each history the pump runs for the same up times in both
+designs, and only the repairs differ. The chance in the histories is then
+common to both designs and cancels in the difference. This is called
+**common random numbers**, and `compare` does it:
+
+```python
+quick = RepairableRBD([("in", "pump"), ("pump", "out")], {"pump": unit(0.1, 2.0)})
+gain = quick.compare(one_pump, t_simulation=5.0, N=10_000, seed=0)
+gain.estimate         # -> 0.0315   exactly: 0.9569 - 0.9256 = 0.0314
+gain.standard_error   # -> 0.00063
+```
+
+Two separate runs of 10 000 histories each give the difference with a
+standard error of about 0.0017: to match `compare` they would need about
+seven times as many histories.
+
+**Antithetic pairs.** A history is built from random numbers $u$ between 0
+and 1: a small $u$ gives a short time, a large one a long time. Run the
+histories in pairs, the second using $1 - u$ wherever the first used $u$:
+where the first had an early failure, the second has a late one. Both are
+genuine histories, but they tend to err in opposite directions, so a pair's
+average is closer to the truth than two unrelated histories' would be:
+
+```python
+paired = one_pump.availability(t_simulation=5.0, N=10_000, seed=0, antithetic=True)
+paired.mean_availability_interval().standard_error   # -> 0.0012   0.0014 without pairs
+```
+
+Here the pairs are worth about 1.4 times as many histories. A system's
+lifetime, which rises with every component's lifetime, gains more. The user
+guide's [Simulation precision and speed](../guide/simulation.md) has every
+option, including running the histories on several processor cores at once.
 
 ## The availability of a system
 
@@ -532,6 +611,10 @@ maintenance](../guide/costs.md#preventive-maintenance).
     - The point availability $A(t)$ starts at 1 and settles to the long-run
       value; RePyability simulates it, with an error that shrinks like
       $1/\sqrt{N}$.
+    - `tolerance` simulates until an answer is precise enough; `compare`
+      simulates two designs with the same random numbers, so the chance in
+      the histories cancels in their difference; antithetic pairs make each
+      history count for more.
     - High availability can hide frequent failures: report the failure
       frequency and MDT too.
 
@@ -653,6 +736,29 @@ value around 12 hours?
     np.interp(12.0, curve.timeline, curve.availability)   # -> 0.888
     np.interp(18.0, curve.timeline, curve.availability)   # -> 0.918
     ```
+
+**6.** (a) Compare the pump with itself, `one_pump.compare(one_pump, 5.0)`.
+What difference and standard error do you get, and why? What would two
+separate runs give? (b) How many histories would it take to know the pump's
+mean availability over its first 5 hours to within ±0.0005?
+
+??? success "Answer"
+    (a) A difference of exactly 0, with a standard error of 0: with the same
+    random numbers the two (identical) designs have identical histories, so
+    every history's difference is zero. Two separate runs of 10 000
+    histories would differ by chance, typically by about their combined
+    standard error, $\sqrt{2} \times 0.0014 = 0.002$.
+
+    ```python
+    same = one_pump.compare(one_pump, 5.0, N=1_000, seed=0)
+    same.estimate          # -> 0.0
+    same.standard_error    # -> 0.0
+    ```
+
+    (b) Halving the tolerance takes four times the histories:
+    $(1.96 \times 0.14/0.0005)^2 \approx 4 \times 75\,700 \approx 303\,000$.
+    With `tolerance=0.0005` (and `N=10_000`) the simulation stops at its
+    first check past that, after 310 000 histories.
 
 ## Where next
 

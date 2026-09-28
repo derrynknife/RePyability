@@ -11,7 +11,10 @@
     - why path probabilities cannot be added, and the **rare-event
       approximation** that safety analysts use instead;
     - the **pivotal decomposition**, and how RePyability builds its exact
-      engine on it.
+      engine on it, after reducing the series and parallel parts;
+    - to read a **fault tree**, the same logic seen from the side of
+      failure, and why an event that feeds several gates must be counted
+      once.
 
     **Before you start:** [Lesson 2](systems.md) (series, parallel and the
     reduction of series-parallel systems). About 30 minutes.
@@ -280,10 +283,22 @@ importance.
 
 ## How RePyability computes exactly
 
-RePyability's engine applies the pivotal decomposition over and over, to the
-minimal path sets:
+RePyability's engine works in two stages.
 
-1. Pick the component that appears in the most path sets, and split into two
+**First, it reduces what it can.** Any series chain, parallel group or
+$k$-out-of-$n$ group of blocks is replaced by one block, whose reliability
+comes from the formulas of [Lesson 2](systems.md): $p_1 p_2 \cdots$ in
+series, $1 - q_1 q_2 \cdots$ in parallel. The new blocks can form new chains
+and groups, so this repeats until nothing more can be reduced, exactly as you
+reduced the cooling circuit by hand in Lesson 2. A series-parallel diagram,
+however large, reduces to a single block.
+
+**Then it pivots on what is left.** The bridge does not reduce at all: the
+cross-tie `e` joins the two lines, so no two of its blocks are simply in
+series or in parallel. For such a *core* the engine applies the pivotal
+decomposition over and over, to the core's minimal path sets:
+
+1. Pick the block that appears in the most path sets, and split into two
    cases.
 2. If it works, remove it from every path set that contains it (it no longer
    needs to be satisfied). If it has failed, delete every path set that
@@ -293,11 +308,13 @@ minimal path sets:
    failed (probability 0).
 
 Many branches of this tree lead to the same sub-problem, and the engine
-solves each one only once and reuses its answer. The whole decomposition
-depends only on the diagram, not on the probabilities, so it is worked out
-once per RBD and then replayed for any probabilities: every time in an array,
-every importance measure, every step of an allocation search. The result is
-exact, with no approximation and no simulation.
+solves each one only once and reuses its answer. When a core sits inside a
+larger diagram, its blocks may themselves be reduced groups, and the rest of
+the diagram is reduced around it. Both stages depend only on the diagram,
+not on the probabilities, so they are worked out once per RBD and then
+replayed for any probabilities: every time in an array, every importance
+measure, every step of an allocation search. The result is exact, with no
+approximation and no simulation.
 
 You can hand the engine any component probabilities directly:
 
@@ -307,18 +324,147 @@ bridge.system_probability({"a": 0.9, "b": 0.9, "c": 0.9, "d": 0.9, "e": 0.9})
 bridge.system_probability({"a": 0.95, "b": 0.8, "c": 0.9, "d": 0.99, "e": 0.5})[0]   # -> 0.979425
 ```
 
-The same computation can run over the minimal cut sets with the components'
-unreliabilities (`method="c"`); the two give the same value.
+With `method="c"` the same computation gives the probability that the
+system fails, and returns its complement; the two give the same value.
+
+Reduction is what keeps large redundant plants cheap. Thirty stages in
+series, each a duplicated pair of units, have $2^{30}$ (over a billion)
+minimal path sets, one for each way of choosing a unit from every stage. The
+diagram reduces to a single block, so the engine never lists them:
+
+```python
+stages = 30
+edges, models, previous = [], {}, ["in"]
+for i in range(stages):
+    pair = [f"a{i}", f"b{i}"]
+    edges += [(p, unit) for p in previous for unit in pair]   # each stage feeds the next
+    models.update({unit: fail(0.1) for unit in pair})
+    previous = pair
+edges += [(p, "out") for p in previous]
+plant = NonRepairableRBD(edges, models)
+plant.sf()                    # -> 0.7397
+(1 - 0.1**2) ** stages        # -> 0.7397   each stage fails only if both units fail
+2**stages                     # -> 1073741824   minimal path sets, never listed
+```
 
 !!! note "What exactness costs"
-    The engine's work grows with the number of minimal path sets and how
-    they overlap, not with $2^n$. For most real diagrams that is modest:
-    hundreds of components in series or in parallel are routine. Densely
-    meshed structures are the hard case, because their path sets multiply. A
-    chain of $k$ bridges in series has $4^k$ minimal path sets (4, 16, 64,
-    ...), so long chains of meshes become expensive to evaluate exactly. The
+    Reducing is cheap, so series-parallel diagrams of any size are
+    evaluated at once. The work is in the core: it grows with the number of
+    the core's minimal path sets and how they overlap, not with $2^n$.
+    Densely meshed structures are the hard case, because nothing in them
+    reduces and their path sets multiply. A chain of $k$ bridges in series
+    has $4^k$ minimal path sets (4, 16, 64, ...), so long chains of meshes
+    become expensive to evaluate exactly. The
     [performance notes](../guide/saving.md#performance) in the guide say
     more.
+
+## The same logic, upside down: fault trees
+
+A block diagram asks how the system works. Safety engineers usually ask the
+opposite question, how it can fail, and draw the answer as a **fault
+tree**. It starts from an undesired **top event**, here "no cooling", and
+works down through **gates** to the **basic events** that cause it: an OR
+gate occurs when any of its inputs occurs, an AND gate when all of them do,
+and a VOTE gate when at least $k$ of its $n$ inputs do. This is the tree of
+the pumps-and-valve system:
+
+```mermaid
+flowchart TD
+    top["no cooling<br/>OR"] --> flow["no flow<br/>AND"]
+    top --> v(["valve fails<br/>0.05"])
+    flow --> p1(["pump 1 fails<br/>0.1"])
+    flow --> p2(["pump 2 fails<br/>0.1"])
+```
+
+Read it from the top: cooling is lost if the valve fails, or if there is no
+flow, which needs both pumps to fail. It is the diagram turned inside out.
+Blocks in series fail when any of them fails, so they become an OR gate;
+blocks in parallel fail only when all of them do, an AND gate; and a block
+that needs $k$ of $n$ units working fails when $n - k + 1$ of them have
+failed, a VOTE gate.
+
+| Block diagram (works when...) | Fault tree (fails when...) |
+|---|---|
+| series: every block works | OR gate: any input occurs |
+| parallel: any block works | AND gate: every input occurs |
+| $k$ of $n$ blocks work | VOTE gate: $n - k + 1$ of $n$ inputs occur |
+
+=== "By hand"
+
+    Work up from the leaves. No flow needs both pumps to fail:
+    $0.1 \times 0.1 = 0.01$. The top event occurs unless neither the
+    valve fails nor the flow stops:
+    $1 - (1 - 0.05)(1 - 0.01) = 0.0595$, which is $1 - 0.9405$, the
+    diagram's unreliability.
+
+    The minimal cut sets can be read off the tree from the top: an OR gate
+    offers each of its inputs as an alternative, and an AND gate needs all
+    of its inputs together. So the top event occurs through `{valve}` or
+    through `{pump 1, pump 2}`: the same cut sets as the diagram's.
+
+=== "In RePyability"
+
+    ```python
+    from repyability import FaultTree
+
+    tree = FaultTree(
+        {
+            "no cooling": ("or", ["no flow", "valve"]),
+            "no flow": ("and", ["pump 1", "pump 2"]),
+        },
+        {"pump 1": 0.1, "pump 2": 0.1, "valve": 0.05},   # probability each occurs
+    )
+    tree.top_event_probability()   # -> 0.0595
+    [sorted(c) for c in tree.minimal_cut_sets()]
+    # [['valve'], ['pump 1', 'pump 2']]
+    FaultTree.from_rbd(pumps_valve).top_event_probability()   # -> 0.0595   the diagram as a tree
+    ```
+
+The two describe one system, and RePyability converts between them:
+`FaultTree.from_rbd` turns a diagram into its tree, and `to_rbd` a tree into
+its diagram.
+
+**Repeated events.** A tree makes something easy to draw that a diagram
+makes awkward: an event that feeds several gates. Two channels, either of
+which will do, share a power supply that fails with probability 0.01; each
+channel also fails if its own pump (0.1) does:
+
+```mermaid
+flowchart TD
+    top["no output<br/>AND"] --> A["channel A<br/>OR"]
+    top --> B["channel B<br/>OR"]
+    A --> s(["supply fails<br/>0.01"])
+    B --> s
+    A --> pa(["pump A fails<br/>0.1"])
+    B --> pb(["pump B fails<br/>0.1"])
+```
+
+Each channel fails with probability $1 - 0.99 \times 0.9 = 0.109$, but the
+two are not independent: they share the supply. Pivot on it, as in the
+pivotal decomposition above. If the supply fails (0.01), both channels fail.
+If it works (0.99), both fail only if both pumps do ($0.1^2$). So the top
+event has probability $0.01 + 0.99 \times 0.01 = 0.0199$. Multiplying the
+channels as if they were independent would give $0.109^2 = 0.0119$, 40% too
+low: the shared supply is a common cause that fails both channels at once.
+
+```python
+shared = FaultTree(
+    {
+        "no output": ("and", ["channel A", "channel B"]),
+        "channel A": ("or", ["supply", "pump A"]),
+        "channel B": ("or", ["supply", "pump B"]),
+    },
+    {"supply": 0.01, "pump A": 0.1, "pump B": 0.1},
+)
+shared.top_event_probability()   # -> 0.0199
+```
+
+RePyability evaluates trees with the engine of this lesson: every branch that
+shares nothing with the rest of the tree is reduced to one block, and the
+pivotal decomposition is applied to what the repeated events tie together.
+The result is exact, repeated events included. The
+[Fault trees](../guide/fault-trees.md) guide covers the rest: trees over
+time, ranking the cut sets, importance measures and the conversions.
 
 ## Pitfalls
 
@@ -351,8 +497,16 @@ unreliabilities (`method="c"`); the two give the same value.
     - The pivotal decomposition,
       $R = p_i R(i \text{ works}) + q_i R(i \text{ failed})$, splits any
       system into two simpler ones.
-    - RePyability applies it recursively to the path sets, reusing repeated
-      sub-problems, and computes every system reliability exactly.
+    - RePyability first reduces every series, parallel and $k$-out-of-$n$
+      group to one block, then applies the pivotal decomposition to the
+      path sets of whatever is left, reusing repeated sub-problems. Every
+      system reliability is exact, and series-parallel diagrams of any size
+      are fast.
+    - A fault tree describes the same logic from the side of failure: an OR
+      gate is a series block, an AND gate a parallel one, a VOTE gate a
+      $k$-out-of-$n$ block, and the cut sets are the same. An event that
+      feeds several gates must be counted once, by pivoting on it, not
+      multiplied as if its appearances were independent.
 
 ## Exercises
 
@@ -424,12 +578,47 @@ components? Why is the exact engine not limited in the same way?
 
 ??? success "Answer"
     $2^{40} \approx 1.1 \times 10^{12}$ states. The engine never lists
-    states: it pivots on components and works on the path sets, whose
-    number depends on the structure. A series or parallel system of 40
-    components has 1 or 40 path sets, and is solved instantly.
+    states: it reduces the series and parallel parts to single blocks, and
+    pivots only on what is left, working on its path sets, whose number
+    depends on the structure. A series or parallel system of 40 components
+    reduces to one block, and is solved instantly.
 
     ```python
     2**40   # -> 1099511627776
+    ```
+
+**6.** A trip system has three sensors and trips when at least two of them
+detect a demand, so it fails when at least two of the three sensors fail.
+Each sensor fails on its own with probability 0.05, and all three share a
+power supply that fails with probability 0.01. What is the probability that
+the trip fails? What would you get by treating each sensor as independent,
+failing with $1 - 0.99 \times 0.95$?
+
+??? success "Answer"
+    Pivot on the power supply. If it fails (0.01), every sensor is dead and
+    the trip fails. If it works (0.99), the trip fails when at least two of
+    the three sensors fail on their own: $3q^2 - 2q^3 = 3 \times 0.0025 -
+    2 \times 0.000125 = 0.00725$. So the trip fails with probability
+    $0.01 + 0.99 \times 0.00725 = 0.01718$. Treating the sensors as
+    independent, each failing with $q = 0.0595$, gives $3q^2 - 2q^3 =
+    0.0102$: 41% too low. The supply is a single point of failure: `{power}`
+    is a minimal cut set of its own.
+
+    ```python
+    sensors = FaultTree(
+        {
+            "no trip": ("vote", 2, ["sensor 1", "sensor 2", "sensor 3"]),
+            "sensor 1": ("or", ["power", "s1"]),
+            "sensor 2": ("or", ["power", "s2"]),
+            "sensor 3": ("or", ["power", "s3"]),
+        },
+        {"power": 0.01, "s1": 0.05, "s2": 0.05, "s3": 0.05},
+    )
+    sensors.top_event_probability()   # -> 0.01718
+    [sorted(c) for c in sensors.minimal_cut_sets()]
+    # [['power'], ['s1', 's2'], ['s1', 's3'], ['s2', 's3']]
+    q = 1 - 0.99 * 0.95
+    3 * q**2 - 2 * q**3               # -> 0.0102
     ```
 
 ## Where next
@@ -437,6 +626,7 @@ components? Why is the exact engine not limited in the same way?
 - [Lesson 4: Which component matters?](importance.md) uses the pivotal
   decomposition to measure how much each component matters.
 - In the user guide, [Building an RBD](../guide/building.md) covers every way
-  to describe a structure, including path and cut sets, and
+  to describe a structure, including path and cut sets,
+  [Fault trees](../guide/fault-trees.md) the trees and their conversions, and
   [Concepts](../concepts.md#how-the-system-quantity-is-computed) summarises
   the exact engine.

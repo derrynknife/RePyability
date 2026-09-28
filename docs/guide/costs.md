@@ -21,6 +21,7 @@ Costs are optional keys of a component's dict, plus one system-level rate:
 | Component | `repair_cost` | Per failure (labour, a callout). A number or a distribution. |
 | Component | `replace_cost` | Per failure (the spare part). A number or a distribution. |
 | Component | `downtime_cost` | Per unit time *this component* is down, even if the system is up (a degraded-mode or per-leg penalty). A number. |
+| Component | `acquisition_cost` | Once, to buy the unit. A number. Not a running cost: see [the total cost of ownership](#the-total-cost-of-ownership). |
 | System | `downtime_cost_rate=` | Per unit time the *system* is down (lost production). A number. |
 
 ```python
@@ -95,12 +96,14 @@ costs.mean              # mean total cost of a window
 costs.cost_rate         # mean / t_simulation: converges to expected_cost_rate()
 costs.percentile(90)    # a planning budget: 9 windows in 10 cost less
 costs.std               # how much a window's cost varies
-costs.by_category       # mean repair, replace, preventive, component_downtime, system_downtime
+costs.by_category       # mean repair, replace, preventive, inspection, component_downtime, system_downtime
 costs.by_component      # mean cost attributable to each costed component
 ```
 
 `cost()` takes the same arguments as `availability()` (`working_nodes`,
-`broken_nodes`, `method`, `N`, `verbose`, `seed`). The same result comes with
+`broken_nodes`, `method`, `N`, `verbose`, `seed`, and `tolerance`,
+`antithetic` and `n_jobs`: see
+[Simulation precision and speed](simulation.md)). The same result comes with
 `availability(...)` as `result.cost`, so one simulation gives both answers.
 With nothing priced, `cost()` returns `None` and `result.cost` is `None`.
 
@@ -110,7 +113,8 @@ With nothing priced, `cost()` returns `None` and `result.cost` is `None`.
   is a property of the system; more simulations will not shrink it.
 - `mean_se` and `mean_interval(confidence)` describe how precisely the
   **expected** cost has been estimated. They shrink like `1/√N`; check them
-  before quoting the mean.
+  before quoting the mean, or pass `tolerance` to `cost()` to simulate until
+  the interval is narrow enough.
 
 ```python
 interval = costs.mean_interval(confidence=0.95)
@@ -259,5 +263,223 @@ year.system_planned_outages / year.n_simulations   # -> 11.82
 year.cost.by_category["preventive"]                # -> 11824.0   1000 each
 ```
 
-Costs, including cost distributions, and maintenance schedules are saved
-with the RBD.
+## Hidden failures and inspection
+
+Some failures announce themselves: a running pump stops, and the operators
+know. Others do not: a relief valve that has seized, a standby pump that will
+not start or a trip that no longer trips looks just like a working one until
+something tests it. Such a failure is *hidden* (or *unrevealed*): the
+component is down, nobody knows, and it stays down until a periodic
+*inspection* (a proof test) finds it. The key `"inspection"` in a
+component's dict makes its failures hidden:
+
+| Key | Meaning |
+|---|---|
+| `interval` | Required: the time `τ` between inspections, positive and finite. The component is inspected at `τ, 2τ, 3τ, …`. |
+| `duration` | `"instant"` (the default): the test takes no time. Or a time-to-test model: the component is off-line while it is tested (a planned outage), and does not age meanwhile. |
+| `cost` | Charged at each inspection: a number or a distribution. |
+
+A failure found by an inspection is repaired once the test is done (taking a
+time drawn from the component's `"repairability"`), and its repair and
+replace costs are charged when it is found. An inspection due while the
+component is being repaired is skipped. The time a failure lies hidden counts
+as downtime in every output, and each inspection's cost is in
+`by_category["inspection"]`. A component can have an inspection or a
+preventive schedule, but not both.
+
+### The average probability of failure on demand
+
+A protective function whose failure is hidden does not act when it is
+needed, so its long-run unavailability is its *average probability of
+failure on demand*, the PFDavg that safety-integrity (SIL) verification asks
+for (IEC 61508 and 61511). With a constant rate `λ` of such failures,
+inspected every `τ`, with instant tests and repairs, a single channel is
+down, after a failure, until the next test: half an interval on average, so
+`PFDavg = 1 − (1 − e^(−λτ)) / (λτ) ≈ λτ/2`. Take a shutdown valve with
+dangerous undetected failures at `2 × 10⁻⁶` per hour, proof-tested yearly:
+
+```python
+def valve(interval):
+    return {
+        "reliability": surv.Exponential.from_params([2e-6]),   # dangerous, undetected
+        "repairability": "instant",
+        "inspection": {"interval": interval},
+    }
+
+one = RepairableRBD([("s", "v"), ("v", "t")], {"v": valve(8760.0)})
+one.mean_unavailability()      # -> 0.008709   about λτ/2 = 0.00876
+pair = RepairableRBD(
+    [("s", "v1"), ("s", "v2"), ("v1", "t"), ("v2", "t")],
+    {"v1": valve(8760.0), "v2": valve(8760.0)},
+)
+pair.mean_unavailability()     # -> 1.0098e-4   about (λτ)²/3
+```
+
+Two valves in parallel (1oo2), tested together, are down only when both
+have failed since the last test: `PFDavg = (1/τ) ∫₀^τ (1 − e^(−λt))² dt ≈
+(λτ)²/3`. That is a third more than the `(λτ/2)²` of two channels that fail
+independently in time, because both have gone untested for the same time.
+The diagram supplies the voting, so 2oo3 and larger architectures follow in
+the same way (see [k-out-of-n nodes](building.md#k-out-of-n-nodes)). Halving
+the interval halves a single channel's PFDavg but quarters the pair's:
+
+| Test interval | 6 months | 1 year | 2 years |
+|---|---|---|---|
+| One valve | 0.00437 | 0.00871 | 0.0173 |
+| Two valves (1oo2) | 2.54 × 10⁻⁵ | 1.01 × 10⁻⁴ | 3.99 × 10⁻⁴ |
+
+These long-run values are exact. Components inspected at the same times go
+down together, so `mean_availability` and the other long-run methods average
+the system's availability over one period of the inspection schedules (the
+least common multiple of the intervals: components on different intervals
+can be mixed), and the importance measures are ratios of those averages.
+They need a constant failure rate, instant tests and instant repair, and
+raise `NotImplementedError` otherwise: then simulate. Testing both valves at
+once, for example, takes the whole function off-line during the test, which
+here costs far more than the hidden failures:
+
+```python
+def tested(interval):
+    return {
+        "reliability": surv.Exponential.from_params([2e-6]),
+        "repairability": surv.LogNormal.from_params([np.log(24), 0.5]),   # about a day
+        "inspection": {
+            "interval": interval,
+            "duration": surv.Weibull.from_params([4, 3]),                  # about 3.6 h
+        },
+    }
+
+both = RepairableRBD(
+    [("s", "v1"), ("s", "v2"), ("v1", "t"), ("v2", "t")],
+    {"v1": tested(8760.0), "v2": tested(8760.0)},
+)
+decade = both.availability(t_simulation=10 * 8760.0, N=20000, seed=0)
+1 - decade.system_uptime / (decade.n_simulations * decade.time_simulated_to)
+# -> 3.9e-4
+decade.system_planned_outages / decade.n_simulations   # -> 9.0   one per test
+```
+
+### Choosing the interval
+
+Each inspection costs `c_i`, and each unit of time the component lies failed
+costs `c_d` (its `"downtime_cost"`, or the system's `downtime_cost_rate`).
+Frequent tests cost more, and rare ones leave failures hidden for longer, so
+the cost rate `c_i/τ + c_d·U(τ)` is least in between, near
+`τ* = √(2c_i / (λc_d))`. `expected_cost_rate` prices it exactly:
+
+```python
+def pump(interval):
+    return RepairableRBD(
+        [("s", "p"), ("p", "t")],
+        {"p": {
+            "reliability": surv.Exponential.from_params([1e-4]),
+            "repairability": "instant",
+            "downtime_cost": 500.0,                               # per hour failed
+            "inspection": {"interval": interval, "cost": 2000.0},
+        }},
+    )
+
+pump(100.0).expected_cost_rate()     # -> 22.49   testing too often
+pump(283.0).expected_cost_rate()     # -> 14.08   near √(2 × 2000 / (1e-4 × 500)) = 283
+pump(1000.0).expected_cost_rate()    # -> 26.19   failures hidden too long
+```
+
+## The total cost of ownership
+
+The costs so far are running costs. Buying the system is a one-off cost:
+give each component an `"acquisition_cost"`, and `total_cost(horizon)` adds
+the purchase to the running cost over the time the system is owned,
+
+```text
+total_cost(H) = acquisition_cost + expected_cost_rate() · H
+```
+
+(undiscounted). The acquisition cost is not a running cost, so it is left
+out of `has_costs`, `expected_cost_rate` and the simulated samples; a
+`CostResult` reports it beside them, as `acquisition_cost`.
+
+```python
+pump = {
+    "reliability": surv.Exponential.from_params([1e-3]),   # MTTF 1000 h
+    "repairability": surv.Exponential.from_params([0.1]),  # MTTR 10 h
+    "repair_cost": 500.0,
+    "acquisition_cost": 20000.0,
+}
+line = RepairableRBD([("s", "pump"), ("pump", "t")], {"pump": pump},
+                     downtime_cost_rate=100.0)
+line.acquisition_cost          # -> 20000.0
+line.expected_cost_rate()      # -> 1.4851   (500 + 100 × 10) / 1010 per hour
+line.total_cost(87600.0)       # -> 150099.0   ten years
+```
+
+### Buying redundancy
+
+A redundant copy is bought once and then runs: it fails, is repaired and
+costs money for as long as it is owned, while it saves the lost production
+of the outages it covers. `allocate_redundancy(horizon)` chooses how many
+identical, independently repaired, active copies of each component give the
+lowest total cost of ownership:
+
+```python
+best = line.allocate_redundancy(87600.0)
+best.units               # {'pump': 2}
+best.total_cost          # -> 127591.4   a second pump saves 22,508 over ten years
+best.acquisition_cost    # -> 40000.0
+best.availability        # -> 0.999902
+line.allocate_redundancy(8760.0).units   # {'pump': 1}   over one year it does not pay
+```
+
+The second pump costs `20000 + 0.495·H` (its price and its repairs) and saves
+`100 · (U − U²) · H = 0.980·H` of lost production, with `U = 10/1010` the
+fraction of the time one pump is down; it pays once `H` exceeds about 41,200
+hours. A third would save at most `100 · U² · (1 − U) = 0.0097` per hour,
+less than the 0.495 per hour its repairs cost, so it never pays, whatever it
+costs to buy.
+
+The result is a [`TotalCostAllocation`][repyability.TotalCostAllocation]:
+`units`, `total_cost`, `acquisition_cost`, `cost_rate` (the running cost
+per unit time) and `availability` of the design, the `horizon` and the
+`method`. Each design is scored exactly: `n` copies of a component of
+long-run availability `A` are all down `(1 − A)ⁿ` of the time, each copy has
+the running cost of the original, and the system's availability comes from
+the exact engine, so the result is what `total_cost`, `expected_cost_rate`
+and `mean_availability` give for the system with the copies drawn out as
+separate nodes. The arguments:
+
+| Argument | Meaning |
+|---|---|
+| `nodes` | The components that may be given copies; by default every one with an `"acquisition_cost"`. The others are counted once. |
+| `min_availability` | Only designs at least this available, in (0, 1): e.g. a contractual availability, met at the lowest total cost. |
+| `max_units` | The most copies of every node (an int) or of some (a dict). A node whose copies cost nothing needs one. |
+| `method` | `"exact"` (the default): a proven optimum. `"greedy"`: adds or removes one copy at a time while that lowers the total; fast, not guaranteed optimal. |
+
+```python
+line.allocate_redundancy(87600.0, min_availability=0.99999).units   # {'pump': 3}
+```
+
+Unlike the reliability of a non-repairable design, the total cost is not
+monotone in the copies: each copy costs as much as the one before and saves
+less. The exact search is bounded by two facts. The `k+1`-th copy of a
+component down a fraction `U` of the time can save at most
+`H · downtime_cost_rate · Uᵏ · (1 − U)` (all it could ever save, were
+everything else perfect), so no copy beyond the point where that falls below
+a copy's cost can pay (without a `min_availability`, which may need copies
+that do not pay). And a design no worse than the best found spends no more
+on copies than that design's total. When every node considered lies on every
+path (in series with the rest of the system) and has no hidden failures, the
+system's availability is theirs times the rest's, and a dynamic program over
+the nodes finds the optimum for any number of them; on other structures a
+branch and bound over the designs does, which suits a handful of nodes.
+
+The model and its limits: copies are active and repaired independently of
+each other (as many repair crews as failed copies), with no common-cause
+failures between them (see [Common-cause failures](common-cause.md)).
+Copies of a component with hidden failures are inspected together. A nested
+`RepairableRBD` cannot be given copies. Components under block replacement
+have no exact long-run cost and raise `NotImplementedError`. Costs are not
+discounted. For non-repairable systems, redundancy allocation within a
+budget or to a reliability target is in
+[Design and allocation](design.md#redundancy-allocation).
+
+Costs, including cost distributions and acquisition costs, and maintenance
+and inspection schedules are saved with the RBD.

@@ -16,10 +16,12 @@ False; use ``isinstance(result, Mapping)`` if you need such a check.)
 import dataclasses
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Dict, Hashable, Optional, Tuple
+from typing import Any, Dict, Hashable, Optional, Tuple
 
 import numpy as np
 from scipy.stats import norm
+
+from repyability.rbd import _montecarlo as montecarlo
 
 
 class _ResultMapping(Mapping):
@@ -101,6 +103,132 @@ class ConfidenceInterval(_ResultMapping):
     confidence: float
     standard_error: float
     n_samples: int
+
+
+@dataclass
+class UncertaintyResult(_ResultMapping):
+    """The spread of a system quantity over plausible node models.
+
+    Returned by ``NonRepairableRBD.sf_uncertainty``. Each of the
+    ``n_draws`` draws gives every uncertain node a plausible model (its
+    parameters drawn from what is known about them), and the system
+    quantity is computed exactly for that draw. The samples therefore
+    describe *epistemic* uncertainty, about what the models are, and not
+    the aleatory variability that the models themselves describe. Their
+    percentiles give uncertainty (credible) intervals; they do not narrow
+    as ``n_draws`` grows, which only makes them more precise.
+
+    Attributes
+    ----------
+    samples : numpy.ndarray
+        One value per draw (``n_draws`` values) for a single time, or one
+        row per draw and one column per time for an array of times.
+    nominal : float or numpy.ndarray
+        The value with every node's own model: the point estimate.
+    n_draws : int
+        The number of draws.
+
+    Examples
+    --------
+    A pump whose Weibull model was fitted (by surpyval) to 50 failure
+    times, in series with a valve that is 99% reliable. The fit's parameter
+    covariance gives the draws:
+
+    >>> import numpy as np
+    >>> import surpyval as surv
+    >>> from repyability import NonRepairableRBD
+    >>> pump = surv.Weibull.fit(np.linspace(200, 1800, 50))
+    >>> valve = surv.FixedEventProbability.from_params(0.01)
+    >>> rbd = NonRepairableRBD(
+    ...     [("s", "pump"), ("pump", "valve"), ("valve", "t")],
+    ...     {"pump": pump, "valve": valve},
+    ... )
+    >>> result = rbd.sf_uncertainty(500, {"pump": "fit"}, n_draws=5000, seed=0)
+    >>> round(result.nominal, 3), round(result.median, 3)
+    (0.847, 0.846)
+    >>> lower, upper = result.interval(0.9)
+    >>> round(lower, 3), round(upper, 3)
+    (0.777, 0.906)
+    """
+
+    samples: np.ndarray
+    nominal: Any
+    n_draws: int
+
+    @property
+    def mean(self) -> Any:
+        """The mean over the draws (per time, for an array of times).
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The mean of ``samples`` over the draws.
+        """
+        return self._per_time(np.mean(self.samples, axis=0))
+
+    @property
+    def median(self) -> Any:
+        """The median over the draws (per time, for an array of times).
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The median of ``samples`` over the draws.
+        """
+        return self._per_time(np.median(self.samples, axis=0))
+
+    @property
+    def std(self) -> Any:
+        """The standard deviation over the draws (per time).
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The sample standard deviation of ``samples`` over the draws.
+        """
+        return self._per_time(np.std(self.samples, axis=0, ddof=1))
+
+    def percentile(self, q: float) -> Any:
+        """The ``q``-th percentile over the draws (per time).
+
+        Parameters
+        ----------
+        q : float
+            The percentile, in [0, 100].
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The percentile of ``samples`` over the draws.
+        """
+        return self._per_time(np.percentile(self.samples, q, axis=0))
+
+    def interval(self, level: float = 0.9) -> tuple:
+        """The equal-tailed uncertainty interval over the draws (per time).
+
+        Parameters
+        ----------
+        level : float, optional
+            The probability the interval holds, in (0, 1), by default 0.9:
+            from the 5th to the 95th percentile.
+
+        Returns
+        -------
+        tuple
+            ``(lower, upper)``: floats, or arrays for an array of times.
+
+        Raises
+        ------
+        ValueError
+            If ``level`` is not in (0, 1).
+        """
+        if not 0.0 < level < 1.0:
+            raise ValueError(f"level must be in (0, 1), got {level!r}.")
+        tail = 50.0 * (1.0 - level)
+        return self.percentile(tail), self.percentile(100.0 - tail)
+
+    def _per_time(self, values: np.ndarray) -> Any:
+        return float(values) if np.ndim(values) == 0 else values
 
 
 @dataclass
@@ -345,13 +473,26 @@ class CostResult(_ResultMapping):
         The number of replications.
     by_category : dict
         Mean per-replication cost split into ``"repair"`` and ``"replace"``
-        (both charged per failure), ``"preventive"`` (charged per
-        preventive replacement), ``"component_downtime"`` and
-        ``"system_downtime"``. The five sum to ``mean``.
+        (both charged per failure; for a hidden failure, when an inspection
+        finds it), ``"preventive"`` (charged per preventive replacement),
+        ``"inspection"`` (charged per inspection), ``"component_downtime"``
+        and ``"system_downtime"``. The six sum to ``mean``.
     by_component : dict
         Mean per-replication cost attributable to each costed component (its
-        repair, replace, preventive and own downtime cost; the
+        repair, replace, preventive, inspection and own downtime cost; the
         system-downtime cost is not attributed to components).
+    acquisition_cost : float
+        The one-off cost of buying the components (the sum of their
+        ``"acquisition_cost"``), 0.0 if none is given. It is not a running
+        cost, so it is *not* in ``samples`` or ``mean``: the cost of owning
+        the system for one window from new is
+        ``acquisition_cost + mean``.
+    antithetic : bool
+        Whether the replications ran in antithetic pairs (replications
+        ``2i`` and ``2i + 1``; see ``RepairableRBD.availability``), by
+        default False. Each sample is still a correct draw of a window's
+        cost, but only the pairs are independent, so ``mean_se`` and
+        ``mean_interval`` are worked out from the pairs' means.
 
     Examples
     --------
@@ -388,6 +529,8 @@ class CostResult(_ResultMapping):
     n_simulations: int
     by_category: Dict[str, float]
     by_component: Dict[Hashable, float]
+    acquisition_cost: float = 0.0
+    antithetic: bool = False
 
     @property
     def mean(self) -> float:
@@ -421,13 +564,17 @@ class CostResult(_ResultMapping):
     @property
     def mean_se(self) -> float:
         """Standard error of ``mean``, ``std / sqrt(n_simulations)``: how far
-        the simulated mean is likely to be from the true expected cost.
+        the simulated mean is likely to be from the true expected cost. For
+        an antithetic run, the standard deviation of the pairs' means over
+        the square root of their number.
 
         Returns
         -------
         float
             The standard error of the mean.
         """
+        if self.antithetic:
+            return montecarlo.standard_error(self.samples, True)
         return self.std / float(np.sqrt(len(self.samples)))
 
     def mean_interval(self, confidence: float = 0.95) -> ConfidenceInterval:
@@ -624,6 +771,77 @@ class RedundancyAllocation(_ResultMapping):
 
 
 @dataclass
+class TotalCostAllocation(_ResultMapping):
+    """The result of ``RepairableRBD.allocate_redundancy()``.
+
+    How many copies of each node give a repairable system the lowest total
+    cost of ownership over a horizon: buying the copies, running them
+    (repairs, replacements, maintenance, inspections, their own downtime),
+    and the cost of the system being down. Like the other result types it
+    is also a read-only mapping of its fields.
+
+    Attributes
+    ----------
+    units : dict
+        How many identical copies of each node considered to fit in active
+        parallel, each repaired independently. Always at least 1: the
+        original unit.
+    total_cost : float
+        The total cost of owning the system for ``horizon`` with those
+        copies, ``acquisition_cost + cost_rate * horizon``: what
+        ``RepairableRBD.total_cost(horizon)`` gives for the system with the
+        copies drawn out.
+    acquisition_cost : float
+        The one-off cost of buying every component, each copy included.
+    cost_rate : float
+        The long-run running cost per unit time: the ``expected_cost_rate``
+        of the system with the copies drawn out.
+    availability : float
+        The system's long-run availability with those copies: its
+        ``mean_availability``.
+    horizon : float
+        The horizon the total cost is taken over.
+    method : str
+        ``"exact"`` (a proven optimum) or ``"greedy"`` (a fast heuristic
+        solution, usually but not always optimal).
+
+    Examples
+    --------
+    A pump that fails on average every 1000 hours and takes 10 to repair,
+    bought for 20,000 and repaired for 500, when an hour without pumping
+    costs 100, over ten years (87,600 hours):
+
+    >>> import surpyval as surv
+    >>> from repyability import RepairableRBD
+    >>> rbd = RepairableRBD(
+    ...     [("s", "pump"), ("pump", "t")],
+    ...     {
+    ...         "pump": {
+    ...             "reliability": surv.Exponential.from_params([1e-3]),
+    ...             "repairability": surv.Exponential.from_params([0.1]),
+    ...             "repair_cost": 500.0,
+    ...             "acquisition_cost": 20000.0,
+    ...         }
+    ...     },
+    ...     downtime_cost_rate=100.0,
+    ... )
+    >>> best = rbd.allocate_redundancy(87600.0)
+    >>> best.units, round(best.total_cost), round(best.acquisition_cost)
+    ({'pump': 2}, 127591, 40000)
+    >>> round(best.availability, 6), best.method
+    (0.999902, 'exact')
+    """
+
+    units: Dict[Hashable, int]
+    total_cost: float
+    acquisition_cost: float
+    cost_rate: float
+    availability: float
+    horizon: float
+    method: str
+
+
+@dataclass
 class AvailabilityResult(_ResultMapping):
     """The result of ``RepairableRBD.availability()``.
 
@@ -640,7 +858,8 @@ class AvailabilityResult(_ResultMapping):
     ``RepairableRBD.mean_up_time()``, ``mean_down_time()`` and
     ``system_failure_frequency()`` methods. ``availability_se`` and
     ``availability_interval`` give the sampling uncertainty of the
-    availability curve.
+    availability curve, and ``mean_availability_interval`` that of the
+    mean availability over the window.
 
     Like the other result types it is also a read-only mapping of its
     fields, so dict-style access (``result["availability"]``,
@@ -686,7 +905,16 @@ class AvailabilityResult(_ResultMapping):
     system_planned_outages : int
         Number of planned outages of the system observed across all
         simulations: changes from up to down caused by preventive
-        maintenance that takes time. 0 without such maintenance.
+        maintenance or an inspection that takes time. 0 without either.
+    uptimes : numpy.ndarray, optional
+        The system's up time in each simulation, in order (they sum to
+        ``system_uptime``); None in a result built without them.
+    antithetic : bool
+        Whether the simulations ran in antithetic pairs (simulations ``2i``
+        and ``2i + 1``; see ``RepairableRBD.availability``), by default
+        False. ``mean_availability_interval`` then works from the pairs'
+        means; the pointwise ``availability_se`` and
+        ``availability_interval`` treat the simulations as independent.
 
     Examples
     --------
@@ -728,6 +956,61 @@ class AvailabilityResult(_ResultMapping):
     n_simulations: int
     cost: Optional[CostResult] = None
     system_planned_outages: int = 0
+    uptimes: Optional[np.ndarray] = None
+    antithetic: bool = False
+
+    def mean_availability_interval(
+        self, confidence: float = 0.95
+    ) -> ConfidenceInterval:
+        """Confidence interval for the expected availability over the window.
+
+        The estimate is the fraction of the window the system was up,
+        ``system_uptime / (n_simulations * time_simulated_to)``: the mean,
+        over the simulations, of each one's fraction up. By the central
+        limit theorem that mean is normal with standard error
+        ``std / sqrt(n)`` of the simulations' fractions (of antithetic
+        pairs' means, for an antithetic run), from which the interval
+        ``estimate +/- z * standard_error`` is built, clipped to [0, 1]. It
+        describes the simulation error, and narrows like ``1 / sqrt(n)``;
+        ``availability(tolerance=...)`` runs until it is narrow enough.
+
+        Parameters
+        ----------
+        confidence : float, optional
+            The confidence level, strictly between 0 and 1, by default 0.95.
+
+        Returns
+        -------
+        ConfidenceInterval
+            The estimate, bounds, standard error and number of simulations.
+
+        Raises
+        ------
+        ValueError
+            If ``confidence`` is not in (0, 1), or the result has no
+            per-simulation up times (one built by hand without them).
+        """
+        if not 0.0 < confidence < 1.0:
+            raise ValueError("confidence must be between 0 and 1.")
+        if self.uptimes is None:
+            raise ValueError(
+                "This result has no per-simulation up times to estimate "
+                "the interval from."
+            )
+        fractions = np.asarray(self.uptimes, dtype=float) / (
+            self.time_simulated_to
+        )
+        estimate = float(np.mean(fractions))
+        se = montecarlo.standard_error(fractions, self.antithetic)
+        z = montecarlo.z_value(confidence)
+        return ConfidenceInterval(
+            estimate=estimate,
+            lower=max(0.0, estimate - z * se),
+            upper=min(1.0, estimate + z * se),
+            confidence=confidence,
+            standard_error=se,
+            n_samples=len(fractions),
+        )
 
     @property
     def availability_se(self) -> np.ndarray:
@@ -737,7 +1020,8 @@ class AvailabilityResult(_ResultMapping):
         the ``n_simulations`` systems that were up, so its sampling standard
         error is the binomial ``sqrt(A (1 - A) / n)``. It is 0 where the
         estimate is 0 or 1; ``availability_interval`` stays informative
-        there.
+        there. It treats the simulations as independent, which antithetic
+        ones are not.
 
         Returns
         -------
