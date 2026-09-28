@@ -236,7 +236,39 @@ planned stops cost production, so it is best replaced less often, at about
 580 h; replacing a pump with a standby costs almost no production, so the
 pair is best replaced at about 500 h. Judged on its own, as `NonRepairable`
 judges it (`cp=1000`, `cu=5000`), the pump is best replaced at 493 h.
-Sweeping the interval like this is the way to choose one.
+
+### Choosing the intervals
+
+`optimal_replacement_intervals` finds the best interval of every component
+under age replacement at once, from the exact long-run values, rather than
+sweeping them one at a time. The components are chosen together: the one
+alone in the line is replaced later than the ones with a standby, because
+its own replacements stop the plant:
+
+```python
+alone(1000).optimal_replacement_intervals().intervals["p"]   # -> 589.6
+plan = with_standby(1000).optimal_replacement_intervals()
+plan.intervals["a"]     # -> 497.1   and the same for "b"
+plan.cost_rate          # -> 6.985
+```
+
+It can also keep the system's long-run availability to a target at the least
+cost (`min_availability`), or give the most availability within a cost rate
+(`max_cost_rate`):
+
+```python
+plan = alone(1000).optimal_replacement_intervals(min_availability=0.9807)
+plan.intervals["p"]     # -> 604.8   a little later than the cheapest
+plan.cost_rate          # -> 13.139  against 13.134
+```
+
+It returns a [`MaintenancePlan`][repyability.MaintenancePlan]: the intervals
+(`inf` for a component better never replaced), and the system's cost rate
+and availability with them. The search starts from the intervals given, and
+from others around each component's mean life, and keeps the best; a target
+no intervals can meet raises `ValueError`, with the best they can do. The
+cost rate is usually flat near its minimum, so an interval some way from the
+one found costs almost the same.
 
 `expected_cost_rate` prices an age-replaced component through its renewal
 cycle: it ends at a failure or a preventive replacement, whichever comes

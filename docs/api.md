@@ -83,6 +83,8 @@ models provided here (see [Building an RBD](guide/building.md) and
 
 ::: repyability.TotalCostAllocation
 
+::: repyability.MaintenancePlan
+
 ::: repyability.MaintenancePolicy
 
 ::: repyability.FailureLimitPolicy

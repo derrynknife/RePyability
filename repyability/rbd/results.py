@@ -842,6 +842,34 @@ class TotalCostAllocation(_ResultMapping):
 
 
 @dataclass
+class MaintenancePlan(_ResultMapping):
+    """The result of ``RepairableRBD.optimal_replacement_intervals()`` and
+    ``RepairableRBD.optimal_inspection_intervals()``.
+
+    The interval chosen for each component, and the system's exact
+    long-run values with them. Like the other result types it is also a
+    read-only mapping of its fields.
+
+    Attributes
+    ----------
+    intervals : dict
+        Node name -> its chosen interval: of age replacement (``inf`` to
+        replace it only when it fails), or of inspection.
+    cost_rate : float
+        The system's long-run cost per unit time with those intervals: its
+        ``expected_cost_rate``.
+    availability : float
+        The system's long-run availability with them: its
+        ``mean_availability``. For a safety system, ``1 - availability`` is
+        its average probability of failure on demand, PFDavg.
+    """
+
+    intervals: Dict[Hashable, float]
+    cost_rate: float
+    availability: float
+
+
+@dataclass
 class AvailabilityResult(_ResultMapping):
     """The result of ``RepairableRBD.availability()``.
 

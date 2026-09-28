@@ -29,8 +29,9 @@ taking already-fitted lifetime models (from
 - **Simulation**: seeded Monte-Carlo run to a tolerance, antithetic pairs,
   parallel runs, and comparisons of designs with common random numbers.
 - **Cost, design and maintenance**: exact and simulated running costs,
-  including scheduled (age or block) preventive replacement at system level
-  and hidden failures found by periodic inspection, the total cost of
+  including scheduled (age or block) preventive replacement at system level,
+  with its intervals chosen for a cost or availability target, and hidden
+  failures found by periodic inspection, the total cost of
   ownership, optimal redundancy allocation (for the lowest total cost of a
   repairable system, too), reliability allocation by the classic named
   methods (equal and ARINC-style apportionment, minimum effort, cost-based),

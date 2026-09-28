@@ -17,7 +17,7 @@ signature and docstring, see the [API reference](../api.md).
 | [Redundancy models](redundancy-models.md) | Cold, warm and hot standby, repeated nodes, repeated standby, and load-sharing groups. |
 | [Common-cause failures](common-cause.md) | Beta-factor and Multiple Greek Letter groups, and where they apply. |
 | [Repairable systems](repairable.md) | Availability over time by simulation, the simulated result and its criticality measures, long-run availability, failure frequency, MUT/MDT/MTBF, nested repairable RBDs, and stepping a simulation by hand. |
-| [Costs](costs.md) | The long-run cost rate in closed form, the simulated cost distribution, costs drawn from distributions, scheduled preventive maintenance, hidden failures found by periodic inspection (PFDavg for safety functions), and the total cost of ownership with the redundancy that minimises it. |
+| [Costs](costs.md) | The long-run cost rate in closed form, the simulated cost distribution, costs drawn from distributions, scheduled preventive maintenance and the intervals that meet a system target, hidden failures found by periodic inspection (PFDavg for safety functions), and the total cost of ownership with the redundancy that minimises it. |
 | [Design and allocation](design.md) | How many redundant copies to fit (redundancy allocation), and apportioning a reliability target among components (reliability allocation). |
 | [Maintenance policies](maintenance.md) | Age replacement, overhaul under minimal or imperfect repair, failure-count replacement, and the expected time to the *n*-th failure. |
 | [Simulation precision and speed](simulation.md) | Simulating until an estimate is precise enough, antithetic pairs, parallel runs, and comparing two designs with common random numbers. |

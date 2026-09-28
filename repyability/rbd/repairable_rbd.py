@@ -39,7 +39,7 @@ from tqdm import tqdm
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd._block_replacement import BlockCycle, block_cycle
-from repyability.rbd._model_utils import model_mean
+from repyability.rbd._model_utils import failure_time_scale, model_mean
 from repyability.rbd._sampling import UniformStream, draw, inverse_sampler
 from repyability.rbd.rbd import RBD, _check_on_infeasible_rbd
 from repyability.rbd.redundancy_allocation import (
@@ -52,6 +52,7 @@ from repyability.rbd.results import (
     CostResult,
     Criticalities,
     FailureCriticalityIndex,
+    MaintenancePlan,
     RestorationCriticalityIndex,
     TotalCostAllocation,
     UpDownImportance,
@@ -484,6 +485,134 @@ def _horizon(horizon) -> float:
             f"horizon must be a finite, non-negative number, got {horizon!r}."
         )
     return value
+
+
+def _objective(cost: float, availability: float, max_cost_rate) -> float:
+    """What an interval choice minimises: the cost rate, or the
+    unavailability when the cost rate is capped."""
+    return 1.0 - availability if max_cost_rate is not None else cost
+
+
+def _meets(cost, availability, min_availability, max_cost_rate) -> bool:
+    """Whether long-run values meet an interval choice's target."""
+    if min_availability is not None and availability < min_availability:
+        return False
+    if max_cost_rate is not None and cost > max_cost_rate:
+        return False
+    return True
+
+
+def _choose_intervals(
+    nodes: list,
+    evaluate,
+    starts: list,
+    bounds: Tuple[np.ndarray, np.ndarray],
+    min_availability: Optional[float],
+    max_cost_rate: Optional[float],
+) -> dict:
+    """The intervals (by node) that minimise the cost rate, or, with a cost
+    cap, the unavailability, subject to the target: SLSQP over the
+    logarithms of the intervals from each of ``starts``, keeping the best
+    that meets the target. ``evaluate(intervals)`` gives their exact
+    ``(cost rate, availability)``. A ValueError if no intervals in
+    ``bounds`` meet the target, giving the best they can do."""
+    from scipy.optimize import minimize
+
+    low, high = bounds
+    box = list(zip(low, high))
+    options = {"ftol": 1e-10, "maxiter": 200, "eps": 1e-6}
+    cache: dict = {}
+
+    def point(x) -> tuple:
+        """``x`` rounded: the intervals evaluated, and returned."""
+        return tuple(np.round(np.asarray(x, dtype=float), 12))
+
+    def values(x) -> Tuple[float, float]:
+        key = point(x)
+        if key not in cache:
+            cache[key] = evaluate(
+                {node: math.exp(xi) for node, xi in zip(nodes, key)}
+            )
+        return cache[key]
+
+    # The objective and the constraint, scaled to be about 1.
+    cost0, availability0 = values(high)
+    down0 = max(1.0 - availability0, 1e-300)
+    rate0 = max(abs(cost0), 1e-300)
+
+    def unavailable(x):
+        return (1.0 - values(x)[1]) / down0
+
+    def cost(x):
+        return values(x)[0] / rate0
+
+    if max_cost_rate is not None:
+        objective = unavailable
+
+        def slack(x):
+            return (max_cost_rate * (1.0 - 1e-12) - values(x)[0]) / (
+                max_cost_rate
+            )
+
+    else:
+        objective = cost
+
+        def slack(x):
+            return (values(x)[1] - min_availability - 1e-12) / (
+                1.0 - min_availability
+            )
+
+    constrained = min_availability is not None or max_cost_rate is not None
+    if constrained and not any(
+        _meets(*values(start), min_availability, max_cost_rate)
+        for start in starts
+    ):
+        # Can the target be met at all? The most available intervals, or
+        # the cheapest, from the starts nearest to it first.
+        extreme = unavailable if min_availability is not None else cost
+        found = []
+        for start in sorted(starts, key=extreme):
+            reach = minimize(
+                extreme, start, method="SLSQP", bounds=box, options=options
+            ).x
+            found.append(reach)
+            if _meets(*values(reach), min_availability, max_cost_rate):
+                break
+        else:
+            best_cost, best_availability = values(
+                min(found + list(starts), key=extreme)
+            )
+            if min_availability is not None:
+                raise ValueError(
+                    f"min_availability {min_availability} cannot be met: the "
+                    f"most any intervals give is {best_availability:.6g}."
+                )
+            raise ValueError(
+                f"max_cost_rate {max_cost_rate} cannot be met: the least any "
+                f"intervals cost is {best_cost:.6g} per unit time."
+            )
+        starts = [reach] + list(starts)
+    best, best_value = None, math.inf
+    for start in starts:
+        found = minimize(
+            objective,
+            start,
+            method="SLSQP",
+            bounds=box,
+            constraints=(
+                [{"type": "ineq", "fun": slack}] if constrained else []
+            ),
+            options=options,
+        )
+        for x in (found.x, start):
+            rate, availability = values(x)
+            if not _meets(rate, availability, min_availability, max_cost_rate):
+                continue
+            value = _objective(rate, availability, max_cost_rate)
+            if value < best_value:
+                best, best_value = np.asarray(x, dtype=float), value
+    assert best is not None  # the start that meets the target is kept
+    return {node: math.exp(xi) for node, xi in zip(nodes, point(best))}
 
 
 def _common_period(intervals: Iterable[float]) -> float:
@@ -2115,6 +2244,236 @@ class RepairableRBD(RBD):
             horizon=horizon,
             method=method,
         )
+
+    def _with_intervals(
+        self, preventive=None, inspection=None
+    ) -> "RepairableRBD":
+        """This RBD with the intervals of some of its preventive or
+        inspection schedules changed, for the exact long-run values: a
+        shallow copy, sharing everything else, including the renewal cycles
+        already worked out (kept by interval)."""
+        self.__dict__.setdefault("_age_cycles", {})
+        self.__dict__.setdefault("_block_cycles", {})
+        plan = copy(self)
+        if preventive:
+            plan._preventive = dict(self._preventive)
+            for node, interval in preventive.items():
+                plan._preventive[node] = self._preventive[node]._replace(
+                    interval=float(interval)
+                )
+        if inspection:
+            plan._inspection = dict(self._inspection)
+            for node, interval in inspection.items():
+                plan._inspection[node] = self._inspection[node]._replace(
+                    interval=float(interval)
+                )
+        return plan
+
+    def _interval_targets(self, min_availability, max_cost_rate):
+        """The checked targets of an interval choice."""
+        if min_availability is not None and max_cost_rate is not None:
+            raise ValueError(
+                "Give at most one of min_availability and max_cost_rate."
+            )
+        if not self.has_costs:
+            raise ValueError(
+                "Nothing is priced, so no interval costs more than another: "
+                "give the components costs (or a downtime_cost_rate)."
+            )
+        if min_availability is not None:
+            if not 0.0 < float(min_availability) < 1.0:
+                raise ValueError(
+                    "min_availability must be a number in (0, 1), got "
+                    f"{min_availability!r}."
+                )
+            return float(min_availability), None
+        if max_cost_rate is not None:
+            if not 0.0 < float(max_cost_rate) < math.inf:
+                raise ValueError(
+                    "max_cost_rate must be a positive number, got "
+                    f"{max_cost_rate!r}."
+                )
+            return None, float(max_cost_rate)
+        return None, None
+
+    def optimal_replacement_intervals(
+        self,
+        nodes: Optional[Collection[Hashable]] = None,
+        *,
+        min_availability: Optional[float] = None,
+        max_cost_rate: Optional[float] = None,
+    ) -> MaintenancePlan:
+        """Choose the age-replacement intervals for the system as a whole.
+
+        ``NonRepairable.find_optimal_replacement`` chooses one unit's
+        replacement age on its own. In a system the components should be
+        chosen together: a unit whose failure stops the system is worth
+        replacing sooner than one with a standby, and replacing a unit takes
+        the system down if its replacement takes time and nothing covers
+        for it. This chooses the age-replacement interval of each component
+        in ``nodes`` for:
+
+        - the lowest long-run cost rate (``expected_cost_rate``), by
+          default;
+        - the lowest cost rate that keeps the system's long-run availability
+          (``mean_availability``) at least ``min_availability``;
+        - or the highest availability within a cost rate of
+          ``max_cost_rate``.
+
+        The long-run values are exact (see ``expected_cost_rate``), so the
+        choice is too, to the precision of the search: a gradient search
+        (SLSQP) over the logarithms of the intervals, from several starting
+        points, keeping the best. Each interval ranges from a thousandth to a
+        thousand times the component's mean life; one found at the top of
+        that range is compared with never replacing the component (an
+        interval of ``inf``), which is taken if no worse. The cost rate is
+        usually flat near its minimum, so intervals some way from the ones
+        found cost almost the same.
+
+        Parameters
+        ----------
+        nodes : Collection[Hashable], optional
+            The components whose intervals to choose, each under age
+            replacement (a ``"preventive"`` schedule with ``"policy":
+            "age"``; its interval is one of the starting points). By default
+            every component under age replacement. The others keep their
+            schedules.
+        min_availability : float, optional
+            The least long-run system availability allowed, in (0, 1).
+        max_cost_rate : float, optional
+            The highest long-run cost rate allowed: the intervals then give
+            the highest availability within it.
+
+        Returns
+        -------
+        MaintenancePlan
+            The interval of each component in ``nodes`` (``inf`` for never),
+            and the system's cost rate and availability with them.
+
+        Raises
+        ------
+        ValueError
+            If a node is not a component under age replacement; if nothing
+            is priced; if both targets are given, or one is out of range;
+            or if no intervals meet the target (the message gives the best
+            they can do).
+        NotImplementedError
+            If the long-run values are not known exactly (see
+            ``expected_cost_rate``).
+
+        Examples
+        --------
+        A pump that wears out, in series with a pair of them in parallel;
+        repairs take about 23 hours and replacements about 7, and the plant
+        loses 500 an hour while it is down:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> def pump():
+        ...     return {
+        ...         "reliability": surv.Weibull.from_params([1000, 2.5]),
+        ...         "repairability": surv.LogNormal.from_params([3.0, 0.5]),
+        ...         "replace_cost": 5000.0,
+        ...         "preventive": {
+        ...             "interval": 1000.0,
+        ...             "duration": surv.Weibull.from_params([8, 3]),
+        ...             "cost": 1000.0,
+        ...         },
+        ...     }
+        >>> plant = RepairableRBD(
+        ...     [("s", "a"), ("a", "b1"), ("a", "b2"), ("b1", "t"),
+        ...      ("b2", "t")],
+        ...     {"a": pump(), "b1": pump(), "b2": pump()},
+        ...     downtime_cost_rate=500.0,
+        ... )
+        >>> plan = plant.optimal_replacement_intervals()
+        >>> {node: round(t) for node, t in plan.intervals.items()}
+        {'a': 590, 'b1': 497, 'b2': 497}
+        >>> round(plan.cost_rate, 2), round(plan.availability, 4)
+        (20.12, 0.9803)
+
+        The pump alone in the line is replaced later than those with a
+        standby: its replacements stop the plant too.
+        """
+        chosen = self._maintained(nodes)
+        min_availability, max_cost_rate = self._interval_targets(
+            min_availability, max_cost_rate
+        )
+        scale = {}
+        for node in chosen:
+            life = failure_time_scale(self.components[node].reliability)
+            scale[node] = life if np.isfinite(life) and life > 0.0 else 1.0
+        low = np.array([math.log(1e-3 * scale[n]) for n in chosen])
+        high = np.array([math.log(1e3 * scale[n]) for n in chosen])
+        current = [
+            math.log(min(self._preventive[n].interval, 1e3 * scale[n]))
+            for n in chosen
+        ]
+        starts = [
+            np.clip(current, low, high),
+            np.array([math.log(scale[n]) for n in chosen]),
+            np.array([math.log(0.3 * scale[n]) for n in chosen]),
+            high.copy(),
+        ]
+
+        def evaluate(intervals: dict) -> Tuple[float, float]:
+            plan = self._with_intervals(preventive=intervals)
+            return plan.expected_cost_rate(), plan.mean_availability()
+
+        best = _choose_intervals(
+            chosen,
+            evaluate,
+            starts,
+            (low, high),
+            min_availability,
+            max_cost_rate,
+        )
+        # An interval at the top of its range may be better never used.
+        for i, node in enumerate(chosen):
+            if best[node] >= 0.99 * math.exp(high[i]):
+                never = dict(best, **{node: math.inf})
+                cost, availability = evaluate(never)
+                if _meets(
+                    cost, availability, min_availability, max_cost_rate
+                ) and _objective(
+                    cost, availability, max_cost_rate
+                ) <= _objective(
+                    *evaluate(best), max_cost_rate
+                ):
+                    best = never
+        cost, availability = evaluate(best)
+        return MaintenancePlan(
+            {node: float(best[node]) for node in chosen}, cost, availability
+        )
+
+    def _maintained(self, nodes) -> list:
+        """The components under age replacement named by ``nodes`` (all of
+        them by default), checked."""
+        if nodes is None:
+            chosen = [
+                node
+                for node, schedule in self._preventive.items()
+                if schedule.policy == "age"
+            ]
+            if not chosen:
+                raise ValueError(
+                    "No component is under age replacement: give the "
+                    "components a 'preventive' schedule to have its "
+                    "interval chosen."
+                )
+            return chosen
+        chosen = list(nodes)
+        if not chosen:
+            raise ValueError("nodes is empty.")
+        for node in chosen:
+            schedule = self._preventive.get(node)
+            if schedule is None or schedule.policy != "age":
+                raise ValueError(
+                    f"Node {node!r} is not a component under age "
+                    "replacement: give it a 'preventive' schedule with "
+                    "'policy': 'age' to have its interval chosen."
+                )
+        return chosen
 
     def initialize_event_queue(
         self,
@@ -3911,6 +4270,17 @@ class RepairableRBD(RBD):
         if schedule.policy == "block":
             block = self._block_cycle(node)
             return block.up, block.length, block.failures, 1.0
+        # Kept by interval, as a search over intervals revisits them.
+        cache = self.__dict__.setdefault("_age_cycles", {})
+        key = (
+            node,
+            id(component.reliability),
+            id(component.time_to_replace),
+            float(schedule.interval),
+            id(schedule.duration),
+        )
+        if key in cache:
+            return cache[key]
         up = float(component.avg_replacement_time(schedule.interval))
         survives = float(
             np.ravel(component.reliability_function(schedule.interval))[0]
@@ -3923,7 +4293,8 @@ class RepairableRBD(RBD):
             + (1.0 - survives) * model_mean(component.time_to_replace)
             + survives * maintenance
         )
-        return up, cycle, 1.0 - survives, survives
+        cache[key] = (up, cycle, 1.0 - survives, survives)
+        return cache[key]
 
     def system_failure_frequency(
         self,

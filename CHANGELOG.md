@@ -46,6 +46,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Choosing maintenance intervals for the system**:
+  `RepairableRBD.optimal_replacement_intervals()` chooses the age-replacement
+  interval of every component (or of those named) together, for the lowest
+  long-run cost rate, the lowest that keeps the system availability to a
+  target (`min_availability`), or the highest availability within a cost
+  rate (`max_cost_rate`) (#93). The long-run values are exact, and the search
+  is a gradient search from several starting points; it returns a
+  `MaintenancePlan`. A component alone in the line comes out replaced later
+  than the same component with a standby, whose replacements cost the plant
+  nothing.
 - **Exact long-run values for block replacement** (#92). A `RepairableRBD`
   with components under block replacement now has an exact
   `mean_availability`, `system_failure_frequency`, MUT, MDT, MTBF,
