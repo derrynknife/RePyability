@@ -468,3 +468,21 @@ def test_mttf_mttr_allocation_errors(kwargs, message):
     kwargs = {"target": 0.98, **kwargs}
     with pytest.raises(ValueError, match=message):
         plant().mttf_mttr_allocation(**kwargs)
+
+
+def test_a_design_cut_short_still_meets_the_target(monkeypatch):
+    import repyability.rbd.repairable_rbd as module
+
+    real = module.minimize
+
+    def one_step(*args, **kwargs):
+        kwargs["options"] = {**kwargs.get("options", {}), "maxiter": 1}
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(module, "minimize", one_step)
+    rbd = plant()
+    with pytest.warns(UserWarning, match="stopped before converging"):
+        design = rbd.mttf_mttr_allocation(0.98)
+    assert not rbd.res.success
+    applied = plant(mttf=design.mttf, mttr=design.mttr)
+    assert applied.mean_availability() >= 0.98 * (1 - 1e-12)
