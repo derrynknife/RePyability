@@ -19,6 +19,24 @@
   RePyability workaround small and list it below with its issue, so it can go
   once RePyability's minimum surpyval version (`pyproject.toml`) has the fix.
 
+## Releasing
+
+Releases are cut from master by `.github/workflows/release.yml`, which this
+session can run: it cannot push tags or create GitHub Releases itself. Every
+merge and release needs the maintainer's go-ahead.
+
+1. On the working branch, bump `repyability/_version.py`. Roll the CHANGELOG
+   `[Unreleased]` section into `## [X.Y.Z] - YYYY-MM-DD`, opening with a
+   summary paragraph and the behaviour changes (they open the release notes),
+   and update the version in `docs/guide/saving.md`. PR to dev, then dev to
+   master, listing "Closes #N" for each finished issue: commit messages'
+   "(#N)" close nothing.
+2. When CI has passed on master's merge commit, run the workflow with
+   `actions_run_trigger`: `run_workflow`, workflow `release.yml`, ref
+   `master`, inputs `{"version": "X.Y.Z", "dry_run": "true"}`. If that
+   passes, run it again with `"dry_run": "false"`. Then check the run, the
+   tag, the GitHub Release and `https://pypi.org/pypi/repyability/X.Y.Z/json`.
+
 ## surpyval workarounds to remove (tracked in #86)
 
 Remove each once the pinned minimum surpyval includes its fix; then
