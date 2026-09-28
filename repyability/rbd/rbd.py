@@ -1088,10 +1088,7 @@ class RBD:
             return out
 
         def system(m: float) -> float:
-            node_arrays = {
-                k: np.atleast_1d(v) for k, v in allocated(m).items()
-            }
-            return self.system_probability(node_arrays, method="p").item()
+            return self._allocation_probability(allocated(m))
 
         failing = [q ** (-1.0 / w) for q, w in free.values() if q > 0 < w]
         m_max = max(failing, default=1.0)
@@ -1331,6 +1328,14 @@ class RBD:
         self.res = res
         return {n: float(v) for n, v in probabilities(log_odds)[0].items()}
 
+    def _allocation_probability(
+        self, probabilities: Dict[Any, float]
+    ) -> float:
+        """The system probability at single node probabilities, as the
+        allocation methods score it (with ``_log_odds``)."""
+        node_arrays = {k: np.atleast_1d(v) for k, v in probabilities.items()}
+        return self.system_probability(node_arrays, method="p").item()
+
     def _allocation_start(self, node_probabilities: Dict) -> Dict[Any, float]:
         """The current probability of every intermediate node, validated.
         Other keys (e.g. the input and output nodes) are not used."""
@@ -1451,15 +1456,7 @@ class RBD:
         0.6
         """
         current = self._allocation_start(node_probabilities)
-        # In series, every node alone is a cut set (and so is in the only
-        # path set).
-        cut_sets = self.get_min_cut_sets()
-        if any(frozenset([node]) not in cut_sets for node in self.nodes):
-            raise ValueError(
-                "the minimum-effort algorithm applies to a series system (a "
-                "single path through every intermediate node); use "
-                "cost_based_allocation for other structures."
-            )
+        self._require_series()
         # In logs, so long chains cannot underflow; zeros sort first.
         order = sorted(self.nodes, key=lambda n: current[n])
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -1478,6 +1475,18 @@ class RBD:
                 for node in order[:raised]:
                     allocation[node] = level
         return allocation
+
+    def _require_series(self) -> None:
+        """A ValueError unless the diagram is a series system, as the
+        minimum-effort algorithm needs: in series, every node alone is a cut
+        set (and so is in the only path set)."""
+        cut_sets = self.get_min_cut_sets()
+        if any(frozenset([node]) not in cut_sets for node in self.nodes):
+            raise ValueError(
+                "the minimum-effort algorithm applies to a series system (a "
+                "single path through every intermediate node); use "
+                "cost_based_allocation for other structures."
+            )
 
     @check_probability
     def cost_based_allocation(

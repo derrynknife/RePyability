@@ -8,9 +8,10 @@
 Importance measures say *where* a system is weak. The methods on this page
 help decide what to do about it: how many redundant copies of each component
 to buy (redundancy allocation), what reliability each component must reach
-for the system to meet a target (reliability allocation), or both at once
-(reliability-redundancy allocation). Theory:
-[Concepts](../concepts.md#allocation).
+for the system to meet a target (reliability allocation), what availability,
+MTTF and MTTR each repairable component needs (availability allocation), or
+redundancy and reliability at once (reliability-redundancy allocation).
+Theory: [Concepts](../concepts.md#allocation).
 
 ## Redundancy allocation
 
@@ -307,8 +308,10 @@ current reliabilities, and how hard each component is to improve.
 These helpers work on **probabilities** (each node's reliability at the
 mission time, or its availability), not on lifetime models, and each returns
 a dict of node → required probability. They are methods of every RBD class,
-so they also work on a bare `RBD` structure. Theory:
-[Concepts](../concepts.md#allocation).
+so they also work on a bare `RBD` structure. For a repairable system's
+availability, [Availability allocation](#availability-allocation) runs them
+from the components' availabilities and turns the result into MTTF and MTTR
+targets. Theory: [Concepts](../concepts.md#allocation).
 
 ### The methods at a glance
 
@@ -652,6 +655,137 @@ pumps_and_valve.simple_allocation(0.97)["v"]                     # -> 0.98108
   valve, one from the current values and costs, the other from the structure
   alone. Here they nearly agree, because the structure is what makes the
   valve matter.
+
+## Availability allocation
+
+For a repairable system the requirement is usually an availability. The
+allocation methods above work on any node probabilities, so they allocate
+availabilities too, and `RepairableRBD.availability_allocation(target,
+method="cost_based")` runs one from the components' long-run availabilities
+(`node_availability()`), scoring the system exactly as `mean_availability()`
+does. A component's availability is `MTTF / (MTTF + MTTR)`, so its share can
+be met with a longer MTTF (reliability) or a shorter MTTR (maintainability),
+and the result gives both: the MTTF that meets it at the current MTTR, and
+the MTTR that meets it at the current MTTF.
+
+Take the plant of the [availability lesson](../learn/availability.md): two
+pumps in parallel (MTTF 10 h, MTTR 1 h each) in series with a valve (MTTF
+50 h, MTTR 2 h), up 95.4% of the time. For 98%:
+
+```python
+from repyability import RepairableRBD
+
+
+def unit(mttf, mttr):
+    return {
+        "reliability": surv.Exponential.from_params([1 / mttf]),
+        "repairability": surv.Exponential.from_params([1 / mttr]),
+    }
+
+
+plant = RepairableRBD(
+    [("in", "pump1"), ("in", "pump2"), ("pump1", "valve"), ("pump2", "valve"), ("valve", "out")],
+    {"pump1": unit(10, 1), "pump2": unit(10, 1), "valve": unit(50, 2)},
+)
+plant.mean_availability()   # -> 0.9536
+need = plant.availability_allocation(0.98)
+need.availability   # {'pump1': 0.9318, 'pump2': 0.9318, 'valve': 0.9846}
+need.mttf           # {'pump1': 13.66, 'pump2': 13.66, 'valve': 127.7}   at the current MTTRs
+need.mttr           # {'pump1': 0.732, 'pump2': 0.732, 'valve': 0.783}   at the current MTTFs
+need.mttf["valve"]   # -> 127.7
+need.mttr["valve"]   # -> 0.783
+```
+
+Each pump needs an MTTF of 13.7 h at its 1 h repairs, or repairs of 0.73 h
+at its 10 h MTTF; the valve, which every path goes through, an MTTF of 128 h
+at its 2 h repairs, or repairs of 0.78 h at its 50 h MTTF. Any MTTF and MTTR
+in the same ratio do as well.
+
+- `method` is `"cost_based"` (the default, which takes `max_availabilities`
+  and `feasibility`), `"improvement"` (which takes `weights`),
+  `"minimum_effort"` (series systems only) or `"equal"`: the
+  [reliability allocation](#reliability-allocation) methods, on
+  availabilities. The solver's result is kept in `plant.res`.
+- Only components with corrective repair alone are allocated an
+  availability. The others keep theirs: components with a preventive or
+  inspection schedule (their intervals are chosen by
+  `optimal_replacement_intervals` and `optimal_inspection_intervals`: see
+  [Costs](costs.md#choosing-the-intervals)), instantly repaired ones, nested
+  RBDs, components with units that never fail or repairs that may never end,
+  and those listed in `fixed`.
+- Components tested or block-replaced on the same calendar are down together
+  more often than independent ones would be. The allocation takes that into
+  account, as `mean_availability` does, so applying it meets the target
+  exactly.
+- The result is an
+  [`AvailabilityAllocation`][repyability.AvailabilityAllocation]
+  (`availability`, `mttf`, `mttr`, `system_availability`).
+
+### Choosing between MTTF and MTTR
+
+The two levers usually cost different amounts: a more reliable seal may be
+dear where a spare kept on site is cheap. `mttf_mttr_allocation(target)`
+finds the cheapest MTTF and MTTR of each component: Mettas's cost-based
+allocation with two variables per component. Lowering its failure rate
+`λ = 1/MTTF` from `λ₀` towards `λ_min = 1/max_mttf`, and cutting its MTTR
+from `MTTR₀` towards `min_mttr`, cost
+
+```
+c_F = exp((1 − f_F) · (λ₀ − λ) / (λ − λ_min))
+c_R = exp((1 − f_R) · (MTTR₀ − MTTR) / (MTTR − min_mttr))
+```
+
+with a feasibility for each lever (`mttf_feasibility` and `mttr_feasibility`,
+0.5 by default). Without limits (the default: `max_mttf` infinite,
+`min_mttr` 0), raising the MTTF by a factor `k` costs
+`exp((1 − f_F) · (k − 1))`, and cutting the MTTR by that factor costs
+`exp((1 − f_R) · (k − 1))`. A component's availability depends only on the
+ratio of its MTTF to its MTTR, so at equal feasibilities both levers move by
+the same factor:
+
+```python
+design = plant.mttf_mttr_allocation(0.98)
+design.mttf   # {'pump1': 10.64, 'pump2': 10.64, 'valve': 85.47}
+design.mttr   # {'pump1': 0.94, 'pump2': 0.94, 'valve': 1.17}
+design.mttf["valve"] / 50   # -> 1.709
+2 / design.mttr["valve"]    # -> 1.709
+```
+
+The cheaper lever is used first, and the dearer one only once the cheaper
+one costs as much at the margin. With repairs easy to shorten and failures
+hard to prevent, only the MTTRs change; the reverse changes only the MTTFs:
+
+```python
+cheap_repairs = plant.mttf_mttr_allocation(
+    0.98,
+    mttf_feasibility={node: 0.1 for node in plant.nodes},
+    mttr_feasibility={node: 0.9 for node in plant.nodes},
+)
+cheap_repairs.mttf   # {'pump1': 10.0, 'pump2': 10.0, 'valve': 50.0}: unchanged
+cheap_repairs.mttr   # {'pump1': 0.82, 'pump2': 0.82, 'valve': 0.72}
+cheap_repairs.mttr["valve"]   # -> 0.725
+```
+
+**Maintainability allocation.** `levers="mttr"` holds the failure behaviour
+and allocates repair times alone (`levers="mttf"` the reverse). A shorter
+repair is worth most on a component that is often down, so, other things
+equal, the components that fail most often get the shortest repairs:
+
+```python
+repairs = plant.mttf_mttr_allocation(0.98, levers="mttr")
+repairs.mttr   # {'pump1': 0.74, 'pump2': 0.74, 'valve': 0.78}
+repairs.mttr["pump1"]   # -> 0.738
+```
+
+- `max_mttf` and `min_mttr` limit a component's levers, and a limit equal to
+  the current value holds that lever. The limits are only approached, at an
+  ever-growing cost, so a target they can only just reach raises
+  `ValueError` with the availability they allow.
+- The components allocated are those `availability_allocation` allocates,
+  and `fixed` holds others. The result is an `AvailabilityAllocation` in
+  which `mttf` and `mttr` apply together.
+- It is solved numerically (SLSQP with exact gradients) in a fraction of a
+  second for tens of components, and the design returned meets the target.
 
 ## Reliability and redundancy together
 

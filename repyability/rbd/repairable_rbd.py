@@ -34,6 +34,8 @@ from typing import (
 )
 
 import numpy as np
+from scipy.optimize import OptimizeResult, brentq, minimize
+from scipy.special import expit, logit, logsumexp, softmax
 from surpyval import ExactEventTime
 from tqdm import tqdm
 
@@ -48,6 +50,7 @@ from repyability.rbd.redundancy_allocation import (
     redundancy_caps,
 )
 from repyability.rbd.results import (
+    AvailabilityAllocation,
     AvailabilityResult,
     ConfidenceInterval,
     CostResult,
@@ -503,6 +506,22 @@ def _meets(cost, availability, min_availability, max_cost_rate) -> bool:
     return True
 
 
+def _allocation_target(target) -> float:
+    """An availability allocation's target, checked to be in [0, 1]."""
+    value = _as_float(target)
+    if not 0.0 <= value <= 1.0:
+        raise ValueError(f"target must be a number in [0, 1], got {target!r}.")
+    return value
+
+
+def _as_float(value) -> float:
+    """``value`` as a float, or NaN if it is not a number."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float("nan")
+
+
 def _choose_intervals(
     nodes: list,
     evaluate,
@@ -517,8 +536,6 @@ def _choose_intervals(
     that meets the target. ``evaluate(intervals)`` gives their exact
     ``(cost rate, availability)``. A ValueError if no intervals in
     ``bounds`` meet the target, giving the best they can do."""
-    from scipy.optimize import minimize
-
     low, high = bounds
     box = list(zip(low, high))
     options = {"ftol": 1e-10, "maxiter": 200, "eps": 1e-6}
@@ -2318,6 +2335,699 @@ class RepairableRBD(RBD):
             availability=1.0 - u,
             horizon=horizon,
             method=method,
+        )
+
+    def availability_allocation(
+        self,
+        target: float,
+        method: str = "cost_based",
+        *,
+        fixed: Optional[Collection[Hashable]] = None,
+        weights: Optional[Dict] = None,
+        max_availabilities: Optional[Dict] = None,
+        feasibility: Optional[Dict] = None,
+    ) -> AvailabilityAllocation:
+        """What availability each component needs for the system to meet a
+        target, and the MTTF or MTTR that gives it.
+
+        Availability allocation: one of the reliability allocation methods
+        (see ``cost_based_allocation``), run on the components' long-run
+        availabilities (``node_availability``), with the system scored as
+        ``mean_availability`` scores it. A component's availability is
+        ``MTTF / (MTTF + MTTR)``, so the availability ``A`` allocated to it
+        is met by an MTTF of ``MTTR * A / (1 - A)`` at its current MTTR, or
+        by an MTTR of ``MTTF * (1 - A) / A`` at its current MTTF (or by any
+        pair in the same ratio): both are reported. To choose the cheapest
+        pair instead, use ``mttf_mttr_allocation``.
+
+        Only components with corrective repair alone are allocated an
+        availability: those that fail and take time to repair, with no
+        ``"preventive"`` or ``"inspection"`` schedule. The others keep
+        theirs: components with a schedule (whose intervals
+        ``optimal_replacement_intervals`` and
+        ``optimal_inspection_intervals`` choose), components repaired
+        instantly (never down), nested ``RepairableRBD`` nodes, components
+        with units that never fail or repairs that may never end, and the
+        components in ``fixed``. A held component that is inspected or
+        block-replaced is up with a probability that varies over its
+        schedule, together with the others on the same calendar; it enters
+        with that variation, as it does in ``mean_availability``, so that
+        the allocation meets the target exactly.
+
+        Parameters
+        ----------
+        target : float
+            The system's long-run availability to reach, in [0, 1].
+        method : str, optional
+            How to allocate it, from the current availabilities:
+            ``"cost_based"`` (the default) for Mettas's cheapest allocation
+            (see ``cost_based_allocation``); ``"improvement"`` to scale
+            every unavailability by one factor (``improvement_allocation``);
+            ``"minimum_effort"``, for a series system, to raise the least
+            available components to one level
+            (``minimum_effort_allocation``); or ``"equal"`` to give every
+            component allocated an availability the same one.
+        fixed : Collection[Hashable], optional
+            Components that keep their availability.
+        weights : dict, optional
+            With ``"improvement"`` only: a weight for each component
+            allocated an availability (see ``improvement_allocation``).
+        max_availabilities : dict, optional
+            With ``"cost_based"`` only: the most a component's availability
+            can reach. A component without one can approach 1.
+        feasibility : dict, optional
+            With ``"cost_based"`` only: a component's feasibility, in
+            [0, 1), 0.5 without one: the higher, the easier to improve.
+
+        Returns
+        -------
+        AvailabilityAllocation
+            The ``availability`` of every component; for each one allocated
+            an availability, the ``mttf`` that gives it at the current MTTR
+            and the ``mttr`` that gives it at the current MTTF; and the
+            ``system_availability`` with them. The solver's result is
+            stored on the RBD as ``res``, as the method run stores it.
+
+        Raises
+        ------
+        ValueError
+            If ``target`` is not in [0, 1] or cannot be reached (the message
+            gives how far the system can go); if ``method`` is unknown, or
+            an option is given to a method that does not take it; if
+            ``fixed`` or an option names a node that is not a component, or
+            an option names a component that keeps its availability; if no
+            component can be allocated an availability; if
+            ``"minimum_effort"`` is asked of a system that is not a series;
+            or if a component has a non-parametric reliability model.
+        KeyError
+            If ``weights`` has no entry for a component allocated an
+            availability.
+        NotImplementedError
+            As for ``mean_availability``.
+
+        Examples
+        --------
+        Two pumps in parallel, each with an MTTF of 10 h and an MTTR of
+        1 h, in series with a valve with an MTTF of 50 h and an MTTR of
+        2 h, are up 95.4% of the time. For 98%, the cheapest allocation
+        asks most of the valve, which every path goes through:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> def unit(mttf, mttr):
+        ...     return {
+        ...         "reliability": surv.Exponential.from_params([1 / mttf]),
+        ...         "repairability": surv.Exponential.from_params([1 / mttr]),
+        ...     }
+        >>> plant = RepairableRBD(
+        ...     [("s", "p1"), ("s", "p2"), ("p1", "v"), ("p2", "v"),
+        ...      ("v", "t")],
+        ...     {"p1": unit(10, 1), "p2": unit(10, 1), "v": unit(50, 2)},
+        ... )
+        >>> round(plant.mean_availability(), 4)
+        0.9536
+        >>> need = plant.availability_allocation(0.98)
+        >>> {node: round(a, 4) for node, a in need.availability.items()}
+        {'p1': 0.9318, 'p2': 0.9318, 'v': 0.9846}
+
+        The valve needs an MTTF of 128 h at its 2 h repairs, or repairs of
+        0.78 h at its 50 h MTTF:
+
+        >>> round(need.mttf["v"]), round(need.mttr["v"], 2)
+        (128, 0.78)
+        """
+        methods = ("cost_based", "improvement", "minimum_effort", "equal")
+        if method not in methods:
+            raise ValueError(
+                "method must be one of "
+                f"{', '.join(repr(m) for m in methods)}, got {method!r}."
+            )
+        options = {
+            "weights": (weights, "improvement"),
+            "max_availabilities": (max_availabilities, "cost_based"),
+            "feasibility": (feasibility, "cost_based"),
+        }
+        for name, (value, owner) in options.items():
+            if value is not None and method != owner:
+                raise ValueError(f"{name} applies to method={owner!r} only.")
+        target = _allocation_target(target)
+        current, free, held = self._allocatable(fixed)
+        for name, (value, _) in options.items():
+            self._allocation_option(name, value, held)
+        view = self._allocation_view(held)
+        start = {node: current[node] for node in self.nodes}
+        if method == "cost_based":
+            maxima = {node: current[node] for node in held}
+            maxima.update(max_availabilities or {})
+            allocated = view.cost_based_allocation(
+                target,
+                start,
+                max_probabilities=maxima,
+                feasibility=feasibility,
+            )
+        elif method == "improvement":
+            allocated = view.improvement_allocation(
+                target, start, fixed=list(held), weights=weights
+            )
+        elif method == "equal":
+            # From 0.5 for every component allocated, scaled alike, so they
+            # all end up the same.
+            allocated = view.improvement_allocation(
+                target,
+                {
+                    node: current[node] if node in held else 0.5
+                    for node in self.nodes
+                },
+                fixed=list(held),
+            )
+        else:
+            allocated = view._minimum_effort_held(target, current, held)
+        if view is not self and method != "minimum_effort":
+            self.res = view.res
+        mttf, mttr = {}, {}
+        for node, (up, down) in free.items():
+            a = allocated[node]
+            mttf[node] = down * a / (1.0 - a) if a < 1.0 else math.inf
+            mttr[node] = up * (1.0 - a) / a if a > 0.0 else math.inf
+        return self._allocation_result(view, allocated, mttf, mttr)
+
+    def mttf_mttr_allocation(
+        self,
+        target: float,
+        *,
+        levers: str = "both",
+        fixed: Optional[Collection[Hashable]] = None,
+        max_mttf: Optional[Dict] = None,
+        min_mttr: Optional[Dict] = None,
+        mttf_feasibility: Optional[Dict] = None,
+        mttr_feasibility: Optional[Dict] = None,
+    ) -> AvailabilityAllocation:
+        """The cheapest MTTFs and MTTRs that meet a system availability
+        target.
+
+        A component's availability, ``MTTF / (MTTF + MTTR)``, can be raised
+        with a longer MTTF (reliability) or a shorter MTTR
+        (maintainability), which cost different amounts. This is Mettas's
+        cost-based allocation (see ``cost_based_allocation``) with both
+        levers: it finds each component's MTTF and MTTR that meet the target
+        at the least total cost, where lowering its failure rate
+        ``lambda = 1 / MTTF`` from ``lambda_0`` towards its least,
+        ``lambda_min = 1 / max_mttf``, costs
+
+            exp((1 - f) * (lambda_0 - lambda) / (lambda - lambda_min)),
+
+        and cutting its MTTR from ``MTTR_0`` towards its least,
+        ``min_mttr``, costs
+
+            exp((1 - f) * (MTTR_0 - MTTR) / (MTTR - min_mttr)),
+
+        each with its own feasibility ``f`` in [0, 1): the lower it is, the
+        faster the cost rises. Each cost is 1 while its lever is unused and
+        grows without bound towards its limit. Without limits, raising the
+        MTTF by a factor ``k`` costs ``exp((1 - f) * (k - 1))``, and so
+        does cutting the MTTR by one: the availability depends on the ratio
+        of the two alone, so at equal feasibilities both are used alike.
+        The cheaper lever is used first, and the dearer one only once the
+        cheaper one costs as much at the margin.
+
+        With ``levers="mttr"`` the failure behaviour is held and only the
+        repairs are allocated (maintainability allocation): a shorter
+        repair is worth most on a component that is often down, so, other
+        things equal, the components that fail most often get the shortest
+        repairs. With ``levers="mttf"`` only the MTTFs change.
+
+        The components allocated, and those that keep their availability,
+        are as for ``availability_allocation``, and the system is scored as
+        ``mean_availability`` scores it. It is solved with
+        ``scipy.optimize.minimize`` (SLSQP) with exact gradients, from the
+        point where every lever has closed the same fraction of its gap to
+        its limit, and the design returned meets the target. The solver's
+        result is stored on the RBD as ``res``, replacing any earlier one;
+        its ``fun`` is the log of the total cost of the levers that may
+        change.
+
+        Parameters
+        ----------
+        target : float
+            The system's long-run availability to reach, in [0, 1].
+        levers : str, optional
+            ``"both"`` (the default), ``"mttr"`` to change only the MTTRs, or
+            ``"mttf"`` to change only the MTTFs.
+        fixed : Collection[Hashable], optional
+            Components that keep their MTTF and MTTR.
+        max_mttf : dict, optional
+            The most a component's MTTF can reach, at least its current
+            MTTF (which holds it). A component without one has no limit.
+        min_mttr : dict, optional
+            The least a component's MTTR can reach, from 0 (the default for
+            a component without one) to its current MTTR (which holds it).
+        mttf_feasibility : dict, optional
+            The feasibility of raising a component's MTTF, in [0, 1), 0.5
+            without one.
+        mttr_feasibility : dict, optional
+            The feasibility of cutting a component's MTTR, in [0, 1), 0.5
+            without one.
+
+        Returns
+        -------
+        AvailabilityAllocation
+            Every component's ``availability``; for each one allocated, its
+            ``mttf`` and ``mttr`` in the cheapest design (together); and the
+            ``system_availability``. A target the system already meets
+            returns the current values.
+
+        Raises
+        ------
+        ValueError
+            If ``target`` is not in [0, 1] or cannot be reached (the message
+            gives the most the limits allow: they are only approached, at an
+            ever-growing cost); if ``levers`` is unknown; if ``fixed`` or an
+            option names a node that is not a component, or an option names
+            one that keeps its availability; if a limit is on the wrong side
+            of the current value, or a feasibility is outside [0, 1); if no
+            lever can change; or if a component has a non-parametric
+            reliability model.
+        NotImplementedError
+            As for ``mean_availability``.
+
+        Warns
+        -----
+        UserWarning
+            If the solver stops before converging; the design returned
+            still meets the target, but may not be the cheapest.
+
+        Examples
+        --------
+        The pumps and valve of ``availability_allocation``, to 98%: at
+        equal feasibilities each component's MTTF rises by the factor its
+        MTTR falls by, and the valve's the most:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> def unit(mttf, mttr):
+        ...     return {
+        ...         "reliability": surv.Exponential.from_params([1 / mttf]),
+        ...         "repairability": surv.Exponential.from_params([1 / mttr]),
+        ...     }
+        >>> plant = RepairableRBD(
+        ...     [("s", "p1"), ("s", "p2"), ("p1", "v"), ("p2", "v"),
+        ...      ("v", "t")],
+        ...     {"p1": unit(10, 1), "p2": unit(10, 1), "v": unit(50, 2)},
+        ... )
+        >>> design = plant.mttf_mttr_allocation(0.98)
+        >>> {node: round(t, 1) for node, t in design.mttf.items()}
+        {'p1': 10.6, 'p2': 10.6, 'v': 85.5}
+        >>> {node: round(t, 2) for node, t in design.mttr.items()}
+        {'p1': 0.94, 'p2': 0.94, 'v': 1.17}
+        >>> round(design.system_availability, 4)
+        0.98
+
+        Holding the failure behaviour, only the repairs change:
+
+        >>> repairs = plant.mttf_mttr_allocation(0.98, levers="mttr")
+        >>> {node: round(t, 2) for node, t in repairs.mttr.items()}
+        {'p1': 0.74, 'p2': 0.74, 'v': 0.78}
+        """
+        if levers not in ("both", "mttf", "mttr"):
+            raise ValueError(
+                f"levers must be 'both', 'mttf' or 'mttr', got {levers!r}."
+            )
+        target = _allocation_target(target)
+        current, free, held = self._allocatable(fixed)
+        most = self._allocation_option("max_mttf", max_mttf, held)
+        least = self._allocation_option("min_mttr", min_mttr, held)
+        ease = (
+            self._allocation_option(
+                "mttf_feasibility", mttf_feasibility, held
+            ),
+            self._allocation_option(
+                "mttr_feasibility", mttr_feasibility, held
+            ),
+        )
+        names = ("mttf_feasibility", "mttr_feasibility")
+        # Each component's failure rate and repair time, as (start, floor):
+        # each falls from its start towards its floor as its lever is used,
+        # to floor + (start - floor) * exp(-v) for the lever's v >= 0.
+        span: Dict[Hashable, Tuple[Tuple[float, float], ...]] = {}
+        variables: List[Tuple[Hashable, int, float]] = []
+        for node, (mttf, mttr) in free.items():
+            top = _as_float(most.get(node, math.inf))
+            if not top >= mttf * (1.0 - 1e-12):
+                raise ValueError(
+                    f"max_mttf[{node!r}] must be at least the component's "
+                    f"MTTF, {mttf:.6g}, got {most[node]!r}."
+                )
+            bottom = _as_float(least.get(node, 0.0))
+            if not 0.0 <= bottom <= mttr * (1.0 + 1e-12):
+                raise ValueError(
+                    f"min_mttr[{node!r}] must be between 0 and the "
+                    f"component's MTTR, {mttr:.6g}, got {least[node]!r}."
+                )
+            span[node] = (
+                (1.0 / mttf, 1.0 / max(top, mttf)),
+                (mttr, min(bottom, mttr)),
+            )
+            for lever, name in enumerate(names):
+                f = _as_float(ease[lever].get(node, 0.5))
+                if not 0.0 <= f < 1.0:
+                    raise ValueError(
+                        f"{name}[{node!r}] must be in [0, 1), got "
+                        f"{ease[lever][node]!r}."
+                    )
+                start, floor = span[node][lever]
+                if levers in ("both", ("mttf", "mttr")[lever]) and (
+                    start > floor
+                ):
+                    variables.append((node, lever, 1.0 - f))
+        if not variables:
+            raise ValueError(
+                "No MTTF or MTTR can change: every lever is held (by levers, "
+                "max_mttf or min_mttr)."
+            )
+        steepness = np.array([s for _, _, s in variables])
+        size = len(variables)
+
+        def design(v) -> Dict[Hashable, List[float]]:
+            """Each component's failure rate and repair time."""
+            values = {
+                node: [ends[0][0], ends[1][0]] for node, ends in span.items()
+            }
+            for (node, lever, _), x in zip(variables, v):
+                if x > 0.0:
+                    start, floor = span[node][lever]
+                    gap = (start - floor) * math.exp(-x)
+                    values[node][lever] = floor + gap
+            return values
+
+        def probabilities(v) -> Tuple[Dict, Dict]:
+            p = {node: current[node] for node in self.nodes}
+            q = {node: 1.0 - current[node] for node in self.nodes}
+            for node, (rate, repair) in design(v).items():
+                odds = rate * repair  # of being down
+                p[node] = 1.0 / (1.0 + odds)
+                q[node] = odds / (1.0 + odds)
+            return p, q
+
+        def result(v) -> AvailabilityAllocation:
+            values = design(v)
+            mttf = {}
+            for node, (rate, _) in values.items():
+                if rate == span[node][0][0]:
+                    mttf[node] = free[node][0]  # unchanged, exactly
+                else:
+                    mttf[node] = 1.0 / rate if rate > 0.0 else math.inf
+            return self._allocation_result(
+                view,
+                probabilities(v)[0],
+                mttf,
+                {node: repair for node, (_, repair) in values.items()},
+            )
+
+        view = self._allocation_view(held)
+        goal = float(logit(target))
+        now = view._log_odds(*probabilities(np.zeros(size)))[0]
+        if goal <= now:
+            self.res = OptimizeResult(
+                x=np.zeros(size),
+                fun=float(np.log(size)),
+                success=True,
+                message="The target is already met.",
+            )
+            return result(np.zeros(size))
+        best = view._log_odds(*probabilities(np.full(size, np.inf)))[0]
+        # The limits are only approached (at an ever-growing cost), so a
+        # target at them, to within rounding, cannot be met either.
+        if goal >= best - 1e-9:
+            raise ValueError(
+                f"target {target} cannot be reached: from the current "
+                f"availability ({expit(now):.6g}) the system can only "
+                f"approach {expit(best):.6g}, with every MTTF and MTTR that "
+                "may change at its limit."
+            )
+
+        def shortfall(v: np.ndarray) -> float:
+            return view._log_odds(*probabilities(v))[0] - goal
+
+        def shortfall_gradient(v: np.ndarray) -> np.ndarray:
+            p, q = probabilities(v)
+            derivative = view._log_odds(p, q)[1]
+            values = design(v)
+            gradient = np.empty(size)
+            for i, ((node, lever, _), x) in enumerate(zip(variables, v)):
+                start, floor = span[node][lever]
+                # The lever lowers the odds of being down, rate * repair, at
+                # the other quantity times its own fall; p = 1 / (1 + odds).
+                other = values[node][1 - lever]
+                fall = other * (start - floor) * math.exp(-x)
+                gradient[i] = derivative[node] * p[node] ** 2 * fall
+            return gradient
+
+        def log_total_cost(v: np.ndarray) -> Tuple[float, np.ndarray]:
+            costs = steepness * np.expm1(v)
+            return float(logsumexp(costs)), softmax(
+                costs
+            ) * steepness * np.exp(v)
+
+        def common_shift(start: np.ndarray, along: np.ndarray) -> np.ndarray:
+            """The start moved up by the least common v, on the levers
+            ``along`` marks, meeting the target (it exists, as the target is
+            below what the limits allow)."""
+            high = 1.0
+            while shortfall(start + high * along) < 0.0 and high < 1e6:
+                high *= 2.0
+            return start + along * brentq(
+                lambda d: shortfall(start + d * along), 0.0, high, xtol=1e-14
+            )
+
+        every = np.ones(size)
+        res = minimize(
+            log_total_cost,
+            common_shift(np.zeros(size), every),
+            jac=True,
+            method="SLSQP",
+            bounds=[(0.0, None)] * size,
+            constraints=[
+                {"type": "ineq", "fun": shortfall, "jac": shortfall_gradient}
+            ],
+            options={"ftol": 1e-12, "maxiter": 1000},
+        )
+        # A lever the solver left within a hair of its bound is unused.
+        v = np.where(res.x < 1e-9, 0.0, res.x)
+        if shortfall(v) < 0.0:
+            # Close the solver's last sliver of constraint tolerance, with
+            # the levers in use.
+            used = (v > 0.0).astype(float)
+            v = common_shift(v, used if used.any() else every)
+        res.x = v
+        res.fun = log_total_cost(v)[0]
+        self.res = res
+        if not res.success:
+            warnings.warn(
+                "the cost minimisation stopped before converging "
+                f"({res.message}); the design meets the target but may not "
+                "be the cheapest.",
+                stacklevel=2,
+            )
+        return result(v)
+
+    def _allocatable(
+        self, fixed
+    ) -> Tuple[
+        Dict[Hashable, float], Dict[Hashable, Tuple[float, float]], set
+    ]:
+        """For an availability allocation: every component's long-run
+        availability; the MTTF and MTTR of those allocated one (with
+        corrective repair alone: they fail and take time to repair, with no
+        preventive or inspection schedule, and are not in ``fixed``); and
+        the set of the others, which keep theirs."""
+        held = set()
+        if fixed is not None:
+            held = set(fixed)
+            unknown = [node for node in held if node not in self.components]
+            if unknown:
+                raise ValueError(
+                    f"fixed names {sorted(unknown, key=str)}, which are not "
+                    "components of this RBD."
+                )
+        current: Dict[Hashable, float] = {}
+        free: Dict[Hashable, Tuple[float, float]] = {}
+        for node, component in self.components.items():
+            current[node] = self._node_availability(node)
+            if (
+                node in held
+                or isinstance(component, RepairableRBD)
+                or node in self._preventive
+                or node in self._inspection
+            ):
+                held.add(node)
+                continue
+            mttf = model_mean(component.reliability)
+            mttr = model_mean(component.time_to_replace)
+            if not (0.0 < mttf < math.inf and 0.0 < mttr < math.inf):
+                # Never down, down for good in the end, or up for good.
+                held.add(node)
+                continue
+            free[node] = (mttf, mttr)
+            current[node] = mttf / (mttf + mttr)
+        if not free:
+            raise ValueError(
+                "No component can be allocated an availability: only "
+                "components with corrective repair alone (that fail and take "
+                "time to repair, with no preventive or inspection schedule), "
+                "not in fixed, can."
+            )
+        return current, free, held
+
+    def _allocation_option(self, name: str, mapping, held: set) -> dict:
+        """A per-component option of an availability allocation, checked to
+        name only components allocated an availability."""
+        values = self._node_overrides(name, mapping)
+        kept = [node for node in values if node in held]
+        if kept:
+            raise ValueError(
+                f"{name} names {sorted(kept, key=str)}, which keep their "
+                "availability: only components with corrective repair alone, "
+                "not in fixed, are allocated one."
+            )
+        return values
+
+    def _allocation_view(self, held: set) -> "RepairableRBD":
+        """This RBD as an availability allocation scores it. The components
+        allocated an availability have a constant one, so when every held
+        component does too the system's availability is the structure
+        function of theirs, and the RBD itself will do. A held component
+        that is inspected or block-replaced is up with a probability that
+        varies over its schedule, together with the others on the calendar:
+        the system's availability is then averaged over the long-run grid,
+        as ``mean_availability`` averages it, by a view of the RBD whose
+        ``_allocation_probability`` and ``_log_odds`` do so."""
+        times, weights = self._long_run_grid()
+        if len(times) == 1:
+            return self
+        profiles = self._availabilities_at(times)
+        view = copy(self)
+        view.__dict__["_allocation_calendar"] = (
+            weights,
+            {node: profiles[node] for node in held},
+            [node for node in self.nodes if node not in held],
+        )
+        return view
+
+    def _calendar_arrays(
+        self, p: Dict, q: Optional[Dict]
+    ) -> Tuple[Dict, Dict]:
+        """Node probabilities ``p`` and their complements ``q`` (by default
+        ``1 - p``) over the allocation calendar's grid, with the held
+        components' own availabilities there."""
+        weights, profiles, _ = self.__dict__["_allocation_calendar"]
+        size = len(weights)
+        works = {node: np.full(size, float(p[node])) for node in p}
+        fails = {
+            node: np.full(
+                size, 1.0 - float(p[node]) if q is None else float(q[node])
+            )
+            for node in p
+        }
+        for node, profile in profiles.items():
+            works[node] = profile
+            fails[node] = 1.0 - profile
+        for node in self.in_or_out:
+            works[node] = np.ones(size)
+            fails[node] = np.zeros(size)
+        return works, fails
+
+    def _calendar_means(self, works: Dict, fails: Dict) -> Tuple[float, float]:
+        """The system's probabilities of working and of failing over the
+        allocation calendar's grid, averaged over it."""
+        weights = self.__dict__["_allocation_calendar"][0]
+        size = len(weights)
+        up, down = self._decomposition().probabilities(
+            works, fails, shape=size
+        )
+        return (
+            float(weights @ np.broadcast_to(up, (size,))),
+            float(weights @ np.broadcast_to(down, (size,))),
+        )
+
+    def _allocation_probability(
+        self, probabilities: Dict[Any, float]
+    ) -> float:
+        if "_allocation_calendar" not in self.__dict__:
+            return super()._allocation_probability(probabilities)
+        return self._calendar_means(
+            *self._calendar_arrays(probabilities, None)
+        )[0]
+
+    def _log_odds(
+        self, p: Dict[Any, float], q: Dict[Any, float]
+    ) -> Tuple[float, Dict[Any, float]]:
+        if "_allocation_calendar" not in self.__dict__:
+            return super()._log_odds(p, q)
+        weights, _, free = self.__dict__["_allocation_calendar"]
+        works, fails = self._calendar_arrays(p, q)
+        up, down = self._calendar_means(works, fails)
+        with np.errstate(divide="ignore"):
+            log_odds = float(np.log(up) - np.log(down))
+        scale = up * down
+        gradient = dict.fromkeys(self.nodes, 0.0)
+        if scale:
+            ones, zeros = np.ones(len(weights)), np.zeros(len(weights))
+            for node in free:
+                # The system's availability is linear in the node's, with
+                # slope P(down | node down) - P(down | node up).
+                if_up = self._calendar_means(
+                    {**works, node: ones}, {**fails, node: zeros}
+                )[1]
+                if_down = self._calendar_means(
+                    {**works, node: zeros}, {**fails, node: ones}
+                )[1]
+                gradient[node] = (if_down - if_up) / scale
+        return log_odds, gradient
+
+    def _minimum_effort_held(self, target: float, current: Dict, held: set):
+        """Albert's minimum-effort allocation to the components not
+        ``held``: in series, the held components' availabilities (averaged
+        over their calendars) are a factor of the system's, and the others
+        make up the rest."""
+        self._require_series()
+        limit = self._allocation_probability(
+            {
+                node: current[node] if node in held else 1.0
+                for node in self.nodes
+            }
+        )
+        if target > limit:
+            raise ValueError(
+                f"target {target} cannot be reached: the components that "
+                "keep their availability hold the system to at most "
+                f"{limit:.6g}."
+            )
+        raised = self.minimum_effort_allocation(
+            target / limit if limit > 0.0 else 0.0,
+            {
+                node: 1.0 if node in held else current[node]
+                for node in self.nodes
+            },
+        )
+        return {
+            node: current[node] if node in held else raised[node]
+            for node in self.nodes
+        }
+
+    def _allocation_result(
+        self, view: "RepairableRBD", allocated: Dict, mttf: Dict, mttr: Dict
+    ) -> AvailabilityAllocation:
+        """An availability allocation's result, scored as ``view`` scores
+        it."""
+        return AvailabilityAllocation(
+            availability={
+                node: float(allocated[node]) for node in self.components
+            },
+            mttf=mttf,
+            mttr=mttr,
+            system_availability=view._allocation_probability(
+                {node: allocated[node] for node in self.nodes}
+            ),
         )
 
     def _with_intervals(

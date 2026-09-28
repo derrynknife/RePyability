@@ -25,6 +25,7 @@ from repyability.rbd.repairable_rbd import RepairableRBD
 from repyability.rbd.repeated_node import RepeatedNode
 from repyability.rbd.repeated_standby_node import RepeatedStandbyNode
 from repyability.rbd.results import (
+    AvailabilityAllocation,
     AvailabilityResult,
     ConfidenceInterval,
     CostResult,
@@ -83,4 +84,5 @@ __all__ = [
     "MaintenancePolicy",
     "FailureLimitPolicy",
     "MaintenancePlan",
+    "AvailabilityAllocation",
 ]

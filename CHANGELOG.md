@@ -46,6 +46,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Availability allocation** (#107):
+  `RepairableRBD.availability_allocation(target, method=...)` runs a
+  reliability allocation method (`"cost_based"`, `"improvement"`,
+  `"minimum_effort"` or `"equal"`) on the components' long-run
+  availabilities, scoring the system as `mean_availability` does, and gives
+  for each component the MTTF that meets its share at the current MTTR and
+  the MTTR that meets it at the current MTTF.
+  `RepairableRBD.mttf_mttr_allocation(target)` chooses the cheapest MTTFs
+  and MTTRs together: Mettas's cost-based allocation with both levers, each
+  with its own feasibility and limit; `levers="mttr"` holds the failure
+  behaviour (maintainability allocation). Only components with corrective
+  repair alone are allocated; those with preventive maintenance or
+  inspection keep their availability, and enter over their calendar, so the
+  allocation meets the target exactly. The results are
+  `AvailabilityAllocation`s.
 - **Choosing proof-test intervals**:
   `RepairableRBD.optimal_inspection_intervals()` chooses the inspection
   interval of components with hidden failures for the lowest cost rate, the

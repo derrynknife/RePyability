@@ -870,6 +870,45 @@ class MaintenancePlan(_ResultMapping):
 
 
 @dataclass
+class AvailabilityAllocation(_ResultMapping):
+    """The result of ``RepairableRBD.availability_allocation()`` and
+    ``RepairableRBD.mttf_mttr_allocation()``.
+
+    What each component must achieve for the system to meet an availability
+    target, and the system's exact long-run availability if they do. Like
+    the other result types it is also a read-only mapping of its fields.
+
+    Attributes
+    ----------
+    availability : dict
+        Node name -> the long-run availability allocated to each component.
+        The components that keep theirs (see ``availability_allocation``)
+        are included, at their own.
+    mttf : dict
+        Node name -> an MTTF, for each component allocated an availability:
+        from ``availability_allocation``, the MTTF that gives it that
+        availability at its current MTTR; from ``mttf_mttr_allocation``,
+        its MTTF in the cheapest design, together with the MTTR in
+        ``mttr``.
+    mttr : dict
+        Node name -> an MTTR, for the same components: from
+        ``availability_allocation``, the MTTR that gives the allocated
+        availability at the current MTTF (so either this or the MTTF above
+        will do); from ``mttf_mttr_allocation``, its MTTR in the cheapest
+        design.
+    system_availability : float
+        The system's long-run availability with the allocated availabilities,
+        as ``mean_availability`` gives it: the target, or more if the system
+        already met it.
+    """
+
+    availability: Dict[Hashable, float]
+    mttf: Dict[Hashable, float]
+    mttr: Dict[Hashable, float]
+    system_availability: float
+
+
+@dataclass
 class AvailabilityResult(_ResultMapping):
     """The result of ``RepairableRBD.availability()``.
 
