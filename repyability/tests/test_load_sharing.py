@@ -156,3 +156,29 @@ def test_k_bounds(exp_aft):
 def test_empty_units_rejected():
     with pytest.raises(ValueError, match="at least one"):
         LoadSharingModel([], load=1.0)
+
+
+@pytest.mark.parametrize(
+    "x, shape",
+    [
+        (60.0, ()),
+        ([60.0], (1,)),
+        ([30.0, 90.0], (2,)),
+        ([[30.0], [90.0]], (2, 1)),
+    ],
+)
+def test_simulated_group_gives_the_shape_it_is_given(x, shape):
+    """A simulated group (a Kaplan-Meier fit) answers in the shape of its
+    query, a float for one time, on surpyval 0.20 and its next release
+    (surpyval#381)."""
+    rng = np.random.default_rng(1)
+    load = rng.uniform(0.5, 2.0, size=400)
+    lives = rng.weibull(2.0, size=400) * 80.0 / np.exp(0.4 * (load - 1))
+    waft = surv.WeibullAFT.fit(lives + 1e-3, Z=load.reshape(-1, 1))
+    group = LoadSharingModel([waft, waft], load=2.0, k=1, n_sims=500, seed=7)
+    assert group.is_simulated
+    for function in (group.sf, group.ff):
+        assert np.shape(function(x)) == shape
+    assert isinstance(group.sf(60.0), float)
+    one_by_one = [float(group.sf(t)) for t in np.ravel(x)]
+    assert np.ravel(group.sf(x)) == pytest.approx(one_by_one)

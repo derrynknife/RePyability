@@ -76,6 +76,19 @@ def is_exponential(model) -> bool:
     )
 
 
+def shaped(function, x, *args, **kwargs):
+    """``function`` (a model's ``sf``, ``ff``, ...) at the times ``x``, in
+    the shape of ``x``: a numpy float for a single time.
+
+    It is evaluated at ``x`` flattened and reshaped, because surpyval 0.20's
+    non-parametric estimates give a 1-element array for a single time and
+    spread a 2-D query into the wrong shape (surpyval#381, fixed on its
+    ``develop``: every model returns the shape it is given).
+    """
+    values = function(np.ravel(x), *args, **kwargs)
+    return np.asarray(values, dtype=float).reshape(np.shape(x))[()]
+
+
 def model_mean(model) -> float:
     """The model's mean as a plain float.
 

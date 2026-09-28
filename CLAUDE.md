@@ -62,3 +62,8 @@ unchanged.
   uncertainty).
 - surpyval#407 (zero-inflated `ff`/`sf` nonzero before time 0): no
   workaround; only a diagram's `sf(t)` at `t < 0` is affected.
+- surpyval#381 (a non-parametric estimate gives a 1-element array for a
+  single time, and spreads a 2-D query): `rbd/_model_utils.py`, `shaped`,
+  used by the simulated `sf` and `ff` of `StandbyModel` and
+  `LoadSharingModel`. The `shape` tests in `test_warm_standby.py` and
+  `test_load_sharing.py` must still pass.

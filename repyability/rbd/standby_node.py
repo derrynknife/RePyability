@@ -6,7 +6,7 @@ from surpyval import Hypoexponential, KaplanMeier
 
 from repyability.utils.wrappers import numpy_seed
 
-from ._model_utils import is_exponential
+from ._model_utils import is_exponential, shaped
 from ._sampling import (
     RowSampler,
     column,
@@ -641,7 +641,7 @@ class StandbyModel:
             return float(np.ravel(self._sf_model.mean())[0])
         return self.random(N, seed=seed).mean()
 
-    def sf(self, *args, **kwargs):
+    def sf(self, x, *args, **kwargs):
         """Survival function (reliability) of the arrangement.
 
         Evaluates the survival function set up at construction: the exact
@@ -651,17 +651,16 @@ class StandbyModel:
 
         Parameters
         ----------
-        *args : array_like
-            The time(s) ``x``, as in ``sf(x)``.
-        **kwargs
+        x : array_like
+            The time(s).
+        *args, **kwargs
             Passed on, with ``x``, to the underlying survival model.
 
         Returns
         -------
         float or numpy.ndarray
             The probability of surviving beyond ``x``: an array for an
-            array ``x``; for a scalar ``x`` a numpy float, except when the
-            arrangement is simulated, which gives a 1-element array.
+            array ``x``, and a numpy float for a scalar ``x``.
 
         Examples
         --------
@@ -673,19 +672,19 @@ class StandbyModel:
         [0.9098, 0.7358]
         """
         if self._sf_model is not None:
-            return self._sf_model.sf(*args, **kwargs)
-        return self.model.sf(*args, **kwargs)
+            return self._sf_model.sf(x, *args, **kwargs)
+        return shaped(self.model.sf, x, *args, **kwargs)
 
-    def ff(self, *args, **kwargs):
+    def ff(self, x, *args, **kwargs):
         """Cumulative failure probability, ``1 - sf(x)``.
 
         Evaluated from the same survival function as ``sf``.
 
         Parameters
         ----------
-        *args : array_like
-            The time(s) ``x``, as in ``ff(x)``.
-        **kwargs
+        x : array_like
+            The time(s).
+        *args, **kwargs
             Passed on, with ``x``, to the underlying survival model.
 
         Returns
@@ -694,8 +693,8 @@ class StandbyModel:
             The probability of failing by ``x``, shaped as for ``sf``.
         """
         if self._sf_model is not None:
-            return self._sf_model.ff(*args, **kwargs)
-        return self.model.ff(*args, **kwargs)
+            return self._sf_model.ff(x, *args, **kwargs)
+        return shaped(self.model.ff, x, *args, **kwargs)
 
     def cs(self, x, X):
         """Conditional survival ``R(x | X) = sf(X + x) / sf(X)``.

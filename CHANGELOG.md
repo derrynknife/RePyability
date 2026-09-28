@@ -23,8 +23,10 @@ next release as well as with 0.20.
 Behaviour changes: node models are saved in surpyval's format, which earlier
 versions cannot load (files they saved still load); a `RegressionNode` on a
 Cox model raises from `mean()` and `random()`, as documented, instead of
-returning a number; and one with a proportional-odds model and a covariate
-schedule follows surpyval (see Fixed).
+returning a number; one with a proportional-odds model and a covariate
+schedule follows surpyval (see Fixed); and a simulated `StandbyModel` or
+`LoadSharingModel` gives a float for a single time, as the others do, where
+it gave a 1-element array.
 
 ### Added
 
@@ -89,6 +91,12 @@ schedule follows surpyval (see Fixed).
 
 ### Changed
 
+- A simulated `StandbyModel` or `LoadSharingModel` (a Kaplan–Meier fit to
+  simulated lifetimes) answers `sf` and `ff` in the shape of the query, a
+  float for a single time, as the closed forms do. It gave a 1-element array
+  on surpyval 0.20 and a float on surpyval's next release, which returns
+  every model's values in the shape of the query (surpyval#381); now it
+  gives the same on both, and a 2-D query keeps its shape.
 - **Node models are saved in surpyval's own format** (#85):
   `{"kind": "surpyval", "model": model.to_dict()}`, loaded with
   `surpyval.from_dict`, instead of RePyability's name-and-parameters format.
