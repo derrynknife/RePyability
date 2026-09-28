@@ -281,8 +281,10 @@ is exactly the go-forward survival from the component's current life under
 the schedule: the load-dependent-ageing ("digital twin") node. Whether a
 family composes along a path is a property of the model: **AFT** (the path
 rescales the clock) and **proportional-/additive-hazards** (the path
-accumulates hazard) do; **proportional odds** does not, and is refused in
-schedule mode. The fixed-covariate node is the special case of a constant
+accumulates hazard) do; **proportional odds** has no single natural
+extension: surpyval 0.20 refuses it in schedule mode, and later versions
+switch to the new covariate's hazard at each step (the survival does not jump
+to the new covariate's curve). The fixed-covariate node is the special case of a constant
 path.
 
 ## Standby and repeated nodes
@@ -601,6 +603,25 @@ There are many allocations that meet a target; each rule picks one.
   component at 0.5 the Birnbaum importance is the structural importance, so
   small changes follow `w_i` times the structural importance exactly; larger
   ones drift as the importances are re-evaluated along the way.
+
+**Availability allocation** applies the same rules to the components'
+long-run availabilities `A_i = MTTF_i / (MTTF_i + MTTR_i)`, with the system's
+availability computed exactly as in [Availability](#availability). An
+allocated `A_i` fixes only the ratio `MTTF_i / MTTR_i = A_i / (1 − A_i)`: it
+is met by an MTTF of `MTTR_i · A_i / (1 − A_i)` at the current MTTR, or by an
+MTTR of `MTTF_i · (1 − A_i) / A_i` at the current MTTF. Choosing between the
+two is a cost-based allocation with two variables per component, the failure
+rate `λ_i = 1 / MTTF_i` and the repair time, each with Mettas's cost
+`exp((1 − f)(x₀ − x)/(x − x_min))` as it falls from `x₀` towards its floor
+`x_min`. The odds that component *i* is down are `λ_i · MTTR_i`, so both
+levers act on its log-odds of being up, `−log λ_i − log MTTR_i`, in the same
+way: at the optimum every lever in use buys system availability at the same
+marginal cost, the cheaper lever is used first, and at equal costs both move
+by the same factor. Holding the failure rates gives *maintainability
+allocation*. In a series system, cutting component *i*'s MTTR by a factor
+`e^v` raises the system's log-odds of being up at `U_i / (1 − A_sys)` per unit
+of `v`, `U_i` its unavailability, so, at equal costs, the components down
+most often get the largest cuts.
 
 ## Maintenance models
 

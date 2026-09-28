@@ -1,29 +1,109 @@
 name: release
 
-# Publishes the package to PyPI when a GitHub Release is published.
+# Publishes the package to PyPI, in either of two ways.
 #
-# This uses PyPI "Trusted Publishing" (OIDC), so no API token is stored in the
-# repository. Before the first release, configure a trusted publisher for the
-# `repyability` project on PyPI pointing at this repo/workflow, and (optionally)
-# create a `pypi` environment in the repo settings.
+# 1. Run this workflow by hand on master (Actions -> release -> Run workflow;
+#    `gh workflow run release.yml --ref master -f version=X.Y.Z`; or the REST
+#    API). It checks that the version typed in matches
+#    repyability/_version.py, that CHANGELOG.md has a dated section for it,
+#    that the tag vX.Y.Z does not exist yet, that CI passed on the commit and
+#    that PyPI does not have the version. It then builds, publishes to PyPI,
+#    and last creates the tag vX.Y.Z and a GitHub Release. The release notes
+#    open with the CHANGELOG section's summary, followed by GitHub's
+#    generated list of pull requests. `dry_run` does the checks and the build
+#    only.
 #
-# Cut a release by tagging a commit (e.g. `git tag v0.5.0 && git push --tags`)
-# and publishing a GitHub Release for that tag. Keep the tag in sync with
-# `repyability/_version.py`.
+#    A release created this way does not start path 2: GitHub starts no
+#    workflow for events made with a workflow's own token. So nothing is
+#    published twice.
+#
+# 2. Publish a GitHub Release by hand (the web UI, or `gh release create`).
+#    The `release: published` event builds the release's tag and publishes it.
+#
+# Both paths publish through PyPI "Trusted Publishing" (OIDC), configured on
+# PyPI for this workflow file and the `pypi` environment, so no API token is
+# stored in the repository. Keep this file's name: the trusted publisher
+# names it.
 
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "The version to release, as in repyability/_version.py (e.g. 0.9.0)"
+        required: true
+        type: string
+      dry_run:
+        description: "Only check and build: publish nothing, create no tag or release"
+        required: false
+        type: boolean
+        default: false
+
+permissions: {}
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
-  build-and-publish:
-    name: Build and publish to PyPI
+  check:
+    name: Check the release
+    if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/repyability
     permissions:
-      id-token: write # required for PyPI trusted publishing (OIDC)
+      contents: read
+      actions: read
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check the version, CHANGELOG, tag, CI and PyPI
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/master" ]; then
+            echo "::error::Releases are cut from master, not $GITHUB_REF."
+            exit 1
+          fi
+          version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' repyability/_version.py)
+          if [ "$version" != "$REQUESTED" ]; then
+            echo "::error::repyability/_version.py says '$version', not '$REQUESTED'."
+            exit 1
+          fi
+          if ! grep -qF "## [$version] - " CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no dated '## [$version] - ' section."
+            exit 1
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/v$version" > /dev/null; then
+            echo "::error::The tag v$version already exists."
+            exit 1
+          fi
+          passed=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/actions.yml/runs?head_sha=$GITHUB_SHA&status=success" --jq '.total_count')
+          if [ "$passed" -eq 0 ]; then
+            echo "::error::CI (actions.yml) has not passed on $GITHUB_SHA; wait for it, or fix it."
+            exit 1
+          fi
+          pypi=$(curl -s -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/repyability/$version/json")
+          if [ "$pypi" = 200 ]; then
+            echo "::error::repyability $version is already on PyPI."
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing repyability $version from $GITHUB_SHA."
+
+  build:
+    name: Build sdist and wheel
+    needs: check
+    # A published release, or a run by hand that passed its checks.
+    if: ${{ !cancelled() && (github.event_name == 'release' || needs.check.result == 'success') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v5
 
@@ -32,10 +112,74 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Build sdist and wheel
+      - name: Build and check the sdist and wheel
         run: |
-          python -m pip install --upgrade pip build
+          python -m pip install --upgrade pip build twine
           python -m build
+          python -m twine check --strict dist/*
+
+      - name: The files carry the version being released
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          test -f "dist/repyability-$VERSION.tar.gz"
+          test -f "dist/repyability-$VERSION-py3-none-any.whl"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    if: ${{ !cancelled() && needs.build.result == 'success' && (github.event_name == 'release' || !inputs.dry_run) }}
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/repyability
+    permissions:
+      id-token: write # required for PyPI trusted publishing (OIDC)
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+
+  github-release:
+    name: Tag and GitHub Release
+    needs: [check, publish]
+    # Only after PyPI has the version, so a failed publish leaves no tag.
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && !inputs.dry_run && needs.publish.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Create the tag and the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          set -euo pipefail
+          # The CHANGELOG section's summary: the lines between its heading
+          # and its first subsection. GitHub appends its generated notes.
+          awk -v heading="## [$VERSION] - " '
+            index($0, heading) == 1 { on = 1; next }
+            on && (/^### / || /^## /) { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          printf '\nThe full list of changes is in [CHANGELOG.md](%s/%s/blob/v%s/CHANGELOG.md).\n' \
+            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$VERSION" >> notes.md
+          gh api "repos/$GITHUB_REPOSITORY/releases" \
+            -f tag_name="v$VERSION" \
+            -f target_commitish="$GITHUB_SHA" \
+            -f name="v$VERSION" \
+            -F generate_release_notes=true \
+            -F body=@notes.md \
+            --jq '.html_url'

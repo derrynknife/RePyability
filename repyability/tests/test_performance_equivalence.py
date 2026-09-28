@@ -1220,20 +1220,21 @@ def test_every_composite_node_in_one_rbd(composites):
     np.testing.assert_allclose(fast, reference, rtol=RTOL, atol=0)
 
 
-def test_kaplan_meier_node_is_batched_without_the_global_rng(monkeypatch):
+def test_kaplan_meier_node_is_batched(monkeypatch):
     with numpy_seed(34):
         km = surv.KaplanMeier.fit(W([700, 2]).random(200))
     rbd = rbd_with(km)
     assert rbd._random_vectorised(1) is not None
-    # surpyval draws Kaplan-Meier samples from a fresh, OS-seeded generator,
-    # never numpy's global RNG, so the global stream -- and with it every
-    # other node's draws -- must be untouched by batching them.
-    np.random.seed(35)
-    rbd.random(300)
-    after_fast = rng_state()
-    np.random.seed(35)
-    rbd._random_by_events(300)
-    assert_same_rng_state(rng_state(), after_fast)
+    # Where surpyval draws Kaplan-Meier samples from depends on its version
+    # (fresh OS entropy up to 0.20, a generator seeded from numpy's global
+    # stream since), but either way batching them uses the global stream
+    # deterministically: the same seed leaves it in the same state.
+    states = []
+    for _ in range(2):
+        np.random.seed(35)
+        rbd.random(300)
+        states.append(rng_state())
+    assert_same_rng_state(*states)
     # Pinning the Kaplan-Meier draws makes the rest comparable exactly.
     monkeypatch.setattr(
         type(km), "random", lambda self, size, *a, **k: np.full(size, 450.0)

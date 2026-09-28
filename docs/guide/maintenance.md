@@ -157,7 +157,9 @@ virtual age back part of the way. Give `Repairable` a surpyval
 for perfect repair and 1 for minimal repair) and the same policies apply.
 `E[N(t)]` then has no closed form and is estimated by simulation, so pass a
 `seed` for a reproducible answer and `n_simulations` to trade speed for
-precision (default 1000):
+precision (default 1000). The simulated numbers below (marked `~>`) vary a
+little with the seed and with surpyval's simulator; the cost rate is flat
+near its minimum, so the interval found varies more than the cost rate:
 
 ```python
 from surpyval.recurrent import GeneralizedRenewal
@@ -170,16 +172,16 @@ compressor.set_repair_and_overhaul_costs(100, 1000)
 
 compressor.is_simulated   # True
 overhaul = compressor.optimal_overhaul_policy(seed=0, n_simulations=200)
-overhaul.interval         # -> 7909.0
-overhaul.cost_rate        # -> 0.2965
+overhaul.interval         # ~> 7600   between 7,400 and 7,900
+overhaul.cost_rate        # ~> 0.294
 ```
 
 `max_interval` bounds the search (by default 15 times the mean of the
-baseline lifetime). Close to minimal repair (`q` near 1) the unit's virtual
-age can reach ages where the survival underflows double precision, and
-surpyval's simulator stops resolving failures there; the search then
-shortens its horizon to what the simulation can resolve, so near-minimal
-repair needs no special handling. The simulated search never returns `inf`:
+baseline lifetime). If surpyval's simulator stops resolving failures before
+the horizon (surpyval 0.20's did close to minimal repair, `q` near 1, where
+the unit's virtual age reaches ages at which the survival underflows double
+precision), the search shortens its horizon to what the simulation can
+resolve, so near-minimal repair needs no special handling. The simulated search never returns `inf`:
 if the cost rate is still falling at the horizon (overhauls never pay, or
 the optimum lies beyond it), it returns the horizon with a warning that says
 whether a larger `max_interval` could help. The optimum grows as repairs
@@ -193,10 +195,10 @@ at its N-th failure. The cost rate is `(cr · (N − 1) + co) / E[T_N]`, with
 
 ```python
 limit = compressor.optimal_failure_limit_policy(seed=0, n_simulations=500)
-limit.failure_count   # -> 14   replace at the 14th failure
-limit.cost_rate       # -> 0.286
-compressor.find_optimal_replacement_failure_count(seed=0, n_simulations=500)   # -> 14
-compressor.expected_time_to_nth_failure(5, seed=0, n_simulations=500)   # -> 4378.1
+limit.failure_count   # ~> 14   replace at the 13th or 14th failure
+limit.cost_rate       # ~> 0.285
+compressor.find_optimal_replacement_failure_count(seed=0, n_simulations=500)   # ~> 14
+compressor.expected_time_to_nth_failure(5, seed=0, n_simulations=500)   # ~> 4360
 ```
 
 The result is a [`FailureLimitPolicy`][repyability.FailureLimitPolicy].

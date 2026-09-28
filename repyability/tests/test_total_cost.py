@@ -927,9 +927,15 @@ def test_nested_rbds_cannot_be_copied():
     assert set(rbd.allocate_redundancy(100.0).units) == {"x"}
 
 
-def test_block_replacement_has_no_exact_total_cost():
-    rbd = pump_rbd(preventive={"interval": 500.0, "policy": "block"})
-    with pytest.raises(NotImplementedError, match="block replacement"):
-        rbd.allocate_redundancy(1000.0)
-    with pytest.raises(NotImplementedError, match="block replacement"):
-        rbd.total_cost(1000.0)
+def test_block_replacement_of_a_memoryless_pump_changes_nothing():
+    # An exponential pump is as good as new at any age: replacing it at the
+    # block times, in no time and at no cost, changes none of its costs.
+    plain = pump_rbd()
+    blocked = pump_rbd(preventive={"interval": 500.0, "policy": "block"})
+    assert blocked.total_cost(1000.0) == pytest.approx(
+        plain.total_cost(1000.0), rel=1e-6
+    )
+    assert (
+        blocked.allocate_redundancy(1000.0).units
+        == plain.allocate_redundancy(1000.0).units
+    )

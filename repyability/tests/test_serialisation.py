@@ -14,6 +14,7 @@ from repyability.rbd.repairable_rbd import RepairableRBD
 from repyability.rbd.repeated_node import RepeatedNode
 from repyability.rbd.repeated_standby_node import RepeatedStandbyNode
 from repyability.rbd.standby_node import StandbyModel
+from repyability.utils.wrappers import numpy_seed
 
 FEP = surv.FixedEventProbability
 W = surv.Weibull.from_params
@@ -133,11 +134,82 @@ def test_base_rbd_from_dict_dispatches():
     assert isinstance(clone, NonRepairableRBD)
 
 
+class _OwnModel:
+    """A model surpyval does not know: only an ``sf``."""
+
+    def sf(self, x):
+        return np.exp(-np.asarray(x, dtype=float) / 100.0)
+
+
 def test_unsupported_model_raises_not_implemented():
-    km = surv.KaplanMeier.fit([1, 2, 3, 4, 5, 6, 7, 8])
-    rbd = NonRepairableRBD([("s", 1), (1, "t")], {1: km})
+    rbd = NonRepairableRBD([("s", 1), (1, "t")], {1: _OwnModel()})
     with pytest.raises(NotImplementedError, match="Cannot serialise"):
         rbd.to_dict()
+
+
+DISTRIBUTIONS = [
+    ("Exponential", [0.01]),
+    ("Weibull", [100, 2]),
+    ("Normal", [100, 10]),
+    ("LogNormal", [4, 0.5]),
+    ("Gamma", [2, 0.05]),
+    ("Gumbel", [100, 10]),
+    ("Logistic", [100, 10]),
+    ("LogLogistic", [100, 3]),
+    ("ExpoWeibull", [100, 2, 1.5]),
+    ("Beta", [2, 3]),
+    ("Uniform", [0, 100]),
+    ("FixedEventProbability", [0.1]),
+    ("ExactEventTime", [50.0]),
+    ("Hypoexponential", [0.01, 0.02]),
+]
+
+
+@pytest.mark.parametrize(
+    "extras",
+    [{}, {"gamma": 5.0}, {"p": 0.9}, {"f0": 0.1}],
+    ids=["plain", "offset", "p", "f0"],
+)
+@pytest.mark.parametrize(
+    "name, params", DISTRIBUTIONS, ids=[d[0] for d in DISTRIBUTIONS]
+)
+def test_every_surpyval_distribution_round_trips(name, params, extras):
+    try:
+        model = getattr(surv, name).from_params(params, **extras)
+    except Exception:
+        pytest.skip(f"surpyval builds no {name} with {extras}")
+    rbd = NonRepairableRBD([("s", 1), (1, "t")], {1: model})
+    back = NonRepairableRBD.from_json(rbd.to_json())
+    t = np.array([0.0, 0.5, 20.0, 50.0, 90.0, 150.0])
+    with np.errstate(all="ignore"):  # e.g. log(0) in a LogNormal's sf(0)
+        np.testing.assert_allclose(back.sf(t), rbd.sf(t), rtol=0, atol=1e-14)
+
+
+@pytest.mark.parametrize("fit", ["KaplanMeier", "NelsonAalen"])
+def test_non_parametric_models_round_trip(fit):
+    x = np.array([12.0, 30.0, 41.0, 55.0, 60.0, 72.0, 88.0, 95.0])
+    model = getattr(surv, fit).fit(x, c=(x > 80).astype(int))
+    rbd = NonRepairableRBD([("s", 1), (1, "t")], {1: model})
+    back = NonRepairableRBD.from_json(rbd.to_json())
+    t = np.array([0.0, 20.0, 50.0, 70.0, 90.0])
+    np.testing.assert_allclose(back.sf(t), rbd.sf(t), rtol=0, atol=1e-14)
+
+
+def test_a_fit_keeps_its_covariance():
+    # So parameter uncertainty can still be propagated after loading.
+    with numpy_seed(3):
+        fitted = surv.Weibull.fit(W([100, 2]).random(40))
+    rbd = NonRepairableRBD([("s", 1), (1, "t")], {1: fitted})
+    back = NonRepairableRBD.from_json(rbd.to_json())
+    np.testing.assert_allclose(
+        np.asarray(back.reliabilities[1].hess_inv),
+        np.asarray(fitted.hess_inv),
+    )
+    draws = {"x": 50.0, "uncertainty": {1: "fit"}, "n_draws": 200, "seed": 1}
+    np.testing.assert_allclose(
+        back.sf_uncertainty(**draws).samples,
+        rbd.sf_uncertainty(**draws).samples,
+    )
 
 
 def test_tuple_node_names_survive_json():

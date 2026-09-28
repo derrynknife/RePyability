@@ -36,9 +36,11 @@ dependencies = [
     "numpy>=2.0,<3",
     "scipy>=1.7",
     "networkx>=3.0",
-    # Deliberately uncapped: RePyability consumes a small, stable surface of
-    # surpyval (sf/ff/random/mean, regression sf/sf_tvc, to_dict/from_dict),
-    # so new surpyval minors should not require a RePyability release.
+    # Deliberately uncapped: RePyability consumes a small surface of surpyval
+    # (sf/ff/qf/random/mean, regression sf/sf_tvc, to_dict/from_dict). A
+    # surpyval release reaches every fresh install at once, so the upstream
+    # workflow runs the tests against surpyval's development branch to show a
+    # break before it is released.
     "surpyval>=0.20",
     "tqdm>=4.64",
 ]

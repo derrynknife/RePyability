@@ -22,7 +22,7 @@ text = rbd.to_json(indent=2)    # a JSON string (keyword arguments go to json.du
 clone = NonRepairableRBD.from_json(text)
 clone.sf(30) == rbd.sf(30)      # True
 type(RBD.from_dict(data)).__name__   # 'NonRepairableRBD': the base class dispatches on type
-data["type"], data["repyability_version"]   # ('NonRepairableRBD', '0.9.0')
+data["type"], data["repyability_version"]   # ('NonRepairableRBD', '0.10.0')
 ```
 
 What is saved:
@@ -32,12 +32,16 @@ What is saved:
 - common-cause groups, and for a `RepairableRBD` every cost, including cost
   distributions and acquisition costs, preventive and inspection schedules,
   `"instant"` repairs and `NonRepairable` components;
-- the node models: surpyval parametric distributions and
-  `FixedEventProbability` by name and parameters (with any offset,
-  limited-failure-population or zero-inflation parameter),
-  `PerfectReliability` and `PerfectUnreliability`, and the standby, repeated,
-  repeated-standby, load-sharing, regression and `NonRepairable` wrappers
-  recursively (a regression model through `surpyval.from_dict`).
+- the node models: surpyval models, parametric (including
+  `FixedEventProbability`) and non-parametric (Kaplan–Meier and friends), in
+  surpyval's own format (`model.to_dict()`, loaded with `surpyval.from_dict`),
+  so everything surpyval keeps round-trips: an offset, a
+  limited-failure-population or zero-inflation parameter, and a fit's
+  covariance, so parameter uncertainty can still be propagated after
+  loading; `PerfectReliability` and `PerfectUnreliability`; and the standby,
+  repeated, repeated-standby, load-sharing, regression and `NonRepairable`
+  wrappers recursively. Files saved before 0.10.0, which stored a
+  parametric model by name and parameters, still load.
 
 String, integer and tuple node names all survive JSON (JSON turns a tuple
 into a list, and loading turns it back). Loading with the wrong class
@@ -45,10 +49,8 @@ into a list, and loading turns it back). Loading with the wrong class
 `ValueError`; `RBD.from_dict` and `RBD.from_json` always pick the right one.
 
 !!! note "Two limits"
-    - **Non-parametric fits** (Kaplan–Meier and friends) cannot be saved:
-      surpyval has no public way to rebuild them, so `to_dict` raises
-      `NotImplementedError`. Fit a parametric model in surpyval if you need to
-      save the diagram.
+    - **Models surpyval does not know** (your own class with an `sf`) cannot
+      be saved: `to_dict` raises `NotImplementedError`.
     - **Simulation-backed standby and load-sharing nodes** are saved by their
       inputs (`n_sims`, `dormancy_factor`, ...) but not their `seed`, and are
       re-simulated when loaded. A reloaded simulated node's reliability can
@@ -79,13 +81,14 @@ global generator is.
 rbd.mean(1_000, seed=0) == rbd.mean(1_000, seed=0)   # True
 ```
 
-**The exception: non-parametric nodes.** surpyval draws Kaplan–Meier (and
-other non-parametric) samples from a fresh, unseeded generator, ignoring the
-global one, so a simulation involving such a node is not reproducible even
-with a seed. This is tracked as
-[surpyval issue #361](https://github.com/derrynknife/SurPyval/issues/361).
-The exact quantities (`sf`, `ff`, the importance measures, ...) are
-unaffected.
+**The exception: non-parametric nodes with surpyval 0.20.** surpyval 0.20
+draws Kaplan–Meier (and other non-parametric) samples from a fresh, unseeded
+generator, ignoring the global one, so a simulation involving such a node is
+not reproducible even with a seed. Later versions seed that generator from
+the global one
+([surpyval issue #361](https://github.com/derrynknife/SurPyval/issues/361)),
+which makes those simulations reproducible too. The exact quantities (`sf`,
+`ff`, the importance measures, ...) are unaffected either way.
 
 The simulations draw the same random numbers in the same order however they
 are computed internally (in blocks for speed, or one at a time), so seeded

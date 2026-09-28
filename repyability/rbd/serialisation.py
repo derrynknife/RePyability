@@ -14,21 +14,23 @@ Design notes
   serialised, so ``from_dict(rbd.to_dict())`` simply reconstructs the RBD by
   calling its constructor again — faithful even for repeated nodes (whose
   graph is collapsed after construction).
-- Node models are serialised structurally: surpyval parametric distributions
-  as ``(dist name, params)``; the RePyability wrappers (standby, repeated,
-  NonRepairable) recursively; nested RBDs via their own ``to_dict``. Fitted
-  non-parametric models are not serialisable (there is no public
-  reconstruction API) and raise a clear error.
+- Node models are serialised structurally: surpyval models (parametric and
+  non-parametric) in surpyval's own format, ``model.to_dict()``, loaded with
+  ``surpyval.from_dict``, so everything surpyval keeps (an offset, ``p``,
+  ``f0``, a fit's covariance) round-trips; the RePyability wrappers
+  (standby, repeated, NonRepairable) recursively; nested RBDs via their own
+  ``to_dict``. Files from before 0.10.0, which saved a parametric model as
+  ``(dist name, params, extras)``, still load.
 """
 
 import json
 from typing import Any
 
-import numpy as np
+from surpyval import NonParametric
 
 from repyability._version import __version__
 from repyability.non_repairable import NonRepairable
-from repyability.rbd._model_utils import distribution_name, model_extras
+from repyability.rbd._model_utils import distribution_name
 from repyability.rbd.helper_classes import (
     PerfectReliability,
     PerfectUnreliability,
@@ -39,11 +41,6 @@ from repyability.rbd.regression_node import RegressionNode
 from repyability.rbd.repeated_node import PARALLEL, RepeatedNode
 from repyability.rbd.repeated_standby_node import RepeatedStandbyNode
 from repyability.rbd.standby_node import StandbyModel
-
-
-def _params_list(model) -> list:
-    # Flat: a deserialised ExactEventTime holds its parameter as [[T]].
-    return [float(p) for p in np.ravel(model.params)]
 
 
 def serialise_model(model: Any) -> dict:
@@ -95,25 +92,18 @@ def serialise_model(model: Any) -> dict:
             "k": model.k,
             "n_sims": model.n_sims,
         }
-    dist = distribution_name(model)
-    if dist is not None:
-        out: dict = {
-            "kind": "parametric",
-            "dist": dist,
-            "params": _params_list(model),
-        }
-        # An offset, limited-failure-population or zero-inflation parameter,
-        # saved only when the model has one.
-        extras = model_extras(model)
-        if extras:
-            out["extras"] = extras
-        return out
+    if distribution_name(model) is not None or isinstance(
+        model, NonParametric
+    ):
+        # surpyval's own format: everything surpyval keeps (an offset, p,
+        # f0, a fit's covariance) round-trips, whatever it adds later.
+        return {"kind": "surpyval", "model": model.to_dict()}
     raise NotImplementedError(
         f"Cannot serialise a node model of type {type(model).__name__}. "
-        "Only surpyval parametric distributions, the RePyability node "
-        "wrappers (standby, repeated, NonRepairable), perfect "
-        "reliability/unreliability and nested RBDs are supported (fitted "
-        "non-parametric models have no reconstruction API)."
+        "Only surpyval models (parametric and non-parametric), the "
+        "RePyability node wrappers (standby, repeated, NonRepairable, "
+        "load-sharing, regression), perfect reliability/unreliability and "
+        "nested RBDs are supported."
     )
 
 
@@ -126,7 +116,11 @@ def deserialise_model(d: dict) -> Any:
         return PerfectReliability
     if kind == "perfect_unreliability":
         return PerfectUnreliability
+    if kind == "surpyval":
+        return surpyval.from_dict(d["model"])
     if kind == "parametric":
+        # The format before 0.10.0: a distribution's name, parameters and
+        # any offset, p and f0 ("extras", since 0.9.0).
         cls = getattr(surpyval, d["dist"])
         return cls.from_params(d["params"], **d.get("extras", {}))
     if kind == "rbd":
