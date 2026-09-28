@@ -193,3 +193,153 @@ def test_what_it_refuses(plant):
     )
     with pytest.raises(ValueError, match="Nothing is priced"):
         unpriced.optimal_replacement_intervals()
+
+
+def test_integer_node_names():
+    rbd = RepairableRBD(
+        [("s", 1), (1, "t")], {1: pump()}, downtime_cost_rate=500.0
+    )
+    plan = rbd.optimal_replacement_intervals()
+    assert set(plan.intervals) == {1}
+
+
+# -- Proof-test intervals -----------------------------------------------------
+
+CALENDAR = [730.0, 2190.0, 4380.0, 8760.0, 17520.0]  # 1, 3, 6, 12, 24 months
+
+
+def valve(interval=8760.0, rate=2e-6, cost=500.0, **extra):
+    return {
+        "reliability": E([rate]),
+        "repairability": "instant",
+        "inspection": {"interval": interval, "cost": cost},
+        **extra,
+    }
+
+
+def one_valve(**kwargs):
+    return RepairableRBD([("s", "v"), ("v", "t")], {"v": valve(**kwargs)})
+
+
+def two_valves(**kwargs):
+    return RepairableRBD(
+        [("s", "v1"), ("s", "v2"), ("v1", "t"), ("v2", "t")],
+        {"v1": valve(**kwargs), "v2": valve(**kwargs)},
+    )
+
+
+def test_one_inspected_component_by_formula():
+    # Testing costs c_i per test; each hour the unit lies failed costs c_d:
+    # the cost rate c_i / tau + c_d U(tau) is least near
+    # sqrt(2 c_i / (lambda c_d)).
+    lam, c_i, c_d = 1e-4, 2000.0, 500.0
+    rbd = RepairableRBD(
+        [("s", "p"), ("p", "t")],
+        {"p": valve(interval=100.0, rate=lam, cost=c_i, downtime_cost=c_d)},
+    )
+    plan = rbd.optimal_inspection_intervals()
+
+    def rate(tau):
+        down = 1.0 + math.expm1(-lam * tau) / (lam * tau)
+        return c_i / tau + c_d * down
+
+    taus = np.linspace(200.0, 400.0, 20001)
+    brute = taus[np.argmin([rate(tau) for tau in taus])]
+    assert plan.intervals["p"] == pytest.approx(brute, rel=1e-3)
+    assert plan.cost_rate == pytest.approx(rate(brute), rel=1e-9)
+    assert plan.intervals["p"] == pytest.approx(
+        math.sqrt(2 * c_i / (lam * c_d)), rel=0.05
+    )
+
+
+def test_redundancy_lets_the_tests_be_rarer():
+    # PFDavg at most 1e-3: about lambda tau / 2 for one valve, (lambda tau)^2
+    # / 3 for two tested together.
+    target = 1.0 - 1e-3
+    one = one_valve().optimal_inspection_intervals(
+        allowed=CALENDAR, min_availability=target
+    )
+    two = two_valves().optimal_inspection_intervals(
+        allowed=CALENDAR, min_availability=target
+    )
+    assert one.intervals == {"v": 730.0}
+    assert two.intervals == {"v1": 17520.0, "v2": 17520.0}
+    assert one.availability >= target and two.availability >= target
+    assert 1.0 - two.availability == pytest.approx(
+        (2e-6 * 17520.0) ** 2 / 3, rel=0.03
+    )
+
+
+def test_every_combination_is_tried():
+    # Two valves with different costs: the method against enumeration.
+    rbd = RepairableRBD(
+        [("s", "v1"), ("s", "v2"), ("v1", "t"), ("v2", "t")],
+        {"v1": valve(cost=500.0), "v2": valve(cost=2000.0, rate=5e-6)},
+        downtime_cost_rate=5000.0,
+    )
+    target = 1.0 - 2e-4
+    plan = rbd.optimal_inspection_intervals(
+        allowed=CALENDAR, min_availability=target
+    )
+    best = (math.inf, None)
+    for a, b in itertools.product(CALENDAR, CALENDAR):
+        design = rbd._with_intervals(inspection={"v1": a, "v2": b})
+        if design.mean_availability() >= target:
+            best = min(best, (design.expected_cost_rate(), (a, b)))
+    assert (plan.intervals["v1"], plan.intervals["v2"]) == best[1]
+    assert plan.cost_rate == pytest.approx(best[0])
+
+
+def test_the_local_search_on_many_combinations(monkeypatch):
+    # Force the local search on a problem small enough to enumerate.
+    import repyability.rbd.repairable_rbd as module
+
+    rbd = two_valves()
+    exhaustive = rbd.optimal_inspection_intervals(
+        allowed=CALENDAR, min_availability=1.0 - 1e-4
+    )
+    monkeypatch.setattr(module, "_MAX_COMBINATIONS", 1)
+    local = rbd.optimal_inspection_intervals(
+        allowed=CALENDAR, min_availability=1.0 - 1e-4
+    )
+    # The valves are alike, so the intervals may come out swapped.
+    assert sorted(local.intervals.values()) == sorted(
+        exhaustive.intervals.values()
+    )
+    assert local.cost_rate == pytest.approx(exhaustive.cost_rate)
+    assert local.availability >= 1.0 - 1e-4
+
+
+def test_a_cost_cap_on_the_tests():
+    # Within 0.1 per hour of tests, the most available two-valve schedule.
+    plan = two_valves().optimal_inspection_intervals(
+        allowed=CALENDAR, max_cost_rate=0.1
+    )
+    assert plan.cost_rate <= 0.1
+    for a, b in itertools.product(CALENDAR, CALENDAR):
+        design = two_valves()._with_intervals(inspection={"v1": a, "v2": b})
+        if design.expected_cost_rate() <= 0.1:
+            assert design.mean_availability() <= plan.availability + 1e-15
+
+
+def test_what_the_inspection_choice_refuses():
+    with pytest.raises(ValueError, match="More than one component"):
+        two_valves().optimal_inspection_intervals()
+    with pytest.raises(ValueError, match="has no hidden failures"):
+        two_valves().optimal_inspection_intervals(
+            nodes=["s"], allowed=CALENDAR
+        )
+    with pytest.raises(ValueError, match="positive, finite"):
+        two_valves().optimal_inspection_intervals(allowed=[730.0, -1.0])
+    with pytest.raises(ValueError, match="no intervals for node 'v2'"):
+        two_valves().optimal_inspection_intervals(allowed={"v1": CALENDAR})
+    with pytest.raises(
+        ValueError, match="the most the allowed intervals give"
+    ):
+        one_valve().optimal_inspection_intervals(
+            allowed=CALENDAR, min_availability=1.0 - 1e-5
+        )
+    with pytest.raises(ValueError, match="No component has hidden failures"):
+        RepairableRBD(
+            [("s", "c"), ("c", "t")], {"c": pump()}
+        ).optimal_inspection_intervals()

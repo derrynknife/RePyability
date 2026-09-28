@@ -441,6 +441,48 @@ pump(283.0).expected_cost_rate()     # -> 14.08   near √(2 × 2000 / (1e-4 × 
 pump(1000.0).expected_cost_rate()    # -> 26.19   failures hidden too long
 ```
 
+`optimal_inspection_intervals` finds it, and with a target, the cheapest
+intervals that meet it. Tests are made on a calendar, and components tested
+at the same times are down together, so with several components the
+intervals are chosen from those allowed (`allowed`): every combination when
+there are at most 2000, a local search otherwise. With one inspected
+component, any interval can be chosen:
+
+```python
+pump(100.0).optimal_inspection_intervals().intervals["p"]   # -> 285.5   the formula gives 283
+```
+
+For a safety function, `min_availability=1 - PFDavg target` gives the
+cheapest tests that meet the target. With the valves above, each test costing
+500, and tests monthly, quarterly, half-yearly, yearly or every two years:
+
+```python
+def priced_valve():
+    return {
+        "reliability": surv.Exponential.from_params([2e-6]),
+        "repairability": "instant",
+        "inspection": {"interval": 8760.0, "cost": 500.0},
+    }
+
+calendar = [730.0, 2190.0, 4380.0, 8760.0, 17520.0]   # hours
+single = RepairableRBD([("s", "v"), ("v", "t")], {"v": priced_valve()})
+single.optimal_inspection_intervals(
+    allowed=calendar, min_availability=1 - 1e-3
+).intervals["v"]                                        # -> 730.0   monthly
+redundant = RepairableRBD(
+    [("s", "v1"), ("s", "v2"), ("v1", "t"), ("v2", "t")],
+    {"v1": priced_valve(), "v2": priced_valve()},
+)
+redundant.optimal_inspection_intervals(
+    allowed=calendar, min_availability=1 - 1e-3
+).intervals["v1"]                                       # -> 17520.0 every two years
+```
+
+Redundancy relaxes the tests: one valve needs them monthly to keep the
+PFDavg at most `10⁻³`, two in parallel every two years. The result is a
+[`MaintenancePlan`][repyability.MaintenancePlan], as for
+[age-replacement intervals](#choosing-the-intervals).
+
 ## The total cost of ownership
 
 The costs so far are running costs. Buying the system is a one-off cost:

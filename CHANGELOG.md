@@ -46,6 +46,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Choosing proof-test intervals**:
+  `RepairableRBD.optimal_inspection_intervals()` chooses the inspection
+  interval of components with hidden failures for the lowest cost rate, the
+  lowest that keeps the system availability to a target (for a safety
+  function, a PFDavg of at most `1 - min_availability`), or the highest
+  availability within a cost rate (#94). Components tested at the same times
+  are down together, so the intervals are chosen from a calendar
+  (`allowed`): every combination when there are at most 2000, a local search
+  otherwise. One inspected component's interval can be chosen freely. A
+  1oo2 pair of shutdown valves meets a PFDavg of `1e-3` with tests every two
+  years, where one valve needs them monthly.
 - **Choosing maintenance intervals for the system**:
   `RepairableRBD.optimal_replacement_intervals()` chooses the age-replacement
   interval of every component (or of those named) together, for the lowest

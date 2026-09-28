@@ -8,6 +8,7 @@ restoration criticality index ratios.
 """
 
 import heapq
+import itertools
 import math
 import pprint
 import warnings
@@ -613,6 +614,80 @@ def _choose_intervals(
                 best, best_value = np.asarray(x, dtype=float), value
     assert best is not None  # the start that meets the target is kept
     return {node: math.exp(xi) for node, xi in zip(nodes, point(best))}
+
+
+#: Allowed intervals are chosen by trying every combination, up to this many;
+#: by a local search beyond.
+_MAX_COMBINATIONS = 2000
+
+
+def _choose_from(
+    nodes: list,
+    options: dict,
+    evaluate,
+    min_availability: Optional[float],
+    max_cost_rate: Optional[float],
+) -> dict:
+    """The intervals, each from its node's ``options``, that minimise the
+    cost rate, or with a cost cap the unavailability, subject to the target:
+    every combination when there are at most 2000, a local search (one
+    interval changed at a time, from several starts) otherwise. A
+    ValueError if none meets the target, giving the best any does."""
+
+    def merit(intervals: dict) -> Tuple[float, float]:
+        """(How far from the target, the objective): lower is better."""
+        cost, availability = evaluate(intervals)
+        if min_availability is not None:
+            short = max(0.0, min_availability - availability)
+        elif max_cost_rate is not None:
+            short = max(0.0, cost - max_cost_rate)
+        else:
+            short = 0.0
+        return short, _objective(cost, availability, max_cost_rate)
+
+    count = math.prod(len(options[node]) for node in nodes)
+    if count <= _MAX_COMBINATIONS:
+        candidates = (
+            dict(zip(nodes, combination))
+            for combination in itertools.product(
+                *(options[node] for node in nodes)
+            )
+        )
+        best = min(candidates, key=merit)
+    else:
+        starts = [
+            {node: options[node][0] for node in nodes},
+            {node: options[node][-1] for node in nodes},
+            {node: options[node][len(options[node]) // 2] for node in nodes},
+        ]
+        best = None
+        for current in starts:
+            value = merit(current)
+            improved = True
+            while improved:
+                improved = False
+                for node in nodes:
+                    for option in options[node]:
+                        candidate = {**current, node: option}
+                        candidate_value = merit(candidate)
+                        if candidate_value < value:
+                            current, value = candidate, candidate_value
+                            improved = True
+            if best is None or value < merit(best):
+                best = current
+    assert best is not None
+    cost, availability = evaluate(best)
+    if not _meets(cost, availability, min_availability, max_cost_rate):
+        if min_availability is not None:
+            raise ValueError(
+                f"min_availability {min_availability} cannot be met: the "
+                f"most the allowed intervals give is {availability:.6g}."
+            )
+        raise ValueError(
+            f"max_cost_rate {max_cost_rate} cannot be met: the least the "
+            f"allowed intervals cost is {cost:.6g} per unit time."
+        )
+    return best
 
 
 def _common_period(intervals: Iterable[float]) -> float:
@@ -2431,7 +2506,7 @@ class RepairableRBD(RBD):
         # An interval at the top of its range may be better never used.
         for i, node in enumerate(chosen):
             if best[node] >= 0.99 * math.exp(high[i]):
-                never = dict(best, **{node: math.inf})
+                never = {**best, node: math.inf}
                 cost, availability = evaluate(never)
                 if _meets(
                     cost, availability, min_availability, max_cost_rate
@@ -2445,6 +2520,222 @@ class RepairableRBD(RBD):
         return MaintenancePlan(
             {node: float(best[node]) for node in chosen}, cost, availability
         )
+
+    def optimal_inspection_intervals(
+        self,
+        nodes: Optional[Collection[Hashable]] = None,
+        *,
+        allowed=None,
+        min_availability: Optional[float] = None,
+        max_cost_rate: Optional[float] = None,
+    ) -> MaintenancePlan:
+        """Choose the proof-test intervals of components with hidden
+        failures, for the system as a whole.
+
+        Testing a component with hidden failures more often costs more
+        tests, and testing it less often leaves its failures hidden for
+        longer (see ``node_availability``). This chooses the inspection
+        interval of each component in ``nodes`` for:
+
+        - the lowest long-run cost rate (``expected_cost_rate``: tests,
+          repairs and downtime), by default;
+        - the lowest cost rate that keeps the system's long-run availability
+          at least ``min_availability``: for a safety function, whose
+          unavailability is its average probability of failure on demand,
+          a PFDavg of at most ``1 - min_availability``;
+        - or the highest availability within a cost rate of
+          ``max_cost_rate``.
+
+        Tests are usually made on a calendar (monthly, quarterly, yearly),
+        and components tested at the same times are down together, so the
+        long-run values depend on how the schedules line up. So the
+        intervals are chosen from ``allowed``: every combination is tried
+        when there are at most 2000 of them, which gives the optimum, and a
+        local search (changing one interval at a time, from several
+        starting points) is made otherwise. With ``allowed`` left out, the
+        RBD must have one component with hidden failures, whose interval
+        is then searched continuously, as by
+        ``optimal_replacement_intervals``.
+
+        The exact long-run values need a constant failure rate, instant
+        tests and instant repair (see ``node_availability``).
+
+        Parameters
+        ----------
+        nodes : Collection[Hashable], optional
+            The components whose intervals to choose, each with hidden
+            failures (an ``"inspection"`` schedule). By default every
+            component with one. The others keep their intervals.
+        allowed : sequence of float or dict, optional
+            The intervals to choose from: one sequence for every node, or a
+            dict of a sequence per node. Left out, the one component with
+            hidden failures has its interval chosen from all.
+        min_availability : float, optional
+            The least long-run system availability allowed, in (0, 1).
+        max_cost_rate : float, optional
+            The highest long-run cost rate allowed: the intervals then give
+            the highest availability within it.
+
+        Returns
+        -------
+        MaintenancePlan
+            The interval of each component in ``nodes``, and the system's
+            cost rate and availability (1 - PFDavg) with them.
+
+        Raises
+        ------
+        ValueError
+            If a node has no hidden failures; if ``allowed`` is left out
+            with more than one component with hidden failures, or holds
+            something other than positive, finite intervals; if nothing is
+            priced; if both targets are given, or one is out of range; or if
+            no intervals meet the target (the message gives the best they
+            can do).
+        NotImplementedError
+            If a component's hidden failures have no exact long-run values
+            (see ``node_availability``), or the intervals repeat together
+            only after too many tests to average over.
+
+        Examples
+        --------
+        A shutdown valve whose dangerous failures are hidden, at ``2e-6``
+        per hour, each proof test costing 500: the cheapest monthly,
+        quarterly, half-yearly, yearly or two-yearly tests (in hours) that
+        keep the PFDavg at most ``1e-3``, for one valve and for two in
+        parallel (1oo2):
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> def valve():
+        ...     return {
+        ...         "reliability": surv.Exponential.from_params([2e-6]),
+        ...         "repairability": "instant",
+        ...         "inspection": {"interval": 8760.0, "cost": 500.0},
+        ...     }
+        >>> calendar = [730.0, 2190.0, 4380.0, 8760.0, 17520.0]
+        >>> one = RepairableRBD([("s", "v"), ("v", "t")], {"v": valve()})
+        >>> one.optimal_inspection_intervals(
+        ...     allowed=calendar, min_availability=1 - 1e-3
+        ... ).intervals
+        {'v': 730.0}
+        >>> pair = RepairableRBD(
+        ...     [("s", "v1"), ("s", "v2"), ("v1", "t"), ("v2", "t")],
+        ...     {"v1": valve(), "v2": valve()},
+        ... )
+        >>> plan = pair.optimal_inspection_intervals(
+        ...     allowed=calendar, min_availability=1 - 1e-3
+        ... )
+        >>> plan.intervals
+        {'v1': 17520.0, 'v2': 17520.0}
+        >>> round(1 - plan.availability, 6)
+        0.000399
+
+        The redundant pair meets the target with tests every two years; the
+        single valve needs them monthly.
+        """
+        chosen = self._inspected(nodes)
+        min_availability, max_cost_rate = self._interval_targets(
+            min_availability, max_cost_rate
+        )
+        rates = {node: self._inspected_rate(node)[0] for node in chosen}
+
+        def evaluate(intervals: dict) -> Tuple[float, float]:
+            plan = self._with_intervals(inspection=intervals)
+            return plan.expected_cost_rate(), plan.mean_availability()
+
+        if allowed is None:
+            if len(self._inspection) > 1:
+                raise ValueError(
+                    "More than one component has hidden failures: give the "
+                    "intervals to choose from in allowed (tests are made on "
+                    "a calendar, and the long-run values depend on how the "
+                    "schedules line up)."
+                )
+            (node,) = chosen
+            rate = rates[node]
+            low = np.array([math.log(1e-4 / rate)])
+            high = np.array([math.log(10.0 / rate)])
+            current = math.log(self._inspection[node].interval)
+            starts = [
+                np.clip([current], low, high),
+                np.array([math.log(0.01 / rate)]),
+                np.array([math.log(0.1 / rate)]),
+                np.array([math.log(1.0 / rate)]),
+            ]
+            best = _choose_intervals(
+                chosen,
+                evaluate,
+                starts,
+                (low, high),
+                min_availability,
+                max_cost_rate,
+            )
+        else:
+            best = _choose_from(
+                chosen,
+                self._allowed_intervals(allowed, chosen),
+                evaluate,
+                min_availability,
+                max_cost_rate,
+            )
+        cost, availability = evaluate(best)
+        return MaintenancePlan(
+            {node: float(best[node]) for node in chosen}, cost, availability
+        )
+
+    def _inspected(self, nodes) -> list:
+        """The components with hidden failures named by ``nodes`` (all of
+        them by default), checked."""
+        if nodes is None:
+            if not self._inspection:
+                raise ValueError(
+                    "No component has hidden failures: give the components "
+                    "an 'inspection' schedule to have its interval chosen."
+                )
+            return list(self._inspection)
+        chosen = list(nodes)
+        if not chosen:
+            raise ValueError("nodes is empty.")
+        for node in chosen:
+            if node not in self._inspection:
+                raise ValueError(
+                    f"Node {node!r} has no hidden failures: give it an "
+                    "'inspection' schedule to have its interval chosen."
+                )
+        return chosen
+
+    @staticmethod
+    def _allowed_intervals(allowed, chosen: list) -> dict:
+        """``allowed`` as a sorted tuple of intervals per chosen node."""
+        per_node = (
+            allowed
+            if isinstance(allowed, dict)
+            else {node: allowed for node in chosen}
+        )
+        options = {}
+        for node in chosen:
+            if node not in per_node:
+                raise ValueError(
+                    f"allowed gives no intervals for node {node!r}."
+                )
+            values = []
+            for value in per_node[node]:
+                try:
+                    interval = float(value)
+                except (TypeError, ValueError):
+                    interval = float("nan")
+                if not 0.0 < interval < math.inf:
+                    raise ValueError(
+                        "allowed intervals must be positive, finite "
+                        f"numbers, got {value!r} for node {node!r}."
+                    )
+                values.append(interval)
+            if not values:
+                raise ValueError(
+                    f"allowed gives no intervals for node {node!r}."
+                )
+            options[node] = tuple(sorted(set(values)))
+        return options
 
     def _maintained(self, nodes) -> list:
         """The components under age replacement named by ``nodes`` (all of
