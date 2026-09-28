@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Works with surpyval's next release** (#106). surpyval's development
+  branch makes `mean()` infinite when some units never fail (`p < 1`),
+  refuses infinite observations, and fixes a Cox model's survival before its
+  first event. RePyability relied on the old behaviour in three places,
+  which now work on surpyval 0.20 and on its next release alike:
+  - a cold standby (and a `RepeatedStandbyNode`) of units that may never fail
+    gave `nan`: its grid is now sized by the mean lifetime of the units
+    that fail;
+  - a warm standby, or a simulated k-out-of-n standby, of such units raised
+    `ValueError`: the arrangements that never fail are now right-censored in
+    the Kaplan-Meier fit;
+  - a `RegressionNode`'s `mean()` and `random()` on a Cox model returned a
+    number instead of raising as documented: a semiparametric model is now
+    recognised by its type, not by the shape of its curve.
+- `NonRepairable.find_optimal_replacement()` returns `inf` at once for a
+  model some of whose units never fail, instead of reaching it by a search
+  that started from `log(mean())`.
+- A `RegressionNode` with a proportional-odds model and a covariate
+  `schedule` follows surpyval: refused where surpyval cannot evaluate it
+  (0.20), and surpyval's survival along the path where it can.
+
+### Changed
+
+- The simulated numbers of imperfect repair in the maintenance guide and the
+  `Repairable` examples are quoted as approximate: surpyval's next release
+  simulates recurrent events differently, so the same seed gives slightly
+  different estimates.
+
+### Added
+
+- An `upstream` workflow runs the tests against surpyval's development
+  branch on pull requests, on pushes to dev and master, and daily, so a
+  surpyval change that breaks RePyability shows before surpyval releases it.
+
 ## [0.9.0] - 2026-09-28
 
 The **Design and Maintenance** milestone. Choose redundancy and component

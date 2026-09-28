@@ -200,8 +200,10 @@ ramped.sf_given_state(1000, {"m": NodeState(age=2500)})   # -> 0.7036
   at construction and raises `ValueError` if it cannot evaluate it (for
   example, a covariate vector of the wrong width).
 - Schedules work for accelerated-failure-time and proportional- or
-  additive-hazards models, not proportional-odds, and need a surpyval that
-  provides `sf_tvc`.
+  additive-hazards models, and need a surpyval that provides `sf_tvc`.
+  Proportional odds works only where surpyval defines its survival along a
+  path: surpyval 0.20 refuses it, and later versions switch to the new
+  covariate's hazard at each step.
 - `mean()` and `random()` (used for MTTF) need a proper parametric lifetime:
   they work for AFT, proportional-odds and parametric models; a
   semi-parametric Cox model has no defined mean and says so.

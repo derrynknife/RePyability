@@ -1,0 +1,44 @@
+name: upstream
+
+# Runs the tests against surpyval's development branch. RePyability requires
+# surpyval with no upper bound, so a surpyval release reaches every fresh
+# install at once; a surpyval change that breaks RePyability should show here
+# first, before surpyval releases it.
+#
+# Kept apart from actions.yml, whose result the release workflow checks: a
+# failure here is a warning about surpyval's next release, not about the
+# commit under test.
+
+on:
+  pull_request:
+  push:
+    branches: [dev, master]
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (surpyval develop)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set-up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install the package, then surpyval from its develop branch
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+          pip uninstall -y surpyval
+          pip install "surpyval @ git+https://github.com/derrynknife/SurPyval.git@develop"
+          python -c "import surpyval; print('surpyval', surpyval.__version__, surpyval.__file__)"
+
+      - name: pytest
+        run: python -m pytest -q

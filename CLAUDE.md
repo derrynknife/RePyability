@@ -19,6 +19,12 @@
   RePyability workaround small and list it below with its issue, so it can go
   once RePyability's minimum surpyval version (`pyproject.toml`) has the fix.
 
+- **surpyval releases reach RePyability users at once.** surpyval is
+  required with no upper bound, so its next release is what a fresh install
+  gets. `.github/workflows/upstream.yml` runs the tests against surpyval's
+  `develop`; when it fails, fix RePyability (working with both the released
+  surpyval and `develop`) and release that before surpyval releases.
+
 ## Releasing
 
 Releases are cut from master by `.github/workflows/release.yml`, which this

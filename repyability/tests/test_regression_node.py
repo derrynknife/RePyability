@@ -249,13 +249,22 @@ def test_schedule_more_load_lowers_reliability(models):
 
 
 @needs_tvc
-def test_po_schedule_rejected(models):
-    # Proportional odds does not compose along a time-varying covariate.
-    with pytest.raises(ValueError, match="proportional-odds|sf_tvc"):
-        RegressionNode(
-            models["po"],
-            schedule=StepSchedule.from_changepoints([0, 50], [[0.0], [0.8]]),
-        )
+def test_po_schedule_follows_surpyval(models):
+    # Whether proportional odds has a survival along a covariate path is
+    # surpyval's to define. Where it does not (0.20), the node refuses the
+    # schedule clearly; where it does, the node gives exactly that survival.
+    schedule = StepSchedule.from_changepoints([0, 50], [[0.0], [0.8]])
+    x = np.array([1.0, 30.0, 90.0])
+    try:
+        expected = np.asarray(models["po"].sf_tvc(x, schedule), dtype=float)
+    except Exception:
+        expected = None
+    if expected is None or not np.all(np.isfinite(expected)):
+        with pytest.raises(ValueError, match="proportional-odds|sf_tvc"):
+            RegressionNode(models["po"], schedule=schedule)
+        return
+    node = RegressionNode(models["po"], schedule=schedule)
+    np.testing.assert_allclose(node.sf(x), expected)
 
 
 @needs_tvc

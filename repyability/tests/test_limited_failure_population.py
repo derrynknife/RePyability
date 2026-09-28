@@ -14,6 +14,7 @@ that ends up, or down, for good.
 """
 
 import math
+import warnings
 
 import numpy as np
 import pytest
@@ -214,8 +215,16 @@ def test_the_convolution_keeps_the_dead_on_arrival_apart():
         _density_on_grid(unit, t), 0.8 * 0.1 * np.exp(-0.1 * t), rtol=1e-12
     )
     assert float(unit.df(0.0)) == pytest.approx(0.2)
-    # Nothing left but units dead on arrival or never failing.
-    assert not _density_on_grid(E([0.1], p=0.5, f0=0.5), t).any()
+
+
+def test_nothing_left_but_units_dead_on_arrival_or_never_failing():
+    # Every unit that fails is dead on arrival (f0 == p). surpyval 0.20
+    # builds such a model; later versions refuse it.
+    try:
+        unit = E([0.1], p=0.5, f0=0.5)
+    except ValueError:
+        pytest.skip("this surpyval refuses f0 == p")
+    assert not _density_on_grid(unit, np.array([0.0, 1.0])).any()
 
 
 def test_cold_standby_with_imperfect_switching():
@@ -416,3 +425,60 @@ def test_sensitivity_keeps_the_extras():
     beta = (sf(100, 2 + h * 0.02) - sf(100, 2 - h * 0.02)) / (2 * h * 0.02)
     assert sens["c"]["alpha"] == pytest.approx(alpha, rel=1e-5)
     assert sens["c"]["beta"] == pytest.approx(beta, rel=1e-5)
+
+
+# -- surpyval's next release: mean() is infinite when p < 1 (surpyval#404) --
+#
+# surpyval 0.20's mean() of a model with p < 1 is the defective mean; later
+# versions return inf. Nothing here may take a time scale from it: these
+# tests give the model an infinite mean() whatever surpyval is installed.
+
+
+def _infinite_mean(model, monkeypatch):
+    monkeypatch.setattr(model, "mean", lambda *a, **k: np.inf)
+    return model
+
+
+def test_failure_time_scale():
+    from repyability.rbd._model_utils import failure_time_scale
+
+    assert failure_time_scale(W([100, 2])) == pytest.approx(88.6227, rel=1e-5)
+    # Some units never fail: the mean of those that fail, with the offset.
+    lfp = W([100, 2], p=0.8, f0=0.1, gamma=5.0)
+    assert failure_time_scale(lfp) == pytest.approx(93.6227, rel=1e-5)
+    assert math.isnan(failure_time_scale(StandbyModel([lfp, lfp])))
+
+
+def test_cold_standby_when_the_mean_is_infinite(monkeypatch):
+    rate, p = 0.1, 0.8
+    unit = _infinite_mean(E([rate], p=p), monkeypatch)
+    pair = StandbyModel([unit, unit])
+    # The pair fails only if both units do: sf = 1 - p^2 * Erlang(2) ff.
+    for t in (5.0, 20.0, 60.0):
+        expected = 1 - p**2 * erlang2_ff(rate, t)
+        assert float(np.ravel(pair.sf(t))[0]) == pytest.approx(
+            expected, abs=2e-4
+        )
+
+
+def test_simulated_standby_never_failing_units_are_censored():
+    from repyability.rbd.standby_node import _kaplan_meier
+
+    km = _kaplan_meier(np.array([1.0, 2.0, 3.0, 4.0, np.inf, np.inf]), 0.0)
+    np.testing.assert_allclose(
+        km.sf(np.array([0.5, 2.5, 4.0, 5.0, 1e9])),
+        [1.0, 4 / 6, 2 / 6, 2 / 6, 2 / 6],
+    )
+    # None fails at all.
+    km = _kaplan_meier(np.array([np.inf, np.inf]), 0.0)
+    np.testing.assert_allclose(km.sf(np.array([0.5, 1e9])), [1.0, 1.0])
+
+
+def test_no_replacement_pays_when_units_may_never_fail(monkeypatch):
+    # In the long run a unit that never fails is kept for good, so running
+    # to failure costs nothing per unit time, whatever the wear-out.
+    unit = NonRepairable(_infinite_mean(W([1000, 2.5], p=0.9), monkeypatch))
+    unit.set_costs_planned_and_unplanned(cp=1, cu=5)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert unit.find_optimal_replacement() == np.inf

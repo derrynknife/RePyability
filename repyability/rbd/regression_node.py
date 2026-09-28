@@ -10,12 +10,13 @@ exposes its survival as an ordinary univariate node. The covariates can be:
 * a **time-varying schedule** ``Z(t)`` (a surpyval ``StepSchedule``: the load
   the component runs under changes over its life) -- reliability is
   ``R(x) = model.sf_tvc(x, schedule)``, the exact survival along that
-  covariate path (accelerated-failure-time / proportional- / additive-hazards;
-  not proportional-odds). This is the load-dependent-aging / digital-twin node
-  of issue #37: as-new survival integrates the whole load path, and
-  conditioning on ``age`` gives the go-forward reliability from the component's
-  current life, since ``R(x | age) = sf_tvc(age + x) / sf_tvc(age)`` is exactly
-  surpyval's ``sf_tvc(..., given=age)``.
+  covariate path (accelerated-failure-time / proportional- / additive-hazards,
+  and proportional odds where surpyval defines it). This is the
+  load-dependent-aging / digital-twin node of issue #37: as-new survival
+  integrates the whole load path, and conditioning on ``age`` gives the
+  go-forward reliability from the component's current life, since
+  ``R(x | age) = sf_tvc(age + x) / sf_tvc(age)`` is exactly surpyval's
+  ``sf_tvc(..., given=age)``.
 
 Either way it is an ordinary univariate node -- it takes part in system
 reliability, importance, MTTF and the condition-based (``age``) layer with no
@@ -31,6 +32,21 @@ from numpy.typing import ArrayLike
 from ._sampling import RowSampler
 
 
+def _is_semiparametric(model) -> bool:
+    """Whether ``model`` is a surpyval semiparametric regression model (a
+    Cox model): its baseline is an estimate on the observed range only,
+    with no tail beyond it. (Recognised by its type, not by its survival
+    curve: surpyval 0.20 happened to give such a baseline's last value
+    before its first event, which later versions fix.)"""
+    try:
+        from surpyval.univariate.regression import (
+            semi_parametric_regression_model as semiparametric,
+        )
+    except ImportError:  # pragma: no cover
+        return False
+    return isinstance(model, semiparametric.SemiParametricRegressionModel)
+
+
 class RegressionNode:
     """An RBD node backed by a fitted surpyval regression model.
 
@@ -43,7 +59,7 @@ class RegressionNode:
     - ``schedule``, a time-varying covariate path ``Z(t)``: the reliability
       is ``R(x) = model.sf_tvc(x, schedule)``, the survival along that
       path (accelerated-failure-time and proportional- or additive-hazards
-      models; not proportional odds).
+      models, and proportional odds where surpyval defines it).
 
     ``sf`` and ``ff`` evaluate that curve directly, so the node takes part
     in system reliability, importance measures and the condition-based
@@ -59,7 +75,7 @@ class RegressionNode:
         A fitted regression model, e.g. ``surpyval.WeibullAFT.fit(...)`` or
         ``surpyval.CoxPH.fit(...)``. Fixed covariates use its ``sf(x, Z)``; a
         schedule uses its ``sf_tvc(x, schedule)`` (needs a surpyval that
-        provides it, and a family other than proportional-odds).
+        provides it for the model's family).
     covariates : array_like, optional
         The component's fixed covariate vector ``Z`` (its operating
         conditions), matching the covariates the model was fitted with.
@@ -74,8 +90,9 @@ class RegressionNode:
         If not exactly one of ``covariates`` and ``schedule`` is given, or
         if a trial evaluation of the survival at ``x = 1`` fails or is not
         finite: e.g. ``model`` is not a fitted regression model,
-        ``covariates`` has the wrong width, or in schedule mode the model
-        has no ``sf_tvc`` or is proportional odds.
+        ``covariates`` has the wrong width, or in schedule mode the model's
+        ``sf_tvc`` cannot evaluate it (e.g. proportional odds on surpyval
+        0.20).
 
     Examples
     --------
@@ -127,8 +144,8 @@ class RegressionNode:
         )
         self.schedule = schedule
         # Probe the survival interface so a misuse fails clearly at
-        # construction (wrong covariate width, an sf_tvc-less surpyval, or a
-        # proportional-odds model in schedule mode).
+        # construction (wrong covariate width, or a surpyval whose sf_tvc
+        # cannot evaluate the model's family in schedule mode).
         try:
             probe = self._sf_at(np.array([1.0]))
             if not np.all(np.isfinite(probe)):
@@ -139,9 +156,9 @@ class RegressionNode:
                 "In fixed-covariate mode its sf(x, Z) must accept a covariate "
                 "matrix of the fitted width; in schedule mode the model must "
                 "support sf_tvc(x, schedule) (accelerated-failure-time / "
-                "proportional- or additive-hazards on a recent surpyval, not "
-                f"proportional-odds). Probing survival failed: "
-                f"{type(e).__name__}: {e}."
+                "proportional- or additive-hazards on a recent surpyval; "
+                "proportional-odds only where surpyval defines it). Probing "
+                f"survival failed: {type(e).__name__}: {e}."
             ) from e
         # Cached (t, sf(t)) grid for mean()/random() (built lazily).
         self._grid: Any = None
@@ -207,7 +224,9 @@ class RegressionNode:
         reported as a clear error rather than a wrong number.
         """
         if self._grid is None:
-            if float(self._sf_at(np.array([1e-9]))[0]) <= 0.99:
+            if _is_semiparametric(self.model) or (
+                float(self._sf_at(np.array([1e-9]))[0]) <= 0.99
+            ):
                 raise ValueError(
                     "mean()/random() need a proper parametric survival curve "
                     "(sf(0+) ~ 1, decaying to 0), but this model's survival "
@@ -246,9 +265,10 @@ class RegressionNode:
         Raises
         ------
         ValueError
-            If the survival curve is improper (``R(1e-9) <= 0.99``, as with
-            a semiparametric Cox baseline) or does not fall to 1e-4 by
-            ``t = 1e15``.
+            If the model is semiparametric (a Cox model: its baseline is
+            defined on the observed range only), if the survival curve is
+            improper (``R(1e-9) <= 0.99``) or if it does not fall to 1e-4
+            by ``t = 1e15``.
         """
         t, s = self._survival_grid()
         return float(np.trapezoid(s, t))

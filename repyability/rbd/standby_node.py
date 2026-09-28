@@ -21,6 +21,22 @@ from .numerical_convolution import (
 )
 
 
+def _kaplan_meier(lifetimes, lower):
+    """The Kaplan-Meier fit of simulated lifetimes. An infinite lifetime (an
+    arrangement that never fails, of units that may never fail) is
+    right-censored at the largest finite one, so ``sf`` stays at the
+    fraction that never fails beyond it. (surpyval takes no infinite exact
+    observations.)"""
+    x = np.asarray(lifetimes, dtype=float)
+    never = ~np.isfinite(x)
+    if not never.any():
+        return KaplanMeier.fit(x, set_lower_limit=lower)
+    last = float(x[~never].max()) if (~never).any() else 1.0
+    return KaplanMeier.fit(
+        np.where(never, last, x), c=never.astype(int), set_lower_limit=lower
+    )
+
+
 def _identical_exponential_rate(models):
     """If every model is an Exponential with the same rate, return that rate;
     otherwise return None. The rate is taken as 1 / mean."""
@@ -263,7 +279,7 @@ class StandbyModel:
                 self.model = None
             else:
                 x_random = self.random(n_sims, seed=seed)
-                self.model = KaplanMeier.fit(x_random, set_lower_limit=lower)
+                self.model = _kaplan_meier(x_random, lower)
                 self._sf_model = None
         elif rate is not None and is_perfect_switching(switching_probability):
             # Identical exponential units: the cold standby lifetime is exactly
@@ -292,7 +308,7 @@ class StandbyModel:
                     " standby; for k>=2 leave it at 1.0 (perfect switching)."
                 )
             x_random = self.random(n_sims, seed=seed)
-            self.model = KaplanMeier.fit(x_random, set_lower_limit=lower)
+            self.model = _kaplan_meier(x_random, lower)
             self._sf_model = None
 
     def _random_warm(self, size):

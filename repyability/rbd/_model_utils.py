@@ -96,6 +96,31 @@ def model_mean(model) -> float:
         raise
 
 
+def failure_time_scale(model) -> float:
+    """A typical failure time of ``model``, to size grids and searches by.
+
+    Its mean lifetime; or, when some of its units never fail (so that mean
+    is infinite), the mean lifetime of the units that do fail: the same
+    distribution with its offset but without ``p`` and ``f0``. NaN when
+    neither is finite. (surpyval's ``mean()`` of a limited-failure-population
+    model was the defective mean before surpyval#404 and is infinite since,
+    so it is not used for that.)
+    """
+    mean = model_mean(model)
+    if np.isfinite(mean):
+        return mean
+    if never_fails(model) > 0.0:
+        import surpyval
+
+        offset = {k: v for k, v in model_extras(model).items() if k == "gamma"}
+        cls = getattr(surpyval, str(distribution_name(model)))
+        failing = cls.from_params(list(np.ravel(model.params)), **offset)
+        mean = float(np.atleast_1d(failing.mean())[0])
+        if np.isfinite(mean):
+            return mean
+    return float("nan")
+
+
 def parametric_spec(model):
     """Return ``(surpyval_class, params, param_names, extras)`` for a
     parametric node model, or ``None`` when it has no reconstructable

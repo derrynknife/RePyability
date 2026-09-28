@@ -4,8 +4,10 @@ Every ```python block of each page in ``docs/`` (and the README) is run in
 order, in one namespace per page, as a reader pasting them would. A statement
 whose last line ends in a comment of the form ``# -> <number>`` is evaluated,
 and its value must equal the quoted number to the precision it is quoted at
-(``0.9091`` to four decimals, ``2884.2`` to one). Blocks indented inside lists
-run too. Tracebacks point at the page and line of the failing example.
+(``0.9091`` to four decimals, ``2884.2`` to one). ``# ~> <number>`` quotes a
+simulated value that varies with the simulator (surpyval's, for imperfect
+repair), and must hold to within 10%. Blocks indented inside lists run too.
+Tracebacks point at the page and line of the failing example.
 """
 
 import ast
@@ -19,7 +21,10 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 PAGES = sorted((ROOT / "docs").rglob("*.md")) + [ROOT / "README.md"]
 BLOCK = re.compile(r"```python\n(.*?)```", re.S)
-QUOTED = re.compile(r"#\s*->\s*(-?\d+(?:\.\d+)?(?:[eE]-?\d+)?)")
+QUOTED = re.compile(r"#\s*(->|~>)\s*(-?\d+(?:\.\d+)?(?:[eE]-?\d+)?)")
+
+#: The relative tolerance of a ``~>`` (about) quote.
+ABOUT = 0.10
 
 
 def tolerance(token: str) -> float:
@@ -33,7 +38,7 @@ def tolerance(token: str) -> float:
 def examples(text: str):
     """Each top-level statement of each python block, in page order: its
     first line in the page, its AST node (line numbers set to the page's),
-    and the number its last line quotes, if any."""
+    and the number its last line quotes, if any, with its tolerance."""
     for block in BLOCK.finditer(text):
         code = textwrap.dedent(block.group(1))
         offset = text.count("\n", 0, block.start()) + 1
@@ -41,7 +46,14 @@ def examples(text: str):
         for node in ast.parse(code).body:
             quoted = QUOTED.search(lines[node.end_lineno - 1])
             ast.increment_lineno(node, offset)
-            yield node.lineno, node, quoted.group(1) if quoted else None
+            if quoted is None:
+                yield node.lineno, node, None, None
+                continue
+            arrow, number = quoted.groups()
+            allowed = tolerance(number)
+            if arrow == "~>":
+                allowed = max(allowed, ABOUT * abs(float(number)))
+            yield node.lineno, node, number, allowed
 
 
 @pytest.mark.parametrize("page", PAGES, ids=lambda p: str(p.relative_to(ROOT)))
@@ -50,7 +62,7 @@ def test_examples_run_and_quoted_numbers_hold(page):
         pytest.skip("the documentation sources are not available")
     filename = str(page)
     namespace: dict = {"__name__": "__docs__"}
-    for line, node, quoted in examples(page.read_text()):
+    for line, node, quoted, allowed in examples(page.read_text()):
         if quoted is None or not isinstance(node, ast.Expr):
             module = ast.Module(body=[node], type_ignores=[])
             exec(compile(module, filename, "exec"), namespace)
@@ -58,7 +70,7 @@ def test_examples_run_and_quoted_numbers_hold(page):
         expression = ast.Expression(node.value)
         value = eval(compile(expression, filename, "eval"), namespace)
         got = float(np.asarray(value, dtype=float).reshape(-1)[0])
-        assert abs(got - float(quoted)) <= tolerance(quoted), (
+        assert abs(got - float(quoted)) <= allowed, (
             f"{page.relative_to(ROOT)}:{line} gives {got!r}, but the page "
             f"quotes {quoted}"
         )
@@ -72,7 +84,7 @@ def test_every_page_is_covered():
     quoted = sum(
         1
         for page in PAGES
-        for _, _, number in examples(page.read_text())
+        for _, _, number, _ in examples(page.read_text())
         if number is not None
     )
     assert quoted > 100
