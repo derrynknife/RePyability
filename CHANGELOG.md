@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-28
+
+The **Design and Maintenance** milestone. Choose redundancy and component
+reliability for the most reliability under several resources, or the least
+cost (`allocate_redundancy`, `redundancy_front`, reliability-redundancy
+allocation), and a repairable system's redundancy for the lowest total cost
+of ownership. Price and simulate scheduled preventive maintenance and the
+proof tests that find hidden failures. Analyse fault trees, carry the
+uncertainty in fitted component models to the system reliability, and
+simulate to a tolerance, in antithetic pairs, in parallel, or two designs
+with common random numbers. The exact engine reduces series-parallel parts
+of a diagram to closed-form modules, so large diagrams stay fast, and the
+documentation is rewritten, tested, and joined by a nine-lesson Learn
+course.
+
+Behaviour changes: `criticality_importance` defaults to the failure-oriented
+form (`kind="success"` gives the old values); `simple_allocation` finds the
+smallest change in the node log-odds; a repeated node no longer changes a
+diagram's logic, which changes results wherever joining its appearances
+added paths; and limited-failure-population and zero-inflated models are
+handled throughout (see Fixed).
+
 ### Added
 - **Monte-Carlo precision and speed (closes #35).** The simulations of both
   kinds of RBD can now run to a tolerance, reduce their variance and run in
