@@ -44,14 +44,65 @@ plugins:
 
 markdown_extensions:
   - admonition
+  - attr_list
+  - md_in_html
   - toc:
       permalink: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.details
   - pymdownx.highlight
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+
+# Formulas are typeset by MathJax (docs/javascripts/mathjax.js); diagrams
+# (```mermaid blocks) by the Mermaid the theme loads.
+extra_javascript:
+  - javascripts/mathjax.js
+  - https://unpkg.com/mathjax@3/es5/tex-mml-chtml.js
+
+# Broken links and anchors fail the (strict) build.
+validation:
+  omitted_files: warn
+  absolute_links: warn
+  unrecognized_links: warn
+  anchors: warn
 
 nav:
   - Home: index.md
+  - Learn:
+      - Start here: learn/index.md
+      - 1. Lifetimes: learn/lifetimes.md
+      - 2. Systems of components: learn/systems.md
+      - 3. Paths, cuts and the exact engine: learn/structure.md
+      - 4. Which component matters?: learn/importance.md
+      - 5. When redundancy disappoints: learn/dependence.md
+      - 6. Repair and availability: learn/availability.md
+      - 7. What it costs: learn/costs.md
+      - 8. Maintaining on purpose: learn/maintenance.md
+      - 9. Designing for reliability: learn/design.md
+      - Glossary: learn/glossary.md
   - Tutorial: tutorial.md
-  - User guide: guide.md
+  - User guide:
+      - Overview: guide/index.md
+      - Building an RBD: guide/building.md
+      - Fault trees: guide/fault-trees.md
+      - Reliability of a system: guide/reliability.md
+      - Importance measures: guide/importance.md
+      - Condition-based evaluation: guide/condition-based.md
+      - Redundancy models: guide/redundancy-models.md
+      - Common-cause failures: guide/common-cause.md
+      - Repairable systems: guide/repairable.md
+      - Costs: guide/costs.md
+      - Design and allocation: guide/design.md
+      - Maintenance policies: guide/maintenance.md
+      - Simulation precision and speed: guide/simulation.md
+      - Saving, reproducibility and performance: guide/saving.md
   - Concepts: concepts.md
   - API reference: api.md

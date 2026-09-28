@@ -28,7 +28,7 @@ import numpy as np
 
 from repyability._version import __version__
 from repyability.non_repairable import NonRepairable
-from repyability.rbd._model_utils import distribution_name
+from repyability.rbd._model_utils import distribution_name, model_extras
 from repyability.rbd.helper_classes import (
     PerfectReliability,
     PerfectUnreliability,
@@ -42,7 +42,8 @@ from repyability.rbd.standby_node import StandbyModel
 
 
 def _params_list(model) -> list:
-    return [float(p) for p in np.atleast_1d(model.params)]
+    # Flat: a deserialised ExactEventTime holds its parameter as [[T]].
+    return [float(p) for p in np.ravel(model.params)]
 
 
 def serialise_model(model: Any) -> dict:
@@ -60,6 +61,7 @@ def serialise_model(model: Any) -> dict:
             "k": model.k,
             "n_sims": model.n_sims,
             "switching_probability": model.switching_probability,
+            "dormancy_factor": model.dormancy_factor,
         }
     if isinstance(model, RepeatedStandbyNode):
         return {
@@ -95,11 +97,17 @@ def serialise_model(model: Any) -> dict:
         }
     dist = distribution_name(model)
     if dist is not None:
-        return {
+        out: dict = {
             "kind": "parametric",
             "dist": dist,
             "params": _params_list(model),
         }
+        # An offset, limited-failure-population or zero-inflation parameter,
+        # saved only when the model has one.
+        extras = model_extras(model)
+        if extras:
+            out["extras"] = extras
+        return out
     raise NotImplementedError(
         f"Cannot serialise a node model of type {type(model).__name__}. "
         "Only surpyval parametric distributions, the RePyability node "
@@ -120,7 +128,7 @@ def deserialise_model(d: dict) -> Any:
         return PerfectUnreliability
     if kind == "parametric":
         cls = getattr(surpyval, d["dist"])
-        return cls.from_params(d["params"])
+        return cls.from_params(d["params"], **d.get("extras", {}))
     if kind == "rbd":
         return rbd_from_dict(d["rbd"])
     if kind == "standby":
@@ -129,6 +137,7 @@ def deserialise_model(d: dict) -> Any:
             k=d["k"],
             n_sims=d.get("n_sims", 10_000),
             switching_probability=d.get("switching_probability", 1.0),
+            dormancy_factor=d.get("dormancy_factor", 0.0),
         )
     if kind == "repeated_standby":
         return RepeatedStandbyNode(
@@ -159,6 +168,17 @@ def deserialise_model(d: dict) -> Any:
     raise ValueError(f"Unknown model kind {kind!r}.")
 
 
+def _node_name(name: Any) -> Any:
+    """A node name as read back from a document.
+
+    JSON has no tuples, so a tuple node name comes back as a list. Node names
+    are hashable and a list is not, so any list must have been a tuple.
+    """
+    if isinstance(name, list):
+        return tuple(_node_name(part) for part in name)
+    return name
+
+
 def _serialise_reliability_value(node, value, all_nodes) -> dict:
     # A repeated node's value is the name of the node it repeats, not a model.
     if value in all_nodes:
@@ -168,28 +188,95 @@ def _serialise_reliability_value(node, value, all_nodes) -> dict:
 
 def _deserialise_reliability_value(d: dict) -> Any:
     if d.get("kind") == "repeat_of":
-        return d["node"]
+        return _node_name(d["node"])
     return deserialise_model(d)
 
 
 def _serialise_component(value) -> dict:
-    # RepairableRBD components: a {reliability, repairability} spec, a
-    # NonRepairable, or a nested RepairableRBD.
+    # RepairableRBD components: a {reliability, repairability} spec (which may
+    # also carry cost fields), a NonRepairable, or a nested RepairableRBD.
     if isinstance(value, dict):
-        return {
+        from repyability.rbd.repairable_rbd import RepairableRBD
+
+        repairability = value["repairability"]
+        out: dict[str, Any] = {
             "kind": "component_spec",
             "reliability": serialise_model(value["reliability"]),
-            "repairability": serialise_model(value["repairability"]),
+            # "instant" (repair in zero time) is a sentinel, not a model.
+            "repairability": (
+                "instant"
+                if repairability == "instant"
+                else serialise_model(repairability)
+            ),
         }
+        for key in RepairableRBD.COST_KEYS:
+            cost = value.get(key)
+            if hasattr(cost, "qf"):
+                # A per-failure cost may be a distribution of the cost.
+                out[key] = serialise_model(cost)
+            elif cost:
+                out[key] = float(cost)
+        if value.get("acquisition_cost"):
+            out["acquisition_cost"] = float(value["acquisition_cost"])
+        for key in ("preventive", "inspection"):
+            if value.get(key) is not None:
+                out[key] = _serialise_schedule(value[key])
+        return out
     return serialise_model(value)
+
+
+def _serialise_schedule(spec: dict) -> dict:
+    # A component's preventive-maintenance or inspection schedule: the
+    # interval (and policy) as they are, the duration ("instant" or a model)
+    # and the cost (a number or a distribution).
+    out: dict[str, Any] = {"interval": float(spec["interval"])}
+    if "policy" in spec:
+        out["policy"] = spec["policy"]
+    duration = spec.get("duration", "instant")
+    out["duration"] = (
+        "instant" if isinstance(duration, str) else serialise_model(duration)
+    )
+    cost = spec.get("cost")
+    if hasattr(cost, "qf"):
+        out["cost"] = serialise_model(cost)
+    elif cost:
+        out["cost"] = float(cost)
+    return out
+
+
+def _deserialise_schedule(d: dict) -> dict:
+    out = dict(d)
+    if isinstance(d["duration"], dict):
+        out["duration"] = deserialise_model(d["duration"])
+    if isinstance(d.get("cost"), dict):
+        out["cost"] = deserialise_model(d["cost"])
+    return out
 
 
 def _deserialise_component(d: dict) -> Any:
     if d.get("kind") == "component_spec":
-        return {
+        from repyability.rbd.repairable_rbd import RepairableRBD
+
+        out: Any = {
             "reliability": deserialise_model(d["reliability"]),
-            "repairability": deserialise_model(d["repairability"]),
+            "repairability": (
+                "instant"
+                if d["repairability"] == "instant"
+                else deserialise_model(d["repairability"])
+            ),
         }
+        for key in RepairableRBD.COST_KEYS:
+            if key in d:
+                cost = d[key]
+                out[key] = (
+                    deserialise_model(cost) if isinstance(cost, dict) else cost
+                )
+        if "acquisition_cost" in d:
+            out["acquisition_cost"] = d["acquisition_cost"]
+        for key in ("preventive", "inspection"):
+            if key in d:
+                out[key] = _deserialise_schedule(d[key])
+        return out
     return deserialise_model(d)
 
 
@@ -198,7 +285,9 @@ def _k_to_list(k):
 
 
 def _k_from_list(k_list):
-    return None if not k_list else {e["node"]: e["k"] for e in k_list}
+    if not k_list:
+        return None
+    return {_node_name(e["node"]): e["k"] for e in k_list}
 
 
 def _ccf_to_list(ccf_groups):
@@ -235,7 +324,8 @@ def _ccf_from_list(ccf_list):
             model = MGL(*model_dict["letters"])
         else:
             raise ValueError(f"Unknown CCF model kind {kind!r}.")
-        groups.append(CCFGroup(entry["members"], model))
+        members = [_node_name(m) for m in entry["members"]]
+        groups.append(CCFGroup(members, model))
     return groups
 
 
@@ -256,6 +346,7 @@ def rbd_to_dict(rbd: RBD) -> dict:
             {"node": n, "component": _serialise_component(v)}
             for n, v in args["components"].items()
         ]
+        out["downtime_cost_rate"] = args.get("downtime_cost_rate", 0.0)
     else:
         nodes = set(args["reliabilities"].keys())
         out["reliabilities"] = [
@@ -276,22 +367,27 @@ def rbd_from_dict(d: dict) -> RBD:
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     rbd_type = d["type"]
-    edges = [tuple(e) for e in d["edges"]]
+    edges = [tuple(_node_name(n) for n in e) for e in d["edges"]]
     common = dict(
         k=_k_from_list(d.get("k")),
-        input_node=d.get("input_node"),
-        output_node=d.get("output_node"),
+        input_node=_node_name(d.get("input_node")),
+        output_node=_node_name(d.get("output_node")),
         on_infeasible_rbd=d.get("on_infeasible_rbd", "raise"),
     )
     if rbd_type == "RepairableRBD":
         components = {
-            e["node"]: _deserialise_component(e["component"])
+            _node_name(e["node"]): _deserialise_component(e["component"])
             for e in d["components"]
         }
-        return RepairableRBD(edges, components, **common)
+        return RepairableRBD(
+            edges,
+            components,
+            downtime_cost_rate=d.get("downtime_cost_rate", 0.0),
+            **common,
+        )
     if rbd_type == "NonRepairableRBD":
         reliabilities = {
-            e["node"]: _deserialise_reliability_value(e["model"])
+            _node_name(e["node"]): _deserialise_reliability_value(e["model"])
             for e in d["reliabilities"]
         }
         return NonRepairableRBD(

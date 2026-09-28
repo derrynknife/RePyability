@@ -7,6 +7,7 @@ directly from the top-level package, e.g.::
 """
 
 from repyability._version import __version__
+from repyability.fault_tree import FaultTree
 from repyability.maintenance import FailureLimitPolicy, MaintenancePolicy
 from repyability.non_repairable import NonRepairable
 from repyability.rbd.ccf import MGL, BetaFactor, CCFGroup
@@ -18,6 +19,7 @@ from repyability.rbd.load_sharing_node import LoadSharingModel
 from repyability.rbd.node_state import NodeState
 from repyability.rbd.non_repairable_rbd import NonRepairableRBD
 from repyability.rbd.rbd import RBD
+from repyability.rbd.redundancy_allocation import ComponentOption
 from repyability.rbd.regression_node import RegressionNode
 from repyability.rbd.repairable_rbd import RepairableRBD
 from repyability.rbd.repeated_node import RepeatedNode
@@ -25,9 +27,14 @@ from repyability.rbd.repeated_standby_node import RepeatedStandbyNode
 from repyability.rbd.results import (
     AvailabilityResult,
     ConfidenceInterval,
+    CostResult,
     Criticalities,
     FailureCriticalityIndex,
+    RedundancyAllocation,
+    ReliabilityRedundancyAllocation,
     RestorationCriticalityIndex,
+    TotalCostAllocation,
+    UncertaintyResult,
     UpDownImportance,
 )
 from repyability.rbd.standby_node import StandbyModel
@@ -42,6 +49,7 @@ __all__ = [
     "RBD",
     "NonRepairableRBD",
     "RepairableRBD",
+    "FaultTree",
     # Component models
     "NonRepairable",
     "Repairable",
@@ -58,9 +66,15 @@ __all__ = [
     "MGL",
     "CCFGroup",
     "minimal_repair_time_to_nth_failure",
+    "ComponentOption",
     # Result types
     "AvailabilityResult",
     "ConfidenceInterval",
+    "CostResult",
+    "RedundancyAllocation",
+    "ReliabilityRedundancyAllocation",
+    "TotalCostAllocation",
+    "UncertaintyResult",
     "Criticalities",
     "UpDownImportance",
     "FailureCriticalityIndex",

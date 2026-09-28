@@ -132,3 +132,14 @@ def test_cost_validation():
 def test_model_without_cif_raises():
     with pytest.raises(ValueError, match="cif"):
         Repairable(object())
+
+
+@pytest.mark.parametrize(
+    "cr, co",
+    [(np.nan, 5.0), (1.0, np.nan), (1.0, np.inf)],
+    ids=["nan repair", "nan overhaul", "infinite overhaul"],
+)
+def test_costs_must_be_finite(cr, co):
+    rep = Repairable(CrowAMSAA.from_params([100.0, 1.5]))
+    with pytest.raises(ValueError, match="finite"):
+        rep.set_repair_and_overhaul_costs(cr, co)

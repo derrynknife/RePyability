@@ -31,7 +31,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Enable Pages (with the GitHub Actions build type) if it isn't already,
       # using the workflow's pages:write token — so no manual repo setting is
@@ -42,7 +42,7 @@ jobs:
           enablement: true
 
       - name: Set-up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.11'
 

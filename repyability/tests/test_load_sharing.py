@@ -13,7 +13,6 @@ import surpyval as surv
 from scipy.special import comb
 
 from repyability import LoadSharingModel, NonRepairableRBD
-from repyability.rbd.load_sharing_node import _HypoexponentialSurvival
 
 
 @pytest.fixture(scope="module")
@@ -39,16 +38,20 @@ def _k_of_n_sf(t, n, k, lam):
 def test_phi1_hypoexponential_is_exact_k_of_n(k):
     # With no load effect the stage rates are s*lambda (s = N..k); the
     # hypoexponential of those rates is exactly the (N-k+1)-th order statistic
-    # of N i.i.d. Exponentials.
+    # of N i.i.d. Exponentials. This pins the surpyval contract the closed
+    # form relies on: Hypoexponential.from_params(rates) is the sum of
+    # independent Exponentials with those rates.
     lam, n = 0.02, 4
     rates = np.array([s * lam for s in range(n, k - 1, -1)])
-    hypo = _HypoexponentialSurvival(rates)
+    hypo = surv.Hypoexponential.from_params(rates)
     t = np.array([10.0, 40.0, 90.0, 180.0])
     expected = np.array([_k_of_n_sf(ti, n, k, lam) for ti in t])
-    assert np.allclose(hypo.sf(t), expected)
-    assert hypo.sf(np.array([0.0]))[0] == pytest.approx(1.0)
+    assert np.allclose(np.ravel(hypo.sf(t)), expected)
+    assert float(np.ravel(hypo.sf(np.array([0.0])))[0]) == pytest.approx(1.0)
     # mean of the hypoexponential = sum 1/rate
-    assert hypo.mean() == pytest.approx(np.sum(1.0 / rates))
+    assert float(np.ravel(hypo.mean())[0]) == pytest.approx(
+        np.sum(1.0 / rates)
+    )
 
 
 # -- closed form <-> Monte-Carlo agreement --------------------------------

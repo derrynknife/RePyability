@@ -1,62 +1,131 @@
+"""Reliability block diagrams of non-repairable components.
+
+Defines ``NonRepairableRBD``, which computes the reliability of a system of
+non-repairable components from its block diagram, and the small helpers it
+uses (``check_x`` and the ``NodeFailure`` simulation event).
+"""
+
 import functools
+import math
 import pprint
 import warnings
+import zlib
+from concurrent.futures import ProcessPoolExecutor
 from copy import copy
 from dataclasses import dataclass, field
 from queue import PriorityQueue
+from types import SimpleNamespace
 from typing import (
     Any,
+    Callable,
     Collection,
     Dict,
     Hashable,
     Iterable,
+    List,
     Optional,
+    Sequence,
+    Tuple,
     Union,
     cast,
 )
 
-import networkx as nx
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.optimize import brentq
-from scipy.stats import norm
 from surpyval import NonParametric
 
 from repyability.utils.wrappers import conditional_survival, numpy_seed
 
-from ._model_utils import is_fixed_probability, parametric_spec
+from . import _montecarlo as montecarlo
+from . import redundancy_allocation
+from ._model_utils import is_fixed_probability, model_mean, parametric_spec
+from ._sampling import RowSampler, draw, row_sampler
 from .ccf import CCFGroup
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .load_sharing_node import LoadSharingModel
 from .node_state import NodeState
-from .rbd import RBD
+from .rbd import RBD, _check_on_infeasible_rbd
+from .redundancy_allocation import ComponentOption, active_unreliability
 from .repeated_node import RepeatedNode
 from .repeated_standby_node import RepeatedStandbyNode
-from .results import ConfidenceInterval
+from .results import (
+    ConfidenceInterval,
+    RedundancyAllocation,
+    ReliabilityRedundancyAllocation,
+    UncertaintyResult,
+)
 from .standby_node import StandbyModel
-
+from .uncertainty import draw_models
 
 # Event class for simulation
+#: Lifetimes per block of a parallel draw (see ``NonRepairableRBD.random``):
+#: each block is seeded by its position, so a parallel draw does not depend
+#: on the number of processes.
+RANDOM_BLOCK = 10_000
+
+
+def _random_block(task) -> np.ndarray:
+    """One block of a parallel draw (in its own process)."""
+    rbd, size, seed, antithetic = task
+    with numpy_seed(seed):
+        return rbd._draw(size, antithetic)
+
+
+def _check_lifetimes(lifetimes: np.ndarray) -> None:
+    if np.isnan(lifetimes).any():
+        raise ValueError(
+            "A node drew a NaN lifetime, which antithetic and common random "
+            "number draws cannot order; draw without them."
+        )
+
+
 @dataclass(order=True)
 class NodeFailure:
-    """Dataclass to hold an event's information. Comparisons are performed
-    by time. status=False means the event is a node failure."""
+    """A node failure scheduled in the event-driven lifetime simulation.
+
+    Instances compare by ``time`` only (``node`` is excluded from
+    comparisons), so a ``queue.PriorityQueue`` of them yields the failures
+    in time order. Used by the one-sample-at-a-time path of
+    [`NonRepairableRBD.random`][repyability.NonRepairableRBD.random].
+
+    Parameters
+    ----------
+    time : float
+        The time at which the node fails.
+    node : Hashable
+        The name of the node that fails.
+    """
 
     time: float
     node: Hashable = field(compare=False)
 
 
 def check_x(func):
-    """Normalises the time input ``x`` and enforces the return contract.
+    """Decorate an RBD method so it accepts any time input ``x``.
 
-    The wrapped function always receives ``x`` as a 1-d numpy array. The
-    caller-facing contract is numpy-style: a scalar ``x`` returns a float (or
-    a dict of floats for the per-node/importance methods), an array ``x``
-    returns a numpy array (or dict of arrays).
+    The wrapper normalises ``x`` and shapes the result to match it. The
+    wrapped method always receives ``x`` as a float numpy array of at least
+    one dimension. The caller-facing contract is numpy-style: a scalar ``x``
+    returns a float (or a dict of floats, for the per-node and importance
+    methods), and an array ``x`` returns the method's array (or dict of
+    arrays) unchanged.
 
-    ``x=None`` is allowed only for a fixed-probability RBD (where time is
-    irrelevant); for a time-varying RBD it raises a ValueError rather than
-    failing cryptically downstream.
+    ``x=None`` is allowed only for a fixed-probability RBD, where time is
+    irrelevant and ``x = 1.0`` is used; for a time-varying RBD the wrapper
+    raises a ValueError rather than failing cryptically downstream.
+
+    Parameters
+    ----------
+    func : callable
+        A method with signature ``func(self, x, *args, **kwargs)`` whose
+        ``self`` has an ``is_fixed`` attribute.
+
+    Returns
+    -------
+    callable
+        The wrapped method, with signature
+        ``wrap(self, x=None, *args, **kwargs)``.
     """
 
     @functools.wraps(func)
@@ -81,16 +150,18 @@ def check_x(func):
     return wrap
 
 
-def _dsf_dparam(cls, params, j, x_arr, rel_step) -> np.ndarray:
+def _dsf_dparam(cls, params, j, x_arr, rel_step, extras=None) -> np.ndarray:
     """Partial derivative of a distribution's ``sf`` at ``x_arr`` with respect
     to its ``j``-th parameter, by finite difference.
 
-    ``cls.from_params`` rebuilds the distribution with a perturbed parameter,
-    so this works for any surpyval parametric distribution without hard-coding
-    per-distribution derivative formulae. A central difference is used where
-    both perturbations are valid; if one perturbation falls outside a
-    parameter's admissible range (e.g. a probability leaving ``[0, 1]``) it
-    falls back to a one-sided difference about the unperturbed value.
+    ``cls.from_params`` rebuilds the distribution with a perturbed parameter
+    (and the model's offset, limited-failure-population and zero-inflation
+    ``extras``, kept as they are), so this works for any surpyval parametric
+    distribution without hard-coding per-distribution derivative formulae.
+    A central difference is used where both perturbations are valid; if one
+    perturbation falls outside a parameter's admissible range (e.g. a
+    probability leaving ``[0, 1]``) it falls back to a one-sided difference
+    about the unperturbed value.
     """
     theta = params[j]
     h = rel_step * abs(theta) if theta != 0.0 else rel_step
@@ -99,7 +170,8 @@ def _dsf_dparam(cls, params, j, x_arr, rel_step) -> np.ndarray:
         trial = list(params)
         trial[j] = theta + delta
         try:
-            return np.asarray(cls.from_params(trial).sf(x_arr), dtype=float)
+            model = cls.from_params(trial, **(extras or {}))
+            return np.asarray(model.sf(x_arr), dtype=float)
         except Exception:
             return None
 
@@ -118,6 +190,181 @@ def _dsf_dparam(cls, params, j, x_arr, rel_step) -> np.ndarray:
 
 
 class NonRepairableRBD(RBD):
+    """A reliability block diagram (RBD) of non-repairable components.
+
+    The diagram is a directed acyclic graph with exactly one input node (no
+    predecessors) and one output node (no successors). Every other node is
+    a component with a reliability model, and the system works while a
+    path of working components joins the input to the output (``k`` makes
+    a node k-out-of-n). Components fail independently, except within the
+    common-cause groups given in ``ccf_groups``.
+
+    The system reliability [`sf`][repyability.NonRepairableRBD.sf] is
+    computed exactly from the node reliabilities, using the minimal path
+    sets (or cut sets); the other analytic methods build on it. The mean
+    time to failure and the lifetimes drawn by
+    [`random`][repyability.NonRepairableRBD.random] are Monte-Carlo
+    estimates.
+
+    A node model can be:
+
+    - a surpyval distribution: parametric (e.g.
+      ``surpyval.Weibull.from_params([100, 2])`` or a fitted model),
+      non-parametric (e.g. a ``surpyval.KaplanMeier`` fit) or a fixed
+      per-demand probability (``surpyval.FixedEventProbability``);
+    - a composite node: a [`StandbyModel`][repyability.StandbyModel],
+      [`LoadSharingModel`][repyability.LoadSharingModel],
+      [`RepeatedNode`][repyability.RepeatedNode],
+      [`RepeatedStandbyNode`][repyability.RepeatedStandbyNode],
+      [`RegressionNode`][repyability.RegressionNode] or another
+      ``NonRepairableRBD`` nested as a single node;
+    - [`PerfectReliability`][repyability.PerfectReliability] or
+      [`PerfectUnreliability`][repyability.PerfectUnreliability].
+
+    If every node is a fixed probability the RBD is fixed-probability (see
+    [`is_fixed`][repyability.NonRepairableRBD.is_fixed]) and the time
+    argument of its methods may be omitted.
+
+    Parameters
+    ----------
+    edges : Iterable[tuple[Hashable, Hashable]]
+        The directed edges ``(from_node, to_node)`` of the diagram, e.g.
+        ``[("in", "a"), ("a", "out")]``.
+    reliabilities : dict
+        ``{node: model}`` for every component node (see above). A value
+        that is the name of another node in this dict makes the key a
+        *repeated* node: the same physical component drawn a second time.
+        It stays where it is drawn, and every appearance is the one
+        component: it works, or has failed, in all of them at once. That
+        node cannot itself be a repeat. The input and output nodes need no
+        entry: they are always perfectly reliable, and a model given for
+        them is replaced.
+    k : dict[Any, int], optional
+        ``{node: k}`` for k-out-of-n nodes: a node with ``n`` predecessors
+        is reached only when at least ``k`` of them are reached through
+        working components (and it must work itself). By default ``k`` is
+        1 for every node. For example, three parallel units feeding the
+        output node ``"out"`` with ``k={"out": 2}`` form a 2-out-of-3
+        system.
+    input_node : Hashable, optional
+        The input node. By default it is inferred as the unique node with
+        no predecessors; naming it does not relax that requirement. A name
+        not in the diagram, or a node with predecessors, raises a
+        ValueError.
+    output_node : Hashable, optional
+        The output node. By default it is inferred as the unique node with
+        no successors; naming it does not relax that requirement. A name
+        not in the diagram, or a node with successors, raises a
+        ValueError.
+    on_infeasible_rbd : str, optional
+        What to do if the diagram is invalid: ``"raise"`` (the default)
+        raises a ValueError, while ``"warn"`` and ``"ignore"`` carry on,
+        after emitting a UserWarning that lists the problems or silently.
+        The results of an invalid RBD are not meaningful. Invalid diagrams
+        include a cycle, more than one input or output node, a node
+        without a model, and a ``k`` that is zero, exceeds the node's
+        number of incoming branches or names an unknown node. The findings
+        are kept in ``structure_check``.
+    ccf_groups : Iterable[CCFGroup], optional
+        Common-cause failure groups ([`CCFGroup`][repyability.CCFGroup]),
+        by default none. Each member must be a component node (not the
+        input or output node, nor a repeated node) in at most one group,
+        and a group's members must have identical models (compared by
+        their serialised form; the check is skipped for models that cannot
+        be serialised). The groups are honoured by ``sf``/``ff`` and the
+        methods computed from them (``reliability``, ``unreliability``,
+        ``df``, ``hf``, ``Hf``, ``cs``, ``time_to_reliability``,
+        ``bx_life``). ``random``, ``mean`` and the MTTF methods ignore
+        them. The importance measures, ``parameter_sensitivity``, the
+        condition-based methods and ``allocate_redundancy`` raise
+        NotImplementedError.
+
+    Attributes
+    ----------
+    reliabilities : dict
+        ``{node: model}`` as used: it includes the input and output nodes
+        (as [`PerfectReliability`][repyability.PerfectReliability]) and
+        leaves out the repeated nodes.
+    repeated : dict
+        ``{repeated_node: node_it_repeats}``.
+    ccf_groups : list[CCFGroup]
+        The validated common-cause groups.
+    nodes : list
+        The component nodes: every node except the input and output nodes
+        and the repeated nodes (each is the component it repeats).
+    input_node : Hashable
+        The input node.
+    output_node : Hashable
+        The output node.
+    structure_check : dict
+        The findings of the structural validation, e.g. ``"is_valid"``,
+        ``"has_cycles"``, ``"nodes_with_no_reliability_distribution"``,
+        ``"all_distributions_fixed"`` and ``"non_analytic_nodes"``.
+
+    Raises
+    ------
+    ValueError
+        If ``on_infeasible_rbd`` is not an allowed value, a node's model is
+        its own name, ``input_node`` or ``output_node`` is not in the
+        diagram, the diagram is invalid (with ``on_infeasible_rbd="raise"``)
+        or ``ccf_groups`` is invalid.
+
+    Examples
+    --------
+    Two pumps in parallel, feeding a valve in series:
+
+    >>> import surpyval as surv
+    >>> from repyability import NonRepairableRBD
+    >>> pump = surv.Weibull.from_params([1000, 1.5])
+    >>> valve = surv.Exponential.from_params([1e-4])
+    >>> rbd = NonRepairableRBD(
+    ...     [("in", "p1"), ("in", "p2"), ("p1", "v"), ("p2", "v"),
+    ...      ("v", "out")],
+    ...     {"p1": pump, "p2": pump, "v": valve},
+    ... )
+    >>> rbd.input_node, rbd.output_node, rbd.nodes
+    ('in', 'out', ['p1', 'p2', 'v'])
+    >>> round(rbd.sf(100), 4)
+    0.9891
+
+    A 2-out-of-3 system of fixed-probability units, so ``x`` may be
+    omitted:
+
+    >>> from surpyval import FixedEventProbability
+    >>> unit = FixedEventProbability.from_params(0.1)
+    >>> edges = [("in", u) for u in "abc"] + [(u, "out") for u in "abc"]
+    >>> two_of_three = NonRepairableRBD(
+    ...     edges, {u: unit for u in "abc"}, k={"out": 2}
+    ... )
+    >>> round(two_of_three.sf(), 4)
+    0.972
+
+    A repeated node: one power supply drawn in both branches (``"psu2"``
+    repeats ``"psu"``), so its failure fails both:
+
+    >>> shared = NonRepairableRBD(
+    ...     [("in", "a"), ("a", "psu"), ("psu", "out"),
+    ...      ("in", "b"), ("b", "psu2"), ("psu2", "out")],
+    ...     {"a": unit, "b": unit, "psu": unit, "psu2": "psu"},
+    ... )
+    >>> shared.repeated
+    {'psu2': 'psu'}
+    >>> round(shared.sf(), 4)
+    0.891
+
+    A beta-factor common cause coupling two parallel units lowers the
+    independent result of 0.99:
+
+    >>> from repyability import BetaFactor, CCFGroup
+    >>> coupled = NonRepairableRBD(
+    ...     [("in", "a"), ("in", "b"), ("a", "out"), ("b", "out")],
+    ...     {"a": unit, "b": unit},
+    ...     ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
+    ... )
+    >>> round(coupled.sf(), 4)
+    0.982
+    """
+
     def __init__(
         self,
         edges: Iterable[tuple[Hashable, Hashable]],
@@ -128,11 +375,7 @@ class NonRepairableRBD(RBD):
         on_infeasible_rbd: str = "raise",
         ccf_groups: Optional[Iterable[CCFGroup]] = None,
     ):
-        if on_infeasible_rbd not in ["raise", "warn", "ignore"]:
-            raise ValueError(
-                "'on_infeasible_rbd' must be one of"
-                + " {'raise', 'warn', 'ignore'}"
-            )
+        _check_on_infeasible_rbd(on_infeasible_rbd)
         # Capture the constructor inputs verbatim (before any mutation) so the
         # RBD can be faithfully serialised via to_dict()/to_json().
         edges = list(edges)
@@ -163,50 +406,20 @@ class NonRepairableRBD(RBD):
             if v not in reliabilities.keys()
         }
 
-        if repeated == {}:
-            super().__init__(
-                edges,
-                set(reliabilities.keys()),
-                k,
-                input_node,
-                output_node,
-                on_infeasible_rbd,
-            )
-            self.structure_check["has_repeated_node_in_cycle"] = False
-        else:
-            new_edges = []
-            for start, stop in edges:
-                if start in repeated:
-                    start = repeated[start]
-                if stop in repeated:
-                    stop = repeated[stop]
-                new_edges.append((start, stop))
-            super().__init__(
-                new_edges,
-                set(reliabilities.keys()),
-                k,
-                input_node,
-                output_node,
-                on_infeasible_rbd,
-            )
-            self.structure_check["has_repeated_node_in_cycle"] = False
-            if self.structure_check["has_cycles"]:
-                # Need to find if cycles are due to repeated components.
-                G = nx.DiGraph()
-                G.add_edges_from(edges)
-                cycles = {
-                    frozenset(cycle) for cycle in list(nx.simple_cycles(G))
-                }
-                non_repeated_node_cycles = copy(self.structure_check["cycles"])
-                for cycle in self.structure_check["cycles"]:
-                    if cycle not in cycles:
-                        non_repeated_node_cycles.remove(cycle)
-                        self.structure_check["has_repeated_node_in_cycle"] = (
-                            True
-                        )
-                if len(non_repeated_node_cycles) == 0:
-                    self.structure_check["has_cycles"] = False
-                self.structure_check["cycles"] = non_repeated_node_cycles
+        # A repeated node stays where it is drawn, and the exact engine
+        # treats every appearance as the one component it repeats (joining
+        # the nodes in the graph instead would add paths the diagram does
+        # not have). Set before the base class works out the structure.
+        self._aliases = dict(repeated)
+        super().__init__(
+            edges,
+            set(reliabilities.keys()),
+            k,
+            input_node,
+            output_node,
+            on_infeasible_rbd,
+        )
+        self.structure_check["has_repeated_node_in_cycle"] = False
 
         # Check for repeated cycles or non-repeated cycles
         if self.structure_check["has_unique_input_node"]:
@@ -221,7 +434,7 @@ class NonRepairableRBD(RBD):
         self.structure_check["is_missing_distributions"] = False
         self.structure_check["nodes_with_no_reliability_distribution"] = []
         for n in self.G.nodes:
-            if n not in reliabilities:
+            if n not in reliabilities and n not in repeated:
                 self.structure_check["is_valid"] = False
                 self.structure_check["is_missing_distributions"] = True
                 self.structure_check[
@@ -231,7 +444,7 @@ class NonRepairableRBD(RBD):
         if not self.structure_check["is_valid"]:
             if on_infeasible_rbd == "warn":
                 warnings.warn(
-                    "Strucutral Errors in RBD:\n"
+                    "Structural Errors in RBD:\n"
                     + pprint.pformat(self.structure_check),
                     stacklevel=2,
                 )
@@ -244,28 +457,10 @@ class NonRepairableRBD(RBD):
         self.repeated = repeated
         self.ccf_groups = self._validate_ccf_groups(ccf_groups)
 
-        fixed_flags = []
-        for _, node in self.reliabilities.items():
-            if isinstance(node, NonParametric):
-                fixed_flags = [False]
-                break
-            elif isinstance(node, NonRepairableRBD):
-                fixed_flags.append(node.is_fixed)
-            elif node == PerfectReliability:
-                continue
-            elif node == PerfectUnreliability:
-                continue
-            else:
-                # when node is a Parametric model
-                if isinstance(node, (StandbyModel, LoadSharingModel)):
-                    fixed_flags = [False]
-                    break
-                elif isinstance(node, RepeatedNode):
-                    fixed_flags.append(is_fixed_probability(node.model))
-                else:
-                    fixed_flags.append(is_fixed_probability(node))
-
-        self._fixed_probs: bool = all(fixed_flags)
+        self._fixed_probs: bool = all(
+            self._model_is_fixed(model)
+            for model in self.reliabilities.values()
+        )
         self.structure_check["all_distributions_fixed"] = self._fixed_probs
 
         # Record whether the system reliability can be solved analytically
@@ -302,33 +497,49 @@ class NonRepairableRBD(RBD):
         broken_nodes: Optional[Collection[Hashable]] = None,
         method: str = "p",
     ) -> Union[float, np.ndarray]:
-        """Returns the system reliability for time/s x.
+        """System reliability (survival function) at time/s ``x``.
+
+        The probability that the system is still working at ``x``,
+        computed exactly from each node's reliability ``sf(x)`` by a
+        Shannon decomposition over the minimal path sets (``method="p"``)
+        or cut sets (``method="c"``). Nodes are independent apart from any
+        common-cause groups: with ``ccf_groups`` the result sums one exact
+        evaluation per combination of the groups' shared-cause outcomes,
+        so the cost grows with the number and size of the groups.
+
+        ``working_nodes`` and ``broken_nodes`` condition on the state of
+        some components by setting their reliability to 1 or 0, e.g. to
+        see the system reliability once a component has failed.
 
         Parameters
         ----------
-        x : ArrayLike
-            Time/s as a number or iterable
+        x : array_like, optional
+            Time/s as a number or an array. May be omitted only for a
+            fixed-probability RBD (see
+            [`is_fixed`][repyability.NonRepairableRBD.is_fixed]).
         working_nodes : Collection[Hashable], optional
-            Marks these nodes as perfectly reliable, by default None
+            Nodes to treat as working (reliability 1), by default none.
         broken_nodes : Collection[Hashable], optional
-            Marks these nodes as perfectly unreliable, by default None
-        method: str, optional
-            Input either "c" or "p" for the function to use the cut set or
-            path set methods respectively. Both methods return the same
-            (exact) result. By default the path set method ("p") is used, as
-            it avoids deriving the cut sets.
+            Nodes to treat as failed (reliability 0), by default none.
+        method : str, optional
+            ``"p"`` (the default) uses the minimal path sets, which avoids
+            deriving the cut sets; ``"c"`` uses the minimal cut sets. Both
+            are exact and give the same result.
 
         Returns
         -------
-        float or np.ndarray
+        float or numpy.ndarray
             The system reliability: a float for scalar ``x``, an array for
             array ``x``.
 
         Raises
         ------
         ValueError
-            If a working/broken node is unknown, is the input/output node, is
-            in both sets, or is a repeat of another node.
+            If ``x`` is omitted for a time-varying RBD, or a working/broken
+            node is unknown, is the input or output node, is in both sets,
+            or is a repeat of another node.
+        NotImplementedError
+            If a working/broken node is a member of a common-cause group.
 
         Examples
         --------
@@ -529,20 +740,35 @@ class NonRepairableRBD(RBD):
     def ff(
         self, x: Optional[ArrayLike] = None, *args, **kwargs
     ) -> Union[float, np.ndarray]:
-        """Returns the system unreliability for time/s x.
+        """System unreliability (failure probability) at time/s ``x``.
+
+        ``1 - sf(x)``: the probability that the system has failed by
+        ``x``. Exact, and honours common-cause groups, as
+        [`sf`][repyability.NonRepairableRBD.sf] does.
 
         Parameters
         ----------
-        x : ArrayLike
-            Time/s as a number or iterable
-        *args, **kwargs :
-            Any sf() arguments
+        x : array_like, optional
+            Time/s as a number or an array. May be omitted only for a
+            fixed-probability RBD.
+        *args
+            Further positional arguments of ``sf`` (``working_nodes``,
+            ``broken_nodes``, ``method``).
+        **kwargs
+            Keyword arguments of ``sf``.
 
         Returns
         -------
-        float or np.ndarray
+        float or numpy.ndarray
             The system unreliability: a float for scalar ``x``, an array for
             array ``x``.
+
+        Raises
+        ------
+        ValueError
+            As for ``sf``.
+        NotImplementedError
+            As for ``sf``.
 
         Examples
         --------
@@ -560,75 +786,1931 @@ class NonRepairableRBD(RBD):
         """
         return 1 - self.sf(x, *args, **kwargs)
 
-    def unreliability(self, x: Optional[ArrayLike] = None, *args, **kwargs):
-        """Returns the system unreliability for time/s x.
+    def sf_uncertainty(
+        self,
+        x: Optional[ArrayLike] = None,
+        uncertainty: Optional[Dict[Hashable, Any]] = None,
+        *,
+        n_draws: int = 1000,
+        seed=None,
+    ) -> UncertaintyResult:
+        """System reliability over plausible node models (parameter
+        uncertainty).
+
+        A node's model is estimated from data, so its parameters are
+        uncertain: this is *epistemic* uncertainty, about what the model
+        is, as opposed to the aleatory variability the model describes.
+        Each of the ``n_draws`` draws gives every uncertain node a
+        plausible model, and the system reliability at ``x`` is computed
+        exactly for that draw (all draws at once, by the vectorised exact
+        engine). The spread of the results, and its percentiles
+        (``interval``), say how well the system reliability is known.
+
+        RePyability does not fit models: the draws use what the fit, done
+        in surpyval, provides. A node's uncertainty is one of:
+
+        - ``"fit"``: its parameters are drawn from the normal approximation
+          of its maximum-likelihood fit (surpyval's ``hess_inv``), on the
+          log scale for a parameter that must be positive and the logit
+          scale for one in (0, 1), so that every draw is valid; an offset,
+          zero-inflation or limited-failure-population parameter keeps its
+          fitted value;
+        - ``{parameter name: distribution}``: each named parameter is drawn
+          from its distribution (anything with ``qf`` or ``ppf``, such as a
+          surpyval or scipy.stats distribution), the others kept;
+        - a list of models (e.g. refits to bootstrap resamples, or
+          posterior draws, made in surpyval), drawn with replacement.
+
+        Nodes of one population, such as identical pumps fitted to the
+        same data, share their uncertainty: give them together as a tuple
+        of node names, and each draw gives them the same model. Drawing
+        them independently would understate the uncertainty, which is
+        about the one population's parameters.
 
         Parameters
         ----------
-        x : ArrayLike
-            Time/s as a number or iterable
-        *args, **kwargs :
-            Any sf() arguments
+        x : array_like, optional
+            Time/s, a number or an array. May be left out when every node
+            model, and every drawn model, is a fixed probability.
+        uncertainty : dict
+            ``{node or tuple of nodes: uncertainty}`` for the uncertain
+            nodes (see above). The other nodes keep their models.
+        n_draws : int, optional
+            The number of draws, by default 1000.
+        seed : int, optional
+            Seed for the draws, for reproducible results.
 
         Returns
         -------
-        np.ndarray
-            Unreliability values for all nodes at all times x
+        UncertaintyResult
+            The system reliability of every draw (``samples``), the nominal
+            value with the nodes' own models, and summaries: ``mean``,
+            ``median``, ``std``, ``percentile`` and ``interval`` (see
+            [`UncertaintyResult`][repyability.UncertaintyResult]).
+
+        Raises
+        ------
+        ValueError
+            If ``uncertainty`` is empty, names an unknown, input, output or
+            repeated node, or names a node twice; if a tuple's nodes have
+            different models; if an uncertainty cannot be drawn (e.g.
+            ``"fit"`` for a model with no fitted covariance, or an unknown
+            parameter); if ``n_draws`` is not a positive integer; or if
+            ``x`` is left out for time-varying models.
+        NotImplementedError
+            If the RBD has common-cause groups.
+
+        Examples
+        --------
+        Two pumps in parallel, of one type whose exponential failure rate
+        is uncertain (known only to lie between 1 and 3 per 1000 h), in
+        series with a valve. Both pumps share the one uncertain rate:
+
+        >>> import scipy.stats as st
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "p1"), ("s", "p2"), ("p1", "v"), ("p2", "v"),
+        ...      ("v", "t")],
+        ...     {
+        ...         "p1": surv.Exponential.from_params([0.002]),
+        ...         "p2": surv.Exponential.from_params([0.002]),
+        ...         "v": surv.FixedEventProbability.from_params(0.01),
+        ...     },
+        ... )
+        >>> rate = {"failure_rate": st.uniform(0.001, 0.002)}
+        >>> result = rbd.sf_uncertainty(
+        ...     500, {("p1", "p2"): rate}, n_draws=10_000, seed=1
+        ... )
+        >>> round(result.nominal, 4)  # at the nominal rate, 2 per 1000 h
+        0.5944
+        >>> lower, upper = result.interval(0.9)
+        >>> round(lower, 3), round(upper, 3)
+        (0.409, 0.813)
+        """
+        self._require_no_ccf()
+        if isinstance(n_draws, bool) or not isinstance(
+            n_draws, (int, np.integer)
+        ):
+            raise ValueError(f"n_draws must be an integer, got {n_draws!r}.")
+        if n_draws < 1:
+            raise ValueError(f"n_draws must be at least 1, got {n_draws}.")
+        if not uncertainty:
+            raise ValueError(
+                "Give the uncertain nodes: uncertainty={node: 'fit'}, for "
+                "example."
+            )
+        components = set(self.nodes)
+        groups = []
+        seen: set = set()
+        for key, spec in uncertainty.items():
+            if key in components or not isinstance(key, tuple):
+                members = (key,)
+            else:
+                members = key
+            for node in members:
+                if node in self.repeated:
+                    raise ValueError(
+                        f"Node {node!r} is a repeat of {self.repeated[node]!r}"
+                        "; give the uncertainty of that node instead."
+                    )
+                if node not in components:
+                    raise ValueError(
+                        f"{node!r} in uncertainty is not a component node."
+                    )
+                if node in seen:
+                    raise ValueError(
+                        f"Node {node!r} is given an uncertainty twice."
+                    )
+                seen.add(node)
+            model = self.reliabilities[members[0]]
+            for node in members[1:]:
+                if not self._same_model(self.reliabilities[node], model):
+                    raise ValueError(
+                        f"Nodes {list(members)!r} share their uncertainty, "
+                        "so they must have the same model."
+                    )
+            groups.append((members, spec))
+
+        rng = np.random.default_rng(seed)
+        drawn: Dict[Hashable, list] = {}
+        for members, spec in groups:
+            label = (
+                f"Node {members[0]!r}"
+                if len(members) == 1
+                else f"Nodes {list(members)!r}"
+            )
+            models = draw_models(
+                self.reliabilities[members[0]], spec, n_draws, rng, label
+            )
+            for node in members:
+                drawn[node] = models
+
+        fixed = self.is_fixed and all(
+            self._model_is_fixed(m) for ms in drawn.values() for m in ms
+        )
+        if x is None:
+            if not fixed:
+                raise ValueError(
+                    "x is required: a node model's probability depends on "
+                    "time."
+                )
+            x = 1.0
+        scalar = np.ndim(x) == 0
+        times = np.atleast_1d(np.asarray(x, dtype=float))
+        probabilities: dict = {}
+        for node in self.nodes:
+            if node in drawn:
+                rows = [
+                    np.broadcast_to(
+                        np.asarray(m.sf(times), dtype=float), times.shape
+                    )
+                    for m in drawn[node]
+                ]
+                probabilities[node] = np.concatenate(rows)
+            else:
+                values = np.broadcast_to(
+                    np.asarray(self.reliabilities[node].sf(times), float),
+                    times.shape,
+                )
+                probabilities[node] = np.tile(values, n_draws)
+        samples = np.asarray(
+            self.system_probability(probabilities), dtype=float
+        ).reshape(n_draws, len(times))
+        nominal = np.asarray(self.sf(times), dtype=float)
+        if scalar:
+            return UncertaintyResult(
+                samples=samples[:, 0],
+                nominal=float(nominal.reshape(-1)[0]),
+                n_draws=n_draws,
+            )
+        return UncertaintyResult(
+            samples=samples, nominal=nominal, n_draws=n_draws
+        )
+
+    @staticmethod
+    def _same_model(a, b) -> bool:
+        """Whether two node models are the same: one object, or the same
+        distribution with the same parameters."""
+        if a is b:
+            return True
+        name_a = getattr(getattr(a, "dist", None), "name", None)
+        name_b = getattr(getattr(b, "dist", None), "name", None)
+        if name_a is None or name_a != name_b:
+            return False
+        params_a = np.ravel(np.asarray(getattr(a, "params", []), float))
+        params_b = np.ravel(np.asarray(getattr(b, "params", []), float))
+        return (
+            params_a.shape == params_b.shape
+            and bool(np.all(params_a == params_b))
+            and all(
+                getattr(a, extra, None) == getattr(b, extra, None)
+                for extra in ("gamma", "p", "f0")
+            )
+        )
+
+    def allocate_redundancy(
+        self,
+        costs: Dict[
+            Hashable,
+            Union[float, Dict[Hashable, float], Sequence[ComponentOption]],
+        ],
+        *,
+        budget: Union[float, Dict[Hashable, float], None] = None,
+        target: Optional[float] = None,
+        minimise: Optional[Hashable] = None,
+        t: Optional[float] = None,
+        max_units: Union[int, Dict[Hashable, int], None] = None,
+        required: Union[int, Dict[Hashable, int], None] = None,
+        strategy: Union[str, Dict[Hashable, str]] = "active",
+        switching_probability: Union[float, Dict[Hashable, float]] = 1.0,
+        mixing: bool = True,
+        method: str = "exact",
+    ) -> RedundancyAllocation:
+        """Choose how many redundant copies of each node to fit.
+
+        Solves the Redundancy Allocation Problem: pick how many independent
+        copies of each node in ``costs`` to fit in active parallel, to either
+
+        - maximise system reliability within the ``budget``, or
+        - minimise total cost with system reliability at least ``target``
+          (and within the ``budget``, if one is also given).
+
+        A copy may use one resource (a number: its cost) or several (a dict
+        such as ``{"cost": 4000, "weight": 12}``, as in Fyffe, Hines & Lee,
+        1968), and the budget then limits each resource it names. A node
+        may also be given a choice of component types, a list of
+        [`ComponentOption`][repyability.ComponentOption] with their own
+        reliabilities and costs: its copies are then all of one type or,
+        with ``mixing``, any combination of types (Coit & Smith, 1996).
+        Copies of reliabilities ``p_1, ..., p_n`` in active parallel have
+        reliability ``1 - (1 - p_1) ... (1 - p_n)`` (``1 - (1 - p) ** n``
+        for ``n`` identical copies); a node may instead need several of its
+        copies working (``required``, k-out-of-n: Coit & Liu, 2000), and its
+        spares may be cold standby rather than active (``strategy``: Coit,
+        2001), or either, whichever is better (Coit, 2003). The system
+        reliability of each candidate allocation is computed exactly, so any
+        RBD structure works. Nodes not in ``costs`` stay as they are.
+        Reliability is evaluated at the single mission time ``t``.
+
+        ``method="exact"`` returns a proven optimum. When every costed node
+        is in series with the rest of the system (it lies on every path, as
+        in the textbook series of subsystems), the system reliability is the
+        product of the costed nodes' reliabilities and the rest's, and a
+        dynamic program over the nodes finds the optimum however many
+        costed nodes there are. On other structures an exhaustive search
+        finds it, which suits a handful of costed nodes.
+
+        Parameters
+        ----------
+        costs : dict
+            ``{node: what one copy uses}`` for the nodes that may be
+            duplicated: a number (its cost) or, for several resources, a dict
+            of resource → amount, naming the same resources for every node.
+            Or, for a choice of component types, a list of
+            [`ComponentOption`][repyability.ComponentOption] (each giving
+            what one copy of it uses in the same way); the node's own model
+            is then not used. Every copy is counted, including the original,
+            so the cheapest allocation (one of each) uses the sum of the
+            amounts. A number must be finite and positive; the amounts in a
+            dict finite and non-negative.
+        budget : float or dict, optional
+            The limit on the one resource (a number), or on each resource a
+            dict names (resources it leaves out are not limited). With no
+            ``target``, reliability is maximised within it, and it must
+            afford one of each costed node. With a ``target`` it adds limits
+            to the minimisation.
+        target : float, optional
+            Minimise the total of one resource subject to system reliability
+            >= target, in (0, 1).
+        minimise : Hashable, optional
+            The resource a ``target`` minimises. Needed only with several
+            resources, none of them called ``"cost"`` (which is minimised by
+            default).
+        t : float, optional
+            The mission time at which reliability is evaluated, a single
+            number. Required for a time-varying RBD (or time-varying
+            options); not needed when every node and option is a fixed
+            probability.
+        max_units : int or dict, optional
+            The most copies allowed (at least 1) of every costed node (an
+            int) or of particular costed nodes (a dict; nodes it leaves out
+            are unlimited), counting copies of every type, e.g. for space
+            limits. By default unlimited; the budget or target bounds the
+            search, so every node (every option) must use some of a limited
+            (or, with a target, the minimised) resource, or have a cap.
+        required : int or dict, optional
+            The number of a node's copies that must work (k-out-of-n), for
+            every costed node (an int) or particular ones (a dict; others
+            need 1). By default 1. Every design has at least this many
+            copies.
+        strategy : str or dict, optional
+            How a node's copies are arranged, for every costed node (a
+            string) or particular ones (a dict; others are active):
+            ``"active"`` (the default): all copies operate, and the node
+            works while ``required`` of them do; ``"cold"``: ``required``
+            copies operate and the others wait unpowered as cold spares,
+            switched in, in the order of the node's options, as operating
+            copies fail (a [`StandbyModel`][repyability.StandbyModel]: exact
+            for identical Exponential units, a numerical convolution for one
+            unit required, simulated otherwise); ``"choose"``: whichever of
+            the two is better, chosen for each node by the optimiser. Cold
+            standby needs lifetime models, not fixed probabilities.
+        switching_probability : float or dict, optional
+            For cold standby, the probability that switching onto a spare
+            succeeds, for every cold node (a number) or particular ones (a
+            dict). By default 1.0 (perfect switching). Imperfect switching
+            is supported with one unit required.
+        mixing : bool, optional
+            For nodes with options: whether their copies may be of
+            different types (the default), or must all be of one type.
+        method : str, optional
+            ``"exact"`` (the default) returns a proven optimum, by dynamic
+            programming for costed nodes in series with the rest (giving up
+            with an explanatory error beyond 2,000,000 partial allocations)
+            and otherwise by an exhaustive search (giving up beyond 500,000
+            allocations examined, which is a handful of costed nodes).
+            ``"greedy"`` repeatedly takes the step (one more copy, or a
+            change of type) with the best log-reliability gain per unit of
+            what it uses (its cost, the minimised resource with a target,
+            or with several limits its total share of them): fast for any
+            size, usually optimal or close, but not guaranteed optimal.
+
+        Returns
+        -------
+        RedundancyAllocation
+            The chosen ``units`` per costed node (copies of every type),
+            with the resulting ``reliability``, the total ``cost`` (of the
+            resource minimised, ``"cost"``, or the first resource), the
+            total of every resource in ``resources``, the ``method`` used,
+            each node's ``strategy`` and, for nodes with options, how many
+            of each type in ``mix`` (see
+            [`RedundancyAllocation`][repyability.RedundancyAllocation]).
+
+        Raises
+        ------
+        ValueError
+            If neither ``budget`` nor ``target`` is given, or on any other
+            invalid input: an unknown ``method``; empty ``costs``; a costed
+            node that is not a component node or is a repeated node; a cost
+            that is not finite and positive (an amount in a dict, not finite
+            and non-negative); nodes naming different resources, or a
+            mixture of numbers and dicts; invalid options (an empty list,
+            duplicate names, or a reliability that is not a model or a
+            probability); a ``budget`` naming an unknown resource, or a
+            number with several resources; a node nothing limits (see
+            ``max_units``); an invalid ``max_units``, ``minimise``,
+            ``mixing``, ``required`` (or one above ``max_units``),
+            ``strategy`` or ``switching_probability``; cold standby of a
+            fixed probability; ``t`` missing for a time-varying RBD or not a
+            single number; a budget that cannot afford the required copies
+            of each costed node; a ``target`` outside (0, 1) or not
+            reachable (within ``max_units`` and the budget); or an exact
+            search that is too large.
+        NotImplementedError
+            If the RBD has common-cause (CCF) groups.
+
+        References
+        ----------
+        D. E. Fyffe, W. W. Hines and N. K. Lee, "System reliability
+        allocation and a computational algorithm", IEEE Transactions on
+        Reliability, 17(2), 64-69, 1968.
+
+        J. D. Kettelle, "Least-cost allocations of reliability investment",
+        Operations Research, 10(2), 249-265, 1962 (dominance in a dynamic
+        program over the subsystems of a series system).
+
+        D. W. Coit and A. E. Smith, "Reliability optimization of
+        series-parallel systems using a genetic algorithm", IEEE
+        Transactions on Reliability, 45(2), 254-260, 1996 (component
+        mixing).
+
+        D. W. Coit and J. Liu, "System reliability optimization with
+        k-out-of-n subsystems", International Journal of Reliability,
+        Quality and Safety Engineering, 7(2), 129-142, 2000.
+
+        D. W. Coit, "Cold-standby redundancy optimization for nonrepairable
+        systems", IIE Transactions, 33(6), 471-478, 2001.
+
+        D. W. Coit, "Maximization of system reliability with a choice of
+        redundancy strategies", IIE Transactions, 35(6), 535-543, 2003.
+
+        Examples
+        --------
+        Two components in series, 90% and 80% reliable, one cost unit each.
+        With a budget of 3 the extra copy goes to the weaker component:
+
+        >>> from surpyval import FixedEventProbability
+        >>> from repyability import ComponentOption, NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "a"), ("a", "b"), ("b", "t")],
+        ...     {
+        ...         "a": FixedEventProbability.from_params(0.1),
+        ...         "b": FixedEventProbability.from_params(0.2),
+        ...     },
+        ... )
+        >>> best = rbd.allocate_redundancy({"a": 1.0, "b": 1.0}, budget=3)
+        >>> best.units
+        {'a': 1, 'b': 2}
+        >>> round(best.reliability, 4)
+        0.864
+
+        The cheapest design that is at least 90% reliable needs two of each:
+
+        >>> rbd.allocate_redundancy({"a": 1.0, "b": 1.0}, target=0.9).units
+        {'a': 2, 'b': 2}
+
+        With weight limited as well as cost, a second ``a`` (3 kg) no longer
+        fits, and the budget goes on more copies of ``b``:
+
+        >>> costs = {
+        ...     "a": {"cost": 1, "weight": 3},
+        ...     "b": {"cost": 1, "weight": 1},
+        ... }
+        >>> best = rbd.allocate_redundancy(
+        ...     costs, budget={"cost": 4, "weight": 6}
+        ... )
+        >>> best.units, round(best.reliability, 4), best.resources
+        ({'a': 1, 'b': 3}, 0.8928, {'cost': 4.0, 'weight': 6.0})
+
+        ``b`` may instead be built from a standard part (80%, cost 1) or a
+        premium one (98%, cost 2). Within a budget of 5 the best design
+        mixes them; with every copy of ``b`` of one type it is less
+        reliable:
+
+        >>> choice = [
+        ...     ComponentOption("standard", 0.8, cost=1),
+        ...     ComponentOption("premium", 0.98, cost=2),
+        ... ]
+        >>> best = rbd.allocate_redundancy({"a": 1, "b": choice}, budget=5)
+        >>> best.units, best.mix, round(best.reliability, 5)
+        ({'a': 2, 'b': 2}, {'b': {'standard': 1, 'premium': 1}}, 0.98604)
+        >>> same = rbd.allocate_redundancy(
+        ...     {"a": 1, "b": choice}, budget=5, mixing=False
+        ... )
+        >>> same.mix, round(same.reliability, 5)
+        ({'b': {'standard': 3}}, 0.98208)
+
+        A pump that must deliver with two units running (2-out-of-n), as
+        active copies or with cold spares, whichever is better. At 1000
+        hours cold spares are better:
+
+        >>> import surpyval as surv
+        >>> station = NonRepairableRBD(
+        ...     [("s", "pumps"), ("pumps", "t")],
+        ...     {"pumps": surv.Exponential.from_params([1 / 2000])},
+        ... )
+        >>> best = station.allocate_redundancy(
+        ...     {"pumps": 1}, budget=4, t=1000, required=2, strategy="choose"
+        ... )
+        >>> best.units, best.strategy, round(best.reliability, 4)
+        ({'pumps': 4}, {'pumps': 'cold'}, 0.9197)
+        """
+        if budget is None and target is None:
+            raise ValueError("Give a budget, a target, or both.")
+        problem = self._redundancy_problem(
+            costs,
+            budget,
+            target,
+            minimise,
+            t,
+            max_units,
+            required,
+            strategy,
+            switching_probability,
+            mixing,
+            method,
+        )
+        nodes, kinds, caps, limits = (
+            problem.nodes,
+            problem.kinds,
+            problem.caps,
+            problem.limits,
+        )
+        primary, fewest, ways = problem.primary, problem.fewest, problem.ways
+        evaluate, within, menus = (
+            problem.evaluate,
+            problem.within,
+            problem.menus,
+        )
+        greedy_strategies = problem.greedy_strategies
+        found: Optional[tuple]
+        if target is None:
+            if method == "greedy":
+                found = redundancy_allocation.greedy(
+                    evaluate,
+                    kinds,
+                    caps,
+                    budget=limits,
+                    primary=primary,
+                    mixing=mixing,
+                    fewest=fewest,
+                    strategies=greedy_strategies,
+                )
+                if not within(found[2]):
+                    raise ValueError(
+                        "The greedy search could not start within the "
+                        "budget (one copy of each node, of its cheapest "
+                        "option); use method='exact'."
+                    )
+            elif problem.in_series:
+                found = self._series_redundancy(
+                    nodes, menus(), limits, problem.base, evaluate, primary
+                )
+            else:
+                found = redundancy_allocation.exact_max_reliability(
+                    evaluate, menus(), limits, primary
+                )
+            if found is None:
+                raise ValueError(
+                    "No allocation fits within the budget (one copy of each "
+                    "node, of some option, does not fit)."
+                )
+        else:
+            target = float(target)
+            if not (0.0 < target < 1.0):
+                raise ValueError(f"target must be in (0, 1), got {target!r}.")
+            # The best reliability any allocation can reach: every costed node
+            # at its cap of its most reliable kind (unlimited active copies of
+            # a kind that can work reach 1; cold spares are taken to).
+            ceiling = evaluate(
+                tuple(
+                    (
+                        1.0
+                        if "cold" in ways[i]
+                        else 1.0
+                        - min(
+                            (
+                                float(p == 0.0)
+                                if caps[i] == math.inf
+                                else active_unreliability(
+                                    [1.0 - p], [caps[i]], fewest[i]
+                                )
+                            )
+                            for p, _ in kinds[i]
+                        )
+                    )
+                    for i in range(len(nodes))
+                )
+            )
+            if ceiling < target:
+                raise ValueError(
+                    f"target {target:g} is unreachable: the best achievable "
+                    f"system reliability is {ceiling:.6g}"
+                    + (
+                        " within max_units."
+                        if max_units is not None
+                        else " even with unlimited copies of the costed "
+                        "nodes."
+                    )
+                )
+            limited = any(math.isfinite(limit) for limit in limits)
+            amounts, m = problem.amounts, problem.m
+            start: Optional[tuple] = redundancy_allocation.greedy(
+                evaluate,
+                kinds,
+                caps,
+                budget=limits,
+                target=target,
+                primary=primary,
+                mixing=mixing,
+                fewest=fewest,
+                strategies=greedy_strategies,
+            )
+            assert start is not None
+            if start[0] < target or not within(start[2]):
+                if method == "greedy" or not limited:
+                    raise ValueError(
+                        f"target {target:g} could not be reached: adding "
+                        "copies stopped improving the system at reliability "
+                        f"{start[0]:.6g}"
+                        + (" within the budget." if limited else ".")
+                    )
+                start = None
+                for i, node in enumerate(nodes):
+                    if caps[i] == math.inf and not all(
+                        any(
+                            a[r] > 0.0 and math.isfinite(limits[r])
+                            for r in range(m)
+                        )
+                        for a in amounts[i]
+                    ):
+                        raise ValueError(
+                            f"The greedy search could not reach target "
+                            f"{target:g} within the budget, and node {node!r} "
+                            "is not limited by it; give it a max_units."
+                        )
+            if method == "greedy":
+                found = start
+            else:
+                bound = None if start is None else start[1]
+                if problem.in_series:
+                    found = self._series_redundancy(
+                        nodes,
+                        menus(bound),
+                        limits,
+                        problem.base,
+                        evaluate,
+                        primary,
+                        target=target,
+                        bound=bound,
+                    )
+                else:
+                    found = redundancy_allocation.exact_min_cost(
+                        evaluate,
+                        menus(bound),
+                        target,
+                        bound=math.inf if bound is None else bound,
+                        budget=limits,
+                        primary=primary,
+                    )
+                if found is None:
+                    found = start
+            if found is None:
+                raise ValueError(
+                    f"target {target:g} is unreachable within the budget."
+                )
+
+        return self._redundancy_result(problem, found, method)
+
+    def _redundancy_problem(
+        self,
+        costs,
+        budget,
+        target,
+        minimise,
+        t,
+        max_units,
+        required,
+        strategy,
+        switching_probability,
+        mixing,
+        method,
+    ) -> SimpleNamespace:
+        """Check the arguments of allocate_redundancy (and
+        redundancy_front) and set up the problem the searches solve: the
+        costed nodes, their kinds and designs, the limits and the exact
+        system evaluation."""
+        if method not in ("exact", "greedy"):
+            raise ValueError(
+                f"method must be 'exact' or 'greedy', got {method!r}."
+            )
+        if not isinstance(mixing, (bool, np.bool_)):
+            raise ValueError(f"mixing must be True or False, got {mixing!r}.")
+        mixing = bool(mixing)
+        if self.ccf_groups:
+            raise NotImplementedError(
+                "Redundancy allocation does not yet account for common-cause "
+                "(CCF) groups: duplicating a group member would also have to "
+                "extend its common-cause group."
+            )
+        if not costs:
+            raise ValueError("costs must name at least one node.")
+        nodes = list(costs)
+        for node in nodes:
+            if node not in self.nodes:
+                raise ValueError(
+                    f"Node {node!r} in costs is not a component node of the "
+                    "RBD (the input and output nodes cannot be duplicated)."
+                )
+            if node in self.repeated:
+                raise ValueError(
+                    f"Node {node!r} is a repeat of node "
+                    f"{self.repeated[node]!r}; allocate redundancy to that "
+                    "node instead."
+                )
+        options = self._redundancy_options(nodes, costs)
+        labels, entries = [], []
+        for node in nodes:
+            if node in options:
+                for option in options[node]:
+                    labels.append(f"option {option.name!r} of node {node!r}")
+                    entries.append(option.cost)
+            else:
+                labels.append(f"node {node!r}")
+                entries.append(costs[node])
+        resources, flat = self._redundancy_amounts(labels, entries)
+        # What one copy of each kind uses, per node (one kind without
+        # options).
+        amounts = []
+        for node in nodes:
+            count = len(options.get(node, [None]))
+            amounts.append(flat[:count])
+            flat = flat[count:]
+        limits = self._redundancy_limits(resources, budget)
+        primary = self._redundancy_primary(resources, minimise, target)
+        caps = redundancy_allocation.redundancy_caps(nodes, max_units)
+        fewest = self._redundancy_required(nodes, required, caps)
+        ways = self._redundancy_strategies(nodes, strategy)
+        switching = self._redundancy_switching(
+            nodes, switching_probability, ways, fewest
+        )
+        # The lifetime (or probability) model of one copy of each kind.
+        models = [
+            (
+                [option.reliability for option in options[node]]
+                if node in options
+                else [self.reliabilities[node]]
+            )
+            for node in nodes
+        ]
+        for node, node_ways, node_models in zip(nodes, ways, models):
+            if "cold" in node_ways and any(
+                self._is_probability(model) or self._model_is_fixed(model)
+                for model in node_models
+            ):
+                raise ValueError(
+                    f"Cold standby needs lifetime models, but node {node!r} "
+                    "(or one of its options) is a fixed probability."
+                )
+        m = len(resources)
+
+        def limited_kind(amount) -> bool:
+            return any(
+                amount[r] > 0.0 and math.isfinite(limits[r]) for r in range(m)
+            ) or (target is not None and amount[primary] > 0.0)
+
+        for i, node in enumerate(nodes):
+            if caps[i] == math.inf and not all(map(limited_kind, amounts[i])):
+                raise ValueError(
+                    f"Node {node!r} could be copied without limit: it uses "
+                    "none of a limited resource. Give it a max_units, or "
+                    "limit a resource it uses."
+                )
+        # The least one copy, and the required copies, of each node use of
+        # each resource.
+        cheapest = [
+            [min(a[r] for a in node_amounts) for r in range(m)]
+            for node_amounts in amounts
+        ]
+        least = [
+            [n * amount for amount in row] for n, row in zip(fewest, cheapest)
+        ]
+        total_least = [math.fsum(row[r] for row in least) for r in range(m)]
+        # Every limit given must afford one of each costed node.
+        for r, limit in enumerate(limits):
+            if isinstance(budget, dict):
+                if resources[r] not in budget:
+                    continue
+            elif budget is None:
+                continue
+            need = total_least[r]
+            if math.isfinite(limit) and limit >= need - 1e-9 * max(
+                1.0, abs(need)
+            ):
+                continue
+            what = (
+                "one of each"
+                if max(fewest) == 1
+                else "the required copies of each"
+            )
+            if isinstance(budget, dict):
+                raise ValueError(
+                    f"budget[{resources[r]!r}] must be finite and at least "
+                    f"{need:g}, the {resources[r]} of {what} costed node; "
+                    f"got {budget[resources[r]]!r}."
+                )
+            raise ValueError(
+                f"budget must be finite and at least {need:g}, the cost of "
+                f"{what} costed node; got {budget!r}."
+            )
+        if t is not None and np.ndim(t) != 0:
+            raise ValueError("t must be a single mission time.")
+        if t is None:
+            varying = [
+                f"option {option.name!r} of node {node!r}"
+                for node, node_options in options.items()
+                for option in node_options
+                if not self._is_probability(option.reliability)
+                and not self._model_is_fixed(option.reliability)
+            ]
+            if self.is_time_varying or varying:
+                raise ValueError(
+                    "t (the mission time) is required: "
+                    + (
+                        "this RBD is time-varying"
+                        if self.is_time_varying
+                        else f"{varying[0]} is time-varying"
+                    )
+                    + ", so its reliability depends on when it is evaluated."
+                )
+            # A fixed-probability RBD does not depend on time (as in sf()).
+            t = 1.0
+        x = np.atleast_1d(np.asarray(t, dtype=float))
+
+        base = {
+            node: np.asarray(p, dtype=float)
+            for node, p in self._base_node_probabilities(
+                x, set(), set()
+            ).items()
+        }
+        # Each node's kinds: (reliability of one copy, what it uses).
+        kinds = []
+        for node, node_amounts in zip(nodes, amounts):
+            if node in options:
+                reliabilities = [
+                    self._option_reliability(node, option, x)
+                    for option in options[node]
+                ]
+            else:
+                reliabilities = [float(np.ravel(base[node])[0])]
+            kinds.append(list(zip(reliabilities, node_amounts)))
+
+        def cold(i: int) -> Callable[[tuple], float]:
+            # The unreliability of a node's copies as cold standby (each
+            # arrangement evaluated once).
+            known: Dict[tuple, float] = {}
+
+            def unreliability(counts: tuple) -> float:
+                if sum(counts) == fewest[i]:
+                    # No spares: the same as active copies (and exact).
+                    return active(i)(counts)
+                if counts not in known:
+                    units = [
+                        model
+                        for model, n in zip(models[i], counts)
+                        for _ in range(n)
+                    ]
+                    standby = StandbyModel(
+                        units,
+                        k=fewest[i],
+                        switching_probability=switching[i],
+                        seed=0,
+                    )
+                    known[counts] = float(np.ravel(standby.ff(x))[0])
+                return known[counts]
+
+            return unreliability
+
+        def active(i: int) -> Callable[[tuple], float]:
+            # The unreliability of a node's copies as active redundancy.
+            return functools.partial(
+                redundancy_allocation.active_unreliability,
+                [1.0 - p for p, _ in kinds[i]],
+                fewest=fewest[i],
+            )
+
+        # Each node's strategies: name -> the unreliability of its copies.
+        strategies = [
+            {
+                way: (active(i) if way == "active" else cold(i))
+                for way in node_ways
+            }
+            for i, node_ways in enumerate(ways)
+        ]
+        cache: Dict[tuple, float] = {}
+
+        def evaluate(reliabilities: tuple) -> float:
+            if reliabilities not in cache:
+                probabilities = dict(base)
+                for node, p in zip(nodes, reliabilities):
+                    probabilities[node] = np.full_like(base[node], p)
+                cache[reliabilities] = float(
+                    np.ravel(self.system_probability(probabilities))[0]
+                )
+            return cache[reliabilities]
+
+        def within(designs) -> bool:
+            # Whether an allocation fits the budget.
+            used = self._redundancy_totals(
+                amounts, [d.counts for d in designs], m
+            )
+            return all(
+                used[r] <= limit + 1e-9 * max(1.0, abs(limit))
+                for r, limit in enumerate(limits)
+            )
+
+        def menus(bound=None) -> list:
+            # Each node's designs worth considering within the budget (and
+            # the bound on the primary resource).
+            found = []
+            for i, node in enumerate(nodes):
+                most, spare = caps[i], []
+                for r in range(m):
+                    limit = limits[r]
+                    if r == primary and bound is not None:
+                        limit = min(limit, bound)
+                    room = limit - (total_least[r] - least[i][r])
+                    spare.append(room)
+                    if math.isfinite(room) and cheapest[i][r] > 0.0:
+                        most = min(
+                            most,
+                            math.floor(
+                                (room + 1e-9 * max(1.0, abs(limit)))
+                                / cheapest[i][r]
+                            ),
+                        )
+                designs = []
+                try:
+                    for way, unreliability in strategies[i].items():
+                        designs += redundancy_allocation.node_designs(
+                            kinds[i],
+                            most,
+                            spare,
+                            mixing,
+                            primary,
+                            fewest[i],
+                            # Active copies: the built-in (and faster) form.
+                            None if way == "active" else unreliability,
+                            way,
+                        )
+                except ValueError as error:
+                    raise ValueError(f"For node {node!r} {error}") from None
+                designs = redundancy_allocation.best_designs(designs, primary)
+                if not designs:
+                    raise ValueError(
+                        f"No design of node {node!r} fits within the budget."
+                    )
+                found.append(designs)
+            return found
+
+        # The greedy search's strategies (None: active copies only).
+        greedy_strategies: List[Optional[Dict[str, Callable[[tuple], float]]]]
+        greedy_strategies = [
+            None if node_ways == ("active",) else strategies[i]
+            for i, node_ways in enumerate(ways)
+        ]
+        # Whether every node is in series with the rest (alone a cut set).
+        in_series = False
+        if method == "exact":
+            cut_sets = self.get_min_cut_sets()
+            in_series = all(frozenset([node]) in cut_sets for node in nodes)
+        return SimpleNamespace(
+            nodes=nodes,
+            options=options,
+            resources=resources,
+            amounts=amounts,
+            m=m,
+            limits=limits,
+            primary=primary,
+            caps=caps,
+            fewest=fewest,
+            ways=ways,
+            kinds=kinds,
+            base=base,
+            evaluate=evaluate,
+            within=within,
+            menus=menus,
+            greedy_strategies=greedy_strategies,
+            in_series=in_series,
+        )
+
+    @staticmethod
+    def _redundancy_result(problem, found, method) -> RedundancyAllocation:
+        """The RedundancyAllocation of a search result."""
+        reliability, _, designs = found
+        counts = [d.counts for d in designs]
+        used = NonRepairableRBD._redundancy_totals(
+            problem.amounts, counts, problem.m
+        )
+        totals = dict(zip(problem.resources, used))
+        return RedundancyAllocation(
+            units={
+                node: int(sum(c)) for node, c in zip(problem.nodes, counts)
+            },
+            reliability=reliability,
+            cost=totals[problem.resources[problem.primary]],
+            method=method,
+            resources=totals,
+            mix={
+                node: {
+                    option.name: int(k)
+                    for option, k in zip(problem.options[node], c)
+                    if k
+                }
+                for node, c in zip(problem.nodes, counts)
+                if node in problem.options
+            },
+            strategy={
+                node: d.strategy for node, d in zip(problem.nodes, designs)
+            },
+        )
+
+    @staticmethod
+    def _redundancy_totals(amounts, counts, m) -> List[float]:
+        """The total of each resource an allocation uses."""
+        return [
+            math.fsum(
+                a[r] * k
+                for kinds, c in zip(amounts, counts)
+                for a, k in zip(kinds, c)
+                if k
+            )
+            for r in range(m)
+        ]
+
+    @staticmethod
+    def _redundancy_required(nodes, required, caps) -> list:
+        """The number of copies of each costed node that must work."""
+        if isinstance(required, dict):
+            unknown = set(required) - set(nodes)
+            if unknown:
+                raise ValueError(
+                    "required names node(s) not in costs: "
+                    f"{sorted(map(str, unknown))}."
+                )
+            given = {node: required.get(node, 1) for node in nodes}
+        else:
+            given = {
+                node: 1 if required is None else required for node in nodes
+            }
+        fewest = []
+        for node, cap in zip(nodes, caps):
+            k = given[node]
+            if (
+                isinstance(k, (bool, np.bool_))
+                or not isinstance(k, (int, np.integer))
+                or k < 1
+            ):
+                raise ValueError(
+                    f"required for node {node!r} must be an integer of at "
+                    f"least 1, got {k!r}."
+                )
+            if k > cap:
+                raise ValueError(
+                    f"max_units for node {node!r} is {cap}, fewer than the "
+                    f"{k} copies it requires."
+                )
+            fewest.append(int(k))
+        return fewest
+
+    @staticmethod
+    def _redundancy_strategies(nodes, strategy) -> list:
+        """The redundancy strategies each costed node may use."""
+        choices = {
+            "active": ("active",),
+            "cold": ("cold",),
+            "choose": ("active", "cold"),
+        }
+        if isinstance(strategy, dict):
+            unknown = set(strategy) - set(nodes)
+            if unknown:
+                raise ValueError(
+                    "strategy names node(s) not in costs: "
+                    f"{sorted(map(str, unknown))}."
+                )
+            given = {node: strategy.get(node, "active") for node in nodes}
+        else:
+            given = {node: strategy for node in nodes}
+        for node in nodes:
+            if given[node] not in choices:
+                raise ValueError(
+                    f"strategy for node {node!r} must be 'active', 'cold' or "
+                    f"'choose', got {given[node]!r}."
+                )
+        return [choices[given[node]] for node in nodes]
+
+    @staticmethod
+    def _redundancy_switching(nodes, switching_probability, ways, fewest):
+        """The probability that switching onto each costed node's next cold
+        spare succeeds."""
+        cold = [node for node, way in zip(nodes, ways) if "cold" in way]
+        if isinstance(switching_probability, dict):
+            for node in switching_probability:
+                if node not in cold:
+                    raise ValueError(
+                        "switching_probability applies to cold standby, and "
+                        f"node {node!r} is not a cold standby node in costs."
+                    )
+            given = {
+                node: switching_probability.get(node, 1.0) for node in nodes
+            }
+        else:
+            if float(switching_probability) != 1.0 and not cold:
+                raise ValueError(
+                    "switching_probability applies to cold standby, which no "
+                    "node uses (see strategy)."
+                )
+            given = {node: switching_probability for node in nodes}
+        out = []
+        for node, way, k in zip(nodes, ways, fewest):
+            rho = float(given[node])
+            if not 0.0 <= rho <= 1.0:
+                raise ValueError(
+                    f"switching_probability for node {node!r} must be in "
+                    f"[0, 1], got {given[node]!r}."
+                )
+            if rho < 1.0 and "cold" in way and k > 1:
+                raise ValueError(
+                    "Imperfect switching is supported for cold standby with "
+                    f"one unit required; node {node!r} requires {k}."
+                )
+            out.append(rho)
+        return out
+
+    @staticmethod
+    def _redundancy_options(nodes, costs) -> dict:
+        """The component options of the nodes given a list of them."""
+        options = {}
+        for node in nodes:
+            entry = costs[node]
+            if not isinstance(entry, (list, tuple)):
+                continue
+            if not entry:
+                raise ValueError(
+                    f"Node {node!r} has an empty list of options; give at "
+                    "least one ComponentOption."
+                )
+            if not all(isinstance(o, ComponentOption) for o in entry):
+                raise ValueError(
+                    f"The options of node {node!r} must be ComponentOption "
+                    "instances."
+                )
+            names = [o.name for o in entry]
+            if len(set(names)) < len(names):
+                raise ValueError(
+                    f"The options of node {node!r} must have distinct "
+                    f"names, got {names}."
+                )
+            for option in entry:
+                value = option.reliability
+                if NonRepairableRBD._is_probability(value):
+                    if not 0.0 <= value <= 1.0:
+                        raise ValueError(
+                            f"The reliability of option {option.name!r} of "
+                            f"node {node!r} must be in [0, 1], got {value!r}."
+                        )
+                elif not callable(getattr(value, "sf", None)):
+                    raise ValueError(
+                        f"The reliability of option {option.name!r} of node "
+                        f"{node!r} must be a model with an sf method or a "
+                        f"probability, got {value!r}."
+                    )
+            options[node] = list(entry)
+        return options
+
+    @staticmethod
+    def _is_probability(value) -> bool:
+        return isinstance(
+            value, (int, float, np.integer, np.floating)
+        ) and not isinstance(value, (bool, np.bool_))
+
+    def _option_reliability(self, node, option, x) -> float:
+        """The reliability of one copy of a component option at ``x``."""
+        value = option.reliability
+        if self._is_probability(value):
+            return float(value)
+        p = float(np.ravel(value.sf(x))[0])
+        if not 0.0 <= p <= 1.0:
+            raise ValueError(
+                f"The reliability of option {option.name!r} of node "
+                f"{node!r} must be in [0, 1], got {p!r}."
+            )
+        return p
+
+    @staticmethod
+    def _redundancy_amounts(labels, entries) -> tuple:
+        """The resources, and what one copy uses of them for each entry of
+        costs (a node, or one of its options)."""
+        if all(isinstance(entry, dict) for entry in entries):
+            resources = list(
+                dict.fromkeys(r for entry in entries for r in entry)
+            )
+            if not resources:
+                raise ValueError("costs must name at least one resource.")
+            amounts = []
+            for label, entry in zip(labels, entries):
+                missing = [r for r in resources if r not in entry]
+                if missing:
+                    raise ValueError(
+                        f"No amount of {missing} is given for {label}; "
+                        "every node in costs must name the same resources."
+                    )
+                vector = []
+                for r in resources:
+                    amount = float(entry[r])
+                    if not np.isfinite(amount) or amount < 0.0:
+                        raise ValueError(
+                            f"The {r} of {label} must be finite and "
+                            f"non-negative, got {entry[r]!r}."
+                        )
+                    vector.append(amount)
+                amounts.append(tuple(vector))
+            return resources, amounts
+        if any(isinstance(entry, dict) for entry in entries):
+            raise ValueError(
+                "costs must give every node (and option) a number (one "
+                "resource) or every one a dict of resources, not a mixture."
+            )
+        amounts = []
+        for label, entry in zip(labels, entries):
+            cost = float(entry)
+            if not np.isfinite(cost) or cost <= 0.0:
+                raise ValueError(
+                    f"The cost of {label} must be finite and positive, "
+                    f"got {entry!r}."
+                )
+            amounts.append((cost,))
+        return ["cost"], amounts
+
+    @staticmethod
+    def _redundancy_limits(resources, budget) -> tuple:
+        """One limit per resource (inf where it is not limited)."""
+        if budget is None:
+            return (math.inf,) * len(resources)
+        if isinstance(budget, dict):
+            if not budget:
+                raise ValueError("budget must limit at least one resource.")
+            unknown = [r for r in budget if r not in resources]
+            if unknown:
+                raise ValueError(
+                    f"budget names resource(s) {unknown} that costs does "
+                    f"not use; the resources are {resources}."
+                )
+            return tuple(
+                float(budget[r]) if r in budget else math.inf
+                for r in resources
+            )
+        if len(resources) > 1:
+            raise ValueError(
+                "With several resources, budget must be a dict of limits, "
+                f"e.g. {{{resources[0]!r}: ..., {resources[1]!r}: ...}}."
+            )
+        return (float(budget),)
+
+    @staticmethod
+    def _redundancy_primary(resources, minimise, target) -> int:
+        """The index of the resource a target minimises (and that breaks
+        ties): ``minimise``, else "cost", else the only (or first) one."""
+        if minimise is not None:
+            if target is None:
+                raise ValueError(
+                    "minimise names the resource a target minimises; give a "
+                    "target too."
+                )
+            if minimise not in resources:
+                raise ValueError(
+                    f"minimise must name one of the resources {resources}, "
+                    f"got {minimise!r}."
+                )
+            return resources.index(minimise)
+        if "cost" in resources:
+            return resources.index("cost")
+        if len(resources) > 1 and target is not None:
+            raise ValueError(
+                "With several resources and none called 'cost', minimise "
+                f"must name the one to minimise, from {resources}."
+            )
+        return 0
+
+    def _series_redundancy(
+        self,
+        nodes,
+        menus,
+        limits,
+        base,
+        evaluate,
+        primary,
+        target=None,
+        bound=None,
+    ):
+        """The exact optimum when every costed node is in series with the
+        rest of the system, by the dynamic program of
+        ``redundancy_allocation.series_front`` over each node's designs."""
+        front = redundancy_allocation.series_front(
+            self._design_choices(menus),
+            budget=limits,
+            bound=bound,
+            primary=primary,
+        )
+        if not front:
+            return None
+
+        def chosen(picks):
+            designs = tuple(menu[j] for menu, j in zip(menus, picks))
+            return tuple(d.reliability for d in designs), designs
+
+        if target is None:
+            best = max(value for _, value, _ in front)
+            ties = [f for f in front if f[1] >= best - 1e-12]
+            use, _, picks = min(ties, key=lambda f: (f[0][primary], -f[1]))
+            reliabilities, designs = chosen(picks)
+            return evaluate(reliabilities), use[primary], designs
+        # The system is the costed nodes times the rest, with the costed
+        # nodes perfect.
+        rest = dict(base)
+        for node in nodes:
+            rest[node] = np.ones_like(base[node])
+        scale = float(np.ravel(self.system_probability(rest))[0])
+        for use, value, picks in front:
+            if scale * math.exp(value) < target * (1.0 - 1e-9):
+                continue
+            reliabilities, designs = chosen(picks)
+            reliability = evaluate(reliabilities)
+            if reliability >= target:
+                return reliability, use[primary], designs
+        return None
+
+    @staticmethod
+    def _design_choices(menus) -> list:
+        """Each node's designs as (use, log-reliability) alternatives for
+        the dynamic program."""
+        return [
+            [
+                (
+                    d.use,
+                    (
+                        math.log1p(-d.unreliability)
+                        if d.unreliability < 1.0
+                        else -math.inf
+                    ),
+                )
+                for d in menu
+            ]
+            for menu in menus
+        ]
+
+    def redundancy_front(
+        self,
+        costs: Dict[
+            Hashable,
+            Union[float, Dict[Hashable, float], Sequence[ComponentOption]],
+        ],
+        *,
+        budget: Union[float, Dict[Hashable, float], None] = None,
+        t: Optional[float] = None,
+        max_units: Union[int, Dict[Hashable, int], None] = None,
+        required: Union[int, Dict[Hashable, int], None] = None,
+        strategy: Union[str, Dict[Hashable, str]] = "active",
+        switching_probability: Union[float, Dict[Hashable, float]] = 1.0,
+        mixing: bool = True,
+    ) -> List[RedundancyAllocation]:
+        """The whole cost-reliability trade-off of redundancy allocation.
+
+        Where ``allocate_redundancy`` returns the one best design for a
+        budget or a target, this returns every design that no other beats
+        by using no more of every resource while being at least as reliable
+        (the Pareto front of multi-objective redundancy allocation, e.g.
+        Taboada et al., 2007). With one resource
+        it is the best reliability for each level of spending, so a design
+        can be chosen by looking at the whole curve; the best design within
+        any budget, and the cheapest meeting any target, are on it. With
+        several resources it is the best reliability for each combination
+        of them.
+
+        The front is exact: when every costed node is in series with the
+        rest of the system it comes from the dynamic program behind
+        ``allocate_redundancy``, and otherwise from evaluating every
+        combination of node designs within the budget (giving up with an
+        explanatory error beyond 500,000 of them).
+
+        Parameters
+        ----------
+        costs : dict
+            What one copy of each costed node uses, as for
+            ``allocate_redundancy``: a number, a dict of resources, or a
+            list of [`ComponentOption`][repyability.ComponentOption].
+        budget : float or dict, optional
+            Limits on the resources, as for ``allocate_redundancy``. The
+            budget or ``max_units`` must bound every node's copies.
+        t : float, optional
+            The mission time, as for ``allocate_redundancy``.
+        max_units : int or dict, optional
+            The most copies of each node, as for ``allocate_redundancy``.
+        required : int or dict, optional
+            The copies of each node that must work, as for
+            ``allocate_redundancy``.
+        strategy : str or dict, optional
+            ``"active"``, ``"cold"`` or ``"choose"``, as for
+            ``allocate_redundancy``.
+        switching_probability : float or dict, optional
+            For cold standby, as for ``allocate_redundancy``.
+        mixing : bool, optional
+            Whether a node's copies may mix types, as for
+            ``allocate_redundancy``.
+
+        Returns
+        -------
+        list of RedundancyAllocation
+            One per non-dominated design, by increasing ``cost`` (the total
+            of ``"cost"``, or of the first resource), the most reliable
+            first among equals. With one resource the reliability rises
+            along the list.
+
+        Raises
+        ------
+        ValueError
+            On invalid input, as for ``allocate_redundancy``, if a node's
+            copies are not bounded by the budget or ``max_units``, or if
+            there are too many designs to evaluate.
+        NotImplementedError
+            If the RBD has common-cause (CCF) groups.
+
+        References
+        ----------
+        H. A. Taboada, F. Baheranwala, D. W. Coit and N. Wattanapongsakorn,
+        "Practical solutions for multi-objective optimization: an
+        application to system reliability design problems", Reliability
+        Engineering & System Safety, 92(3), 314-322, 2007.
+
+        Examples
+        --------
+        Two components in series, 90% and 80% reliable, one cost unit each,
+        spending up to 5:
+
+        >>> from surpyval import FixedEventProbability
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "a"), ("a", "b"), ("b", "t")],
+        ...     {
+        ...         "a": FixedEventProbability.from_params(0.1),
+        ...         "b": FixedEventProbability.from_params(0.2),
+        ...     },
+        ... )
+        >>> front = rbd.redundancy_front({"a": 1.0, "b": 1.0}, budget=5)
+        >>> for design in front:
+        ...     print(design.cost, design.units, round(design.reliability, 4))
+        2.0 {'a': 1, 'b': 1} 0.72
+        3.0 {'a': 1, 'b': 2} 0.864
+        4.0 {'a': 2, 'b': 2} 0.9504
+        5.0 {'a': 2, 'b': 3} 0.9821
+        """
+        problem = self._redundancy_problem(
+            costs,
+            budget,
+            None,
+            None,
+            t,
+            max_units,
+            required,
+            strategy,
+            switching_probability,
+            mixing,
+            "exact",
+        )
+        menus = problem.menus()
+        if problem.in_series:
+            found = []
+            for use, _, picks in redundancy_allocation.series_front(
+                self._design_choices(menus),
+                budget=problem.limits,
+                primary=problem.primary,
+            ):
+                designs = tuple(menu[j] for menu, j in zip(menus, picks))
+                reliability = problem.evaluate(
+                    tuple(d.reliability for d in designs)
+                )
+                found.append((use, reliability, designs))
+            # The same front, ordered by the exact system reliabilities.
+            front = redundancy_allocation._sorted_front(found, problem.primary)
+        else:
+            front = redundancy_allocation.exact_front(
+                problem.evaluate, menus, problem.limits, problem.primary
+            )
+        return [
+            self._redundancy_result(problem, allocation, "exact")
+            for allocation in front
+        ]
+
+    def allocate_reliability_redundancy(
+        self,
+        uses: Dict[
+            Hashable,
+            Callable[[float, int], Union[float, Dict[Hashable, float]]],
+        ],
+        *,
+        budget: Union[float, Dict[Hashable, float]],
+        bounds: Union[
+            Tuple[float, float], Dict[Hashable, Tuple[float, float]]
+        ],
+        t: Optional[float] = None,
+        max_units: Union[int, Dict[Hashable, int], None] = None,
+    ) -> ReliabilityRedundancyAllocation:
+        """Choose each node's component reliability and number of copies
+        together: the reliability-redundancy allocation problem (RRAP).
+
+        Joins reliability allocation (what each component must achieve) to
+        redundancy allocation (how many copies to fit): for each node in
+        ``uses``, pick a component reliability ``r`` within its ``bounds``
+        and a number of active copies ``n``, giving the node reliability
+        ``1 - (1 - r) ** n``, to maximise system reliability within the
+        budget. What the copies use is a function of both, typically rising
+        steeply as ``r`` approaches 1 (Tillman, Hwang & Kuo, 1977). The
+        node's own model in the RBD is not used; the other nodes stay as
+        they are, evaluated at the mission time ``t``. Any structure works:
+        the system reliability and its gradient come from the exact engine.
+
+        It is solved exactly over the copies by branch and bound: each copy
+        vector that fits the budget at the lowest reliabilities is bounded
+        above by the system reliability with every node at the highest
+        reliability it could afford alone, and the vectors are solved in
+        decreasing order of that bound -- each a continuous problem for the
+        reliabilities, solved by SLSQP with the exact gradient from the
+        lowest reliabilities -- until no bound beats the best found. The
+        continuous problem is solved to a local optimum, which for a series
+        system with costs convex in the reliabilities is the global one. On
+        the classic benchmarks (series, series-parallel, bridge and
+        overspeed protection systems) it returns the best published
+        solutions.
+
+        Parameters
+        ----------
+        uses : dict
+            ``{node: function}``: ``function(r, n)`` gives what ``n`` copies
+            of component reliability ``r`` use, a number (their cost) or a
+            dict of resource -> amount, naming the same resources for every
+            node. It must not decrease as ``r`` or ``n`` grows.
+        budget : float or dict
+            The limit on the one resource (a number), or on each resource a
+            dict names (resources it leaves out are not limited).
+        bounds : tuple or dict
+            The lowest and highest component reliability, ``(low, high)``
+            in [0, 1], for every node (a tuple) or for each node (a dict
+            naming every node in ``uses``). The lowest must be affordable.
+        t : float, optional
+            The mission time at which the other nodes' reliabilities are
+            evaluated. Required for a time-varying RBD.
+        max_units : int or dict, optional
+            The most copies of every node (an int) or of particular nodes
+            (a dict). By default the budget bounds them.
+
+        Returns
+        -------
+        ReliabilityRedundancyAllocation
+            The ``units`` and ``component_reliability`` of each node, the
+            system ``reliability``, and the total of each resource used
+            (``resources``; ``cost`` is the total of ``"cost"``, or of the
+            first resource).
+
+        Raises
+        ------
+        ValueError
+            On invalid input: empty ``uses``, a node that is not a component
+            node or is a repeated node, a use that is not a function or
+            returns something other than finite, non-negative amounts of the
+            same resources for every node, a ``budget`` naming an unknown
+            resource, invalid ``bounds`` or ``max_units``, ``t`` missing for
+            a time-varying RBD, a budget that cannot afford one copy of each
+            node at its lowest reliability, a node whose copies nothing
+            bounds, or more than 500,000 copy vectors to consider.
+        NotImplementedError
+            If the RBD has common-cause (CCF) groups.
+
+        References
+        ----------
+        F. A. Tillman, C.-L. Hwang and W. Kuo, "Determining component
+        reliability and redundancy for optimum system reliability", IEEE
+        Transactions on Reliability, 26(3), 162-165, 1977.
+
+        Examples
+        --------
+        Two components in series. A component's reliability ``r`` is
+        chosen in [0.5, 0.999]; each copy costs 10 to fit, plus
+        ``(-1 / log(r)) ** 1.5``, which rises steeply as ``r`` nears 1.
+        Within a budget of 100, three copies of each at ``r = 0.754`` is
+        best:
+
+        >>> import math
+        >>> from surpyval import FixedEventProbability
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "a"), ("a", "b"), ("b", "t")],
+        ...     {
+        ...         "a": FixedEventProbability.from_params(0.1),
+        ...         "b": FixedEventProbability.from_params(0.2),
+        ...     },
+        ... )
+        >>> def cost(r, n):
+        ...     return n * (10 + (-1 / math.log(r)) ** 1.5)
+        >>> best = rbd.allocate_reliability_redundancy(
+        ...     {"a": cost, "b": cost}, budget=100, bounds=(0.5, 0.999)
+        ... )
+        >>> best.units
+        {'a': 3, 'b': 3}
+        >>> [round(r, 3) for r in best.component_reliability.values()]
+        [0.754, 0.754]
+        >>> round(best.reliability, 4)
+        0.9705
+        """
+        if self.ccf_groups:
+            raise NotImplementedError(
+                "Reliability-redundancy allocation does not yet account for "
+                "common-cause (CCF) groups."
+            )
+        if not uses:
+            raise ValueError("uses must name at least one node.")
+        nodes = list(uses)
+        for node in nodes:
+            if node not in self.nodes:
+                raise ValueError(
+                    f"Node {node!r} in uses is not a component node of the "
+                    "RBD (the input and output nodes cannot be duplicated)."
+                )
+            if node in self.repeated:
+                raise ValueError(
+                    f"Node {node!r} is a repeat of node "
+                    f"{self.repeated[node]!r}; allocate to that node instead."
+                )
+            if not callable(uses[node]):
+                raise ValueError(
+                    f"uses[{node!r}] must be a function of (r, n), got "
+                    f"{uses[node]!r}."
+                )
+        if isinstance(bounds, dict):
+            missing = [node for node in nodes if node not in bounds]
+            unknown = [node for node in bounds if node not in uses]
+            if missing or unknown:
+                raise ValueError(
+                    "bounds must give (low, high) for exactly the nodes in "
+                    f"uses; missing {missing}, unknown {unknown}."
+                )
+            ranges = [bounds[node] for node in nodes]
+        else:
+            ranges = [bounds] * len(nodes)
+        limits_of = []
+        for node, pair in zip(nodes, ranges):
+            try:
+                low, high = (float(value) for value in pair)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"The bounds of node {node!r} must be a pair (low, "
+                    f"high), got {pair!r}."
+                ) from None
+            if not 0.0 <= low <= high <= 1.0:
+                raise ValueError(
+                    f"The bounds of node {node!r} must satisfy 0 <= low <= "
+                    f"high <= 1, got {pair!r}."
+                )
+            limits_of.append((low, high))
+        # The resources, from what one copy of each node uses at its lowest
+        # reliability.
+        labels = [f"node {node!r}" for node in nodes]
+        entries = [
+            uses[node](low, 1) for node, (low, _) in zip(nodes, limits_of)
+        ]
+        if all(isinstance(entry, dict) for entry in entries):
+            resources, _ = self._redundancy_amounts(labels, entries)
+        else:
+            resources = ["cost"]
+            for label, entry in zip(labels, entries):
+                if isinstance(entry, dict) or not np.isfinite(float(entry)):
+                    raise ValueError(
+                        f"The use of {label} must be a finite number or a "
+                        f"dict of resources for every node, got {entry!r}."
+                    )
+        m = len(resources)
+
+        def vector(node):
+            # The node's use as a tuple, one amount per resource.
+            function = uses[node]
+
+            def use(r: float, n: int) -> Tuple[float, ...]:
+                amount = function(r, n)
+                if isinstance(amount, dict):
+                    values = tuple(float(amount[x]) for x in resources)
+                else:
+                    values = (float(amount),)
+                if len(values) != m or not all(
+                    np.isfinite(v) and v >= 0.0 for v in values
+                ):
+                    raise ValueError(
+                        f"The use of node {node!r} at r={r!r}, n={n!r} must "
+                        "be finite and non-negative amounts of the resources "
+                        f"{resources}, got {amount!r}."
+                    )
+                return values
+
+            return use
+
+        use_vectors = [vector(node) for node in nodes]
+        limits = self._redundancy_limits(resources, budget)
+        caps = redundancy_allocation.redundancy_caps(nodes, max_units)
+        for i, node in enumerate(nodes):
+            if caps[i] == math.inf:
+                # Unbounded unless a limited resource grows with the copies.
+                others = [
+                    math.fsum(
+                        use_vectors[j](limits_of[j][0], 1)[r]
+                        for j in range(len(nodes))
+                        if j != i
+                    )
+                    for r in range(m)
+                ]
+                n = 1
+                while all(
+                    others[r] + amount <= limits[r]
+                    for r, amount in enumerate(
+                        use_vectors[i](limits_of[i][0], n)
+                    )
+                ):
+                    n += 1
+                    if n > 10_000:
+                        raise ValueError(
+                            f"Node {node!r} could be copied without limit: "
+                            "its copies do not use enough of a limited "
+                            "resource. Give it a max_units."
+                        )
+        if t is not None and np.ndim(t) != 0:
+            raise ValueError("t must be a single mission time.")
+        if t is None:
+            if self.is_time_varying:
+                raise ValueError(
+                    "t (the mission time) is required: this RBD is "
+                    "time-varying, so its reliability depends on when it is "
+                    "evaluated."
+                )
+            t = 1.0
+        x = np.atleast_1d(np.asarray(t, dtype=float))
+        base = {
+            node: float(np.ravel(p)[0])
+            for node, p in self._base_node_probabilities(
+                x, set(), set()
+            ).items()
+        }
+        structure = self._decomposition()
+
+        def system(reliabilities):
+            p = dict(base)
+            q = {node: 1.0 - value for node, value in base.items()}
+            for node, value in zip(nodes, reliabilities):
+                p[node], q[node] = value, 1.0 - value
+            value, _, gradient = structure.value_and_gradient(p, q)
+            return value, tuple(gradient.get(node, 0.0) for node in nodes)
+
+        reliability, units, components = (
+            redundancy_allocation.reliability_redundancy(
+                system, use_vectors, limits, limits_of, caps
+            )
+        )
+        amounts = [
+            use_vectors[i](components[i], units[i]) for i in range(len(nodes))
+        ]
+        totals = {
+            resource: math.fsum(a[r] for a in amounts)
+            for r, resource in enumerate(resources)
+        }
+        primary = resources.index("cost") if "cost" in resources else 0
+        return ReliabilityRedundancyAllocation(
+            units=dict(zip(nodes, map(int, units))),
+            component_reliability=dict(zip(nodes, components)),
+            reliability=reliability,
+            cost=totals[resources[primary]],
+            resources=totals,
+        )
+
+    def unreliability(self, x: Optional[ArrayLike] = None, *args, **kwargs):
+        """System unreliability at time/s ``x``; the same as ``ff``.
+
+        ``1 - sf(x)``, the probability that the system has failed by ``x``
+        (see [`ff`][repyability.NonRepairableRBD.ff]).
+
+        Parameters
+        ----------
+        x : array_like, optional
+            Time/s as a number or an array. May be omitted only for a
+            fixed-probability RBD.
+        *args
+            Further positional arguments of ``sf`` (``working_nodes``,
+            ``broken_nodes``, ``method``).
+        **kwargs
+            Keyword arguments of ``sf``.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The system unreliability: a float for scalar ``x``, an array for
+            array ``x``.
+
+        Raises
+        ------
+        ValueError
+            As for ``sf``.
+        NotImplementedError
+            As for ``sf``.
         """
         return 1 - self.sf(x, *args, **kwargs)
 
     def reliability(self, x: Optional[ArrayLike] = None, *args, **kwargs):
-        """Returns the system reliability for time/s x.
+        """System reliability at time/s ``x``; the same as ``sf``.
+
+        The probability that the system is still working at ``x`` (see
+        [`sf`][repyability.NonRepairableRBD.sf]).
 
         Parameters
         ----------
-        x : ArrayLike
-            Time/s as a number or iterable
-        *args, **kwargs :
-            Any sf() arguments
+        x : array_like, optional
+            Time/s as a number or an array. May be omitted only for a
+            fixed-probability RBD.
+        *args
+            Further positional arguments of ``sf`` (``working_nodes``,
+            ``broken_nodes``, ``method``).
+        **kwargs
+            Keyword arguments of ``sf``.
 
         Returns
         -------
-        np.ndarray
-            Reliability values for all nodes at all times x
+        float or numpy.ndarray
+            The system reliability: a float for scalar ``x``, an array for
+            array ``x``.
+
+        Raises
+        ------
+        ValueError
+            As for ``sf``.
+        NotImplementedError
+            As for ``sf``.
         """
         return self.sf(x, *args, **kwargs)
 
     def cs(self, x: ArrayLike, X: ArrayLike, *args, **kwargs) -> np.ndarray:
-        """Returns the conditional survival of the system.
+        """Conditional survival of the system.
 
-        That is, the probability the system survives a *further* ``x`` given it
-        has already survived to ``X``: ``R(x | X) = sf(X + x) / sf(X)``.
+        The probability that the system survives a *further* ``x`` given it
+        has survived to age ``X``: ``R(x | X) = sf(X + x) / sf(X)``. The
+        whole system is conditioned on having survived, not each component
+        on its own age; for per-component ages use
+        [`sf_given_state`][repyability.NonRepairableRBD.sf_given_state].
+
+        The result is clipped to [0, 1] and is 0 where ``sf(X)`` is 0.
+        ``x`` and ``X`` broadcast against each other.
 
         Parameters
         ----------
-        x : ArrayLike
+        x : array_like
             The further duration/s at which conditional survival is evaluated.
-        X : ArrayLike
+        X : array_like
             The age/s the system is known to have survived to.
-        *args, **kwargs :
-            Any sf() arguments (e.g. working_nodes, broken_nodes, method).
+        *args
+            Further positional arguments of ``sf`` (``working_nodes``,
+            ``broken_nodes``, ``method``).
+        **kwargs
+            Keyword arguments of ``sf``.
 
         Returns
         -------
-        np.ndarray
-            The conditional survival probability/ies.
+        float or numpy.ndarray
+            The conditional survival probability: a float if both ``x`` and
+            ``X`` are scalars, otherwise an array.
+
+        Raises
+        ------
+        ValueError
+            As for ``sf``.
+        NotImplementedError
+            As for ``sf``.
+
+        Examples
+        --------
+        A component 50 hours old survives the next 10 hours with a higher
+        probability than it had of surviving from new to 60 hours:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {"c": surv.Weibull.from_params([100, 2])},
+        ... )
+        >>> round(rbd.cs(10, 50), 4)
+        0.8958
+        >>> round(rbd.sf(60), 4)
+        0.6977
         """
         return conditional_survival(self, x, X, *args, **kwargs)
 
     @check_x
     def Hf(self, x: Optional[ArrayLike] = None, **kwargs) -> np.ndarray:
-        """Returns the system cumulative hazard function H(x) = -ln R(x).
+        """System cumulative hazard ``H(x) = -ln R(x)`` at time/s ``x``.
 
-        This is exact given the (exact) system reliability R(x); it is +inf
-        wherever the system reliability has reached zero.
+        Exact given the exact system reliability ``R(x)`` from
+        [`sf`][repyability.NonRepairableRBD.sf] (so it honours
+        common-cause groups); +inf wherever the system reliability has
+        reached zero.
 
         Parameters
         ----------
-        x : ArrayLike
-            Time/s as a number or iterable.
-        **kwargs :
-            Any sf() arguments (e.g. working_nodes, broken_nodes, method).
+        x : array_like, optional
+            Time/s as a number or an array. May be omitted only for a
+            fixed-probability RBD.
+        **kwargs
+            Keyword arguments of ``sf`` (``working_nodes``,
+            ``broken_nodes``, ``method``).
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The cumulative hazard: a float for scalar ``x``, an array for
+            array ``x``.
+
+        Raises
+        ------
+        ValueError
+            As for ``sf``.
+        NotImplementedError
+            As for ``sf``.
+
+        Examples
+        --------
+        For a single exponential component ``H(x)`` is the failure rate
+        times ``x``:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {"c": surv.Exponential.from_params([0.01])},
+        ... )
+        >>> round(rbd.Hf(50), 6)
+        0.5
         """
         sf = np.asarray(self.sf(x, **kwargs), dtype=float)
         with np.errstate(divide="ignore"):
@@ -638,21 +2720,54 @@ class NonRepairableRBD(RBD):
     def df(
         self, x: Optional[ArrayLike] = None, dx: float = 1e-6, **kwargs
     ) -> np.ndarray:
-        """Returns the system failure density f(x) = -dR/dx.
+        """System failure density ``f(x) = -dR/dx`` at time/s ``x``.
 
-        Computed by central finite differences of the system reliability
-        (which is composed of the nodes' reliabilities, so it is smooth in x);
-        ``dx`` sets the relative step size. The step never crosses into
-        negative time.
+        Computed by a central finite difference of the system reliability
+        from [`sf`][repyability.NonRepairableRBD.sf] (so it honours
+        common-cause groups), with step ``h = dx * max(|x|, 1)``: relative
+        to ``x`` for ``|x| >= 1``, absolute below. The lower point is
+        clipped at 0, so the step never crosses into negative time (the
+        difference is one-sided near 0), and negative results (numerical
+        noise) are clipped to 0. It assumes ``R`` is smooth near ``x``,
+        which does not hold for step-function node models such as a
+        Kaplan-Meier fit.
 
         Parameters
         ----------
-        x : ArrayLike
-            Time/s as a number or iterable.
+        x : array_like, optional
+            Time/s as a number or an array. May be omitted only for a
+            fixed-probability RBD (whose density is 0).
         dx : float, optional
             Relative finite-difference step, by default 1e-6.
-        **kwargs :
-            Any sf() arguments (e.g. working_nodes, broken_nodes, method).
+        **kwargs
+            Keyword arguments of ``sf`` (``working_nodes``,
+            ``broken_nodes``, ``method``).
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The failure density: a float for scalar ``x``, an array for
+            array ``x``.
+
+        Raises
+        ------
+        ValueError
+            As for ``sf``.
+        NotImplementedError
+            As for ``sf``.
+
+        Examples
+        --------
+        For a single exponential component ``f(x) = rate * exp(-rate * x)``:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {"c": surv.Exponential.from_params([0.01])},
+        ... )
+        >>> round(rbd.df(50), 6)
+        0.006065
         """
         x = np.atleast_1d(np.asarray(x, dtype=float))
         h = dx * np.maximum(np.abs(x), 1.0)
@@ -668,20 +2783,51 @@ class NonRepairableRBD(RBD):
     def hf(
         self, x: Optional[ArrayLike] = None, dx: float = 1e-6, **kwargs
     ) -> np.ndarray:
-        """Returns the system hazard rate h(x) = f(x) / R(x).
+        """System hazard rate ``h(x) = f(x) / R(x)`` at time/s ``x``.
 
-        Uses the (numerical) failure density df() over the (exact) system
-        reliability. It is +inf wherever the system reliability has reached
-        zero.
+        The numerical failure density from
+        [`df`][repyability.NonRepairableRBD.df] over the exact system
+        reliability from [`sf`][repyability.NonRepairableRBD.sf] (both
+        honour common-cause groups). It is +inf wherever the system
+        reliability has reached zero.
 
         Parameters
         ----------
-        x : ArrayLike
-            Time/s as a number or iterable.
+        x : array_like, optional
+            Time/s as a number or an array. May be omitted only for a
+            fixed-probability RBD.
         dx : float, optional
-            Relative finite-difference step passed to df(), by default 1e-6.
-        **kwargs :
-            Any sf() arguments (e.g. working_nodes, broken_nodes, method).
+            Relative finite-difference step passed to ``df``, by default
+            1e-6.
+        **kwargs
+            Keyword arguments of ``sf`` (``working_nodes``,
+            ``broken_nodes``, ``method``).
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The hazard rate: a float for scalar ``x``, an array for array
+            ``x``.
+
+        Raises
+        ------
+        ValueError
+            As for ``sf``.
+        NotImplementedError
+            As for ``sf``.
+
+        Examples
+        --------
+        A single exponential component has a constant hazard rate:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {"c": surv.Exponential.from_params([0.01])},
+        ... )
+        >>> round(rbd.hf(50), 6)
+        0.01
         """
         sf = np.asarray(self.sf(x, **kwargs), dtype=float)
         density = self.df(x, dx=dx, **kwargs)
@@ -696,8 +2842,45 @@ class NonRepairableRBD(RBD):
     def node_sf(
         self, x: Optional[ArrayLike] = None, *args, **kwargs
     ) -> Dict[Any, Union[float, np.ndarray]]:
-        """Returns each node's reliability at time/s x (a dict keyed by node
-        name). Floats for scalar ``x``, arrays for array ``x``."""
+        """Reliability of each node at time/s ``x``.
+
+        Each node model's own ``sf(x)``, including the input and output
+        nodes (always 1). A repeated node appears only under the node it
+        repeats.
+
+        Parameters
+        ----------
+        x : array_like, optional
+            Time/s as a number or an array. May be omitted only for a
+            fixed-probability RBD.
+        *args
+            Accepted but ignored, so ``working_nodes``/``broken_nodes`` do
+            not apply here.
+        **kwargs
+            Accepted but ignored.
+
+        Returns
+        -------
+        dict[Any, float | numpy.ndarray]
+            ``{node: reliability}``: floats for scalar ``x``, arrays for
+            array ``x``.
+
+        Raises
+        ------
+        ValueError
+            If ``x`` is omitted for a time-varying RBD.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {"c": surv.Weibull.from_params([100, 2])},
+        ... )
+        >>> {k: round(v, 4) for k, v in sorted(rbd.node_sf(50).items())}
+        {'c': 0.7788, 's': 1.0, 't': 1.0}
+        """
         node_sf: Dict[Any, Union[float, np.ndarray]] = {}
         for node_name, node in self.reliabilities.items():
             node_sf[node_name] = node.sf(x)
@@ -707,8 +2890,34 @@ class NonRepairableRBD(RBD):
     def node_ff(
         self, x: Optional[ArrayLike] = None, *args, **kwargs
     ) -> Dict[Any, Union[float, np.ndarray]]:
-        """Returns each node's unreliability at time/s x (a dict keyed by node
-        name). Floats for scalar ``x``, arrays for array ``x``."""
+        """Unreliability of each node at time/s ``x``.
+
+        Each node model's own ``ff(x)``, including the input and output
+        nodes (always 0). A repeated node appears only under the node it
+        repeats.
+
+        Parameters
+        ----------
+        x : array_like, optional
+            Time/s as a number or an array. May be omitted only for a
+            fixed-probability RBD.
+        *args
+            Accepted but ignored, so ``working_nodes``/``broken_nodes`` do
+            not apply here.
+        **kwargs
+            Accepted but ignored.
+
+        Returns
+        -------
+        dict[Any, float | numpy.ndarray]
+            ``{node: unreliability}``: floats for scalar ``x``, arrays for
+            array ``x``.
+
+        Raises
+        ------
+        ValueError
+            If ``x`` is omitted for a time-varying RBD.
+        """
         node_ff: Dict[Any, Union[float, np.ndarray]] = {}
         for node_name, node in self.reliabilities.items():
             node_ff[node_name] = node.ff(x)
@@ -717,21 +2926,54 @@ class NonRepairableRBD(RBD):
 
     @property
     def is_fixed(self) -> bool:
-        """True if every node's reliability is a fixed (time-invariant)
-        probability, so the system reliability does not vary with time."""
+        """Whether the system reliability is constant in time.
+
+        True when every node is a fixed (per-demand) probability, such as a
+        ``surpyval.FixedEventProbability``, a
+        [`RepeatedNode`][repyability.RepeatedNode] of one, or a nested
+        fixed-probability RBD; perfect nodes do not count either way. Any
+        other model (a lifetime distribution, a non-parametric fit, a
+        standby or load-sharing node, ...) makes the RBD time-varying.
+
+        For a fixed-probability RBD the time argument ``x`` of the
+        reliability and importance methods may be omitted, and the
+        methods that solve for a time (``time_to_reliability``,
+        ``bx_life``, ``remaining_life``) raise a ValueError. Decided when
+        the RBD is built.
+        """
         return self._fixed_probs
+
+    @staticmethod
+    def _model_is_fixed(model) -> bool:
+        """Whether a node model's reliability does not vary with time."""
+        if isinstance(model, NonParametric):
+            return False
+        if isinstance(model, NonRepairableRBD):
+            return model.is_fixed
+        if model is PerfectReliability or model is PerfectUnreliability:
+            return True
+        if isinstance(model, (StandbyModel, LoadSharingModel)):
+            return False
+        if isinstance(model, RepeatedNode):
+            return is_fixed_probability(model.model)
+        return is_fixed_probability(model)
 
     @property
     def is_time_varying(self) -> bool:
-        """True if any node's reliability varies with time (the complement of
-        :attr:`is_fixed`)."""
+        """Whether the system reliability varies with time.
+
+        The complement of
+        [`is_fixed`][repyability.NonRepairableRBD.is_fixed]: True when at
+        least one node's reliability depends on time, in which case the
+        time argument ``x`` must be given.
+        """
         return not self._fixed_probs
 
-    # Node model types whose reliability is obtained by Monte-Carlo simulation
-    # (a Kaplan-Meier fit to simulated samples) rather than in closed form. A
-    # standby arrangement is sequence-dependent (dynamic), so its sf(t) cannot
-    # be expressed analytically and is instead estimated by simulation. Such
-    # nodes therefore prevent a purely analytic / BDD solution of the system.
+    # Dynamic (sequence-dependent) node model types. Depending on the node,
+    # their sf(t) is a closed form (identical exponential units), a numerical
+    # convolution or a Kaplan-Meier fit to simulated lifetimes; any of them is
+    # treated as preventing a purely analytic / BDD solution of the system
+    # (see is_analytically_solvable).
     _SIMULATION_NODE_TYPES = (
         StandbyModel,
         RepeatedStandbyNode,
@@ -765,14 +3007,22 @@ class NonRepairableRBD(RBD):
         return True
 
     def get_non_analytic_nodes(self) -> dict[Any, str]:
-        """Returns the nodes that prevent an analytic / BDD solution.
+        """The nodes that prevent a purely analytic solution.
+
+        A node is non-analytic when its model is a
+        [`StandbyModel`][repyability.StandbyModel],
+        [`RepeatedStandbyNode`][repyability.RepeatedStandbyNode] or
+        [`LoadSharingModel`][repyability.LoadSharingModel], or a
+        [`RepeatedNode`][repyability.RepeatedNode] or nested
+        ``NonRepairableRBD`` containing one (see
+        ``is_analytically_solvable``).
 
         Returns
         -------
         dict[Any, str]
-            A mapping of node name -> the offending model's type name for
-            every node whose reliability requires Monte-Carlo simulation (e.g.
-            a StandbyModel). Empty if the RBD is analytically solvable.
+            ``{node: type name of its model}`` for every non-analytic node,
+            e.g. ``{"a": "StandbyModel"}``. Empty if the RBD is
+            analytically solvable.
         """
         non_analytic: dict[Any, str] = {}
         for node_name, model in self.reliabilities.items():
@@ -781,125 +3031,732 @@ class NonRepairableRBD(RBD):
         return non_analytic
 
     def is_analytically_solvable(self) -> bool:
-        """Returns whether the system reliability can be solved analytically.
+        """Whether every node is of an analytic (non-dynamic) model type.
 
-        The analytic methods (the inclusion-exclusion in system_probability(),
-        and equivalently a BDD evaluation) require every node to expose a
-        reliability sf(t) that does not itself depend on Monte-Carlo
-        simulation. This holds for parametric and non-parametric distributions,
-        fixed-probability nodes, repeated nodes of such models, and nested RBDs
-        that are themselves analytically solvable.
+        The exact system reliability (``sf`` and the methods built on it)
+        is only as accurate as each node's own ``sf(t)``. That is a closed
+        form or data for surpyval distributions (parametric,
+        non-parametric or fixed-probability), for
+        [`RegressionNode`][repyability.RegressionNode] and the perfect
+        nodes, for repeated nodes of such models, and for nested RBDs that
+        are themselves analytically solvable.
 
-        It does NOT hold when any node is a standby arrangement (StandbyModel
-        or RepeatedStandbyNode): a standby node is sequence-dependent and its
-        sf(t) is estimated by simulation, so while sf()/system_probability()
-        will still return a value, that value is only as good as the underlying
-        Monte-Carlo + Kaplan-Meier fit (a step function bounded by the sampled
-        support) rather than a closed-form result. Such systems are better
-        evaluated by simulation (e.g. random()/mean()).
+        Standby and load-sharing arrangements
+        ([`StandbyModel`][repyability.StandbyModel],
+        [`RepeatedStandbyNode`][repyability.RepeatedStandbyNode],
+        [`LoadSharingModel`][repyability.LoadSharingModel]) are
+        sequence-dependent, so their ``sf(t)`` is, depending on the node, a
+        closed form (identical exponential units), a numerical convolution
+        or a Kaplan-Meier fit to Monte-Carlo lifetimes (a step function
+        bounded by the simulated support). This check is by type only: any
+        such node, or a repeated node or nested RBD containing one, makes it
+        False, even when the node's ``sf`` is a closed form. ``sf`` still
+        returns a value either way; for such systems simulating the whole
+        system (``random``, ``mean``) avoids the per-node approximation.
+
+        The result is also stored at construction in
+        ``structure_check["is_analytically_solvable"]``.
 
         Returns
         -------
         bool
-            True if the RBD can be solved analytically / with a BDD, False if
-            it requires simulation. Use get_non_analytic_nodes() to see which
-            nodes are responsible.
+            True if no node is of a standby or load-sharing type; False
+            otherwise (``get_non_analytic_nodes`` lists which).
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, StandbyModel
+        >>> unit = surv.Weibull.from_params([100, 2])
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "a"), ("a", "b"), ("b", "t")],
+        ...     {"a": StandbyModel([unit, unit]), "b": unit},
+        ... )
+        >>> rbd.is_analytically_solvable()
+        False
+        >>> rbd.get_non_analytic_nodes()
+        {'a': 'StandbyModel'}
         """
         return len(self.get_non_analytic_nodes()) == 0
 
-    def random(self, size, seed=None):
-        """Monte-Carlo simulate ``size`` system failure times.
+    def random(
+        self,
+        size,
+        seed=None,
+        *,
+        antithetic: bool = False,
+        n_jobs: Optional[int] = None,
+    ):
+        """Draw ``size`` random system lifetimes (Monte-Carlo).
+
+        Each node's lifetime is drawn independently from its own model's
+        ``random``, and the system fails when its last working minimal path
+        set breaks: each sample is the maximum, over the minimal path sets,
+        of the minimum lifetime of the path set's members (k-out-of-n and
+        repeated nodes are accounted for). When every
+        node's draws can be replayed as one block (e.g. surpyval parametric
+        distributions, and composite nodes built from them), all samples
+        are computed at once; otherwise they are simulated one at a time by
+        failing nodes in time order until the system fails. Both paths draw
+        the same random numbers in the same order, so they give identical
+        results. Either way the system is worked out through the diagram's
+        modules, without listing its path sets, so a large redundant diagram
+        is sampled about as fast as a small one.
+
+        Common-cause groups are ignored, without a warning: their
+        basic-event model assumes a small failure probability, while a
+        lifetime runs to ``Q = 1``. The same applies to ``mean``,
+        ``mean_time_to_failure`` and ``mean_time_to_failure_interval``.
+        Fixed-probability nodes have no lifetime (surpyval draws 0/1 event
+        indicators for them), so the samples are not meaningful for an RBD
+        containing any.
 
         Parameters
         ----------
         size : int
-            Number of system-lifetime samples to draw.
+            Number of system lifetimes to draw.
         seed : int or None, optional
             If given, seeds numpy's global RNG for the duration of the draw so
             the result is reproducible (surpyval's ``.random`` uses the global
             RNG); the caller's RNG state is restored afterwards. By default
-            None (non-reproducible).
+            None (non-reproducible). It cannot make surpyval non-parametric
+            node models (e.g. a Kaplan-Meier fit) reproducible: surpyval
+            draws those from a fresh, OS-seeded generator on every call.
+        antithetic : bool, optional
+            Draw the lifetimes in antithetic pairs, by default False: the
+            second of each pair (samples ``2i`` and ``2i + 1``) is drawn
+            from ``1 - u`` for every uniform ``u`` the first drew. Each
+            lifetime is still a correct draw, but the two of a pair are
+            negatively correlated (for a system whose lifetime rises with
+            its nodes'), so their mean varies less than two independent
+            draws'. The pairs, not the lifetimes, are independent: estimate
+            a standard error from the pairs' means. ``size`` must be even,
+            and every node's draws must be replayable (as for the batched
+            sampling above), else ``NotImplementedError``.
+        n_jobs : int, optional
+            Draw in parallel, in blocks of ``RANDOM_BLOCK`` (10_000)
+            lifetimes, each seeded in turn from ``seed``, over ``n_jobs``
+            processes (-1: one per CPU). The blocks are the same however
+            many processes draw them, so the lifetimes do not depend on
+            ``n_jobs`` (any number, 1 included), but they differ from a
+            draw without it. By default None: one draw in this process.
+
+        Returns
+        -------
+        numpy.ndarray
+            ``size`` system lifetimes; ``inf`` in a sample where the system
+            never fails (e.g. through a perfectly reliable path).
+
+        Raises
+        ------
+        ValueError
+            If ``size`` is not a positive integer (even, with
+            ``antithetic``) when ``antithetic`` or ``n_jobs`` is given, or
+            ``n_jobs`` is not a positive integer or -1.
+        NotImplementedError
+            If ``antithetic`` is asked for and a node's draws cannot be
+            replayed from uniforms (a node model sampled its own way).
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> unit = surv.Weibull.from_params([100, 2])
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        ...     {"a": unit, "b": unit},
+        ... )
+        >>> lifetimes = rbd.random(5, seed=1)
+        >>> lifetimes.shape
+        (5,)
+        >>> bool((lifetimes == rbd.random(5, seed=1)).all())
+        True
         """
-        out = np.zeros(size)
-        with numpy_seed(seed):
-            for i in range(size):
-                event_queue: PriorityQueue = PriorityQueue()
-                for node in self.G.nodes:
-                    # .random(1) returns a 1-element array; take the scalar so
-                    # the event time orders the PriorityQueue and assigns into
-                    # ``out`` (NumPy >= 2 rejects assigning a 1-element array
-                    # to a scalar).
-                    draw = np.asarray(self.reliabilities[node].random(1))
-                    time = float(draw.reshape(-1)[0])
-                    event_queue.put(NodeFailure(time, node))
+        if not antithetic and n_jobs is None:
+            with numpy_seed(seed):
+                return self._draw(size)
+        montecarlo.check_count(size, antithetic, "size")
+        jobs = None if n_jobs is None else montecarlo.jobs(n_jobs)
+        return self._simulate_lifetimes(size, seed, antithetic, jobs, None)
 
-                working_nodes = {k: True for k in self.G.nodes}
-                system_working = True
-                while system_working:
-                    failure = event_queue.get()
-                    time = failure.time
-                    working_nodes[failure.node] = False
-                    system_working = self.is_system_working(
-                        working_nodes, method="p"
-                    )
-                out[i] = time
+    def _draw(self, size, antithetic: bool = False) -> np.ndarray:
+        """``size`` lifetimes from numpy's global RNG as it stands."""
+        if antithetic:
+            return self._random_antithetic(size)
+        fast = self._random_vectorised(size)
+        if fast is not None:
+            return fast
+        return self._random_by_events(size)
 
+    def _random_antithetic(self, size) -> np.ndarray:
+        """``size`` (even) lifetimes in antithetic pairs: the second of
+        each pair drawn from ``1 - u`` for the first's uniforms ``u``."""
+        sampler = self._row_sampler()
+        if sampler is None:
+            raise NotImplementedError(
+                "Antithetic sampling needs every node's draws to be "
+                "replayable from uniforms (surpyval parametric distributions "
+                "and the composite nodes built from them)."
+            )
+        u = np.random.random_sample((size // 2, sampler.width))
+        out = np.empty(size)
+        out[0::2] = sampler.draw(u)
+        out[1::2] = sampler.draw(1.0 - u)
+        _check_lifetimes(out)
         return out
 
-    def mean(self, mc_samples: int = 100_000, seed=None):
-        """Returns the Mean Time To Failure of the RBD
-        This is necessary for recursive calls which will only use the `mean`
-        """
-        return self.random(mc_samples, seed=seed).mean().item()
+    def _simulate_lifetimes(
+        self,
+        n: int,
+        seed,
+        antithetic: bool,
+        jobs: Optional[int],
+        stop: Optional[Callable[[np.ndarray], int]],
+    ) -> np.ndarray:
+        """``n`` lifetimes, then more while ``stop`` (given those so far)
+        asks for them: in this process from numpy's global RNG (seeded,
+        then restored, with a seed), or, with ``jobs``, in seeded blocks
+        over that many processes. Either way a run that stops at ``m``
+        lifetimes draws those it would in a run of ``m`` from the start,
+        in blocks of that run's first ``n``."""
+        seeds = np.random.SeedSequence(seed) if jobs is not None else None
+        executor = (
+            ProcessPoolExecutor(max_workers=jobs)
+            if jobs is not None and jobs > 1
+            else None
+        )
+        parts: List[np.ndarray] = []
+        try:
+            with numpy_seed(seed if jobs is None else None):
+                batch = n
+                while batch:
+                    if seeds is None:
+                        parts.append(self._draw(batch, antithetic))
+                    else:
+                        tasks = [
+                            (
+                                self,
+                                size,
+                                montecarlo.block_seed(seeds),
+                                antithetic,
+                            )
+                            for size in montecarlo.blocks(batch, RANDOM_BLOCK)
+                        ]
+                        if executor is None:
+                            parts.extend(map(_random_block, tasks))
+                        else:
+                            parts.extend(executor.map(_random_block, tasks))
+                    batch = 0 if stop is None else stop(np.concatenate(parts))
+        finally:
+            if executor is not None:
+                executor.shutdown()
+        return np.concatenate(parts)
 
-    def mean_time_to_failure(self, mc_samples: int = 100_000, seed=None):
+    def _random_vectorised(self, size) -> Optional[np.ndarray]:
+        """``random(size)`` without the per-sample event loop, when every
+        node's draws can be replayed in one block (see :meth:`_row_sampler`);
+        otherwise ``None`` (nothing is drawn)."""
+        sampler = self._row_sampler()
+        if sampler is None:
+            return None
+        state = np.random.get_state()
+        out = sampler.draw(np.random.random_sample((size, sampler.width)))
+        if np.isnan(out).any():
+            # The event loop's ordering of NaN times is not reproducible
+            # here; rewind and let it run.
+            np.random.set_state(state)
+            return None
+        return out
+
+    def _row_sampler(self) -> Optional[RowSampler]:
+        """This RBD's ``random(1)`` as a :class:`RowSampler`, when every
+        node's draws can be replayed that way (which also lets an RBD nested
+        as a node be batched); otherwise ``None``.
+
+        A coherent system fails when its last intact path set breaks, so its
+        lifetime is the max over minimal path sets of the min of their
+        members' lifetimes: the same value the event loop finds. It is
+        worked out through the diagram's modules, without listing the path
+        sets: a series module fails at its members' first failure, a
+        parallel one at their last, and a k-out-of-n one at the failure that
+        leaves fewer than ``k`` working. A sample in which any node drew NaN
+        comes out NaN, so that the caller falls back to the event loop,
+        which orders NaN times its own way.
         """
-        User friendly way to get MTTF
+        nodes = self._components()
+        samplers: list[RowSampler] = []
+        for node in nodes:
+            node_sampler = row_sampler(self.reliabilities[node])
+            if node_sampler is None:
+                return None
+            samplers.append(node_sampler)
+        structure = self._decomposition()
+
+        def sample(u):
+            size = len(u)
+            lifetimes, start = {}, 0
+            for node, sampler in zip(nodes, samplers):
+                end = start + sampler.width
+                lifetimes[node] = sampler.draw(u[:, start:end])
+                start = end
+            out = np.array(structure.lifetime(lifetimes, size), dtype=float)
+            for lifetime in lifetimes.values():
+                out[np.isnan(lifetime)] = np.nan
+            return out
+
+        return RowSampler(sum(s.width for s in samplers), sample)
+
+    def _components(self) -> list:
+        """Every node of the diagram that is a component of its own (the
+        input and output included), in the diagram's order: a repeated node
+        is the component it repeats, which fails once for all its
+        appearances."""
+        return [n for n in self.G.nodes if n not in self.repeated]
+
+    def _random_by_events(self, size) -> np.ndarray:
+        """``random(size)`` by stepping through each sample's failures in
+        time order until the system fails; works for any node model."""
+        out = np.zeros(size)
+        for i in range(size):
+            event_queue: PriorityQueue = PriorityQueue()
+            for node in self._components():
+                # .random(1) returns a 1-element array; take the scalar so
+                # the event time orders the PriorityQueue and assigns into
+                # ``out`` (NumPy >= 2 rejects assigning a 1-element array to
+                # a scalar).
+                one = np.asarray(draw(self.reliabilities[node], 1))
+                time = float(one.reshape(-1)[0])
+                event_queue.put(NodeFailure(time, node))
+
+            working_nodes = {k: True for k in self._components()}
+            system_working = True
+            while system_working:
+                if event_queue.empty():
+                    # Every node has failed and the system still works: an
+                    # edge joins the input to the output directly, so it
+                    # never fails (as the batched path finds too).
+                    time = np.inf
+                    break
+                failure = event_queue.get()
+                time = failure.time
+                working_nodes[failure.node] = False
+                system_working = self.is_system_working(
+                    working_nodes, method="p"
+                )
+            out[i] = time
+        return out
+
+    def mean(
+        self,
+        mc_samples: int = 100_000,
+        seed=None,
+        *,
+        tolerance: Optional[float] = None,
+        confidence: float = 0.95,
+        max_samples: Optional[int] = None,
+        antithetic: bool = False,
+        n_jobs: Optional[int] = None,
+    ):
+        """Mean time to failure (MTTF) of the system, by Monte-Carlo.
+
+        The average of ``random(mc_samples, seed=seed)`` (see
+        [`random`][repyability.NonRepairableRBD.random]), so it ignores
+        common-cause groups and is not meaningful for fixed-probability
+        nodes. The estimate's standard error is the lifetimes' standard
+        deviation over ``sqrt(mc_samples)``; use
+        ``mean_time_to_failure_interval`` to get it with a confidence
+        interval. This is also the MTTF used for this RBD when it is
+        nested as a node of another RBD (see ``node_mttf``).
+
+        Parameters
+        ----------
+        mc_samples : int, optional
+            Number of system lifetimes to simulate, by default 100_000.
+        seed : int or None, optional
+            Seed for reproducibility (see ``random``), by default None.
+        tolerance : float, optional
+            Simulate until the MTTF is known to within ``tolerance`` (in
+            the lifetimes' units) either side, at ``confidence``: after the
+            first ``mc_samples`` lifetimes, and each further ``mc_samples``,
+            the run stops once the half-width of the confidence interval
+            of the mean is at most ``tolerance``, or ``max_samples`` have
+            been drawn (then with a RuntimeWarning). By default None: exactly
+            ``mc_samples``. A run that stops at ``m`` lifetimes gives the
+            result of a run of ``m`` from the start (without ``n_jobs``).
+        confidence : float, optional
+            The confidence level ``tolerance`` is judged at, by default
+            0.95.
+        max_samples : int, optional
+            The most lifetimes a run to ``tolerance`` draws, by default 100
+            times ``mc_samples``.
+        antithetic : bool, optional
+            Draw the lifetimes in antithetic pairs (see ``random``), by
+            default False. ``mc_samples`` must then be even.
+        n_jobs : int, optional
+            Draw in parallel over ``n_jobs`` processes (see ``random``), by
+            default None.
+
+        Returns
+        -------
+        float
+            The MTTF estimate.
+
+        Raises
+        ------
+        ValueError
+            If an option is invalid (see ``random``; ``max_samples``
+            without a ``tolerance``, or smaller than ``mc_samples``).
+
+        Examples
+        --------
+        A single exponential component with failure rate 0.01 has an
+        exact MTTF of 100:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {"c": surv.Exponential.from_params([0.01])},
+        ... )
+        >>> print(f"{rbd.mean(mc_samples=10_000, seed=1):.1f}")
+        98.9
         """
-        return self.mean(mc_samples, seed=seed)
+        samples = self._mttf_samples(
+            mc_samples,
+            seed,
+            tolerance,
+            confidence,
+            max_samples,
+            antithetic,
+            n_jobs,
+        )
+        return samples.mean().item()
+
+    def mean_time_to_failure(
+        self,
+        mc_samples: int = 100_000,
+        seed=None,
+        *,
+        tolerance: Optional[float] = None,
+        confidence: float = 0.95,
+        max_samples: Optional[int] = None,
+        antithetic: bool = False,
+        n_jobs: Optional[int] = None,
+    ):
+        """Mean time to failure (MTTF) of the system; the same as ``mean``.
+
+        A Monte-Carlo estimate from ``mc_samples`` simulated lifetimes (see
+        [`mean`][repyability.NonRepairableRBD.mean]); common-cause groups
+        are ignored.
+
+        Parameters
+        ----------
+        mc_samples : int, optional
+            Number of system lifetimes to simulate, by default 100_000.
+        seed : int or None, optional
+            Seed for reproducibility (see ``random``), by default None.
+        tolerance : float, optional
+            Simulate until the MTTF is known to within ``tolerance`` either
+            side (see ``mean``), by default None.
+        confidence : float, optional
+            The confidence level ``tolerance`` is judged at, by default
+            0.95.
+        max_samples : int, optional
+            The most lifetimes a run to ``tolerance`` draws, by default 100
+            times ``mc_samples``.
+        antithetic : bool, optional
+            Draw the lifetimes in antithetic pairs (see ``random``), by
+            default False.
+        n_jobs : int, optional
+            Draw in parallel over ``n_jobs`` processes (see ``random``), by
+            default None.
+
+        Returns
+        -------
+        float
+            The MTTF estimate.
+        """
+        return self.mean(
+            mc_samples,
+            seed=seed,
+            tolerance=tolerance,
+            confidence=confidence,
+            max_samples=max_samples,
+            antithetic=antithetic,
+            n_jobs=n_jobs,
+        )
 
     def mean_time_to_failure_interval(
         self,
         mc_samples: int = 100_000,
         confidence: float = 0.95,
         seed=None,
+        *,
+        tolerance: Optional[float] = None,
+        max_samples: Optional[int] = None,
+        antithetic: bool = False,
+        n_jobs: Optional[int] = None,
     ) -> ConfidenceInterval:
-        """Returns the Monte-Carlo MTTF estimate with its sampling
-        uncertainty.
+        """Monte-Carlo MTTF estimate with a confidence interval.
 
-        The MTTF is the mean of ``mc_samples`` simulated system lifetimes; by
-        the central limit theorem its sampling error is normal with standard
-        error ``sample std / sqrt(mc_samples)``, from which the confidence
-        interval is built.
+        The MTTF is the mean of ``mc_samples`` simulated system lifetimes
+        (see [`random`][repyability.NonRepairableRBD.random]; common-cause
+        groups are ignored). By the central limit theorem its sampling
+        error is normal with standard error
+        ``sample std / sqrt(mc_samples)`` (of the antithetic pairs' means,
+        over the square root of their number, with ``antithetic``), from
+        which the two-sided interval ``estimate +/- z * standard_error`` is
+        built; the lower bound is clipped at 0. The interval describes the
+        simulation error only, not uncertainty in the node models.
 
         Parameters
         ----------
         mc_samples : int, optional
             Number of Monte-Carlo samples, by default 100_000.
         confidence : float, optional
-            The confidence level, by default 0.95.
+            The confidence level, in (0, 1), by default 0.95.
         seed : int or None, optional
-            Seed for reproducibility (see :meth:`random`).
+            Seed for reproducibility (see ``random``), by default None.
+        tolerance : float, optional
+            Simulate until the interval is at most ``tolerance`` either side
+            of the estimate: after the first ``mc_samples`` lifetimes, and
+            each further ``mc_samples``, the run stops once it is, or once
+            ``max_samples`` have been drawn (then with a RuntimeWarning). By
+            default None: exactly ``mc_samples``. Without ``n_jobs``, a run
+            that stops at ``m`` lifetimes gives the result of a run of ``m``
+            from the start.
+        max_samples : int, optional
+            The most lifetimes a run to ``tolerance`` draws, by default 100
+            times ``mc_samples``.
+        antithetic : bool, optional
+            Draw the lifetimes in antithetic pairs (see ``random``), by
+            default False: a narrower interval for the same number of
+            lifetimes, when the system's lifetime rises with its nodes' (as
+            a coherent system's does). ``mc_samples`` must then be even.
+        n_jobs : int, optional
+            Draw in parallel over ``n_jobs`` processes (-1: one per CPU; see
+            ``random``), by default None. The result does not depend on the
+            number of processes.
 
         Returns
         -------
         ConfidenceInterval
-            The estimate, bounds, standard error and sample count.
+            The estimate, bounds, confidence level, standard error and
+            sample count (see
+            [`ConfidenceInterval`][repyability.ConfidenceInterval]).
+
+        Raises
+        ------
+        ValueError
+            If ``confidence`` is not in (0, 1), or another option is invalid
+            (see ``mean``).
+        NotImplementedError
+            With ``antithetic``, if a node's draws cannot be replayed from
+            uniforms.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {"c": surv.Exponential.from_params([0.01])},
+        ... )
+        >>> ci = rbd.mean_time_to_failure_interval(mc_samples=10_000, seed=1)
+        >>> print(f"{ci.estimate:.1f} ({ci.lower:.1f}, {ci.upper:.1f})")
+        98.9 (96.9, 100.8)
+
+        Simulate until the MTTF is known to within 0.5 either side:
+
+        >>> ci = rbd.mean_time_to_failure_interval(
+        ...     mc_samples=10_000, seed=1, tolerance=0.5
+        ... )
+        >>> ci.n_samples, round(ci.upper - ci.estimate, 2)
+        (160000, 0.49)
         """
         if not 0.0 < confidence < 1.0:
             raise ValueError("confidence must be between 0 and 1.")
-        samples = self.random(mc_samples, seed=seed)
+        samples = self._mttf_samples(
+            mc_samples,
+            seed,
+            tolerance,
+            confidence,
+            max_samples,
+            antithetic,
+            n_jobs,
+        )
         estimate = float(samples.mean())
-        standard_error = float(samples.std(ddof=1) / np.sqrt(len(samples)))
-        z = float(norm.ppf(0.5 + confidence / 2.0))
+        standard_error = montecarlo.standard_error(samples, antithetic)
+        z = montecarlo.z_value(confidence)
         return ConfidenceInterval(
             estimate=estimate,
             lower=max(0.0, estimate - z * standard_error),
             upper=estimate + z * standard_error,
             confidence=confidence,
             standard_error=standard_error,
+            n_samples=len(samples),
+        )
+
+    def _mttf_samples(
+        self,
+        mc_samples,
+        seed,
+        tolerance,
+        confidence,
+        max_samples,
+        antithetic: bool,
+        n_jobs,
+    ) -> np.ndarray:
+        """The simulated lifetimes an MTTF estimate is the mean of."""
+        if (
+            tolerance is None
+            and max_samples is None
+            and not antithetic
+            and n_jobs is None
+        ):
+            return self.random(mc_samples, seed=seed)
+        montecarlo.check_count(mc_samples, antithetic, "mc_samples")
+        montecarlo.check_confidence(confidence)
+        limit = montecarlo.sample_limit(
+            mc_samples,
+            tolerance,
+            max_samples,
+            antithetic,
+            ("mc_samples", "max_samples"),
+        )
+        jobs = None if n_jobs is None else montecarlo.jobs(n_jobs)
+
+        def more(values: np.ndarray) -> int:
+            return montecarlo.more_samples(
+                values,
+                mc_samples,
+                tolerance,
+                confidence,
+                limit,  # type: ignore[arg-type]
+                antithetic,
+                "MTTF",
+                "max_samples",
+            )
+
+        stop = None if limit is None else more
+        return self._simulate_lifetimes(
+            mc_samples, seed, antithetic, jobs, stop
+        )
+
+    def compare(
+        self,
+        other: "NonRepairableRBD",
+        mc_samples: int = 100_000,
+        seed=None,
+        *,
+        confidence: float = 0.95,
+    ) -> ConfidenceInterval:
+        """How much longer (or shorter) this system's mean time to failure
+        is than ``other``'s, by simulation with common random numbers.
+
+        Both systems' lifetimes are simulated ``mc_samples`` times, and in
+        each sample a component with the same name in both draws the same
+        random numbers in both: the same lifetime where its model is the
+        same, and a matching one (the same quantile of its own model) where
+        it is not. The differences between the two systems' lifetimes then
+        come from how the systems differ, not from chance, so their mean is
+        a more precise estimate of the difference in MTTF than the
+        difference of two independent estimates of the same size (the more
+        the systems share, the more precise). The reliabilities themselves
+        need no simulation: compare ``sf`` for those.
+
+        Parameters
+        ----------
+        other : NonRepairableRBD
+            The system to compare with.
+        mc_samples : int, optional
+            The number of lifetimes of each system, by default 100_000.
+        seed : int, optional
+            Seed for a reproducible comparison, by default None.
+        confidence : float, optional
+            The confidence level of the interval, by default 0.95.
+
+        Returns
+        -------
+        ConfidenceInterval
+            The mean difference (this system's lifetime minus ``other``'s)
+            over the samples, with its standard error and a normal
+            confidence interval (not clipped: the difference may be
+            negative). Common-cause groups are ignored, as by ``random``.
+
+        Raises
+        ------
+        ValueError
+            If ``mc_samples`` or ``confidence`` is invalid.
+        NotImplementedError
+            If a node's draws cannot be replayed from uniforms (a node
+            model sampled its own way). A non-parametric model (a
+            Kaplan-Meier fit, say) draws its own random numbers, which the
+            two systems do not share.
+
+        Examples
+        --------
+        A third unit in parallel with two:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> unit = surv.Weibull.from_params([100, 2])
+        >>> def parallel(n):
+        ...     names = [f"u{i}" for i in range(n)]
+        ...     edges = [("s", u) for u in names] + [(u, "t") for u in names]
+        ...     return NonRepairableRBD(edges, {u: unit for u in names})
+        >>> gain = parallel(3).compare(parallel(2), mc_samples=20_000, seed=0)
+        >>> round(gain.estimate, 1), round(gain.standard_error, 2)
+        (14.8, 0.21)
+
+        The exact difference, the integral of the difference in
+        reliability, is 14.46. Two independent estimates from 20_000
+        lifetimes each would give it with a standard error of about 0.42.
+        """
+        montecarlo.check_count(mc_samples, False, "mc_samples")
+        montecarlo.check_confidence(confidence)
+        key = int(np.random.SeedSequence(seed).generate_state(1, np.uint64)[0])
+        differences = self._keyed_lifetimes(
+            mc_samples, key
+        ) - other._keyed_lifetimes(mc_samples, key)
+        estimate = float(np.mean(differences))
+        standard_error = montecarlo.standard_error(differences, False)
+        z = montecarlo.z_value(confidence)
+        return ConfidenceInterval(
+            estimate=estimate,
+            lower=estimate - z * standard_error,
+            upper=estimate + z * standard_error,
+            confidence=confidence,
+            standard_error=standard_error,
             n_samples=mc_samples,
         )
+
+    def _keyed_lifetimes(self, n: int, key: int) -> np.ndarray:
+        """``n`` lifetimes in which each component draws its uniforms from
+        streams of its own, keyed by ``key``, its name and the uniform's
+        place in its draw (common random numbers, see ``compare``)."""
+        lifetimes = {}
+        for node in self._components():
+            sampler = row_sampler(self.reliabilities[node])
+            if sampler is None:
+                raise NotImplementedError(
+                    "Common random numbers need every node's draws to be "
+                    "replayable from uniforms (surpyval parametric "
+                    f"distributions and the composite nodes built from "
+                    f"them); node {node!r}'s are not."
+                )
+            name = zlib.crc32(repr(node).encode())
+            u = np.empty((n, sampler.width))
+            for j in range(sampler.width):
+                u[:, j] = np.random.default_rng([key, name, j]).random(n)
+            lifetimes[node] = sampler.draw(u)
+        out = np.array(
+            self._decomposition().lifetime(lifetimes, n), dtype=float
+        )
+        for lifetime in lifetimes.values():
+            out[np.isnan(lifetime)] = np.nan
+        _check_lifetimes(out)
+        return out
 
     def time_to_reliability(
         self,
@@ -907,21 +3764,25 @@ class NonRepairableRBD(RBD):
         upper_bound: Optional[float] = None,
         **kwargs,
     ) -> float:
-        """Returns the time at which system reliability equals ``target``.
+        """Time at which the system reliability falls to ``target``.
 
-        Solves ``R(t) = target`` for ``t`` (the inverse of :meth:`sf`). System
-        reliability is monotonically non-increasing in time, so the solution
-        is unique.
+        Solves ``R(t) = target`` for ``t >= 0`` (the inverse of
+        [`sf`][repyability.NonRepairableRBD.sf], so it honours common-cause
+        groups). System reliability is non-increasing in time, so the
+        crossing is bracketed between 0 and an upper bound and found with
+        Brent's method (``scipy.optimize.brentq``). Unless ``upper_bound``
+        is given, the bound is found by doubling from ``t = 1``.
 
         Parameters
         ----------
         target : float
             The reliability level to solve for, in (0, 1).
         upper_bound : float, optional
-            An upper bound for the search; found automatically (by doubling)
-            if None.
-        **kwargs :
-            Any sf() arguments (e.g. working_nodes, broken_nodes, method).
+            An upper bound for the search, at which the reliability must be
+            below ``target``; found automatically (by doubling) if None.
+        **kwargs
+            Keyword arguments of ``sf`` (``working_nodes``,
+            ``broken_nodes``, ``method``).
 
         Returns
         -------
@@ -931,9 +3792,14 @@ class NonRepairableRBD(RBD):
         Raises
         ------
         ValueError
-            If ``target`` is not in (0, 1), if the RBD is fixed-probability
-            (reliability is constant in time), or if ``target`` exceeds the
-            system reliability at ``t = 0`` (so it is never reached).
+            If ``target`` is not in (0, 1); if the RBD is fixed-probability
+            (reliability is constant in time); if ``target`` exceeds the
+            system reliability at ``t = 0`` (so it is never reached); if no
+            upper bound is found (after 1000 doublings); or if the
+            reliability at ``upper_bound`` is still above ``target``. Also
+            as for ``sf``.
+        NotImplementedError
+            As for ``sf``.
 
         Examples
         --------
@@ -996,18 +3862,32 @@ class NonRepairableRBD(RBD):
         return float(brentq(f, 0.0, hi))
 
     def bx_life(self, x: float, **kwargs) -> float:
-        """Returns the B\\ :sub:`X` life: the time by which ``x`` percent of
-        systems have failed, i.e. the time at which ``R(t) = 1 - x/100``.
+        """Bx life: the time by which ``x`` percent of systems have failed.
 
-        For example ``bx_life(10)`` is the B10 life (10% failed / 90%
-        reliability).
+        The time at which ``R(t) = 1 - x / 100``, found with
+        ``time_to_reliability(1 - x / 100)``. For example ``bx_life(10)``
+        is the B10 life (10% failed, 90% reliability).
 
         Parameters
         ----------
         x : float
             The percentage failed, in (0, 100).
-        **kwargs :
-            Any sf() arguments (e.g. working_nodes, broken_nodes, method).
+        **kwargs
+            Keyword arguments of ``time_to_reliability`` (``upper_bound``)
+            and ``sf`` (``working_nodes``, ``broken_nodes``, ``method``).
+
+        Returns
+        -------
+        float
+            The time at which ``x`` percent of systems have failed.
+
+        Raises
+        ------
+        ValueError
+            If ``x`` is not in (0, 100), or as for ``time_to_reliability``
+            (e.g. for a fixed-probability RBD).
+        NotImplementedError
+            As for ``sf``.
 
         Examples
         --------
@@ -1120,43 +4000,65 @@ class NonRepairableRBD(RBD):
         state: Optional[Dict[Hashable, NodeState]] = None,
         method: str = "p",
     ) -> Union[float, np.ndarray]:
-        """System reliability a further ``x`` into the future, given each
-        node's current state.
+        """System reliability over the next ``x``, given each node's state.
 
-        The condition-based ("digital twin") generalisation of :meth:`sf`:
-        instead of assuming every component is new, each component conditions
-        on its own current life ``X_i`` (streamed from sensors) and the
-        conditioned per-node reliabilities are propagated exactly through the
-        system::
+        The condition-based ("digital twin") generalisation of
+        [`sf`][repyability.NonRepairableRBD.sf]: instead of assuming every
+        component is new, each component conditions on its own current
+        [`NodeState`][repyability.NodeState] (e.g. streamed from sensors),
+        and the conditioned node reliabilities are propagated exactly
+        through the system:
 
             R_i(x | X_i)     = R_i(X_i + x) / R_i(X_i)
-            R_sys(x | {X_i}) = system_probability({ R_i(x | X_i) })
+            R_sys(x | state) = system reliability from the R_i(x | X_i)
+
+        A node that is alive at age ``X_i`` contributes ``R_i(x | X_i)``
+        (0 where ``R_i(X_i)`` is 0), a failed node (``alive=False``)
+        contributes 0, and a node left out of ``state`` contributes its
+        ordinary reliability ``R_i(x)``, as if new.
 
         Parameters
         ----------
-        x : ArrayLike
-            The further duration/s at which reliability is evaluated (measured
-            from *now*, so ``x = 0`` is the present).
-        state : dict[Hashable, NodeState]
-            The current state of each component. A node omitted from the
-            mapping is treated as new (age 0), so an empty state reproduces
-            :meth:`sf`.
+        x : array_like, optional
+            The further duration/s at which reliability is evaluated
+            (measured from *now*, so ``x = 0`` is the present). May be
+            omitted only for a fixed-probability RBD.
+        state : dict[Hashable, NodeState], optional
+            ``{node: NodeState}``, the current state of some or all of the
+            component nodes. By default empty, which reproduces ``sf(x)``.
         method : str, optional
-            "p" (path-set, default) or "c" (cut-set); both are exact.
+            ``"p"`` (the default) uses the minimal path sets and ``"c"`` the
+            minimal cut sets; both are exact.
 
         Returns
         -------
-        float or np.ndarray
+        float or numpy.ndarray
             System reliability given the state: a float for scalar ``x``, an
             array for array ``x``.
 
+        Raises
+        ------
+        TypeError
+            If ``state`` is not a dict, or one of its values is not a
+            ``NodeState``.
+        ValueError
+            If ``x`` is omitted for a time-varying RBD, or ``state`` names
+            the input or output node, an unknown node (including a repeated
+            node), or a node whose model is a standby, load-sharing or
+            repeated node or a nested RBD.
+        NotImplementedError
+            If the RBD has common-cause (CCF) groups.
+
         Notes
         -----
-        Only lifetime (time-varying) distributions age; a fixed-probability
-        component conditioned on being alive contributes reliability 1 going
-        forward (its per-demand uncertainty is resolved by observing it
-        alive). Composite / dynamic nodes (standby, repeated, nested RBD) are
-        not supported here in this release and raise if given a state.
+        Only lifetime (time-varying) distributions age. A fixed-probability
+        component stated alive contributes reliability 1 going forward (its
+        per-demand uncertainty is resolved by observing it alive), whereas
+        left out of ``state`` it contributes its fixed probability.
+        Composite / dynamic nodes (standby, load-sharing, repeated, nested
+        RBD) are not supported here in this release: they may be left out
+        of ``state`` (and are then unconditioned) but raise if given a
+        state.
 
         Examples
         --------
@@ -1183,28 +4085,46 @@ class NonRepairableRBD(RBD):
         state: Optional[Dict[Hashable, NodeState]] = None,
         upper_bound: Optional[float] = None,
     ) -> float:
-        """Remaining useful life (RUL): the further time until system
-        reliability falls to ``target``, given each node's current state.
+        """Remaining useful life: the time until reliability falls to target.
 
-        The condition-based analogue of :meth:`time_to_reliability`: it solves
-        ``sf_given_state(t, state) == target`` for ``t``. Because
-        ``sf_given_state`` is measured from now, the result is the time
-        *remaining* from the current state. ``remaining_life(1 - x/100,
-        state)`` is the conditional B\\ :sub:`X` life.
+        The condition-based analogue of ``time_to_reliability``: it solves
+        ``sf_given_state(t, state) == target`` for ``t``, by the same
+        bracketing and Brent's method. Because
+        [`sf_given_state`][repyability.NonRepairableRBD.sf_given_state] is
+        measured from now, the result is the time *remaining* from the
+        current state. ``remaining_life(1 - x / 100, state)`` is the
+        conditional Bx life.
 
         Parameters
         ----------
         target : float
             The system reliability level to solve for, in (0, 1).
-        state : dict[Hashable, NodeState]
-            The current state of each component (see :meth:`sf_given_state`).
+        state : dict[Hashable, NodeState], optional
+            ``{node: NodeState}``, the current state of some or all of the
+            component nodes (see ``sf_given_state``). By default empty (all
+            nodes new).
         upper_bound : float, optional
-            An upper bound for the search; found automatically if None.
+            An upper bound for the search, at which the reliability must be
+            below ``target``; found automatically (by doubling) if None.
 
         Returns
         -------
         float
             The remaining time until ``R_sys(t | state) == target``.
+
+        Raises
+        ------
+        ValueError
+            If ``target`` is not in (0, 1); if the RBD is fixed-probability;
+            if ``target`` exceeds the current system reliability
+            ``R_sys(0 | state)`` (e.g. because the state has already failed
+            the system); if no upper bound is found; if the reliability at
+            ``upper_bound`` is still above ``target``; or if ``state`` is
+            invalid (as for ``sf_given_state``).
+        TypeError
+            If ``state`` is not a dict of ``NodeState`` values.
+        NotImplementedError
+            If the RBD has common-cause (CCF) groups.
 
         Examples
         --------
@@ -1229,32 +4149,76 @@ class NonRepairableRBD(RBD):
         self,
         x: Optional[ArrayLike] = None,
         state: Optional[Dict[Hashable, NodeState]] = None,
+        kind: str = "failure",
     ) -> Dict[str, Dict[Any, Union[float, np.ndarray]]]:
-        """Live, state-dependent node importance over a forward horizon ``x``
-        -- how each component's importance shifts once the current wear on
-        every component is accounted for.
+        """Birnbaum and criticality importance given each node's state.
 
-        Evaluates the Birnbaum and criticality importance measures at the
-        conditioned per-node reliabilities ``R_i(x | X_i)`` (see
-        :meth:`sf_given_state`) rather than at the as-new reliabilities, so the
-        rankings reflect the current state. Both use the same conventions as
-        :meth:`birnbaum_importance` and :meth:`criticality_importance`: they
-        measure how much the system reliability depends on each node *now*, not
-        which node is most likely to have failed.
+        Shows how each component's importance over a forward horizon ``x``
+        shifts once the current wear on every component is accounted for.
+        The Birnbaum and criticality importance measures are evaluated at
+        the conditioned node reliabilities ``R_i(x | X_i)`` (see
+        [`sf_given_state`][repyability.NonRepairableRBD.sf_given_state])
+        rather than at the as-new reliabilities, so the rankings reflect
+        the current state. With ``F = 1 - R``:
+
+            birnbaum_i    = R_sys(x | state, i working)
+                            - R_sys(x | state, i failed)
+            criticality_i = birnbaum_i * F_i(x | X_i) / F_sys(x | state)
+
+        the failure-oriented criticality: the share of the system failures
+        over the horizon that node ``i`` accounts for. ``kind="success"``
+        gives the success-oriented form,
+        ``birnbaum_i * R_i(x | X_i) / R_sys(x | state)``, instead. These
+        are the conventions of ``birnbaum_importance`` and
+        ``criticality_importance``, applied to the system as it is now. A
+        failed node's success-oriented criticality is 0.
 
         Parameters
         ----------
-        x : ArrayLike
+        x : array_like, optional
             The forward horizon/s over which importance is evaluated (from
-            now).
-        state : dict[Hashable, NodeState]
-            The current state of each component (see :meth:`sf_given_state`).
+            now). May be omitted only for a fixed-probability RBD.
+        state : dict[Hashable, NodeState], optional
+            ``{node: NodeState}``, the current state of some or all of the
+            component nodes (see ``sf_given_state``). By default empty (all
+            nodes new).
+        kind : str, optional
+            The criticality's form: ``"failure"`` (the default) or
+            ``"success"``, as for ``criticality_importance``.
 
         Returns
         -------
-        dict[str, dict[Any, float | np.ndarray]]
-            ``{"birnbaum": {node: value}, "criticality": {node: value}}``.
-            Values are floats for scalar ``x`` and arrays for array ``x``.
+        dict[str, dict[Any, float | numpy.ndarray]]
+            ``{"birnbaum": {node: value}, "criticality": {node: value}}``
+            over the component nodes. Values are floats for scalar ``x``
+            and arrays for array ``x``.
+
+        Raises
+        ------
+        TypeError
+            If ``state`` is not a dict of ``NodeState`` values.
+        ValueError
+            If ``x`` is omitted for a time-varying RBD, ``state`` is
+            invalid (as for ``sf_given_state``), or ``kind`` is neither
+            ``"failure"`` nor ``"success"``.
+        NotImplementedError
+            If the RBD has common-cause (CCF) groups.
+
+        Examples
+        --------
+        Two identical units in parallel, one of them 60 hours old: over
+        the next 20 hours the system now depends more on the new unit:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, NodeState
+        >>> unit = surv.Weibull.from_params([100, 2])
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "old"), ("s", "new"), ("old", "t"), ("new", "t")],
+        ...     {"old": unit, "new": unit},
+        ... )
+        >>> imp = rbd.importances_given_state(20, {"old": NodeState(age=60)})
+        >>> {k: round(v, 4) for k, v in sorted(imp["birnbaum"].items())}
+        {'new': 0.2442, 'old': 0.0392}
         """
         if state is None:
             state = {}
@@ -1270,7 +4234,7 @@ class NonRepairableRBD(RBD):
         x_arr = np.atleast_1d(np.asarray(x, dtype=float))
         node_probabilities = self._state_node_probabilities(x_arr, state)
         birnbaum = super()._birnbaum_importance(node_probabilities)
-        criticality = super()._criticality_importance(node_probabilities)
+        criticality = super()._criticality_importance(node_probabilities, kind)
 
         def _squeeze(measure):
             return {
@@ -1290,9 +4254,62 @@ class NonRepairableRBD(RBD):
     def node_mttf(
         self, mc_samples: int = 100_000, seed=None
     ) -> dict[Any, float]:
-        """Returns each node's mean time to failure (a dict keyed by node
-        name). Simulation-based node models use ``mc_samples`` Monte-Carlo
-        draws; fixed-probability nodes have no time dimension and return 0."""
+        """Mean time to failure (MTTF) of each component node.
+
+        Each node's MTTF comes from its own model:
+
+        - a [`StandbyModel`][repyability.StandbyModel] or
+          [`LoadSharingModel`][repyability.LoadSharingModel]: its
+          ``mean(mc_samples)``, exact when the node has a closed form or
+          convolution, otherwise a Monte-Carlo estimate from
+          ``mc_samples`` lifetimes;
+        - a nested ``NonRepairableRBD`` or a
+          [`RepeatedNode`][repyability.RepeatedNode]: a Monte-Carlo
+          estimate from ``mc_samples`` lifetimes;
+        - a fixed-probability node: 0.0, as it has no time dimension;
+        - any other model: its own ``mean()``, e.g. the exact mean of a
+          surpyval distribution, except that a limited-failure-population
+          model's is infinite: some of its units never fail. (surpyval's
+          ``mean()`` of one is the *defective* mean, its failing units' mean
+          weighted by their fraction.)
+
+        Common-cause groups do not affect a node's own MTTF.
+
+        Parameters
+        ----------
+        mc_samples : int, optional
+            Number of Monte-Carlo samples for the nodes estimated by
+            simulation, by default 100_000.
+        seed : int or None, optional
+            Seeds numpy's global RNG for the whole call, restoring the
+            caller's state afterwards (see ``random``), by default None.
+
+        Returns
+        -------
+        dict[Any, float]
+            ``{node: MTTF}`` over the component nodes (not the input or
+            output node).
+
+        Raises
+        ------
+        AttributeError
+            If a node's model has no ``mean()`` method (e.g.
+            [`PerfectReliability`][repyability.PerfectReliability]).
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "a"), ("a", "b"), ("b", "t")],
+        ...     {
+        ...         "a": surv.Exponential.from_params([0.01]),
+        ...         "b": surv.FixedEventProbability.from_params(0.1),
+        ...     },
+        ... )
+        >>> {k: round(v, 2) for k, v in sorted(rbd.node_mttf().items())}
+        {'a': 100.0, 'b': 0.0}
+        """
         out: dict[Any, float] = {}
         with numpy_seed(seed):
             for node in self.nodes:
@@ -1310,7 +4327,7 @@ class NonRepairableRBD(RBD):
                 elif is_fixed_probability(model):
                     out[node] = 0.0
                 else:
-                    out[node] = float(np.atleast_1d(model.mean())[0])
+                    out[node] = model_mean(model)
         return out
 
     # Importance measures
@@ -1322,25 +4339,37 @@ class NonRepairableRBD(RBD):
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
     ) -> dict[Any, Union[float, np.ndarray]]:
-        """Returns the Birnbaum measure of importance for all nodes.
+        """Birnbaum importance of each node at time/s ``x``.
 
-        Note: Birnbaum's measure of importance assumes all nodes are
-        independent.
+        ``B_i = R_sys(i working) - R_sys(i failed)``: the rate at which the
+        system reliability changes with node ``i``'s reliability, which is
+        also the probability that node ``i`` is critical (the system works
+        if ``i`` works and fails if ``i`` fails). It does not depend on node
+        ``i``'s own reliability. Exact; it assumes independent nodes.
 
         Parameters
         ----------
-        x : ArrayLike
-            Time/s as a number or iterable
+        x : array_like, optional
+            Time/s as a number or an array. May be omitted only for a
+            fixed-probability RBD.
         working_nodes : Collection[Hashable], optional
-            Condition on these nodes being perfectly reliable, by default None
+            Nodes to treat as working (reliability 1), by default none.
         broken_nodes : Collection[Hashable], optional
-            Condition on these nodes having failed, by default None
+            Nodes to treat as failed (reliability 0), by default none.
 
         Returns
         -------
-        dict[Any, float | np.ndarray]
-            Dictionary with node names as keys and Birnbaum importances as
-            values (floats for scalar ``x``, arrays for array ``x``)
+        dict[Any, float | numpy.ndarray]
+            ``{node: importance}`` over the component nodes: floats for
+            scalar ``x``, arrays for array ``x``.
+
+        Raises
+        ------
+        ValueError
+            If ``x`` is omitted for a time-varying RBD, or a working/broken
+            node is invalid (as for ``sf``).
+        NotImplementedError
+            If the RBD has common-cause (CCF) groups.
 
         Examples
         --------
@@ -1359,6 +4388,12 @@ class NonRepairableRBD(RBD):
         >>> bi = rbd.birnbaum_importance()
         >>> {k: round(v, 4) for k, v in sorted(bi.items())}
         {'a': 0.1, 'b': 0.1}
+
+        Once ``"b"`` has failed, the system depends entirely on ``"a"``:
+
+        >>> bi = rbd.birnbaum_importance(broken_nodes=["b"])
+        >>> {k: round(v, 4) for k, v in sorted(bi.items())}
+        {'a': 1.0, 'b': 0.1}
         """
         self._require_no_ccf()
         node_probabilities = self._probabilities_with_overrides(
@@ -1376,22 +4411,56 @@ class NonRepairableRBD(RBD):
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
     ) -> dict[Any, Union[float, np.ndarray]]:
-        """Returns the improvement potential of all nodes.
+        """Improvement potential of each node at time/s ``x``.
+
+        ``IP_i = R_sys(i working) - R_sys``: how much the system reliability
+        would rise if node ``i`` were made perfect. It equals
+        ``B_i * (1 - R_i)``, with ``B_i`` the Birnbaum importance. Exact; it
+        assumes independent nodes.
 
         Parameters
         ----------
-        x : ArrayLike
-            Time/s as a number or iterable
+        x : array_like, optional
+            Time/s as a number or an array. May be omitted only for a
+            fixed-probability RBD.
         working_nodes : Collection[Hashable], optional
-            Condition on these nodes being perfectly reliable, by default None
+            Nodes to treat as working (reliability 1), by default none.
         broken_nodes : Collection[Hashable], optional
-            Condition on these nodes having failed, by default None
+            Nodes to treat as failed (reliability 0), by default none.
 
         Returns
         -------
-        dict[Any, float | np.ndarray]
-            Dictionary with node names as keys and improvement potentials as
-            values (floats for scalar ``x``, arrays for array ``x``)
+        dict[Any, float | numpy.ndarray]
+            ``{node: improvement potential}`` over the component nodes:
+            floats for scalar ``x``, arrays for array ``x``.
+
+        Raises
+        ------
+        ValueError
+            If ``x`` is omitted for a time-varying RBD, or a working/broken
+            node is invalid (as for ``sf``).
+        NotImplementedError
+            If the RBD has common-cause (CCF) groups.
+
+        Examples
+        --------
+        Two pumps in parallel (each failing with probability 0.1) feeding a
+        valve in series (0.05): a perfect valve gains the most.
+
+        >>> from surpyval import FixedEventProbability
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "p1"), ("s", "p2"), ("p1", "v"), ("p2", "v"),
+        ...      ("v", "t")],
+        ...     {
+        ...         "p1": FixedEventProbability.from_params(0.1),
+        ...         "p2": FixedEventProbability.from_params(0.1),
+        ...         "v": FixedEventProbability.from_params(0.05),
+        ...     },
+        ... )
+        >>> ip = rbd.improvement_potential()
+        >>> {k: round(v, 4) for k, v in sorted(ip.items())}
+        {'p1': 0.0095, 'p2': 0.0095, 'v': 0.0495}
         """
         self._require_no_ccf()
         node_probabilities = self._probabilities_with_overrides(
@@ -1409,24 +4478,57 @@ class NonRepairableRBD(RBD):
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
     ) -> dict[Any, Union[float, np.ndarray]]:
-        """Returns the RAW importance per Modarres & Kaminskiy. That is RAW_i =
-        (unreliability of system given i failed) /
-        (nominal system unreliability).
+        """Risk achievement worth (RAW) of each node at time/s ``x``.
+
+        ``RAW_i = (1 - R_sys(i failed)) / (1 - R_sys)``, per Modarres &
+        Kaminskiy: the factor by which the system unreliability would grow
+        if node ``i`` were failed. It is at least 1. Where the system
+        unreliability is 0 the division gives inf or nan, with a numpy
+        RuntimeWarning. Exact; it assumes independent nodes.
 
         Parameters
         ----------
-        x : ArrayLike
-            Time/s as a number or iterable
+        x : array_like, optional
+            Time/s as a number or an array. May be omitted only for a
+            fixed-probability RBD.
         working_nodes : Collection[Hashable], optional
-            Condition on these nodes being perfectly reliable, by default None
+            Nodes to treat as working (reliability 1), by default none.
         broken_nodes : Collection[Hashable], optional
-            Condition on these nodes having failed, by default None
+            Nodes to treat as failed (reliability 0), by default none.
 
         Returns
         -------
-        dict[Any, float | np.ndarray]
-            Dictionary with node names as keys and RAW importances as values
-            (floats for scalar ``x``, arrays for array ``x``)
+        dict[Any, float | numpy.ndarray]
+            ``{node: RAW}`` over the component nodes: floats for scalar
+            ``x``, arrays for array ``x``.
+
+        Raises
+        ------
+        ValueError
+            If ``x`` is omitted for a time-varying RBD, or a working/broken
+            node is invalid (as for ``sf``).
+        NotImplementedError
+            If the RBD has common-cause (CCF) groups.
+
+        Examples
+        --------
+        Two pumps in parallel (each failing with probability 0.1) feeding a
+        valve in series (0.05): a failed valve fails the system outright.
+
+        >>> from surpyval import FixedEventProbability
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "p1"), ("s", "p2"), ("p1", "v"), ("p2", "v"),
+        ...      ("v", "t")],
+        ...     {
+        ...         "p1": FixedEventProbability.from_params(0.1),
+        ...         "p2": FixedEventProbability.from_params(0.1),
+        ...         "v": FixedEventProbability.from_params(0.05),
+        ...     },
+        ... )
+        >>> raw = rbd.risk_achievement_worth()
+        >>> {k: round(v, 4) for k, v in sorted(raw.items())}
+        {'p1': 2.437, 'p2': 2.437, 'v': 16.8067}
         """
         self._require_no_ccf()
         node_probabilities = self._probabilities_with_overrides(
@@ -1444,24 +4546,58 @@ class NonRepairableRBD(RBD):
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
     ) -> dict[Any, Union[float, np.ndarray]]:
-        """Returns the RRW importance per Modarres & Kaminskiy. That is RRW_i =
-        (nominal unreliability of system) /
-        (unreliability of system given i is working).
+        """Risk reduction worth (RRW) of each node at time/s ``x``.
+
+        ``RRW_i = (1 - R_sys) / (1 - R_sys(i working))``, per Modarres &
+        Kaminskiy: the factor by which the system unreliability would
+        shrink if node ``i`` were made perfect. It is at least 1, and inf
+        (with a numpy RuntimeWarning) where a perfect node ``i`` makes the
+        system perfect, e.g. a node that alone forms a path. Exact; it
+        assumes independent nodes.
 
         Parameters
         ----------
-        x : ArrayLike
-            Time/s as a number or iterable
+        x : array_like, optional
+            Time/s as a number or an array. May be omitted only for a
+            fixed-probability RBD.
         working_nodes : Collection[Hashable], optional
-            Condition on these nodes being perfectly reliable, by default None
+            Nodes to treat as working (reliability 1), by default none.
         broken_nodes : Collection[Hashable], optional
-            Condition on these nodes having failed, by default None
+            Nodes to treat as failed (reliability 0), by default none.
 
         Returns
         -------
-        dict[Any, float | np.ndarray]
-            Dictionary with node names as keys and RRW importances as values
-            (floats for scalar ``x``, arrays for array ``x``)
+        dict[Any, float | numpy.ndarray]
+            ``{node: RRW}`` over the component nodes: floats for scalar
+            ``x``, arrays for array ``x``.
+
+        Raises
+        ------
+        ValueError
+            If ``x`` is omitted for a time-varying RBD, or a working/broken
+            node is invalid (as for ``sf``).
+        NotImplementedError
+            If the RBD has common-cause (CCF) groups.
+
+        Examples
+        --------
+        Two pumps in parallel (each failing with probability 0.1) feeding a
+        valve in series (0.05):
+
+        >>> from surpyval import FixedEventProbability
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "p1"), ("s", "p2"), ("p1", "v"), ("p2", "v"),
+        ...      ("v", "t")],
+        ...     {
+        ...         "p1": FixedEventProbability.from_params(0.1),
+        ...         "p2": FixedEventProbability.from_params(0.1),
+        ...         "v": FixedEventProbability.from_params(0.05),
+        ...     },
+        ... )
+        >>> rrw = rbd.risk_reduction_worth()
+        >>> {k: round(v, 4) for k, v in sorted(rrw.items())}
+        {'p1': 1.19, 'p2': 1.19, 'v': 5.95}
         """
         self._require_no_ccf()
         node_probabilities = self._probabilities_with_overrides(
@@ -1478,23 +4614,92 @@ class NonRepairableRBD(RBD):
         x: Optional[ArrayLike] = None,
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
+        kind: str = "failure",
     ) -> dict[Any, Union[float, np.ndarray]]:
-        """Returns the criticality importance of all nodes at time/s x.
+        """Criticality importance of each node at time/s ``x``.
+
+        With ``B_i`` the Birnbaum importance, ``R_i`` the node's reliability
+        and ``R_sys`` the system's:
+
+        - ``kind="failure"`` (the default) gives the failure-oriented form
+          (Rausand & Høyland), ``CI_i = B_i * (1 - R_i) / (1 - R_sys)``:
+          the probability that node ``i`` has failed and is critical, given
+          that the system has failed -- the share of system failures that
+          node ``i`` accounts for. It ranks nodes in series by how
+          unreliable they are. It is computed from the node
+          unreliabilities, through the minimal cut sets, so the system
+          unreliability is not lost to cancellation in ``1 - R_sys``
+          however reliable the system is. It is ``nan`` where the system
+          cannot fail (e.g. at ``x = 0``).
+        - ``kind="success"`` gives the success-oriented form,
+          ``CI_i = B_i * R_i / R_sys``: the probability that node ``i`` is
+          working and critical, given that the system works. It is 1 for
+          every node in series with the rest of the system, however
+          unreliable, so it cannot rank them. It is ``nan`` where the
+          system cannot work.
+
+        Exact; it assumes independent nodes.
 
         Parameters
         ----------
-        x : ArrayLike
-            Time/s as a number or iterable
+        x : array_like, optional
+            Time/s as a number or an array. May be omitted only for a
+            fixed-probability RBD.
         working_nodes : Collection[Hashable], optional
-            Condition on these nodes being perfectly reliable, by default None
+            Nodes to treat as working (reliability 1), by default none.
         broken_nodes : Collection[Hashable], optional
-            Condition on these nodes having failed, by default None
+            Nodes to treat as failed (reliability 0), by default none.
+        kind : str, optional
+            ``"failure"`` (the default) or ``"success"``.
 
         Returns
         -------
-        dict[Any, float | np.ndarray]
-            Dictionary with node names as keys and criticality importances as
-            values (floats for scalar ``x``, arrays for array ``x``)
+        dict[Any, float | numpy.ndarray]
+            ``{node: criticality importance}`` over the component nodes:
+            floats for scalar ``x``, arrays for array ``x``.
+
+        Raises
+        ------
+        ValueError
+            If ``x`` is omitted for a time-varying RBD, a working/broken
+            node is invalid (as for ``sf``), or ``kind`` is neither
+            ``"failure"`` nor ``"success"``.
+        NotImplementedError
+            If the RBD has common-cause (CCF) groups.
+
+        References
+        ----------
+        M. Rausand and A. Høyland, System Reliability Theory: Models,
+        Statistical Methods, and Applications, 2nd edition, Wiley, 2004.
+
+        Examples
+        --------
+        Two pumps in parallel (each failing with probability 0.1) feeding a
+        valve in series (0.05): the valve accounts for 83% of the system's
+        failures (the shares add to more than 1 here, as both pumps are
+        critical in the same failures).
+
+        >>> from surpyval import FixedEventProbability
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "p1"), ("s", "p2"), ("p1", "v"), ("p2", "v"),
+        ...      ("v", "t")],
+        ...     {
+        ...         "p1": FixedEventProbability.from_params(0.1),
+        ...         "p2": FixedEventProbability.from_params(0.1),
+        ...         "v": FixedEventProbability.from_params(0.05),
+        ...     },
+        ... )
+        >>> ci = rbd.criticality_importance()
+        >>> {k: round(v, 4) for k, v in sorted(ci.items())}
+        {'p1': 0.1597, 'p2': 0.1597, 'v': 0.8319}
+
+        The success-oriented form gives the valve, like any node in series,
+        exactly 1:
+
+        >>> ci = rbd.criticality_importance(kind="success")
+        >>> {k: round(v, 4) for k, v in sorted(ci.items())}
+        {'p1': 0.0909, 'p2': 0.0909, 'v': 1.0}
         """
         self._require_no_ccf()
         node_probabilities = self._probabilities_with_overrides(
@@ -1502,7 +4707,7 @@ class NonRepairableRBD(RBD):
         )
         return cast(
             Dict[Any, Union[float, np.ndarray]],
-            super()._criticality_importance(node_probabilities),
+            super()._criticality_importance(node_probabilities, kind),
         )
 
     @check_x
@@ -1513,42 +4718,74 @@ class NonRepairableRBD(RBD):
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
     ) -> dict[Any, Union[float, np.ndarray]]:
-        """Calculate Fussell-Vesely importance of all nodes at time/s x.
+        """Fussell-Vesely importance of each node at time/s ``x``.
 
-        Briefly, the Fussell-Vesely importance measure for node i =
-        (sum of probabilities of cut-sets including node i occuring/failing) /
-        (the probability of the system failing).
+        With ``fv_type="c"`` (the default) this is the usual cut-set
+        measure: the probability that a minimal cut set containing node
+        ``i`` has failed, given that the system has failed. The numerator
+        uses the rare-event approximation, summing the probabilities of
+        those cut sets instead of taking their union:
 
-        Typically this measure is implemented using cut-sets as mentioned
-        above, although the measure can be implemented using path-sets. Both
-        are implemented here.
+            FV_i = sum over minimal cut sets C containing i of
+                   prod over j in C of (1 - R_j), divided by (1 - R_sys)
 
-        fv_type dictates the method:
-            "c" - cut-set
-            "p" - path-set
+        The sum over-estimates the union, so values can exceed 1 when the
+        failure probabilities are not small.
+
+        With ``fv_type="p"`` the same formula is applied to the minimal path
+        sets instead: the numerator sums, over the minimal path sets
+        containing ``i``, the probability that every member of the path set
+        has failed. This value is not bounded by 1: for a node in a parallel
+        pair it is ``(1 - R_i) / (1 - R_sys)``.
 
         Parameters
         ----------
-        x : ArrayLike
-            Time/s as a number or iterable
+        x : array_like, optional
+            Time/s as a number or an array. May be omitted only for a
+            fixed-probability RBD.
         fv_type : str, optional
-            Dictates the method of calculation, 'c' = cut-set and
-            'p' = path-set, by default "c"
+            ``"c"`` (the default) sums over the minimal cut sets and ``"p"``
+            over the minimal path sets.
         working_nodes : Collection[Hashable], optional
-            Condition on these nodes being perfectly reliable, by default None
+            Nodes to treat as working (reliability 1), by default none.
         broken_nodes : Collection[Hashable], optional
-            Condition on these nodes having failed, by default None
+            Nodes to treat as failed (reliability 0), by default none.
 
         Returns
         -------
-        dict[Any, float | np.ndarray]
-            Dictionary with node names as keys and Fussell-Vesely importances
-            as values (floats for scalar ``x``, arrays for array ``x``)
+        dict[Any, float | numpy.ndarray]
+            ``{node: Fussell-Vesely importance}`` over the component nodes:
+            floats for scalar ``x``, arrays for array ``x``.
 
         Raises
         ------
         ValueError
-            If ``fv_type`` is not 'c' (cut-set) or 'p' (path-set).
+            If ``fv_type`` is not "c" or "p", ``x`` is omitted for a
+            time-varying RBD, or a working/broken node is invalid (as for
+            ``sf``).
+        NotImplementedError
+            If the RBD has common-cause (CCF) groups.
+
+        Examples
+        --------
+        Two pumps in parallel (each failing with probability 0.1) feeding a
+        valve in series (0.05): the valve alone is a cut set, and it
+        contributes most of the system's failure probability.
+
+        >>> from surpyval import FixedEventProbability
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "p1"), ("s", "p2"), ("p1", "v"), ("p2", "v"),
+        ...      ("v", "t")],
+        ...     {
+        ...         "p1": FixedEventProbability.from_params(0.1),
+        ...         "p2": FixedEventProbability.from_params(0.1),
+        ...         "v": FixedEventProbability.from_params(0.05),
+        ...     },
+        ... )
+        >>> fv = rbd.fussell_vesely()
+        >>> {k: round(v, 4) for k, v in sorted(fv.items())}
+        {'p1': 0.1681, 'p2': 0.1681, 'v': 0.8403}
         """
         self._require_no_ccf()
         rel_dict = {}
@@ -1565,7 +4802,40 @@ class NonRepairableRBD(RBD):
     def fussel_vesely(
         self, x: Optional[ArrayLike] = None, fv_type: str = "c"
     ) -> dict[Any, Union[float, np.ndarray]]:
-        """Deprecated alias for :meth:`fussell_vesely` (corrected spelling)."""
+        """Deprecated misspelt alias of ``fussell_vesely``.
+
+        Deprecated: use
+        [`fussell_vesely`][repyability.NonRepairableRBD.fussell_vesely]
+        instead; this alias will be removed in a future release. It returns
+        ``fussell_vesely(x, fv_type)`` and, unlike it, takes no
+        ``working_nodes``/``broken_nodes``.
+
+        Parameters
+        ----------
+        x : array_like, optional
+            Time/s as a number or an array. May be omitted only for a
+            fixed-probability RBD.
+        fv_type : str, optional
+            ``"c"`` (the default) sums over the minimal cut sets and ``"p"``
+            over the minimal path sets.
+
+        Returns
+        -------
+        dict[Any, float | numpy.ndarray]
+            As for ``fussell_vesely``.
+
+        Warns
+        -----
+        DeprecationWarning
+            On every call.
+
+        Raises
+        ------
+        ValueError
+            As for ``fussell_vesely``.
+        NotImplementedError
+            If the RBD has common-cause (CCF) groups.
+        """
         warnings.warn(
             "fussel_vesely() is deprecated; use fussell_vesely() "
             "(Fussell-Vesely). This alias will be removed in a future "
@@ -1582,10 +4852,10 @@ class NonRepairableRBD(RBD):
         broken_nodes: Optional[Collection[Hashable]] = None,
         rel_step: float = 1e-5,
     ) -> Dict[Any, Dict[str, Union[float, np.ndarray]]]:
-        """Sensitivity of the system reliability to each node's distribution
-        parameters at time/s ``x``.
+        """Sensitivity of system reliability to each node's parameters.
 
-        For node ``i`` with parameter ``theta``, the sensitivity is
+        For node ``i`` with parameter ``theta``, the sensitivity at time/s
+        ``x`` is
 
         ``d R_sys / d theta = B_i(x) * d sf_i(x; theta) / d theta``
 
@@ -1593,36 +4863,69 @@ class NonRepairableRBD(RBD):
         system reliability moves per unit change in that node's reliability)
         and ``d sf_i / d theta`` is how much the node's reliability moves per
         unit change in the parameter. The parameter derivative is taken
-        numerically (a central finite difference, rebuilding the distribution
-        with ``from_params``), so it applies to any parametric surpyval model
-        without per-distribution formulae. It answers "which fitted parameter,
-        if it were a little different, would move system reliability the most"
-        -- e.g. to target data collection or to gauge the impact of estimation
+        numerically by a central finite difference with step
+        ``rel_step * |theta|`` (``rel_step`` if ``theta`` is 0), rebuilding
+        the distribution with ``from_params``, so it applies to any
+        parametric surpyval model without per-distribution formulae. If one
+        perturbation is not a valid parameter value (e.g. a probability
+        leaving [0, 1]) a one-sided difference is used; if neither is, the
+        result is nan. It answers "which fitted parameter, if it were a
+        little different, would move system reliability the most" -- e.g.
+        to target data collection or to gauge the impact of estimation
         uncertainty.
 
-        Only nodes with reconstructable distribution parameters are included;
-        composite nodes (a nested RBD, a standby arrangement, a repeated node)
-        and fitted non-parametric models have no parameters to perturb and are
-        omitted. A node forced via ``working_nodes``/``broken_nodes`` is pinned
-        independently of its parameters, so its sensitivities are reported as
-        zero.
+        Only nodes with reconstructable surpyval distribution parameters
+        are included, fixed-probability nodes among them (their parameter
+        is the failure probability). Composite nodes (a nested RBD, a
+        standby, load-sharing or repeated node, a regression node), fitted
+        non-parametric models and the input and output nodes have no
+        parameters to perturb and are omitted. A node forced via
+        ``working_nodes``/``broken_nodes`` is pinned independently of its
+        parameters, so its sensitivities are reported as zero.
 
         Parameters
         ----------
-        x : ArrayLike
-            Time/s as a number or iterable.
+        x : array_like, optional
+            Time/s as a number or an array. May be omitted only for a
+            fixed-probability RBD.
         working_nodes : Collection[Hashable], optional
-            Condition on these nodes being perfectly reliable, by default None.
+            Nodes to treat as working (reliability 1), by default none.
         broken_nodes : Collection[Hashable], optional
-            Condition on these nodes having failed, by default None.
+            Nodes to treat as failed (reliability 0), by default none.
         rel_step : float, optional
             Relative step used for the finite difference, by default ``1e-5``.
 
         Returns
         -------
-        dict[Any, dict[str, float | np.ndarray]]
-            ``{node_name: {parameter_name: sensitivity}}``. Sensitivities are
-            floats for scalar ``x`` and arrays for array ``x``.
+        dict[Any, dict[str, float | numpy.ndarray]]
+            ``{node: {parameter_name: sensitivity}}``, with surpyval's
+            parameter names (e.g. ``"alpha"`` and ``"beta"`` for a Weibull;
+            ``"param0"``, ``"param1"``, ... if it gives none). Sensitivities
+            are floats for scalar ``x`` and arrays for array ``x``.
+
+        Raises
+        ------
+        ValueError
+            If ``x`` is omitted for a time-varying RBD, or a working/broken
+            node is invalid (as for ``sf``).
+        NotImplementedError
+            If the RBD has common-cause (CCF) groups.
+
+        Examples
+        --------
+        For a single exponential component ``R = exp(-rate * x)``, so
+        ``dR/d rate = -x * exp(-rate * x)``, about -9.048 at ``x = 10``
+        with rate 0.01:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {"c": surv.Exponential.from_params([0.01])},
+        ... )
+        >>> sens = rbd.parameter_sensitivity(10)
+        >>> {name: round(v, 3) for name, v in sens["c"].items()}
+        {'failure_rate': -9.048}
         """
         if x is None:
             if self.is_fixed:
@@ -1649,7 +4952,7 @@ class NonRepairableRBD(RBD):
             if spec is None:
                 # Composite / non-parametric node: no parameters to perturb.
                 continue
-            cls, params, names = spec
+            cls, params, names, extras = spec
             node_out: Dict[str, Union[float, np.ndarray]] = {}
             if node_name in forced:
                 # Pinned regardless of its parameters -> zero sensitivity.
@@ -1660,7 +4963,7 @@ class NonRepairableRBD(RBD):
                 continue
             b_i = np.asarray(birnbaum[node_name], dtype=float)
             for j, name in enumerate(names):
-                dsf = _dsf_dparam(cls, params, j, x_arr, rel_step)
+                dsf = _dsf_dparam(cls, params, j, x_arr, rel_step, extras)
                 node_out[name] = _out(b_i * dsf)
             sensitivities[node_name] = node_out
         return sensitivities

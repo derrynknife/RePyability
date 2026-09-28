@@ -1,5 +1,9 @@
+import threading
+
+import numpy as np
 import pytest
 import surpyval as surv
+from surpyval import FixedEventProbability
 
 from repyability.rbd.helper_classes import PerfectReliability as PR
 from repyability.rbd.helper_classes import PerfectUnreliability as PU
@@ -152,6 +156,9 @@ def test_self_reference():
 
 
 def test_repeated_koon_nodes():
+    # Node 6 is the voting node 3 drawn a second time, over its own two
+    # inputs: each appearance needs two of its own inputs working, and the
+    # component itself works or fails in both places at once.
     edges = [
         (0, 1),
         (1, 3),
@@ -164,20 +171,20 @@ def test_repeated_koon_nodes():
         (3, 7),
         (6, 7),
     ]
+    p = {1: 0.9, 2: 0.8, 3: 0.7, 4: 0.6, 5: 0.5}  # 0 and 7: input, output
     reliabilities = {
-        1: surv.Weibull.from_params([10, 2]),
-        2: surv.Weibull.from_params([10, 2]),
-        3: surv.Weibull.from_params([10, 2]),
-        4: surv.Weibull.from_params([10, 2]),
-        5: surv.Weibull.from_params([10, 2]),
-        6: 3,
-        7: surv.Weibull.from_params([10, 2]),
+        n: FixedEventProbability.from_params(1 - v) for n, v in p.items()
     }
-
-    k = {3: 2, 6: 2}
-
-    with pytest.raises(ValueError):
-        NonRepairableRBD(edges, reliabilities, k=k)
+    reliabilities[6] = 3
+    rbd = NonRepairableRBD(edges, reliabilities, k={3: 2, 6: 2})
+    assert rbd.repeated == {6: 3}
+    # The voter works, fed by both 1 and 2 or by both 4 and 5.
+    expected = p[3] * (1 - (1 - p[1] * p[2]) * (1 - p[4] * p[5]))
+    assert rbd.sf() == pytest.approx(expected, rel=1e-14)
+    assert rbd.get_min_path_sets(include_in_out_nodes=False) == {
+        frozenset({1, 2, 3}),
+        frozenset({3, 4, 5}),
+    }
 
 
 def test_repeated_nodes():
@@ -226,19 +233,49 @@ def test_nonparametric_node():
     NonRepairableRBD(edges, reliabilities)
 
 
-def test_repeated_node_in_cycle():
+def test_repeated_node_drawn_twice_along_one_path():
+    # Node 3 is node 1 drawn again further along the same chain: the drawing
+    # has no loop, and the system needs 1 and 2 working.
     edges = [
         (0, 1),
         (1, 2),
         (2, 3),
         (3, 4),
     ]
-
     reliabilities = {
-        1: PR,
-        2: PR,
+        1: FixedEventProbability.from_params(0.1),
+        2: FixedEventProbability.from_params(0.2),
         3: 1,
     }
+    rbd = NonRepairableRBD(edges, reliabilities)
+    assert not rbd.structure_check["has_cycles"]
+    assert rbd.sf() == pytest.approx(0.9 * 0.8, rel=1e-15)
+    assert rbd.get_min_cut_sets() == {frozenset({1}), frozenset({2})}
 
-    with pytest.raises(ValueError):
-        NonRepairableRBD(edges, reliabilities)
+
+def _within(seconds, func):
+    """``func()``'s result, failing (rather than hanging the suite) if it
+    does not return within ``seconds``."""
+    result: list = []
+    worker = threading.Thread(target=lambda: result.append(func()))
+    worker.daemon = True
+    worker.start()
+    worker.join(seconds)
+    assert not worker.is_alive(), f"did not return within {seconds} s"
+    return result[0]
+
+
+@pytest.mark.parametrize("path", ["batched", "event loop"])
+def test_a_system_that_cannot_fail_has_infinite_lifetimes(path):
+    # An edge joins the input straight to the output, so the system works
+    # even after every node has failed. A zero-inflated node cannot be
+    # batched, so it sends random() down the one-at-a-time event loop,
+    # which used to wait for ever for a system failure.
+    unit = surv.Weibull.from_params([100, 2])
+    if path == "event loop":
+        unit = surv.Weibull.from_params([100, 2], f0=0.1)
+    rbd = NonRepairableRBD([("s", "a"), ("a", "t"), ("s", "t")], {"a": unit})
+    assert rbd.sf(50) == 1.0
+    lifetimes = _within(20, lambda: rbd.random(5, seed=0))
+    assert np.all(np.isinf(lifetimes))
+    assert np.isinf(_within(20, lambda: rbd.mean(20, seed=0)))
