@@ -38,6 +38,7 @@ from tqdm import tqdm
 
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import _montecarlo as montecarlo
+from repyability.rbd._block_replacement import BlockCycle, block_cycle
 from repyability.rbd._model_utils import model_mean
 from repyability.rbd._sampling import UniformStream, draw, inverse_sampler
 from repyability.rbd.rbd import RBD, _check_on_infeasible_rbd
@@ -933,10 +934,9 @@ class RepairableRBD(RBD):
       ``1 / (MTTF + MTTR)``: ``mean_availability``, ``node_availability``,
       ``system_failure_frequency``, ``mean_up_time``, ``mean_down_time``,
       ``mean_time_between_failures``, ``expected_cost_rate`` and the
-      importance measures. A component under age replacement enters
-      through its renewal cycle instead (see ``node_availability``); block
-      replacement has no exact long-run values, so with it these methods
-      raise NotImplementedError.
+      importance measures. A component under age or block replacement
+      enters through its renewal cycle instead (see
+      ``node_availability``).
     - Monte-Carlo simulation of a finite window ``[0, t_simulation]`` that
       starts with every component working: ``availability`` (availability
       over time, and criticality measures) and ``cost`` (the distribution
@@ -1631,6 +1631,13 @@ class RepairableRBD(RBD):
         ``(c_p * R(T) + c_u * F(T)) / integral_0^T R``, as
         ``NonRepairable.cost_rate`` computes.
 
+        Under block replacement at ``T`` the renewals are the block times at
+        which the component is up (see ``node_availability``): with ``L``
+        the mean time between them and ``N`` the mean number of failures in
+        between, ``omega_i = N / L`` and ``nu_i = 1 / L``. With instant
+        repair and replacement that is ``(c_p + c_u * M(T)) / T``, ``M`` the
+        renewal function of the lives.
+
         A component with hidden failures is inspected every ``tau_i`` and,
         with a constant failure rate ``lambda``, fails ``(1 - exp(-lambda *
         tau_i)) / tau_i`` times per unit time (at most once per interval).
@@ -1671,8 +1678,9 @@ class RepairableRBD(RBD):
             this returns 0.0 without any checks.)
         NotImplementedError
             If something is priced and a component is under block
-            replacement, which has no exact long-run cost rate, or has
-            hidden failures other than with a constant failure rate,
+            replacement with models its exact values do not cover (see
+            ``node_availability``), or has hidden failures other than with
+            a constant failure rate,
             instant tests and instant repair: simulate it with ``cost``.
 
         Examples
@@ -1936,7 +1944,8 @@ class RepairableRBD(RBD):
             if a component has a non-parametric reliability model; or if
             the exact search examines more than 500,000 designs.
         NotImplementedError
-            If a component is under block replacement, or has hidden
+            If a component is under block replacement with models its exact
+            values do not cover (see ``node_availability``), or has hidden
             failures other than with a constant failure rate, instant tests
             and instant repair: its long-run values are not known exactly.
 
@@ -2068,9 +2077,8 @@ class RepairableRBD(RBD):
             return float(self.system_probability(alone)[0]) == 0.0
 
         series = None
-        if all(
-            node not in self._inspection and in_series(node) for node in chosen
-        ):
+        varying = set(self._inspection) | set(self._block_nodes())
+        if all(node not in varying and in_series(node) for node in chosen):
             # Each such node's availability is constant, and the system's is
             # theirs times the rest's: the exact search is then a dynamic
             # program over the nodes.
@@ -2304,9 +2312,10 @@ class RepairableRBD(RBD):
             non-parametric reliability model, whose MTTF this cannot
             compute.
         NotImplementedError
-            If a component is under block replacement, which has no exact
-            long-run availability, or has hidden failures other than with a
-            constant failure rate, instant tests and instant repair:
+            If a component is under block replacement with models its exact
+            values do not cover (see ``node_availability``), or has hidden
+            failures other than with a constant failure rate, instant tests
+            and instant repair:
             simulate it with ``availability``.
 
         Examples
@@ -3510,6 +3519,20 @@ class RepairableRBD(RBD):
         ``integral_0^T R / (integral_0^T R + F(T) * MTTR + R(T) * MTTP)``,
         with ``MTTP`` the mean maintenance time (0 for ``"instant"``).
 
+        Under block replacement every ``T`` a unit is replaced at each
+        multiple of ``T`` at which it is up, and in between it fails and is
+        repaired as usual; a replacement due while it is down is skipped.
+        The block times at which it is up are its renewals, so its
+        availability is its mean up time between two of them over their
+        mean distance apart. That needs the expected up time and number of
+        failures of an alternating renewal process of lives and repairs
+        within an interval, and what a repair still going on at a block time
+        carries into the next: they are computed numerically, with an error
+        falling as the square of the grid step (about 1e-6 or less). With
+        instant repair and replacement the unit is always up, and it fails
+        ``M(T)`` times per interval, ``M`` the renewal function of its
+        lives.
+
         A component with hidden failures, a constant failure rate
         ``lambda``, inspected every ``tau`` with instant tests and instant
         repair, is up a fraction ``(1 - exp(-lambda * tau)) / (lambda *
@@ -3529,8 +3552,11 @@ class RepairableRBD(RBD):
             If a component has a non-parametric reliability model, whose
             MTTF this cannot compute.
         NotImplementedError
-            If a component is under block replacement, which has no exact
-            long-run availability, or has hidden failures other than with a
+            If a component is under block replacement with models its exact
+            values do not cover (a lifetime that is not a surpyval
+            parametric model with a density, dead-on-arrival units, repairs
+            that may never end, or repairs or maintenance far longer than
+            the interval), or has hidden failures other than with a
             constant failure rate, instant tests and instant repair.
 
         Examples
@@ -3567,8 +3593,8 @@ class RepairableRBD(RBD):
         if schedule is None:
             component = self.components[node]
             return float(np.atleast_1d(component.mean_availability())[0])
-        up, cycle, _ = self._maintenance_cycle(node, schedule)
-        return up / cycle
+        up, cycle, _, _ = self._maintenance_cycle(node, schedule)
+        return min(1.0, up / cycle)
 
     def _inspected_rate(self, node) -> Tuple[float, float]:
         """The constant failure rate and the inspection interval of a
@@ -3591,13 +3617,164 @@ class RepairableRBD(RBD):
             )
         return rate, inspection.interval
 
-    def _has_inspection(self) -> bool:
-        """Whether a component here, or in a nested RBD, has hidden
-        failures."""
-        return bool(self._inspection) or any(
-            isinstance(c, RepairableRBD) and c._has_inspection()
-            for c in self.components.values()
+    def _block_nodes(self) -> list:
+        """The components under block replacement."""
+        return [
+            node
+            for node, schedule in self._preventive.items()
+            if schedule.policy == "block"
+        ]
+
+    def _block_cycle(self, node) -> BlockCycle:
+        """The renewal cycle of a component under block replacement (see
+        ``_block_replacement``), computed once and kept."""
+        component = self.components[node]
+        schedule = self._preventive[node]
+        cache = self.__dict__.setdefault("_block_cycles", {})
+        key = (
+            node,
+            id(component.reliability),
+            id(component.time_to_replace),
+            float(schedule.interval),
+            id(schedule.duration),
         )
+        if key not in cache:
+            cache[key] = block_cycle(
+                component.reliability,
+                component.time_to_replace,
+                schedule.duration,
+                schedule.interval,
+                node,
+            )
+        return cache[key]
+
+    def _has_calendar(self) -> bool:
+        """Whether a component here, or in a nested RBD, is inspected or
+        replaced on a calendar: its long-run availability then varies with
+        the time of the schedule."""
+        return (
+            bool(self._inspection)
+            or bool(self._block_nodes())
+            or any(
+                isinstance(c, RepairableRBD) and c._has_calendar()
+                for c in self.components.values()
+            )
+        )
+
+    def _calendar_grid(self, blocks: list) -> Tuple[np.ndarray, np.ndarray]:
+        """``_long_run_grid`` with components under block replacement: the
+        middles of cells over one common period of the block and inspection
+        intervals. The cells' edges are those of every block-replaced
+        component's profile (its long-run availability over its interval,
+        cell by cell), the block and inspection times, and enough points in
+        between for an inspected component's availability to vary little
+        across a cell; so each cell lies in one cell of every profile, and
+        the mean over the cells is as exact as the profiles."""
+        intervals = {self._preventive[node].interval for node in blocks}
+        intervals |= {
+            self._inspection[node].interval for node in self._inspection
+        }
+        period = _common_period(intervals)
+        pieces = [np.array([0.0, period])]
+        for interval in intervals:
+            count = int(round(period / interval))
+            if count > 100_000:
+                raise NotImplementedError(
+                    f"The block-replacement and inspection intervals "
+                    f"{sorted(intervals)} repeat together only after too many "
+                    "intervals to average over: estimate the long-run values "
+                    "by simulation, with availability() or cost()."
+                )
+            pieces.append(interval * np.arange(count))
+        for node in blocks:
+            phase = self._block_cycle(node).phase
+            repeats = int(round(period / phase[-1]))
+            pieces.append(
+                (
+                    phase[-1] * np.arange(repeats)[:, None] + phase[None, :-1]
+                ).ravel()
+            )
+        for node in self._inspection:
+            rate, interval = self._inspected_rate(node)
+            per_interval = int(np.ceil(256.0 * rate * interval))
+            pieces.append(
+                np.linspace(
+                    0.0,
+                    period,
+                    1 + per_interval * int(round(period / interval)),
+                )
+            )
+        edges = np.concatenate(pieces)
+        if len(edges) > 4_000_000:
+            raise NotImplementedError(
+                f"The block-replacement and inspection intervals "
+                f"{sorted(intervals)} repeat together only after too long a "
+                "time to average over finely enough: estimate the long-run "
+                "values by simulation, with availability() or cost()."
+            )
+        # Edges closer than rounding are one.
+        edges = np.unique(np.round(edges / period, 12)) * period
+        return 0.5 * (edges[1:] + edges[:-1]), np.diff(edges) / period
+
+    def _block_profile(self, node, times: np.ndarray, rates: bool = False):
+        """A block-replaced component's long-run availability (or failure
+        intensity) at each of ``times``: the value of its profile's cell
+        (over a block interval) that the time falls in."""
+        cycle = self._block_cycle(node)
+        interval = float(cycle.phase[-1])
+        values = cycle.failure_rate if rates else cycle.availability
+        phase = times - interval * np.floor(times / interval)
+        cell = np.searchsorted(cycle.phase, phase, side="right") - 1
+        return values[np.clip(cell, 0, len(values) - 1)]
+
+    def _block_outages(self, working_nodes, broken_nodes) -> float:
+        """The system's planned outages per unit time, in the long run,
+        from the replacements at block times that take time: at each block
+        time, the probability that the system is up just before the
+        replacements due then start and down just after, which (as they
+        only take units down) is the fall in the system availability. Units
+        due at the same time go down together. An inspection due at the
+        same time comes first."""
+        blocks = [
+            node
+            for node in self._block_nodes()
+            if self._preventive[node].duration is not None
+        ]
+        if not blocks:
+            return 0.0
+        intervals = {self._preventive[node].interval for node in blocks}
+        intervals |= {
+            self._inspection[node].interval for node in self._inspection
+        }
+        period = _common_period(intervals)
+        due: dict = {}
+        for node in blocks:
+            interval = self._preventive[node].interval
+            for k in range(int(round(period / interval))):
+                instant = round(k * interval / period, 12)
+                due.setdefault(instant, []).append(node)
+        instants = np.array(sorted(due)) * period
+        # Just after each block time, before its replacements start (an
+        # inspection due then is done).
+        base = self._availabilities_at(instants + 1e-9 * period)
+        before, after = dict(base), dict(base)
+        for column, key in enumerate(sorted(due)):
+            for node in due[key]:
+                cycle = self._block_cycle(node)
+                before[node] = np.array(before[node], dtype=float)
+                after[node] = np.array(after[node], dtype=float)
+                before[node][column] = cycle.before
+                after[node][column] = cycle.after
+        before = self._probabilities_with_overrides(
+            before, working_nodes, broken_nodes
+        )
+        after = self._probabilities_with_overrides(
+            after, working_nodes, broken_nodes
+        )
+        fall = np.asarray(self.system_probability(before)) - np.asarray(
+            self.system_probability(after)
+        )
+        return float(np.sum(fall)) / period
 
     def _long_run_grid(self) -> Tuple[np.ndarray, np.ndarray]:
         """The times, and their weights (which sum to 1), that the exact
@@ -3617,15 +3794,19 @@ class RepairableRBD(RBD):
         nested = [
             node
             for node, c in self.components.items()
-            if isinstance(c, RepairableRBD) and c._has_inspection()
+            if isinstance(c, RepairableRBD) and c._has_calendar()
         ]
-        if nested and len(nested) + len(self._inspection) > 1:
+        blocks = self._block_nodes()
+        if nested and len(nested) + len(self._inspection) + len(blocks) > 1:
             raise NotImplementedError(
                 f"Node(s) {sorted(nested, key=str)} are RBDs with hidden "
-                "failures, and other nodes' inspections here fall at the "
-                "same times: estimate the long-run values by simulation, "
-                "with availability() or cost()."
+                "failures or block replacement, and other nodes' inspections "
+                "or block replacements here fall at the same times: "
+                "estimate the long-run values by simulation, with "
+                "availability() or cost()."
             )
+        if blocks:
+            return self._calendar_grid(blocks)
         if not self._inspection:
             return np.zeros(1), np.ones(1)
         rates = {node: self._inspected_rate(node) for node in self._inspection}
@@ -3662,11 +3843,14 @@ class RepairableRBD(RBD):
         last inspection, for a component with hidden failures; its constant
         long-run availability for any other."""
         out: dict = {}
+        blocks = set(self._block_nodes())
         for node in self.components:
             if node in self._inspection:
                 rate, interval = self._inspected_rate(node)
                 since = times - interval * np.floor(times / interval)
                 out[node] = np.exp(-rate * since)
+            elif node in blocks:
+                out[node] = self._block_profile(node, times)
             else:
                 out[node] = np.full(len(times), self._node_availability(node))
         for node in self.in_or_out:
@@ -3704,25 +3888,29 @@ class RepairableRBD(RBD):
         schedule = self._preventive.get(node)
         if schedule is None:
             return component.failure_frequency(), 0.0, 0.0
-        _, cycle, survives = self._maintenance_cycle(node, schedule)
-        maintained = survives / cycle
+        _, cycle, failures, maintenances = self._maintenance_cycle(
+            node, schedule
+        )
+        maintained = maintenances / cycle
         planned = 0.0 if schedule.duration is None else maintained
-        return (1.0 - survives) / cycle, maintained, planned
+        return failures / cycle, maintained, planned
 
     def _maintenance_cycle(
         self, node, schedule: _Preventive
-    ) -> Tuple[float, float, float]:
-        """A component's renewal cycle under age replacement: its mean up
-        time and mean length, and the probability that it ends in a
-        preventive replacement (the rest end in a failure)."""
-        if schedule.policy == "block":
-            raise NotImplementedError(
-                f"Component {node!r} is under block replacement, which has "
-                "no exact long-run availability, failure frequency or cost "
-                "rate: estimate them by simulation, with availability() or "
-                "cost()."
-            )
+    ) -> Tuple[float, float, float, float]:
+        """A component's renewal cycle under preventive maintenance: its mean
+        up time, mean length, mean number of failures and mean number of
+        preventive replacements.
+
+        Under age replacement a cycle ends at a failure or at a preventive
+        replacement, whichever comes first. Under block replacement it runs
+        from one block time at which the unit is up (and replaced) to the
+        next, with any failures and repairs in between (see
+        ``_block_replacement``); it is computed once and kept."""
         component = self.components[node]
+        if schedule.policy == "block":
+            block = self._block_cycle(node)
+            return block.up, block.length, block.failures, 1.0
         up = float(component.avg_replacement_time(schedule.interval))
         survives = float(
             np.ravel(component.reliability_function(schedule.interval))[0]
@@ -3735,7 +3923,7 @@ class RepairableRBD(RBD):
             + (1.0 - survives) * model_mean(component.time_to_replace)
             + survives * maintenance
         )
-        return up, cycle, survives
+        return up, cycle, 1.0 - survives, survives
 
     def system_failure_frequency(
         self,
@@ -3756,7 +3944,9 @@ class RepairableRBD(RBD):
         ``omega_i`` is node i's long-run failure frequency: ``1 / (MTTF_i +
         MTTR_i)`` for a component, ``F(T) / C`` for one under age
         replacement at ``T`` (``C`` its mean renewal cycle, see
-        ``expected_cost_rate``), and a nested ``RepairableRBD``'s own
+        ``expected_cost_rate``), its mean failures per renewal cycle over
+        the cycle's mean length for one under block replacement, and a
+        nested ``RepairableRBD``'s own
         ``system_failure_frequency``. Exact for independent repairable
         nodes, with no simulation. Every system failure counts, including
         the zero-length outages an instantly repaired component causes;
@@ -3784,7 +3974,8 @@ class RepairableRBD(RBD):
             node, or is in both sets; or if a component has a
             non-parametric reliability model.
         NotImplementedError
-            If a component is under block replacement.
+            If a component is under block replacement with models its exact
+            values do not cover (see ``node_availability``).
 
         Examples
         --------
@@ -3826,6 +4017,7 @@ class RepairableRBD(RBD):
         )
         birnbaum = super()._birnbaum_importance(availability)
         failures = planned = 0.0
+        blocks = set(self._block_nodes())
         for node in self.components:
             if node in forced:
                 # A forced node never changes state, so it contributes no
@@ -3837,10 +4029,17 @@ class RepairableRBD(RBD):
                 rate, _ = self._inspected_rate(node)
                 node_failures: Any = rate * availability[node]
                 node_planned: Any = 0.0
+            elif node in blocks:
+                # Its failure intensity varies over its block interval; its
+                # replacements fall at block times (counted below).
+                node_failures = self._block_profile(node, times, rates=True)
+                node_planned = 0.0
             else:
                 node_failures, _, node_planned = self._node_frequencies(node)
             failures += float(weights @ (importance * node_failures))
             planned += float(weights @ (importance * node_planned))
+        if blocks:
+            planned += self._block_outages(working_nodes, broken_nodes)
         return failures, planned
 
     def mean_time_between_failures(

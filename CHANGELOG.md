@@ -46,6 +46,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Exact long-run values for block replacement** (#92). A `RepairableRBD`
+  with components under block replacement now has an exact
+  `mean_availability`, `system_failure_frequency`, MUT, MDT, MTBF,
+  `expected_cost_rate`, `total_cost`, importance measures and
+  `allocate_redundancy`, which used to raise `NotImplementedError`. A
+  component's renewals are the block times at which it is up; between two of
+  them it is an alternating renewal process of lives and repairs, and a
+  repair can run over a block time. The renewal equations are solved on a
+  grid, to about one part in a million. Components replaced at the same
+  block times go down together, so the system's values average over the
+  block interval (over the time the schedules take to repeat together, with
+  different intervals) instead of combining each component's own average: a
+  pair of pumps in parallel, both replaced at the same block times, is down
+  for every replacement, which the per-component average misses entirely.
+  The exact values need a surpyval parametric lifetime with a density and
+  repairs that always end; the simulation covers the rest.
 - **Non-parametric node models can be saved** (#85): Kaplan–Meier,
   Nelson–Aalen and the other surpyval non-parametric fits, which used to
   raise `NotImplementedError`.

@@ -193,27 +193,30 @@ replaced preventively in about 7 h, alone or with a standby, with lost
 production at 500 per hour:
 
 ```python
-def pump(interval):
+def pump(interval, policy="age"):
     return {
         "reliability": surv.Weibull.from_params([1000, 2.5]),        # MTTF 887 h
         "repairability": surv.LogNormal.from_params([3.0, 0.5]),     # 23 h
         "replace_cost": 5000.0,
         "preventive": {
             "interval": interval,
+            "policy": policy,
             "duration": surv.Weibull.from_params([8, 3]),            # 7 h
             "cost": 1000.0,
         },
     }
 
-def alone(interval):
+def alone(interval, policy="age"):
     return RepairableRBD(
-        [("s", "p"), ("p", "t")], {"p": pump(interval)}, downtime_cost_rate=500.0
+        [("s", "p"), ("p", "t")],
+        {"p": pump(interval, policy)},
+        downtime_cost_rate=500.0,
     )
 
-def with_standby(interval):
+def with_standby(interval, policy="age"):
     return RepairableRBD(
         [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
-        {"a": pump(interval), "b": pump(interval)},
+        {"a": pump(interval, policy), "b": pump(interval, policy)},
         downtime_cost_rate=500.0,
     )
 
@@ -248,8 +251,30 @@ cost rate = … + Σ R_i(T_i) / C_i · preventive cost_i     preventive actions
 With instant repair and maintenance a component's own cost rate is
 `NonRepairable.cost_rate(T)`. `mean_availability`, `node_availability`, the
 frequencies, MUT, MDT and the importance measures account for it the same
-way. Block replacement has no exact long-run values (those methods raise
-`NotImplementedError`): simulate it.
+way.
+
+Under block replacement the renewals are the block times at which the unit is
+up: it is replaced there, and a replacement due while it is down is skipped.
+Between two of them it fails and is repaired as usual, and a repair can run
+over a block time. `expected_cost_rate` and the other long-run methods compute
+its mean up time, failures and length between renewals numerically, from the
+renewal equations of its lives and repairs within an interval, to about one
+part in a million. With instant repair and replacement the cost rate is
+`(c_p + c_u · M(T)) / T`, `M` the renewal function of the lives. Components
+replaced at the same block times go down together, so the system's long-run
+values average over the block interval (over the time the schedules take to
+repeat together, for different intervals), rather than combining each
+component's own average:
+
+```python
+alone(580, "block").expected_cost_rate()          # -> 14.06   against 13.14 for age
+with_standby(580, "block").mean_availability()    # -> 0.9901  both replaced at once
+with_standby(580).mean_availability()             # -> 0.9996
+```
+
+The exact block-replacement values need a surpyval parametric lifetime with a
+density (no units dead on arrival), and repairs that always end; otherwise
+they raise `NotImplementedError`, and the simulation still applies.
 
 The simulation prices both policies. A replacement's cost is in
 `by_category["preventive"]`, and a planned outage counts as downtime, but not
@@ -475,8 +500,8 @@ The model and its limits: copies are active and repaired independently of
 each other (as many repair crews as failed copies), with no common-cause
 failures between them (see [Common-cause failures](common-cause.md)).
 Copies of a component with hidden failures are inspected together. A nested
-`RepairableRBD` cannot be given copies. Components under block replacement
-have no exact long-run cost and raise `NotImplementedError`. Costs are not
+`RepairableRBD` cannot be given copies. Copies of a component under block
+replacement are replaced together, at the same block times. Costs are not
 discounted. For non-repairable systems, redundancy allocation within a
 budget or to a reliability target is in
 [Design and allocation](design.md#redundancy-allocation).

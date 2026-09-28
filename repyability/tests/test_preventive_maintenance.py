@@ -376,7 +376,9 @@ def test_the_exact_long_run_values_match_a_long_simulation():
     )
 
 
-def test_block_replacement_has_no_exact_long_run_values():
+def test_block_replacement_has_exact_long_run_values():
+    # The details are in test_block_replacement.py; here, the long-run
+    # values agree with the simulation's long-window averages.
     rbd = single(
         {
             "reliability": W([100.0, 3.0]),
@@ -385,17 +387,18 @@ def test_block_replacement_has_no_exact_long_run_values():
             "preventive": {"interval": 50.0, "policy": "block"},
         }
     )
-    for method in (
-        rbd.mean_availability,
-        rbd.node_availability,
-        rbd.expected_cost_rate,
-        rbd.system_failure_frequency,
-        rbd.mean_up_time,
-        rbd.birnbaum_importance,
-    ):
-        with pytest.raises(NotImplementedError, match="block replacement"):
-            method()
-    assert rbd.cost(500.0, N=5, seed=1).mean > 0.0  # simulates
+    t = 50_000.0
+    result = rbd.availability(t_simulation=t, N=20, seed=2)
+    window = result.mean_availability_interval()
+    assert abs(rbd.mean_availability() - window.estimate) < 4 * (
+        window.standard_error
+    )
+    cost = rbd.cost(t_simulation=t, N=20, seed=3).mean_interval()
+    assert abs(rbd.expected_cost_rate() * t - cost.estimate) < 4 * (
+        cost.standard_error
+    )
+    assert rbd.mean_up_time() > 0.0
+    assert set(rbd.birnbaum_importance()) >= {"c"}
 
 
 # -- no maintenance ---------------------------------------------------------

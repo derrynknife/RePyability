@@ -357,9 +357,7 @@ answers for the same pump: the structure and the downtime move the optimum.
 
 ### Simulating a policy
 
-The simulation prices the same policy over a finite window, with its spread,
-and it also handles block replacement, which has no exact long-run formula
-here (the calendar ties the components' histories together):
+The simulation prices the same policy over a finite window, with its spread:
 
 ```python
 year = alone(580).availability(t_simulation=8760.0, N=500, seed=0)
@@ -383,16 +381,32 @@ year.cost.cost_rate     # -> 13.01   ...for age replacement
 ```
 
 Block replacement stops the plant more often (it replaces pumps that are
-nearly new) and costs more. It could still be the right choice if grouping
-the work saves money that this model does not see, such as one shutdown for
-several parts.
+nearly new) and costs more. The long-run values are exact for it too:
+
+```python
+alone(580, "block").expected_cost_rate()          # -> 14.06   against 13.14 for age
+with_standby(580, "block").expected_cost_rate()   # -> 12.2    against 7.10 for age
+with_standby(580, "block").mean_availability()    # -> 0.9901  against 0.9996 for age
+```
+
+With a standby, block replacement is far worse: both pumps are replaced at the
+same block times, so every replacement stops the plant, and the standby does
+nothing for the planned stops. Age replacement renews each pump on its own
+clock, so one is almost always running while the other is replaced. The
+calendar ties the components together, and the exact values account for it:
+they average the system over the block interval rather than combining each
+pump's own average. Block replacement could still be the right choice if
+grouping the work saves money that this model does not see, such as one
+shutdown for several parts, or with staggered block times.
 
 !!! note "Exact or simulated?"
-    For age replacement, `expected_cost_rate`, `mean_availability` and the
-    other long-run methods are exact. For block replacement they raise
-    `NotImplementedError`: use the simulation (`availability` or `cost`).
-    See [Costs](../guide/costs.md#preventive-maintenance) in the user guide
-    for every detail of the schedule.
+    For age and block replacement, `expected_cost_rate`, `mean_availability`
+    and the other long-run methods are exact. For block replacement they are
+    computed numerically, to about one part in a million: a repair can run
+    over a block time, and components replaced at the same times go down
+    together. The simulation (`availability` or `cost`) gives the spread over
+    a finite window. See [Costs](../guide/costs.md#preventive-maintenance) in
+    the user guide for every detail of the schedule.
 
 ## Failures nobody sees
 
