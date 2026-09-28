@@ -22,7 +22,7 @@ text = rbd.to_json(indent=2)    # a JSON string (keyword arguments go to json.du
 clone = NonRepairableRBD.from_json(text)
 clone.sf(30) == rbd.sf(30)      # True
 type(RBD.from_dict(data)).__name__   # 'NonRepairableRBD': the base class dispatches on type
-data["type"], data["repyability_version"]   # ('NonRepairableRBD', '0.8.0')
+data["type"], data["repyability_version"]   # ('NonRepairableRBD', '0.9.0')
 ```
 
 What is saved:
@@ -33,10 +33,11 @@ What is saved:
   distributions and acquisition costs, preventive and inspection schedules,
   `"instant"` repairs and `NonRepairable` components;
 - the node models: surpyval parametric distributions and
-  `FixedEventProbability` by name and parameters, `PerfectReliability` and
-  `PerfectUnreliability`, and the standby, repeated, repeated-standby,
-  load-sharing, regression and `NonRepairable` wrappers recursively (a
-  regression model through `surpyval.from_dict`).
+  `FixedEventProbability` by name and parameters (with any offset,
+  limited-failure-population or zero-inflation parameter),
+  `PerfectReliability` and `PerfectUnreliability`, and the standby, repeated,
+  repeated-standby, load-sharing, regression and `NonRepairable` wrappers
+  recursively (a regression model through `surpyval.from_dict`).
 
 String, integer and tuple node names all survive JSON (JSON turns a tuple
 into a list, and loading turns it back). Loading with the wrong class

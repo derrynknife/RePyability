@@ -7,7 +7,13 @@ from surpyval import Hypoexponential, KaplanMeier
 from repyability.utils.wrappers import numpy_seed
 
 from ._model_utils import is_exponential
-from ._sampling import RowSampler, column, draw_rows, inverse_sampler
+from ._sampling import (
+    RowSampler,
+    column,
+    draw,
+    draw_rows,
+    inverse_sampler,
+)
 from .numerical_convolution import (
     ConvolvedSurvival,
     is_perfect_switching,
@@ -300,7 +306,7 @@ class StandbyModel:
         """
         budgets = np.column_stack(
             [
-                np.asarray(model.random(size), dtype=float)
+                np.asarray(draw(model, size), dtype=float)
                 for model in self.reliabilities
             ]
         )
@@ -308,10 +314,16 @@ class StandbyModel:
 
     def _warm_from_budgets(self, budgets):
         """Warm-standby lifetimes from the units' budgets (one row per
-        sample)."""
-        if np.all(np.isfinite(budgets)):
+        sample): all at once where every budget is finite, sample by sample
+        elsewhere (a unit that never fails has an infinite budget)."""
+        finite = np.all(np.isfinite(budgets), axis=1)
+        if finite.all():
             return self._warm_lifetimes(budgets)
-        return self._warm_lifetimes_by_sample(budgets)
+        out = np.empty(budgets.shape[0], dtype=float)
+        if finite.any():
+            out[finite] = self._warm_lifetimes(budgets[finite])
+        out[~finite] = self._warm_lifetimes_by_sample(budgets[~finite])
+        return out
 
     def _warm_lifetimes(self, budgets):
         """The virtual-age loop for every sample at once.
@@ -374,6 +386,10 @@ class StandbyModel:
                 )
                 idx = int(np.argmin(remaining))
                 dt = float(remaining[idx])
+                if dt == np.inf:
+                    # Every unit left never fails: nor does the arrangement.
+                    t = np.inf
+                    break
                 t += dt
                 age[operating] += dt
                 age[dormant] += kappa * dt
@@ -431,11 +447,11 @@ class StandbyModel:
                 # estimated from the sum of each of the components in the node,
                 # i.e. it will fail after all of them fail.
                 x_random = np.asarray(
-                    self.reliabilities[0].random(size), dtype=float
+                    draw(self.reliabilities[0], size), dtype=float
                 )
                 if is_perfect_switching(self.switching_probability):
                     for model in self.reliabilities[1:]:
-                        x_random = x_random + model.random(size)
+                        x_random = x_random + draw(model, size)
                 else:
                     # Under imperfect switching a spare only contributes if
                     # every switch up to and including its own has succeeded.
@@ -446,7 +462,7 @@ class StandbyModel:
                     for model, p in zip(self.reliabilities[1:], probs):
                         running = running & (np.random.random(size) < p)
                         x_random = x_random + np.where(
-                            running, model.random(size), 0.0
+                            running, draw(model, size), 0.0
                         )
 
             else:
@@ -488,11 +504,11 @@ class StandbyModel:
             pq: PriorityQueue = PriorityQueue()
             # start k streams:
             for node in self.reliabilities[: self.k]:
-                pq.put(node.random(1).item())
+                pq.put(draw(node, 1).item())
 
             # Add the next event time to the lowest value in the queue
             for node in self.reliabilities[self.k :]:  # noqa: E203
-                next_t = node.random(1).item()
+                next_t = draw(node, 1).item()
                 current_lowest = pq.get()
                 pq.put(current_lowest + next_t)
 

@@ -28,7 +28,7 @@ import numpy as np
 
 from repyability._version import __version__
 from repyability.non_repairable import NonRepairable
-from repyability.rbd._model_utils import distribution_name
+from repyability.rbd._model_utils import distribution_name, model_extras
 from repyability.rbd.helper_classes import (
     PerfectReliability,
     PerfectUnreliability,
@@ -97,11 +97,17 @@ def serialise_model(model: Any) -> dict:
         }
     dist = distribution_name(model)
     if dist is not None:
-        return {
+        out: dict = {
             "kind": "parametric",
             "dist": dist,
             "params": _params_list(model),
         }
+        # An offset, limited-failure-population or zero-inflation parameter,
+        # saved only when the model has one.
+        extras = model_extras(model)
+        if extras:
+            out["extras"] = extras
+        return out
     raise NotImplementedError(
         f"Cannot serialise a node model of type {type(model).__name__}. "
         "Only surpyval parametric distributions, the RePyability node "
@@ -122,7 +128,7 @@ def deserialise_model(d: dict) -> Any:
         return PerfectUnreliability
     if kind == "parametric":
         cls = getattr(surpyval, d["dist"])
-        return cls.from_params(d["params"])
+        return cls.from_params(d["params"], **d.get("extras", {}))
     if kind == "rbd":
         return rbd_from_dict(d["rbd"])
     if kind == "standby":

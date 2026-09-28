@@ -81,7 +81,13 @@ def mttf(rbd):
     return quad(rbd.sf, 0, np.inf)[0]
 
 
-LFP = W([100, 2], p=0.9)  # its draws cannot be replayed from uniforms
+def standby_pair():
+    """A repairable unit whose life is a cold-standby pair: its draws cannot
+    be replayed from uniforms of its own."""
+    return {
+        "reliability": StandbyModel([W([10, 2]), W([10, 2])]),
+        "repairability": E([1.0]),
+    }
 
 
 class Drawn:
@@ -271,10 +277,7 @@ def test_antithetic_cost_is_unbiased_and_tighter():
 
 
 def test_antithetic_needs_replayable_draws():
-    rbd = RepairableRBD(
-        [("s", "c"), ("c", "t")],
-        {"c": {"reliability": LFP, "repairability": E([1.0])}},
-    )
+    rbd = RepairableRBD([("s", "c"), ("c", "t")], {"c": standby_pair()})
     with pytest.raises(NotImplementedError):
         rbd.availability(T, N=10, seed=0, antithetic=True)
 
@@ -426,10 +429,7 @@ def test_invalid_comparisons(options):
 
 
 def test_comparing_needs_replayable_draws():
-    rbd = RepairableRBD(
-        [("s", "c"), ("c", "t")],
-        {"c": {"reliability": LFP, "repairability": E([1.0])}},
-    )
+    rbd = RepairableRBD([("s", "c"), ("c", "t")], {"c": standby_pair()})
     with pytest.raises(NotImplementedError):
         rbd.compare(rbd, T, N=10, seed=0)
 
@@ -518,7 +518,7 @@ def test_antithetic_mttf_to_a_tolerance():
 
 
 def test_antithetic_draws_need_replayable_nodes():
-    rbd = NonRepairableRBD([("s", "c"), ("c", "t")], {"c": LFP})
+    rbd = NonRepairableRBD([("s", "c"), ("c", "t")], {"c": Drawn(100.0)})
     with pytest.raises(NotImplementedError):
         rbd.random(10, seed=0, antithetic=True)
     with pytest.raises(ValueError, match="even"):
@@ -696,9 +696,9 @@ def test_invalid_mttf_comparisons():
         parallel(2).compare(parallel(3), mc_samples=0)
     with pytest.raises(ValueError):
         parallel(2).compare(parallel(3), mc_samples=10, confidence=0.0)
-    lfp = NonRepairableRBD([("s", "c"), ("c", "t")], {"c": LFP})
+    drawn = NonRepairableRBD([("s", "c"), ("c", "t")], {"c": Drawn(100.0)})
     with pytest.raises(NotImplementedError):
-        lfp.compare(parallel(2), mc_samples=10, seed=0)
+        drawn.compare(parallel(2), mc_samples=10, seed=0)
 
 
 # -- the shared helpers -------------------------------------------------------

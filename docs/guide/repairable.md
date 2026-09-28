@@ -74,7 +74,10 @@ plant.mean_time_between_failures()  # -> 28.6     MTBF = MUT + MDT = 1 / frequen
 ```
 
 A component's availability is `MTTF / (MTTF + MTTR)`; the system's is the
-exact system computation at those availabilities. The failure frequency is
+exact system computation at those availabilities. A component some of whose
+units never fail (a surpyval model with `p < 1`) sooner or later gets one of
+them, and is then up for good: its long-run availability is 1 and its
+failure frequency 0 (simulate `availability()` for the years before). The failure frequency is
 the Birnbaum/Vesely formula: each node's Birnbaum importance times its own
 failure frequency `1 / (MTTF + MTTR)`, summed. All of these accept
 `working_nodes`/`broken_nodes`, and `mean_availability` accepts

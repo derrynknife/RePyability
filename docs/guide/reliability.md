@@ -150,7 +150,10 @@ ci.standard_error    # -> 0.1373   sample std / √mc_samples
 
 The interval narrows like `1/√mc_samples`. Common-cause groups are not
 included in these simulated quantities (see
-[Common-cause failures](common-cause.md#what-honours-a-ccf-group)).
+[Common-cause failures](common-cause.md#what-honours-a-ccf-group)). A node
+some of whose units never fail (a surpyval model with `p < 1`) draws
+infinite lifetimes for them, so a system that can outlast its failing nodes
+has an infinite MTTF.
 
 To simulate until the MTTF is known to a given precision, pass a
 `tolerance`: `mean_time_to_failure_interval(tolerance=0.5)` keeps adding

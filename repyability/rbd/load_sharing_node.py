@@ -36,7 +36,7 @@ from surpyval import Hypoexponential, KaplanMeier
 from repyability.utils.wrappers import conditional_survival, numpy_seed
 
 from ._model_utils import is_exponential
-from ._sampling import RowSampler, column, inverse_sampler
+from ._sampling import RowSampler, column, draw, inverse_sampler
 
 _AFT_KIND = "Accelerated Failure Time"
 
@@ -283,7 +283,7 @@ class LoadSharingModel:
             # Baseline exposure-to-failure thresholds: (N, size).
             tau = np.empty((self.N, size))
             for i, base in enumerate(self._baselines):
-                tau[i] = np.asarray(base.random(size), dtype=float).reshape(-1)
+                tau[i] = np.asarray(draw(base, size), dtype=float).reshape(-1)
         return self._lifetimes_from_thresholds(tau)
 
     def _lifetimes_from_thresholds(self, tau):

@@ -39,8 +39,8 @@ from repyability.utils.wrappers import conditional_survival, numpy_seed
 
 from . import _montecarlo as montecarlo
 from . import redundancy_allocation
-from ._model_utils import is_fixed_probability, parametric_spec
-from ._sampling import RowSampler, row_sampler
+from ._model_utils import is_fixed_probability, model_mean, parametric_spec
+from ._sampling import RowSampler, draw, row_sampler
 from .ccf import CCFGroup
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .load_sharing_node import LoadSharingModel
@@ -150,16 +150,18 @@ def check_x(func):
     return wrap
 
 
-def _dsf_dparam(cls, params, j, x_arr, rel_step) -> np.ndarray:
+def _dsf_dparam(cls, params, j, x_arr, rel_step, extras=None) -> np.ndarray:
     """Partial derivative of a distribution's ``sf`` at ``x_arr`` with respect
     to its ``j``-th parameter, by finite difference.
 
-    ``cls.from_params`` rebuilds the distribution with a perturbed parameter,
-    so this works for any surpyval parametric distribution without hard-coding
-    per-distribution derivative formulae. A central difference is used where
-    both perturbations are valid; if one perturbation falls outside a
-    parameter's admissible range (e.g. a probability leaving ``[0, 1]``) it
-    falls back to a one-sided difference about the unperturbed value.
+    ``cls.from_params`` rebuilds the distribution with a perturbed parameter
+    (and the model's offset, limited-failure-population and zero-inflation
+    ``extras``, kept as they are), so this works for any surpyval parametric
+    distribution without hard-coding per-distribution derivative formulae.
+    A central difference is used where both perturbations are valid; if one
+    perturbation falls outside a parameter's admissible range (e.g. a
+    probability leaving ``[0, 1]``) it falls back to a one-sided difference
+    about the unperturbed value.
     """
     theta = params[j]
     h = rel_step * abs(theta) if theta != 0.0 else rel_step
@@ -168,7 +170,8 @@ def _dsf_dparam(cls, params, j, x_arr, rel_step) -> np.ndarray:
         trial = list(params)
         trial[j] = theta + delta
         try:
-            return np.asarray(cls.from_params(trial).sf(x_arr), dtype=float)
+            model = cls.from_params(trial, **(extras or {}))
+            return np.asarray(model.sf(x_arr), dtype=float)
         except Exception:
             return None
 
@@ -3289,7 +3292,7 @@ class NonRepairableRBD(RBD):
             samplers.append(node_sampler)
         structure = self._decomposition()
 
-        def draw(u):
+        def sample(u):
             size = len(u)
             lifetimes, start = {}, 0
             for node, sampler in zip(nodes, samplers):
@@ -3301,7 +3304,7 @@ class NonRepairableRBD(RBD):
                 out[np.isnan(lifetime)] = np.nan
             return out
 
-        return RowSampler(sum(s.width for s in samplers), draw)
+        return RowSampler(sum(s.width for s in samplers), sample)
 
     def _components(self) -> list:
         """Every node of the diagram that is a component of its own (the
@@ -3321,8 +3324,8 @@ class NonRepairableRBD(RBD):
                 # the event time orders the PriorityQueue and assigns into
                 # ``out`` (NumPy >= 2 rejects assigning a 1-element array to
                 # a scalar).
-                draw = np.asarray(self.reliabilities[node].random(1))
-                time = float(draw.reshape(-1)[0])
+                one = np.asarray(draw(self.reliabilities[node], 1))
+                time = float(one.reshape(-1)[0])
                 event_queue.put(NodeFailure(time, node))
 
             working_nodes = {k: True for k in self._components()}
@@ -4265,7 +4268,10 @@ class NonRepairableRBD(RBD):
           estimate from ``mc_samples`` lifetimes;
         - a fixed-probability node: 0.0, as it has no time dimension;
         - any other model: its own ``mean()``, e.g. the exact mean of a
-          surpyval distribution.
+          surpyval distribution, except that a limited-failure-population
+          model's is infinite: some of its units never fail. (surpyval's
+          ``mean()`` of one is the *defective* mean, its failing units' mean
+          weighted by their fraction.)
 
         Common-cause groups do not affect a node's own MTTF.
 
@@ -4321,7 +4327,7 @@ class NonRepairableRBD(RBD):
                 elif is_fixed_probability(model):
                     out[node] = 0.0
                 else:
-                    out[node] = float(np.atleast_1d(model.mean())[0])
+                    out[node] = model_mean(model)
         return out
 
     # Importance measures
@@ -4946,7 +4952,7 @@ class NonRepairableRBD(RBD):
             if spec is None:
                 # Composite / non-parametric node: no parameters to perturb.
                 continue
-            cls, params, names = spec
+            cls, params, names, extras = spec
             node_out: Dict[str, Union[float, np.ndarray]] = {}
             if node_name in forced:
                 # Pinned regardless of its parameters -> zero sensitivity.
@@ -4957,7 +4963,7 @@ class NonRepairableRBD(RBD):
                 continue
             b_i = np.asarray(birnbaum[node_name], dtype=float)
             for j, name in enumerate(names):
-                dsf = _dsf_dparam(cls, params, j, x_arr, rel_step)
+                dsf = _dsf_dparam(cls, params, j, x_arr, rel_step, extras)
                 node_out[name] = _out(b_i * dsf)
             sensitivities[node_name] = node_out
         return sensitivities

@@ -28,24 +28,10 @@ from typing import Any, List, Optional
 
 import numpy as np
 
+from repyability.rbd._model_utils import model_extras
+
 #: The draws of a node's model that ``"fit"`` asks for.
 FIT = "fit"
-
-
-#: The offset, limited-failure-population and zero-inflation parameters,
-#: and the values that mean the model has none of them.
-_EXTRAS = {"gamma": 0.0, "p": 1.0, "f0": 0.0}
-
-
-def _extras(model) -> dict:
-    """The model's offset, limited-failure-population and zero-inflation
-    parameters, where it has them: they keep their values in every draw."""
-    out = {}
-    for name, none in _EXTRAS.items():
-        value = getattr(model, name, none)
-        if value is not None and value != none:
-            out[name] = value
-    return out
 
 
 def _parametric(model, label: str):
@@ -142,7 +128,7 @@ def _fit_draws(model, n: int, rng: np.random.Generator, label: str) -> list:
     drawn = np.column_stack(
         [sc.inverse(z[:, j]) for j, sc in enumerate(scales)]
     )
-    extras = _extras(model)
+    extras = model_extras(model)
     return [dist.from_params(list(row), **extras) for row in drawn]
 
 
@@ -184,7 +170,7 @@ def _parameter_draws(
                 f"outside its range ({lower}, {upper})."
             )
         columns[:, j] = values
-    extras = _extras(model)
+    extras = model_extras(model)
     return [dist.from_params(list(row), **extras) for row in columns]
 
 
