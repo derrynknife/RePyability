@@ -7,42 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
+## [0.10.0] - 2026-09-28
 
-- **Works with surpyval's next release** (#106). surpyval's development
-  branch makes `mean()` infinite when some units never fail (`p < 1`),
-  refuses infinite observations, and fixes a Cox model's survival before its
-  first event. RePyability relied on the old behaviour in three places,
-  which now work on surpyval 0.20 and on its next release alike:
-  - a cold standby (and a `RepeatedStandbyNode`) of units that may never fail
-    gave `nan`: its grid is now sized by the mean lifetime of the units
-    that fail;
-  - a warm standby, or a simulated k-out-of-n standby, of such units raised
-    `ValueError`: the arrangements that never fail are now right-censored in
-    the Kaplan-Meier fit;
-  - a `RegressionNode`'s `mean()` and `random()` on a Cox model returned a
-    number instead of raising as documented: a semiparametric model is now
-    recognised by its type, not by the shape of its curve.
-- `NonRepairable.find_optimal_replacement()` returns `inf` at once for a
-  model some of whose units never fail, instead of reaching it by a search
-  that started from `log(mean())`.
-- A `RegressionNode` with a proportional-odds model and a covariate
-  `schedule` follows surpyval: refused where surpyval cannot evaluate it
-  (0.20), and surpyval's survival along the path where it can.
+Meet a repairable system's availability and cost targets. Choose the
+age-replacement intervals of its components together
+(`optimal_replacement_intervals`), the proof-test intervals that keep a
+safety function's PFDavg within its target (`optimal_inspection_intervals`),
+and the availability, MTTF and MTTR each component needs
+(`availability_allocation`, `mttf_mttr_allocation`). Block replacement now
+has exact long-run values, like age replacement and inspection, averaged
+over the schedules of components maintained or tested together. Node models
+are saved in surpyval's own format, and RePyability works with surpyval's
+next release as well as with 0.20.
 
-### Changed
-
-- **Node models are saved in surpyval's own format** (#85):
-  `{"kind": "surpyval", "model": model.to_dict()}`, loaded with
-  `surpyval.from_dict`, instead of RePyability's name-and-parameters format.
-  Everything surpyval keeps round-trips, including a fit's covariance, so
-  parameter uncertainty can still be propagated after loading. Files saved
-  by earlier versions still load, but files saved by 0.10.0 do not load in
-  earlier versions.
-- The simulated numbers of imperfect repair in the maintenance guide and the
-  `Repairable` examples are quoted as approximate: surpyval's next release
-  simulates recurrent events differently, so the same seed gives slightly
-  different estimates.
+Behaviour changes: node models are saved in surpyval's format, which earlier
+versions cannot load (files they saved still load); a `RegressionNode` on a
+Cox model raises from `mean()` and `random()`, as documented, instead of
+returning a number; and one with a proportional-odds model and a covariate
+schedule follows surpyval (see Fixed).
 
 ### Added
 
@@ -104,6 +86,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An `upstream` workflow runs the tests against surpyval's development
   branch on pull requests, on pushes to dev and master, and daily, so a
   surpyval change that breaks RePyability shows before surpyval releases it.
+
+### Changed
+
+- **Node models are saved in surpyval's own format** (#85):
+  `{"kind": "surpyval", "model": model.to_dict()}`, loaded with
+  `surpyval.from_dict`, instead of RePyability's name-and-parameters format.
+  Everything surpyval keeps round-trips, including a fit's covariance, so
+  parameter uncertainty can still be propagated after loading. Files saved
+  by earlier versions still load, but files saved by 0.10.0 do not load in
+  earlier versions.
+- The simulated numbers of imperfect repair in the maintenance guide and the
+  `Repairable` examples are quoted as approximate: surpyval's next release
+  simulates recurrent events differently, so the same seed gives slightly
+  different estimates.
+
+### Fixed
+
+- **Works with surpyval's next release** (#106). surpyval's development
+  branch makes `mean()` infinite when some units never fail (`p < 1`),
+  refuses infinite observations, and fixes a Cox model's survival before its
+  first event. RePyability relied on the old behaviour in three places,
+  which now work on surpyval 0.20 and on its next release alike:
+  - a cold standby (and a `RepeatedStandbyNode`) of units that may never fail
+    gave `nan`: its grid is now sized by the mean lifetime of the units
+    that fail;
+  - a warm standby, or a simulated k-out-of-n standby, of such units raised
+    `ValueError`: the arrangements that never fail are now right-censored in
+    the Kaplan-Meier fit;
+  - a `RegressionNode`'s `mean()` and `random()` on a Cox model returned a
+    number instead of raising as documented: a semiparametric model is now
+    recognised by its type, not by the shape of its curve.
+- `NonRepairable.find_optimal_replacement()` returns `inf` at once for a
+  model some of whose units never fail, instead of reaching it by a search
+  that started from `log(mean())`.
+- A `RegressionNode` with a proportional-odds model and a covariate
+  `schedule` follows surpyval: refused where surpyval cannot evaluate it
+  (0.20), and surpyval's survival along the path where it can.
 
 ## [0.9.0] - 2026-09-28
 
