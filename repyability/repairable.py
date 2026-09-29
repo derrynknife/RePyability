@@ -54,7 +54,7 @@ from scipy.special import gammaln
 
 from repyability.maintenance import FailureLimitPolicy, MaintenancePolicy
 from repyability.rbd._model_utils import failure_time_scale
-from repyability.utils.wrappers import numpy_seed
+from repyability.utils.wrappers import numpy_seed, seed_keyword
 
 # Simulation draws used to estimate E[N(t)] for a simulation-backed
 # (imperfect-repair) model. Ignored for analytic (``cif``) models.
@@ -175,7 +175,8 @@ class Repairable:
         - ``cif(t)``: an analytic cumulative intensity (minimal repair),
           e.g. a surpyval ``CrowAMSAA`` or ``Duane`` model (fitted, or
           built with ``from_params``) or a fitted ``HPP``; or
-        - ``mcf(t, items=..., seed=...)``: a simulation-estimated mean
+        - ``mcf(t, items=..., random_state=...)`` (``seed=...`` before
+          surpyval 0.21; either is accepted): a simulation-estimated mean
           cumulative function (imperfect repair), e.g. a surpyval
           ``GeneralizedRenewal`` (Kijima I/II) model, fitted or built with
           ``fit_from_parameters``.
@@ -306,8 +307,10 @@ class Repairable:
         """
         if self._analytic:
             return np.asarray(self.model.cif(t), dtype=float)
+        mcf = self.model.mcf
         return np.asarray(
-            self.model.mcf(t, items=n_simulations, seed=seed), dtype=float
+            mcf(t, items=n_simulations, **{seed_keyword(mcf): seed}),
+            dtype=float,
         )
 
     def _expected_failures_scalar(
@@ -817,8 +820,11 @@ class Repairable:
             result = None
             while achievable >= 1:
                 try:
-                    result = self.model.count_terminated_simulation(
-                        achievable, items=n_simulations, seed=seed
+                    simulate = self.model.count_terminated_simulation
+                    result = simulate(
+                        achievable,
+                        items=n_simulations,
+                        **{seed_keyword(simulate): seed},
                     )
                     break
                 except (ValueError, FloatingPointError):

@@ -1,4 +1,5 @@
 import functools
+import inspect
 from contextlib import contextmanager
 
 import numpy as np
@@ -31,6 +32,41 @@ def numpy_seed(seed):
         yield
     finally:
         np.random.set_state(state)
+
+
+def seed_keyword(method) -> str:
+    """The keyword a model's simulation method takes its seed by.
+
+    surpyval 0.21 renamed the simulations' ``seed`` to ``random_state``
+    (the old name warns until surpyval 0.22 removes it), so a seed goes
+    by ``random_state`` when the method takes it and by ``seed``
+    otherwise: surpyval 0.20, and any other model exposing the same
+    methods.
+
+    Parameters
+    ----------
+    method : callable
+        The bound method to be called, e.g. ``model.mcf``.
+
+    Returns
+    -------
+    str
+        ``"random_state"`` or ``"seed"``.
+
+    Examples
+    --------
+    >>> class Old:
+    ...     def mcf(self, x, items=100, seed=None): ...
+    >>> class New:
+    ...     def mcf(self, x, items=100, random_state=None): ...
+    >>> seed_keyword(Old().mcf), seed_keyword(New().mcf)
+    ('seed', 'random_state')
+    """
+    try:
+        parameters = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        return "seed"
+    return "random_state" if "random_state" in parameters else "seed"
 
 
 def check_probability(func):
