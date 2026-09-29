@@ -104,6 +104,28 @@ def inverse_sampler(model) -> Optional[Sampler]:
     return None
 
 
+def sampler_key(model) -> Optional[tuple]:
+    """A key that plain parametric models with the same distribution and
+    parameters share, so that they can share one sampler; ``None`` for any
+    other model.
+
+    A :class:`UniformStream` applies each sampler it is asked for to its
+    whole block of uniforms, so three identical pumps with a sampler each
+    cost three evaluations of the quantile function per block, and with one
+    shared sampler cost one. Each draw still takes the next uniform, so the
+    values drawn are the same either way.
+    """
+    if not isinstance(model, Parametric) or model.p != 1 or model.f0 != 0:
+        return None
+    params = np.asarray(model.params)
+    return (
+        model.dist,
+        params.dtype.str,
+        tuple(params.ravel().tolist()),
+        model.gamma,
+    )
+
+
 def draw_rows(samplers: list[Sampler], size: int) -> list[np.ndarray]:
     """``size`` rounds of one draw from each sampler, in order, as a list of
     ``size``-long arrays (one per sampler).
@@ -125,10 +147,14 @@ class UniformStream:
     at a time and each sampler's ``qf`` is applied to the whole block at
     once. :meth:`close` rewinds the global RNG to just after the last uniform
     handed out, so it ends exactly where the single draws would have left it.
+
+    ``samplers`` holds the samplers of the models drawing from the stream,
+    one for each distinct model (see :func:`sampler_key`).
     """
 
     def __init__(self, block_size: int = 1024):
         self.block_size = block_size
+        self.samplers: dict = {}
         self._state: Any = None  # np.random.get_state() before the block
         self._block = np.empty(0)
         self._pos = 0

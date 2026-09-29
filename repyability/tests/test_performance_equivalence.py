@@ -21,7 +21,13 @@ these tests hold the fast path to that reference:
   containing them is batched too;
 - minimal cut sets are read off the exact engine's decomposition instead of
   Berge's algorithm (the minimal cut sets are unique, so they must match
-  exactly), and that decomposition runs on an explicit stack.
+  exactly), and that decomposition runs on an explicit stack;
+- the repairable simulation's event loop queues ``(time, event)`` pairs,
+  skips the structure function where a coherent system cannot change, gives
+  identical models one sampler, and draws a plain component's next event
+  directly. It has no slow path left to compare with, so seeded results
+  recorded before these changes (``seeded_event_loop.json``) must still
+  come out.
 
 Floating-point samples are compared to 1e-12 relative (the fast paths do the
 same operations, so they agree to the last bit here; the tolerance only
@@ -31,8 +37,10 @@ Counts and RNG states are compared exactly.
 """
 
 import dataclasses
+import json
 import queue
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, Dict
 
 import numpy as np
@@ -66,10 +74,12 @@ from repyability.rbd.rbd import (
 from repyability.rbd.regression_node import RegressionNode
 from repyability.rbd.repeated_node import RepeatedNode
 from repyability.rbd.repeated_standby_node import RepeatedStandbyNode
+from repyability.rbd.results import CostResult
 from repyability.utils.wrappers import numpy_seed
 
 W = surv.Weibull.from_params
 RTOL = 1e-12
+RECORDED_PATH = Path(__file__).with_name("seeded_event_loop.json")
 
 
 def rng_state():
@@ -1078,6 +1088,218 @@ def test_event_queue_pops_in_priority_queue_order():
             assert ours.get() is theirs.get()
         assert ours.qsize() == theirs.qsize()
         assert ours.empty() == theirs.empty()
+
+
+# -- the event loop's speedups ------------------------------------------------
+
+
+def instrument_air():
+    """Reliafy's instrument-air sample: an intake filter, three identical
+    compressors (two needed), two identical dryers (one needed), a receiver
+    and a header, with lognormal repairs; the voting nodes never fail."""
+    L, E = surv.LogNormal.from_params, surv.Exponential.from_params
+
+    def gate():
+        return NonRepairable(W([1e12, 1.0]), L([0.1, 0.1]))
+
+    units = {
+        "filter": NonRepairable(W([30000, 2.0]), L([0.6931, 0.4])),
+        "receiver": NonRepairable(E([1e-6]), L([3.8712, 0.5])),
+        "header": NonRepairable(W([60000, 1.2]), L([2.0794, 0.5])),
+        "vote": gate(),
+        "dvote": gate(),
+    }
+    for c in "ABC":
+        units[c] = NonRepairable(W([12000, 1.6]), L([3.1781, 0.6]))
+    for d in "DE":
+        units[d] = NonRepairable(W([20000, 1.3]), L([2.4849, 0.5]))
+    edges = [("in", "filter")]
+    edges += [("filter", c) for c in "ABC"] + [(c, "vote") for c in "ABC"]
+    edges += [("vote", d) for d in "DE"] + [(d, "dvote") for d in "DE"]
+    edges += [("dvote", "receiver"), ("receiver", "header"), ("header", "out")]
+    return RepairableRBD(edges, units, k={"vote": 2, "dvote": 1})
+
+
+def pumps_with_capacities():
+    unit = {
+        "reliability": surv.Exponential.from_params([0.1]),
+        "repairability": surv.Exponential.from_params([1.0]),
+    }
+    return RepairableRBD(
+        [("s", u) for u in "abc"] + [(u, "t") for u in "abc"],
+        {u: unit for u in "abc"},
+        capacity={u: 50 for u in "abc"},
+    )
+
+
+def seeded_runs():
+    """Seeded simulations through every path of the event loop: maintenance,
+    inspections, nested RBDs, costs, forced nodes, antithetic pairs, cut
+    sets, capacities and parallel blocks. Name -> (rbd, method, kwargs)."""
+    runs = {}
+    for name, rbd in sorted(repairable_rbds().items()):
+        first = rbd.nodes[0]
+        runs[name] = (
+            rbd,
+            "availability",
+            dict(t_simulation=300.0, N=40, seed=21),
+        )
+        runs[f"{name}, cut sets"] = (
+            rbd,
+            "availability",
+            dict(t_simulation=200.0, N=20, seed=22, method="c"),
+        )
+        runs[f"{name}, antithetic"] = (
+            rbd,
+            "availability",
+            dict(t_simulation=200.0, N=20, seed=26, antithetic=True),
+        )
+        runs[f"{name}, first broken"] = (
+            rbd,
+            "availability",
+            dict(t_simulation=200.0, N=20, seed=24, broken_nodes=[first]),
+        )
+        if rbd.has_costs:
+            runs[f"{name}, cost"] = (
+                rbd,
+                "cost",
+                dict(t_simulation=200.0, N=20, seed=25),
+            )
+    air = instrument_air()
+    runs["instrument air"] = (
+        air,
+        "availability",
+        dict(t_simulation=600000.0, N=6, seed=1, method="c"),
+    )
+    runs["instrument air, n_jobs"] = (
+        air,
+        "availability",
+        dict(t_simulation=60000.0, N=300, seed=3, n_jobs=2),
+    )
+    runs["pumps with capacities"] = (
+        pumps_with_capacities(),
+        "availability",
+        dict(t_simulation=100.0, N=50, seed=5, demand=100),
+    )
+    return runs
+
+
+def digest(result) -> Dict[str, Any]:
+    """Counts, which must match exactly, and totals, which must match to
+    RTOL: any change of the draws, the event order or the bookkeeping shows
+    up in them."""
+    if isinstance(result, CostResult):
+        return {
+            "n": result.n_simulations,
+            "samples": float(np.sum(result.samples)),
+            "categories": float(sum(result.by_category.values())),
+        }
+    criticalities = result.criticalities
+    failures = criticalities.failure_criticality_index.per_component_failure
+    restorations = criticalities.restoration_criticality_index.by_component
+    out = {
+        "n": result.n_simulations,
+        "failures": result.system_failures,
+        "restorations": result.system_restorations,
+        "planned": result.system_planned_outages,
+        "points": len(result.timeline),
+        "uptime": float(result.system_uptime),
+        "curve": float(np.sum(result.availability)),
+        "uptimes": float(np.sum(result.uptimes)),
+        "node uptime": float(sum(result.node_uptime.values())),
+        "fci": float(sum(failures.values())),
+        "rci": float(sum(restorations.values())),
+        "oci": float(
+            sum(criticalities.operational_criticality_index.up.values())
+        ),
+    }
+    if result.cost is not None:
+        out["cost"] = float(np.sum(result.cost.samples))
+    if result.capacity is not None:
+        out["capacity"] = float(np.sum(result.capacity))
+        out["delivered"] = float(np.sum(result.delivered))
+    return out
+
+
+def record_seeded_runs():
+    """Re-record ``seeded_event_loop.json``: only after a deliberate change
+    of the simulation's results (run this module as a script)."""
+    recorded = {
+        name: digest(getattr(rbd, method)(**kwargs))
+        for name, (rbd, method, kwargs) in seeded_runs().items()
+    }
+    RECORDED_PATH.write_text(json.dumps(recorded, indent=1) + "\n")
+
+
+RECORDED = json.loads(RECORDED_PATH.read_text())
+
+
+@pytest.fixture(scope="module")
+def runs():
+    return seeded_runs()
+
+
+def test_every_seeded_run_is_recorded(runs):
+    assert sorted(runs) == sorted(RECORDED)
+
+
+@pytest.mark.parametrize("name", sorted(RECORDED))
+def test_event_loop_reproduces_the_recorded_results(runs, name):
+    rbd, method, kwargs = runs[name]
+    result = digest(getattr(rbd, method)(**kwargs))
+    expected = RECORDED[name]
+    assert set(result) == set(expected)
+    for key, value in expected.items():
+        if isinstance(value, float):
+            np.testing.assert_allclose(
+                result[key], value, rtol=RTOL, atol=0, err_msg=key
+            )
+        else:
+            assert result[key] == value, key
+
+
+def test_identical_models_share_a_sampler():
+    rbd = instrument_air()
+    stream = _sampling.UniformStream()
+    streamed = rbd._streamed_components(stream)
+    assert streamed["A"]._failure is streamed["B"]._failure
+    assert streamed["A"]._repair is streamed["C"]._repair
+    assert streamed["vote"]._failure is streamed["dvote"]._failure
+    assert streamed["A"]._failure is not streamed["D"]._failure
+    # The filter, the compressors, the dryers, the receiver, the header and
+    # the voting nodes: six failure models and six repair models.
+    assert len(stream.samplers) == 12
+
+
+def test_sharing_samplers_draws_the_same(monkeypatch):
+    rbd = instrument_air()
+    kwargs = dict(t_simulation=100000.0, N=20, seed=4)
+    shared = rbd.availability(**kwargs)
+    monkeypatch.setattr(repairable_rbd, "sampler_key", lambda model: None)
+    stream = _sampling.UniformStream()
+    streamed = rbd._streamed_components(stream)
+    assert streamed["A"]._failure is not streamed["B"]._failure
+    assert_same(shared, rbd.availability(**kwargs))
+
+
+@pytest.mark.parametrize("name", sorted(rbds()))
+def test_structure_functions_are_coherent(name):
+    # The event loop skips the structure function for a restoration while
+    # the system works, and for a failure while it doesn't: that relies on
+    # no restoration ever taking the system down.
+    rbd = rbds()[name]
+    nodes = sorted(rbd.nodes, key=str)
+    for method in ("p", "c"):
+        works = rbd._decomposition().structure_function(method)
+        for bits in range(2 ** len(nodes)):
+            status = {n: bool(bits >> i & 1) for i, n in enumerate(nodes)}
+            up = works(status)
+            for n in nodes:
+                changed = works({**status, n: not status[n]})
+                if status[n]:
+                    assert up or not changed  # a failure can't bring it up
+                else:
+                    assert changed or not up  # a repair can't take it down
 
 
 # -- composite nodes inside an RBD --------------------------------------------

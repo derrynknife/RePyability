@@ -59,6 +59,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Faster availability simulation** (#120). `RepairableRBD.availability()`
+  and `cost()` run 1.3–1.7× faster per core, and every seeded result is the
+  same. The event queue compares times directly. The structure function is
+  evaluated only when an event could change the system (a repair can't take
+  a coherent system down, nor a failure bring it up), and called directly.
+  Identical models share their quantile function's evaluations. A component
+  with no maintenance or inspection takes its next draw directly.
 - **More accurate cold standby.** The numerical convolution behind a
   `StandbyModel` (cold, one operating unit) and a `RepeatedStandbyNode` now
   uses the trapezoidal rule: its error falls from about `1e-4` to about

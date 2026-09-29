@@ -346,12 +346,18 @@ class Decomposition:
         """Whether the system works, given whether each node works (truthy)
         or has failed (falsy). ``method`` says whether the core is checked
         through its minimal path sets (``"p"``) or cut sets (``"c"``)."""
+        return self.structure_function(method)(status)
+
+    def structure_function(self, method: str = "p") -> Callable:
+        """The compiled structure function behind :meth:`works`, for callers
+        (the simulations) that evaluate it at every event: ``function(status)``
+        is ``works(status, method)``."""
         function = self._functions.get(method)
         if function is None:
             function = self._functions[method] = self._structure_function(
                 method
             )
-        return function(status)
+        return function
 
     def _structure_function(self, method: str) -> Callable:
         """The structure function compiled to a Python function: one line

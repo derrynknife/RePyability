@@ -44,7 +44,11 @@ from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd import capacity as _capacity
 from repyability.rbd._block_replacement import BlockCycle, block_cycle
 from repyability.rbd._model_utils import failure_time_scale, model_mean
-from repyability.rbd._sampling import UniformStream, inverse_sampler
+from repyability.rbd._sampling import (
+    UniformStream,
+    inverse_sampler,
+    sampler_key,
+)
 from repyability.rbd.degrading_node import DegradingNode
 from repyability.rbd.rbd import RBD, _check_on_infeasible_rbd
 from repyability.rbd.redundancy_allocation import (
@@ -99,6 +103,12 @@ class _EventQueue:
     ``queue.PriorityQueue`` is this same heap (``heappush``/``heappop``) plus
     thread locking on every operation, which a single-threaded simulation
     only pays for; events come out in exactly the same order.
+
+    The heap holds ``(time, event)`` pairs, so that times compare as floats
+    rather than through the events' own ordering. Two events at the same time
+    compare equal either way, so ties come out as they would with the events
+    alone. (A ``(time, counter, event)`` entry would release ties in the
+    order they were queued instead, which changes the results.)
     """
 
     __slots__ = ("_heap",)
@@ -107,10 +117,10 @@ class _EventQueue:
         self._heap: list = []
 
     def put(self, event) -> None:
-        heapq.heappush(self._heap, event)
+        heapq.heappush(self._heap, (event.time, event))
 
     def get(self):
-        return heapq.heappop(self._heap)
+        return heapq.heappop(self._heap)[1]
 
     def empty(self) -> bool:
         return not self._heap
@@ -160,11 +170,24 @@ def _stand_in(component, stream, made: dict, path: tuple = ()):
         return None if nested is None else _StreamedRBD(component, nested)
     if type(component) is not NonRepairable:
         return None
-    failure = inverse_sampler(component.reliability)
-    repair = inverse_sampler(component.time_to_replace)
+    # Identical models share a sampler, so the shared stream evaluates each
+    # distinct model once per block (a keyed stream has no shared blocks).
+    samplers = stream.samplers if isinstance(stream, UniformStream) else {}
+    failure = _shared_sampler(component.reliability, samplers)
+    repair = _shared_sampler(component.time_to_replace, samplers)
     if failure is None or repair is None:
         return None
     return _StreamedComponent(failure, repair, _stream_for(stream, path))
+
+
+def _shared_sampler(model, samplers: dict):
+    """``inverse_sampler(model)``, the one in ``samplers`` if an identical
+    model has one already (see ``sampler_key``)."""
+    sampler = inverse_sampler(model)
+    key = sampler_key(model)
+    if sampler is None or key is None:
+        return sampler
+    return samplers.setdefault(key, sampler)
 
 
 def _stream_for(stream, path: tuple):
@@ -537,7 +560,7 @@ def _simulate_block(task) -> "_Tally":
     )
 
 
-@dataclass(order=True)
+@dataclass(order=True, slots=True)
 class Event:
     """A component's change of state in the availability simulation.
 
@@ -4230,9 +4253,12 @@ class RepairableRBD(RBD):
 
             event = self._event_queue.get()
             self.component_status[event.component] = event.status
-            new_system_state = self.is_system_working(
-                self.component_status, method
-            )
+            # Only a change against the system's state can change it (the
+            # structure is coherent; see _replicate).
+            if event.status != self.system_state:
+                new_system_state = self.is_system_working(
+                    self.component_status, method
+                )
 
             next_event = self._follow_up(event, sources[event.component])
             # But only queue up the event if it occurs before the end
@@ -4806,6 +4832,18 @@ class RepairableRBD(RBD):
             if capacity is None
             else capacity.trace(tally, self.component_status)
         )
+        # The structure function, called directly (initialize_event_queue
+        # has checked the method).
+        works = self._decomposition().structure_function(method)
+        # Components with no maintenance or inspection that are not nested
+        # RBDs: their next event is simply their next draw.
+        plain = {
+            node
+            for node, component in self.components.items()
+            if node not in self._preventive
+            and node not in self._inspection
+            and not isinstance(component, RepairableRBD)
+        }
 
         # Implemented ensure that no events that occur after the end-time of
         # the simulation are added to the queue; so we just need to keep
@@ -4868,10 +4906,14 @@ class RepairableRBD(RBD):
             # Record new system state, it could still be the same as
             # system_state in which case we don't bother changing the
             # aggregate timeline, but if it is different, we need to +/-1
-            # to it if the system has gone on/off-line
-            new_system_state = self.is_system_working(
-                self.component_status, method
-            )
+            # to it if the system has gone on/off-line. The structure is
+            # coherent: a restoration can't take the system down, nor a
+            # failure bring it up, so only a change against the system's
+            # state needs the structure function.
+            if event.status == self.system_state:
+                new_system_state = self.system_state
+            else:
+                new_system_state = works(self.component_status)
             if new_system_state != self.system_state:
                 status = 1 if new_system_state else -1
                 system_timeline.append((event.time, status))
@@ -4894,7 +4936,11 @@ class RepairableRBD(RBD):
             # Now we need to get the component's next event: its next failure
             # if it just got repaired, or its repair if it just broke; but
             # only queue it up if it occurs before the end of the simulation.
-            next_event = self._follow_up(event, sources[node])
+            if node in plain:
+                t, next_status = sources[node].next_event()
+                next_event = Event(event.time + t, node, next_status)
+            else:
+                next_event = self._follow_up(event, sources[node])
             if next_event.time < t_simulation:
                 self._event_queue.put(next_event)
 
