@@ -1146,8 +1146,11 @@ class RBD:
         Raises
         ------
         ValueError
-            If no node has a capacity, the diagram is not a valid RBD, or
-            the probability arrays are not all the same length.
+            If no node has a capacity, the diagram is not a valid RBD, the
+            probability arrays are not all the same length, or a node takes
+            its capacity from its model (a ``DegradingNode``, or a nested
+            RBD with capacities), which a probability of working does not
+            describe.
         KeyError
             If an intermediate node has no entry in ``node_probabilities``.
 
@@ -1170,6 +1173,13 @@ class RBD:
 
         The pipe, not the pumps, limits the plant when both run.
         """
+        own = self._capacity_models()
+        if own:
+            raise ValueError(
+                f"Node(s) {sorted(own, key=str)} take their capacity from "
+                "their models, which a probability of working does not "
+                "describe: use capacity_distribution()."
+            )
         scalar = all(np.ndim(node_probabilities[n]) == 0 for n in self.nodes)
         arrays, size = self._node_arrays(node_probabilities)
         levels, probabilities = self._capacity_arrays(arrays, size)

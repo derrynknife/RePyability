@@ -65,7 +65,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `1e-8`, and results move by up to that much. Two exponential units with
   a 90% switch now have an MTTF of 190.00001, the formula's 190, where the
   convolution gave 189.9.
-
 - **Requires surpyval 0.21** (was 0.20), and drops the code that worked
   around surpyval 0.20 (#86). surpyval 0.21 draws the lifetimes of
   limited-failure-population and zero-inflated models, gives their mean and

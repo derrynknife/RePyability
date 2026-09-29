@@ -93,7 +93,10 @@ class FlowGraph:
     to what it carries (through a k-out-of-n node that the system can also
     bypass). ``terms`` is the reduction's list of terms, in which each
     module comes after its members, with each node named by the component
-    it stands for. ``vertices`` are the terms left, in topological order;
+    it stands for; a group that a node needs all of stays a k-out-of-n
+    term here, with ``k`` its size, as it carries the sum of its members'
+    capacities (the tree makes it a series module). ``vertices`` are the
+    terms left, in topological order;
     two of them can stand for one component (a repeated node, drawn in two
     places). ``preds`` and ``k`` hold each vertex's predecessors
     (``_SOURCE`` for the input) and k, and ``sink_preds`` and ``sink_k``

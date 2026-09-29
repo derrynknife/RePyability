@@ -986,3 +986,15 @@ def test_capacity_levels_are_kept_in_order_and_saved():
         again.capacity_distribution(700.0).probabilities,
         staged.capacity_distribution(700.0).probabilities,
     )
+
+
+def test_system_capacity_needs_the_capacity_of_every_node():
+    stages = DegradingNode([(2, W([100, 2])), (1, W([100, 2]))])
+    rbd = NonRepairableRBD([("s", "a"), ("a", "t")], {"a": stages})
+    with pytest.raises(ValueError, match="capacity_distribution"):
+        rbd.system_capacity({"a": 0.5})
+    # With a capacity given for the node, its probability describes it.
+    given = NonRepairableRBD(
+        [("s", "a"), ("a", "t")], {"a": stages}, capacity={"a": 3}
+    )
+    assert given.system_capacity({"a": 0.5}).levels.tolist() == [0.0, 3.0]
