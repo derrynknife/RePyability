@@ -60,12 +60,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Faster availability simulation** (#120). `RepairableRBD.availability()`
-  and `cost()` run 1.3–1.7× faster per core, and every seeded result is the
-  same. The event queue compares times directly. The structure function is
-  evaluated only when an event could change the system (a repair can't take
-  a coherent system down, nor a failure bring it up), and called directly.
-  Identical models share their quantile function's evaluations. A component
-  with no maintenance or inspection takes its next draw directly.
+  and `cost()` run 1.6–2.7× faster per core, and every seeded result is the
+  same, to the last bit.
+  - The loop works the event queue's heap directly, comparing times as
+    floats.
+  - The structure function is evaluated only when an event could change
+    the system (a repair can't take a coherent system down, nor a failure
+    bring it up), and it is called directly.
+  - Identical models share their quantile function's evaluations. Normal
+    and lognormal quantiles skip scipy.stats' argument checks (surpyval
+    [#469](https://github.com/derrynknife/SurPyval/issues/469)).
+  - A component with no maintenance or inspection takes its next draw
+    directly.
+  - Each simulation works out its components' criticality measures for
+    all the components at once, instead of one at a time.
 - **Faster start-up** (#121). `import repyability` no longer loads
   scipy.signal, tqdm or the process-pool machinery until a call needs them
   (about 0.2 s less here; surpyval's share is

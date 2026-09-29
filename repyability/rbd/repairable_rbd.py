@@ -1112,6 +1112,97 @@ def time_at_status(timeline, status):
     return union.sum()
 
 
+def _overlap_times(starts, nodes, times, changes, system_timeline, t_end):
+    """For each component, in order: its uptime, and the time it and the
+    system are both up, both down, at least one up and at least one down.
+
+    These are the numbers ``time_at_status``, ``combined_timeline``,
+    ``intersection`` and ``union`` give from each component's timeline and
+    the system's, to the last bit: the same intervals, summed by ``np.sum``
+    in the same order. Only the timelines are merged for all the components
+    at once, in a handful of array operations, instead of one component at
+    a time. ``starts`` holds 1 for each component that is up at 0 (else 0),
+    and ``nodes``, ``times`` and ``changes`` each change's component (its
+    index), time and value (1 for a restoration, -1 for a failure), in time
+    order. ``system_timeline`` is the system's timeline, end included.
+    """
+    n = len(starts)
+    nodes = np.array(nodes, dtype=np.intp)
+    times = np.array(times, dtype=float)
+    changes = np.array(changes, dtype=np.int64)
+
+    # Each component's own timeline, one after another: its start, its
+    # changes in time order, and the end.
+    counts = np.bincount(nodes, minlength=n)
+    sizes = counts + 2
+    ends = np.cumsum(sizes)
+    firsts = ends - sizes
+    own_t = np.empty(int(ends[-1]))
+    own_e = np.empty(own_t.size, dtype=np.int64)
+    own_t[firsts], own_e[firsts] = 0.0, starts
+    own_t[ends - 1], own_e[ends - 1] = t_end, 0
+    # A change's place: after its component's start, and after that
+    # component's earlier changes.
+    order = np.argsort(nodes, kind="stable")
+    node = nodes[order]
+    earlier = np.arange(node.size) - (np.cumsum(counts) - counts)[node]
+    place = firsts[node] + 1 + earlier
+    own_t[place], own_e[place] = times[order], changes[order]
+    # A component is up from its start (if up then) and each restoration
+    # until its next entry (time_at_status).
+    gaps = own_t[1:] - own_t[:-1]
+    restored = own_e[:-1] == 1
+
+    # Each component's timeline with the system's appended, sorted by time
+    # within each component, equal times merged by summing their changes,
+    # and then accumulated: how many of the two are up (combined_timeline).
+    system_t = np.array([t for t, _ in system_timeline])
+    system_e = np.array([e for _, e in system_timeline], dtype=np.int64)
+    m = system_t.size
+    joint_ends = np.cumsum(sizes + m)
+    joint_firsts = joint_ends - sizes - m
+    joint_t = np.empty(int(joint_ends[-1]))
+    joint_e = np.empty(joint_t.size, dtype=np.int64)
+    own = np.repeat(joint_firsts - firsts, sizes) + np.arange(own_t.size)
+    joint_t[own], joint_e[own] = own_t, own_e
+    system = (joint_firsts + sizes)[:, None] + np.arange(m)
+    joint_t[system], joint_e[system] = system_t, system_e
+    segment = np.repeat(np.arange(n), sizes + m)
+    order = np.lexsort((joint_t, segment))
+    joint_t, joint_e, segment = joint_t[order], joint_e[order], segment[order]
+    new = np.ones(joint_t.size, dtype=bool)
+    new[1:] = (segment[1:] != segment[:-1]) | (joint_t[1:] != joint_t[:-1])
+    merged = np.flatnonzero(new)
+    merged_t = joint_t[merged]
+    merged_e = np.add.reduceat(joint_e, merged)
+    merged_segment = segment[merged]
+    heads = np.flatnonzero(
+        np.r_[True, merged_segment[1:] != merged_segment[:-1]]
+    )
+    tails = np.r_[heads[1:], merged.size]
+    running = np.cumsum(merged_e)
+    before = running[heads] - merged_e[heads]
+    up = running - np.repeat(before, tails - heads)
+    spans = merged_t[1:] - merged_t[:-1]
+
+    out = []
+    for c in range(n):
+        a, b = firsts[c], ends[c] - 1
+        uptime = gaps[a:b][restored[a:b]].sum()
+        a, b = heads[c], tails[c] - 1
+        span, k = spans[a:b], up[a:b]
+        out.append(
+            (
+                uptime,
+                span[k == 2].sum(),  # both up
+                span[k == 0].sum(),  # both down
+                span[k > 0].sum(),  # at least one up
+                span[k < 2].sum(),  # at least one down
+            )
+        )
+    return out
+
+
 def _squeeze_values(d: dict) -> dict:
     """Convert a dict of 1-element arrays (as produced by the base RBD
     importance helpers) to a dict of plain floats. Steady-state availability
@@ -4821,10 +4912,13 @@ class RepairableRBD(RBD):
         # Seed each timeline from the actual initial status so that
         # forced-broken components (and a system they start down) are
         # accounted as down from t=0, not assumed up.
-        component_timelines: dict = {
-            comp: [(0.0, 1 if self.component_status[comp] else 0)]
-            for comp in self.components
-        }
+        index = {comp: i for i, comp in enumerate(self.components)}
+        starts = [1 if self.component_status[c] else 0 for c in index]
+        # Every change of a component (its index, time and value), in time
+        # order: its timeline, for _overlap_times.
+        changed: list = []
+        changed_at: list = []
+        changes: list = []
         system_timeline = [(0.0, 1 if self.system_state else 0)]
         rep_cost = 0.0
         trace = (
@@ -4845,13 +4939,17 @@ class RepairableRBD(RBD):
             and not isinstance(component, RepairableRBD)
         }
 
+        # The queue's heap, worked directly (see _EventQueue).
+        heap = self._event_queue._heap
+        push, pop = heapq.heappush, heapq.heappop
+
         # Implemented ensure that no events that occur after the end-time of
         # the simulation are added to the queue; so we just need to keep
         # going through the queue until it's empty
-        while not self._event_queue.empty():
+        while heap:
             # Get the next event and update the component's status
 
-            event = self._event_queue.get()
+            event = pop(heap)[1]
             node = event.component
             if (event.preventive or event.inspection) and (
                 event.status == self.component_status[node]
@@ -4872,7 +4970,7 @@ class RepairableRBD(RBD):
                             rep_cost += pay(node, category, stream)
                 next_event = self._follow_up(event, sources[node])
                 if next_event.time < t_simulation:
-                    self._event_queue.put(next_event)
+                    push(heap, (next_event.time, next_event))
                 continue
             # Update the component's status
             self.component_status[node] = event.status
@@ -4901,7 +4999,9 @@ class RepairableRBD(RBD):
                         rep_cost += pay(node, category, stream)
 
             status = 1 if event.status else -1
-            component_timelines[node].append((event.time, status))
+            changed.append(index[node])
+            changed_at.append(event.time)
+            changes.append(status)
 
             # Record new system state, it could still be the same as
             # system_state in which case we don't bother changing the
@@ -4942,17 +5042,24 @@ class RepairableRBD(RBD):
             else:
                 next_event = self._follow_up(event, sources[node])
             if next_event.time < t_simulation:
-                self._event_queue.put(next_event)
+                push(heap, (next_event.time, next_event))
 
         system_timeline.append((t_simulation, 0))
         if trace is not None:
             trace.finish(t_simulation)
 
-        for component in self.components.keys():
-            component_timelines[component].append((t_simulation, 0))
-            # This simulation's uptime for the component; the downtime is the
-            # remainder of the window.
-            component_ut = time_at_status(component_timelines[component], 1)
+        # Each component's uptime (the downtime is the rest of the window),
+        # and its overlaps with the system's.
+        overlaps = _overlap_times(
+            starts, changed, changed_at, changes, system_timeline, t_simulation
+        )
+        for component, (
+            component_ut,
+            both_up,
+            both_down,
+            either_up,
+            either_down,
+        ) in zip(self.components, overlaps):
             tally.node_uptime[component] += component_ut
             tally.node_downtime[component] += t_simulation - component_ut
             if component in downtime_cost_rates:
@@ -4962,17 +5069,10 @@ class RepairableRBD(RBD):
                 rep_cost += charge
                 tally.cost_by_category["component_downtime"] += charge
                 tally.cost_by_component[component] += charge
-            joint_t, joint_events = combined_timeline(
-                component_timelines[component], system_timeline
-            )
-            tally.intersection_uptime[component] += intersection(
-                joint_t, joint_events
-            )
-            tally.intersection_downtime[component] += intersection(
-                joint_t, 2 - joint_events
-            )
-            tally.union_uptime[component] += union(joint_t, joint_events)
-            tally.union_downtime[component] += union(joint_t, 2 - joint_events)
+            tally.intersection_uptime[component] += both_up
+            tally.intersection_downtime[component] += both_down
+            tally.union_uptime[component] += either_up
+            tally.union_downtime[component] += either_down
 
         simulation_system_ut = time_at_status(system_timeline, 1)
         tally.system_uptime += simulation_system_ut

@@ -27,7 +27,12 @@ these tests hold the fast path to that reference:
   identical models one sampler, and draws a plain component's next event
   directly. It has no slow path left to compare with, so seeded results
   recorded before these changes (``seeded_event_loop.json``) must still
-  come out.
+  come out;
+- after each simulation, the components' uptimes and overlaps with the
+  system are worked out for all the components at once, and must equal
+  what the timeline functions give one component at a time, to the last
+  bit; normal and lognormal quantiles skip scipy.stats' argument checks,
+  and must equal surpyval's to the last bit.
 
 Floating-point samples are compared to 1e-12 relative (the fast paths do the
 same operations, so they agree to the last bit here; the tolerance only
@@ -324,6 +329,21 @@ def test_inverse_sampler_reproduces_surpyval(name):
     np.random.seed(3)
     assert np.array_equal(sampler(np.random.random_sample(50)), expected)
     assert_same_rng_state(rng_state(), after_single_draws)
+
+
+@pytest.mark.parametrize(
+    "dist", [surv.Normal, surv.LogNormal], ids=["normal", "lognormal"]
+)
+def test_direct_quantiles_are_surpyvals(dist):
+    # Not only for the uniforms a draw takes: at the ends and outside too.
+    u = np.r_[
+        np.random.default_rng(4).random(1000),
+        [0.0, 1.0, 1e-300, 1 - 1e-16, -0.5, 1.5, np.nan],
+    ]
+    direct = _sampling._DIRECT_QF[id(dist)]
+    for params in ([0.0, 1.0], [3.1781, 0.6], [-2.0, 3.0]):
+        expected = dist.qf(u, *params)
+        assert np.array_equal(direct(u, *params), expected, equal_nan=True)
 
 
 @pytest.mark.parametrize(
@@ -1300,6 +1320,66 @@ def test_structure_functions_are_coherent(name):
                     assert up or not changed  # a failure can't bring it up
                 else:
                     assert changed or not up  # a repair can't take it down
+
+
+def overlaps_one_at_a_time(starts, events, system_timeline, t_end):
+    """The overlaps as the event loop used to work them out: each
+    component's timeline merged with the system's in turn."""
+    out = []
+    for c, start in enumerate(starts):
+        own = [(t, e) for t, node, e in events if node == c]
+        timeline = [(0.0, start)] + own + [(t_end, 0)]
+        joint_t, joint = repairable_rbd.combined_timeline(
+            timeline, system_timeline
+        )
+        out.append(
+            (
+                repairable_rbd.time_at_status(timeline, 1),
+                repairable_rbd.intersection(joint_t, joint),
+                repairable_rbd.intersection(joint_t, 2 - joint),
+                repairable_rbd.union(joint_t, joint),
+                repairable_rbd.union(joint_t, 2 - joint),
+            )
+        )
+    return out
+
+
+@pytest.mark.parametrize("seed", range(40))
+def test_overlaps_worked_out_at_once_are_exact(seed):
+    rng = np.random.default_rng(seed)
+    t_end = 100.0
+    # On a grid, so that changes often coincide (with each other, with the
+    # system's, and at 0); on a coarse one for half the seeds.
+    step = 2.5 if seed % 2 else 0.1
+
+    def alternating(start, size):
+        up, out = start, []
+        for t in np.sort(rng.choice(np.arange(0.0, t_end, step), size)):
+            up = 1 - up
+            out.append((float(t), 1 if up else -1))
+        return out
+
+    starts = [int(rng.random() < 0.8) for _ in range(int(rng.integers(1, 7)))]
+    events = [
+        (t, c, e)
+        for c, start in enumerate(starts)
+        for t, e in alternating(start, int(rng.integers(0, 12)))
+    ]
+    events.sort(key=lambda event: event[0])  # stable: in time order
+    system_start = int(rng.random() < 0.7)
+    system_timeline = [(0.0, system_start)]
+    system_timeline += alternating(system_start, int(rng.integers(0, 10)))
+    system_timeline += [(t_end, 0)]
+    fast = repairable_rbd._overlap_times(
+        starts,
+        [c for _, c, _ in events],
+        [t for t, _, _ in events],
+        [e for _, _, e in events],
+        system_timeline,
+        t_end,
+    )
+    expected = overlaps_one_at_a_time(starts, events, system_timeline, t_end)
+    assert fast == expected  # to the last bit
 
 
 # -- composite nodes inside an RBD --------------------------------------------
