@@ -43,6 +43,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   own distribution. Binary nodes are the special case of each, and the
   distributions combine through series (least) and parallel (sum) as
   before.
+- **Delivered capacity over time** (#99): when nodes have capacities,
+  `RepairableRBD.availability()` also follows what the system can deliver.
+  The result gains the mean capacity curve (`capacity_timeline`,
+  `capacity`), the time spent at each capacity (`capacity_time`,
+  `mean_capacity`), and each simulation's fraction of the demand delivered
+  (`delivered`, `delivered_fraction`, `delivered_fraction_interval()`): the
+  production availability over the window. `availability(demand=...)`
+  sets the demand, by default the design capacity. The capacity is worked
+  out after every component failure and repair, from the exact
+  distribution given which components are up, so a node working at several
+  levels counts at each in proportion, and the simulated failures and
+  repairs are the same as without capacities. Over a long window the
+  averages approach the exact long-run values.
 
 ### Changed
 

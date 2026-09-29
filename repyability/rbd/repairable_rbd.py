@@ -215,6 +215,14 @@ class _Tally:
             "system_downtime": 0.0,
         }
         self.cost_by_component = {node: 0.0 for node in costs}
+        # With capacities (see _CapacityRecorder): time -> net change in the
+        # simulated systems' total expected capacity, and in how many of them
+        # can carry an unlimited amount; the time spent at each capacity; and
+        # each replication's delivered fraction of the demand, in order.
+        self.capacity_changes: dict = defaultdict(float)
+        self.unlimited_changes: dict = defaultdict(int)
+        self.capacity_time: dict = defaultdict(float)
+        self.delivered: List[float] = []
 
     def pay(self, node, category: str, charges) -> float:
         """The next amount of a stream of charges, booked to its node and
@@ -259,6 +267,147 @@ class _Tally:
             self.cost_by_category[key] += value
         for key, value in other.cost_by_component.items():
             self.cost_by_component[key] += value
+        for mine, theirs in (
+            (self.capacity_changes, other.capacity_changes),
+            (self.unlimited_changes, other.unlimited_changes),
+            (self.capacity_time, other.capacity_time),
+        ):
+            for key, value in theirs.items():
+                mine[key] += value
+        self.delivered.extend(other.delivered)
+
+
+class _CapacityState(NamedTuple):
+    """The system's capacity in one state of the simulation (see
+    ``_CapacityRecorder``)."""
+
+    levels: tuple
+    probabilities: tuple
+    # The expected capacity when it is finite (0 otherwise), and whether it
+    # can be unlimited.
+    finite_mean: float
+    unlimited: int
+    # The expected fraction of the demand met, if there is a demand.
+    delivered: float
+
+
+class _CapacityRecorder:
+    """The system's capacity in each state of an availability simulation.
+
+    Given which components are down, the capacity has an exact
+    distribution: one level, unless some nodes work at several (a node's
+    capacity levels, given as a dict), which the simulation, drawing only
+    whether each component is up, then weighs by their probabilities. It is
+    worked out once per state and kept."""
+
+    def __init__(self, rbd: "RepairableRBD", demand: Optional[float]):
+        own = rbd._capacity_models()
+        if own:
+            raise NotImplementedError(
+                f"Node(s) {sorted(own, key=str)} take their capacity from "
+                "their models (a DegradingNode's stages, or a nested RBD's "
+                "capacities), which the simulation does not follow. Give "
+                "them a capacity, or use capacity_distribution() for the "
+                "long run."
+            )
+        self._rbd = rbd
+        self._nodes = list(rbd.nodes)
+        self._states: Dict[frozenset, _CapacityState] = {}
+        if demand is None:
+            # Everything up at its highest level: the design capacity.
+            top = float(self._distribution(frozenset())[0][-1])
+            self.demand: Optional[float] = top if np.isfinite(top) else None
+        else:
+            demand = float(demand)
+            if not (np.isfinite(demand) and demand > 0.0):
+                raise ValueError(
+                    f"demand must be a positive, finite number, got "
+                    f"{demand!r}."
+                )
+            self.demand = demand
+
+    def _distribution(self, down: frozenset) -> Tuple[np.ndarray, np.ndarray]:
+        arrays = {
+            node: np.zeros(1) if node in down else np.ones(1)
+            for node in self._nodes
+        }
+        levels, rows = self._rbd._capacity_arrays(arrays, 1)
+        return levels, rows[:, 0]
+
+    def __call__(self, down: frozenset) -> _CapacityState:
+        state = self._states.get(down)
+        if state is None:
+            levels, probabilities = self._distribution(down)
+            finite = np.isfinite(levels)
+            unlimited = int(np.any(probabilities[~finite] > 0.0))
+            delivered = 0.0
+            if self.demand is not None:
+                delivered = (
+                    float(np.minimum(levels, self.demand) @ probabilities)
+                    / self.demand
+                )
+            state = self._states[down] = _CapacityState(
+                tuple(levels.tolist()),
+                tuple(probabilities.tolist()),
+                (
+                    0.0
+                    if unlimited
+                    else float(levels[finite] @ probabilities[finite])
+                ),
+                unlimited,
+                delivered,
+            )
+        return state
+
+    def trace(self, tally: "_Tally", status: dict) -> "_CapacityTrace":
+        """The capacity of one simulation, which starts with ``status``."""
+        return _CapacityTrace(self, tally, status)
+
+
+class _CapacityTrace:
+    """One simulation's capacity over time, added to the tally as it goes:
+    each change of the expected capacity, and at the end the time spent at
+    each level and the fraction of the demand delivered."""
+
+    def __init__(self, recorder: _CapacityRecorder, tally: "_Tally", status):
+        self.recorder = recorder
+        self.tally = tally
+        self.down = {node for node, up in status.items() if not up}
+        self.state = recorder(frozenset(self.down))
+        self.since = 0.0
+        self.delivered = 0.0
+        tally.capacity_changes[0.0] += self.state.finite_mean
+        tally.unlimited_changes[0.0] += self.state.unlimited
+
+    def change(self, time: float, node, up: bool) -> None:
+        """Component ``node`` went up (or down) at ``time``."""
+        if up:
+            self.down.discard(node)
+        else:
+            self.down.add(node)
+        new = self.recorder(frozenset(self.down))
+        self._close(time)
+        mean = new.finite_mean - self.state.finite_mean
+        if mean:
+            self.tally.capacity_changes[time] += mean
+        unlimited = new.unlimited - self.state.unlimited
+        if unlimited:
+            self.tally.unlimited_changes[time] += unlimited
+        self.state = new
+
+    def _close(self, time: float) -> None:
+        span = time - self.since
+        if span > 0.0:
+            state = self.state
+            for level, p in zip(state.levels, state.probabilities):
+                self.tally.capacity_time[level] += p * span
+            self.delivered += state.delivered * span
+        self.since = time
+
+    def finish(self, t_simulation: float) -> None:
+        self._close(t_simulation)
+        if self.recorder.demand is not None:
+            self.tally.delivered.append(self.delivered / t_simulation)
 
 
 class _NodeStream:
@@ -374,8 +523,18 @@ def _stopping_rule(
 
 def _simulate_block(task) -> "_Tally":
     """One block of a parallel run (in its own process)."""
-    rbd, t, working, broken, method, n, seed, antithetic = task
-    return rbd._run(t, working, broken, method, n, False, seed, antithetic)
+    rbd, t, working, broken, method, n, seed, antithetic, capacity = task
+    return rbd._run(
+        t,
+        working,
+        broken,
+        method,
+        n,
+        False,
+        seed,
+        antithetic,
+        capacity=capacity,
+    )
 
 
 @dataclass(order=True)
@@ -1157,14 +1316,15 @@ class RepairableRBD(RBD):
       availability ``MTTF / (MTTF + MTTR)`` and failure frequency
       ``1 / (MTTF + MTTR)``: ``mean_availability``, ``node_availability``,
       ``system_failure_frequency``, ``mean_up_time``, ``mean_down_time``,
-      ``mean_time_between_failures``, ``expected_cost_rate`` and the
-      importance measures. A component under age or block replacement
-      enters through its renewal cycle instead (see
-      ``node_availability``).
+      ``mean_time_between_failures``, ``expected_cost_rate``,
+      ``capacity_distribution`` (with node capacities) and the importance
+      measures. A component under age or block replacement enters through
+      its renewal cycle instead (see ``node_availability``).
     - Monte-Carlo simulation of a finite window ``[0, t_simulation]`` that
       starts with every component working: ``availability`` (availability
-      over time, and criticality measures) and ``cost`` (the distribution
-      of the window's cost).
+      over time, criticality measures and, with node capacities, the
+      capacity over time and the fraction of a demand delivered) and
+      ``cost`` (the distribution of the window's cost).
 
     Times are in the time unit of the component models, and costs in the
     currency they are given in.
@@ -4103,6 +4263,7 @@ class RepairableRBD(RBD):
         max_N: Optional[int] = None,
         antithetic: bool = False,
         n_jobs: Optional[int] = None,
+        demand: Optional[float] = None,
     ) -> AvailabilityResult:
         """Simulate the system's availability over ``[0, t_simulation]``.
 
@@ -4129,6 +4290,20 @@ class RepairableRBD(RBD):
         [`CostResult`][repyability.CostResult]; otherwise it is None. For
         exact long-run values, use ``mean_availability`` and the other
         steady-state methods.
+
+        When nodes have capacities (see the ``capacity`` argument of the
+        class), the same simulations also follow what the system can
+        deliver: its capacity after every component event (a failure that
+        leaves the system up can still take some of its capacity), the time
+        it spends at each capacity, and the fraction of ``demand`` it
+        delivers (see
+        [`AvailabilityResult`][repyability.AvailabilityResult]). The
+        simulation draws only whether each component is up, so a node
+        working at several levels counts at each in proportion to its
+        probability. Nodes taking their capacity from their models (a
+        ``DegradingNode``'s stages, or a nested RBD's capacities) are not
+        followed: give them a capacity, or use ``capacity_distribution`` for
+        the long run.
 
         Parameters
         ----------
@@ -4205,6 +4380,12 @@ class RepairableRBD(RBD):
             run without it. By default None: every simulation in this
             process, in turn. Each process is sent a copy of the RBD, so
             this pays off for long simulations; ``verbose`` has no effect.
+        demand : float, optional
+            The demand the delivered fraction is measured against, in the
+            capacities' units, when nodes have capacities. By default the
+            system's capacity with every component up (at its highest
+            level): its design capacity. If that is unlimited, no delivered
+            fraction is worked out unless a demand is given.
 
         Returns
         -------
@@ -4213,7 +4394,8 @@ class RepairableRBD(RBD):
             the up and down totals summed over the simulations, the system
             failure, planned outage and restoration counts, the
             ``criticalities``, the ``cost`` and each simulation's up time
-            (``uptimes``).
+            (``uptimes``); with capacities, also the capacity over time,
+            the time at each capacity and the delivered fraction.
 
         Raises
         ------
@@ -4222,9 +4404,12 @@ class RepairableRBD(RBD):
             node, or is in both sets, if ``method`` is not ``"p"`` or
             ``"c"``, or if ``N``, ``tolerance``, ``confidence``, ``max_N``
             or ``n_jobs`` is invalid (``N`` odd with ``antithetic``,
-            ``max_N`` without a tolerance or below ``N``, ...).
+            ``max_N`` without a tolerance or below ``N``, ...); or if a
+            ``demand`` is not a positive, finite number, or is given for an
+            RBD with no capacities.
         NotImplementedError
-            With ``antithetic``, if a component's draws cannot be replayed.
+            With ``antithetic``, if a component's draws cannot be replayed;
+            with capacities, if a node takes its capacity from its model.
 
         Examples
         --------
@@ -4275,6 +4460,7 @@ class RepairableRBD(RBD):
             antithetic=antithetic,
             n_jobs=n_jobs,
             target="availability",
+            demand=demand,
         )
 
     def compare(
@@ -4425,6 +4611,7 @@ class RepairableRBD(RBD):
         antithetic: bool,
         n_jobs: Optional[int],
         target: str,
+        demand: Optional[float] = None,
     ) -> AvailabilityResult:
         """``availability`` (and ``cost``): validate, run the replications
         (serially or in parallel, until converged if asked) and build the
@@ -4441,6 +4628,14 @@ class RepairableRBD(RBD):
         stop = _stopping_rule(
             N, tolerance, confidence, max_N, antithetic, target, t_simulation
         )
+        capacity = None
+        if target == "availability" and self._has_capacity():
+            capacity = _CapacityRecorder(self, demand)
+        elif demand is not None:
+            raise ValueError(
+                "A demand is measured against capacities, and no node has "
+                "one: give them with capacity={node: capacity}."
+            )
         if n_jobs is None:
             tally = self._run(
                 t_simulation,
@@ -4452,6 +4647,7 @@ class RepairableRBD(RBD):
                 seed,
                 antithetic,
                 stop,
+                capacity=capacity,
             )
         else:
             tally = self._run_parallel(
@@ -4464,9 +4660,10 @@ class RepairableRBD(RBD):
                 antithetic,
                 stop,
                 montecarlo.jobs(n_jobs),
+                capacity,
             )
         return self._availability_result(
-            tally, t_simulation, initial_up, antithetic
+            tally, t_simulation, initial_up, antithetic, capacity
         )
 
     def _run(
@@ -4481,6 +4678,7 @@ class RepairableRBD(RBD):
         antithetic: bool = False,
         stop: Optional[Callable[["_Tally"], int]] = None,
         streams: Optional["_KeyedStreams"] = None,
+        capacity: Optional[_CapacityRecorder] = None,
     ) -> "_Tally":
         """Run ``N`` replications (then more, while ``stop`` asks for
         them) and return their totals.
@@ -4490,7 +4688,8 @@ class RepairableRBD(RBD):
         the caller's RNG state is restored once the simulations have
         finished. With ``streams`` (common random numbers, see ``compare``)
         or ``antithetic``, each component draws from a stream of its own
-        instead, keyed (for antithetic pairs) from the global RNG.
+        instead, keyed (for antithetic pairs) from the global RNG. With
+        ``capacity``, each replication also follows the system's capacity.
         """
         tally = _Tally(self.costs)
         has_costs = self.has_costs
@@ -4537,6 +4736,7 @@ class RepairableRBD(RBD):
                     charges,
                     downtime_cost_rates,
                     has_costs,
+                    capacity,
                 )
                 progress.update()
             more = 0 if stop is None else stop(tally)
@@ -4577,6 +4777,7 @@ class RepairableRBD(RBD):
         charges: tuple,
         downtime_cost_rates: dict,
         has_costs: bool,
+        capacity: Optional[_CapacityRecorder] = None,
     ) -> None:
         """One simulation of ``[0, t_simulation]``, added to ``tally``."""
         failure_charges, preventive_charges, inspection_charges = charges
@@ -4600,6 +4801,11 @@ class RepairableRBD(RBD):
         }
         system_timeline = [(0.0, 1 if self.system_state else 0)]
         rep_cost = 0.0
+        trace = (
+            None
+            if capacity is None
+            else capacity.trace(tally, self.component_status)
+        )
 
         # Implemented ensure that no events that occur after the end-time of
         # the simulation are added to the queue; so we just need to keep
@@ -4632,6 +4838,8 @@ class RepairableRBD(RBD):
                 continue
             # Update the component's status
             self.component_status[node] = event.status
+            if trace is not None:
+                trace.change(event.time, node, event.status)
             if event.status:
                 RCI[node]["component_restorations"] += 1
             elif event.preventive:
@@ -4691,6 +4899,8 @@ class RepairableRBD(RBD):
                 self._event_queue.put(next_event)
 
         system_timeline.append((t_simulation, 0))
+        if trace is not None:
+            trace.finish(t_simulation)
 
         for component in self.components.keys():
             component_timelines[component].append((t_simulation, 0))
@@ -4738,6 +4948,7 @@ class RepairableRBD(RBD):
         t_simulation: float,
         initial_up: bool,
         antithetic: bool,
+        capacity: Optional[_CapacityRecorder] = None,
     ) -> AvailabilityResult:
         """The ``AvailabilityResult`` of the replications in ``tally``."""
         N = tally.n
@@ -4818,6 +5029,36 @@ class RepairableRBD(RBD):
                 antithetic=antithetic,
             )
 
+        capacity_fields: dict = {}
+        if capacity is not None:
+            # The mean capacity from t=0..t_simulation: the simulated
+            # systems' total expected capacity after each time at which one
+            # changed (unlimited while one can carry an unlimited amount).
+            times = sorted(
+                set(tally.capacity_changes)
+                | set(tally.unlimited_changes)
+                | {0.0, t_simulation}
+            )
+            totals = np.cumsum([tally.capacity_changes[t] for t in times])
+            unlimited = np.cumsum([tally.unlimited_changes[t] for t in times])
+            curve = np.where(
+                unlimited > 0, np.inf, np.maximum(totals / N, 0.0)
+            )
+            capacity_fields = dict(
+                capacity_timeline=np.array(times),
+                capacity=curve,
+                capacity_time={
+                    level: tally.capacity_time[level]
+                    for level in sorted(tally.capacity_time)
+                },
+                demand=capacity.demand,
+                delivered=(
+                    None
+                    if capacity.demand is None
+                    else np.asarray(tally.delivered, dtype=float)
+                ),
+            )
+
         return AvailabilityResult(
             timeline=time,
             availability=system_availability,
@@ -4834,6 +5075,7 @@ class RepairableRBD(RBD):
             system_planned_outages=tally.system_planned_outages,
             uptimes=np.asarray(tally.uptimes, dtype=float),
             antithetic=antithetic,
+            **capacity_fields,
         )
 
     def _run_parallel(
@@ -4847,6 +5089,7 @@ class RepairableRBD(RBD):
         antithetic: bool,
         stop,
         jobs: int,
+        capacity: Optional[_CapacityRecorder] = None,
     ) -> "_Tally":
         """The replications in blocks of ``PARALLEL_BLOCK``, each seeded
         from ``seed`` by its position, run ``jobs`` at a time in separate
@@ -4869,6 +5112,7 @@ class RepairableRBD(RBD):
                         size,
                         montecarlo.block_seed(seeds),
                         antithetic,
+                        capacity,
                     )
                     for size in montecarlo.blocks(batch, PARALLEL_BLOCK)
                 ]

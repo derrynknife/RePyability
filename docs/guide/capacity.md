@@ -124,6 +124,44 @@ is. Components inspected or replaced on a calendar are down together more
 often than independent ones would be, and the distribution is averaged over
 their schedules, as `mean_availability` is.
 
+## Over a window (simulated)
+
+The long run is where a plant settles; a contract year starts with every
+unit new. [`availability()`](repairable.md#availability-over-time-simulated)
+simulates the window, and when nodes have capacities the same simulations
+follow what the system can deliver, against a `demand`:
+
+```python
+year = pumps.availability(8760, N=500, seed=1, demand=100)   # a year, in hours
+year.capacity[:3]                   # array([150. , 149.9, 149.8])   the mean capacity curve
+year.mean_capacity                  # -> 144.3     the long run: 144.23
+year.delivered_fraction             # -> 0.99793   the long run: 0.99781
+year.delivered_fraction_interval().upper   # -> 0.99807
+year.capacity_time[100.0] / (500 * 8760)   # -> 0.10584   the time at 100
+```
+
+- `capacity_timeline` and `capacity` are the mean capacity over time, as
+  `timeline` and `availability` are the mean availability. The capacity
+  is worked out after every component failure and repair, not only those
+  that change whether the system is up: here most failures cost 50 and
+  leave the plant running.
+- `capacity_time` is the time spent at each capacity, summed over the
+  simulations.
+- `delivered` holds each simulation's delivered fraction: what it delivered
+  against the demand, `min(capacity, demand)` over the window, over the
+  demand over the window. `delivered_fraction` is their mean, the
+  production availability over the window, and
+  `delivered_fraction_interval(confidence)` its simulation error.
+- `demand` defaults to the design capacity, everything up (150 here).
+  Contracts usually name a smaller one.
+
+The simulation draws only when components fail and are repaired, exactly
+as without capacities, so the availability results are unchanged. A node
+working at several levels counts at each in proportion to its
+probability. Nodes that take their capacity from their models (a
+`DegradingNode`'s stages, or a nested RBD's capacities) are not followed:
+give them a capacity, or use the exact long-run `capacity_distribution()`.
+
 ## Components with several levels
 
 Some components degrade rather than fail outright: a pump at full, half or

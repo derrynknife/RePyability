@@ -117,6 +117,7 @@ np.interp(50, result.timeline, result.availability)   # -> 0.9531   at t = 50
 | `tolerance`, `confidence`, `max_N` | Simulate until the mean availability over the window is known to within `tolerance` (see [Simulation precision and speed](simulation.md#simulating-to-a-tolerance)). |
 | `antithetic` | Simulate in antithetic pairs, for a more precise mean from the same `N` (see [Antithetic pairs](simulation.md#antithetic-pairs)). |
 | `n_jobs` | Run the simulations over several processes (see [Parallel runs](simulation.md#parallel-runs)). |
+| `demand` | With node capacities, the demand the delivered fraction is measured against (see [System capacity](capacity.md#over-a-window-simulated)). |
 
 The curve starts at 1 and settles towards the long-run availability
 (`0.9536` here). Its sampling error is available pointwise:
@@ -160,6 +161,7 @@ one is up than the other far more precisely than two separate runs (see
 | `n_simulations`, `time_simulated_to` | `N` and `t_simulation`. |
 | `criticalities` | The criticality measures (below). |
 | `cost` | The simulated costs, or `None` when nothing is priced (see [Costs](costs.md#the-simulated-cost-distribution)). |
+| `capacity_timeline`, `capacity`, `capacity_time`, `mean_capacity`, `demand`, `delivered`, `delivered_fraction`, `delivered_fraction_interval(confidence)` | With node capacities: the mean capacity over time, the time at each capacity, and the fraction of the demand delivered (see [System capacity](capacity.md#over-a-window-simulated)). `None` without capacities. |
 
 ```python
 result.mean_up_time      # -> 27.29    against the exact 27.27

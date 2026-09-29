@@ -1137,6 +1137,26 @@ class AvailabilityResult(_ResultMapping):
         False. ``mean_availability_interval`` then works from the pairs'
         means; the pointwise ``availability_se`` and
         ``availability_interval`` treat the simulations as independent.
+    capacity_timeline : numpy.ndarray, optional
+        With capacities (the ``capacity`` of the ``RepairableRBD``): 0, each
+        time at which the capacity of some simulated system changed, and
+        ``time_simulated_to``, in increasing order. None without
+        capacities, as are the other capacity fields.
+    capacity : numpy.ndarray, optional
+        The simulated systems' mean capacity at each time in
+        ``capacity_timeline``, from that time until the next: the capacity
+        curve. ``inf`` while one of them can carry an unlimited amount.
+    capacity_time : dict, optional
+        Capacity -> the time spent at it, summed over the simulations: they
+        add up to ``n_simulations * time_simulated_to``. A node working at
+        several levels counts at each in proportion to its probability.
+    demand : float, optional
+        The demand the delivered fraction is measured against (see
+        ``RepairableRBD.availability``); None without one.
+    delivered : numpy.ndarray, optional
+        Each simulation's delivered fraction, in order: the integral of
+        ``min(capacity, demand)`` over the window, over ``demand`` times
+        its length. None without a demand.
 
     Examples
     --------
@@ -1180,6 +1200,96 @@ class AvailabilityResult(_ResultMapping):
     system_planned_outages: int = 0
     uptimes: Optional[np.ndarray] = None
     antithetic: bool = False
+    capacity_timeline: Optional[np.ndarray] = None
+    capacity: Optional[np.ndarray] = None
+    capacity_time: Optional[Dict[float, float]] = None
+    demand: Optional[float] = None
+    delivered: Optional[np.ndarray] = None
+
+    @property
+    def mean_capacity(self) -> Optional[float]:
+        """Simulation estimate of the average capacity over the window:
+        each capacity times the time spent at it, over
+        ``n_simulations * time_simulated_to``. Over a long window it
+        approaches the exact long-run ``capacity_distribution().mean()``.
+
+        Returns
+        -------
+        float or None
+            The average capacity (``inf`` if some time was spent at an
+            unlimited one), or None without capacities.
+        """
+        if self.capacity_time is None:
+            return None
+        total = sum(
+            level * time for level, time in self.capacity_time.items() if time
+        )
+        return float(total) / (self.n_simulations * self.time_simulated_to)
+
+    @property
+    def delivered_fraction(self) -> Optional[float]:
+        """Simulation estimate of the fraction of the demand delivered over
+        the window: the production availability. The mean of
+        ``delivered``; over a long window it approaches the exact long-run
+        ``capacity_distribution().delivered_fraction(demand)``.
+
+        Returns
+        -------
+        float or None
+            The delivered fraction, in ``[0, 1]``, or None without a
+            demand.
+        """
+        if self.delivered is None:
+            return None
+        return float(np.mean(self.delivered))
+
+    def delivered_fraction_interval(
+        self, confidence: float = 0.95
+    ) -> ConfidenceInterval:
+        """Confidence interval for the expected delivered fraction over the
+        window.
+
+        As ``mean_availability_interval`` is for the availability: the
+        estimate is the mean of the simulations' delivered fractions, with
+        standard error ``std / sqrt(n)`` (of antithetic pairs' means, for an
+        antithetic run), and the interval, clipped to [0, 1], describes the
+        simulation error.
+
+        Parameters
+        ----------
+        confidence : float, optional
+            The confidence level, strictly between 0 and 1, by default 0.95.
+
+        Returns
+        -------
+        ConfidenceInterval
+            The estimate, bounds, standard error and number of simulations.
+
+        Raises
+        ------
+        ValueError
+            If ``confidence`` is not in (0, 1), or the result has no
+            delivered fractions (no capacities, or no demand).
+        """
+        if not 0.0 < confidence < 1.0:
+            raise ValueError("confidence must be between 0 and 1.")
+        if self.delivered is None:
+            raise ValueError(
+                "This result has no delivered fractions: the RBD had no "
+                "capacities, or no demand to measure them against."
+            )
+        fractions = np.asarray(self.delivered, dtype=float)
+        estimate = float(np.mean(fractions))
+        se = montecarlo.standard_error(fractions, self.antithetic)
+        z = montecarlo.z_value(confidence)
+        return ConfidenceInterval(
+            estimate=estimate,
+            lower=max(0.0, estimate - z * se),
+            upper=min(1.0, estimate + z * se),
+            confidence=confidence,
+            standard_error=se,
+            n_samples=len(fractions),
+        )
 
     def mean_availability_interval(
         self, confidence: float = 0.95

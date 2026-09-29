@@ -536,7 +536,11 @@ least complete total, and merging the states that agree on them.
 
 In the long run the probability of each level is the fraction of time spent
 at it: the components' long-run availabilities stand in for their
-reliabilities, as for the long-run availability.
+reliabilities, as for the long-run availability. Over a finite window,
+which starts with everything new, the availability simulation follows the
+capacity too: after every component event it works out the capacity the
+components that are up give, and the fraction of the demand delivered over
+the window is the time average of `min(C, d) / d`.
 
 **Multi-state components.** A component can itself have several levels: a
 pump at full, half or no output. The distribution of each node's capacity
