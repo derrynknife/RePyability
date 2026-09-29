@@ -299,3 +299,40 @@ def test_failure_limit_costs_required():
     rep = Repairable(_gr(0.5))
     with pytest.raises(ValueError, match="costs not set"):
         rep.find_optimal_replacement_failure_count(seed=1, n_simulations=200)
+
+
+def test_the_simulations_seed_goes_by_the_models_own_keyword():
+    """surpyval 0.21 renamed the simulations' ``seed`` to ``random_state``
+    (``seed`` warns until 0.22 removes it). The seed is passed by the name
+    the model's method takes, so neither surpyval version warns, and a
+    model taking ``seed`` (surpyval 0.20, or an equivalent) still gets it.
+    """
+    rep = Repairable(_gr(0.5))
+    rep.set_repair_and_overhaul_costs(1.0, 10.0)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        rep.cost([50.0, 150.0], seed=3, n_simulations=100)
+        rep.expected_time_to_nth_failure(2, seed=3, n_simulations=100)
+
+    class SeedOnly:
+        """A model whose simulations take ``seed``, as surpyval 0.20's."""
+
+        def __init__(self):
+            self.seen = []
+
+        def mcf(self, x, items=1000, seed=None):
+            self.seen.append(("mcf", seed))
+            return np.asarray(x, dtype=float) / 100.0
+
+        def count_terminated_simulation(self, events, items=1000, seed=None):
+            self.seen.append(("count", seed))
+            return GeneralizedRenewal.fit_from_parameters(
+                [100.0, 2.0], 0.5, kijima="ii", dist=surv.Weibull
+            ).count_terminated_simulation(events, items=items)
+
+    model = SeedOnly()
+    rep = Repairable(model)
+    rep.set_repair_and_overhaul_costs(1.0, 10.0)
+    rep.cost([50.0], seed=7, n_simulations=50)
+    rep.expected_time_to_nth_failure(1, seed=7, n_simulations=50)
+    assert ("mcf", 7) in model.seen and ("count", 7) in model.seen
