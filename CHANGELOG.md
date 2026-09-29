@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Works with surpyval 0.21 without deprecation warnings.** surpyval 0.21
+  renames its simulations' `seed` to `random_state` (the old name warns
+  until surpyval 0.22 removes it). `Repairable` passed `seed=` to a
+  generalized-renewal model's `mcf` and `count_terminated_simulation`, so
+  every simulated overhaul or failure-limit calculation warned under 0.21,
+  and would fail under 0.22. The seed now goes by the name the model's method
+  takes, so surpyval 0.20, 0.21 and models exposing the same methods all
+  work, with the same results.
+
 ## [0.10.0] - 2026-09-28
 
 Meet a repairable system's availability and cost targets. Choose the

@@ -62,6 +62,10 @@ unchanged.
   uncertainty).
 - surpyval#407 (zero-inflated `ff`/`sf` nonzero before time 0): no
   workaround; only a diagram's `sf(t)` at `t < 0` is affected.
+- surpyval 0.21's `seed` -> `random_state` rename (surpyval#422): the
+  `seed_keyword` shim in `utils/wrappers.py`, used by `Repairable` for
+  `mcf` and `count_terminated_simulation`. Pass `random_state=` directly
+  once the minimum surpyval is 0.21.
 - surpyval#381 (a non-parametric estimate gives a 1-element array for a
   single time, and spreads a 2-D query): `rbd/_model_utils.py`, `shaped`,
   used by the simulated `sf` and `ff` of `StandbyModel` and
