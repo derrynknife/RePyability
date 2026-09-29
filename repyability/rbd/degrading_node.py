@@ -4,7 +4,6 @@ fails: a node with several capacity levels over time (#98)."""
 from typing import Any, Sequence, Tuple
 
 import numpy as np
-from scipy.stats import gamma as _gamma
 
 from ._model_utils import model_mean, never_fails
 from .numerical_convolution import ConvolvedSurvival
@@ -157,7 +156,9 @@ class DegradingNode(StandbyModel):
             return np.asarray(self.reliabilities[0].sf(x), dtype=float)
         survival = self._sf_model
         if isinstance(survival, _ExponentialStandbySurvival):
-            return _gamma.sf(x, a=j, scale=1.0 / survival.rate)
+            from scipy.stats import gamma
+
+            return gamma.sf(x, a=j, scale=1.0 / survival.rate)
         assert isinstance(survival, ConvolvedSurvival)
         return np.asarray(survival.partial_sf(j, x), dtype=float)
 

@@ -13,8 +13,6 @@ with a Kaplan-Meier fit.
 from typing import cast
 
 import numpy as np
-from scipy.integrate import cumulative_trapezoid, trapezoid
-from scipy.signal import fftconvolve
 
 from ._model_utils import distribution_name, failure_time_scale, never_fails
 
@@ -172,6 +170,8 @@ def _sf_from_pdf(
     never fail) and otherwise has the (possibly un-normalised) density
     ``pdf``, scaled to its mass ``finite - at_zero`` to normalise away
     discretisation drift."""
+    from scipy.integrate import cumulative_trapezoid
+
     cdf = cumulative_trapezoid(pdf, t, initial=0.0)
     total = cdf[-1]
     mass = finite - at_zero
@@ -268,6 +268,8 @@ class ConvolvedSurvival:
         eps: float = 1e-10,
         partials: bool = False,
     ):
+        from scipy.signal import fftconvolve
+
         models = list(models)
         n = len(models)
         if n == 0:
@@ -404,6 +406,8 @@ class ConvolvedSurvival:
         float
             The mean lifetime.
         """
+        from scipy.integrate import trapezoid
+
         if self.never_fails > 0.0:
             return float("inf")
         return float(trapezoid(self._sf, self._t))

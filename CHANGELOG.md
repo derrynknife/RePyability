@@ -66,6 +66,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a coherent system down, nor a failure bring it up), and called directly.
   Identical models share their quantile function's evaluations. A component
   with no maintenance or inspection takes its next draw directly.
+- **Faster start-up** (#121). `import repyability` no longer loads
+  scipy.signal, tqdm or the process-pool machinery until a call needs them
+  (about 0.2 s less here; surpyval's share is
+  [surpyval #470](https://github.com/derrynknife/SurPyval/issues/470)).
+  - A parallel run (`n_jobs`) under the forkserver start method (Linux's
+    default from Python 3.14) has the server load RePyability once, so its
+    processes start with it loaded: from the second run on, they start at
+    once rather than taking a second or more each.
+  - `n_jobs=-1` counts the CPUs this process may run on, which in a
+    container can be fewer than the machine has.
+  - CI also tests Python 3.14.
 - **More accurate cold standby.** The numerical convolution behind a
   `StandbyModel` (cold, one operating unit) and a `RepeatedStandbyNode` now
   uses the trapezoidal rule: its error falls from about `1e-4` to about

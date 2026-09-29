@@ -1,7 +1,6 @@
 from queue import PriorityQueue
 
 import numpy as np
-from scipy.stats import gamma as _gamma
 from surpyval import Hypoexponential, KaplanMeier
 
 from repyability.utils.wrappers import numpy_seed
@@ -70,10 +69,14 @@ class _ExponentialStandbySurvival:
         self.rate = k * rate  # failure rate while k units operate
 
     def sf(self, x):
-        return _gamma.sf(x, a=self.shape, scale=1.0 / self.rate)
+        from scipy.stats import gamma
+
+        return gamma.sf(x, a=self.shape, scale=1.0 / self.rate)
 
     def ff(self, x):
-        return _gamma.cdf(x, a=self.shape, scale=1.0 / self.rate)
+        from scipy.stats import gamma
+
+        return gamma.cdf(x, a=self.shape, scale=1.0 / self.rate)
 
     def mean(self, *args, **kwargs):
         return self.shape / self.rate

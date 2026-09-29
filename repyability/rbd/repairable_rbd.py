@@ -14,7 +14,6 @@ import pprint
 import warnings
 import zlib
 from collections import Counter, defaultdict
-from concurrent.futures import ProcessPoolExecutor
 from copy import copy
 from dataclasses import dataclass, field
 from fractions import Fraction
@@ -37,7 +36,6 @@ import numpy as np
 from scipy.optimize import OptimizeResult, brentq, minimize
 from scipy.special import expit, logit, logsumexp, softmax
 from surpyval import ExactEventTime
-from tqdm import tqdm
 
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import _montecarlo as montecarlo
@@ -4717,6 +4715,8 @@ class RepairableRBD(RBD):
         instead, keyed (for antithetic pairs) from the global RNG. With
         ``capacity``, each replication also follows the system's capacity.
         """
+        from tqdm import tqdm
+
         tally = _Tally(self.costs)
         has_costs = self.has_costs
         downtime_cost_rates = {
@@ -5144,7 +5144,7 @@ class RepairableRBD(RBD):
         so the result does not depend on ``jobs``."""
         seeds = np.random.SeedSequence(seed)
         tally = _Tally(self.costs)
-        executor = ProcessPoolExecutor(max_workers=jobs) if jobs > 1 else None
+        executor = montecarlo.process_pool(jobs) if jobs > 1 else None
         try:
             batch = N
             while batch:

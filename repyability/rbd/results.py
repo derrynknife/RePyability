@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Hashable, Optional, Tuple
 
 import numpy as np
-from scipy.stats import norm
+from scipy.special import ndtri
 
 from repyability.rbd import _montecarlo as montecarlo
 
@@ -606,7 +606,7 @@ class CostResult(_ResultMapping):
             raise ValueError("confidence must be between 0 and 1.")
         estimate = self.mean
         standard_error = self.mean_se
-        z = float(norm.ppf(0.5 + confidence / 2.0))
+        z = float(ndtri(0.5 + confidence / 2.0))
         return ConfidenceInterval(
             estimate=estimate,
             lower=max(0.0, estimate - z * standard_error),
@@ -1390,7 +1390,7 @@ class AvailabilityResult(_ResultMapping):
         """
         if not 0.0 < confidence < 1.0:
             raise ValueError("confidence must be between 0 and 1.")
-        z = float(norm.ppf(0.5 + confidence / 2.0))
+        z = float(ndtri(0.5 + confidence / 2.0))
         p = np.asarray(self.availability, dtype=float)
         n = self.n_simulations
         denominator = 1.0 + z**2 / n

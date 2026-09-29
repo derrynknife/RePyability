@@ -31,7 +31,6 @@ mean is kept. The error falls as ``h ** 2``.
 from typing import NamedTuple
 
 import numpy as np
-from scipy.signal import fftconvolve
 
 from ._model_utils import distribution_name, never_fails
 
@@ -243,6 +242,8 @@ def block_cycle(
         If a model is not one of those, or the repairs or replacements
         take too long, compared with the interval, for the grid.
     """
+    from scipy.signal import fftconvolve
+
     _check_life(life, node)
     fix = _Duration(repair, "repair", node)
     replace = _Duration(duration, "replacement", node)

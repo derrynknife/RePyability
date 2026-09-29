@@ -1,7 +1,6 @@
 import warnings
 
 import numpy as np
-from scipy.integrate import quad, trapezoid
 from scipy.optimize import minimize, minimize_scalar
 from surpyval import ExactEventTime, NonParametric, Parametric
 
@@ -266,6 +265,8 @@ class NonRepairable:
         >>> round(unit.avg_replacement_time(100), 2)
         63.21
         """
+        from scipy.integrate import quad, trapezoid
+
         if self.model_parameterization == "parametric":
             # surpyval evaluates an offset model below its offset through a
             # fractional power of a negative number before masking it, which

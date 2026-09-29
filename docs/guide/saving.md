@@ -81,6 +81,12 @@ global generator is.
 rbd.mean(1_000, seed=0) == rbd.mean(1_000, seed=0)   # True
 ```
 
+A seed reproduces a result on the same platform. numpy's mathematical
+functions can differ in the last bit between operating systems and
+processors. So on another machine, the same seed can give times that differ
+in their last digits, and rarely a different count, where two events
+nearly coincide.
+
 Simulations involving non-parametric nodes (Kaplan–Meier and the other
 surpyval non-parametric fits) are reproducible too: surpyval seeds their
 draws from the global generator

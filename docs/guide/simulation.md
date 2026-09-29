@@ -154,6 +154,24 @@ few thousand lifetimes that are drawn in one vectorised step. It works with
 `tolerance` (checked after each batch of `N`) and `antithetic`; `verbose`
 has no effect.
 
+A process needs RePyability, surpyval and scipy loaded before it can
+simulate, and how long that takes depends on how the platform starts
+processes:
+
+- **Linux, Python up to 3.13 (fork):** processes start with everything
+  already loaded.
+- **Linux, Python 3.14 (forkserver):** RePyability has the server load them
+  once. The first parallel run waits for that; later runs start their
+  processes at once.
+- **macOS and Windows (spawn):** every process loads them itself, which
+  takes a second or two, so `n_jobs` pays off only for runs longer than
+  that.
+
+`n_jobs=-1` starts one process per CPU this process may run on (its CPU
+affinity, where the platform reports one). A container limited by a CPU
+quota rather than by affinity can report more CPUs than it may use: set
+`n_jobs` explicitly there.
+
 ## Comparing two designs
 
 Two designs are best compared with **common random numbers**: simulate both

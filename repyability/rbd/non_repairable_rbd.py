@@ -10,7 +10,6 @@ import math
 import pprint
 import warnings
 import zlib
-from concurrent.futures import ProcessPoolExecutor
 from copy import copy
 from dataclasses import dataclass, field
 from queue import PriorityQueue
@@ -3400,7 +3399,7 @@ class NonRepairableRBD(RBD):
         in blocks of that run's first ``n``."""
         seeds = np.random.SeedSequence(seed) if jobs is not None else None
         executor = (
-            ProcessPoolExecutor(max_workers=jobs)
+            montecarlo.process_pool(jobs)
             if jobs is not None and jobs > 1
             else None
         )
