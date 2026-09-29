@@ -22,6 +22,7 @@ from typing import (
     Dict,
     Hashable,
     Iterable,
+    Iterator,
     List,
     Optional,
     Sequence,
@@ -38,6 +39,7 @@ from surpyval import NonParametric
 from repyability.utils.wrappers import conditional_survival, numpy_seed
 
 from . import _montecarlo as montecarlo
+from . import capacity as _capacity
 from . import redundancy_allocation
 from ._model_utils import is_fixed_probability, model_mean, parametric_spec
 from ._sampling import RowSampler, row_sampler
@@ -50,6 +52,7 @@ from .redundancy_allocation import ComponentOption, active_unreliability
 from .repeated_node import RepeatedNode
 from .repeated_standby_node import RepeatedStandbyNode
 from .results import (
+    CapacityDistribution,
     ConfidenceInterval,
     RedundancyAllocation,
     ReliabilityRedundancyAllocation,
@@ -130,16 +133,7 @@ def check_x(func):
 
     @functools.wraps(func)
     def wrap(obj, x=None, *args, **kwargs):
-        if x is None:
-            if obj.is_fixed:
-                x = 1.0
-            else:
-                raise ValueError(
-                    "x is required: this RBD is time-varying (at least one "
-                    "node model's probability depends on time)."
-                )
-        scalar_in = np.ndim(x) == 0
-        x = np.atleast_1d(np.asarray(x, dtype=float))
+        x, scalar_in = _times(obj, x)
         result = func(obj, x, *args, **kwargs)
         if scalar_in:
             if isinstance(result, dict):
@@ -148,6 +142,23 @@ def check_x(func):
         return result
 
     return wrap
+
+
+def _times(obj, x) -> tuple:
+    """The time argument of an RBD method as a float array of at least one
+    dimension, and whether it was a scalar. ``x=None`` stands for any time
+    (1.0) in a fixed-probability RBD, and is refused in a time-varying
+    one."""
+    if x is None:
+        if obj.is_fixed:
+            x = 1.0
+        else:
+            raise ValueError(
+                "x is required: this RBD is time-varying (at least one "
+                "node model's probability depends on time)."
+            )
+    scalar_in = np.ndim(x) == 0
+    return np.atleast_1d(np.asarray(x, dtype=float)), scalar_in
 
 
 def _dsf_dparam(cls, params, j, x_arr, rel_step, extras=None) -> np.ndarray:
@@ -278,6 +289,14 @@ class NonRepairableRBD(RBD):
         them. The importance measures, ``parameter_sensitivity``, the
         condition-based methods and ``allocate_redundancy`` raise
         NotImplementedError.
+    capacity : dict[Any, float], optional
+        Each node's capacity, keyed by node name, by default None: the
+        throughput it passes while it works, a positive number in any unit
+        (the same for every node), for
+        [`capacity_distribution`][repyability.NonRepairableRBD.capacity_distribution].
+        A failed node passes nothing, and a node with no capacity given
+        limits nothing (``inf``). A repeated node has the capacity of the
+        node it repeats, wherever it is drawn: give that node's.
 
     Attributes
     ----------
@@ -289,6 +308,8 @@ class NonRepairableRBD(RBD):
         ``{repeated_node: node_it_repeats}``.
     ccf_groups : list[CCFGroup]
         The validated common-cause groups.
+    capacity : dict
+        The capacities given, keyed by node name, as floats.
     nodes : list
         The component nodes: every node except the input and output nodes
         and the repeated nodes (each is the component it repeats).
@@ -306,8 +327,10 @@ class NonRepairableRBD(RBD):
     ValueError
         If ``on_infeasible_rbd`` is not an allowed value, a node's model is
         its own name, ``input_node`` or ``output_node`` is not in the
-        diagram, the diagram is invalid (with ``on_infeasible_rbd="raise"``)
-        or ``ccf_groups`` is invalid.
+        diagram, the diagram is invalid (with ``on_infeasible_rbd="raise"``),
+        ``ccf_groups`` is invalid, or a capacity is not a positive number or
+        is for a node that cannot take one (the input or output node, a
+        repeated node, or one not in the diagram).
 
     Examples
     --------
@@ -374,6 +397,7 @@ class NonRepairableRBD(RBD):
         output_node: Optional[Any] = None,
         on_infeasible_rbd: str = "raise",
         ccf_groups: Optional[Iterable[CCFGroup]] = None,
+        capacity: Optional[dict[Any, float]] = None,
     ):
         _check_on_infeasible_rbd(on_infeasible_rbd)
         # Capture the constructor inputs verbatim (before any mutation) so the
@@ -388,6 +412,7 @@ class NonRepairableRBD(RBD):
             "output_node": output_node,
             "on_infeasible_rbd": on_infeasible_rbd,
             "ccf_groups": ccf_groups,
+            "capacity": dict(capacity) if capacity else None,
         }
         reliabilities = copy(reliabilities)
         for key, value in reliabilities.items():
@@ -418,6 +443,7 @@ class NonRepairableRBD(RBD):
             input_node,
             output_node,
             on_infeasible_rbd,
+            capacity=capacity,
         )
         self.structure_check["has_repeated_node_in_cycle"] = False
 
@@ -664,6 +690,23 @@ class NonRepairableRBD(RBD):
         call to the ordinary independent engine. ``beta = 0`` recovers it
         exactly.
         """
+        terms = [
+            np.asarray(weight)
+            * np.asarray(
+                self.system_probability(node_probabilities, method=method)
+            )
+            for weight, node_probabilities in self._ccf_conditions(
+                base_probabilities, working_nodes, broken_nodes
+            )
+        ]
+        return np.sum(terms, axis=0)
+
+    def _ccf_conditions(
+        self, base_probabilities, working_nodes, broken_nodes
+    ) -> Iterator[tuple]:
+        """The combinations of the common-cause groups' shock outcomes (see
+        ``_ccf_system_probability``): for each, its probability and the node
+        reliabilities given it, under which the nodes are independent."""
         from itertools import product
 
         forced = working_nodes | broken_nodes
@@ -709,20 +752,13 @@ class NonRepairableRBD(RBD):
             )
             group_outcomes.append(outcomes)
 
-        terms = []
         for combo in product(*group_outcomes):
             node_probabilities = dict(base_probabilities)
             weight: Any = 1.0
             for outcome_weight, member_probs in combo:
                 weight = weight * outcome_weight
                 node_probabilities.update(member_probs)
-            terms.append(
-                np.asarray(weight)
-                * np.asarray(
-                    self.system_probability(node_probabilities, method=method)
-                )
-            )
-        return np.sum(terms, axis=0)
+            yield weight, node_probabilities
 
     def _require_no_ccf(self) -> None:
         """Raise if the RBD has CCF groups, for the probability-dependent
@@ -785,6 +821,100 @@ class NonRepairableRBD(RBD):
         0.01
         """
         return 1 - self.sf(x, *args, **kwargs)
+
+    def capacity_distribution(
+        self,
+        x: Optional[ArrayLike] = None,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> CapacityDistribution:
+        """The exact distribution of the system's capacity at time/s ``x``.
+
+        Each node carries its ``capacity`` (given when the RBD was built)
+        while it works and nothing once it has failed, and the system's
+        capacity is the most that can flow through the working nodes from
+        the input to the output. A node given no capacity limits nothing.
+        With three pumps of half the demand each, one failure costs nothing
+        and two cost half the output. The capacity is positive exactly when
+        the system works, so the probability that it is positive is
+        [`sf`][repyability.NonRepairableRBD.sf].
+
+        The distribution is exact, from each node's reliability at ``x``,
+        worked out as ``sf`` is (see
+        [`RBD.system_capacity`][repyability.RBD.system_capacity]), and
+        honours common-cause groups.
+
+        Parameters
+        ----------
+        x : array_like, optional
+            Time/s as a number or an array. May be omitted only for a
+            fixed-probability RBD.
+        working_nodes : Collection[Hashable], optional
+            Nodes to treat as working, by default none.
+        broken_nodes : Collection[Hashable], optional
+            Nodes to treat as failed, by default none.
+
+        Returns
+        -------
+        CapacityDistribution
+            The capacities the system can have, and their probabilities: one
+            per level for a scalar ``x``, and one row per level and one
+            column per time for an array. Its ``meets(demand)`` is the
+            probability that the capacity meets a demand, and ``mean()`` the
+            expected capacity.
+
+        Raises
+        ------
+        ValueError
+            If no node has a capacity, ``x`` is omitted for a time-varying
+            RBD, or a working/broken node is invalid (as for ``sf``).
+        NotImplementedError
+            If a working/broken node is a member of a common-cause group.
+
+        Examples
+        --------
+        Three pumps of 50 each in parallel, each 90% reliable at the time
+        of interest, feeding a pipe that carries 120:
+
+        >>> from surpyval import FixedEventProbability
+        >>> from repyability import NonRepairableRBD
+        >>> pump = FixedEventProbability.from_params(0.1)
+        >>> pipe = FixedEventProbability.from_params(0.0)
+        >>> plant = NonRepairableRBD(
+        ...     [("in", "a"), ("in", "b"), ("in", "c"),
+        ...      ("a", "pipe"), ("b", "pipe"), ("c", "pipe"),
+        ...      ("pipe", "out")],
+        ...     {"a": pump, "b": pump, "c": pump, "pipe": pipe},
+        ...     capacity={"a": 50, "b": 50, "c": 50, "pipe": 120},
+        ... )
+        >>> capacity = plant.capacity_distribution()
+        >>> capacity.levels.tolist()
+        [0.0, 50.0, 100.0, 120.0]
+        >>> round(capacity.meets(100), 4)  # two pumps or more
+        0.972
+        >>> round(capacity.mean(), 2)
+        113.13
+        """
+        x, scalar = _times(self, x)
+        working_nodes = set() if working_nodes is None else set(working_nodes)
+        broken_nodes = set() if broken_nodes is None else set(broken_nodes)
+        self._validate_node_overrides(working_nodes, broken_nodes)
+        base = self._base_node_probabilities(x, working_nodes, broken_nodes)
+        conditions: Iterable[tuple] = (
+            self._ccf_conditions(base, working_nodes, broken_nodes)
+            if self.ccf_groups
+            else [(1.0, base)]
+        )
+        levels, rows = [], []
+        for weight, node_probabilities in conditions:
+            arrays, size = self._node_arrays(node_probabilities)
+            part = self._capacity_arrays(arrays, size)
+            levels.append(part[0])
+            rows.append(np.asarray(weight) * part[1])
+        merged = _capacity.merged(np.concatenate(levels), np.vstack(rows))
+        return CapacityDistribution(
+            merged[0], merged[1][:, 0] if scalar else merged[1]
+        )
 
     def sf_uncertainty(
         self,

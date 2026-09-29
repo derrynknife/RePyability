@@ -63,6 +63,8 @@ models provided here (see [Building an RBD](guide/building.md) and
 
 ::: repyability.AvailabilityResult
 
+::: repyability.CapacityDistribution
+
 ::: repyability.Criticalities
 
 ::: repyability.UpDownImportance

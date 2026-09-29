@@ -488,6 +488,56 @@ system sees a state change when the nested system's state changes.
 - The **restoration criticality index** does the same for repairs that
   restored the system.
 
+## Capacity
+
+A reliability block diagram answers a yes-or-no question: does the system
+work? A plant also asks how much it delivers. Give each node a capacity
+`c_i`, the throughput it passes while it works (0 once it has failed), and
+the system's capacity is the most that can flow from the input to the output
+through the working nodes, each passing at most its capacity: the diagram's
+**maximum flow**. The edges carry any amount, so
+
+```
+series:    C = min(c_1, c_2, ...)
+parallel:  C = c_1 + c_2 + ...
+```
+
+and in general, by the **max-flow min-cut theorem**, the capacity is the
+least total capacity of a cut, a set of nodes whose failure disconnects the
+output:
+
+```
+C = min over cuts K of  Σ_{i in K} c_i · [node i works]
+```
+
+A k-out-of-n node passes flow only while at least `k` of its inputs are
+reached, as in the reliability analysis, so the capacity is positive exactly
+when the system works: `P(C > 0)` is the reliability (or availability).
+
+**The distribution.** Over the components' states, `C` takes finitely many
+values. The probability of each follows as the system probability does. A
+module's distribution comes from its members' in closed form: the
+distribution of the least of independent capacities for a series chain, of
+their sum for a parallel group, and of their sum while at least `k` work for
+a k-out-of-n group. Combining distributions this way is the **universal
+generating function** of multi-state systems (Ushakov; Lisnianski and
+Levitin). What is left, such as a bridge, is conditioned on its parts'
+capacities one at a time, carrying only each cut's running total and the
+least complete total, and merging the states that agree on them.
+
+**What it gives.** From the distribution:
+
+- `P(C ≥ d)`, the probability of meeting a demand `d`: the system's
+  reliability for that demand (its availability, in the long run);
+- `E[C]`, the expected capacity;
+- `E[min(C, d)] / d`, the expected fraction of the demand delivered. In the
+  long run this is the fraction of the demand met over time: the
+  **production availability**, the figure plant owners contract on.
+
+In the long run the probability of each level is the fraction of time spent
+at it: the components' long-run availabilities stand in for their
+reliabilities, as for the long-run availability.
+
 ## Costs
 
 The long-run cost rate follows from the **renewal-reward theorem**: in the

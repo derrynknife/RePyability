@@ -39,6 +39,13 @@ The children are the positions of other terms. Every probability is
 computed together with its complement, both as sums of products of the
 nodes' probabilities and complements, so neither loses precision however
 close to 0 or 1 it is.
+
+Each rule also keeps how much the diagram can carry, when its nodes have
+capacities (see ``capacity.py``): a series chain carries the least of its
+members' capacities, a parallel group the sum, and a bypassed node never
+adds to what its predecessor already sends on directly. So the capacity
+analysis works on the reduced diagram too, kept whole as a
+:class:`FlowGraph`.
 """
 
 from itertools import combinations, product
@@ -77,6 +84,66 @@ NO_PATHS = "RBD has no paths through! Need to re-evaluate the KooN nodes."
 _WRITTEN_OUT = 5000
 
 
+class FlowGraph:
+    """The reduced diagram, whole, for the capacity analysis.
+
+    The structure function needs only the minimal path sets of what the
+    reduction leaves, but the capacity needs the diagram itself: a
+    component that can never decide whether the system works can still add
+    to what it carries (through a k-out-of-n node that the system can also
+    bypass). ``terms`` is the reduction's list of terms, in which each
+    module comes after its members, with each node named by the component
+    it stands for. ``vertices`` are the terms left, in topological order;
+    two of them can stand for one component (a repeated node, drawn in two
+    places). ``preds`` and ``k`` hold each vertex's predecessors
+    (``_SOURCE`` for the input) and k, and ``sink_preds`` and ``sink_k``
+    the output's.
+    """
+
+    def __init__(
+        self,
+        terms: Sequence[tuple],
+        vertices: Sequence[int],
+        preds: Sequence[tuple],
+        k: Sequence[int],
+        sink_preds: tuple,
+        sink_k: int,
+    ):
+        self.terms = tuple(terms)
+        self.vertices = tuple(vertices)
+        self.preds = tuple(preds)
+        self.k = tuple(k)
+        self.sink_preds = sink_preds
+        self.sink_k = sink_k
+        self._cuts: Optional[List[tuple]] = None
+
+    def cuts(self) -> List[tuple]:
+        """The minimal sets of vertices whose removal leaves no path from
+        the input to the output, taking every k as 1, each in topological
+        order; none if an edge joins the input to the output directly. By
+        the max-flow min-cut theorem the most the vertices can carry is the
+        least total capacity of one of these sets."""
+        if self._cuts is None:
+            # Each vertex's minimal paths from the input, as vertex sets: a
+            # path that holds another cannot be part of a minimal one.
+            paths: Dict[int, list] = {_SOURCE: [frozenset()]}
+            for v, preds in zip(self.vertices, self.preds):
+                paths[v] = _minimal_sets(
+                    p | {v} for u in preds for p in paths[u]
+                )
+            ends = _minimal_sets(p for u in self.sink_preds for p in paths[u])
+            order = {v: i for i, v in enumerate(self.vertices)}
+            self._cuts = (
+                []
+                if frozenset() in ends
+                else sorted(
+                    tuple(sorted(cut, key=order.__getitem__))
+                    for cut in _minimal_cut_sets(_shannon_plan(ends))
+                )
+            )
+        return self._cuts
+
+
 class Decomposition:
     """An RBD's structure function as a tree of modules over a core.
 
@@ -86,7 +153,8 @@ class Decomposition:
     positions of its terms; or neither, when the system always works (e.g.
     an edge joins the input to the output directly). ``nodes`` are the
     nodes in the tree: the relevant ones. Every other node is in no minimal
-    path set.
+    path set. ``flow`` is the reduced diagram whole, for the capacity
+    analysis (None for a structure that is not reduced).
     """
 
     def __init__(
@@ -94,6 +162,7 @@ class Decomposition:
         terms: Sequence[tuple],
         root: Optional[int] = None,
         core: Optional[Iterable[Iterable[int]]] = None,
+        flow: Optional[FlowGraph] = None,
     ):
         self.terms = list(terms)
         self.root = root
@@ -102,6 +171,7 @@ class Decomposition:
         )
         self.always_works = root is None and core is None
         self.nodes = frozenset(t[1] for t in self.terms if t[0] == NODE)
+        self.flow = flow
         self._core_plan: Optional[tuple] = None
         self._core_cut_sets: Optional[List[tuple]] = None
         self._functions: Dict[str, Callable] = {}
@@ -653,13 +723,42 @@ class _Reduction:
             for u in members
         ):
             return []
-        if k == len(members):
-            m = self._module(SERIES, members)
-        else:
-            m = self._module(KOON, members, k)
+        # Needing all of them works as a series chain would, but carries
+        # their sum, not the least of them (see FlowGraph): the tree makes
+        # it a series module (see _tree).
+        m = self._module(KOON, members, k)
         changed = self._replace(members, m, pred, {w}, member_k)
         self.k[w] = 1
         return changed
+
+    def flow_graph(self, aliases: Dict[Hashable, Hashable]) -> FlowGraph:
+        """The reduced diagram as the capacity analysis needs it (see
+        :class:`FlowGraph`), its vertices in topological order."""
+        terms = [
+            (NODE, aliases.get(t[1], t[1])) if t[0] == NODE else t
+            for t in self.terms
+        ]
+        waiting = {
+            v: sum(1 for u in self.pred[v] if u != _SOURCE) for v in self.alive
+        }
+        ready = sorted(v for v, count in waiting.items() if count == 0)
+        order: list = []
+        while ready:
+            v = ready.pop()
+            order.append(v)
+            for w in sorted(self.succ[v], reverse=True):
+                if w >= 0:
+                    waiting[w] -= 1
+                    if waiting[w] == 0:
+                        ready.append(w)
+        return FlowGraph(
+            terms,
+            order,
+            [tuple(sorted(self.pred[v])) for v in order],
+            [self.k[v] for v in order],
+            tuple(sorted(self.pred[_SINK])),
+            self.k[_SINK],
+        )
 
     def core_graph(self) -> RBDGraph:
         """The reduced diagram, with each vertex's k."""
@@ -689,7 +788,11 @@ def _tree(terms: list, roots: Iterable[int]) -> tuple[list, Dict[int, int]]:
         elif expanded:
             children = tuple(position[c] for c in term[1])
             position[v] = len(tree)
-            tree.append((term[0], children, *term[2:]))
+            if term[0] == KOON and term[2] == len(children):
+                # All k of them: whether it works is a series chain's.
+                tree.append((SERIES, children))
+            else:
+                tree.append((term[0], children, *term[2:]))
         else:
             stack.append((v, True))
             stack.extend((c, False) for c in reversed(term[1]))
@@ -782,10 +885,11 @@ def decompose(
     shared = set(aliases) | set(aliases.values())
     reduction = _Reduction(graph, input_node, output_node, pinned=shared)
     reduction.run()
+    flow = reduction.flow_graph(aliases)
     alive = reduction.alive
     if not alive:
         # Only a direct edge from the input to the output is left.
-        return Decomposition([])
+        return Decomposition([], flow=flow)
     if len(alive) == 1:
         # One module is left, fed by the input alone. It feeds the output,
         # which may also have a direct edge from the input: then the output
@@ -796,10 +900,12 @@ def decompose(
             # One appearance of a component is left: it is the system.
             terms[v] = (NODE, aliases.get(terms[v][1], terms[v][1]))
         tree, position = _tree(terms, [v])
-        return Decomposition(tree, root=position[v])
+        return Decomposition(tree, root=position[v], flow=flow)
     path_sets = find_min_path_sets(
         rbd_graph=reduction.core_graph(), curr_node=_SINK, solns={}
     )
-    return _from_path_sets(
+    decomposition = _from_path_sets(
         reduction.terms, path_sets, (_SOURCE, _SINK), aliases
     )
+    decomposition.flow = flow
+    return decomposition

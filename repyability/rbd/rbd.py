@@ -29,8 +29,10 @@ from scipy.sparse import diags
 from scipy.special import expit as sigmoid
 from scipy.special import logit, logsumexp, softmax
 
+from repyability.rbd import capacity as _capacity
 from repyability.rbd.modular import Decomposition, decompose
 from repyability.rbd.rbd_graph import RBDGraph
+from repyability.rbd.results import CapacityDistribution
 from repyability.rbd.shannon import (
     _evaluate_shannon_plan,
     _minimal_cut_sets,
@@ -314,6 +316,11 @@ class RBD:
     built from ``edges`` alone to analyse a structure with no models.
     Probability calculations assume the nodes are independent.
 
+    Nodes can also be given a ``capacity``, their throughput while they
+    work, for the capacity analysis (see
+    [`system_capacity`][repyability.RBD.system_capacity]): the system's
+    capacity is then the most that can flow from the input to the output.
+
     The structure is validated on construction. It is infeasible if it has
     a cycle; if it has not exactly one node with no incoming edges, or not
     exactly one with no outgoing edges (e.g. a node in ``nodes`` that is in
@@ -358,6 +365,16 @@ class RBD:
         containing ``structure_check`` and builds the RBD anyway, and
         ``"ignore"`` builds it silently. An infeasible RBD may give errors
         or wrong results later.
+    capacity : dict[Any, float], optional
+        Each node's capacity, keyed by node name, by default None: the
+        throughput it passes while it works, a positive number in any unit
+        (the same for every node). A failed node passes nothing, and a node
+        with no capacity given limits nothing: it passes whatever reaches
+        it while it works (``inf``). The edges carry any amount, so a series
+        chain passes the least of its nodes' capacities and a parallel
+        group the sum; a k-out-of-n node passes flow only while at least
+        ``k`` of its inputs are reached. Only the capacity analysis uses
+        them.
 
     Attributes
     ----------
@@ -374,6 +391,8 @@ class RBD:
     nodes : list
         The intermediate nodes, in the order they were added to the graph
         (the same list [`node_names`][repyability.RBD.node_names] returns).
+    capacity : dict
+        The capacities given, keyed by node name, as floats.
     structure_check : dict
         The validation report, e.g. ``"is_valid"``, ``"has_cycles"``,
         ``"cycles"``, ``"koon_errors"``, ``"koon_warnings"`` and
@@ -384,6 +403,8 @@ class RBD:
     ValueError
         If ``input_node`` or ``output_node`` is not a node of the diagram,
         or is not its source or sink (whatever ``on_infeasible_rbd`` is);
+        if a capacity is not a positive number, or is given for the input
+        or output node or a node not in the diagram;
         if the structure is infeasible
         and ``on_infeasible_rbd`` is ``"raise"`` (the message does not
         list the problems: use ``"warn"`` to see them); if
@@ -439,6 +460,7 @@ class RBD:
         input_node: Optional[Any] = None,
         output_node: Optional[Any] = None,
         on_infeasible_rbd: str = "raise",
+        capacity: Optional[dict] = None,
     ):
         # The constructor is documented in the class docstring (mkdocstrings
         # merges the two). The positional order mirrors the subclasses: the
@@ -526,6 +548,7 @@ class RBD:
             for n in self.G.nodes
             if n not in self.in_or_out and n not in aliases
         ]
+        self.capacity = self._validated_capacity(capacity)
         self.structure_check["has_irrelevant_nodes"] = False
         self.structure_check["irrelevant_nodes"] = set()
 
@@ -973,6 +996,157 @@ class RBD:
         drawn in more than one place (a ``NonRepairableRBD``'s repeated
         nodes); none in a plain RBD."""
         return getattr(self, "_aliases", {})
+
+    def _validated_capacity(self, capacity: Optional[dict]) -> dict:
+        """The node capacities as floats, checked: each positive (``inf``
+        for no limit), and each for a node of the diagram that is not the
+        input or output node, nor a repeat of another node."""
+        if not capacity:
+            return {}
+        aliases = self._component_aliases()
+        out = {}
+        for node, value in dict(capacity).items():
+            if node in self.in_or_out:
+                raise ValueError(
+                    f"The input or output node {node!r} takes no capacity: "
+                    "it passes whatever reaches it."
+                )
+            if node in aliases:
+                raise ValueError(
+                    f"Node {node!r} repeats node {aliases[node]!r}: give "
+                    f"the capacity of {aliases[node]!r}, which it has "
+                    "wherever it is drawn."
+                )
+            if node not in self.G.nodes:
+                raise ValueError(
+                    f"Unknown node {node!r} in capacity: it is not in the "
+                    "diagram."
+                )
+            if isinstance(value, (bool, np.bool_)) or not isinstance(
+                value, (int, float, np.integer, np.floating)
+            ):
+                raise ValueError(
+                    f"The capacity of node {node!r} must be a number, got "
+                    f"{value!r}."
+                )
+            value = float(value)
+            if not value > 0.0:
+                raise ValueError(
+                    f"The capacity of node {node!r} must be positive (inf "
+                    f"for no limit), got {value!r}."
+                )
+            out[node] = value
+        return out
+
+    def system_capacity(
+        self, node_probabilities: Dict
+    ) -> CapacityDistribution:
+        """Return the exact distribution of the system's capacity, from each
+        node's probability of working.
+
+        Each node carries its ``capacity`` while it works and nothing once
+        it has failed (a node given none limits nothing), and the system's
+        capacity is the most that can flow from the input to the output:
+        the maximum flow of the diagram, which is the least total capacity
+        of a cut. A series chain carries the least of its nodes' capacities
+        and a parallel group their sum, and a k-out-of-n node passes flow
+        only while at least ``k`` of its inputs are reached, so the
+        capacity is positive exactly when the system works. With three
+        pumps of half the demand each, one failure costs nothing and two
+        cost half the output.
+
+        The distribution is exact, over every combination of the nodes'
+        states, and assumes they are independent. It is worked out as the
+        system probability is: each series, parallel or k-out-of-n module's
+        distribution in closed form from its members' (the least of their
+        capacities, their sum, their sum while at least ``k`` work), and
+        what is left (e.g. a bridge) by conditioning on its parts'
+        capacities one at a time. So it costs about what the system
+        probability does. The subclasses give it the node probabilities:
+        [`NonRepairableRBD.capacity_distribution`][repyability.NonRepairableRBD.capacity_distribution]
+        at a time, and
+        [`RepairableRBD.capacity_distribution`][repyability.RepairableRBD.capacity_distribution]
+        in the long run.
+
+        Parameters
+        ----------
+        node_probabilities : Dict
+            The probability that each node works, keyed by node name: floats,
+            or 1-d arrays (e.g. one value per time) that all have the same
+            length. Every intermediate node needs an entry; other keys are
+            not used.
+
+        Returns
+        -------
+        CapacityDistribution
+            The capacities the system can have and their probabilities: one
+            per level for float probabilities, and one row per level and
+            one column per element for arrays.
+
+        Raises
+        ------
+        ValueError
+            If no node has a capacity, the diagram is not a valid RBD, or
+            the probability arrays are not all the same length.
+        KeyError
+            If an intermediate node has no entry in ``node_probabilities``.
+
+        Examples
+        --------
+        Two pumps of 60 and 40 in parallel, feeding a pipe that carries 80:
+
+        >>> from repyability import RBD
+        >>> plant = RBD(
+        ...     [("s", "p1"), ("s", "p2"), ("p1", "pipe"), ("p2", "pipe"),
+        ...      ("pipe", "t")],
+        ...     capacity={"p1": 60, "p2": 40, "pipe": 80},
+        ... )
+        >>> up = {"p1": 0.9, "p2": 0.8, "pipe": 1.0}
+        >>> capacity = plant.system_capacity(up)
+        >>> capacity.levels.tolist()
+        [0.0, 40.0, 60.0, 80.0]
+        >>> capacity.probabilities.round(4).tolist()
+        [0.02, 0.08, 0.18, 0.72]
+
+        The pipe, not the pumps, limits the plant when both run.
+        """
+        scalar = all(np.ndim(node_probabilities[n]) == 0 for n in self.nodes)
+        arrays, size = self._node_arrays(node_probabilities)
+        levels, probabilities = self._capacity_arrays(arrays, size)
+        return CapacityDistribution(
+            levels, probabilities[:, 0] if scalar else probabilities
+        )
+
+    def _capacity_arrays(
+        self, arrays: Dict, size: int
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """The exact distribution of the system's capacity (see
+        ``capacity.py``), given each node's probability of working as an
+        array of length ``size``: the levels, and one row of probabilities
+        per level."""
+        if not self.capacity:
+            raise ValueError(
+                "No node has a capacity: give each node's throughput with "
+                "capacity={node: capacity} when building the RBD."
+            )
+        flow = (
+            self._decomposition().flow
+            if self.structure_check["is_valid"]
+            else None
+        )
+        if flow is None:
+            raise ValueError(
+                "The capacity analysis needs a valid diagram: this one "
+                "failed the structure check (see structure_check)."
+            )
+
+        def component(name):
+            works = np.asarray(arrays[name], dtype=float)
+            return _capacity.binary(
+                self.capacity.get(name, np.inf), works, 1.0 - works
+            )
+
+        return _capacity.system_distribution(flow, component, size)
 
     @check_probability
     def improvement_allocation(
@@ -1814,11 +1988,12 @@ class RBD:
 
         The dict holds the RBD's ``type`` and the ``repyability_version``
         that wrote it, plus the constructor inputs as given: the edges, the
-        node models (or components), the k-out-of-n values, the input and
-        output nodes, ``on_infeasible_rbd``, and the common-cause groups or
-        the downtime cost rate. [`from_dict`][repyability.RBD.from_dict]
-        rebuilds the RBD by calling its constructor again, so the round
-        trip is faithful even for repeated nodes. Node models are serialised
+        node models (or components), the k-out-of-n values and capacities,
+        the input and output nodes, ``on_infeasible_rbd``, and the
+        common-cause groups or the downtime cost rate.
+        [`from_dict`][repyability.RBD.from_dict] rebuilds the RBD by calling
+        its constructor again, so the round trip is faithful even for
+        repeated nodes. Node models are serialised
         structurally: surpyval models (parametric and non-parametric) in
         surpyval's own format, so an offset, ``p``, ``f0`` and a fit's
         covariance round-trip; the RePyability node models (standby,

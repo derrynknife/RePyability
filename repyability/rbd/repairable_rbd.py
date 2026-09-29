@@ -52,6 +52,7 @@ from repyability.rbd.redundancy_allocation import (
 from repyability.rbd.results import (
     AvailabilityAllocation,
     AvailabilityResult,
+    CapacityDistribution,
     ConfidenceInterval,
     CostResult,
     Criticalities,
@@ -1252,6 +1253,13 @@ class RepairableRBD(RBD):
     downtime_cost_rate : float, optional
         Cost per unit time the whole system is down (e.g. lost
         production), by default 0.0 (not priced).
+    capacity : dict[Hashable, float], optional
+        Each node's capacity, keyed by node name, by default None: the
+        throughput it passes while it is up, a positive number in any unit
+        (the same for every node), for
+        [`capacity_distribution`][repyability.RepairableRBD.capacity_distribution].
+        A node that is down passes nothing, and a node with no capacity
+        given limits nothing (``inf``).
 
     Attributes
     ----------
@@ -1269,6 +1277,8 @@ class RepairableRBD(RBD):
         ``"inspection_cost"``.
     downtime_cost_rate : float
         The system downtime cost rate.
+    capacity : dict
+        The capacities given, keyed by node name, as floats.
     acquisition_costs : dict
         Node name -> the one-off cost of buying the unit, for the nodes that
         declare a non-zero ``"acquisition_cost"``.
@@ -1313,8 +1323,9 @@ class RepairableRBD(RBD):
         non-parametric model or a ``StandbyModel``; if ``input_node`` or
         ``output_node`` is not in the diagram, or is not its source or sink;
         if ``on_infeasible_rbd`` is not ``"raise"``, ``"warn"`` or
-        ``"ignore"``; or if the diagram is invalid and ``on_infeasible_rbd``
-        is ``"raise"``.
+        ``"ignore"``; if the diagram is invalid and ``on_infeasible_rbd``
+        is ``"raise"``; or if a capacity is not a positive number or is for
+        the input or output node or a node not in the diagram.
     KeyError
         If a spec dict has no ``"reliability"`` or no ``"repairability"``.
 
@@ -1410,6 +1421,7 @@ class RepairableRBD(RBD):
         output_node: Optional[Any] = None,
         on_infeasible_rbd: str = "raise",
         downtime_cost_rate: float = 0.0,
+        capacity: Optional[dict[Any, float]] = None,
     ):
         _check_on_infeasible_rbd(on_infeasible_rbd)
         # Capture the constructor inputs verbatim (before any mutation) so the
@@ -1423,6 +1435,7 @@ class RepairableRBD(RBD):
             "output_node": output_node,
             "on_infeasible_rbd": on_infeasible_rbd,
             "downtime_cost_rate": downtime_cost_rate,
+            "capacity": dict(capacity) if capacity else None,
         }
         self.downtime_cost_rate = self._validate_cost(
             "<system>", "downtime_cost_rate", downtime_cost_rate
@@ -1524,6 +1537,7 @@ class RepairableRBD(RBD):
             input_node,
             output_node,
             on_infeasible_rbd,
+            capacity=capacity,
         )
 
         # Every intermediate graph node needs a component definition (the
@@ -3712,6 +3726,88 @@ class RepairableRBD(RBD):
         )
         system = self.system_probability(availability, method=method)
         return float(weights @ system)
+
+    def capacity_distribution(
+        self,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> CapacityDistribution:
+        """The exact long-run distribution of the system's capacity.
+
+        Each node carries its ``capacity`` (given when the RBD was built)
+        while it is up and nothing while it is down, and the system's
+        capacity is the most that can flow through the nodes that are up
+        from the input to the output. A node given no capacity limits
+        nothing. The probability of each level is the long-run fraction of
+        time the system spends at it; the capacity is positive exactly when
+        the system is up, so the fraction of time it is positive is
+        [`mean_availability`][repyability.RepairableRBD.mean_availability].
+        With three pumps of half the demand each, one down costs nothing
+        and two cost half the output.
+
+        Exact, with no simulation: worked out from each node's long-run
+        availability as ``mean_availability`` is (see
+        [`RBD.system_capacity`][repyability.RBD.system_capacity]), and
+        averaged over the schedules of components inspected or replaced on
+        a calendar, which are down together more often than independent
+        ones would be.
+
+        Parameters
+        ----------
+        working_nodes : Collection[Hashable], optional
+            Condition on these nodes always being up, by default None.
+        broken_nodes : Collection[Hashable], optional
+            Condition on these nodes being down, by default None.
+
+        Returns
+        -------
+        CapacityDistribution
+            The capacities the system can have, and the long-run fraction of
+            time at each. Its ``meets(demand)`` is the fraction of time the
+            capacity meets a demand, ``mean()`` the average capacity, and
+            ``delivered_fraction(demand)`` the fraction of the demand
+            delivered: the production availability.
+
+        Raises
+        ------
+        ValueError
+            If no node has a capacity, or as for ``mean_availability``.
+        NotImplementedError
+            As for ``mean_availability``.
+
+        Examples
+        --------
+        Three pumps of 50 each, each up 10 / 11 of the time, against a
+        demand of 100:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> pump = {
+        ...     "reliability": surv.Exponential.from_params([0.1]),
+        ...     "repairability": surv.Exponential.from_params([1.0]),
+        ... }
+        >>> plant = RepairableRBD(
+        ...     [("s", "a"), ("s", "b"), ("s", "c"),
+        ...      ("a", "t"), ("b", "t"), ("c", "t")],
+        ...     {"a": pump, "b": pump, "c": pump},
+        ...     capacity={"a": 50, "b": 50, "c": 50},
+        ... )
+        >>> capacity = plant.capacity_distribution()
+        >>> capacity.levels.tolist()
+        [0.0, 50.0, 100.0, 150.0]
+        >>> round(capacity.meets(100), 4)  # at least two up
+        0.9767
+        >>> round(capacity.delivered_fraction(100), 4)
+        0.988
+        >>> round(capacity.mean(), 2)  # 150 * 10 / 11
+        136.36
+        """
+        probabilities, weights = self._long_run_probabilities(
+            working_nodes, broken_nodes
+        )
+        arrays, size = self._node_arrays(probabilities)
+        levels, rows = self._capacity_arrays(arrays, size)
+        return CapacityDistribution(levels, rows @ weights)
 
     def _follow_up(self, event: Event, source) -> Event:
         """The next event of ``event``'s component, drawn from ``source``.

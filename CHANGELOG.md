@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **System capacity** (#97): how much a system can deliver, not just
+  whether it works. Every RBD class takes `capacity={node: throughput}`,
+  each node's throughput while it works. The system's capacity is the
+  diagram's maximum flow: a series chain carries the least of its nodes'
+  capacities and a parallel group the sum. A node given no capacity limits
+  nothing, and a k-out-of-n node passes flow only while at least `k` of its
+  inputs are reached, so the capacity is positive exactly when the system
+  works. `NonRepairableRBD.capacity_distribution(x)` gives the exact
+  distribution of the capacity at time/s `x` (honouring common-cause
+  groups), `RepairableRBD.capacity_distribution()` in the long run, and
+  `RBD.system_capacity(node_probabilities)` from given node
+  probabilities. They return a `CapacityDistribution`: its `levels` and
+  their `probabilities`, with `meets(demand)` (the probability of meeting a
+  demand), `mean()` (the expected capacity) and `delivered_fraction(demand)`
+  (the expected fraction of a demand delivered: in the long run, the
+  production availability). Series-parallel parts reduce in closed form
+  (the universal generating function), and the rest (e.g. a bridge) by
+  conditioning on its parts' capacities, keeping each cut's running total,
+  so the analysis costs about what the system reliability does. The
+  capacities are saved with the RBD. A new guide page, System capacity,
+  covers it.
+
 ### Changed
 
 - **Requires surpyval 0.21** (was 0.20), and drops the code that worked

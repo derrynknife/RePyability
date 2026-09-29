@@ -8,8 +8,8 @@ Design notes
 ------------
 - Node identity is preserved through JSON. Node names may be ints or strings,
   but JSON object keys are always strings, so the per-node collections
-  (reliabilities, components, k) are serialised as *lists of entries*
-  (``{"node": n, ...}``) rather than dicts keyed by node.
+  (reliabilities, components, k, capacity) are serialised as *lists of
+  entries* (``{"node": n, ...}``) rather than dicts keyed by node.
 - The constructor inputs are captured verbatim at construction time and
   serialised, so ``from_dict(rbd.to_dict())`` simply reconstructs the RBD by
   calling its constructor again — faithful even for repeated nodes (whose
@@ -284,6 +284,19 @@ def _k_from_list(k_list):
     return {_node_name(e["node"]): e["k"] for e in k_list}
 
 
+def _capacity_to_list(capacity):
+    # An unlimited capacity is float("inf"), which json writes as Infinity.
+    if not capacity:
+        return None
+    return [{"node": n, "capacity": float(v)} for n, v in capacity.items()]
+
+
+def _capacity_from_list(capacity_list):
+    if not capacity_list:
+        return None
+    return {_node_name(e["node"]): e["capacity"] for e in capacity_list}
+
+
 def _ccf_to_list(ccf_groups):
     from repyability.rbd.ccf import MGL, BetaFactor
 
@@ -331,6 +344,7 @@ def rbd_to_dict(rbd: RBD) -> dict:
         "type": type(rbd).__name__,
         "edges": [list(e) for e in args["edges"]],
         "k": _k_to_list(args["k"]),
+        "capacity": _capacity_to_list(args.get("capacity")),
         "input_node": args["input_node"],
         "output_node": args["output_node"],
         "on_infeasible_rbd": args["on_infeasible_rbd"],
@@ -364,6 +378,7 @@ def rbd_from_dict(d: dict) -> RBD:
     edges = [tuple(_node_name(n) for n in e) for e in d["edges"]]
     common = dict(
         k=_k_from_list(d.get("k")),
+        capacity=_capacity_from_list(d.get("capacity")),
         input_node=_node_name(d.get("input_node")),
         output_node=_node_name(d.get("output_node")),
         on_infeasible_rbd=d.get("on_infeasible_rbd", "raise"),

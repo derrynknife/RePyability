@@ -869,6 +869,161 @@ class MaintenancePlan(_ResultMapping):
     availability: float
 
 
+def _meeting(levels: np.ndarray, demand: float) -> np.ndarray:
+    """Which ``levels`` meet ``demand``. A level within rounding of it
+    meets it: capacities that add up to the demand exactly (three units of
+    ``1 / 3`` against a demand of 1) do."""
+    if np.isinf(demand):
+        return levels >= demand
+    return levels >= demand - 1e-9 * abs(demand)
+
+
+@dataclass
+class CapacityDistribution(_ResultMapping):
+    """The exact distribution of a system's capacity: how much it can
+    deliver.
+
+    Returned by ``NonRepairableRBD.capacity_distribution`` (at a time, or
+    at each of several), ``RepairableRBD.capacity_distribution`` (in the
+    long run) and ``RBD.system_capacity``. Each component carries its
+    capacity while it works and nothing once it has failed, and the
+    system's capacity is the most that can flow through the diagram from
+    the input to the output. Like the other result types it is also a
+    read-only mapping of its fields.
+
+    Attributes
+    ----------
+    levels : numpy.ndarray
+        The capacities the system can have, in increasing order: 0 when it
+        is down, and each total its working components can carry. ``inf``
+        when components with no capacity given can join the input to the
+        output on their own.
+    probabilities : numpy.ndarray
+        The probability of each level: one per level, or for several times
+        one row per level and one column per time. They sum to 1. In the
+        long run, the fraction of time the system spends at each level.
+
+    Examples
+    --------
+    Three pumps of 50 units each, in parallel, each available 90% of the
+    time:
+
+    >>> from repyability import RBD
+    >>> pumps = RBD(
+    ...     [("s", "a"), ("s", "b"), ("s", "c"),
+    ...      ("a", "t"), ("b", "t"), ("c", "t")],
+    ...     capacity={"a": 50, "b": 50, "c": 50},
+    ... )
+    >>> capacity = pumps.system_capacity({"a": 0.9, "b": 0.9, "c": 0.9})
+    >>> capacity.levels.tolist()
+    [0.0, 50.0, 100.0, 150.0]
+    >>> capacity.probabilities.round(4).tolist()
+    [0.001, 0.027, 0.243, 0.729]
+
+    Two of the three meet a demand of 100:
+
+    >>> round(capacity.meets(100), 4)
+    0.972
+    >>> round(capacity.mean(), 4)
+    135.0
+    >>> round(capacity.delivered_fraction(100), 4)
+    0.9855
+    """
+
+    levels: np.ndarray
+    probabilities: np.ndarray
+
+    def meets(self, demand: float) -> Any:
+        """The probability that the capacity meets a demand: that it is at
+        least ``demand``.
+
+        For a non-repairable system at a time, it is the system's
+        reliability for that demand; in the long run, the fraction of time
+        the system can meet it. With every component's capacity positive,
+        ``meets`` of any demand above 0 but no more than the smallest level
+        above 0 is the system's reliability (or availability): the
+        capacity is positive exactly when the system works.
+
+        Parameters
+        ----------
+        demand : float
+            The demand, in the capacities' units. A capacity within
+            rounding of it (a relative ``1e-9``) meets it.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The probability, per time for several times.
+
+        Raises
+        ------
+        ValueError
+            If ``demand`` is NaN.
+        """
+        demand = float(demand)
+        if np.isnan(demand):
+            raise ValueError("demand must be a number, not NaN.")
+        met = _meeting(self.levels, demand)
+        return self._per_time(np.sum(self.probabilities[met], axis=0))
+
+    def mean(self) -> Any:
+        """The expected capacity.
+
+        In the long run, the average capacity over time. Infinite if the
+        capacity can be infinite (see ``levels``).
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The expected capacity, per time for several times.
+        """
+        levels = self.levels.reshape(
+            (-1,) + (1,) * (self.probabilities.ndim - 1)
+        )
+        with np.errstate(invalid="ignore"):
+            parts = np.where(
+                self.probabilities > 0, levels * self.probabilities, 0.0
+            )
+        return self._per_time(np.sum(parts, axis=0))
+
+    def delivered_fraction(self, demand: float) -> Any:
+        """The expected fraction of a demand the system delivers:
+        ``E[min(capacity, demand)] / demand``.
+
+        A system with more capacity than the demand delivers the demand,
+        and one with less delivers what it can. In the long run, this is the
+        fraction of the demand met over time: the production availability.
+
+        Parameters
+        ----------
+        demand : float
+            The demand, a positive, finite number in the capacities' units.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The fraction, in ``[0, 1]``, per time for several times.
+
+        Raises
+        ------
+        ValueError
+            If ``demand`` is not a positive, finite number.
+        """
+        demand = float(demand)
+        if not (np.isfinite(demand) and demand > 0.0):
+            raise ValueError(
+                f"demand must be a positive, finite number, got {demand!r}."
+            )
+        delivered = np.minimum(self.levels, demand) / demand
+        delivered = delivered.reshape(
+            (-1,) + (1,) * (self.probabilities.ndim - 1)
+        )
+        return self._per_time(np.sum(delivered * self.probabilities, axis=0))
+
+    def _per_time(self, values: np.ndarray) -> Any:
+        return float(values) if np.ndim(values) == 0 else values
+
+
 @dataclass
 class AvailabilityAllocation(_ResultMapping):
     """The result of ``RepairableRBD.availability_allocation()`` and

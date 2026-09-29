@@ -27,6 +27,7 @@ from repyability.rbd.repeated_standby_node import RepeatedStandbyNode
 from repyability.rbd.results import (
     AvailabilityAllocation,
     AvailabilityResult,
+    CapacityDistribution,
     ConfidenceInterval,
     CostResult,
     Criticalities,
@@ -71,6 +72,7 @@ __all__ = [
     "ComponentOption",
     # Result types
     "AvailabilityResult",
+    "CapacityDistribution",
     "ConfidenceInterval",
     "CostResult",
     "RedundancyAllocation",
