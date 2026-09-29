@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-09-29
+
+Works with surpyval 0.21 without deprecation warnings, as well as with
+0.20. No behaviour changes: results are the same under either version.
+
 ### Fixed
 
 - **Works with surpyval 0.21 without deprecation warnings.** surpyval 0.21
