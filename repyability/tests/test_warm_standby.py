@@ -135,9 +135,8 @@ def test_warm_with_imperfect_switching_rejected():
 )
 def test_simulated_standby_gives_the_shape_it_is_given(x, shape):
     """A simulated arrangement (a Kaplan-Meier fit) answers in the shape of
-    its query, a float for one time, as the closed forms do: the same on
-    surpyval 0.20, whose estimates give a 1-element array for one time, and
-    on its next release (surpyval#381)."""
+    its query, a float for one time, as the closed forms do
+    (surpyval#381)."""
     pump = surv.Weibull.from_params([100, 2])
     warm = StandbyModel([pump, pump], dormancy_factor=0.3, seed=0)
     assert isinstance(warm.model, surv.NonParametric)  # simulated

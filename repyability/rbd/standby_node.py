@@ -6,11 +6,10 @@ from surpyval import Hypoexponential, KaplanMeier
 
 from repyability.utils.wrappers import numpy_seed
 
-from ._model_utils import is_exponential, shaped
+from ._model_utils import is_exponential
 from ._sampling import (
     RowSampler,
     column,
-    draw,
     draw_rows,
     inverse_sampler,
 )
@@ -322,7 +321,7 @@ class StandbyModel:
         """
         budgets = np.column_stack(
             [
-                np.asarray(draw(model, size), dtype=float)
+                np.asarray(model.random(size), dtype=float)
                 for model in self.reliabilities
             ]
         )
@@ -463,11 +462,11 @@ class StandbyModel:
                 # estimated from the sum of each of the components in the node,
                 # i.e. it will fail after all of them fail.
                 x_random = np.asarray(
-                    draw(self.reliabilities[0], size), dtype=float
+                    self.reliabilities[0].random(size), dtype=float
                 )
                 if is_perfect_switching(self.switching_probability):
                     for model in self.reliabilities[1:]:
-                        x_random = x_random + draw(model, size)
+                        x_random = x_random + model.random(size)
                 else:
                     # Under imperfect switching a spare only contributes if
                     # every switch up to and including its own has succeeded.
@@ -478,7 +477,7 @@ class StandbyModel:
                     for model, p in zip(self.reliabilities[1:], probs):
                         running = running & (np.random.random(size) < p)
                         x_random = x_random + np.where(
-                            running, draw(model, size), 0.0
+                            running, model.random(size), 0.0
                         )
 
             else:
@@ -520,11 +519,11 @@ class StandbyModel:
             pq: PriorityQueue = PriorityQueue()
             # start k streams:
             for node in self.reliabilities[: self.k]:
-                pq.put(draw(node, 1).item())
+                pq.put(node.random(1).item())
 
             # Add the next event time to the lowest value in the queue
             for node in self.reliabilities[self.k :]:  # noqa: E203
-                next_t = draw(node, 1).item()
+                next_t = node.random(1).item()
                 current_lowest = pq.get()
                 pq.put(current_lowest + next_t)
 
@@ -673,7 +672,7 @@ class StandbyModel:
         """
         if self._sf_model is not None:
             return self._sf_model.sf(x, *args, **kwargs)
-        return shaped(self.model.sf, x, *args, **kwargs)
+        return self.model.sf(x, *args, **kwargs)
 
     def ff(self, x, *args, **kwargs):
         """Cumulative failure probability, ``1 - sf(x)``.
@@ -694,7 +693,7 @@ class StandbyModel:
         """
         if self._sf_model is not None:
             return self._sf_model.ff(x, *args, **kwargs)
-        return shaped(self.model.ff, x, *args, **kwargs)
+        return self.model.ff(x, *args, **kwargs)
 
     def cs(self, x, X):
         """Conditional survival ``R(x | X) = sf(X + x) / sf(X)``.

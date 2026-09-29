@@ -23,7 +23,10 @@
   required with no upper bound, so its next release is what a fresh install
   gets. `.github/workflows/upstream.yml` runs the tests against surpyval's
   `develop`; when it fails, fix RePyability (working with both the released
-  surpyval and `develop`) and release that before surpyval releases.
+  surpyval and `develop`) and release that before surpyval releases. CI's
+  `test (minimum surpyval)` job tests the oldest surpyval `pyproject.toml`
+  allows; raise that minimum, rather than keep code for older versions,
+  once RePyability needs what a newer surpyval does.
 
 ## Releasing
 
@@ -43,31 +46,9 @@ merge and release needs the maintainer's go-ahead.
    passes, run it again with `"dry_run": "false"`. Then check the run, the
    tag, the GitHub Release and `https://pypi.org/pypi/repyability/X.Y.Z/json`.
 
-## surpyval workarounds to remove (tracked in #86)
+## surpyval workarounds to remove
 
-Remove each once the pinned minimum surpyval includes its fix; then
-`repyability/tests/test_limited_failure_population.py` must still pass
-unchanged.
-
-- surpyval#403 (`random()` gives survival data for `p < 1`; zero-inflated
-  draws go through a binomial): `rbd/_sampling.py`, `draw`, `_defective` and
-  the `qf` branch of `inverse_sampler`.
-- surpyval#404 (`mean()` is the defective mean for `p < 1`):
-  `rbd/_model_utils.py`, `model_mean` returning inf.
-  (`NonRepairable._long_run`, the probability of ending up for good, stays.)
-- surpyval#405 (zero-inflated `df(0)` is the point mass):
-  `rbd/numerical_convolution.py`, `_continuous_part`.
-- surpyval#406 (no rebuild with new parameters keeping `gamma`, `p`, `f0`):
-  `rbd/_model_utils.py`, `model_extras` (used by sensitivity and
-  uncertainty).
-- surpyval#407 (zero-inflated `ff`/`sf` nonzero before time 0): no
-  workaround; only a diagram's `sf(t)` at `t < 0` is affected.
-- surpyval 0.21's `seed` -> `random_state` rename (surpyval#422): the
-  `seed_keyword` shim in `utils/wrappers.py`, used by `Repairable` for
-  `mcf` and `count_terminated_simulation`. Pass `random_state=` directly
-  once the minimum surpyval is 0.21.
-- surpyval#381 (a non-parametric estimate gives a 1-element array for a
-  single time, and spreads a 2-D query): `rbd/_model_utils.py`, `shaped`,
-  used by the simulated `sf` and `ff` of `StandbyModel` and
-  `LoadSharingModel`. The `shape` tests in `test_warm_standby.py` and
-  `test_load_sharing.py` must still pass.
+None at present: surpyval 0.21 fixed every one listed before (#86), and
+RePyability requires it. When a new one is needed, list it here with its
+surpyval issue and where it lives, so it can go once the minimum surpyval
+in `pyproject.toml` includes the fix.

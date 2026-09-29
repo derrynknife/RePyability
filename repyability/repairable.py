@@ -54,7 +54,7 @@ from scipy.special import gammaln
 
 from repyability.maintenance import FailureLimitPolicy, MaintenancePolicy
 from repyability.rbd._model_utils import failure_time_scale
-from repyability.utils.wrappers import numpy_seed, seed_keyword
+from repyability.utils.wrappers import numpy_seed
 
 # Simulation draws used to estimate E[N(t)] for a simulation-backed
 # (imperfect-repair) model. Ignored for analytic (``cif``) models.
@@ -307,9 +307,8 @@ class Repairable:
         """
         if self._analytic:
             return np.asarray(self.model.cif(t), dtype=float)
-        mcf = self.model.mcf
         return np.asarray(
-            mcf(t, items=n_simulations, **{seed_keyword(mcf): seed}),
+            self.model.mcf(t, items=n_simulations, random_state=seed),
             dtype=float,
         )
 
@@ -820,11 +819,8 @@ class Repairable:
             result = None
             while achievable >= 1:
                 try:
-                    simulate = self.model.count_terminated_simulation
-                    result = simulate(
-                        achievable,
-                        items=n_simulations,
-                        **{seed_keyword(simulate): seed},
+                    result = self.model.count_terminated_simulation(
+                        achievable, items=n_simulations, random_state=seed
                     )
                     break
                 except (ValueError, FloatingPointError):

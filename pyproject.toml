@@ -37,11 +37,13 @@ dependencies = [
     "scipy>=1.7",
     "networkx>=3.0",
     # Deliberately uncapped: RePyability consumes a small surface of surpyval
-    # (sf/ff/qf/random/mean, regression sf/sf_tvc, to_dict/from_dict). A
-    # surpyval release reaches every fresh install at once, so the upstream
-    # workflow runs the tests against surpyval's development branch to show a
-    # break before it is released.
-    "surpyval>=0.20",
+    # (sf/ff/qf/random/mean, extras/with_params, regression sf/sf_tvc,
+    # to_dict/from_dict). A surpyval release reaches every fresh install at
+    # once, so the upstream workflow runs the tests against surpyval's
+    # development branch to show a break before it is released. CI also tests
+    # this minimum. 0.21 draws lifetimes of limited-failure and zero-inflated
+    # models, and takes random_state, as RePyability relies on.
+    "surpyval>=0.21",
     "tqdm>=4.64",
 ]
 

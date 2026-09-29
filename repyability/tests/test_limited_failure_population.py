@@ -32,11 +32,10 @@ from repyability import (
 )
 from repyability.rbd._model_utils import (
     is_exponential,
-    model_extras,
     model_mean,
     never_fails,
 )
-from repyability.rbd._sampling import draw, inverse_sampler
+from repyability.rbd._sampling import inverse_sampler
 from repyability.rbd.numerical_convolution import _density_on_grid
 
 W = surv.Weibull.from_params
@@ -62,10 +61,10 @@ def erlang2_ff(rate, t):
 
 
 def test_model_helpers():
-    assert model_extras(W([100, 2])) == {}
-    assert model_extras(LFP) == {"p": 0.9}
-    assert model_extras(BOTH) == {"p": 0.9, "f0": 0.1}
-    assert model_extras(W([100, 2], gamma=5.0)) == {"gamma": 5.0}
+    assert W([100, 2]).extras == {}
+    assert LFP.extras == {"p": 0.9}
+    assert BOTH.extras == {"p": 0.9, "f0": 0.1}
+    assert W([100, 2], gamma=5.0).extras == {"gamma": 5.0}
     assert never_fails(LFP) == pytest.approx(0.1)
     assert never_fails(ZI) == 0.0 and never_fails(E([0.1])) == 0.0
     assert model_mean(LFP) == math.inf
@@ -81,7 +80,7 @@ def test_model_helpers():
 def test_draws_follow_the_model(name):
     model = MODELS[name]
     np.random.seed(1)
-    x = draw(model, 50_000)
+    x = model.random(50_000)
     p, f0 = float(model.p), float(model.f0)
     assert within(np.mean(np.isinf(x)), 1 - p, len(x))
     assert within(np.mean(x == 0.0), f0, len(x))
@@ -89,7 +88,7 @@ def test_draws_follow_the_model(name):
         assert within(np.mean(x > t), float(model.sf(t)), len(x))
     # One global uniform per draw, as the batched path takes them.
     np.random.seed(2)
-    draw(model, 7)
+    model.random(7)
     after = np.random.random_sample()
     np.random.seed(2)
     np.random.random_sample(7)
@@ -97,13 +96,13 @@ def test_draws_follow_the_model(name):
     np.random.seed(3)
     batched = inverse_sampler(model)(np.random.random_sample(7))
     np.random.seed(3)
-    np.testing.assert_array_equal(batched, draw(model, 7))
+    np.testing.assert_array_equal(batched, model.random(7))
 
 
 def test_a_plain_model_draws_as_surpyval_does():
     model = W([100, 2])
     np.random.seed(4)
-    ours = draw(model, 5)
+    ours = inverse_sampler(model)(np.random.random_sample(5))
     np.random.seed(4)
     np.testing.assert_array_equal(ours, model.random(5))
 
@@ -217,16 +216,6 @@ def test_the_convolution_keeps_the_dead_on_arrival_apart():
     assert float(unit.df(0.0)) == pytest.approx(0.2)
 
 
-def test_nothing_left_but_units_dead_on_arrival_or_never_failing():
-    # Every unit that fails is dead on arrival (f0 == p). surpyval 0.20
-    # builds such a model; later versions refuse it.
-    try:
-        unit = E([0.1], p=0.5, f0=0.5)
-    except ValueError:
-        pytest.skip("this surpyval refuses f0 == p")
-    assert not _density_on_grid(unit, np.array([0.0, 1.0])).any()
-
-
 def test_cold_standby_with_imperfect_switching():
     rate, p, s = 0.1, 0.8, 0.7
     unit = E([rate], p=p)
@@ -261,7 +250,7 @@ def test_warm_standby_that_may_never_fail():
     # The rows with only finite budgets are played out all at once, as
     # before; the others one by one.
     np.random.seed(10)
-    budgets = np.column_stack([draw(unit, 300) for _ in range(3)])
+    budgets = np.column_stack([unit.random(300) for _ in range(3)])
     finite = np.all(np.isfinite(budgets), axis=1)
     assert 0 < finite.sum() < 300
     together = node._warm_from_budgets(budgets)
@@ -400,7 +389,7 @@ def test_saving_keeps_the_extras(model):
     back = RBD.from_json(rbd.to_json())
     t = np.array([0.0, 4.0, 50.0, 1e9])
     np.testing.assert_allclose(back.sf(t), rbd.sf(t), rtol=0, atol=1e-15)
-    assert model_extras(back.reliabilities["c"]) == model_extras(model)
+    assert back.reliabilities["c"].extras == model.extras
 
 
 def test_models_are_saved_in_surpyval_format():
@@ -445,11 +434,10 @@ def test_sensitivity_keeps_the_extras():
     assert sens["c"]["beta"] == pytest.approx(beta, rel=1e-5)
 
 
-# -- surpyval's next release: mean() is infinite when p < 1 (surpyval#404) --
+# -- mean() is infinite when p < 1 (surpyval#404) ----------------------------
 #
-# surpyval 0.20's mean() of a model with p < 1 is the defective mean; later
-# versions return inf. Nothing here may take a time scale from it: these
-# tests give the model an infinite mean() whatever surpyval is installed.
+# Nothing here may take a time scale from it: these tests give the model an
+# infinite mean() whatever surpyval does.
 
 
 def _infinite_mean(model, monkeypatch):

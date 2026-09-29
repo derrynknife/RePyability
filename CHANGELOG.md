@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Requires surpyval 0.21** (was 0.20), and drops the code that worked
+  around surpyval 0.20 (#86). surpyval 0.21 draws the lifetimes of
+  limited-failure-population and zero-inflated models, gives their mean and
+  the continuous part of their density, rebuilds a model with new parameters
+  keeping its offset, `p` and `f0` (`with_params`), and keeps a
+  non-parametric estimate's answers in the shape of the query; RePyability
+  now relies on these. Results are the same: every replaced workaround
+  computed what surpyval 0.21 now does, draw for draw.
+- `Repairable` passes its seed to a generalized-renewal model's simulations
+  as `random_state`, surpyval 0.21's name; a model whose simulations take
+  only `seed` is no longer supported.
+- CI also runs the tests on the oldest surpyval `pyproject.toml` allows, so
+  the declared minimum stays tested after surpyval releases.
+
 ## [0.10.1] - 2026-09-29
 
 Works with surpyval 0.21 without deprecation warnings, as well as with

@@ -28,8 +28,6 @@ from typing import Any, List, Optional
 
 import numpy as np
 
-from repyability.rbd._model_utils import model_extras
-
 #: The draws of a node's model that ``"fit"`` asks for.
 FIT = "fit"
 
@@ -128,8 +126,7 @@ def _fit_draws(model, n: int, rng: np.random.Generator, label: str) -> list:
     drawn = np.column_stack(
         [sc.inverse(z[:, j]) for j, sc in enumerate(scales)]
     )
-    extras = model_extras(model)
-    return [dist.from_params(list(row), **extras) for row in drawn]
+    return [model.with_params(list(row)) for row in drawn]
 
 
 def _parameter_draws(
@@ -170,8 +167,7 @@ def _parameter_draws(
                 f"outside its range ({lower}, {upper})."
             )
         columns[:, j] = values
-    extras = model_extras(model)
-    return [dist.from_params(list(row), **extras) for row in columns]
+    return [model.with_params(list(row)) for row in columns]
 
 
 def _ensemble_draws(

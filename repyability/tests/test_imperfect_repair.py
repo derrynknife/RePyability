@@ -113,7 +113,7 @@ class _CutShort:
         self.limit = limit
         self.message = message
 
-    def mcf(self, t, items=1000, seed=None):
+    def mcf(self, t, items=1000, random_state=None):
         t = np.asarray(t, dtype=float)
         if t.max() > self.limit:
             warnings.warn(self.message)
@@ -164,9 +164,9 @@ def test_an_optimum_beyond_the_horizon_warns():
     optimum (3162) lies beyond the default horizon (15 times the mean,
     1329.34). The search returns at most the horizon and warns, once, that
     the cost rate is still falling there, rather than returning a false
-    optimum. A simulator that cannot resolve failures that far (surpyval
-    0.20's) makes it shorten the horizon first, to where the baseline
-    survival is 1e-10, and say so."""
+    optimum. A simulator that cannot resolve failures that far makes it
+    shorten the horizon first, to where the baseline survival is 1e-10, and
+    say so."""
     rep = Repairable(_gr(1.0, kijima="i"))
     rep.set_repair_and_overhaul_costs(1.0, 1000.0)
     with warnings.catch_warnings(record=True) as caught:
@@ -186,8 +186,8 @@ def test_an_optimum_beyond_the_horizon_warns():
 
 def test_stalls_the_search_cannot_avoid_are_reported():
     """When the simulation is cut short at every horizon the search tries
-    (as surpyval 0.20's was for q > 1, where the virtual age outruns the
-    real age), the simulator's warning must reach the caller, not be
+    (as it can be for q > 1, where the virtual age outruns the real age),
+    the simulator's warning must reach the caller, not be
     swallowed with those of the discarded attempts."""
     rep = Repairable(
         _CutShort(
@@ -211,7 +211,7 @@ def test_repairs_that_age_the_unit_bring_the_overhaul_forward():
     rep = Repairable(_gr(1.5, kijima="i"))
     rep.set_repair_and_overhaul_costs(10.0, 50.0)
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore")  # surpyval 0.20's simulator stalls
+        warnings.simplefilter("ignore")  # the simulator may report stalls
         interval = rep.find_optimal_overhaul_interval(
             seed=0, n_simulations=100
         )
@@ -301,12 +301,10 @@ def test_failure_limit_costs_required():
         rep.find_optimal_replacement_failure_count(seed=1, n_simulations=200)
 
 
-def test_the_simulations_seed_goes_by_the_models_own_keyword():
+def test_the_simulations_seed_goes_by_random_state():
     """surpyval 0.21 renamed the simulations' ``seed`` to ``random_state``
-    (``seed`` warns until 0.22 removes it). The seed is passed by the name
-    the model's method takes, so neither surpyval version warns, and a
-    model taking ``seed`` (surpyval 0.20, or an equivalent) still gets it.
-    """
+    (``seed`` warns until 0.22 removes it): the seed goes by the new name,
+    so nothing warns, and it reaches the model."""
     rep = Repairable(_gr(0.5))
     rep.set_repair_and_overhaul_costs(1.0, 10.0)
     with warnings.catch_warnings():
@@ -314,23 +312,25 @@ def test_the_simulations_seed_goes_by_the_models_own_keyword():
         rep.cost([50.0, 150.0], seed=3, n_simulations=100)
         rep.expected_time_to_nth_failure(2, seed=3, n_simulations=100)
 
-    class SeedOnly:
-        """A model whose simulations take ``seed``, as surpyval 0.20's."""
+    class Recording:
+        """A model that records the random_state its simulations get."""
 
         def __init__(self):
             self.seen = []
 
-        def mcf(self, x, items=1000, seed=None):
-            self.seen.append(("mcf", seed))
+        def mcf(self, x, items=1000, random_state=None):
+            self.seen.append(("mcf", random_state))
             return np.asarray(x, dtype=float) / 100.0
 
-        def count_terminated_simulation(self, events, items=1000, seed=None):
-            self.seen.append(("count", seed))
+        def count_terminated_simulation(
+            self, events, items=1000, random_state=None
+        ):
+            self.seen.append(("count", random_state))
             return GeneralizedRenewal.fit_from_parameters(
                 [100.0, 2.0], 0.5, kijima="ii", dist=surv.Weibull
             ).count_terminated_simulation(events, items=items)
 
-    model = SeedOnly()
+    model = Recording()
     rep = Repairable(model)
     rep.set_repair_and_overhaul_costs(1.0, 10.0)
     rep.cost([50.0], seed=7, n_simulations=50)

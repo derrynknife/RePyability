@@ -40,7 +40,7 @@ from repyability.utils.wrappers import conditional_survival, numpy_seed
 from . import _montecarlo as montecarlo
 from . import redundancy_allocation
 from ._model_utils import is_fixed_probability, model_mean, parametric_spec
-from ._sampling import RowSampler, draw, row_sampler
+from ._sampling import RowSampler, row_sampler
 from .ccf import CCFGroup
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .load_sharing_node import LoadSharingModel
@@ -3324,7 +3324,7 @@ class NonRepairableRBD(RBD):
                 # the event time orders the PriorityQueue and assigns into
                 # ``out`` (NumPy >= 2 rejects assigning a 1-element array to
                 # a scalar).
-                one = np.asarray(draw(self.reliabilities[node], 1))
+                one = np.asarray(self.reliabilities[node].random(1))
                 time = float(one.reshape(-1)[0])
                 event_queue.put(NodeFailure(time, node))
 

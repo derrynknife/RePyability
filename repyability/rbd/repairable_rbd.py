@@ -43,7 +43,7 @@ from repyability.non_repairable import NonRepairable
 from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd._block_replacement import BlockCycle, block_cycle
 from repyability.rbd._model_utils import failure_time_scale, model_mean
-from repyability.rbd._sampling import UniformStream, draw, inverse_sampler
+from repyability.rbd._sampling import UniformStream, inverse_sampler
 from repyability.rbd.rbd import RBD, _check_on_infeasible_rbd
 from repyability.rbd.redundancy_allocation import (
     lowest_total_cost,
@@ -3746,7 +3746,7 @@ class RepairableRBD(RBD):
                 if isinstance(source, _StreamedComponent):
                     duration = source.maintenance_time()
                 else:
-                    duration = draw(schedule.duration, 1).item()
+                    duration = schedule.duration.random(1).item()
                 return Event(t + duration, node, True, True)
         elif not event.status:
             # Failed: back, as new, once it is repaired.
@@ -3791,7 +3791,7 @@ class RepairableRBD(RBD):
             if isinstance(source, _StreamedComponent):
                 duration = source.maintenance_time()
             else:
-                duration = draw(inspection.duration, 1).item()
+                duration = inspection.duration.random(1).item()
         failure = self._pending_failure[node]
         if failure is None:
             repair, status = source.next_event()

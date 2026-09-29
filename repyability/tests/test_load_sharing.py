@@ -169,8 +169,7 @@ def test_empty_units_rejected():
 )
 def test_simulated_group_gives_the_shape_it_is_given(x, shape):
     """A simulated group (a Kaplan-Meier fit) answers in the shape of its
-    query, a float for one time, on surpyval 0.20 and its next release
-    (surpyval#381)."""
+    query, a float for one time, as the closed forms do (surpyval#381)."""
     rng = np.random.default_rng(1)
     load = rng.uniform(0.5, 2.0, size=400)
     lives = rng.weibull(2.0, size=400) * 80.0 / np.exp(0.4 * (load - 1))

@@ -322,13 +322,12 @@ def test_inverse_sampler_reproduces_surpyval(name):
     ids=["lfp", "zi", "both"],
 )
 def test_inverse_sampler_draws_defective_models_by_their_quantiles(model):
-    # surpyval's own random returns survival data for these models, so
-    # every path draws their lifetimes by the quantile function instead,
+    # surpyval draws these models' lifetimes by their quantile function,
     # one global uniform each: the batched sampler and single draws agree.
     sampler = _sampling.inverse_sampler(model)
     assert sampler is not None
     np.random.seed(3)
-    expected = np.concatenate([_sampling.draw(model, 1) for _ in range(50)])
+    expected = np.concatenate([model.random(1) for _ in range(50)])
     after_single_draws = rng_state()
     np.random.seed(3)
     assert np.array_equal(sampler(np.random.random_sample(50)), expected)
@@ -1225,10 +1224,9 @@ def test_kaplan_meier_node_is_batched(monkeypatch):
         km = surv.KaplanMeier.fit(W([700, 2]).random(200))
     rbd = rbd_with(km)
     assert rbd._random_vectorised(1) is not None
-    # Where surpyval draws Kaplan-Meier samples from depends on its version
-    # (fresh OS entropy up to 0.20, a generator seeded from numpy's global
-    # stream since), but either way batching them uses the global stream
-    # deterministically: the same seed leaves it in the same state.
+    # surpyval draws Kaplan-Meier samples from a generator it seeds from
+    # numpy's global stream once per call, so batching them uses the global
+    # stream deterministically: the same seed leaves it in the same state.
     states = []
     for _ in range(2):
         np.random.seed(35)
