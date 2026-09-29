@@ -18,7 +18,8 @@ Design notes
   non-parametric) in surpyval's own format, ``model.to_dict()``, loaded with
   ``surpyval.from_dict``, so everything surpyval keeps (an offset, ``p``,
   ``f0``, a fit's covariance) round-trips; the RePyability wrappers
-  (standby, repeated, NonRepairable) recursively; nested RBDs via their own
+  (standby, degrading, repeated, NonRepairable) recursively; nested RBDs via
+  their own
   ``to_dict``. Files from before 0.10.0, which saved a parametric model as
   ``(dist name, params, extras)``, still load.
 """
@@ -31,6 +32,7 @@ from surpyval import NonParametric
 from repyability._version import __version__
 from repyability.non_repairable import NonRepairable
 from repyability.rbd._model_utils import distribution_name
+from repyability.rbd.degrading_node import DegradingNode
 from repyability.rbd.helper_classes import (
     PerfectReliability,
     PerfectUnreliability,
@@ -51,6 +53,15 @@ def serialise_model(model: Any) -> dict:
         return {"kind": "perfect_unreliability"}
     if isinstance(model, RBD):
         return {"kind": "rbd", "rbd": rbd_to_dict(model)}
+    if isinstance(model, DegradingNode):
+        # Before StandbyModel, which it extends.
+        return {
+            "kind": "degrading",
+            "stages": [
+                {"capacity": capacity, "model": serialise_model(stage)}
+                for capacity, stage in model.stages
+            ],
+        }
     if isinstance(model, StandbyModel):
         return {
             "kind": "standby",
@@ -101,9 +112,9 @@ def serialise_model(model: Any) -> dict:
     raise NotImplementedError(
         f"Cannot serialise a node model of type {type(model).__name__}. "
         "Only surpyval models (parametric and non-parametric), the "
-        "RePyability node wrappers (standby, repeated, NonRepairable, "
-        "load-sharing, regression), perfect reliability/unreliability and "
-        "nested RBDs are supported."
+        "RePyability node wrappers (standby, degrading, repeated, "
+        "NonRepairable, load-sharing, regression), perfect "
+        "reliability/unreliability and nested RBDs are supported."
     )
 
 
@@ -118,6 +129,13 @@ def deserialise_model(d: dict) -> Any:
         return PerfectUnreliability
     if kind == "surpyval":
         return surpyval.from_dict(d["model"])
+    if kind == "degrading":
+        return DegradingNode(
+            [
+                (stage["capacity"], deserialise_model(stage["model"]))
+                for stage in d["stages"]
+            ]
+        )
     if kind == "parametric":
         # The format before 0.10.0: a distribution's name, parameters and
         # any offset, p and f0 ("extras", since 0.9.0).
@@ -286,15 +304,31 @@ def _k_from_list(k_list):
 
 def _capacity_to_list(capacity):
     # An unlimited capacity is float("inf"), which json writes as Infinity.
+    # A node working at several levels keeps them as [level, probability]
+    # pairs: JSON object keys are strings.
     if not capacity:
         return None
-    return [{"node": n, "capacity": float(v)} for n, v in capacity.items()]
+    out = []
+    for n, v in capacity.items():
+        if isinstance(v, dict):
+            levels = [[float(level), float(p)] for level, p in v.items()]
+            out.append({"node": n, "levels": levels})
+        else:
+            out.append({"node": n, "capacity": float(v)})
+    return out
 
 
 def _capacity_from_list(capacity_list):
     if not capacity_list:
         return None
-    return {_node_name(e["node"]): e["capacity"] for e in capacity_list}
+    return {
+        _node_name(e["node"]): (
+            {level: p for level, p in e["levels"]}
+            if "levels" in e
+            else e["capacity"]
+        )
+        for e in capacity_list
+    }
 
 
 def _ccf_to_list(ccf_groups):

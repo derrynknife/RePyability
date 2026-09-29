@@ -44,6 +44,7 @@ from . import redundancy_allocation
 from ._model_utils import is_fixed_probability, model_mean, parametric_spec
 from ._sampling import RowSampler, row_sampler
 from .ccf import CCFGroup
+from .degrading_node import DegradingNode
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .load_sharing_node import LoadSharingModel
 from .node_state import NodeState
@@ -289,14 +290,18 @@ class NonRepairableRBD(RBD):
         them. The importance measures, ``parameter_sensitivity``, the
         condition-based methods and ``allocate_redundancy`` raise
         NotImplementedError.
-    capacity : dict[Any, float], optional
+    capacity : dict[Any, float or dict], optional
         Each node's capacity, keyed by node name, by default None: the
         throughput it passes while it works, a positive number in any unit
-        (the same for every node), for
+        (the same for every node), or a dict ``{level: probability}`` of the
+        levels it works at and the probability of each while it works; for
         [`capacity_distribution`][repyability.NonRepairableRBD.capacity_distribution].
-        A failed node passes nothing, and a node with no capacity given
-        limits nothing (``inf``). A repeated node has the capacity of the
-        node it repeats, wherever it is drawn: give that node's.
+        A failed node passes nothing. A node with no capacity given limits
+        nothing (``inf``), unless its model has capacities of its own: a
+        [`DegradingNode`][repyability.DegradingNode]'s stages, or a nested
+        ``NonRepairableRBD`` with capacities, whose distribution it then
+        has. A repeated node has the capacity of the node it repeats,
+        wherever it is drawn: give that node's.
 
     Attributes
     ----------
@@ -676,6 +681,24 @@ class NonRepairableRBD(RBD):
                 "members must carry identical component models."
             )
 
+    def _capacity_models(self) -> dict:
+        """``{node: model}`` for the nodes with no capacity entry whose model
+        has a capacity distribution of its own: a ``DegradingNode``, or a
+        nested ``NonRepairableRBD`` with capacities."""
+        return {
+            node: model
+            for node, model in self.reliabilities.items()
+            if node not in self.capacity
+            and node not in self.in_or_out
+            and (
+                isinstance(model, DegradingNode)
+                or (
+                    isinstance(model, NonRepairableRBD)
+                    and model._has_capacity()
+                )
+            )
+        }
+
     def _ccf_system_probability(
         self, base_probabilities, working_nodes, broken_nodes, method
     ) -> np.ndarray:
@@ -831,9 +854,11 @@ class NonRepairableRBD(RBD):
         """The exact distribution of the system's capacity at time/s ``x``.
 
         Each node carries its ``capacity`` (given when the RBD was built)
-        while it works and nothing once it has failed, and the system's
-        capacity is the most that can flow through the working nodes from
-        the input to the output. A node given no capacity limits nothing.
+        while it works, at one level or several, and nothing once it has
+        failed; the system's capacity is the most that can flow through the
+        working nodes from the input to the output. A node given no
+        capacity limits nothing, unless its model has capacities of its own
+        (a ``DegradingNode``'s stages, or a nested RBD's capacities).
         With three pumps of half the demand each, one failure costs nothing
         and two cost half the output. The capacity is positive exactly when
         the system works, so the probability that it is positive is
@@ -863,13 +888,17 @@ class NonRepairableRBD(RBD):
             probability that the capacity meets a demand, and ``mean()`` the
             expected capacity.
 
+        A node forced working is at the levels it can work at, in
+        proportion to their probabilities at ``x``.
+
         Raises
         ------
         ValueError
             If no node has a capacity, ``x`` is omitted for a time-varying
             RBD, or a working/broken node is invalid (as for ``sf``).
         NotImplementedError
-            If a working/broken node is a member of a common-cause group.
+            If a working/broken node is a member of a common-cause group, or
+            a member of one has a capacity distribution from its model.
 
         Examples
         --------
@@ -899,6 +928,26 @@ class NonRepairableRBD(RBD):
         working_nodes = set() if working_nodes is None else set(working_nodes)
         broken_nodes = set() if broken_nodes is None else set(broken_nodes)
         self._validate_node_overrides(working_nodes, broken_nodes)
+        own = {}
+        for node, model in self._capacity_models().items():
+            distribution = model.capacity_distribution(x)
+            own[node] = self._forced(
+                (
+                    distribution.levels,
+                    np.atleast_2d(distribution.probabilities.T).T,
+                ),
+                node,
+                working_nodes,
+                broken_nodes,
+            )
+        grouped = {m for group in self.ccf_groups for m in group.members}
+        if grouped & set(own):
+            raise NotImplementedError(
+                "The capacity analysis does not model a common-cause group "
+                "whose members have capacity distributions of their own "
+                f"(nodes {sorted(grouped & set(own), key=str)}): give them "
+                "capacities instead."
+            )
         base = self._base_node_probabilities(x, working_nodes, broken_nodes)
         conditions: Iterable[tuple] = (
             self._ccf_conditions(base, working_nodes, broken_nodes)
@@ -908,7 +957,7 @@ class NonRepairableRBD(RBD):
         levels, rows = [], []
         for weight, node_probabilities in conditions:
             arrays, size = self._node_arrays(node_probabilities)
-            part = self._capacity_arrays(arrays, size)
+            part = self._capacity_arrays(arrays, size, own)
             levels.append(part[0])
             rows.append(np.asarray(weight) * part[1])
         merged = _capacity.merged(np.concatenate(levels), np.vstack(rows))

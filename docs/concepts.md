@@ -538,6 +538,18 @@ In the long run the probability of each level is the fraction of time spent
 at it: the components' long-run availabilities stand in for their
 reliabilities, as for the long-run availability.
 
+**Multi-state components.** A component can itself have several levels: a
+pump at full, half or no output. The distribution of each node's capacity
+enters the calculation the same way, whether it has two levels or many, so
+binary components are the special case. A component's levels can be fixed
+(each with a probability while it works), come from a nested system, or come
+from a model of its states over time: a component that degrades through
+stages is in stage `j` at time `t` with probability
+`P(S_{j-1} ≤ t < S_j)`, where `S_j` is the sum of its first `j` stages'
+times. In the long run, renewed after each failure, it spends its up time in
+each stage in proportion to the stage's mean time (the renewal-reward
+theorem).
+
 ## Costs
 
 The long-run cost rate follows from the **renewal-reward theorem**: in the

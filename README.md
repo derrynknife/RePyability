@@ -27,9 +27,9 @@ taking already-fitted lifetime models (from
 - **Repairable systems**: exact long-run availability, failure frequency and
   MUT/MDT/MTBF; simulated availability over time with criticality measures.
 - **Capacity**: how much a system delivers, from its components'
-  capacities: the exact distribution of its capacity at a time or in the
-  long run, the probability of meeting a demand, and the production
-  availability.
+  capacities (with several levels, or degrading through stages): the exact
+  distribution of its capacity at a time or in the long run, the
+  probability of meeting a demand, and the production availability.
 - **Simulation**: seeded Monte-Carlo run to a tolerance, antithetic pairs,
   parallel runs, and comparisons of designs with common random numbers.
 - **Cost, design and maintenance**: exact and simulated running costs,

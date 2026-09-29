@@ -43,6 +43,8 @@ The rules:
 - A node given no capacity limits nothing: it passes whatever reaches it
   while it works (a capacity of `inf`). Control systems and power supplies
   are usually of this kind: needed, but not carrying the flow.
+- A node that works at several levels takes a dict of them instead (see
+  [below](#components-with-several-levels)).
 - A k-out-of-n node keeps its meaning (see
   [below](#k-out-of-n-nodes-and-demand)).
 - A [repeated node](building.md) has the capacity of the node it repeats,
@@ -121,6 +123,84 @@ availability, as [`mean_availability`][repyability.RepairableRBD.mean_availabili
 is. Components inspected or replaced on a calendar are down together more
 often than independent ones would be, and the distribution is averaged over
 their schedules, as `mean_availability` is.
+
+## Components with several levels
+
+Some components degrade rather than fail outright: a pump at full, half or
+no output. There are three ways to give a node several levels, and binary
+nodes are the special case of each.
+
+**Levels while it works.** A dict `{level: probability}` in place of a
+number gives the levels a node works at and the probability of each while
+it works. Its reliability model still says whether it works, so at a time
+`t` it is at each level with the level's probability times `R(t)`, and down
+with `F(t)`:
+
+```python
+derated = NonRepairableRBD(
+    [("in", "p1"), ("in", "p2"), ("p1", "out"), ("p2", "out")],
+    {"p1": pump, "p2": pump},
+    capacity={"p1": {50: 0.9, 25: 0.1}, "p2": {50: 0.9, 25: 0.1}},   # 10% of the time at half output
+)
+derated.capacity_distribution(1000).levels       # array([  0.,  25.,  50.,  75., 100.])
+derated.capacity_distribution(1000).meets(100)   # -> 0.3994
+```
+
+**A component that degrades over time.** A
+[`DegradingNode`][repyability.DegradingNode] runs through stages, each at
+its own capacity for a time from its own lifetime model, and has failed
+once the last ends: a model of the component's states over time. Its
+stages give its levels; its lifetime, the sum of its stages' times, gives
+its reliability, so it is a node model like any other:
+
+```python
+from repyability import DegradingNode
+
+E = surv.Exponential.from_params
+worn = DegradingNode([
+    (50, surv.Weibull.from_params([1500, 2])),   # full output until it wears
+    (25, E([1 / 800])),                          # then half output until it fails
+])
+worn.stage_probabilities(1000)       # array([0.6412, 0.2379])   in each stage at 1000
+worn.mean()                          # -> 2129.3   the stages' mean times, added
+
+degrading = NonRepairableRBD(
+    [("in", "p1"), ("in", "p2"), ("p1", "out"), ("p2", "out")],
+    {"p1": worn, "p2": worn},
+)
+degrading.capacity_distribution(1000).meets(100)   # -> 0.4111   both still at full output
+degrading.capacity_distribution(1000).meets(50)    # -> 0.9278
+degrading.sf(1000)                                 # -> 0.9854   any output at all
+```
+
+The stage probabilities come from the same convolution of the stages' times
+as the reliability: exact for identical exponential stages, and otherwise
+accurate to about `1e-7`.
+
+**A nested RBD with capacities.** A nested RBD that has capacities of its
+own brings its whole distribution: a pump skid drawn as its own RBD, and
+used as one node, gives the same distribution as its pumps drawn in place.
+
+A capacity given for a node in the outer RBD takes the place of what its
+model would give: the node is then a single component with that capacity.
+
+In the long run, a `RepairableRBD` component with levels while it is up is
+at each level for its probability of the time it is up. A degrading
+component (a `DegradingNode` as its reliability) spends its up time in its
+stages in proportion to their mean times, by the renewal-reward theorem;
+one on a maintenance or inspection schedule has no exact long-run values
+here. A nested `RepairableRBD` with capacities brings its own long-run
+distribution.
+
+```python
+worn_unit = {"reliability": worn, "repairability": E([1 / 48])}   # MTTR 48
+repaired = RepairableRBD(
+    [("in", "p1"), ("in", "p2"), ("p1", "out"), ("p2", "out")],
+    {"p1": worn_unit, "p2": worn_unit},
+)
+repaired.capacity_distribution().delivered_fraction(100)   # -> 0.7942
+repaired.mean_availability()                               # -> 0.99951
+```
 
 ## From node probabilities
 

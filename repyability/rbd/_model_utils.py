@@ -47,8 +47,14 @@ _PLAIN = {"gamma": 0.0, "p": 1.0, "f0": 0.0}
 
 def never_fails(model) -> float:
     """The fraction of units that never fail: ``1 - p`` for a surpyval
-    limited-failure-population model, 0 for any other."""
-    p = getattr(model, "p", None) if distribution_name(model) else None
+    limited-failure-population model; for a standby arrangement whose
+    survival function is a convolution (a sum of lifetimes, some of which
+    may never end), the probability that it never fails; 0 for any
+    other."""
+    if distribution_name(model) is None:
+        survival = getattr(model, "_sf_model", None)
+        return float(getattr(survival, "never_fails", 0.0) or 0.0)
+    p = getattr(model, "p", None)
     if p is None:
         return 0.0
     return max(0.0, 1.0 - float(p))
@@ -81,7 +87,7 @@ def failure_time_scale(model) -> float:
     mean = model_mean(model)
     if np.isfinite(mean):
         return mean
-    if never_fails(model) > 0.0:
+    if distribution_name(model) is not None and never_fails(model) > 0.0:
         offset = {k: v for k, v in model.extras.items() if k == "gamma"}
         failing = model.dist.from_params(
             list(np.ravel(model.params)), **offset

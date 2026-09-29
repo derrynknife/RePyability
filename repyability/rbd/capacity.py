@@ -87,6 +87,38 @@ def binary(
     )
 
 
+def node_distribution(
+    capacity, works: np.ndarray, fails: np.ndarray
+) -> Distribution:
+    """A node's distribution from its capacity entry: a number, which it
+    carries while it works, or a dict of the levels it works at and their
+    probabilities given that it works."""
+    if not isinstance(capacity, dict):
+        return binary(capacity, works, fails)
+    works = np.ravel(works)
+    shares = np.array(list(capacity.values()), dtype=float)
+    return merged(
+        np.array([0.0] + list(capacity), dtype=float),
+        np.vstack([np.ravel(fails), shares[:, None] * works[None, :]]),
+    )
+
+
+def working(distribution: Distribution) -> Distribution:
+    """``distribution`` given that the node works: its levels above 0, in
+    proportion. Where it cannot work at all, its highest level."""
+    levels, probabilities = distribution
+    up = levels > 0.0
+    if not up.any():
+        raise ValueError("A node that can never work cannot be forced to.")
+    levels, probabilities = levels[up], probabilities[up]
+    total = probabilities.sum(axis=0)
+    top = np.zeros_like(probabilities)
+    top[-1] = 1.0
+    with np.errstate(invalid="ignore", divide="ignore"):
+        given = np.where(total > 0.0, probabilities / total, top)
+    return levels, given
+
+
 def combine(a: Distribution, b: Distribution, how: Callable) -> Distribution:
     """The distribution of ``how(x, y)`` for independent ``x`` and ``y``
     distributed as ``a`` and ``b``."""

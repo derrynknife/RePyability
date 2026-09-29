@@ -30,8 +30,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so the analysis costs about what the system reliability does. The
   capacities are saved with the RBD. A new guide page, System capacity,
   covers it.
+- **Multi-state components** (#98) in the capacity analysis: a component
+  can work at several levels, a pump at full or half output. A capacity can
+  be a dict `{level: probability}` of the levels a node works at and the
+  probability of each while it works. A `DegradingNode` runs through stages,
+  each at its own capacity for a time from its own lifetime model, and has
+  failed once the last ends: its stage at a time comes from the
+  convolution of its stages' times, and in the long run, renewed after each
+  failure, it spends its up time in each stage in proportion to the stage's
+  mean. It is a `StandbyModel` of its stages (its lifetime is their sum), so
+  it is a node model like any other. A nested RBD with capacities brings its
+  own distribution. Binary nodes are the special case of each, and the
+  distributions combine through series (least) and parallel (sum) as
+  before.
 
 ### Changed
+
+- **More accurate cold standby.** The numerical convolution behind a
+  `StandbyModel` (cold, one operating unit) and a `RepeatedStandbyNode` now
+  uses the trapezoidal rule: its error falls from about `1e-4` to about
+  `1e-8`, and results move by up to that much. Two exponential units with
+  a 90% switch now have an MTTF of 190.00001, the formula's 190, where the
+  convolution gave 189.9.
 
 - **Requires surpyval 0.21** (was 0.20), and drops the code that worked
   around surpyval 0.20 (#86). surpyval 0.21 draws the lifetimes of
@@ -46,6 +66,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only `seed` is no longer supported.
 - CI also runs the tests on the oldest surpyval `pyproject.toml` allows, so
   the declared minimum stays tested after surpyval releases.
+
+### Fixed
+
+- A repairable component whose reliability is a cold `StandbyModel` with a
+  unit that may never fail (a surpyval model with `p < 1`) had a long-run
+  availability of NaN. It is now 1, as for any component some of whose
+  units never fail: sooner or later it gets one, and is up for good.
 
 ## [0.10.1] - 2026-09-29
 

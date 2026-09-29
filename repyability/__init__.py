@@ -11,6 +11,7 @@ from repyability.fault_tree import FaultTree
 from repyability.maintenance import FailureLimitPolicy, MaintenancePolicy
 from repyability.non_repairable import NonRepairable
 from repyability.rbd.ccf import MGL, BetaFactor, CCFGroup
+from repyability.rbd.degrading_node import DegradingNode
 from repyability.rbd.helper_classes import (
     PerfectReliability,
     PerfectUnreliability,
@@ -57,6 +58,7 @@ __all__ = [
     "NonRepairable",
     "Repairable",
     "StandbyModel",
+    "DegradingNode",
     "LoadSharingModel",
     "RepeatedNode",
     "RepeatedStandbyNode",

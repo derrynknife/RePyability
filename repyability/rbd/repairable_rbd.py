@@ -41,9 +41,11 @@ from tqdm import tqdm
 
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import _montecarlo as montecarlo
+from repyability.rbd import capacity as _capacity
 from repyability.rbd._block_replacement import BlockCycle, block_cycle
 from repyability.rbd._model_utils import failure_time_scale, model_mean
 from repyability.rbd._sampling import UniformStream, inverse_sampler
+from repyability.rbd.degrading_node import DegradingNode
 from repyability.rbd.rbd import RBD, _check_on_infeasible_rbd
 from repyability.rbd.redundancy_allocation import (
     lowest_total_cost,
@@ -1253,13 +1255,18 @@ class RepairableRBD(RBD):
     downtime_cost_rate : float, optional
         Cost per unit time the whole system is down (e.g. lost
         production), by default 0.0 (not priced).
-    capacity : dict[Hashable, float], optional
+    capacity : dict[Hashable, float or dict], optional
         Each node's capacity, keyed by node name, by default None: the
         throughput it passes while it is up, a positive number in any unit
-        (the same for every node), for
+        (the same for every node), or a dict ``{level: probability}`` of the
+        levels it works at and the probability of each while it is up; for
         [`capacity_distribution`][repyability.RepairableRBD.capacity_distribution].
-        A node that is down passes nothing, and a node with no capacity
-        given limits nothing (``inf``).
+        A node that is down passes nothing. A node with no capacity given
+        limits nothing (``inf``), unless its model has capacities of its
+        own: a reliability that is a
+        [`DegradingNode`][repyability.DegradingNode], whose stages give its
+        levels, or a nested ``RepairableRBD`` with capacities, whose
+        distribution it then has.
 
     Attributes
     ----------
@@ -3735,10 +3742,14 @@ class RepairableRBD(RBD):
         """The exact long-run distribution of the system's capacity.
 
         Each node carries its ``capacity`` (given when the RBD was built)
-        while it is up and nothing while it is down, and the system's
-        capacity is the most that can flow through the nodes that are up
-        from the input to the output. A node given no capacity limits
-        nothing. The probability of each level is the long-run fraction of
+        while it is up, at one level or several, and nothing while it is
+        down; the system's capacity is the most that can flow through the
+        nodes that are up from the input to the output. A node given no
+        capacity limits nothing, unless its model has capacities of its own:
+        a degrading component spends its up time in its stages in
+        proportion to their mean times (by the renewal-reward theorem), and
+        a nested RBD with capacities brings its own long-run
+        distribution. The probability of each level is the long-run fraction of
         time the system spends at it; the capacity is positive exactly when
         the system is up, so the fraction of time it is positive is
         [`mean_availability`][repyability.RepairableRBD.mean_availability].
@@ -3773,7 +3784,8 @@ class RepairableRBD(RBD):
         ValueError
             If no node has a capacity, or as for ``mean_availability``.
         NotImplementedError
-            As for ``mean_availability``.
+            As for ``mean_availability``, or if a degrading component is
+            maintained or inspected on a schedule.
 
         Examples
         --------
@@ -3805,9 +3817,61 @@ class RepairableRBD(RBD):
         probabilities, weights = self._long_run_probabilities(
             working_nodes, broken_nodes
         )
+        working_nodes = set(working_nodes or ())
+        broken_nodes = set(broken_nodes or ())
         arrays, size = self._node_arrays(probabilities)
-        levels, rows = self._capacity_arrays(arrays, size)
+        own = {}
+        for node in self._capacity_models():
+            levels, shares = self._long_run_capacity(node)
+            own[node] = self._forced(
+                (levels, np.repeat(shares[:, None], size, axis=1)),
+                node,
+                working_nodes,
+                broken_nodes,
+            )
+        levels, rows = self._capacity_arrays(arrays, size, own)
         return CapacityDistribution(levels, rows @ weights)
+
+    def _capacity_models(self) -> dict:
+        """``{node: model}`` for the nodes with no capacity entry whose model
+        has a capacity distribution of its own: a nested ``RepairableRBD``
+        with capacities, or a component whose reliability is a
+        ``DegradingNode``."""
+        out: Dict[Any, Any] = {}
+        for node, component in self.components.items():
+            if node in self.capacity:
+                continue
+            if isinstance(component, RepairableRBD):
+                if component._has_capacity():
+                    out[node] = component
+            elif isinstance(component.reliability, DegradingNode):
+                out[node] = component.reliability
+        return out
+
+    def _long_run_capacity(self, node) -> Tuple[np.ndarray, np.ndarray]:
+        """The long-run distribution of the capacity of a node whose model
+        has one (see ``_capacity_models``): a nested RBD's own; for a
+        degrading component, down a fraction ``1 - A`` of the time and in
+        each stage the rest of it in proportion to the stage's share of its
+        working time."""
+        component = self.components[node]
+        if isinstance(component, RepairableRBD):
+            distribution = component.capacity_distribution()
+            return distribution.levels, distribution.probabilities
+        if node in self._preventive or node in self._inspection:
+            raise NotImplementedError(
+                f"Component {node!r} degrades through stages and is "
+                "maintained or inspected on a schedule: its long-run time in "
+                "each stage has no exact value here. Give it a capacity "
+                "instead."
+            )
+        stages = component.reliability
+        up = self._node_availability(node)
+        shares = np.concatenate([[1.0 - up], up * stages.stage_fractions()])
+        levels, rows = _capacity.merged(
+            np.array((0.0,) + stages.capacities), shares[:, None]
+        )
+        return levels, rows[:, 0]
 
     def _follow_up(self, event: Event, source) -> Event:
         """The next event of ``event``'s component, drawn from ``source``.

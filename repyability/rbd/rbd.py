@@ -290,6 +290,59 @@ def minimal_cut_sets_from_path_sets(
     return _minimal_cut_sets(_shannon_plan(path_sets))
 
 
+def _capacity_number(node, value: Any, what: str) -> float:
+    """A capacity level, checked: a positive number (``inf`` for no limit),
+    as a float."""
+    if isinstance(value, (bool, np.bool_)) or not isinstance(
+        value, (int, float, np.integer, np.floating)
+    ):
+        raise ValueError(
+            f"The {what} of node {node!r} must be a number, got {value!r}."
+        )
+    value = float(value)
+    if not value > 0.0:
+        raise ValueError(
+            f"The {what} of node {node!r} must be positive (inf for no "
+            f"limit), got {value!r}."
+        )
+    return value
+
+
+def _capacity_levels(node, levels: dict) -> dict:
+    """A node's capacity levels while it works, ``{level: probability}``,
+    checked: positive levels and probabilities adding up to 1. Returned in
+    increasing order of level, scaled to add up to 1 exactly."""
+    if not levels:
+        raise ValueError(
+            f"The capacity levels of node {node!r} are empty: give at least "
+            "one {level: probability}."
+        )
+    out = {}
+    for level, probability in levels.items():
+        level = _capacity_number(node, level, "capacity level")
+        if isinstance(probability, (bool, np.bool_)) or not isinstance(
+            probability, (int, float, np.integer, np.floating)
+        ):
+            raise ValueError(
+                f"The probability of capacity {level!r} of node {node!r} "
+                f"must be a number, got {probability!r}."
+            )
+        if not 0.0 < float(probability) <= 1.0:
+            raise ValueError(
+                f"The probability of capacity {level!r} of node {node!r} "
+                f"must be in (0, 1], got {probability!r}."
+            )
+        out[level] = float(probability)
+    total = sum(out.values())
+    if abs(total - 1.0) > 1e-9:
+        raise ValueError(
+            f"The probabilities of the capacity levels of node {node!r} "
+            f"must add up to 1 (they are the levels it works at), got "
+            f"{total!r}."
+        )
+    return {level: out[level] / total for level in sorted(out)}
+
+
 class RBD:
     """Reliability block diagram structure: the base of the RBD classes.
 
@@ -365,16 +418,18 @@ class RBD:
         containing ``structure_check`` and builds the RBD anyway, and
         ``"ignore"`` builds it silently. An infeasible RBD may give errors
         or wrong results later.
-    capacity : dict[Any, float], optional
+    capacity : dict[Any, float or dict], optional
         Each node's capacity, keyed by node name, by default None: the
         throughput it passes while it works, a positive number in any unit
-        (the same for every node). A failed node passes nothing, and a node
-        with no capacity given limits nothing: it passes whatever reaches
-        it while it works (``inf``). The edges carry any amount, so a series
-        chain passes the least of its nodes' capacities and a parallel
-        group the sum; a k-out-of-n node passes flow only while at least
-        ``k`` of its inputs are reached. Only the capacity analysis uses
-        them.
+        (the same for every node); or, for a node that works at several
+        levels, a dict ``{level: probability}`` of the levels and the
+        probability of each while it works (adding up to 1). A failed node
+        passes nothing, and a node with no capacity given limits nothing:
+        it passes whatever reaches it while it works (``inf``). The edges
+        carry any amount, so a series chain passes the least of its nodes'
+        capacities and a parallel group the sum; a k-out-of-n node passes
+        flow only while at least ``k`` of its inputs are reached. Only the
+        capacity analysis uses them.
 
     Attributes
     ----------
@@ -392,7 +447,8 @@ class RBD:
         The intermediate nodes, in the order they were added to the graph
         (the same list [`node_names`][repyability.RBD.node_names] returns).
     capacity : dict
-        The capacities given, keyed by node name, as floats.
+        The capacities given, keyed by node name: floats, or dicts of
+        levels and their probabilities (in increasing order of level).
     structure_check : dict
         The validation report, e.g. ``"is_valid"``, ``"has_cycles"``,
         ``"cycles"``, ``"koon_errors"``, ``"koon_warnings"`` and
@@ -403,8 +459,9 @@ class RBD:
     ValueError
         If ``input_node`` or ``output_node`` is not a node of the diagram,
         or is not its source or sink (whatever ``on_infeasible_rbd`` is);
-        if a capacity is not a positive number, or is given for the input
-        or output node or a node not in the diagram;
+        if a capacity is not a positive number or a dict of positive levels
+        with probabilities adding up to 1, or is given for the input or
+        output node or a node not in the diagram;
         if the structure is infeasible
         and ``on_infeasible_rbd`` is ``"raise"`` (the message does not
         list the problems: use ``"warn"`` to see them); if
@@ -998,13 +1055,16 @@ class RBD:
         return getattr(self, "_aliases", {})
 
     def _validated_capacity(self, capacity: Optional[dict]) -> dict:
-        """The node capacities as floats, checked: each positive (``inf``
-        for no limit), and each for a node of the diagram that is not the
-        input or output node, nor a repeat of another node."""
+        """The node capacities, checked: each a positive number (``inf`` for
+        no limit), as a float, or a dict of such levels and their
+        probabilities, positive and adding up to 1 (as floats, in
+        increasing order of level, and scaled to add up to 1 exactly); and
+        each for a node of the diagram that is not the input or output
+        node, nor a repeat of another node."""
         if not capacity:
             return {}
         aliases = self._component_aliases()
-        out = {}
+        out: Dict[Any, Any] = {}
         for node, value in dict(capacity).items():
             if node in self.in_or_out:
                 raise ValueError(
@@ -1022,21 +1082,21 @@ class RBD:
                     f"Unknown node {node!r} in capacity: it is not in the "
                     "diagram."
                 )
-            if isinstance(value, (bool, np.bool_)) or not isinstance(
-                value, (int, float, np.integer, np.floating)
-            ):
-                raise ValueError(
-                    f"The capacity of node {node!r} must be a number, got "
-                    f"{value!r}."
-                )
-            value = float(value)
-            if not value > 0.0:
-                raise ValueError(
-                    f"The capacity of node {node!r} must be positive (inf "
-                    f"for no limit), got {value!r}."
-                )
-            out[node] = value
+            if isinstance(value, dict):
+                out[node] = _capacity_levels(node, value)
+            else:
+                out[node] = _capacity_number(node, value, "capacity")
         return out
+
+    def _capacity_models(self) -> dict:
+        """``{node: model}`` for the nodes with no capacity entry whose
+        model has a capacity distribution of its own (a nested RBD with
+        capacities, or a ``DegradingNode``): none in a plain RBD."""
+        return {}
+
+    def _has_capacity(self) -> bool:
+        """Whether some node has a capacity, given or from its model."""
+        return bool(self.capacity) or bool(self._capacity_models())
 
     def system_capacity(
         self, node_probabilities: Dict
@@ -1118,13 +1178,16 @@ class RBD:
         )
 
     def _capacity_arrays(
-        self, arrays: Dict, size: int
+        self, arrays: Dict, size: int, own: Optional[Dict] = None
     ) -> tuple[np.ndarray, np.ndarray]:
         """The exact distribution of the system's capacity (see
         ``capacity.py``), given each node's probability of working as an
         array of length ``size``: the levels, and one row of probabilities
-        per level."""
-        if not self.capacity:
+        per level. ``own`` holds the distributions (levels, and one row per
+        level of ``size`` probabilities) of the nodes whose models give
+        them."""
+        own = own or {}
+        if not self._has_capacity():
             raise ValueError(
                 "No node has a capacity: give each node's throughput with "
                 "capacity={node: capacity} when building the RBD."
@@ -1141,12 +1204,26 @@ class RBD:
             )
 
         def component(name):
+            if name in own:
+                return own[name]
             works = np.asarray(arrays[name], dtype=float)
-            return _capacity.binary(
+            return _capacity.node_distribution(
                 self.capacity.get(name, np.inf), works, 1.0 - works
             )
 
         return _capacity.system_distribution(flow, component, size)
+
+    def _forced(
+        self, distribution: tuple, node, working_nodes, broken_nodes
+    ) -> tuple:
+        """A node's own capacity distribution with the node forced working
+        (given that it works) or broken (0), if it is."""
+        if node in broken_nodes:
+            size = distribution[1].shape[1]
+            return np.zeros(1), np.ones((1, size))
+        if node in working_nodes:
+            return _capacity.working(distribution)
+        return distribution
 
     @check_probability
     def improvement_allocation(

@@ -218,6 +218,10 @@ class StandbyModel:
     0.7358
     """
 
+    # Whether a convolved survival function keeps every partial sum's too
+    # (a DegradingNode needs them for the stage it is in).
+    _partial_sums = False
+
     def __init__(
         self,
         reliabilities,
@@ -292,7 +296,9 @@ class StandbyModel:
             # switching), whose survival function is computed deterministically
             # by numerical convolution rather than from Monte-Carlo samples.
             self._sf_model = ConvolvedSurvival(
-                reliabilities, switching_probability=switching_probability
+                reliabilities,
+                switching_probability=switching_probability,
+                partials=self._partial_sums,
             )
             self.model = None
         else:
