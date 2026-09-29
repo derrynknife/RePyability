@@ -2,7 +2,7 @@ import numpy as np
 
 from repyability.utils.wrappers import numpy_seed
 
-from ._sampling import RowSampler, draw, inverse_sampler
+from ._sampling import RowSampler, inverse_sampler
 
 REPEATED_NODE_TYPES = {"parallel", "series"}
 PARALLEL = 1
@@ -87,7 +87,7 @@ class RepeatedNode:
             The ``size`` lifetimes, shape ``(size,)``.
         """
         with numpy_seed(seed):
-            randoms = np.asarray(draw(self.model, (size, self.repeats)))
+            randoms = np.asarray(self.model.random((size, self.repeats)))
         if self.kind == SERIES:
             # If repetition is in series, then a random event will be the
             # smallest of all the events in series. i.e. when the first item

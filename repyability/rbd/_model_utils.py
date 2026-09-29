@@ -39,23 +39,10 @@ def is_fixed_probability(model) -> bool:
     return distribution_name(model) in FIXED_PROBABILITY_DIST_NAMES
 
 
-#: A surpyval parametric model's offset, limited-failure-population and
-#: zero-inflation parameters, and the values that mean it has none of them.
-_EXTRAS = {"gamma": 0.0, "p": 1.0, "f0": 0.0}
-
-
-def model_extras(model) -> dict:
-    """The offset (``gamma``), limited-failure-population (``p``, the
-    fraction of units that ever fail) and zero-inflation (``f0``, the
-    fraction dead on arrival) parameters of a surpyval parametric model,
-    where it has them: what ``from_params`` needs, besides the parameters,
-    to rebuild it. Empty for a plain model (or any other)."""
-    out = {}
-    for name, none in _EXTRAS.items():
-        value = getattr(model, name, none)
-        if value is not None and value != none:
-            out[name] = float(value)
-    return out
+#: The values of a surpyval parametric model's offset (``gamma``),
+#: limited-failure-population (``p``) and zero-inflation (``f0``)
+#: parameters that mean it has none of them.
+_PLAIN = {"gamma": 0.0, "p": 1.0, "f0": 0.0}
 
 
 def never_fails(model) -> float:
@@ -71,42 +58,16 @@ def is_exponential(model) -> bool:
     """True if ``model`` is a plain surpyval Exponential lifetime: no
     offset, every unit fails and none is dead on arrival. Only then is it
     memoryless from time 0 with rate ``1 / mean``."""
-    return distribution_name(model) == "Exponential" and not model_extras(
-        model
-    )
-
-
-def shaped(function, x, *args, **kwargs):
-    """``function`` (a model's ``sf``, ``ff``, ...) at the times ``x``, in
-    the shape of ``x``: a numpy float for a single time.
-
-    It is evaluated at ``x`` flattened and reshaped, because surpyval 0.20's
-    non-parametric estimates give a 1-element array for a single time and
-    spread a 2-D query into the wrong shape (surpyval#381, fixed on its
-    ``develop``: every model returns the shape it is given).
-    """
-    values = function(np.ravel(x), *args, **kwargs)
-    return np.asarray(values, dtype=float).reshape(np.shape(x))[()]
+    if distribution_name(model) != "Exponential":
+        return False
+    extras = getattr(model, "extras", {})
+    return all(extras.get(name, none) == none for name, none in _PLAIN.items())
 
 
 def model_mean(model) -> float:
-    """The model's mean as a plain float.
-
-    Infinite for a limited-failure-population model: some of its units
-    never fail. (surpyval's ``mean()`` is then the *defective* mean, the
-    failing units' mean weighted by their fraction, which is not the mean
-    of a lifetime.) Works around surpyval 0.11's ExactEventTime, whose
-    ``mean()`` raises AttributeError (its underlying dist has no ``mean``);
-    for an exact event time the mean is simply its parameter.
-    """
-    if never_fails(model) > 0.0:
-        return float("inf")
-    try:
-        return float(np.atleast_1d(model.mean())[0])
-    except AttributeError:
-        if distribution_name(model) == "ExactEventTime":
-            return float(np.atleast_1d(model.params)[0])
-        raise
+    """The model's mean lifetime as a plain float: infinite for a
+    limited-failure-population model, some of whose units never fail."""
+    return float(np.ravel(model.mean())[0])
 
 
 def failure_time_scale(model) -> float:
@@ -115,20 +76,17 @@ def failure_time_scale(model) -> float:
     Its mean lifetime; or, when some of its units never fail (so that mean
     is infinite), the mean lifetime of the units that do fail: the same
     distribution with its offset but without ``p`` and ``f0``. NaN when
-    neither is finite. (surpyval's ``mean()`` of a limited-failure-population
-    model was the defective mean before surpyval#404 and is infinite since,
-    so it is not used for that.)
+    neither is finite.
     """
     mean = model_mean(model)
     if np.isfinite(mean):
         return mean
     if never_fails(model) > 0.0:
-        import surpyval
-
-        offset = {k: v for k, v in model_extras(model).items() if k == "gamma"}
-        cls = getattr(surpyval, str(distribution_name(model)))
-        failing = cls.from_params(list(np.ravel(model.params)), **offset)
-        mean = float(np.atleast_1d(failing.mean())[0])
+        offset = {k: v for k, v in model.extras.items() if k == "gamma"}
+        failing = model.dist.from_params(
+            list(np.ravel(model.params)), **offset
+        )
+        mean = model_mean(failing)
         if np.isfinite(mean):
             return mean
     return float("nan")
@@ -140,8 +98,8 @@ def parametric_spec(model):
     distribution parameters (a ``StandbyModel``, ``RepeatedNode``, nested
     RBD, a repeated node's source name, the perfect-reliability helpers, or
     a fitted non-parametric model). ``extras`` are its offset,
-    limited-failure-population and zero-inflation parameters (see
-    ``model_extras``): ``surpyval_class.from_params(params, **extras)``
+    limited-failure-population and zero-inflation parameters (surpyval's
+    ``model.extras``): ``surpyval_class.from_params(params, **extras)``
     rebuilds it.
 
     Used by parameter-sensitivity analysis to rebuild a distribution with a
@@ -162,4 +120,4 @@ def parametric_spec(model):
     names = getattr(dist, "param_names", None)
     if not names or len(list(names)) != len(params):
         names = [f"param{i}" for i in range(len(params))]
-    return cls, params, list(names), model_extras(model)
+    return cls, params, list(names), dict(getattr(model, "extras", {}))

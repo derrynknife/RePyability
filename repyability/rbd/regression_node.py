@@ -10,8 +10,8 @@ exposes its survival as an ordinary univariate node. The covariates can be:
 * a **time-varying schedule** ``Z(t)`` (a surpyval ``StepSchedule``: the load
   the component runs under changes over its life) -- reliability is
   ``R(x) = model.sf_tvc(x, schedule)``, the exact survival along that
-  covariate path (accelerated-failure-time / proportional- / additive-hazards,
-  and proportional odds where surpyval defines it). This is the
+  covariate path (accelerated-failure-time, proportional- and
+  additive-hazards, and proportional-odds models). This is the
   load-dependent-aging / digital-twin node of issue #37: as-new survival
   integrates the whole load path, and conditioning on ``age`` gives the
   go-forward reliability from the component's current life, since
@@ -36,8 +36,7 @@ def _is_semiparametric(model) -> bool:
     """Whether ``model`` is a surpyval semiparametric regression model (a
     Cox model): its baseline is an estimate on the observed range only,
     with no tail beyond it. (Recognised by its type, not by its survival
-    curve: surpyval 0.20 happened to give such a baseline's last value
-    before its first event, which later versions fix.)"""
+    curve.)"""
     try:
         from surpyval.univariate.regression import (
             semi_parametric_regression_model as semiparametric,
@@ -58,8 +57,8 @@ class RegressionNode:
       ``R(x) = model.sf(x, Z)``, for any regression family; or
     - ``schedule``, a time-varying covariate path ``Z(t)``: the reliability
       is ``R(x) = model.sf_tvc(x, schedule)``, the survival along that
-      path (accelerated-failure-time and proportional- or additive-hazards
-      models, and proportional odds where surpyval defines it).
+      path (accelerated-failure-time, proportional- and additive-hazards,
+      and proportional-odds models).
 
     ``sf`` and ``ff`` evaluate that curve directly, so the node takes part
     in system reliability, importance measures and the condition-based
@@ -74,8 +73,7 @@ class RegressionNode:
     model : surpyval regression model
         A fitted regression model, e.g. ``surpyval.WeibullAFT.fit(...)`` or
         ``surpyval.CoxPH.fit(...)``. Fixed covariates use its ``sf(x, Z)``; a
-        schedule uses its ``sf_tvc(x, schedule)`` (needs a surpyval that
-        provides it for the model's family).
+        schedule uses its ``sf_tvc(x, schedule)``.
     covariates : array_like, optional
         The component's fixed covariate vector ``Z`` (its operating
         conditions), matching the covariates the model was fitted with.
@@ -91,8 +89,7 @@ class RegressionNode:
         if a trial evaluation of the survival at ``x = 1`` fails or is not
         finite: e.g. ``model`` is not a fitted regression model,
         ``covariates`` has the wrong width, or in schedule mode the model's
-        ``sf_tvc`` cannot evaluate it (e.g. proportional odds on surpyval
-        0.20).
+        ``sf_tvc`` cannot evaluate it.
 
     Examples
     --------
@@ -155,9 +152,9 @@ class RegressionNode:
                 "RegressionNode requires a fitted surpyval regression model. "
                 "In fixed-covariate mode its sf(x, Z) must accept a covariate "
                 "matrix of the fitted width; in schedule mode the model must "
-                "support sf_tvc(x, schedule) (accelerated-failure-time / "
-                "proportional- or additive-hazards on a recent surpyval; "
-                "proportional-odds only where surpyval defines it). Probing "
+                "support sf_tvc(x, schedule) (accelerated-failure-time, "
+                "proportional- and additive-hazards, and proportional-odds "
+                "models). Probing "
                 f"survival failed: {type(e).__name__}: {e}."
             ) from e
         # Cached (t, sf(t)) grid for mean()/random() (built lazily).

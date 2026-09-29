@@ -282,10 +282,9 @@ the schedule: the load-dependent-ageing ("digital twin") node. Whether a
 family composes along a path is a property of the model: **AFT** (the path
 rescales the clock) and **proportional-/additive-hazards** (the path
 accumulates hazard) do; **proportional odds** has no single natural
-extension: surpyval 0.20 refuses it in schedule mode, and later versions
-switch to the new covariate's hazard at each step (the survival does not jump
-to the new covariate's curve). The fixed-covariate node is the special case of a constant
-path.
+extension: surpyval switches to the new covariate's hazard at each step (the
+survival does not jump to the new covariate's curve). The fixed-covariate
+node is the special case of a constant path.
 
 ## Standby and repeated nodes
 

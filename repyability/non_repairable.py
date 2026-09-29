@@ -12,7 +12,6 @@ from repyability.rbd._model_utils import (
     model_mean,
     never_fails,
 )
-from repyability.rbd._sampling import draw
 from repyability.rbd.standby_node import StandbyModel
 
 FAILURE = 1
@@ -756,7 +755,7 @@ class NonRepairable:
         """
         if self.__next_event_type == FAILURE:
             self.__next_event_type = REPLACE
-            return draw(self.reliability, 1).item(), False
+            return self.reliability.random(1).item(), False
         elif self.__next_event_type == REPLACE:
             self.__next_event_type = FAILURE
-            return draw(self.time_to_replace, 1).item(), True
+            return self.time_to_replace.random(1).item(), True

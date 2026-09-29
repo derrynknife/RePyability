@@ -35,8 +35,8 @@ from surpyval import Hypoexponential, KaplanMeier
 
 from repyability.utils.wrappers import conditional_survival, numpy_seed
 
-from ._model_utils import is_exponential, shaped
-from ._sampling import RowSampler, column, draw, inverse_sampler
+from ._model_utils import is_exponential
+from ._sampling import RowSampler, column, inverse_sampler
 
 _AFT_KIND = "Accelerated Failure Time"
 
@@ -283,7 +283,7 @@ class LoadSharingModel:
             # Baseline exposure-to-failure thresholds: (N, size).
             tau = np.empty((self.N, size))
             for i, base in enumerate(self._baselines):
-                tau[i] = np.asarray(draw(base, size), dtype=float).reshape(-1)
+                tau[i] = np.asarray(base.random(size), dtype=float).reshape(-1)
         return self._lifetimes_from_thresholds(tau)
 
     def _lifetimes_from_thresholds(self, tau):
@@ -412,7 +412,7 @@ class LoadSharingModel:
         """
         if self._sf_model is not None:
             return self._sf_model.sf(x, *args, **kwargs)
-        return shaped(self.model.sf, x, *args, **kwargs)
+        return self.model.sf(x, *args, **kwargs)
 
     def ff(self, x, *args, **kwargs):
         """Cumulative failure probability, ``1 - sf(x)``.
@@ -434,7 +434,7 @@ class LoadSharingModel:
         """
         if self._sf_model is not None:
             return self._sf_model.ff(x, *args, **kwargs)
-        return shaped(self.model.ff, x, *args, **kwargs)
+        return self.model.ff(x, *args, **kwargs)
 
     def cs(self, x, X):
         """Conditional survival ``R(x | X) = sf(X + x) / sf(X)``.

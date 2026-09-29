@@ -15,12 +15,10 @@ path. :func:`row_sampler` extends the same idea to composite node models
 (standby, repeated, load-sharing, regression and nested-RBD nodes), which
 draw several uniforms per sample.
 
-A limited-failure-population or zero-inflated surpyval model is the
-exception: its own ``random`` returns survival data (failure times, with
-the units that never fail right-censored), not lifetimes. Its lifetimes are
-drawn by its quantile function instead, one global uniform each: infinite
-for a unit that never fails, 0 for one dead on arrival. Every simulation
-draws them that way, through :func:`inverse_sampler` and :func:`draw`.
+A limited-failure-population or zero-inflated surpyval model draws its
+lifetimes through its own quantile function, one global uniform each:
+infinite for a unit that never fails, 0 for one dead on arrival.
+:func:`inverse_sampler` replays that too.
 """
 
 from dataclasses import dataclass
@@ -71,9 +69,10 @@ def row_sampler(model) -> Optional[RowSampler]:
         isinstance(model, NonParametric)
         and type(model).random is NonParametric.random
     ):
-        # surpyval draws these from a fresh, OS-seeded generator on every
-        # call, never from numpy's global RNG: they take no global uniforms
-        # (and are not reproducible, batched or not).
+        # surpyval draws these from a generator it seeds from numpy's global
+        # RNG, once per call: not one global uniform per draw. A batch takes
+        # one seed for all its draws, so it uses the global stream
+        # reproducibly, but not as draws made one at a time would.
         return RowSampler(
             0, lambda u: np.asarray(model.random(len(u)), dtype=float)
         )
@@ -88,9 +87,10 @@ def inverse_sampler(model) -> Optional[Sampler]:
     uniform per draw; otherwise ``None``.
 
     This mirrors the branch of surpyval's ``Parametric.random`` that such a
-    model takes, operation for operation, so the values are identical. For a
-    limited-failure-population or zero-inflated model it is the model's
-    quantile function (see the module docstring and :func:`draw`).
+    model takes, operation for operation, so the values are identical: the
+    distribution's quantile function plus the offset for a plain model, and
+    the model's own quantile function for a limited-failure-population or
+    zero-inflated one.
     """
     if (
         isinstance(model, Parametric)
@@ -102,40 +102,6 @@ def inverse_sampler(model) -> Optional[Sampler]:
             return lambda u: dist.qf(u, *params) + gamma
         return lambda u: np.asarray(model.qf(u), dtype=float)
     return None
-
-
-def _defective(model) -> bool:
-    """A limited-failure-population or zero-inflated surpyval model, whose
-    ``random`` returns survival data rather than lifetimes."""
-    return (
-        isinstance(model, Parametric)
-        and type(model).random is Parametric.random
-        and (model.p != 1 or model.f0 != 0)
-        and hasattr(model.dist, "qf")
-    )
-
-
-def draw(model, size):
-    """``size`` lifetimes (or durations) of ``model`` from numpy's global
-    RNG: ``model.random(size)``, except for a limited-failure-population or
-    zero-inflated surpyval model, whose own ``random`` returns survival
-    data. Its lifetimes are drawn by its quantile function, one uniform
-    each, as :func:`inverse_sampler` draws them in blocks: infinite for a
-    unit that never fails, 0 for one dead on arrival.
-
-    Examples
-    --------
-    >>> import numpy as np
-    >>> import surpyval as surv
-    >>> from repyability.rbd._sampling import draw
-    >>> cured = surv.Weibull.from_params([100, 2], p=0.6)  # 40% never fail
-    >>> np.random.seed(0)
-    >>> draw(cured, 4).round(2)
-    array([156.89,    inf,    inf, 154.51])
-    """
-    if _defective(model):
-        return np.asarray(model.qf(np.random.random_sample(size)), dtype=float)
-    return model.random(size)
 
 
 def draw_rows(samplers: list[Sampler], size: int) -> list[np.ndarray]:

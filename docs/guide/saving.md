@@ -81,18 +81,18 @@ global generator is.
 rbd.mean(1_000, seed=0) == rbd.mean(1_000, seed=0)   # True
 ```
 
-**The exception: non-parametric nodes with surpyval 0.20.** surpyval 0.20
-draws Kaplan–Meier (and other non-parametric) samples from a fresh, unseeded
-generator, ignoring the global one, so a simulation involving such a node is
-not reproducible even with a seed. Later versions seed that generator from
-the global one
-([surpyval issue #361](https://github.com/derrynknife/SurPyval/issues/361)),
-which makes those simulations reproducible too. The exact quantities (`sf`,
-`ff`, the importance measures, ...) are unaffected either way.
+Simulations involving non-parametric nodes (Kaplan–Meier and the other
+surpyval non-parametric fits) are reproducible too: surpyval seeds their
+draws from the global generator
+([surpyval issue #361](https://github.com/derrynknife/SurPyval/issues/361)).
 
 The simulations draw the same random numbers in the same order however they
 are computed internally (in blocks for speed, or one at a time), so seeded
-results do not depend on which internal path a model takes. A parallel run
+results do not depend on which internal path a model takes. Non-parametric
+nodes are the exception: surpyval takes one seed from the global generator
+for each call rather than one random number for each draw, so a block of
+their draws differs from the same draws made one at a time. Their results
+are still reproducible. A parallel run
 (`n_jobs`) seeds each block of simulations in turn from `seed`, so its
 results do not depend on the number of processes; they differ from a run
 without `n_jobs` (see [Parallel runs](simulation.md#parallel-runs)).

@@ -16,12 +16,7 @@ import numpy as np
 from scipy.integrate import cumulative_trapezoid, trapezoid
 from scipy.signal import fftconvolve
 
-from ._model_utils import (
-    distribution_name,
-    failure_time_scale,
-    model_extras,
-    never_fails,
-)
+from ._model_utils import distribution_name, failure_time_scale, never_fails
 
 
 def _scalar(value) -> float:
@@ -56,34 +51,17 @@ def _dead_on_arrival(model) -> float:
     return float(getattr(model, "f0", 0.0) or 0.0)
 
 
-def _continuous_part(model):
-    """The model without its units dead on arrival, whose density is the
-    model's own away from 0. (surpyval's density of a zero-inflated model
-    gives the dead-on-arrival fraction itself at exactly 0.) ``None`` when
-    nothing is left: every unit is dead on arrival or never fails."""
-    f0 = _dead_on_arrival(model)
-    if f0 == 0.0:
-        return model
-    import surpyval
-
-    extras = model_extras(model)
-    del extras["f0"]
-    extras["p"] = float(getattr(model, "p", 1.0)) - f0
-    if extras["p"] <= 0.0:
-        return None
-    cls = getattr(surpyval, cast(str, distribution_name(model)))
-    return cls.from_params(list(np.ravel(model.params)), **extras)
-
-
 def _density_on_grid(model, t: np.ndarray) -> np.ndarray:
-    """The density of the model's continuous part on the grid (see
-    :func:`_continuous_part`), with any non-finite values (e.g. an
-    infinite density at t=0 for some shapes) replaced by zero. The negligible
-    mass lost is restored by the later CDF normalisation."""
-    part = _continuous_part(model)
-    if part is None:
-        return np.zeros_like(t)
-    pdf = np.asarray(part.df(t), dtype=float)
+    """The density of the model's continuous part on the grid, with any
+    non-finite values (e.g. an infinite density at t=0 for some shapes)
+    replaced by zero. The negligible mass lost is restored by the later CDF
+    normalisation. For a zero-inflated model that leaves out the units dead
+    on arrival, whose mass its ``df`` otherwise gives at exactly 0."""
+    if _dead_on_arrival(model):
+        pdf = model.df(t, continuous=True)
+    else:
+        pdf = model.df(t)
+    pdf = np.asarray(pdf, dtype=float)
     return np.nan_to_num(pdf, nan=0.0, posinf=0.0, neginf=0.0)
 
 
