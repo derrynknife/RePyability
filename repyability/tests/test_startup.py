@@ -80,7 +80,7 @@ def test_the_forkserver_preloads_repyability(forkserver_by_default):
 
 
 @pytest.mark.skipif(not HAS_FORKSERVER, reason="no forkserver here")
-def test_a_forkserver_run_matches_a_forked_one(forkserver_by_default):
+def test_a_forkserver_run_matches_one_in_this_process(forkserver_by_default):
     unit = {
         "reliability": surv.Exponential.from_params([0.1]),
         "repairability": surv.Exponential.from_params([1.0]),
@@ -89,10 +89,9 @@ def test_a_forkserver_run_matches_a_forked_one(forkserver_by_default):
         [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")],
         {n: unit for n in "abc"},
     )
-    kwargs = dict(t_simulation=50.0, N=600, seed=3, n_jobs=2)
-    served = plant.availability(**kwargs)
-    with pytest.MonkeyPatch.context() as m:
-        m.setattr(multiprocessing, "get_context", default_context("fork"))
-        forked = plant.availability(**kwargs)
-    assert served.system_failures == forked.system_failures
-    assert (served.uptimes == forked.uptimes).all()
+    kwargs = dict(t_simulation=50.0, N=600, seed=3)
+    # n_jobs=1 runs the same seeded blocks here, with no processes.
+    served = plant.availability(**kwargs, n_jobs=2)
+    here = plant.availability(**kwargs, n_jobs=1)
+    assert served.system_failures == here.system_failures
+    assert (served.uptimes == here.uptimes).all()
