@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-30
+
+How much a system can deliver, and exact answers where there were
+estimates. System capacity gives the exact distribution of what a diagram
+can deliver from its components' capacities (#97), with components that
+work at several levels (#98), and the simulation follows the capacity
+delivered over a window: the production availability (#99). A repairable
+system's availability over time and over a mission is exact from new
+(#117), and so is a system's mean time to failure (#122).
+`analysis_routes()` says, without running anything, how each analysis will
+be computed: exactly, numerically, by simulation or not at all (#127).
+Availability simulations run faster, and about ten times as fast again
+when compiled with numba (#119, #120), and `import repyability` is quicker
+(#121). Demonstration test planning is new (#129).
+
+Behaviour changes: seeded repairable simulations give different numbers,
+once, as each random quantity now has a stream of its own (#119);
+`mean()` and `mean_time_to_failure()` are exact, the old estimate is
+behind `method="simulate"`, and the exact MTTF refuses common-cause groups
+(#122); the number of simulations is `mc_samples` everywhere, and its cap
+`max_samples`, with the old names deprecated until 1.0 (#105);
+`is_analytically_solvable()` flags only simulated nodes (#127); cold-standby
+reliabilities are more accurate, so they move slightly (#128); and
+surpyval 0.21 is required.
+
 ### Added
 
 - **System capacity** (#97): how much a system can deliver, not just
