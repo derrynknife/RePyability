@@ -20,7 +20,8 @@ system's availability over time and over a mission is exact from new
 be computed: exactly, numerically, by simulation or not at all (#127).
 Availability simulations run faster, and about ten times as fast again
 when compiled with numba (#119, #120), and `import repyability` is quicker
-(#121). Demonstration test planning is new (#129).
+(#121). Components can share a limited number of repair crews (#89), and
+demonstration test planning is new (#129).
 
 Behaviour changes: seeded repairable simulations give different numbers,
 once, as each random quantity now has a stream of its own (#119);
@@ -144,6 +145,21 @@ surpyval 0.21 is required.
   infinite MTTF. The MTTF is as exact as the node reliabilities it is made
   of, and `analysis_routes()` says which nodes limit it. Nested RBDs and
   `RepeatedNode`s bring their exact MTTFs too (`node_mttf`, `mean`).
+- **Shared repair crews** (#89). `RepairableRBD(..., repair_crews=n)`
+  lets at most `n` repairs proceed at once. A component whose job (a repair
+  or replacement, maintenance that takes time, or a test that takes time)
+  finds every crew busy waits, down, until one is free: the next crew takes
+  the waiting job of the highest `"priority"` (a new component spec key),
+  and of those the one that fell due first, and stays with it until it is
+  done. A test that waits keeps its component off-line, not ageing. A
+  nested RBD has crews of its own. The simulations (`availability`, `cost`,
+  `compare`) follow the queue, in Python, with the same streams, so seeded
+  runs stay reproducible and paired; the exact methods refuse while a job
+  can wait, and `analysis_routes()` says so. With the default (None), or at
+  least as many crews as components, nothing waits and every result is the
+  same as before. The crews and priorities are saved with the RBD. Checked
+  against the machine-repair model's closed form (identical exponential
+  units in parallel or k-out-of-n, with one or more crews).
 - **Demonstration test planning** (#129): how many units, or how long a
   test, demonstrates a reliability at a confidence level, and what a
   finished test demonstrated. `demonstration_sample_size` (the success run,

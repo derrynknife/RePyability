@@ -578,6 +578,14 @@ def test_the_compiled_engine_refuses_what_it_cannot_run():
     rbd = repairable_rbds()["maintained"]
     with pytest.raises(NotImplementedError, match="preventive maintenance"):
         rbd.availability(100.0, mc_samples=5, seed=2, engine="numba")
+    bridge = plain_rbds()["bridge"]
+    crewed = RepairableRBD(
+        [tuple(e) for e in bridge._init_args["edges"]],
+        bridge._init_args["components"],
+        repair_crews=1,
+    )
+    with pytest.raises(NotImplementedError, match="repair crews"):
+        crewed.availability(100.0, mc_samples=5, seed=2, engine="numba")
 
 
 def test_without_numba_the_compiled_engine_cannot_be_asked_for(monkeypatch):

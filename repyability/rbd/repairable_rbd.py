@@ -200,6 +200,63 @@ def _stand_in(component, run, made: dict, path: tuple, duration=None):
     )
 
 
+class _Crews:
+    """The repair crews of one simulation (``RepairableRBD``'s
+    ``repair_crews``): how many are free, the components they are working
+    on, and the jobs waiting for one.
+
+    A job is the work that brings a component back up: a repair or
+    replacement, maintenance that takes time, or a test that takes time.
+    The component is down from when the job fell due. A job that finds no
+    crew free waits, and the next crew to finish starts the waiting job of
+    the highest priority, and of those the one that fell due first. The
+    job's length was drawn when it fell due, so waiting shifts the
+    component's restoration without changing its draws.
+    """
+
+    __slots__ = ("free", "served", "holding", "waiting", "_order", "_rank")
+
+    def __init__(self, crews: int, served, priority: dict):
+        self.free = crews
+        self.served = frozenset(served)
+        self.holding: set = set()
+        self.waiting: list = []
+        self._order = 0
+        self._rank = {node: -priority.get(node, 0.0) for node in served}
+
+    def request(self, node, due: float, done: "Event") -> Optional["Event"]:
+        """``node``'s job, due at ``due`` and ending with ``done`` if a crew
+        starts it at once: ``done``, or None while the job waits."""
+        if self.free:
+            self.free -= 1
+            self.holding.add(node)
+            return done
+        entry = (self._rank[node], due, self._order, node, done)
+        heapq.heappush(self.waiting, entry)
+        self._order += 1
+        return None
+
+    def release(self, node, t: float) -> Optional[Tuple[Any, float, "Event"]]:
+        """``node``'s job is done at ``t``: its crew starts the next waiting
+        job, if any. That job's component, how long it waited, and the event
+        that now ends it; or None."""
+        self.holding.discard(node)
+        if not self.waiting:
+            self.free += 1
+            return None
+        _, due, _, waiting, done = heapq.heappop(self.waiting)
+        self.holding.add(waiting)
+        wait = t - due
+        ends = Event(
+            done.time + wait,
+            waiting,
+            done.status,
+            done.preventive,
+            done.inspection,
+        )
+        return waiting, wait, ends
+
+
 class _Fixed:
     """A cost charged at the same amount every time."""
 
@@ -668,6 +725,36 @@ class _PythonRunner:
 
 #: The per-action costs: charged at each preventive action or inspection.
 _ACTION_COST_KEYS = ("preventive_cost", "inspection_cost")
+
+
+def _validate_crews(crews) -> Optional[int]:
+    """``repair_crews``, validated: a whole number of crews, at least 1, or
+    None for as many as are needed."""
+    if crews is None:
+        return None
+    if isinstance(crews, bool) or int(crews) != crews or crews < 1:
+        raise ValueError(
+            f"repair_crews must be a whole number, 1 or more, or None; got "
+            f"{crews!r}."
+        )
+    return int(crews)
+
+
+def _validate_priority(node, priority) -> float:
+    """A component's ``"priority"`` for a crew, validated: a finite
+    number."""
+    if isinstance(priority, bool) or not isinstance(
+        priority, (int, float, np.integer, np.floating)
+    ):
+        raise ValueError(
+            f"Component {node!r}: priority must be a number, got "
+            f"{priority!r}."
+        )
+    if not np.isfinite(priority):
+        raise ValueError(
+            f"Component {node!r}: priority must be finite, got {priority!r}."
+        )
+    return float(priority)
 
 
 def _safe_mean(model) -> float:
@@ -1510,10 +1597,11 @@ class RepairableRBD(RBD):
     Each component alternates between working and failed: it fails after a
     time drawn from its reliability model, and is then repaired, as good
     as new, after a time drawn from its repairability model. Components fail
-    and are repaired independently of one another and of the system state:
-    there is no shared repair crew, and a component keeps running (and can
-    fail) while the system is down. The system is up whenever its working
-    components connect the input node to the output node.
+    and are repaired independently of one another and of the system state
+    (unless ``repair_crews`` makes them wait for a crew), and a component
+    keeps running (and can fail) while the system is down. The system is up
+    whenever its working components connect the input node to the output
+    node.
 
     Two kinds of analysis are offered:
 
@@ -1587,7 +1675,9 @@ class RepairableRBD(RBD):
           ``"acquisition_cost"`` is the one-off cost of buying the unit, a
           number: it is not a running cost, so it is left out of
           ``expected_cost_rate`` and the simulated costs, and counted by
-          ``total_cost`` and ``allocate_redundancy``.
+          ``total_cost`` and ``allocate_redundancy``. ``"priority"`` is the
+          component's place in the queue for a repair crew (see
+          ``repair_crews``): a number, higher first, by default 0.
         - A [`NonRepairable`][repyability.NonRepairable], pairing a
           reliability model with a time-to-replace model. Each node gets
           its own copy, so one object can be given for several identical
@@ -1632,6 +1722,22 @@ class RepairableRBD(RBD):
         [`DegradingNode`][repyability.DegradingNode], whose stages give its
         levels, or a nested ``RepairableRBD`` with capacities, whose
         distribution it then has.
+    repair_crews : int, optional
+        How many repair crews work on the components, by default None: as
+        many as are needed, so no work waits. At most this many jobs
+        proceed at once: a job is what brings a component back up (a repair
+        or replacement, preventive maintenance that takes time, or a test
+        that takes time), and the component is down from when the job falls
+        due. A job that finds every crew busy waits, the component down,
+        until a crew is free, which then takes the waiting job of the
+        highest ``"priority"``, and of those the one that fell due first;
+        a crew stays with a job until it is done. Maintenance or a test in
+        no time needs no crew. A nested ``RepairableRBD``'s components are
+        worked on by its own crews. With fewer crews than components,
+        components wait for each other: the simulations (``availability``,
+        ``cost``, ``compare``) follow the queue, in Python, and the exact
+        methods raise ``NotImplementedError``. With at least as many, no
+        job waits, and every result is as without crews.
 
     Attributes
     ----------
@@ -1651,6 +1757,8 @@ class RepairableRBD(RBD):
         The system downtime cost rate.
     capacity : dict
         The capacities given, keyed by node name, as floats.
+    repair_crews : int or None
+        The number of repair crews (None: as many as are needed).
     acquisition_costs : dict
         Node name -> the one-off cost of buying the unit, for the nodes that
         declare a non-zero ``"acquisition_cost"``.
@@ -1696,8 +1804,10 @@ class RepairableRBD(RBD):
         ``output_node`` is not in the diagram, or is not its source or sink;
         if ``on_infeasible_rbd`` is not ``"raise"``, ``"warn"`` or
         ``"ignore"``; if the diagram is invalid and ``on_infeasible_rbd``
-        is ``"raise"``; or if a capacity is not a positive number or is for
-        the input or output node or a node not in the diagram.
+        is ``"raise"``; if a capacity is not a positive number or is for
+        the input or output node or a node not in the diagram; or if
+        ``repair_crews`` is not a whole number of at least 1, or a
+        ``"priority"`` is not a finite number.
     TypeError
         If a component is not a spec dict, a ``NonRepairable`` or a
         ``RepairableRBD`` (a ``Repairable``, which models imperfect repair,
@@ -1775,7 +1885,7 @@ class RepairableRBD(RBD):
     COMPONENT_SPEC_KEYS = (
         ("reliability", "repairability")
         + COST_KEYS
-        + ("preventive", "inspection", "acquisition_cost")
+        + ("preventive", "inspection", "acquisition_cost", "priority")
     )
     #: The keys of a component's ``"preventive"`` spec.
     PREVENTIVE_KEYS = ("interval", "policy", "duration", "cost")
@@ -1798,6 +1908,7 @@ class RepairableRBD(RBD):
         on_infeasible_rbd: str = "raise",
         downtime_cost_rate: float = 0.0,
         capacity: Optional[dict[Any, float]] = None,
+        repair_crews: Optional[int] = None,
     ):
         _check_on_infeasible_rbd(on_infeasible_rbd)
         # Capture the constructor inputs verbatim (before any mutation) so the
@@ -1812,7 +1923,11 @@ class RepairableRBD(RBD):
             "on_infeasible_rbd": on_infeasible_rbd,
             "downtime_cost_rate": downtime_cost_rate,
             "capacity": dict(capacity) if capacity else None,
+            "repair_crews": repair_crews,
         }
+        self.repair_crews = _validate_crews(repair_crews)
+        # Each component's place in the queue for a crew (higher first).
+        self._priority: dict[Any, float] = {}
         self.downtime_cost_rate = self._validate_cost(
             "<system>", "downtime_cost_rate", downtime_cost_rate
         )
@@ -1864,6 +1979,10 @@ class RepairableRBD(RBD):
                     if cost is not None:
                         node_costs["inspection_cost"] = cost
                     self._inspection[name] = inspection
+                if component.get("priority") is not None:
+                    self._priority[name] = _validate_priority(
+                        name, component["priority"]
+                    )
                 if component.get("acquisition_cost") is not None:
                     acquisition = self._validate_cost(
                         name, "acquisition_cost", component["acquisition_cost"]
@@ -4148,6 +4267,14 @@ class RepairableRBD(RBD):
             if first.time < t_simulation:
                 event_queue.put(first)
         self._event_queue = event_queue
+        # The repair crews, when there are fewer than the components that
+        # may need one (with enough, no job ever waits).
+        crews = self.repair_crews
+        self._crews = (
+            _Crews(crews, self._crew_served(), self._priority)
+            if crews is not None and self._crews_limited()
+            else None
+        )
         self.last_change_planned = False
         # The initial system state must reflect any forced-broken components
         # (e.g. a broken component in series starts the system down), rather
@@ -4516,6 +4643,9 @@ class RepairableRBD(RBD):
         ``analysis_routes``)."""
         from repyability.rbd import routes as r
 
+        crews = r.refusal(self._require_unlimited_crews)
+        if crews:
+            return r.refused(crews)
         calendars = r.refusal(self._require_calendars)
         if calendars:
             return r.refused(calendars)
@@ -4562,6 +4692,9 @@ class RepairableRBD(RBD):
         ``analysis_routes``)."""
         from repyability.rbd import routes as r
 
+        crews = r.refusal(self._require_unlimited_crews)
+        if crews:
+            return r.refused(crews)
         nodes = {node: self._node_over_time(node) for node in self.components}
         refusals = {
             n: how for n, (route, how) in nodes.items() if route == r.REFUSED
@@ -4967,6 +5100,7 @@ class RepairableRBD(RBD):
         """Each node's point availability over ``[0, horizon]``, from new,
         as a curve (see ``_point_availability``), except the nodes in
         ``skip`` (held working or failed)."""
+        self._require_unlimited_crews()
         curves: dict = {}
         for node, component in self.components.items():
             if node in skip:
@@ -5281,6 +5415,66 @@ class RepairableRBD(RBD):
             return Event(t, node, status, _planned(source, status))
         return Event(event.time + t, node, status)
 
+    def _crew_follow_up(
+        self, event: Event, next_event: Event
+    ) -> Optional[Event]:
+        """``next_event`` as the repair crews allow (see ``_Crews``): a job
+        that falls due when ``event`` takes a component down waits for a
+        crew (None while it does), and a crew that finishes one at
+        ``event`` starts the next waiting job, whose end is queued here."""
+        crews, node = self._crews, event.component
+        if crews is None or node not in crews.served:
+            return next_event
+        if event.status:
+            if node in crews.holding:
+                started = crews.release(node, event.time)
+                if started is not None:
+                    ends = self._started_late(*started)
+                    if ends.time < self.t_simulation:
+                        self._event_queue.put(ends)
+            return next_event
+        if next_event.status:
+            return crews.request(node, event.time, next_event)
+        return next_event
+
+    def _started_late(self, node, wait: float, ends: Event) -> Event:
+        """A job of ``node`` that a crew starts ``wait`` after it fell due,
+        and so ends with ``ends``: a component off-line for a test does not
+        age while it waits, so its hidden failure is ``wait`` later."""
+        pending = self._pending_failure.get(node)
+        if pending is not None:
+            self._pending_failure[node] = pending + wait
+        return ends
+
+    def _crew_served(self) -> list:
+        """The components the repair crews work on: this RBD's own, not a
+        nested RBD's (which has crews of its own)."""
+        return [
+            node
+            for node, component in self.components.items()
+            if not isinstance(component, RepairableRBD)
+        ]
+
+    def _crews_limited(self) -> bool:
+        """Whether there are fewer repair crews than components that may
+        need one, so that a job may wait."""
+        return self.repair_crews is not None and self.repair_crews < len(
+            self._crew_served()
+        )
+
+    def _require_unlimited_crews(self) -> None:
+        """Raise if a job may wait for a repair crew: components then no
+        longer fail and recover independently, which the exact methods
+        assume."""
+        if self._crews_limited():
+            raise NotImplementedError(
+                f"With {self.repair_crews} repair crew(s) for "
+                f"{len(self._crew_served())} components, a component can "
+                "wait for a crew, so the components no longer fail and "
+                "recover independently, which the exact methods assume. "
+                "Simulate the system with availability() or cost()."
+            )
+
     def _maintained_follow_up(
         self, event: Event, source, schedule: _Preventive
     ) -> Event:
@@ -5466,10 +5660,15 @@ class RepairableRBD(RBD):
                     self.component_status, method
                 )
 
-            next_event = self._follow_up(event, sources[event.component])
+            follow = self._follow_up(event, sources[event.component])
+            next_event: Optional[Event] = (
+                follow
+                if self._crews is None
+                else self._crew_follow_up(event, follow)
+            )
             # But only queue up the event if it occurs before the end
             # of the simulation
-            if next_event.time < self.t_simulation:
+            if next_event is not None and next_event.time < self.t_simulation:
                 self._event_queue.put(next_event)
 
         self.system_state = new_system_state
@@ -6123,6 +6322,7 @@ class RepairableRBD(RBD):
         status = self.component_status
         index, plain, works = ctx.position, ctx.plain, ctx.works
         inspected = self._inspection
+        crews = self._crews
         n = len(index)
         # Each component's failures, the system failures they caused, its
         # restorations and the system restorations they caused.
@@ -6175,8 +6375,13 @@ class RepairableRBD(RBD):
                     if not event.status:
                         for category, charges in failure_charges.get(node, ()):
                             rep_cost += pay(node, category, charges)
-                next_event = self._follow_up(event, sources[node])
-                if next_event.time < t_simulation:
+                follow = self._follow_up(event, sources[node])
+                next_event: Optional[Event] = (
+                    follow
+                    if crews is None
+                    else self._crew_follow_up(event, follow)
+                )
+                if next_event is not None and next_event.time < t_simulation:
                     push(heap, (next_event.time, next_event))
                 continue
             t = event.time
@@ -6244,7 +6449,10 @@ class RepairableRBD(RBD):
                 next_event = Event(t + delay, node, next_status)
             else:
                 next_event = self._follow_up(event, sources[node])
-            if next_event.time < t_simulation:
+            if crews is not None:
+                # A job waits for a repair crew (see _Crews).
+                next_event = self._crew_follow_up(event, next_event)
+            if next_event is not None and next_event.time < t_simulation:
                 push(heap, (next_event.time, next_event))
         self.system_state = up
 
@@ -6671,6 +6879,7 @@ class RepairableRBD(RBD):
 
     def _node_availability(self, node) -> float:
         """A component's long-run availability (see ``node_availability``)."""
+        self._require_unlimited_crews()
         if node in self._inspection:
             rate, interval = self._inspected_rate(node)
             return float(-np.expm1(-rate * interval) / (rate * interval))
@@ -6974,6 +7183,7 @@ class RepairableRBD(RBD):
         with hidden failures enters through its own long-run values, which
         is exact only if nothing else varies with the inspections.
         """
+        self._require_unlimited_crews()
         self._require_calendars()
         blocks = self._block_nodes()
         if blocks:

@@ -153,6 +153,10 @@ def repairable_rbds():
                 },
                 capacity={"b": 100.0, "c": 100.0},
             ),
+            "one repair crew": system(
+                unit(priority=1), repair_crews=1, downtime_cost_rate=5.0
+            ),
+            "enough repair crews": system(unit(), repair_crews=3),
         }
     )
     return out

@@ -299,8 +299,8 @@ The compiled engine simulates plain components (`reliability` and
 `repairability` specs, or `NonRepairable` objects, with surpyval parametric
 models) in any structure, with nodes held working or broken, costs,
 antithetic pairs, tolerances and common random numbers. Preventive
-maintenance, inspections, nested RBDs, capacities and other models run in
-Python, which `"auto"` chooses by itself. With `n_jobs` it runs on that many
+maintenance, inspections, repair crews, nested RBDs, capacities and other
+models run in Python, which `"auto"` chooses by itself. With `n_jobs` it runs on that many
 threads, which start at once.
 
 On one test machine, the plant above, over 1 000 hours, ran at about a

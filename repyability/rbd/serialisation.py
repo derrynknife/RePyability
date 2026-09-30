@@ -230,6 +230,8 @@ def _serialise_component(value) -> dict:
                 out[key] = float(cost)
         if value.get("acquisition_cost"):
             out["acquisition_cost"] = float(value["acquisition_cost"])
+        if value.get("priority"):
+            out["priority"] = float(value["priority"])
         for key in ("preventive", "inspection"):
             if value.get(key) is not None:
                 out[key] = _serialise_schedule(value[key])
@@ -285,6 +287,8 @@ def _deserialise_component(d: dict) -> Any:
                 )
         if "acquisition_cost" in d:
             out["acquisition_cost"] = d["acquisition_cost"]
+        if "priority" in d:
+            out["priority"] = d["priority"]
         for key in ("preventive", "inspection"):
             if key in d:
                 out[key] = _deserialise_schedule(d[key])
@@ -389,6 +393,8 @@ def rbd_to_dict(rbd: RBD) -> dict:
             for n, v in args["components"].items()
         ]
         out["downtime_cost_rate"] = args.get("downtime_cost_rate", 0.0)
+        if args.get("repair_crews") is not None:
+            out["repair_crews"] = int(args["repair_crews"])
     else:
         nodes = set(args["reliabilities"].keys())
         out["reliabilities"] = [
@@ -426,6 +432,7 @@ def rbd_from_dict(d: dict) -> RBD:
             edges,
             components,
             downtime_cost_rate=d.get("downtime_cost_rate", 0.0),
+            repair_crews=d.get("repair_crews"),
             **common,
         )
     if rbd_type == "NonRepairableRBD":

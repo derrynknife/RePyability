@@ -40,11 +40,12 @@ A component can be given as:
   (`"repair_cost"`, `"replace_cost"`, `"downtime_cost"`, and the one-off
   `"acquisition_cost"`; see [Costs](costs.md)),
   scheduled preventive replacement (`"preventive"`; see
-  [Costs](costs.md#preventive-maintenance)) and, for a component whose
+  [Costs](costs.md#preventive-maintenance)), for a component whose
   failures are hidden until a proof test finds them, periodic inspection
-  (`"inspection"`; see [Costs](costs.md#hidden-failures-and-inspection)).
-  Any other key raises `ValueError`, so a mistyped cost key is never
-  silently priced at zero;
+  (`"inspection"`; see [Costs](costs.md#hidden-failures-and-inspection)),
+  and its place in the queue for a repair crew (`"priority"`; see
+  [below](#repair-crews)). Any other key raises `ValueError`, so a
+  mistyped cost key is never silently priced at zero;
 - `"repairability": "instant"` for a component repaired in zero time (see
   [below](#instantly-repaired-components));
 - a [`NonRepairable`][repyability.NonRepairable]`(reliability,
@@ -55,12 +56,13 @@ A component can be given as:
 
 The constructor also takes `k`, `input_node`, `output_node` and
 `on_infeasible_rbd` exactly as for a
-[`NonRepairableRBD`](building.md), and `downtime_cost_rate` (see
-[Costs](costs.md)).
+[`NonRepairableRBD`](building.md), `downtime_cost_rate` (see
+[Costs](costs.md)) and `repair_crews` (see [below](#repair-crews)).
 
 Every repair restores a component to as good as new, components fail and are
-repaired independently of each other, and a component keeps its own
-failure/repair cycle whether or not the system is up.
+repaired independently of each other (unless they wait for a repair crew),
+and a component keeps its own failure/repair cycle whether or not the system
+is up.
 
 ## Long-run availability and frequencies (exact)
 
@@ -237,6 +239,51 @@ Here the valve caused 55% of system failures although it fails a fifth as
 often as a pump, and 99% of its failures took the system down: the pumps are
 redundant and it is not. A node's failure "causes" a system failure when it
 is the event that takes the system from up to down.
+
+## Repair crews
+
+By default every failed component is repaired at once, as though each had a
+crew of its own. `repair_crews` limits how many repairs can proceed at once.
+A plant with one technician repairs one pump while the next waits, so it is
+down more often, and for longer:
+
+```python
+pump = {"reliability": surv.Exponential.from_params([0.1]),     # MTTF 10 h
+        "repairability": surv.Exponential.from_params([0.5])}   # MTTR 2 h
+three = [("s", p) for p in "xyz"] + [(p, "t") for p in "xyz"]
+one_crew = RepairableRBD(three, {p: dict(pump) for p in "xyz"}, repair_crews=1)
+result = one_crew.availability(20_000.0, mc_samples=40, seed=1)
+result.mean_availability_interval().estimate    # -> 0.9747   exact: 0.9746
+RepairableRBD(three, {p: dict(pump) for p in "xyz"}).mean_availability()   # -> 0.9954   a crew each
+```
+
+(The exact value is the machine-repair model's: with one crew, the number of
+pumps down is a birth-death chain, and the system is down when all three
+are.)
+
+- **What needs a crew.** Every job that brings a component back up: a repair
+  or replacement, preventive maintenance that takes time, and a test that
+  takes time (with the repair of any failure it finds). The component is
+  down from when the job falls due until it is done. Maintenance or a test
+  in no time needs no crew.
+- **The queue.** A job that finds every crew busy waits. The next crew to
+  finish takes the waiting job of the highest `"priority"` (a component
+  spec key, by default 0), and of those the one that fell due first, and
+  stays with it until it is done. A test that waits keeps the component
+  off-line, and it does not age.
+- **Nested RBDs** have crews of their own: a nested `RepairableRBD`'s
+  components are repaired by its `repair_crews`, not by its parent's.
+- **Exact methods.** With fewer crews than components, components wait for
+  each other, so they no longer fail and recover independently: the exact
+  methods (`mean_availability`, `point_availability`, the importance
+  measures and the rest) raise `NotImplementedError`, and
+  `analysis_routes()` says so. The simulations (`availability`, `cost`,
+  `compare`) follow the queue, in Python. With at least as many crews as
+  components nothing waits, and every result is as without crews.
+
+```python
+one_crew.analysis_routes()["mean_availability"].route   # 'refused'
+```
 
 ## Instantly repaired components
 
