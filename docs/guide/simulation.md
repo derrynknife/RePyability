@@ -305,7 +305,11 @@ threads, which start at once.
 On one test machine, the plant above, over 1 000 hours, ran at about a
 million events (failures and repairs) a second in Python, 12 million
 compiled on one core and 24 million on four; a system of 12 components with
-a bridge and a vote, over 5 000 hours, at 0.8, 8.5 and 23 million.
+a bridge and a vote, over 5 000 hours, at 0.8, 8.5 and 23 million; and 70
+components, 35 redundant pairs in series, over 2 000 hours, at 0.6, 4.4 and
+12.6 million. Above 20 components, the compiled loop works out whether the
+system is up after each event that could change it, rather than looking it
+up in a table of every state, so those events cost more.
 
 ## Which to use
 
