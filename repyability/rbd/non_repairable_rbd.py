@@ -58,6 +58,7 @@ from .results import (
     ReliabilityRedundancyAllocation,
     UncertaintyResult,
 )
+from .routes import AnalysisRoute
 from .standby_node import StandbyModel
 from .uncertainty import draw_models
 
@@ -782,6 +783,69 @@ class NonRepairableRBD(RBD):
                 node_probabilities.update(member_probs)
             yield weight, node_probabilities
 
+    def _require_no_ccf_for_states(self) -> None:
+        """Raise if the RBD has CCF groups, for the condition-based methods
+        (``sf_given_state``, ``remaining_life``,
+        ``importances_given_state``)."""
+        if self.ccf_groups:
+            raise NotImplementedError(
+                "Condition-based evaluation (sf_given_state / remaining_life "
+                "/ importances_given_state) does not yet account for "
+                "common-cause (CCF) groups; use sf()/ff() for CCF system "
+                "reliability."
+            )
+
+    def _require_no_ccf_for_allocation(self, reliabilities=False) -> None:
+        """Raise if the RBD has CCF groups, for redundancy allocation (or,
+        with ``reliabilities``, reliability-redundancy allocation)."""
+        if not self.ccf_groups:
+            return
+        if reliabilities:
+            raise NotImplementedError(
+                "Reliability-redundancy allocation does not yet account for "
+                "common-cause (CCF) groups."
+            )
+        raise NotImplementedError(
+            "Redundancy allocation does not yet account for common-cause "
+            "(CCF) groups: duplicating a group member would also have to "
+            "extend its common-cause group."
+        )
+
+    def _require_time_varying(self) -> None:
+        """Raise if the system reliability does not vary with time, so the
+        time to a reliability is undefined."""
+        if self.is_fixed:
+            raise ValueError(
+                "System reliability does not vary with time (all nodes are "
+                "fixed-probability); the time to a reliability is undefined."
+            )
+
+    def _require_replayable(self) -> None:
+        """Raise unless every node's draws can be replayed from uniforms,
+        as common random numbers (``compare``) need."""
+        for node in self._components():
+            if row_sampler(self.reliabilities[node]) is None:
+                raise NotImplementedError(
+                    "Common random numbers need every node's draws to be "
+                    "replayable from uniforms (surpyval parametric "
+                    f"distributions and the composite nodes built from "
+                    f"them); node {node!r}'s are not."
+                )
+
+    def _require_capacity_outside_groups(self) -> None:
+        """Raise if a common-cause group member takes its capacity
+        distribution from its own model, which the capacity analysis does
+        not model."""
+        grouped = {m for group in self.ccf_groups for m in group.members}
+        own = grouped & set(self._capacity_models())
+        if own:
+            raise NotImplementedError(
+                "The capacity analysis does not model a common-cause group "
+                "whose members have capacity distributions of their own "
+                f"(nodes {sorted(own, key=str)}): give them capacities "
+                "instead."
+            )
+
     def _require_no_ccf(self) -> None:
         """Raise if the RBD has CCF groups, for the probability-dependent
         importance / sensitivity measures that do not yet account for them.
@@ -939,14 +1003,7 @@ class NonRepairableRBD(RBD):
                 working_nodes,
                 broken_nodes,
             )
-        grouped = {m for group in self.ccf_groups for m in group.members}
-        if grouped & set(own):
-            raise NotImplementedError(
-                "The capacity analysis does not model a common-cause group "
-                "whose members have capacity distributions of their own "
-                f"(nodes {sorted(grouped & set(own), key=str)}): give them "
-                "capacities instead."
-            )
+        self._require_capacity_outside_groups()
         base = self._base_node_probabilities(x, working_nodes, broken_nodes)
         conditions: Iterable[tuple] = (
             self._ccf_conditions(base, working_nodes, broken_nodes)
@@ -1639,12 +1696,7 @@ class NonRepairableRBD(RBD):
         if not isinstance(mixing, (bool, np.bool_)):
             raise ValueError(f"mixing must be True or False, got {mixing!r}.")
         mixing = bool(mixing)
-        if self.ccf_groups:
-            raise NotImplementedError(
-                "Redundancy allocation does not yet account for common-cause "
-                "(CCF) groups: duplicating a group member would also have to "
-                "extend its common-cause group."
-            )
+        self._require_no_ccf_for_allocation()
         if not costs:
             raise ValueError("costs must name at least one node.")
         nodes = list(costs)
@@ -2563,11 +2615,7 @@ class NonRepairableRBD(RBD):
         >>> round(best.reliability, 4)
         0.9705
         """
-        if self.ccf_groups:
-            raise NotImplementedError(
-                "Reliability-redundancy allocation does not yet account for "
-                "common-cause (CCF) groups."
-            )
+        self._require_no_ccf_for_allocation(reliabilities=True)
         if not uses:
             raise ValueError("uses must name at least one node.")
         nodes = list(uses)
@@ -3150,60 +3198,30 @@ class NonRepairableRBD(RBD):
         """
         return not self._fixed_probs
 
-    # Dynamic (sequence-dependent) node model types. Depending on the node,
-    # their sf(t) is a closed form (identical exponential units), a numerical
-    # convolution or a Kaplan-Meier fit to simulated lifetimes; any of them is
-    # treated as preventing a purely analytic / BDD solution of the system
-    # (see is_analytically_solvable).
-    _SIMULATION_NODE_TYPES = (
-        StandbyModel,
-        RepeatedStandbyNode,
-        LoadSharingModel,
-    )
-
     def _node_is_analytic(self, model) -> bool:
-        """Returns True if a node's reliability is available without
-        Monte-Carlo simulation (i.e. in closed form or from data), and so can
-        be consumed directly by the analytic / BDD system probability.
+        """Whether a node's reliability is computed without simulation:
+        exactly or numerically (see ``repyability.rbd.routes``)."""
+        from repyability.rbd.routes import SIMULATED, model_route
 
-        The check recurses through RepeatedNodes (analytic iff their underlying
-        model is) and nested NonRepairableRBDs (analytic iff they are
-        themselves analytically solvable).
-        """
-        # Perfect reliability / unreliability are constants
-        if model is PerfectReliability or model is PerfectUnreliability:
-            return True
-        # Standby arrangements are simulation-based (KM fit) -> non-analytic
-        if isinstance(model, self._SIMULATION_NODE_TYPES):
-            return False
-        # A repeated node is analytic iff its underlying model is
-        if isinstance(model, RepeatedNode):
-            return self._node_is_analytic(model.model)
-        # A nested RBD is analytic iff it is itself analytically solvable
-        if isinstance(model, NonRepairableRBD):
-            return model.is_analytically_solvable()
-        # Otherwise it is a surpyval parametric/non-parametric distribution
-        # (incl. FixedEventProbability), all of which expose a usable sf(t)
-        # without simulation.
-        return True
+        return model_route(model)[0] != SIMULATED
 
     def get_non_analytic_nodes(self) -> dict[Any, str]:
-        """The nodes that prevent a purely analytic solution.
+        """The nodes whose reliability is simulated.
 
-        A node is non-analytic when its model is a
-        [`StandbyModel`][repyability.StandbyModel],
-        [`RepeatedStandbyNode`][repyability.RepeatedStandbyNode] or
-        [`LoadSharingModel`][repyability.LoadSharingModel], or a
-        [`RepeatedNode`][repyability.RepeatedNode] or nested
-        ``NonRepairableRBD`` containing one (see
-        ``is_analytically_solvable``).
+        A node's reliability is simulated when it is a Kaplan-Meier fit to
+        simulated lifetimes: a [`StandbyModel`][repyability.StandbyModel]
+        or [`LoadSharingModel`][repyability.LoadSharingModel] with no
+        closed form or convolution (see their ``is_simulated``), or a
+        repeated node or nested RBD of one. A closed form or a numerical
+        convolution is not simulated. ``analysis_routes`` says how each
+        analysis of the RBD is computed.
 
         Returns
         -------
         dict[Any, str]
-            ``{node: type name of its model}`` for every non-analytic node,
-            e.g. ``{"a": "StandbyModel"}``. Empty if the RBD is
-            analytically solvable.
+            ``{node: type name of its model}`` for every node whose
+            reliability is simulated, e.g. ``{"a": "StandbyModel"}``. Empty
+            if none is.
         """
         non_analytic: dict[Any, str] = {}
         for node_name, model in self.reliabilities.items():
@@ -3212,28 +3230,19 @@ class NonRepairableRBD(RBD):
         return non_analytic
 
     def is_analytically_solvable(self) -> bool:
-        """Whether every node is of an analytic (non-dynamic) model type.
+        """Whether every node's reliability is computed without simulation.
 
         The exact system reliability (``sf`` and the methods built on it)
         is only as accurate as each node's own ``sf(t)``. That is a closed
-        form or data for surpyval distributions (parametric,
-        non-parametric or fixed-probability), for
+        form or data for surpyval distributions, for
         [`RegressionNode`][repyability.RegressionNode] and the perfect
-        nodes, for repeated nodes of such models, and for nested RBDs that
-        are themselves analytically solvable.
-
-        Standby and load-sharing arrangements
-        ([`StandbyModel`][repyability.StandbyModel],
-        [`RepeatedStandbyNode`][repyability.RepeatedStandbyNode],
-        [`LoadSharingModel`][repyability.LoadSharingModel]) are
-        sequence-dependent, so their ``sf(t)`` is, depending on the node, a
-        closed form (identical exponential units), a numerical convolution
-        or a Kaplan-Meier fit to Monte-Carlo lifetimes (a step function
-        bounded by the simulated support). This check is by type only: any
-        such node, or a repeated node or nested RBD containing one, makes it
-        False, even when the node's ``sf`` is a closed form. ``sf`` still
-        returns a value either way; for such systems simulating the whole
-        system (``random``, ``mean``) avoids the per-node approximation.
+        nodes; a closed form or a numerical convolution for most standby
+        and load-sharing arrangements; and a Kaplan-Meier fit to simulated
+        lifetimes for the rest (see ``get_non_analytic_nodes``), which
+        makes this False. ``sf`` still returns a value either way, carrying
+        those nodes' Monte-Carlo error. ``analysis_routes`` says how each
+        analysis is computed, including those that always simulate
+        (``random``, ``mean``).
 
         The result is also stored at construction in
         ``structure_check["is_analytically_solvable"]``.
@@ -3241,24 +3250,341 @@ class NonRepairableRBD(RBD):
         Returns
         -------
         bool
-            True if no node is of a standby or load-sharing type; False
-            otherwise (``get_non_analytic_nodes`` lists which).
+            True if no node's reliability is simulated; False otherwise
+            (``get_non_analytic_nodes`` lists which).
 
         Examples
         --------
+        One cold spare for one unit is a numerical convolution; two units
+        of three needed working, with one cold spare, is simulated:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, StandbyModel
+        >>> unit = surv.Weibull.from_params([100, 2])
+        >>> pair = NonRepairableRBD(
+        ...     [("s", "a"), ("a", "t")], {"a": StandbyModel([unit, unit])}
+        ... )
+        >>> pair.is_analytically_solvable()
+        True
+        >>> trio = NonRepairableRBD(
+        ...     [("s", "a"), ("a", "t")],
+        ...     {"a": StandbyModel([unit] * 3, k=2, n_sims=2000, seed=1)},
+        ... )
+        >>> trio.is_analytically_solvable()
+        False
+        >>> trio.get_non_analytic_nodes()
+        {'a': 'StandbyModel'}
+        """
+        return len(self.get_non_analytic_nodes()) == 0
+
+    def analysis_routes(self) -> Dict[str, "AnalysisRoute"]:
+        """How each analysis of this RBD is computed, found without running
+        it: exactly, numerically, by simulation, or not at all.
+
+        The route follows from the method, then from the nodes' models:
+        the structure is always evaluated exactly, whatever the diagram, but
+        a system value is only as exact as the node values it is made of.
+        So a node whose reliability is a numerical convolution makes the
+        analyses built on it numerical, and one whose reliability is fitted
+        to simulated lifetimes makes them simulated (see
+        ``get_non_analytic_nodes``). A refusal is found by the check the
+        method itself runs, and its reason is the message it would raise.
+
+        Returns
+        -------
+        dict[str, AnalysisRoute]
+            For each public analysis, by method name: its ``route``
+            (``"exact"``, ``"numerical"``, ``"simulated"`` or
+            ``"refused"``), the ``reason``, and the ``nodes`` that decide it
+            (see [`AnalysisRoute`][repyability.AnalysisRoute]).
+
+        Examples
+        --------
+        Two units needed of three, with the third a cold spare, have no
+        closed form, so the node's reliability is simulated, and so is
+        everything built on it:
+
         >>> import surpyval as surv
         >>> from repyability import NonRepairableRBD, StandbyModel
         >>> unit = surv.Weibull.from_params([100, 2])
         >>> rbd = NonRepairableRBD(
         ...     [("s", "a"), ("a", "b"), ("b", "t")],
-        ...     {"a": StandbyModel([unit, unit]), "b": unit},
+        ...     {
+        ...         "a": StandbyModel([unit] * 3, k=2, n_sims=2000, seed=1),
+        ...         "b": unit,
+        ...     },
         ... )
-        >>> rbd.is_analytically_solvable()
-        False
-        >>> rbd.get_non_analytic_nodes()
-        {'a': 'StandbyModel'}
+        >>> routes = rbd.analysis_routes()
+        >>> routes["sf"].route, routes["sf"].nodes
+        ('simulated', ('a',))
+        >>> routes["structural_importance"].route
+        'exact'
+        >>> routes["mean"].route
+        'simulated'
         """
-        return len(self.get_non_analytic_nodes()) == 0
+        from repyability.rbd import routes as r
+
+        nodes = {n: r.model_route(m) for n, m in self.reliabilities.items()}
+        out: Dict[str, r.AnalysisRoute] = {}
+
+        def give(names, route) -> None:
+            for name in names:
+                out[name] = route
+
+        def built(route, reason):
+            return r.with_nodes(route, reason, nodes, "reliabilities")
+
+        grouped = bool(self.ccf_groups)
+        give(
+            (
+                "sf",
+                "ff",
+                "reliability",
+                "unreliability",
+                "Hf",
+                "cs",
+                "node_sf",
+                "node_ff",
+            ),
+            built(
+                r.EXACT,
+                "The structure function over the node reliabilities, "
+                "exactly"
+                + (
+                    ", summed over the common-cause groups' outcomes."
+                    if grouped
+                    else "."
+                ),
+            ),
+        )
+        give(
+            ("df", "hf"),
+            built(
+                r.NUMERICAL,
+                "The exact reliability, differentiated by central "
+                "differences.",
+            ),
+        )
+        fixed = r.refusal(self._require_time_varying)
+        give(
+            ("time_to_reliability", "bx_life"),
+            (
+                r.refused(fixed)
+                if fixed
+                else built(
+                    r.NUMERICAL,
+                    "The exact reliability, inverted by root-finding.",
+                )
+            ),
+        )
+        no_ccf = r.refusal(self._require_no_ccf)
+        give(
+            (
+                "birnbaum_importance",
+                "improvement_potential",
+                "risk_achievement_worth",
+                "risk_reduction_worth",
+                "criticality_importance",
+                "fussell_vesely",
+                "fussel_vesely",
+            ),
+            (
+                r.refused(no_ccf)
+                if no_ccf
+                else built(
+                    r.EXACT,
+                    "The exact system reliability, with each node working and "
+                    "failed.",
+                )
+            ),
+        )
+        out["parameter_sensitivity"] = (
+            r.refused(no_ccf)
+            if no_ccf
+            else built(
+                r.NUMERICAL,
+                "The exact Birnbaum importance times each parameter's "
+                "derivative, by differences (composite and non-parametric "
+                "nodes are left out).",
+            )
+        )
+        out["structural_importance"] = r.AnalysisRoute(
+            r.EXACT, "From the structure alone."
+        )
+        stateless = [
+            n
+            for n, m in self.reliabilities.items()
+            if not self._node_is_stateable(m)
+        ]
+        note = (
+            f" A state cannot be given for {r._names(stateless)} (standby, "
+            "load-sharing, repeated and nested nodes)."
+            if stateless
+            else ""
+        )
+        states = r.refusal(self._require_no_ccf_for_states)
+        give(
+            ("sf_given_state", "importances_given_state"),
+            (
+                r.refused(states)
+                if states
+                else built(
+                    r.EXACT,
+                    "The exact system reliability over each node's "
+                    "reliability given its state." + note,
+                )
+            ),
+        )
+        out["remaining_life"] = (
+            r.refused(states or fixed or "")
+            if states or fixed
+            else built(
+                r.NUMERICAL,
+                "The reliability given the state, inverted by root-finding."
+                + note,
+            )
+        )
+        capacity = r.refusal(self._require_capacity) or r.refusal(
+            self._require_capacity_outside_groups
+        )
+        out["capacity_distribution"] = (
+            r.refused(capacity)
+            if capacity
+            else built(
+                r.EXACT,
+                "The exact distribution of the system's capacity from the "
+                "node reliabilities.",
+            )
+        )
+        no_capacity = r.refusal(self._require_capacity)
+        out["system_capacity"] = (
+            r.refused(no_capacity)
+            if no_capacity
+            else r.AnalysisRoute(
+                r.EXACT,
+                "The exact distribution of the system's capacity from the "
+                "node probabilities given.",
+            )
+        )
+        out["system_probability"] = r.AnalysisRoute(
+            r.EXACT,
+            "The structure function over the node probabilities given.",
+        )
+        out["path_set_probabilities"] = r.AnalysisRoute(
+            r.EXACT, "From the node probabilities given."
+        )
+        give(
+            (
+                "improvement_allocation",
+                "equal_allocation",
+                "simple_allocation",
+                "minimum_effort_allocation",
+                "cost_based_allocation",
+            ),
+            r.AnalysisRoute(
+                r.NUMERICAL,
+                "A solver over the exact system probability, from the node "
+                "probabilities given (not the node models).",
+            ),
+        )
+        out["sf_uncertainty"] = (
+            r.refused(no_ccf)
+            if no_ccf
+            else r.AnalysisRoute(
+                r.SIMULATED,
+                "The node parameters drawn from their uncertainty, and the "
+                "exact system reliability for each draw.",
+            )
+        )
+        independent = (
+            " The members of a common-cause group are sampled "
+            "independently: the common cause is left out."
+            if grouped
+            else ""
+        )
+        batched = self._row_sampler() is not None
+        out["random"] = r.AnalysisRoute(
+            r.SIMULATED,
+            (
+                "Monte-Carlo lifetimes, drawn in batches."
+                if batched
+                else "Monte-Carlo lifetimes, one at a time, as some nodes' "
+                "draws cannot be batched; antithetic sampling is refused."
+            )
+            + independent,
+        )
+        give(
+            ("mean", "mean_time_to_failure", "mean_time_to_failure_interval"),
+            r.AnalysisRoute(
+                r.SIMULATED,
+                "The mean of Monte-Carlo lifetimes (see random)."
+                + independent,
+            ),
+        )
+        replay = r.refusal(self._require_replayable)
+        out["compare"] = (
+            r.refused(replay)
+            if replay
+            else r.AnalysisRoute(
+                r.SIMULATED,
+                "Monte-Carlo lifetimes of both systems, with common random "
+                "numbers." + independent,
+            )
+        )
+        out["node_mttf"] = r.with_nodes(
+            r.EXACT,
+            "Each node's own mean lifetime.",
+            {n: self._mttf_route(m) for n, m in self.reliabilities.items()},
+            "means",
+        )
+        allocation = r.refusal(self._require_no_ccf_for_allocation)
+        give(
+            ("allocate_redundancy", "redundancy_front"),
+            (
+                r.refused(allocation)
+                if allocation
+                else built(
+                    r.EXACT,
+                    "Each candidate's exact system reliability, searched "
+                    "exactly or greedily. Cold standby copies (strategy "
+                    "'cold' or 'choose') are scored as a StandbyModel, "
+                    "simulated for a node that needs two or more copies "
+                    "working, unless they are identical Exponential units.",
+                )
+            ),
+        )
+        rrap = r.refusal(
+            functools.partial(
+                self._require_no_ccf_for_allocation, reliabilities=True
+            )
+        )
+        out["allocate_reliability_redundancy"] = (
+            r.refused(rrap)
+            if rrap
+            else built(
+                r.NUMERICAL,
+                "Branch and bound over the copies, and SLSQP over the "
+                "reliabilities, of the exact system reliability.",
+            )
+        )
+        return dict(sorted(out.items()))
+
+    @staticmethod
+    def _mttf_route(model) -> Tuple[str, str]:
+        """How ``node_mttf`` finds a node's mean lifetime: its route, and a
+        phrase saying how."""
+        from repyability.rbd import routes as r
+        from repyability.rbd.regression_node import RegressionNode
+
+        if isinstance(model, (NonRepairableRBD, RepeatedNode)):
+            return r.SIMULATED, "the mean of Monte-Carlo lifetimes"
+        if isinstance(model, (StandbyModel, LoadSharingModel)):
+            if model.is_simulated:
+                return r.SIMULATED, "the mean of Monte-Carlo lifetimes"
+            return r.model_route(model)
+        if isinstance(model, RegressionNode):
+            return r.NUMERICAL, "the mean of its survival function on a grid"
+        return r.EXACT, "its model's mean"
 
     def random(
         self,
@@ -3916,16 +4242,10 @@ class NonRepairableRBD(RBD):
         """``n`` lifetimes in which each component draws its uniforms from
         streams of its own, keyed by ``key``, its name and the uniform's
         place in its draw (common random numbers, see ``compare``)."""
+        self._require_replayable()
         lifetimes = {}
         for node in self._components():
-            sampler = row_sampler(self.reliabilities[node])
-            if sampler is None:
-                raise NotImplementedError(
-                    "Common random numbers need every node's draws to be "
-                    "replayable from uniforms (surpyval parametric "
-                    f"distributions and the composite nodes built from "
-                    f"them); node {node!r}'s are not."
-                )
+            sampler = cast(RowSampler, row_sampler(self.reliabilities[node]))
             name = zlib.crc32(repr(node).encode())
             u = np.empty((n, sampler.width))
             for j in range(sampler.width):
@@ -4012,11 +4332,7 @@ class NonRepairableRBD(RBD):
         """
         if not 0.0 < target < 1.0:
             raise ValueError("target reliability must be in (0, 1).")
-        if self.is_fixed:
-            raise ValueError(
-                "System reliability does not vary with time (all nodes are "
-                "fixed-probability); the time to a reliability is undefined."
-            )
+        self._require_time_varying()
 
         r0 = float(sf_func(0.0))
         if target > r0:
@@ -4151,13 +4467,7 @@ class NonRepairableRBD(RBD):
         a failed node contributes zero, and an alive node of age ``X``
         contributes ``conditional_survival(model, x, X) = sf(X + x) / sf(X)``.
         """
-        if self.ccf_groups:
-            raise NotImplementedError(
-                "Condition-based evaluation (sf_given_state / remaining_life "
-                "/ importances_given_state) does not yet account for "
-                "common-cause (CCF) groups; use sf()/ff() for CCF system "
-                "reliability."
-            )
+        self._require_no_ccf_for_states()
         self._validate_state(state)
         node_probabilities: Dict[Any, ArrayLike] = {}
         for node_name, model in self.reliabilities.items():

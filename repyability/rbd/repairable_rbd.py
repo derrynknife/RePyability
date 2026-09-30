@@ -20,6 +20,7 @@ from collections import Counter, defaultdict
 from copy import copy
 from dataclasses import dataclass, field
 from fractions import Fraction
+from functools import partial
 from typing import (
     Any,
     Callable,
@@ -80,6 +81,7 @@ from repyability.rbd.results import (
     TotalCostAllocation,
     UpDownImportance,
 )
+from repyability.rbd.routes import AnalysisRoute
 
 
 class _StreamedRBD:
@@ -436,15 +438,7 @@ class _CapacityRecorder:
     worked out once per state and kept."""
 
     def __init__(self, rbd: "RepairableRBD", demand: Optional[float]):
-        own = rbd._capacity_models()
-        if own:
-            raise NotImplementedError(
-                f"Node(s) {sorted(own, key=str)} take their capacity from "
-                "their models (a DegradingNode's stages, or a nested RBD's "
-                "capacities), which the simulation does not follow. Give "
-                "them a capacity, or use capacity_distribution() for the "
-                "long run."
-            )
+        rbd._require_capacities_given()
         self._rbd = rbd
         self._nodes = list(rbd.nodes)
         self._states: Dict[frozenset, _CapacityState] = {}
@@ -1013,6 +1007,15 @@ def _choose_from(
             f"allowed intervals cost is {cost:.6g} per unit time."
         )
     return best
+
+
+#: Why antithetic pairs and common random numbers (``compare``) are refused
+#: when some component's draws do not come from a stream.
+_UNSTREAMED = (
+    "Antithetic and common random numbers need every component's draws to "
+    "be replayable (surpyval parametric distributions and the composite "
+    "models built from them)."
+)
 
 
 def _common_period(intervals: Iterable[float]) -> float:
@@ -3921,13 +3924,7 @@ class RepairableRBD(RBD):
             return plan.expected_cost_rate(), plan.mean_availability()
 
         if allowed is None:
-            if len(self._inspection) > 1:
-                raise ValueError(
-                    "More than one component has hidden failures: give the "
-                    "intervals to choose from in allowed (tests are made on "
-                    "a calendar, and the long-run values depend on how the "
-                    "schedules line up)."
-                )
+            self._require_one_inspected()
             (node,) = chosen
             rate = rates[node]
             low = np.array([math.log(1e-4 / rate)])
@@ -4183,6 +4180,423 @@ class RepairableRBD(RBD):
             As for ``mean_availability``.
         """
         return 1 - self.mean_availability(*args, **kwargs)
+
+    def analysis_routes(self) -> Dict[str, "AnalysisRoute"]:
+        """How each analysis of this RBD is computed, found without running
+        it: exactly, numerically, by simulation, or not at all.
+
+        The route follows from the method, then from the components: the
+        long-run values are exact from each component's long-run
+        availability, which is a closed form, or numerical for a component
+        under preventive maintenance, or refused for a case they do not
+        cover (hidden failures at a rate that is not constant, say); the
+        availability over time solves each component's renewal equation on
+        a grid; ``availability``, ``cost`` and ``compare`` always simulate.
+        A component whose life is simulated (a ``StandbyModel`` fitted to
+        simulated lifetimes) makes the exact values it enters simulated
+        too. A refusal is found by the check the method itself runs, and its
+        reason is the message it would raise; limits that only computing
+        shows (a grid grown too large) are not foreseen.
+
+        A method that takes nodes, targets or intervals is described for
+        its defaults: ``optimal_replacement_intervals`` choosing for every
+        component under age replacement, say.
+
+        For a simulation, ``engine`` is the engine ``engine="auto"`` runs a
+        long simulation on: ``"numba"`` when numba is installed and the
+        compiled engine simulates the system, else ``"python"``, with the
+        reason in ``engine_reason``.
+
+        Returns
+        -------
+        dict[str, AnalysisRoute]
+            For each public analysis, by method name: its ``route``
+            (``"exact"``, ``"numerical"``, ``"simulated"`` or
+            ``"refused"``), the ``reason``, and the ``nodes`` that decide it
+            (see [`AnalysisRoute`][repyability.AnalysisRoute]).
+
+        Examples
+        --------
+        A pump found failed only by monthly tests, with a Weibull life:
+        the exact values need a constant failure rate there, so they are
+        refused, and the simulation is the way:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> rbd = RepairableRBD(
+        ...     [("s", "pump"), ("pump", "t")],
+        ...     {
+        ...         "pump": {
+        ...             "reliability": surv.Weibull.from_params([500, 1.5]),
+        ...             "repairability": "instant",
+        ...             "inspection": {"interval": 720},
+        ...         }
+        ...     },
+        ... )
+        >>> routes = rbd.analysis_routes()
+        >>> routes["mean_availability"].route
+        'refused'
+        >>> routes["mean_availability"].nodes
+        ('pump',)
+        >>> routes["availability"].route
+        'simulated'
+        """
+        from repyability.rbd import routes as r
+
+        out: Dict[str, r.AnalysisRoute] = {}
+
+        def give(names, route) -> None:
+            for name in names:
+                out[name] = route
+
+        long_run = self._long_run_route()
+
+        long_run_nodes = self._long_run_nodes()
+
+        def from_long_run(route, reason):
+            """A method of ``route``, explained by ``reason``, built on the
+            long-run values: refused as they are, and numerical or simulated
+            as the components' are."""
+            if long_run.route == r.REFUSED:
+                return long_run
+            return r.with_nodes(
+                route, reason, long_run_nodes, "long-run values"
+            )
+
+        give(
+            (
+                "mean_availability",
+                "mean_unavailability",
+                "node_availability",
+                "system_failure_frequency",
+                "mean_time_between_failures",
+                "mean_up_time",
+                "mean_down_time",
+                "birnbaum_importance",
+                "improvement_potential",
+                "risk_achievement_worth",
+                "risk_reduction_worth",
+                "criticality_importance",
+                "fussell_vesely",
+                "fussel_vesely",
+            ),
+            long_run,
+        )
+        if self.has_costs:
+            give(
+                ("expected_cost_rate", "total_cost"),
+                from_long_run(
+                    r.EXACT,
+                    "The long-run cost rate, from the exact long-run values "
+                    "(total_cost multiplies it by the time).",
+                ),
+            )
+        else:
+            give(
+                ("expected_cost_rate", "total_cost"),
+                r.AnalysisRoute(
+                    r.EXACT,
+                    "No running cost is priced, so the cost rate is 0 "
+                    "(total_cost adds any acquisition costs).",
+                ),
+            )
+        capacity = (
+            None if long_run.route == r.REFUSED else self._capacity_refusal()
+        )
+        out["capacity_distribution"] = (
+            r.refused(*capacity)
+            if capacity
+            else from_long_run(
+                r.EXACT,
+                "The exact long-run distribution of the system's capacity, "
+                "from the components' long-run availabilities.",
+            )
+        )
+        no_capacity = r.refusal(self._require_capacity)
+        out["system_capacity"] = (
+            r.refused(no_capacity)
+            if no_capacity
+            else r.AnalysisRoute(
+                r.EXACT,
+                "The exact distribution of the system's capacity from the "
+                "node probabilities given.",
+            )
+        )
+        give(("point_availability", "mission_availability"), self._over_time())
+        give(
+            ("allocate_redundancy", "availability_allocation"),
+            from_long_run(
+                r.EXACT,
+                "A search over the exact long-run values of the candidates.",
+            ),
+        )
+        out["mttf_mttr_allocation"] = from_long_run(
+            r.NUMERICAL,
+            "A solver for the components' MTTF and MTTR targets, over the "
+            "exact long-run values.",
+        )
+        # The optimisers, called for every node they can choose for.
+        targets = r.refusal(partial(self._interval_targets, None, None))
+        refusal = r.refusal(partial(self._maintained, None)) or targets
+        out["optimal_replacement_intervals"] = (
+            r.refused(refusal)
+            if refusal
+            else from_long_run(
+                r.NUMERICAL,
+                "An optimiser over the age-replacement intervals, with the "
+                "exact long-run values at each.",
+            )
+        )
+        refusal = (
+            r.refusal(partial(self._inspected, None))
+            or targets
+            or next(
+                (
+                    message
+                    for message in (
+                        r.refusal(partial(self._inspected_rate, node))
+                        for node in self._inspection
+                    )
+                    if message
+                ),
+                None,
+            )
+            or r.refusal(self._require_one_inspected)
+        )
+        out["optimal_inspection_intervals"] = (
+            r.refused(refusal)
+            if refusal
+            else from_long_run(
+                r.NUMERICAL,
+                "An optimiser over the inspection interval, with the exact "
+                "long-run values at each.",
+            )
+        )
+        streamed = self._stream_plan(1.0, 0, False)[1]
+        paired = (
+            ""
+            if streamed
+            else " Antithetic pairs are refused: some components' draws "
+            "do not come from a stream."
+        )
+        given = r.refusal(self._require_capacities_given)
+        engine, why = self._engine_choice(capacity=self._has_capacity())
+        out["availability"] = (
+            r.refused(given, tuple(self._capacity_models()))
+            if given
+            else r.AnalysisRoute(
+                r.SIMULATED,
+                "A discrete-event simulation of the components' failures, "
+                "repairs and maintenance." + paired,
+                engine=engine,
+                engine_reason=why,
+            )
+        )
+        engine, why = self._engine_choice(capacity=False)
+        out["cost"] = r.AnalysisRoute(
+            r.SIMULATED,
+            "A discrete-event simulation of the components' failures, "
+            "repairs and maintenance, and what they cost." + paired,
+            engine=engine,
+            engine_reason=why,
+        )
+        out["compare"] = (
+            r.AnalysisRoute(
+                r.SIMULATED,
+                "The two systems simulated with common random numbers.",
+                engine=engine,
+                engine_reason=why,
+            )
+            if streamed
+            else r.refused(_UNSTREAMED)
+        )
+        give(
+            ("initialize_event_queue", "next_event"),
+            r.AnalysisRoute(
+                r.SIMULATED,
+                "One simulation, stepped through event by event, drawing from "
+                "numpy's global RNG.",
+            ),
+        )
+        out["structural_importance"] = r.AnalysisRoute(
+            r.EXACT, "From the structure alone."
+        )
+        out["system_probability"] = r.AnalysisRoute(
+            r.EXACT,
+            "The structure function over the node probabilities given.",
+        )
+        out["path_set_probabilities"] = r.AnalysisRoute(
+            r.EXACT, "From the node probabilities given."
+        )
+        give(
+            (
+                "improvement_allocation",
+                "equal_allocation",
+                "simple_allocation",
+                "minimum_effort_allocation",
+                "cost_based_allocation",
+            ),
+            r.AnalysisRoute(
+                r.NUMERICAL,
+                "A solver over the exact system probability, from the node "
+                "probabilities given (not the component models).",
+            ),
+        )
+        return dict(sorted(out.items()))
+
+    def _capacity_refusal(self) -> Optional[Tuple[str, tuple]]:
+        """What ``capacity_distribution`` refuses beyond the long-run
+        values, in the order it checks: a degrading component on a
+        schedule, here or in a nested RBD, then no capacity at all. The
+        message and the nodes, or None."""
+        from repyability.rbd import routes as r
+
+        for node, model in self._capacity_models().items():
+            if isinstance(model, RepairableRBD):
+                inner = model._capacity_refusal()
+                if inner:
+                    return inner[0], (node,)
+                continue
+            message = r.refusal(
+                partial(self._require_unscheduled_stages, node)
+            )
+            if message:
+                return message, (node,)
+        message = r.refusal(self._require_capacity)
+        return (message, ()) if message else None
+
+    def _node_long_run(self, node) -> Tuple[str, str]:
+        """How a component's long-run values are found: the route, and a
+        phrase saying how (the message it raises, if refused)."""
+        from repyability.rbd import routes as r
+
+        component = self.components[node]
+        if isinstance(component, RepairableRBD):
+            inner = component._long_run_route()
+            if inner.route == r.REFUSED:
+                return r.REFUSED, inner.reason
+            return (
+                inner.route,
+                f"a nested RBD's long-run values, {inner.route}",
+            )
+        if node in self._inspection:
+            message = r.refusal(partial(self._inspected_rate, node))
+            if message:
+                return r.REFUSED, message
+            return r.EXACT, "hidden failures at a constant rate"
+        schedule = self._preventive.get(node)
+        life, how = r.model_route(component.reliability)
+        if schedule is None:
+            message = r.refusal(component.mean_availability)
+            if message:
+                return r.REFUSED, message
+            if life == r.EXACT:
+                return r.EXACT, "its mean life and mean repair time"
+            return life, f"its mean life, from {how}"
+        if schedule.policy == "block":
+            message = r.refusal(partial(self._require_block_models, node))
+            if message:
+                return r.REFUSED, message
+            return (
+                r.NUMERICAL,
+                "block replacement: its renewal cycle, solved on a grid",
+            )
+        if life == r.SIMULATED:
+            return life, f"age replacement of a life from {how}"
+        return r.NUMERICAL, "age replacement: its mean up time, by quadrature"
+
+    def _long_run_nodes(self) -> Dict[Any, Tuple[str, str]]:
+        """Each component's long-run route (see ``_node_long_run``)."""
+        return {node: self._node_long_run(node) for node in self.components}
+
+    def _long_run_route(self) -> "AnalysisRoute":
+        """How the exact long-run values are found (see
+        ``analysis_routes``)."""
+        from repyability.rbd import routes as r
+
+        calendars = r.refusal(self._require_calendars)
+        if calendars:
+            return r.refused(calendars)
+        nodes = self._long_run_nodes()
+        refusals = {
+            n: how for n, (route, how) in nodes.items() if route == r.REFUSED
+        }
+        if refusals:
+            return r.refused(next(iter(refusals.values())), tuple(refusals))
+        return r.with_nodes(
+            r.EXACT,
+            "The structure function over the components' long-run "
+            "availabilities, exactly.",
+            nodes,
+            "long-run values",
+        )
+
+    def _node_over_time(self, node) -> Tuple[str, str]:
+        """How a component's availability over time is found: the route,
+        and a phrase saying how (the message it raises, if refused)."""
+        from repyability.rbd import routes as r
+
+        component = self.components[node]
+        if isinstance(component, RepairableRBD):
+            inner = component._over_time()
+            if inner.route == r.REFUSED:
+                return r.REFUSED, inner.reason
+            return inner.route, f"a nested RBD's availability, {inner.route}"
+        message = r.refusal(partial(self._require_time_models, node))
+        if not message and node in self._inspection:
+            message = r.refusal(partial(self._inspected_rate, node))
+        schedule = self._preventive.get(node)
+        if not message and schedule is not None and schedule.policy == "block":
+            message = r.refusal(partial(self._require_block_models, node))
+        if message:
+            return r.REFUSED, message
+        life, how = r.model_route(component.reliability)
+        if life == r.SIMULATED:
+            return life, f"a life from {how}"
+        return r.NUMERICAL, "its renewal equation, solved on a grid"
+
+    def _over_time(self) -> "AnalysisRoute":
+        """How the availability over time from new is found (see
+        ``analysis_routes``)."""
+        from repyability.rbd import routes as r
+
+        nodes = {node: self._node_over_time(node) for node in self.components}
+        refusals = {
+            n: how for n, (route, how) in nodes.items() if route == r.REFUSED
+        }
+        if refusals:
+            return r.refused(next(iter(refusals.values())), tuple(refusals))
+        return r.with_nodes(
+            r.NUMERICAL,
+            "Each component's renewal equation solved on a grid (to about "
+            "1e-7), and the system exactly at its components' availabilities "
+            "at each time.",
+            nodes,
+            "availabilities",
+        )
+
+    def _engine_choice(self, capacity: bool) -> Tuple[str, str]:
+        """The engine ``engine="auto"`` runs a long simulation on, and why
+        (see ``_simulation_engine``)."""
+        from repyability.rbd import _compiled
+
+        plan = self._stream_plan(1.0, 0, False)[0]
+        reason = _compiled.unsupported(
+            self, plan, object() if capacity else None
+        )
+        if reason is not None:
+            return "python", f"the compiled engine does not simulate {reason}"
+        if not _compiled.available():
+            return (
+                "python",
+                "numba is not installed; pip install 'repyability[fast]' "
+                "for the compiled engine",
+            )
+        return (
+            "numba",
+            "compiled for a run long enough to repay loading it; a short "
+            "one runs in Python",
+        )
 
     def mean_availability(
         self,
@@ -4588,18 +5002,8 @@ class RepairableRBD(RBD):
         replacement age on the grid, and only as long as it takes to settle
         at its long-run availability (to 1e-10), after which the curve holds
         that value. Under block replacement, see ``_block_curve``."""
+        self._require_time_models(node)
         component = self.components[node]
-        for what, model in [
-            ("reliability", component.reliability),
-            ("repairability", component.time_to_replace),
-        ]:
-            if is_fixed_probability(model):
-                raise NotImplementedError(
-                    f"Component {node!r}: its {what} model is a probability, "
-                    "not a distribution of times, so its availability over "
-                    "time has no exact value. Estimate it by simulation, "
-                    "with availability()."
-                )
         schedule = self._preventive.get(node)
         if schedule is not None and schedule.policy == "block":
             return self._block_curve(node, horizon)
@@ -4847,13 +5251,7 @@ class RepairableRBD(RBD):
         if isinstance(component, RepairableRBD):
             distribution = component.capacity_distribution()
             return distribution.levels, distribution.probabilities
-        if node in self._preventive or node in self._inspection:
-            raise NotImplementedError(
-                f"Component {node!r} degrades through stages and is "
-                "maintained or inspected on a schedule: its long-run time in "
-                "each stage has no exact value here. Give it a capacity "
-                "instead."
-            )
+        self._require_unscheduled_stages(node)
         stages = component.reliability
         up = self._node_availability(node)
         shares = np.concatenate([[1.0 - up], up * stages.stage_fractions()])
@@ -5587,11 +5985,7 @@ class RepairableRBD(RBD):
                 t_simulation, entropy, antithetic, widths
             )
             if (antithetic or common) and not complete:
-                raise NotImplementedError(
-                    "Antithetic and common random numbers need every "
-                    "component's draws to be replayable (surpyval parametric "
-                    "distributions and the composite models built from them)."
-                )
+                raise NotImplementedError(_UNSTREAMED)
             engine = self._simulation_engine(engine, plan, capacity, N)
             progress = tqdm(
                 total=N, disable=not verbose, desc="Running simulations"
@@ -6252,6 +6646,111 @@ class RepairableRBD(RBD):
         up, cycle, _, _ = self._maintenance_cycle(node, schedule)
         return min(1.0, up / cycle)
 
+    def _require_one_inspected(self) -> None:
+        """Raise if more than one component has hidden failures, when no
+        intervals are given to choose from (``optimal_inspection_intervals``
+        with ``allowed=None``)."""
+        if len(self._inspection) > 1:
+            raise ValueError(
+                "More than one component has hidden failures: give the "
+                "intervals to choose from in allowed (tests are made on "
+                "a calendar, and the long-run values depend on how the "
+                "schedules line up)."
+            )
+
+    def _require_capacities_given(self) -> None:
+        """Raise if a node takes its capacity from its model (a
+        ``DegradingNode``'s stages, or a nested RBD's capacities), which
+        the availability simulation does not follow."""
+        own = self._capacity_models()
+        if own:
+            raise NotImplementedError(
+                f"Node(s) {sorted(own, key=str)} take their capacity from "
+                "their models (a DegradingNode's stages, or a nested RBD's "
+                "capacities), which the simulation does not follow. Give "
+                "them a capacity, or use capacity_distribution() for the "
+                "long run."
+            )
+
+    def _require_time_models(self, node) -> None:
+        """Raise if a component's life or repair model is a probability,
+        not a distribution of times: its availability over time then has
+        no exact value."""
+        component = self.components[node]
+        for what, model in [
+            ("reliability", component.reliability),
+            ("repairability", component.time_to_replace),
+        ]:
+            if is_fixed_probability(model):
+                raise NotImplementedError(
+                    f"Component {node!r}: its {what} model is a probability, "
+                    "not a distribution of times, so its availability over "
+                    "time has no exact value. Estimate it by simulation, "
+                    "with availability()."
+                )
+
+    def _require_unscheduled_stages(self, node) -> None:
+        """Raise if a degrading component is maintained or inspected on a
+        schedule: its long-run time in each stage has no exact value."""
+        if node in self._preventive or node in self._inspection:
+            raise NotImplementedError(
+                f"Component {node!r} degrades through stages and is "
+                "maintained or inspected on a schedule: its long-run time in "
+                "each stage has no exact value here. Give it a capacity "
+                "instead."
+            )
+
+    def _require_block_models(self, node) -> None:
+        """Raise unless the exact block-replacement values cover the
+        component's models (the checks ``block_cycle`` makes first)."""
+        from repyability.rbd._block_replacement import _check_life, _Duration
+
+        component = self.components[node]
+        _check_life(component.reliability, node)
+        _Duration(component.time_to_replace, "repair", node)
+        _Duration(self._preventive[node].duration, "replacement", node)
+
+    def _require_calendars(self) -> None:
+        """Raise if the exact long-run values cannot average over the
+        components' calendars (block replacement and inspection): a nested
+        RBD's calendar with another here, intervals with no common period,
+        or one repeating too often in it (before any computation)."""
+        nested = [
+            node
+            for node, c in self.components.items()
+            if isinstance(c, RepairableRBD) and c._has_calendar()
+        ]
+        blocks = self._block_nodes()
+        if nested and len(nested) + len(self._inspection) + len(blocks) > 1:
+            raise NotImplementedError(
+                f"Node(s) {sorted(nested, key=str)} are RBDs with hidden "
+                "failures or block replacement, and other nodes' inspections "
+                "or block replacements here fall at the same times: "
+                "estimate the long-run values by simulation, with "
+                "availability() or cost()."
+            )
+        intervals = {self._preventive[node].interval for node in blocks}
+        intervals |= {
+            self._inspection[node].interval for node in self._inspection
+        }
+        if not intervals:
+            return
+        period = _common_period(intervals)
+        if any(round(period / interval) > 100_000 for interval in intervals):
+            if blocks:
+                raise NotImplementedError(
+                    f"The block-replacement and inspection intervals "
+                    f"{sorted(intervals)} repeat together only after too many "
+                    "intervals to average over: estimate the long-run values "
+                    "by simulation, with availability() or cost()."
+                )
+            raise NotImplementedError(
+                f"The inspection intervals {sorted(intervals)} repeat "
+                "together only after too many inspections to average "
+                "over: estimate the long-run values by simulation, with "
+                "availability() or cost()."
+            )
+
     def _inspected_rate(self, node) -> Tuple[float, float]:
         """The constant failure rate and the inspection interval of a
         component with hidden failures, for the exact long-run values,
@@ -6334,15 +6833,7 @@ class RepairableRBD(RBD):
         period = _common_period(intervals)
         pieces = [np.array([0.0, period])]
         for interval in intervals:
-            count = int(round(period / interval))
-            if count > 100_000:
-                raise NotImplementedError(
-                    f"The block-replacement and inspection intervals "
-                    f"{sorted(intervals)} repeat together only after too many "
-                    "intervals to average over: estimate the long-run values "
-                    "by simulation, with availability() or cost()."
-                )
-            pieces.append(interval * np.arange(count))
+            pieces.append(interval * np.arange(int(round(period / interval))))
         for node in blocks:
             phase = self._block_cycle(node).phase
             repeats = int(round(period / phase[-1]))
@@ -6448,20 +6939,8 @@ class RepairableRBD(RBD):
         with hidden failures enters through its own long-run values, which
         is exact only if nothing else varies with the inspections.
         """
-        nested = [
-            node
-            for node, c in self.components.items()
-            if isinstance(c, RepairableRBD) and c._has_calendar()
-        ]
+        self._require_calendars()
         blocks = self._block_nodes()
-        if nested and len(nested) + len(self._inspection) + len(blocks) > 1:
-            raise NotImplementedError(
-                f"Node(s) {sorted(nested, key=str)} are RBDs with hidden "
-                "failures or block replacement, and other nodes' inspections "
-                "or block replacements here fall at the same times: "
-                "estimate the long-run values by simulation, with "
-                "availability() or cost()."
-            )
         if blocks:
             return self._calendar_grid(blocks)
         if not self._inspection:
@@ -6472,13 +6951,6 @@ class RepairableRBD(RBD):
         breaks = {0.0, period}
         for interval in intervals:
             count = int(round(period / interval))
-            if count > 100_000:
-                raise NotImplementedError(
-                    f"The inspection intervals {sorted(intervals)} repeat "
-                    "together only after too many inspections to average "
-                    "over: estimate the long-run values by simulation, with "
-                    "availability() or cost()."
-                )
             breaks.update(k * interval for k in range(1, count))
         edges = np.array(sorted(breaks))
         fastest = max(rate for rate, _ in rates.values())

@@ -95,8 +95,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   numbers; preventive maintenance, inspections, nested RBDs, capacities and
   other models run in Python, which `"auto"` chooses by itself.
 
+- **Know in advance how each analysis will be computed** (#127).
+  `NonRepairableRBD.analysis_routes()` and `RepairableRBD.analysis_routes()`
+  say, without running anything, how each analysis of the diagram would be
+  computed: exactly, numerically (deterministic, to a small stated error),
+  by simulation, or not at all. Each comes with the reason and the nodes that
+  decide it, in an `AnalysisRoute`.
+  - A refusal's reason is the message the method would raise, found by the
+    same check the method runs.
+  - For a repairable simulation, it also gives the engine `engine="auto"`
+    would use, and why.
+  - The saving guide's table of exact and simulated analyses is tested
+    against it.
+  - `StandbyModel` gains `is_simulated`, as `LoadSharingModel` has.
+
 ### Changed
 
+- **`is_analytically_solvable()` and `get_non_analytic_nodes()` flag only
+  simulated nodes** (#127). They counted every standby, repeated-standby and
+  load-sharing node as simulation-backed, even one with a closed form or a
+  numerical convolution. They now flag a node only when its reliability is
+  fitted to simulated lifetimes (see `is_simulated`), and so does
+  `structure_check`. A diagram with a cold spare for one unit, say, is now
+  solvable.
 - **Seeded repairable simulations give new numbers, once** (#119). Every
   random quantity a `RepairableRBD` simulation draws now comes from a
   stream of its own: each component's times to failure, its repair times,

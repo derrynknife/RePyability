@@ -110,20 +110,69 @@ runs](simulation.md#parallel-runs)).
 
 ## What is exact and what is simulated
 
-| Quantity | How it is computed |
-|---|---|
-| `sf`, `ff`, `Hf`, `cs`, the importance measures, `sf_given_state`, `structural_importance` | Exact, from the node reliabilities. |
-| `df`, `hf` | The exact reliability, differentiated numerically. |
-| `time_to_reliability`, `bx_life`, `remaining_life` | Exact reliability, inverted by root-finding. |
-| `parameter_sensitivity` | Exact Birnbaum importance times a numerical parameter derivative. |
-| `random`, `mean`, `mean_time_to_failure(_interval)`, `node_mttf` (composite nodes) | Monte-Carlo. |
-| `mean_availability`, `system_failure_frequency`, MUT/MDT/MTBF, `expected_cost_rate`, `total_cost`, the repairable importance measures | Exact, from the long-run node availabilities. |
-| `capacity_distribution`, `system_capacity` | Exact, from the node reliabilities (at a time) or long-run availabilities. |
-| `point_availability`, `mission_availability` | Exact: each component's renewal equation, solved numerically (to about `1e-7`), and the system at its components' availabilities at each time. |
-| `availability` (with the capacity over time and the delivered fraction), `cost`, the simulated criticality measures | Discrete-event simulation. |
-| Standby and load-sharing node reliability | Exact or numerical where a closed form or convolution applies, otherwise simulated (see [Redundancy models](redundancy-models.md#how-the-survival-function-is-obtained)). |
-| `allocate_redundancy` (both kinds of RBD) | Exact scoring, except cold standby (`strategy="cold"` or `"choose"`) that needs two or more units working, of units that are not identical Exponentials: its reliability is simulated from 10 000 lifetimes, seeded, so the scores are reproducible but carry Monte-Carlo error. `method="exact"` is a proven optimum of the scores, `"greedy"` a heuristic. |
-| `Repairable` policies | Analytic for a power-law process, simulated for imperfect repair. |
+Each analysis is computed one of four ways:
+
+- **exact**: closed forms, or the exact structure function over exact node
+  values;
+- **numerical**: deterministic numerical methods, which give the same result
+  every time, to a small, stated error;
+- **simulated**: Monte Carlo, reproducible with a seed;
+- **refused**: the method raises, and says why.
+
+On a diagram of plain components (surpyval distributions, with no preventive
+maintenance or hidden failures):
+
+| Quantity | Route | How it is computed |
+|---|---|---|
+| `sf`, `ff`, `Hf`, `cs`, `birnbaum_importance` and the other importance measures, `sf_given_state`, `structural_importance` | exact | From the node reliabilities. |
+| `df`, `hf` | numerical | The exact reliability, differentiated numerically. |
+| `time_to_reliability`, `bx_life`, `remaining_life` | numerical | The exact reliability, inverted by root-finding. |
+| `parameter_sensitivity` | numerical | The exact Birnbaum importance times a numerical parameter derivative. |
+| `random`, `mean`, `mean_time_to_failure`, `mean_time_to_failure_interval` | simulated | Monte Carlo. |
+| `mean_availability`, `system_failure_frequency`, `mean_up_time`, `mean_down_time`, `mean_time_between_failures`, `expected_cost_rate`, `total_cost`, and the repairable importance measures | exact | From the long-run node availabilities. |
+| `capacity_distribution`, `system_capacity` | exact | From the node reliabilities (at a time) or long-run availabilities. |
+| `point_availability`, `mission_availability` | numerical | Each component's renewal equation, solved numerically (to about `1e-7`), and the system at its components' availabilities at each time. |
+| `availability` (with the capacity over time and the delivered fraction), `cost`, `compare` | simulated | Discrete-event simulation. |
+| `allocate_redundancy` (both kinds of RBD) | exact | Exact scoring: `method="exact"` is a proven optimum, `"greedy"` a heuristic. Cold standby (`strategy="cold"` or `"choose"`) that needs two or more units working, of units that are not identical Exponentials, is scored from 10 000 seeded simulated lifetimes. |
+
+The nodes can change a route:
+
+- **Standby and load-sharing nodes.** Their reliability is exact or numerical
+  where a closed form or convolution applies, and is otherwise fitted to
+  simulated lifetimes (see [Redundancy
+  models](redundancy-models.md#how-the-survival-function-is-obtained)). The
+  analyses built on such a node are then simulated too.
+- **Maintenance.** Preventive maintenance makes the long-run values numerical.
+- **Hidden failures.** Their exact values need a constant failure rate, with
+  instant tests and repairs; otherwise the exact methods refuse.
+- **Imperfect repair.** `Repairable` policies are analytic for a power-law
+  process and simulated for imperfect repair.
+
+**For your own diagram, ask it.** `analysis_routes()` gives each analysis's
+route, the reason and the nodes that decide it, without running any of them.
+For a refusal, the reason is the message the method would raise. For a
+repairable simulation, it also gives the engine `engine="auto"` would use:
+
+```python
+import surpyval as surv
+from repyability import RepairableRBD
+
+tested = RepairableRBD(
+    [("s", "pump"), ("pump", "t")],
+    {
+        "pump": {
+            "reliability": surv.Weibull.from_params([500, 1.5]),
+            "repairability": "instant",
+            "inspection": {"interval": 720},
+        }
+    },
+)
+routes = tested.analysis_routes()
+routes["mean_availability"].route  # 'refused': a Weibull life, found by tests
+routes["mean_availability"].nodes  # ('pump',)
+routes["availability"].route       # 'simulated'
+routes["availability"].engine      # 'python': no compiled engine for tests
+```
 
 ## Performance
 

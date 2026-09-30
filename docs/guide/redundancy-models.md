@@ -179,11 +179,11 @@ line = NonRepairableRBD(
     {"pumps": cold, "filters": three_in_parallel},
 )
 line.sf(50)   # -> 0.9798
-line.is_analytically_solvable()   # False: a standby node is simulation-backed
+line.is_analytically_solvable()   # True: no node's reliability is simulated
 ```
 
-`is_analytically_solvable()` counts every standby, repeated-standby and
-load-sharing node as simulation-backed, even when (as here) its reliability
-is exact; see
-[Is the system time-dependent, and is it exact?](building.md#is-the-system-time-dependent-and-is-it-exact).
+`is_analytically_solvable()` is `False` only when some node's reliability is
+fitted to simulated lifetimes, and `get_non_analytic_nodes()` names those
+nodes; `analysis_routes()` says how each analysis is computed (see
+[Is the system time-dependent, and is it exact?](building.md#is-the-system-time-dependent-and-is-it-exact)).
 All of these models save with the RBD.
