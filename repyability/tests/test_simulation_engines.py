@@ -540,6 +540,37 @@ def test_what_the_compiled_engine_can_run():
     assert _compiled.unsupported(capacity, plan, object()) == "capacities"
 
 
+def test_a_subclassed_component_runs_in_python(monkeypatch):
+    # A subclass may make its events its own way, which only the Python
+    # loop asks it for: "auto" runs it in Python however long the run.
+    class LoggedUnit(NonRepairable):
+        pass
+
+    rbd = RepairableRBD(
+        [("s", "a"), ("a", "sub"), ("sub", "t")],
+        {
+            "a": {"reliability": W([70, 1.5]), "repairability": E([0.8])},
+            "sub": LoggedUnit(W([40, 2]), E([0.5])),
+        },
+    )
+    plan, _ = rbd._stream_plan(100.0, 1, False)
+    assert _compiled.unsupported(rbd, plan, None) == "node 'sub''s LoggedUnit"
+
+    def compiled(*args, **kwargs):
+        raise AssertionError("compiled")
+
+    monkeypatch.setattr(_compiled, "worthwhile", lambda plan, N: True)
+    monkeypatch.setattr(_compiled, "Runner", compiled)
+    rbd.availability(100.0, N=5, seed=2)
+
+
+@needs_numba
+def test_the_compiled_engine_refuses_what_it_cannot_run():
+    rbd = repairable_rbds()["maintained"]
+    with pytest.raises(NotImplementedError, match="preventive maintenance"):
+        rbd.availability(100.0, N=5, seed=2, engine="numba")
+
+
 def test_without_numba_the_compiled_engine_cannot_be_asked_for(monkeypatch):
     monkeypatch.setattr(_compiled, "available", lambda: False)
     rbd = plain_rbds()["bridge"]
