@@ -251,6 +251,8 @@ class LoadSharingModel:
         else:
             x_random = self.random(n_sims, seed=seed)
             self.model = KaplanMeier.fit(x_random, set_lower_limit=lower)
+            # The simulated lifetimes' mean, for mean().
+            self._simulated_mean = float(np.mean(x_random))
 
     def random(self, size, seed=None):
         """Simulate group lifetimes with the cumulative-exposure event loop.
@@ -364,21 +366,26 @@ class LoadSharingModel:
             out[j] = t
         return out
 
-    def mean(self, N=10_000, seed=None):
+    def mean(self, N=None, seed=None):
         """Mean lifetime (MTTF) of the group.
 
         Exact (the hypoexponential mean, the sum of the stage means) when
-        the closed form applies. When the group is simulated it is a
-        Monte-Carlo estimate: the mean of ``N`` fresh draws of ``random``,
-        not the mean of the Kaplan-Meier fit behind ``sf``.
+        the closed form applies. When the group is simulated it is the mean
+        of the ``n_sims`` lifetimes simulated at construction, which the
+        Kaplan-Meier fit behind ``sf`` is made from: a Monte-Carlo
+        estimate, but the same on every call (and reproducible with the
+        constructor's ``seed``). Give ``N`` or ``seed`` for a fresh
+        estimate instead: the mean of ``N`` new draws of ``random``.
 
         Parameters
         ----------
         N : int, optional
-            The number of draws for the Monte-Carlo estimate, by default
-            10_000. Ignored when the closed form applies.
+            The number of new draws for a fresh Monte-Carlo estimate
+            (10_000 if only ``seed`` is given). By default None: the mean of
+            the lifetimes simulated at construction. Ignored when the closed
+            form applies.
         seed : int or None, optional
-            Seed for those draws (see ``random``), by default None.
+            Seed for those new draws (see ``random``), by default None.
             Ignored when the closed form applies.
 
         Returns
@@ -388,7 +395,9 @@ class LoadSharingModel:
         """
         if self._sf_model is not None:
             return float(np.ravel(self._sf_model.mean())[0])
-        return float(self.random(N, seed=seed).mean())
+        if N is None and seed is None:
+            return self._simulated_mean
+        return float(self.random(10_000 if N is None else N, seed=seed).mean())
 
     def sf(self, x, *args, **kwargs):
         """Survival function (reliability) of the group.

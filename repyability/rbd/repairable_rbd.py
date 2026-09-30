@@ -1694,6 +1694,10 @@ class RepairableRBD(RBD):
         ``"ignore"``; if the diagram is invalid and ``on_infeasible_rbd``
         is ``"raise"``; or if a capacity is not a positive number or is for
         the input or output node or a node not in the diagram.
+    TypeError
+        If a component is not a spec dict, a ``NonRepairable`` or a
+        ``RepairableRBD`` (a ``Repairable``, which models imperfect repair,
+        cannot be a node).
     KeyError
         If a spec dict has no ``"reliability"`` or no ``"repairability"``.
 
@@ -1897,6 +1901,8 @@ class RepairableRBD(RBD):
                 components[name] = copy(component)
                 reliability[name] = component.reliability
                 repairability[name] = component.time_to_replace
+            else:
+                raise TypeError(self._unknown_component(name, component))
 
         super().__init__(
             edges,
@@ -1934,6 +1940,24 @@ class RepairableRBD(RBD):
 
         self.components = components
         self.repairability = copy(repairability)
+
+    @staticmethod
+    def _unknown_component(node, component) -> str:
+        """Why ``component`` cannot be node ``node``: it is none of the
+        kinds a node can be."""
+        from repyability.repairable import Repairable
+
+        kinds = (
+            "Give a spec dict with 'reliability' and 'repairability', a "
+            "NonRepairable, or a nested RepairableRBD."
+        )
+        if isinstance(component, Repairable):
+            return (
+                f"Component {node!r} is a Repairable, which models the "
+                "minimal or imperfect repair of a single unit: it cannot be "
+                "a node, whose repairs renew it as new. " + kinds
+            )
+        return f"Component {node!r} is a {type(component).__name__}. " + kinds
 
     @classmethod
     def _validate_component_spec(cls, node, spec: dict) -> None:

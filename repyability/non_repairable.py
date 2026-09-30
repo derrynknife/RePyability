@@ -343,9 +343,9 @@ class NonRepairable:
         failure and then replaced, so up and down times alternate (an
         alternating renewal process). ``MTTF`` is the mean of
         ``reliability`` and ``MTTR`` the mean of ``time_to_replace``.
-        For a simulated ``StandbyModel`` lifetime the MTTF is a Monte Carlo
-        estimate drawn from numpy's global RNG, so it varies slightly
-        between calls.
+        For a simulated ``StandbyModel`` lifetime the MTTF is the mean of
+        the lifetimes simulated when it was built (see its ``mean``), so it
+        is the same on every call.
 
         If some units never fail (a limited-failure-population model,
         ``p < 1``), sooner or later a replacement is one of them, and the

@@ -122,7 +122,7 @@ runs](simulation.md#parallel-runs)).
 | `point_availability`, `mission_availability` | Exact: each component's renewal equation, solved numerically (to about `1e-7`), and the system at its components' availabilities at each time. |
 | `availability` (with the capacity over time and the delivered fraction), `cost`, the simulated criticality measures | Discrete-event simulation. |
 | Standby and load-sharing node reliability | Exact or numerical where a closed form or convolution applies, otherwise simulated (see [Redundancy models](redundancy-models.md#how-the-survival-function-is-obtained)). |
-| `allocate_redundancy` (both kinds of RBD) | Exact scoring; `method="exact"` is a proven optimum, `"greedy"` a heuristic. |
+| `allocate_redundancy` (both kinds of RBD) | Exact scoring, except cold standby (`strategy="cold"` or `"choose"`) that needs two or more units working, of units that are not identical Exponentials: its reliability is simulated from 10 000 lifetimes, seeded, so the scores are reproducible but carry Monte-Carlo error. `method="exact"` is a proven optimum of the scores, `"greedy"` a heuristic. |
 | `Repairable` policies | Analytic for a power-law process, simulated for imperfect repair. |
 
 ## Performance

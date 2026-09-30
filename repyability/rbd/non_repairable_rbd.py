@@ -1227,8 +1227,10 @@ class NonRepairableRBD(RBD):
         copies working (``required``, k-out-of-n: Coit & Liu, 2000), and its
         spares may be cold standby rather than active (``strategy``: Coit,
         2001), or either, whichever is better (Coit, 2003). The system
-        reliability of each candidate allocation is computed exactly, so any
-        RBD structure works. Nodes not in ``costs`` stay as they are.
+        reliability of each candidate allocation is computed exactly from
+        its nodes' reliabilities, so any RBD structure works; only a cold
+        standby node's own reliability may be simulated (see
+        ``strategy``). Nodes not in ``costs`` stay as they are.
         Reliability is evaluated at the single mission time ``t``.
 
         ``method="exact"`` returns a proven optimum. When every costed node
@@ -1291,7 +1293,8 @@ class NonRepairableRBD(RBD):
             switched in, in the order of the node's options, as operating
             copies fail (a [`StandbyModel`][repyability.StandbyModel]: exact
             for identical Exponential units, a numerical convolution for one
-            unit required, simulated otherwise); ``"choose"``: whichever of
+            unit required, and otherwise simulated from 10 000 lifetimes,
+            seeded, so reproducible); ``"choose"``: whichever of
             the two is better, chosen for each node by the optimiser. Cold
             standby needs lifetime models, not fixed probabilities.
         switching_probability : float or dict, optional

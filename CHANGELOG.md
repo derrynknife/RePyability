@@ -151,10 +151,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - CI also tests Python 3.14.
 - **More accurate cold standby.** The numerical convolution behind a
   `StandbyModel` (cold, one operating unit) and a `RepeatedStandbyNode` now
-  uses the trapezoidal rule: its error falls from about `1e-4` to about
-  `1e-8`, and results move by up to that much. Two exponential units with
+  uses the trapezoidal rule. For units whose density is positive at 0,
+  such as Exponential ones, its error falls from about `1e-4` to about
+  `1e-8`, and results move by up to that much: two exponential units with
   a 90% switch now have an MTTF of 190.00001, the formula's 190, where the
-  convolution gave 189.9.
+  convolution gave 189.9. Units whose density is 0 at 0 (a Weibull with
+  shape above 1, say) are unchanged, accurate to about `1e-6`; with a
+  density infinite at 0 (a Weibull with shape below 1) the error is still
+  about `1e-3`.
 - **Requires surpyval 0.21** (was 0.20), and drops the code that worked
   around surpyval 0.20 (#86). surpyval 0.21 draws the lifetimes of
   limited-failure-population and zero-inflated models, gives their mean and
@@ -175,6 +179,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unit that may never fail (a surpyval model with `p < 1`) had a long-run
   availability of NaN. It is now 1, as for any component some of whose
   units never fail: sooner or later it gets one, and is up for good.
+- **Exact values that changed from call to call.** A simulated
+  `StandbyModel` or `LoadSharingModel` (one with no closed form or
+  convolution) drew fresh lifetimes from numpy's global RNG for its
+  `mean()` at every call. So the exact long-run values of a repairable RBD
+  with such a node changed slightly each time they were asked for: its
+  `mean_availability`, failure frequency, costs and importance measures.
+  `mean()` is now the mean of the lifetimes simulated when the node was
+  built, which its Kaplan-Meier `sf` is fitted to. It is the same on every
+  call, consistent with `sf`, and reproducible with the node's `seed`.
+  `mean(N=..., seed=...)` still makes a fresh estimate.
+- A `RepairableRBD` accepted a component of any type, so a `Repairable` (a
+  model of imperfect repair, which cannot be a node) or a bare surpyval
+  model failed only at the first analysis, with an `AttributeError`. The
+  constructor now raises a `TypeError` that says what a component can be.
 
 ## [0.10.1] - 2026-09-29
 

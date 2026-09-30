@@ -284,9 +284,7 @@ class StandbyModel:
                 self._sf_model = closed_form
                 self.model = None
             else:
-                x_random = self.random(n_sims, seed=seed)
-                self.model = _kaplan_meier(x_random, lower)
-                self._sf_model = None
+                self._simulate(n_sims, seed, lower)
         elif rate is not None and is_perfect_switching(switching_probability):
             # Identical exponential units: the cold standby lifetime is exactly
             # Erlang(N-k+1, k*rate) for any k, by the memorylessness of the
@@ -315,9 +313,16 @@ class StandbyModel:
                     "switching_probability is only supported for k=1 cold"
                     " standby; for k>=2 leave it at 1.0 (perfect switching)."
                 )
-            x_random = self.random(n_sims, seed=seed)
-            self.model = _kaplan_meier(x_random, lower)
-            self._sf_model = None
+            self._simulate(n_sims, seed, lower)
+
+    def _simulate(self, n_sims, seed, lower) -> None:
+        """Set the survival function up from ``n_sims`` simulated
+        lifetimes: a Kaplan-Meier fit to them, and their mean for
+        ``mean``."""
+        lifetimes = self.random(n_sims, seed=seed)
+        self.model = _kaplan_meier(lifetimes, lower)
+        self._sf_model = None
+        self._simulated_mean = float(np.mean(lifetimes))
 
     def _random_warm(self, size):
         """Warm-standby lifetimes by cumulative exposure (virtual age).
@@ -607,22 +612,28 @@ class StandbyModel:
 
         return RowSampler(self.N, draw)
 
-    def mean(self, N=10_000, seed=None):
+    def mean(self, N=None, seed=None):
         """Mean lifetime (MTTF) of the arrangement.
 
         Exact for the Erlang and hypoexponential closed forms, and
         deterministic for the numerical convolution (the integral of its
-        survival function). When the arrangement is simulated it is a
-        Monte-Carlo estimate: the mean of ``N`` fresh draws of ``random``,
-        not the mean of the Kaplan-Meier fit behind ``sf``.
+        survival function). When the arrangement is simulated it is the
+        mean of the ``n_sims`` lifetimes simulated at construction, which
+        the Kaplan-Meier fit behind ``sf`` is made from: a Monte-Carlo
+        estimate, but the same on every call (and reproducible with the
+        constructor's ``seed``), so the long-run values of an RBD it is a
+        node of are too. Give ``N`` or ``seed`` for a fresh estimate
+        instead: the mean of ``N`` new draws of ``random``.
 
         Parameters
         ----------
         N : int, optional
-            The number of draws for the Monte-Carlo estimate, by default
-            10_000. Ignored unless the arrangement is simulated.
+            The number of new draws for a fresh Monte-Carlo estimate
+            (10_000 if only ``seed`` is given). By default None: the mean of
+            the lifetimes simulated at construction. Ignored unless the
+            arrangement is simulated.
         seed : int or None, optional
-            Seed for those draws (see ``random``), by default None.
+            Seed for those new draws (see ``random``), by default None.
             Ignored unless the arrangement is simulated.
 
         Returns
@@ -639,15 +650,19 @@ class StandbyModel:
         300.0
         >>> w = surv.Weibull.from_params([100.0, 2.0])
         >>> sim = StandbyModel([w, w, w], k=2, n_sims=2000, seed=1)
-        >>> round(float(sim.mean(N=2000, seed=1)), 1)
+        >>> round(float(sim.mean()), 1)
         105.2
+        >>> round(float(sim.mean(N=2000, seed=2)), 1)  # new draws
+        103.6
         """
-        # Use the exact/deterministic mean when an analytic survival model is
-        # available (exponential closed form or convolution); otherwise fall
-        # back to the Monte-Carlo estimate.
+        # The exact/deterministic mean when an analytic survival model is
+        # available (exponential closed form or convolution); otherwise the
+        # simulated lifetimes' mean, or a fresh Monte-Carlo estimate.
         if self._sf_model is not None:
             return float(np.ravel(self._sf_model.mean())[0])
-        return self.random(N, seed=seed).mean()
+        if N is None and seed is None:
+            return self._simulated_mean
+        return float(self.random(10_000 if N is None else N, seed=seed).mean())
 
     def sf(self, x, *args, **kwargs):
         """Survival function (reliability) of the arrangement.

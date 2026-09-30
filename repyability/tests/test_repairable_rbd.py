@@ -27,6 +27,23 @@ def test_repairable_rbd_missing_repairability_component():
         RepairableRBD(edges, components)
 
 
+def test_a_component_is_a_spec_a_unit_or_an_rbd():
+    # Anything else is refused when the RBD is built, not at its first
+    # analysis: a Repairable (imperfect repair) cannot be a node, and a
+    # bare lifetime model needs a repair model beside it.
+    from surpyval.recurrent import CrowAMSAA
+
+    from repyability.repairable import Repairable
+
+    edges = [("s", "a"), ("a", "t")]
+    unit = Repairable(CrowAMSAA.from_params([100.0, 1.5]))
+    with pytest.raises(TypeError, match="'a' is a Repairable.*imperfect"):
+        RepairableRBD(edges, {"a": unit})
+    life = surv.Weibull.from_params([10.0, 2.0])
+    with pytest.raises(TypeError, match="spec dict"):
+        RepairableRBD(edges, {"a": life})
+
+
 # One component, one simulation, tests simple case
 def test_repairable_rbd_availability_one_component_1N():
     """
