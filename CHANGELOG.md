@@ -7,8 +7,158 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **System capacity** (#97): how much a system can deliver, not just
+  whether it works. Every RBD class takes `capacity={node: throughput}`,
+  each node's throughput while it works. The system's capacity is the
+  diagram's maximum flow: a series chain carries the least of its nodes'
+  capacities and a parallel group the sum. A node given no capacity limits
+  nothing, and a k-out-of-n node passes flow only while at least `k` of its
+  inputs are reached, so the capacity is positive exactly when the system
+  works. `NonRepairableRBD.capacity_distribution(x)` gives the exact
+  distribution of the capacity at time/s `x` (honouring common-cause
+  groups), `RepairableRBD.capacity_distribution()` in the long run, and
+  `RBD.system_capacity(node_probabilities)` from given node
+  probabilities. They return a `CapacityDistribution`: its `levels` and
+  their `probabilities`, with `meets(demand)` (the probability of meeting a
+  demand), `mean()` (the expected capacity) and `delivered_fraction(demand)`
+  (the expected fraction of a demand delivered: in the long run, the
+  production availability). Series-parallel parts reduce in closed form
+  (the universal generating function), and the rest (e.g. a bridge) by
+  conditioning on its parts' capacities, keeping each cut's running total,
+  so the analysis costs about what the system reliability does. The
+  capacities are saved with the RBD. A new guide page, System capacity,
+  covers it.
+- **Multi-state components** (#98) in the capacity analysis: a component
+  can work at several levels, a pump at full or half output. A capacity can
+  be a dict `{level: probability}` of the levels a node works at and the
+  probability of each while it works. A `DegradingNode` runs through stages,
+  each at its own capacity for a time from its own lifetime model, and has
+  failed once the last ends: its stage at a time comes from the
+  convolution of its stages' times, and in the long run, renewed after each
+  failure, it spends its up time in each stage in proportion to the stage's
+  mean. It is a `StandbyModel` of its stages (its lifetime is their sum), so
+  it is a node model like any other. A nested RBD with capacities brings its
+  own distribution. Binary nodes are the special case of each, and the
+  distributions combine through series (least) and parallel (sum) as
+  before.
+- **Delivered capacity over time** (#99): when nodes have capacities,
+  `RepairableRBD.availability()` also follows what the system can deliver.
+  The result gains the mean capacity curve (`capacity_timeline`,
+  `capacity`), the time spent at each capacity (`capacity_time`,
+  `mean_capacity`), and each simulation's fraction of the demand delivered
+  (`delivered`, `delivered_fraction`, `delivered_fraction_interval()`): the
+  production availability over the window. `availability(demand=...)`
+  sets the demand, by default the design capacity. The capacity is worked
+  out after every component failure and repair, from the exact
+  distribution given which components are up, so a node working at several
+  levels counts at each in proportion, and the simulated failures and
+  repairs are the same as without capacities. Over a long window the
+  averages approach the exact long-run values.
+- **Exact availability over time** (#117): `RepairableRBD.point_availability(x)`
+  gives the probability that the system is up at each time `x`, every
+  component new at 0, and `mission_availability(t)` its mean over `[0, t]`:
+  what `availability()` estimates by simulation, exactly and in a fraction
+  of a second. Each component alternates up and down periods, and its point
+  availability solves the renewal equation, solved numerically on a grid of
+  2,000 steps over its typical up time (an error of about 1e-7); the
+  components are independent, so the system's is the exact system
+  computation at theirs, at each time. Down periods that start at a known
+  time (the repair of a unit dead on arrival, the first failure of an exact
+  lifetime, the first age replacement, every block replacement) are kept
+  out of the grid, exact however short they are, and so are the later age
+  replacements of units that each reach their age, which fall at nearly
+  fixed times: two units in parallel replaced at the same age are down
+  together as often as they should be. Age and block replacement, nested
+  RBDs and hidden failures with a constant failure rate are covered, as in
+  `mean_availability`. A mission of decades costs no more than one of
+  hours: once the components have settled, at their long-run values or
+  repeating with their calendar, the integral is extended exactly. The
+  curves settle at `mean_availability()`, and a long mission's average
+  exceeds it by the start-up term renewal theory predicts; on the benchmark
+  diagrams they agree with the simulation.
+- **A compiled simulation engine** (#119). With numba installed, an
+  optional dependency (`pip install "repyability[fast]"`),
+  `RepairableRBD.availability()`, `cost()` and `compare()` can run their
+  simulations compiled: about ten times as fast as in Python on one core,
+  and faster still on several (`n_jobs` runs it on that many threads). A new
+  argument, `engine`, chooses: `"auto"` (the default) compiles when numba is
+  installed, the engine simulates the system and the run is long enough to
+  repay loading it (a third of a second from numba's cache; some seconds
+  the first time ever, while numba compiles it); `"numba"` asks for it, and
+  `"python"` keeps to Python. The two give the same results, to the last
+  bit: the compiled loop is the Python one over arrays, reading the same
+  random streams, and CI checks them against each other. It simulates plain
+  components (surpyval parametric models) in any structure, with nodes held
+  working or broken, costs, antithetic pairs, tolerances and common random
+  numbers; preventive maintenance, inspections, nested RBDs, capacities and
+  other models run in Python, which `"auto"` chooses by itself.
+
 ### Changed
 
+- **Seeded repairable simulations give new numbers, once** (#119). Every
+  random quantity a `RepairableRBD` simulation draws now comes from a
+  stream of its own: each component's times to failure, its repair times,
+  its maintenance or test times, and each cost given as a distribution,
+  named by the component's place and the quantity and seeded from the
+  run's seed. The results are as correct as before, but a seeded run of
+  `availability()`, `cost()` or `compare()` gives different numbers than in
+  0.10, within their sampling error. In exchange:
+  - a simulation is the same however the run is split up: a run with
+    `n_jobs` gives the same results as one without (before, a parallel run
+    differed from a serial one), a run to a tolerance that stops after `n`
+    simulations is the run of `N=n`, and the first `n` simulations of any
+    run are a run of `n`;
+  - one component's draws never depend on another's, and each simulation's
+    `k`-th draw of each stream is fixed, so antithetic pairs pair every
+    quantity (costs too, which were unpaired) and `compare` matches every
+    one (costs too);
+  - a model whose draws cannot be streamed no longer sends every other
+    component back to drawing one number at a time: it draws from numpy's
+    global RNG, seeded afresh for each simulation, and the rest stream;
+  - without a seed, a run takes one number from numpy's global RNG as its
+    seed (so `np.random.seed(s)` beforehand gives the run `seed=s` gives)
+    and otherwise leaves it as it was, where it used to consume as many
+    numbers as the simulations drew.
+  Stepping a system through its events by hand (`initialize_event_queue`,
+  `next_event`) still draws from the global RNG, as before.
+- **Faster availability simulation** (#120, #119). Even without the
+  compiled engine, `RepairableRBD.availability()` and `cost()` run 3.8–5.9×
+  faster per core than in 0.10.
+  - The loop works the event queue's heap directly, comparing times as
+    floats.
+  - The structure function is evaluated only when an event could change
+    the system (a repair can't take a coherent system down, nor a failure
+    bring it up), and it is called directly.
+  - Normal and lognormal quantiles skip scipy.stats' argument checks
+    (surpyval [#469](https://github.com/derrynknife/SurPyval/issues/469)).
+  - A component with no maintenance or inspection takes its next draw
+    directly.
+  - Each simulation adds up its components' up times, and their overlaps
+    with the system's, as it goes, instead of working them out from their
+    timelines at the end.
+- **Faster start-up** (#121). `import repyability` no longer loads
+  scipy.signal, tqdm or the process-pool machinery until a call needs them
+  (about 0.2 s less here; surpyval's share is
+  [surpyval #470](https://github.com/derrynknife/SurPyval/issues/470)).
+  - A parallel run (`n_jobs`) under the forkserver start method (Linux's
+    default from Python 3.14) has the server load RePyability once, so its
+    processes start with it loaded: from the second run on, they start at
+    once rather than taking a second or more each.
+  - `n_jobs=-1` counts the CPUs this process may run on, which in a
+    container can be fewer than the machine has.
+  - CI also tests Python 3.14.
+- **More accurate cold standby.** The numerical convolution behind a
+  `StandbyModel` (cold, one operating unit) and a `RepeatedStandbyNode` now
+  uses the trapezoidal rule. For units whose density is positive at 0,
+  such as Exponential ones, its error falls from about `1e-4` to about
+  `1e-8`, and results move by up to that much: two exponential units with
+  a 90% switch now have an MTTF of 190.00001, the formula's 190, where the
+  convolution gave 189.9. Units whose density is 0 at 0 (a Weibull with
+  shape above 1, say) are unchanged, accurate to about `1e-6`; with a
+  density infinite at 0 (a Weibull with shape below 1) the error is still
+  about `1e-3`.
 - **Requires surpyval 0.21** (was 0.20), and drops the code that worked
   around surpyval 0.20 (#86). surpyval 0.21 draws the lifetimes of
   limited-failure-population and zero-inflated models, gives their mean and
@@ -22,6 +172,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   only `seed` is no longer supported.
 - CI also runs the tests on the oldest surpyval `pyproject.toml` allows, so
   the declared minimum stays tested after surpyval releases.
+
+### Fixed
+
+- A repairable component whose reliability is a cold `StandbyModel` with a
+  unit that may never fail (a surpyval model with `p < 1`) had a long-run
+  availability of NaN. It is now 1, as for any component some of whose
+  units never fail: sooner or later it gets one, and is up for good.
+- **Exact values that changed from call to call.** A simulated
+  `StandbyModel` or `LoadSharingModel` (one with no closed form or
+  convolution) drew fresh lifetimes from numpy's global RNG for its
+  `mean()` at every call. So the exact long-run values of a repairable RBD
+  with such a node changed slightly each time they were asked for: its
+  `mean_availability`, failure frequency, costs and importance measures.
+  `mean()` is now the mean of the lifetimes simulated when the node was
+  built, which its Kaplan-Meier `sf` is fitted to. It is the same on every
+  call, consistent with `sf`, and reproducible with the node's `seed`.
+  `mean(N=..., seed=...)` still makes a fresh estimate.
+- A `RepairableRBD` accepted a component of any type, so a `Repairable` (a
+  model of imperfect repair, which cannot be a node) or a bare surpyval
+  model failed only at the first analysis, with an `AttributeError`. The
+  constructor now raises a `TypeError` that says what a component can be.
 
 ## [0.10.1] - 2026-09-29
 

@@ -25,9 +25,15 @@ taking already-fitted lifetime models (from
 - **Redundancy and dependence**: cold, warm and hot standby; repeated nodes;
   load sharing; beta-factor and MGL common-cause groups.
 - **Repairable systems**: exact long-run availability, failure frequency and
-  MUT/MDT/MTBF; simulated availability over time with criticality measures.
+  MUT/MDT/MTBF; exact availability over time and over a mission; simulated
+  histories with criticality measures.
+- **Capacity**: how much a system delivers, from its components'
+  capacities (with several levels, or degrading through stages): the exact
+  distribution of its capacity at a time or in the long run, the
+  probability of meeting a demand, and the production availability.
 - **Simulation**: seeded Monte-Carlo run to a tolerance, antithetic pairs,
-  parallel runs, and comparisons of designs with common random numbers.
+  parallel runs, and comparisons of designs with common random numbers;
+  repairable systems simulated compiled, with numba installed.
 - **Cost, design and maintenance**: exact and simulated running costs,
   including scheduled (age or block) preventive replacement at system level,
   with its intervals chosen for a cost or availability target, hidden
@@ -65,6 +71,14 @@ RePyability can be installed via pip using the PyPI [repository](https://pypi.or
 
 ```bash
 pip install repyability
+```
+
+Repairable systems simulate about ten times as fast with the optional
+compiled engine, which needs [numba](https://numba.pydata.org) (available for
+64-bit Linux, macOS on Apple silicon and Windows):
+
+```bash
+pip install "repyability[fast]"
 ```
 
 ## Documentation

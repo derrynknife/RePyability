@@ -74,3 +74,33 @@ def test_repeated_standby_sf_matches_erlang():
     for t in [1, 3, 10]:
         assert node.sf(t) == pytest.approx(gamma.sf(t), **TOL)
         assert node.ff(t) == pytest.approx(gamma.ff(t), **TOL)
+
+
+def test_convolution_is_second_order_accurate():
+    # The trapezoidal rule leaves an error of order the grid step squared:
+    # to about 1e-7 here, where the plain sum over the grid was off by
+    # 1e-4 (half a step's worth of each density's value at 0).
+    exp1, exp2 = Exponential.from_params([1]), Exponential.from_params([2])
+    t = np.array([0.1, 0.5, 1, 2, 4, 8])
+    conv = ConvolvedSurvival([exp1, exp2])
+    np.testing.assert_allclose(
+        conv.sf(t), 2 * np.exp(-t) - np.exp(-2 * t), atol=1e-7
+    )
+    erlang = ConvolvedSurvival([exp1, exp1, exp1])
+    np.testing.assert_allclose(
+        erlang.sf(t), Gamma.from_params([3.0, 1.0]).sf(t), atol=1e-7
+    )
+    assert erlang.mean() == pytest.approx(3.0, rel=1e-6)
+
+
+def test_convolution_keeps_its_partial_sums_on_request():
+    exp = Exponential.from_params([1])
+    conv = ConvolvedSurvival([exp, exp, exp], partials=True)
+    t = np.array([0.5, 2.0, 5.0])
+    for j in (1, 2, 3):
+        np.testing.assert_allclose(
+            conv.partial_sf(j, t),
+            Gamma.from_params([float(j), 1.0]).sf(t),
+            atol=1e-7,
+        )
+    np.testing.assert_allclose(conv.partial_sf(3, t), conv.sf(t))

@@ -36,7 +36,9 @@ from repyability.rbd._model_utils import (
     never_fails,
 )
 from repyability.rbd._sampling import inverse_sampler
+from repyability.rbd._streams import DURATION, FAILURE, REPAIR
 from repyability.rbd.numerical_convolution import _density_on_grid
+from repyability.tests.keyed_draws import KeyedDraws
 
 W = surv.Weibull.from_params
 E = surv.Exponential.from_params
@@ -337,19 +339,28 @@ def test_long_run_availability_with_absorbing_ends():
     assert abs(window.estimate - exact) < 4 * window.standard_error + 0.01
 
 
-def test_repairable_draws_are_replayed_exactly():
+def test_repairable_draws_come_from_their_streams():
+    # A limited-failure-population or zero-inflated lifetime (infinite for
+    # a unit that never fails, 0 for one dead on arrival) comes from the
+    # component's own stream like any other draw: each simulation's up time
+    # is what its component's draws make it.
     rbd = repairable(W([10, 2], p=0.9, f0=0.05))
-    streamed = rbd.availability(200.0, N=200, seed=15).uptimes
-    original = RepairableRBD._streamed_components
-    try:
-        RepairableRBD._streamed_components = (
-            lambda self, stream, made=None, prefix=(): None
-        )
-        direct = rbd.availability(200.0, N=200, seed=15).uptimes
-    finally:
-        RepairableRBD._streamed_components = original
-    np.testing.assert_array_equal(streamed, direct)
-    # A maintenance time dead on arrival (done at once) replays alike too.
+    window = 200.0
+    result = rbd.availability(window, N=60, seed=15)
+    draws = KeyedDraws(rbd, window, 15)
+    never, dead = 0, 0
+    for r in range(60):
+        t, up, uptime = 0.0, True, 0.0
+        while t < window:
+            delay = draws.next(("c",), FAILURE if up else REPAIR, r)
+            if up:
+                uptime += min(t + delay, window) - t
+                never += delay == np.inf
+                dead += delay == 0.0
+            t, up = t + delay, not up
+        assert result.uptimes[r] == pytest.approx(uptime, rel=1e-12)
+    assert never and dead
+    # A maintenance time dead on arrival (done at once) has a stream too.
     maintained = RepairableRBD(
         [("s", "c"), ("c", "t")],
         {
@@ -363,15 +374,9 @@ def test_repairable_draws_are_replayed_exactly():
             }
         },
     )
-    streamed = maintained.availability(200.0, N=100, seed=17).uptimes
-    try:
-        RepairableRBD._streamed_components = (
-            lambda self, stream, made=None, prefix=(): None
-        )
-        direct = maintained.availability(200.0, N=100, seed=17).uptimes
-    finally:
-        RepairableRBD._streamed_components = original
-    np.testing.assert_array_equal(streamed, direct)
+    specs, complete = maintained._stream_specs(200.0)
+    assert complete and (("c",), DURATION) in specs
+    assert maintained.availability(200.0, N=100, seed=17).n_simulations
     # So antithetic pairs and common random numbers work with them.
     assert rbd.compare(rbd, 200.0, N=50, seed=1).estimate == 0.0
     assert rbd.availability(200.0, N=20, seed=1, antithetic=True).antithetic

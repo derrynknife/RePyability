@@ -23,6 +23,8 @@ models provided here (see [Building an RBD](guide/building.md) and
 
 ::: repyability.StandbyModel
 
+::: repyability.DegradingNode
+
 ::: repyability.RepeatedNode
 
 ::: repyability.RepeatedStandbyNode
@@ -62,6 +64,8 @@ models provided here (see [Building an RBD](guide/building.md) and
 ## Result types
 
 ::: repyability.AvailabilityResult
+
+::: repyability.CapacityDistribution
 
 ::: repyability.Criticalities
 

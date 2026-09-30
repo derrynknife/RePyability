@@ -87,7 +87,11 @@ units, drawing the units as ordinary parallel nodes gives the exact answer.
 
 `mean()` and `random(size, seed=None)` give the arrangement's mean lifetime
 and draw lifetimes; `cs(x, X)` is its conditional survival. A standby node
-cannot take a [condition-based state](condition-based.md).
+cannot take a [condition-based state](condition-based.md). When the
+arrangement is simulated, `mean()` is the mean of the lifetimes its fit is made
+from, the same on every call, so the exact long-run values of a repairable RBD
+it is part of are too; `mean(N=..., seed=...)` makes a fresh estimate from new
+draws.
 
 ## Repeated nodes: n identical copies
 

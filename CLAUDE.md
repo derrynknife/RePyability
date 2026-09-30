@@ -28,6 +28,23 @@
   allows; raise that minimum, rather than keep code for older versions,
   once RePyability needs what a newer surpyval does.
 
+## Simulation engines and seeded results
+
+- **A `RepairableRBD` simulation has two engines that must agree to the last
+  bit**: the Python event loop (`RepairableRBD._replicate`) and the compiled
+  one (`repyability/rbd/_kernel.py`, numba, the optional `fast` extra). A
+  change to the loop's events, arithmetic or order goes into both;
+  `test_simulation_engines.py` checks them against each other (run by CI's
+  `test (with numba, ...)` jobs) and the Python loop against a reference
+  written from the streams' definition. What the compiled engine does not
+  simulate, `_compiled.unsupported` sends to Python.
+- **The random streams (`repyability/rbd/_streams.py`) define every seeded
+  result.** Changing how a stream is named, seeded or laid out (its width,
+  `BLOCK_DRAWS`, `MAX_WIDTH`, `first_rows`, the expected draws in
+  `_expected_draws`) changes seeded results: that is a behaviour change for
+  the CHANGELOG, `seeded_event_loop.json` must be re-recorded, and the docs'
+  quoted numbers updated. The rows of a chunk only affect speed.
+
 ## Releasing
 
 Releases are cut from master by `.github/workflows/release.yml`, which this
@@ -48,7 +65,13 @@ merge and release needs the maintainer's go-ahead.
 
 ## surpyval workarounds to remove
 
-None at present: surpyval 0.21 fixed every one listed before (#86), and
-RePyability requires it. When a new one is needed, list it here with its
-surpyval issue and where it lives, so it can go once the minimum surpyval
-in `pyproject.toml` includes the fix.
+- **Normal and LogNormal quantiles** (surpyval #469). surpyval computes
+  them through `scipy.stats.norm.ppf`, whose argument checks cost four
+  times the maths. `_DIRECT_QF` in `repyability/rbd/_sampling.py` computes
+  the same values through `scipy.special.ndtri` for the simulations;
+  `test_direct_quantiles_are_surpyvals` checks that they stay identical.
+  Remove it once the minimum surpyval computes them directly.
+
+List each new workaround here with its surpyval issue and where it lives,
+so it can go once the minimum surpyval in `pyproject.toml` includes the
+fix.

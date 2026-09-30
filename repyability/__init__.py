@@ -11,6 +11,7 @@ from repyability.fault_tree import FaultTree
 from repyability.maintenance import FailureLimitPolicy, MaintenancePolicy
 from repyability.non_repairable import NonRepairable
 from repyability.rbd.ccf import MGL, BetaFactor, CCFGroup
+from repyability.rbd.degrading_node import DegradingNode
 from repyability.rbd.helper_classes import (
     PerfectReliability,
     PerfectUnreliability,
@@ -27,6 +28,7 @@ from repyability.rbd.repeated_standby_node import RepeatedStandbyNode
 from repyability.rbd.results import (
     AvailabilityAllocation,
     AvailabilityResult,
+    CapacityDistribution,
     ConfidenceInterval,
     CostResult,
     Criticalities,
@@ -56,6 +58,7 @@ __all__ = [
     "NonRepairable",
     "Repairable",
     "StandbyModel",
+    "DegradingNode",
     "LoadSharingModel",
     "RepeatedNode",
     "RepeatedStandbyNode",
@@ -71,6 +74,7 @@ __all__ = [
     "ComponentOption",
     # Result types
     "AvailabilityResult",
+    "CapacityDistribution",
     "ConfidenceInterval",
     "CostResult",
     "RedundancyAllocation",

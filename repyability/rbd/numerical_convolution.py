@@ -13,8 +13,6 @@ with a Kaplan-Meier fit.
 from typing import cast
 
 import numpy as np
-from scipy.integrate import cumulative_trapezoid, trapezoid
-from scipy.signal import fftconvolve
 
 from ._model_utils import distribution_name, failure_time_scale, never_fails
 
@@ -172,6 +170,8 @@ def _sf_from_pdf(
     never fail) and otherwise has the (possibly un-normalised) density
     ``pdf``, scaled to its mass ``finite - at_zero`` to normalise away
     discretisation drift."""
+    from scipy.integrate import cumulative_trapezoid
+
     cdf = cumulative_trapezoid(pdf, t, initial=0.0)
     total = cdf[-1]
     mass = finite - at_zero
@@ -196,8 +196,10 @@ class ConvolvedSurvival:
     The grid runs from 0 to the sum of the components' upper times (for
     each, the smallest ``max(mean, 1) * 2 ** j`` at which its survival is
     at most ``eps``). The densities are evaluated on it (non-finite values
-    set to 0), convolved by FFT, and each partial sum's distribution is
-    normalised to total probability 1 before the mixture is formed.
+    set to 0) and convolved by FFT with the trapezoidal rule, so the error
+    falls as the square of the grid step, and each partial sum's
+    distribution is normalised to total probability 1 before the mixture
+    is formed.
 
     A component may be a limited-failure-population or zero-inflated
     surpyval model: a fraction ``1 - p`` of its units never fail, and a
@@ -224,6 +226,9 @@ class ConvolvedSurvival:
         accuracy at the cost of construction time.
     eps : float, optional
         Survival threshold used to bound the time grid, by default 1e-10.
+    partials : bool, optional
+        Whether to keep the survival function of every partial sum
+        ``T_1 + ... + T_j`` too (see ``partial_sf``), by default False.
 
     Attributes
     ----------
@@ -261,7 +266,10 @@ class ConvolvedSurvival:
         switching_probability=1.0,
         n_points: int = 100_001,
         eps: float = 1e-10,
+        partials: bool = False,
     ):
+        from scipy.signal import fftconvolve
+
         models = list(models)
         n = len(models)
         if n == 0:
@@ -281,15 +289,19 @@ class ConvolvedSurvival:
         # (every unit dead on arrival) and finite (none never fails): the
         # continuous part of T + T_k is the continuous parts convolved, plus
         # each one's continuous part while the other is 0.
-        partials = []
+        sums = []
         at_zero = _dead_on_arrival(models[0])
         finite = 1.0 - never_fails(models[0])
         pdf = _density_on_grid(models[0], t)
-        partials.append((at_zero, finite, pdf))
+        sums.append((at_zero, finite, pdf))
         for model in models[1:]:
             density = _density_on_grid(model, t)
             zero = _dead_on_arrival(model)
-            summed = fftconvolve(pdf, density)[:n_points] * dt
+            # The trapezoidal rule: the sum over the grid, less half of each
+            # end's term, so the error falls as the square of the step.
+            summed = fftconvolve(pdf, density)[:n_points] * dt - 0.5 * dt * (
+                pdf[0] * density + density[0] * pdf
+            )
             if at_zero:
                 summed = summed + at_zero * density
             if zero:
@@ -297,17 +309,22 @@ class ConvolvedSurvival:
             pdf = summed
             at_zero *= zero
             finite *= 1.0 - never_fails(model)
-            partials.append((at_zero, finite, pdf))
+            sums.append((at_zero, finite, pdf))
 
         # Survival function is the weighted mixture of the partial-sum survival
         # functions (zero-weight partials are skipped, so perfect switching
-        # only evaluates the full convolution).
+        # only evaluates the full convolution, unless every partial sum's is
+        # to be kept).
         sf = np.zeros(n_points)
         never = 0.0
-        for weight, (at_zero, finite, partial_pdf) in zip(weights, partials):
-            if weight == 0.0:
+        self._partials: list = []
+        for weight, (at_zero, finite, partial_pdf) in zip(weights, sums):
+            if weight == 0.0 and not partials:
                 continue
-            sf += weight * _sf_from_pdf(partial_pdf, t, at_zero, finite)
+            partial = _sf_from_pdf(partial_pdf, t, at_zero, finite)
+            if partials:
+                self._partials.append((partial, 1.0 - finite))
+            sf += weight * partial
             never += weight * (1.0 - finite)
 
         self._t = t
@@ -337,6 +354,26 @@ class ConvolvedSurvival:
         return np.interp(
             x, self._t, self._sf, left=1.0, right=self.never_fails
         )
+
+    def partial_sf(self, j: int, x):
+        """Survival function of the partial sum ``T_1 + ... + T_j`` at x,
+        for ``j`` from 1 to the number of models, with perfect switching
+        (kept only if the object was built with ``partials=True``).
+
+        Parameters
+        ----------
+        j : int
+            How many of the lifetimes to add, from 1.
+        x : float or array_like
+            The time(s) at which to evaluate.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The survival probability, shaped as for ``sf``.
+        """
+        curve, never = self._partials[j - 1]
+        return np.interp(x, self._t, curve, left=1.0, right=never)
 
     def ff(self, x):
         """Cumulative failure probability (CDF) at x.
@@ -369,6 +406,8 @@ class ConvolvedSurvival:
         float
             The mean lifetime.
         """
+        from scipy.integrate import trapezoid
+
         if self.never_fails > 0.0:
             return float("inf")
         return float(trapezoid(self._sf, self._t))

@@ -132,14 +132,18 @@ same `N`, without biasing the estimate:
   removes most of the variance.
 
 In a `RepairableRBD` both work component by component: each component draws
-from a stream of its own, keyed by the seed, its place in the diagram and
-the simulation (or the pair), so its `k`-th draw is matched, or paired,
-however the components' events interleave.
+each quantity (its times to failure, its repairs, ...) from a stream of its
+own, keyed by the seed, its place in the diagram and the quantity, and laid
+out so that the stream's `k`-th draw in simulation `r` (or pair `r`) is
+fixed by those alone. Its `k`-th draw is then matched, or paired, however
+the components' events interleave, and every simulation is the same however
+the run is split up: over processes or threads, or in a run to a tolerance.
 
-A parallel run splits the simulations into blocks seeded in turn from one
-`numpy.random.SeedSequence`, whose spawned seeds give independent streams.
-The block, not the process that runs it, fixes the random numbers, so the
-results do not depend on the number of processes.
+A parallel run of a `NonRepairableRBD` splits the lifetimes into blocks
+seeded in turn from one `numpy.random.SeedSequence`, whose spawned seeds
+give independent streams. The block, not the process that runs it, fixes
+the random numbers, so the results do not depend on the number of
+processes.
 
 ### Fault trees
 
@@ -464,14 +468,29 @@ contributes its own system frequency.
 
 **Availability over time.** Before the long run, availability depends on
 time: a new system starts up (`A(0) = 1`) and settles towards the long-run
-value, possibly overshooting. There is no general closed form, so
-`availability()` simulates `N` independent histories (each component's
-alternating failures and repairs, merged in time order, with the system's
-state re-evaluated at every event) and reports the fraction of histories up
-at each time. Each point is a proportion, so its standard error is
+value, possibly overshooting. A component alternates up periods `U` and down
+periods `D`, as good as new after each: an alternating renewal process, whose
+point availability `A_i(t)` solves the renewal equation. There is a closed
+form only for exponential times; `point_availability` solves the equation
+numerically, on a grid of 2,000 steps over the component's typical up time
+(an error of about `1e-7`). Components that fail and are repaired
+independently are up or down independently at every time, so the system's
+`A(t)` is its system probability at the `A_i(t)`, and
+`mission_availability` is its mean over `[0, T]`. For a long mission that
+mean is the long-run value plus about `b/T`: for one component
+`b = A (E[C²]/(2E[C]) − E[U²]/(2E[U]))`, `C = U + D`, positive for a life
+that wears out, and for a system `Σ_i I_B^i b_i` to first order.
+
+`availability()` simulates `N` independent histories instead (each
+component's alternating failures and repairs, merged in time order, with the
+system's state re-evaluated at every event) and reports the fraction of
+histories up at each time. The histories also give what the exact methods
+do not: the counts, downtimes and costs over the window, and the criticality
+measures below. Each point is a proportion, so its standard error is
 `√(A(1 − A)/N)`; the confidence band uses the Wilson score interval, which
 stays sensible at `A = 1`. For exponential components the simulation is held
-to the exact Markov solution in the test suite.
+to the exact Markov solution in the test suite, and on the benchmark
+diagrams to `point_availability`.
 
 A nested repairable RBD runs its own history on the same clock, and the outer
 system sees a state change when the nested system's state changes.
@@ -487,6 +506,72 @@ system sees a state change when the nested system's state changes.
   to down), and the fraction of the node's own failures that did so.
 - The **restoration criticality index** does the same for repairs that
   restored the system.
+
+## Capacity
+
+A reliability block diagram answers a yes-or-no question: does the system
+work? A plant also asks how much it delivers. Give each node a capacity
+`c_i`, the throughput it passes while it works (0 once it has failed), and
+the system's capacity is the most that can flow from the input to the output
+through the working nodes, each passing at most its capacity: the diagram's
+**maximum flow**. The edges carry any amount, so
+
+```
+series:    C = min(c_1, c_2, ...)
+parallel:  C = c_1 + c_2 + ...
+```
+
+and in general, by the **max-flow min-cut theorem**, the capacity is the
+least total capacity of a cut, a set of nodes whose failure disconnects the
+output:
+
+```
+C = min over cuts K of  Σ_{i in K} c_i · [node i works]
+```
+
+A k-out-of-n node passes flow only while at least `k` of its inputs are
+reached, as in the reliability analysis, so the capacity is positive exactly
+when the system works: `P(C > 0)` is the reliability (or availability).
+
+**The distribution.** Over the components' states, `C` takes finitely many
+values. The probability of each follows as the system probability does. A
+module's distribution comes from its members' in closed form: the
+distribution of the least of independent capacities for a series chain, of
+their sum for a parallel group, and of their sum while at least `k` work for
+a k-out-of-n group. Combining distributions this way is the **universal
+generating function** of multi-state systems (Ushakov; Lisnianski and
+Levitin). What is left, such as a bridge, is conditioned on its parts'
+capacities one at a time, carrying only each cut's running total and the
+least complete total, and merging the states that agree on them.
+
+**What it gives.** From the distribution:
+
+- `P(C ≥ d)`, the probability of meeting a demand `d`: the system's
+  reliability for that demand (its availability, in the long run);
+- `E[C]`, the expected capacity;
+- `E[min(C, d)] / d`, the expected fraction of the demand delivered. In the
+  long run this is the fraction of the demand met over time: the
+  **production availability**, the figure plant owners contract on.
+
+In the long run the probability of each level is the fraction of time spent
+at it: the components' long-run availabilities stand in for their
+reliabilities, as for the long-run availability. Over a finite window,
+which starts with everything new, the availability simulation follows the
+capacity too: after every component event it works out the capacity the
+components that are up give, and the fraction of the demand delivered over
+the window is the time average of `min(C, d) / d`.
+
+**Multi-state components.** A component can itself have several levels: a
+pump at full, half or no output. The distribution of each node's capacity
+enters the calculation the same way, whether it has two levels or many, so
+binary components are the special case. A component's levels can be fixed
+(each with a probability while it works), come from a nested system, or come
+from a model of its states over time: a component that degrades through
+stages is in stage `j` at time `t` with probability
+`P(S_{j-1} ≤ t < S_j)`, where `S_j` is the sum of its first `j` stages'
+times. In the long run, renewed after each failure, it spends its up time in
+each stage in proportion to the stage's mean time (the renewal-reward
+theorem).
 
 ## Costs
 

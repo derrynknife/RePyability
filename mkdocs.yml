@@ -99,6 +99,7 @@ nav:
       - Redundancy models: guide/redundancy-models.md
       - Common-cause failures: guide/common-cause.md
       - Repairable systems: guide/repairable.md
+      - System capacity: guide/capacity.md
       - Costs: guide/costs.md
       - Design and allocation: guide/design.md
       - Maintenance policies: guide/maintenance.md

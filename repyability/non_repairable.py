@@ -1,7 +1,6 @@
 import warnings
 
 import numpy as np
-from scipy.integrate import quad, trapezoid
 from scipy.optimize import minimize, minimize_scalar
 from surpyval import ExactEventTime, NonParametric, Parametric
 
@@ -266,6 +265,8 @@ class NonRepairable:
         >>> round(unit.avg_replacement_time(100), 2)
         63.21
         """
+        from scipy.integrate import quad, trapezoid
+
         if self.model_parameterization == "parametric":
             # surpyval evaluates an offset model below its offset through a
             # fractional power of a negative number before masking it, which
@@ -342,9 +343,9 @@ class NonRepairable:
         failure and then replaced, so up and down times alternate (an
         alternating renewal process). ``MTTF`` is the mean of
         ``reliability`` and ``MTTR`` the mean of ``time_to_replace``.
-        For a simulated ``StandbyModel`` lifetime the MTTF is a Monte Carlo
-        estimate drawn from numpy's global RNG, so it varies slightly
-        between calls.
+        For a simulated ``StandbyModel`` lifetime the MTTF is the mean of
+        the lifetimes simulated when it was built (see its ``mean``), so it
+        is the same on every call.
 
         If some units never fail (a limited-failure-population model,
         ``p < 1``), sooner or later a replacement is one of them, and the

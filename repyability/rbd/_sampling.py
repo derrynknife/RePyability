@@ -1,12 +1,13 @@
 """Batched random draws that reproduce surpyval's own sampling exactly.
 
 surpyval draws a sample from a plain parametric model as ``qf(u) + gamma``,
-taking one uniform ``u`` from numpy's global RNG per sample. The simulations
-used to make those draws one call at a time, and each call costs tens of
-microseconds of scipy/surpyval overhead. Taking the *same* uniforms from the
-global RNG in one block, in the same order, and applying ``qf`` to the block
-yields the same numbers at a fraction of the cost, so seeded results do not
-change.
+taking one uniform ``u`` from numpy's global RNG per sample. Making those
+draws one call at a time costs tens of microseconds of scipy/surpyval
+overhead each. Taking the *same* uniforms from the global RNG in one block,
+in the same order, and applying ``qf`` to the block yields the same numbers
+at a fraction of the cost. (``RepairableRBD``'s simulations take their
+uniforms from streams of their own instead, see ``_streams``, and turn
+them into draws with the same samplers.)
 
 :func:`inverse_sampler` returns ``None`` for any model whose sampling it
 cannot reproduce exactly (nested RBDs, standby nodes, fixed-probability
@@ -22,10 +23,11 @@ infinite for a unit that never fails, 0 for one dead on arrival.
 """
 
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 import numpy as np
-from surpyval import NonParametric, Parametric
+from scipy.special import ndtri
+from surpyval import LogNormal, NonParametric, Normal, Parametric
 
 from .helper_classes import PerfectReliability, PerfectUnreliability
 
@@ -81,6 +83,17 @@ def row_sampler(model) -> Optional[RowSampler]:
     return own() if callable(own) else None
 
 
+#: The quantile functions of surpyval's Normal and LogNormal, computed as
+#: surpyval computes them but without the argument checks of scipy.stats'
+#: generic ppf, which cost four times the maths: ``norm.ppf(u, mu, sigma)``
+#: is ``ndtri(u) * sigma + mu``, value for value. A workaround for surpyval
+#: #469 (keyed by the distribution objects' identity).
+_DIRECT_QF: dict = {
+    id(Normal): lambda u, mu, sigma: ndtri(u) * sigma + mu,
+    id(LogNormal): lambda u, mu, sigma: np.exp(ndtri(u) * sigma + mu),
+}
+
+
 def inverse_sampler(model) -> Optional[Sampler]:
     """``u -> model.random(len(u))`` for the uniforms ``u`` that call would
     draw, when the model samples by inverse transform with exactly one global
@@ -99,7 +112,8 @@ def inverse_sampler(model) -> Optional[Sampler]:
     ):
         if model.p == 1 and model.f0 == 0:
             dist, params, gamma = model.dist, model.params, model.gamma
-            return lambda u: dist.qf(u, *params) + gamma
+            qf = _DIRECT_QF.get(id(dist), dist.qf)
+            return lambda u: qf(u, *params) + gamma
         return lambda u: np.asarray(model.qf(u), dtype=float)
     return None
 
@@ -114,46 +128,3 @@ def draw_rows(samplers: list[Sampler], size: int) -> list[np.ndarray]:
     """
     u = np.random.random_sample((size, len(samplers)))
     return [column(u, j, sampler) for j, sampler in enumerate(samplers)]
-
-
-class UniformStream:
-    """Single draws from many samplers, in any interleaving, from pre-drawn
-    blocks of the global RNG's uniforms.
-
-    Each call to :meth:`draw` takes the next uniform in the global stream,
-    exactly as a ``random(1)`` call would, but the uniforms are drawn a block
-    at a time and each sampler's ``qf`` is applied to the whole block at
-    once. :meth:`close` rewinds the global RNG to just after the last uniform
-    handed out, so it ends exactly where the single draws would have left it.
-    """
-
-    def __init__(self, block_size: int = 1024):
-        self.block_size = block_size
-        self._state: Any = None  # np.random.get_state() before the block
-        self._block = np.empty(0)
-        self._pos = 0
-        self._values: dict = {}
-
-    def draw(self, sampler: Sampler) -> float:
-        if self._pos == len(self._block):
-            self._state = np.random.get_state()
-            self._block = np.random.random_sample(self.block_size)
-            self._pos = 0
-            self._values = {}
-        values = self._values.get(sampler)
-        if values is None:
-            values = self._values[sampler] = np.asarray(
-                sampler(self._block), dtype=float
-            ).tolist()
-        value = values[self._pos]
-        self._pos += 1
-        return value
-
-    def close(self) -> None:
-        if self._state is not None:
-            np.random.set_state(self._state)
-            np.random.random_sample(self._pos)
-            self._state = None
-            self._block = np.empty(0)
-            self._pos = 0
-            self._values = {}

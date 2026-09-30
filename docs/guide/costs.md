@@ -102,7 +102,7 @@ costs.by_component      # mean cost attributable to each costed component
 
 `cost()` takes the same arguments as `availability()` (`working_nodes`,
 `broken_nodes`, `method`, `N`, `verbose`, `seed`, and `tolerance`,
-`antithetic` and `n_jobs`: see
+`antithetic`, `n_jobs` and `engine`: see
 [Simulation precision and speed](simulation.md)). The same result comes with
 `availability(...)` as `result.cost`, so one simulation gives both answers.
 With nothing priced, `cost()` returns `None` and `result.cost` is `None`.
@@ -146,9 +146,9 @@ variable.expected_cost_rate()   # -> 30.58   = 2 × 168.17 / 11
 
 - The distribution must have a finite mean and no appreciable probability of
   a negative cost.
-- The cost draws come from their own random stream (seeded from the run's
-  seed), so pricing never changes the failure and repair histories: a seeded
-  `availability()` gives the same availability with or without costs.
+- The cost draws come from random streams of their own (seeded from the
+  run's seed), so pricing never changes the failure and repair histories: a
+  seeded `availability()` gives the same availability with or without costs.
 - The downtime costs must be numbers: they are rates, and the outage
   durations already make them random.
 
@@ -315,9 +315,9 @@ down.
 
 ```python
 year = alone(580).availability(t_simulation=8760.0, N=500, seed=0)
-year.system_failures / year.n_simulations          # -> 3.666
-year.system_planned_outages / year.n_simulations   # -> 11.82
-year.cost.by_category["preventive"]                # -> 11824.0   1000 each
+year.system_failures / year.n_simulations          # -> 3.518
+year.system_planned_outages / year.n_simulations   # -> 11.92
+year.cost.by_category["preventive"]                # -> 11918.0   1000 each
 ```
 
 ## Hidden failures and inspection

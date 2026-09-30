@@ -65,17 +65,36 @@ def test_closed_form_matches_monte_carlo(exp_aft):
     assert np.allclose(ls.sf(t), mc.sf(t), atol=0.025)
 
 
-def test_reproducible_with_seed(exp_aft):
-    # A Weibull baseline forces the Monte-Carlo (Kaplan-Meier) path.
+@pytest.fixture(scope="module")
+def weibull_aft():
+    """A Weibull-AFT unit: its baseline forces the Monte-Carlo
+    (Kaplan-Meier) path."""
     rng = np.random.default_rng(1)
     load = rng.uniform(0.5, 2.0, size=400)
     x = rng.weibull(2.0, size=400) * 80.0 / np.exp(0.4 * (load - 1)) + 1e-3
-    waft = surv.WeibullAFT.fit(x, Z=load.reshape(-1, 1))
+    return surv.WeibullAFT.fit(x, Z=load.reshape(-1, 1))
+
+
+def test_reproducible_with_seed(weibull_aft):
+    waft = weibull_aft
     a = LoadSharingModel([waft, waft], load=2.0, k=1, n_sims=500, seed=7)
     b = LoadSharingModel([waft, waft], load=2.0, k=1, n_sims=500, seed=7)
     assert a.is_simulated is True
     t = np.array([30.0, 90.0])
     assert np.allclose(a.sf(t), b.sf(t))
+
+
+def test_a_simulated_group_has_one_mean(weibull_aft):
+    # The mean of the lifetimes its fit is made from, the same at every
+    # call, and made without touching numpy's global RNG.
+    group = LoadSharingModel(
+        [weibull_aft] * 2, load=2.0, k=1, n_sims=500, seed=7
+    )
+    assert group.is_simulated
+    before = np.random.get_state()[1].copy()
+    assert group.mean() == group.mean() == group.random(500, seed=7).mean()
+    assert np.array_equal(np.random.get_state()[1], before)
+    assert group.mean(N=500, seed=8) != group.mean()
 
 
 # -- dependent failure: sharing shortens life -----------------------------

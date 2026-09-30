@@ -29,6 +29,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering",
     "Topic :: Scientific/Engineering :: Mathematics",
 ]
@@ -48,6 +49,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The compiled engine of RepairableRBD simulations (engine="numba", and
+# engine="auto" when it pays). 0.60 is the first numba for numpy 2.
+fast = ["numba>=0.60"]
 dev = [
     "black==26.3.1",
     "isort>=5.12",
@@ -112,13 +116,17 @@ module = [
     'tqdm',
     'numpy',
     'numpy.*',
+    'numba',
+    'numba.*',
 ]
 ignore_missing_imports = true
 
 # Coverage
 [tool.coverage.run]
 source = ["repyability"]
-omit = ["*/tests/*"]
+# The compiled loop runs as machine code, which coverage cannot trace (its
+# equivalence with the Python loop is tested instead).
+omit = ["*/tests/*", "*/rbd/_kernel.py"]
 
 [tool.coverage.report]
 # The library (excluding tests) must stay above this bar.

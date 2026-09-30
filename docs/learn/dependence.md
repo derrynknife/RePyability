@@ -187,13 +187,13 @@ $(\lambda t)^2$ when $\lambda t$ is small.
     ```python
     switch90 = StandbyModel([unit, unit], switching_probability=0.9)
     switch90.sf(100)   # -> 0.699    the formula gives 0.6990
-    switch90.mean()    # -> 189.9    the formula gives 190
+    switch90.mean()    # -> 190.0    the formula gives 190
     ```
 
     With an imperfect switch the library cannot use the Erlang formula: it
     convolves the lifetimes numerically on a time grid. That works for any
-    lifetime model and is repeatable, but here it agrees with the formula
-    only to within about 0.0002.
+    lifetime model and is repeatable, and here it agrees with the formula to
+    within about 0.00000003.
 
 At 10 h the standby pair with a 90% switch fails more often than the active
 pair (0.0137 against 0.0091), although over 100 h it is clearly better.
@@ -597,7 +597,7 @@ standby pair or the active pair?
 
     ```python
     switch95 = StandbyModel([unit500, unit500], switching_probability=0.95)
-    switch95.mean()     # -> 974.7    by hand: 975 (numerical convolution)
+    switch95.mean()     # -> 975.0    by hand: 975 (numerical convolution)
     switch95.sf(500)    # -> 0.717
     switch95.ff(25)     # -> 0.0036
     NonRepairableRBD(pair_edges, {"a": unit500, "b": unit500}).ff(25)   # -> 0.0024

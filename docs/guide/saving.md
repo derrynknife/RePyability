@@ -75,11 +75,20 @@ surpyval samples from numpy's **global** random number generator, so a seed
 is applied to it for the duration of the call and the caller's generator
 state is restored afterwards. Seeded calls are reproducible without
 disturbing the surrounding program; unseeded calls draw from wherever the
-global generator is.
+global generator is. A `RepairableRBD`'s simulations draw from random
+streams of their own instead, one for each component and quantity, seeded
+from `seed` (see [Random streams](simulation.md#random-streams)); an
+unseeded run takes its seed from the global generator.
 
 ```python
 rbd.mean(1_000, seed=0) == rbd.mean(1_000, seed=0)   # True
 ```
+
+A seed reproduces a result on the same platform. numpy's mathematical
+functions can differ in the last bit between operating systems and
+processors. So on another machine, the same seed can give times that differ
+in their last digits, and rarely a different count, where two events
+nearly coincide.
 
 Simulations involving non-parametric nodes (Kaplan–Meier and the other
 surpyval non-parametric fits) are reproducible too: surpyval seeds their
@@ -92,10 +101,12 @@ results do not depend on which internal path a model takes. Non-parametric
 nodes are the exception: surpyval takes one seed from the global generator
 for each call rather than one random number for each draw, so a block of
 their draws differs from the same draws made one at a time. Their results
-are still reproducible. A parallel run
-(`n_jobs`) seeds each block of simulations in turn from `seed`, so its
-results do not depend on the number of processes; they differ from a run
-without `n_jobs` (see [Parallel runs](simulation.md#parallel-runs)).
+are still reproducible. A parallel run of a `NonRepairableRBD` (`n_jobs`)
+seeds each block of simulations in turn from `seed`, so its results do not
+depend on the number of processes; they differ from a run without
+`n_jobs`. A `RepairableRBD`'s results are the same with `n_jobs` or
+without, and with either engine (see [Parallel
+runs](simulation.md#parallel-runs)).
 
 ## What is exact and what is simulated
 
@@ -107,9 +118,11 @@ without `n_jobs` (see [Parallel runs](simulation.md#parallel-runs)).
 | `parameter_sensitivity` | Exact Birnbaum importance times a numerical parameter derivative. |
 | `random`, `mean`, `mean_time_to_failure(_interval)`, `node_mttf` (composite nodes) | Monte-Carlo. |
 | `mean_availability`, `system_failure_frequency`, MUT/MDT/MTBF, `expected_cost_rate`, `total_cost`, the repairable importance measures | Exact, from the long-run node availabilities. |
-| `availability`, `cost`, the simulated criticality measures | Discrete-event simulation. |
+| `capacity_distribution`, `system_capacity` | Exact, from the node reliabilities (at a time) or long-run availabilities. |
+| `point_availability`, `mission_availability` | Exact: each component's renewal equation, solved numerically (to about `1e-7`), and the system at its components' availabilities at each time. |
+| `availability` (with the capacity over time and the delivered fraction), `cost`, the simulated criticality measures | Discrete-event simulation. |
 | Standby and load-sharing node reliability | Exact or numerical where a closed form or convolution applies, otherwise simulated (see [Redundancy models](redundancy-models.md#how-the-survival-function-is-obtained)). |
-| `allocate_redundancy` (both kinds of RBD) | Exact scoring; `method="exact"` is a proven optimum, `"greedy"` a heuristic. |
+| `allocate_redundancy` (both kinds of RBD) | Exact scoring, except cold standby (`strategy="cold"` or `"choose"`) that needs two or more units working, of units that are not identical Exponentials: its reliability is simulated from 10 000 lifetimes, seeded, so the scores are reproducible but carry Monte-Carlo error. `method="exact"` is a proven optimum of the scores, `"greedy"` a heuristic. |
 | `Repairable` policies | Analytic for a power-law process, simulated for imperfect repair. |
 
 ## Performance
@@ -133,14 +146,17 @@ without `n_jobs` (see [Parallel runs](simulation.md#parallel-runs)).
 - **Simulations** are vectorised where the models allow it: `mean()` of a
   system of parametric components draws 100 000 lifetimes in well under a
   second. Availability simulations step through events, so their cost grows
-  with `N` times the number of failures and repairs in the window.
+  with `N` times the number of failures and repairs in the window; with
+  numba installed (`pip install "repyability[fast]"`) they run compiled,
+  about ten times as fast (see [The compiled
+  engine](simulation.md#the-compiled-engine)).
 - **Monte-Carlo error** shrinks like `1/√N`: use the confidence intervals
   (`mean_time_to_failure_interval`, `mean_availability_interval`,
   `availability_interval`, `CostResult.mean_interval`) to judge `N`, or pass
   a `tolerance` to simulate until they are narrow enough. Antithetic pairs
   and common random numbers (`compare`) get more precision from each
-  simulation, and `n_jobs` spreads the simulations over several processes:
-  see [Simulation precision and speed](simulation.md).
+  simulation, and `n_jobs` spreads the simulations over several CPUs: see
+  [Simulation precision and speed](simulation.md).
 
 !!! note "Known limit: long paths through a mesh"
     The minimal path sets of the part of a diagram that does not reduce are

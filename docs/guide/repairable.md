@@ -8,9 +8,10 @@
 A [`RepairableRBD`][repyability.RepairableRBD] models a system whose
 components are repaired when they fail. The question changes from "has it
 failed yet?" to "is it up?": **availability**. Long-run quantities have exact
-closed forms; the availability over time, and a family of criticality
-measures, come from a discrete-event simulation. Theory:
-[Concepts](../concepts.md#availability).
+closed forms, and the availability over time from new is exact too; the
+histories behind it (failure counts, downtime and cost over a window) and a
+family of criticality measures come from a discrete-event simulation.
+Theory: [Concepts](../concepts.md#availability).
 
 ## Components
 
@@ -92,39 +93,81 @@ A forced node never changes state, so it contributes no failures. The
 importance measures on a repairable system are covered on
 [Importance measures](importance.md#on-a-repairable-system).
 
+## Availability over time (exact)
+
+With every component new at time 0, the probability that the system is up
+at a time `t`, its **point availability** `A(t)`, is exact, and so is its
+mean over a mission `[0, t]`:
+
+```python
+plant.point_availability([0.0, 1.0, 5.0, 50.0])   # array([1.    , 0.9808, 0.9565, 0.9536])
+plant.point_availability(1.0)                      # -> 0.9808
+plant.mission_availability(100.0)                  # -> 0.9544   mean over [0, 100]
+plant.mission_availability([10.0, 100.0, 1000.0]) # array([0.962 , 0.9544, 0.9537])
+```
+
+Each component's `A(t)` follows from the distributions of its up and down
+times by the renewal equation, solved numerically to about `1e-7`; the
+components fail and are repaired independently, so the system's is the
+exact system computation at theirs, at each time (see
+[Concepts](../concepts.md#availability)). The curve starts at 1 (less any
+units dead on arrival) and settles at `mean_availability()`, and a mission
+average differs from the long-run value by about `b / t`, for a constant `b`
+of the components' up and down times. `b` is positive unless the lives vary
+more than exponential ones do, and largest for components that wear out,
+which fail less early on. A mission of decades costs no more than one of
+hours: past the time the components have settled, the integral is extended
+exactly.
+
+Both take `working_nodes`, `broken_nodes` and `method` as
+`mean_availability` does, and cover what it covers: age and block
+replacement, nested RBDs, and hidden failures with a constant failure rate
+and instant tests and repair. A component with any other hidden failures
+raises `NotImplementedError`; simulate it. Each component's curve is
+computed on a grid of 2,000 steps over its typical up time: within one step
+of a time at which its units start or stop on a schedule (at 0, and at its
+scheduled replacements), what happens faster than a step, such as a short
+repair, is smoothed over it, so a point value there can be off by up to
+about the probability that the component is under repair; mission averages
+are not affected.
+
 ## Availability over time (simulated)
 
 `availability(t_simulation, ...)` runs `N` independent simulations of the
 system from time 0 (everything new, except any `broken_nodes`) to
-`t_simulation`, and averages them:
+`t_simulation`, and averages them: the same curve as `point_availability`,
+with the histories behind it, which also give the failure counts, downtime,
+costs and criticality measures over the window:
 
 ```python
 result = plant.availability(t_simulation=100.0, N=2_000, seed=0)
-result.timeline[:3]       # array([0.    , 0.0037, 0.0289])  times the mean availability changes
+result.timeline[:3]       # array([0.    , 0.0259, 0.027 ])  times the mean availability changes
 result.availability[:3]   # array([1.    , 0.9995, 0.999 ])  mean availability at those times
-result.availability[-1]   # -> 0.957   at t = 100
-np.interp(50, result.timeline, result.availability)   # -> 0.9531   at t = 50
+result.availability[-1]   # -> 0.9495   at t = 100
+np.interp(50, result.timeline, result.availability)   # -> 0.9607   at t = 50
 ```
 
 | Argument | Meaning |
 |---|---|
 | `t_simulation` | The length of each simulated history. |
 | `N` | The number of histories (default 10 000). Error shrinks like `1/√N`. |
-| `seed` | Seeds the run for reproducibility; the caller's RNG state is restored. |
+| `seed` | Seeds the run for reproducibility: each component draws from random streams of its own (see [Random streams](simulation.md#random-streams)). numpy's global RNG is left as it was. |
 | `working_nodes`, `broken_nodes` | Components that never fail, or that are down throughout. |
 | `method` | `"p"` or `"c"`, for deciding whether the system is up; same result. |
 | `verbose` | Show a progress bar. |
 | `tolerance`, `confidence`, `max_N` | Simulate until the mean availability over the window is known to within `tolerance` (see [Simulation precision and speed](simulation.md#simulating-to-a-tolerance)). |
 | `antithetic` | Simulate in antithetic pairs, for a more precise mean from the same `N` (see [Antithetic pairs](simulation.md#antithetic-pairs)). |
-| `n_jobs` | Run the simulations over several processes (see [Parallel runs](simulation.md#parallel-runs)). |
+| `n_jobs` | Run the simulations on several CPUs, with the same result as on one (see [Parallel runs](simulation.md#parallel-runs)). |
+| `engine` | `"python"`, `"numba"` (compiled) or `"auto"`, the default: the same results, faster compiled (see [The compiled engine](simulation.md#the-compiled-engine)). |
+| `demand` | With node capacities, the demand the delivered fraction is measured against (see [System capacity](capacity.md#over-a-window-simulated)). |
 
 The curve starts at 1 and settles towards the long-run availability
 (`0.9536` here). Its sampling error is available pointwise:
 
 ```python
-result.availability_se[-1]                            # -> 0.004536   standard error at t = 100
+result.availability_se[-1]                            # -> 0.004896   standard error at t = 100
 lower, upper = result.availability_interval(confidence=0.95)   # Wilson band
-lower[-1], upper[-1]                                  # (0.9472, 0.965)
+lower[-1], upper[-1]                                  # (0.939, 0.9583)
 ```
 
 `lower`/`upper` align with `result.timeline`, ready to draw as a band. The
@@ -133,8 +176,8 @@ up, has an interval of its own:
 
 ```python
 window = result.mean_availability_interval(confidence=0.95)
-window.estimate                   # -> 0.9539   the exact mean over 100 h is 0.9544
-window.lower, window.upper        # (0.9523, 0.9556)
+window.estimate                   # -> 0.9542   plant.mission_availability(100.0) is 0.9544
+window.lower, window.upper        # (0.9526, 0.9558)
 ```
 
 To compare two designs, simulate them with common random numbers:
@@ -160,10 +203,11 @@ one is up than the other far more precisely than two separate runs (see
 | `n_simulations`, `time_simulated_to` | `N` and `t_simulation`. |
 | `criticalities` | The criticality measures (below). |
 | `cost` | The simulated costs, or `None` when nothing is priced (see [Costs](costs.md#the-simulated-cost-distribution)). |
+| `capacity_timeline`, `capacity`, `capacity_time`, `mean_capacity`, `demand`, `delivered`, `delivered_fraction`, `delivered_fraction_interval(confidence)` | With node capacities: the mean capacity over time, the time at each capacity, and the fraction of the demand delivered (see [System capacity](capacity.md#over-a-window-simulated)). `None` without capacities. |
 
 ```python
-result.mean_up_time      # -> 27.29    against the exact 27.27
-result.failure_frequency # -> 0.03496  against the exact 0.03497
+result.mean_up_time      # -> 27.20    against the exact 27.27
+result.failure_frequency # -> 0.035075 against the exact 0.03497
 ```
 
 The result also behaves as a read-only mapping (`result["availability"]`,
@@ -177,9 +221,9 @@ view:
 
 ```python
 c = result.criticalities
-c.operational_criticality_index.down   # {'A': 0.238, 'B': 0.2337, 'C': 0.8384}
-c.failure_criticality_index.per_system_failure   # {'A': 0.2217, 'B': 0.2191, 'C': 0.5592}
-c.failure_criticality_index.per_system_failure["C"]   # -> 0.5592
+c.operational_criticality_index.down   # {'A': 0.246, 'B': 0.2491, 'C': 0.8252}
+c.failure_criticality_index.per_system_failure   # {'A': 0.222, 'B': 0.2294, 'C': 0.5487}
+c.failure_criticality_index.per_system_failure["C"]   # -> 0.5487
 ```
 
 | Measure | `up` / `by_system` / `per_system_failure` | `down` / `by_component` / `per_component_failure` |
@@ -189,7 +233,7 @@ c.failure_criticality_index.per_system_failure["C"]   # -> 0.5592
 | `failure_criticality_index` | Fraction of system failures this node's failure caused. | Fraction of this node's failures that failed the system. |
 | `restoration_criticality_index` | Fraction of system restorations this node's repair caused. | Fraction of this node's repairs that restored the system. |
 
-Here the valve caused 56% of system failures although it fails a fifth as
+Here the valve caused 55% of system failures although it fails a fifth as
 often as a pump, and 99% of its failures took the system down: the pumps are
 redundant and it is not. A node's failure "causes" a system failure when it
 is the event that takes the system from up to down.
@@ -230,7 +274,7 @@ nested = RepairableRBD(
 )
 nested.mean_availability()         # -> 0.9536   the same system as `plant`
 nested.system_failure_frequency()  # -> 0.03497
-nested.availability(t_simulation=100.0, N=2_000, seed=0).availability[-1]   # -> 0.9535
+nested.availability(t_simulation=100.0, N=2_000, seed=0).availability[-1]   # -> 0.951
 ```
 
 Use one `RepairableRBD` object per place it appears: the same object used for
@@ -265,5 +309,7 @@ events[0]   # (15.06..., False): the plant first went down at t = 15.06
 ```
 
 This is the interface a nested RBD presents to its parent; `availability()`
-drives the same machinery. It uses numpy's global RNG as is (there is no
-`seed` argument).
+drives the same machinery, with each component drawing from its own random
+streams. Stepped by hand, the components draw from numpy's global RNG as it
+is (there is no `seed` argument), so a history stepped by hand is not one of
+`availability()`'s.

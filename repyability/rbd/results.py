@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Hashable, Optional, Tuple
 
 import numpy as np
-from scipy.stats import norm
+from scipy.special import ndtri
 
 from repyability.rbd import _montecarlo as montecarlo
 
@@ -316,7 +316,7 @@ class FailureCriticalityIndex(_ResultMapping):
 
     >>> share = fci.per_component_failure
     >>> {node: round(share[node], 2) for node in sorted(share)}
-    {'a': 0.92, 'b': 0.91}
+    {'a': 0.91, 'b': 0.91}
     """
 
     per_system_failure: Dict[Hashable, float]
@@ -429,7 +429,7 @@ class Criticalities(_ResultMapping):
     >>> {node: round(float(v), 4) for node, v in oci.up.items()}
     {'a': 1.0, 'b': 1.0}
     >>> {node: round(float(v), 2) for node, v in oci.down.items()}
-    {'a': 0.53, 'b': 0.51}
+    {'a': 0.55, 'b': 0.5}
     >>> crit["iou"] is crit.iou  # dict-style access also works
     True
     """
@@ -514,14 +514,14 @@ class CostResult(_ResultMapping):
     ... )
     >>> result = rbd.cost(t_simulation=100.0, N=200, seed=0)
     >>> round(result.mean, 2), round(result.std, 2)
-    (1351.33, 442.78)
+    (1354.77, 429.75)
     >>> round(result.by_category["repair"], 2)  # 100 per failure
-    896.0
+    909.5
     >>> round(result.by_category["system_downtime"], 2)  # 50 per hour down
-    455.33
+    445.27
     >>> interval = result.mean_interval(0.95)
     >>> round(interval.lower, 2), round(interval.upper, 2)
-    (1289.96, 1412.69)
+    (1295.21, 1414.33)
     """
 
     samples: np.ndarray
@@ -606,7 +606,7 @@ class CostResult(_ResultMapping):
             raise ValueError("confidence must be between 0 and 1.")
         estimate = self.mean
         standard_error = self.mean_se
-        z = float(norm.ppf(0.5 + confidence / 2.0))
+        z = float(ndtri(0.5 + confidence / 2.0))
         return ConfidenceInterval(
             estimate=estimate,
             lower=max(0.0, estimate - z * standard_error),
@@ -869,6 +869,161 @@ class MaintenancePlan(_ResultMapping):
     availability: float
 
 
+def _meeting(levels: np.ndarray, demand: float) -> np.ndarray:
+    """Which ``levels`` meet ``demand``. A level within rounding of it
+    meets it: capacities that add up to the demand exactly (three units of
+    ``1 / 3`` against a demand of 1) do."""
+    if np.isinf(demand):
+        return levels >= demand
+    return levels >= demand - 1e-9 * abs(demand)
+
+
+@dataclass
+class CapacityDistribution(_ResultMapping):
+    """The exact distribution of a system's capacity: how much it can
+    deliver.
+
+    Returned by ``NonRepairableRBD.capacity_distribution`` (at a time, or
+    at each of several), ``RepairableRBD.capacity_distribution`` (in the
+    long run) and ``RBD.system_capacity``. Each component carries its
+    capacity while it works and nothing once it has failed, and the
+    system's capacity is the most that can flow through the diagram from
+    the input to the output. Like the other result types it is also a
+    read-only mapping of its fields.
+
+    Attributes
+    ----------
+    levels : numpy.ndarray
+        The capacities the system can have, in increasing order: 0 when it
+        is down, and each total its working components can carry. ``inf``
+        when components with no capacity given can join the input to the
+        output on their own.
+    probabilities : numpy.ndarray
+        The probability of each level: one per level, or for several times
+        one row per level and one column per time. They sum to 1. In the
+        long run, the fraction of time the system spends at each level.
+
+    Examples
+    --------
+    Three pumps of 50 units each, in parallel, each available 90% of the
+    time:
+
+    >>> from repyability import RBD
+    >>> pumps = RBD(
+    ...     [("s", "a"), ("s", "b"), ("s", "c"),
+    ...      ("a", "t"), ("b", "t"), ("c", "t")],
+    ...     capacity={"a": 50, "b": 50, "c": 50},
+    ... )
+    >>> capacity = pumps.system_capacity({"a": 0.9, "b": 0.9, "c": 0.9})
+    >>> capacity.levels.tolist()
+    [0.0, 50.0, 100.0, 150.0]
+    >>> capacity.probabilities.round(4).tolist()
+    [0.001, 0.027, 0.243, 0.729]
+
+    Two of the three meet a demand of 100:
+
+    >>> round(capacity.meets(100), 4)
+    0.972
+    >>> round(capacity.mean(), 4)
+    135.0
+    >>> round(capacity.delivered_fraction(100), 4)
+    0.9855
+    """
+
+    levels: np.ndarray
+    probabilities: np.ndarray
+
+    def meets(self, demand: float) -> Any:
+        """The probability that the capacity meets a demand: that it is at
+        least ``demand``.
+
+        For a non-repairable system at a time, it is the system's
+        reliability for that demand; in the long run, the fraction of time
+        the system can meet it. With every component's capacity positive,
+        ``meets`` of any demand above 0 but no more than the smallest level
+        above 0 is the system's reliability (or availability): the
+        capacity is positive exactly when the system works.
+
+        Parameters
+        ----------
+        demand : float
+            The demand, in the capacities' units. A capacity within
+            rounding of it (a relative ``1e-9``) meets it.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The probability, per time for several times.
+
+        Raises
+        ------
+        ValueError
+            If ``demand`` is NaN.
+        """
+        demand = float(demand)
+        if np.isnan(demand):
+            raise ValueError("demand must be a number, not NaN.")
+        met = _meeting(self.levels, demand)
+        return self._per_time(np.sum(self.probabilities[met], axis=0))
+
+    def mean(self) -> Any:
+        """The expected capacity.
+
+        In the long run, the average capacity over time. Infinite if the
+        capacity can be infinite (see ``levels``).
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The expected capacity, per time for several times.
+        """
+        levels = self.levels.reshape(
+            (-1,) + (1,) * (self.probabilities.ndim - 1)
+        )
+        with np.errstate(invalid="ignore"):
+            parts = np.where(
+                self.probabilities > 0, levels * self.probabilities, 0.0
+            )
+        return self._per_time(np.sum(parts, axis=0))
+
+    def delivered_fraction(self, demand: float) -> Any:
+        """The expected fraction of a demand the system delivers:
+        ``E[min(capacity, demand)] / demand``.
+
+        A system with more capacity than the demand delivers the demand,
+        and one with less delivers what it can. In the long run, this is the
+        fraction of the demand met over time: the production availability.
+
+        Parameters
+        ----------
+        demand : float
+            The demand, a positive, finite number in the capacities' units.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The fraction, in ``[0, 1]``, per time for several times.
+
+        Raises
+        ------
+        ValueError
+            If ``demand`` is not a positive, finite number.
+        """
+        demand = float(demand)
+        if not (np.isfinite(demand) and demand > 0.0):
+            raise ValueError(
+                f"demand must be a positive, finite number, got {demand!r}."
+            )
+        delivered = np.minimum(self.levels, demand) / demand
+        delivered = delivered.reshape(
+            (-1,) + (1,) * (self.probabilities.ndim - 1)
+        )
+        return self._per_time(np.sum(delivered * self.probabilities, axis=0))
+
+    def _per_time(self, values: np.ndarray) -> Any:
+        return float(values) if np.ndim(values) == 0 else values
+
+
 @dataclass
 class AvailabilityAllocation(_ResultMapping):
     """The result of ``RepairableRBD.availability_allocation()`` and
@@ -982,6 +1137,26 @@ class AvailabilityResult(_ResultMapping):
         False. ``mean_availability_interval`` then works from the pairs'
         means; the pointwise ``availability_se`` and
         ``availability_interval`` treat the simulations as independent.
+    capacity_timeline : numpy.ndarray, optional
+        With capacities (the ``capacity`` of the ``RepairableRBD``): 0, each
+        time at which the capacity of some simulated system changed, and
+        ``time_simulated_to``, in increasing order. None without
+        capacities, as are the other capacity fields.
+    capacity : numpy.ndarray, optional
+        The simulated systems' mean capacity at each time in
+        ``capacity_timeline``, from that time until the next: the capacity
+        curve. ``inf`` while one of them can carry an unlimited amount.
+    capacity_time : dict, optional
+        Capacity -> the time spent at it, summed over the simulations: they
+        add up to ``n_simulations * time_simulated_to``. A node working at
+        several levels counts at each in proportion to its probability.
+    demand : float, optional
+        The demand the delivered fraction is measured against (see
+        ``RepairableRBD.availability``); None without one.
+    delivered : numpy.ndarray, optional
+        Each simulation's delivered fraction, in order: the integral of
+        ``min(capacity, demand)`` over the window, over ``demand`` times
+        its length. None without a demand.
 
     Examples
     --------
@@ -1025,6 +1200,96 @@ class AvailabilityResult(_ResultMapping):
     system_planned_outages: int = 0
     uptimes: Optional[np.ndarray] = None
     antithetic: bool = False
+    capacity_timeline: Optional[np.ndarray] = None
+    capacity: Optional[np.ndarray] = None
+    capacity_time: Optional[Dict[float, float]] = None
+    demand: Optional[float] = None
+    delivered: Optional[np.ndarray] = None
+
+    @property
+    def mean_capacity(self) -> Optional[float]:
+        """Simulation estimate of the average capacity over the window:
+        each capacity times the time spent at it, over
+        ``n_simulations * time_simulated_to``. Over a long window it
+        approaches the exact long-run ``capacity_distribution().mean()``.
+
+        Returns
+        -------
+        float or None
+            The average capacity (``inf`` if some time was spent at an
+            unlimited one), or None without capacities.
+        """
+        if self.capacity_time is None:
+            return None
+        total = sum(
+            level * time for level, time in self.capacity_time.items() if time
+        )
+        return float(total) / (self.n_simulations * self.time_simulated_to)
+
+    @property
+    def delivered_fraction(self) -> Optional[float]:
+        """Simulation estimate of the fraction of the demand delivered over
+        the window: the production availability. The mean of
+        ``delivered``; over a long window it approaches the exact long-run
+        ``capacity_distribution().delivered_fraction(demand)``.
+
+        Returns
+        -------
+        float or None
+            The delivered fraction, in ``[0, 1]``, or None without a
+            demand.
+        """
+        if self.delivered is None:
+            return None
+        return float(np.mean(self.delivered))
+
+    def delivered_fraction_interval(
+        self, confidence: float = 0.95
+    ) -> ConfidenceInterval:
+        """Confidence interval for the expected delivered fraction over the
+        window.
+
+        As ``mean_availability_interval`` is for the availability: the
+        estimate is the mean of the simulations' delivered fractions, with
+        standard error ``std / sqrt(n)`` (of antithetic pairs' means, for an
+        antithetic run), and the interval, clipped to [0, 1], describes the
+        simulation error.
+
+        Parameters
+        ----------
+        confidence : float, optional
+            The confidence level, strictly between 0 and 1, by default 0.95.
+
+        Returns
+        -------
+        ConfidenceInterval
+            The estimate, bounds, standard error and number of simulations.
+
+        Raises
+        ------
+        ValueError
+            If ``confidence`` is not in (0, 1), or the result has no
+            delivered fractions (no capacities, or no demand).
+        """
+        if not 0.0 < confidence < 1.0:
+            raise ValueError("confidence must be between 0 and 1.")
+        if self.delivered is None:
+            raise ValueError(
+                "This result has no delivered fractions: the RBD had no "
+                "capacities, or no demand to measure them against."
+            )
+        fractions = np.asarray(self.delivered, dtype=float)
+        estimate = float(np.mean(fractions))
+        se = montecarlo.standard_error(fractions, self.antithetic)
+        z = montecarlo.z_value(confidence)
+        return ConfidenceInterval(
+            estimate=estimate,
+            lower=max(0.0, estimate - z * se),
+            upper=min(1.0, estimate + z * se),
+            confidence=confidence,
+            standard_error=se,
+            n_samples=len(fractions),
+        )
 
     def mean_availability_interval(
         self, confidence: float = 0.95
@@ -1125,7 +1390,7 @@ class AvailabilityResult(_ResultMapping):
         """
         if not 0.0 < confidence < 1.0:
             raise ValueError("confidence must be between 0 and 1.")
-        z = float(norm.ppf(0.5 + confidence / 2.0))
+        z = float(ndtri(0.5 + confidence / 2.0))
         p = np.asarray(self.availability, dtype=float)
         n = self.n_simulations
         denominator = 1.0 + z**2 / n
