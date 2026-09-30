@@ -587,6 +587,17 @@ def test_the_engines_agree_with_forced_nodes(forced):
 
 
 @needs_numba
+def test_a_run_on_threads_leaves_numbas_thread_count_alone():
+    import numba
+
+    before = numba.get_num_threads()
+    plain_rbds()["bridge"].availability(
+        100.0, N=50, seed=1, engine="numba", n_jobs=2
+    )
+    assert numba.get_num_threads() == before
+
+
+@needs_numba
 def test_the_engines_agree_on_costs_and_comparisons():
     rbd = plain_rbds()["costed"]
     identical(

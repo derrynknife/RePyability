@@ -5908,9 +5908,10 @@ class RepairableRBD(RBD):
         # The availability from t=0..t_simulation: how many of the N
         # simulated systems work after each time at which one changed state
         # (and at 0 and t_simulation whether or not any did), over N.
-        times, deltas = tally.state_changes()
+        changed_at, deltas = tally.state_changes()
         time, inverse = np.unique(
-            np.concatenate(([0.0, t_simulation], times)), return_inverse=True
+            np.concatenate(([0.0, t_simulation], changed_at)),
+            return_inverse=True,
         )
         working = np.bincount(
             inverse.ravel(),

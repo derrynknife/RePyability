@@ -407,6 +407,10 @@ def set_threads(count: int) -> None:
     numba.set_num_threads(count)
 
 
+def get_threads() -> int:
+    return int(numba.get_num_threads())
+
+
 def used() -> bool:
     """Whether the loop has been compiled (or loaded) in this process."""
     return bool(run_serial.signatures or run_parallel.signatures)

@@ -84,10 +84,11 @@ long = plant.availability(t_simulation=100.0, N=1_000, seed=0)
 bool((short.uptimes == long.uptimes[:100]).all())   # True
 ```
 
-A stream's numbers come in blocks of simulations as wide as the draws a
-simulation is expected to take from it allow, so which number a simulation
-gets depends on the component's models and on the window too: a run over
-another window, or a component in another place, draws other numbers. A
+A stream's numbers are laid out in blocks of simulations, fewer to a block
+the more draws a simulation is expected to take from the stream, so which
+numbers a simulation gets depends on the component's models and on the
+window too: a run over another window, or a component in another place,
+draws other numbers. A
 model whose draws cannot be streamed (other than a surpyval parametric one,
 or a subclass of the component classes, which may draw its events its own
 way) draws from numpy's global RNG, seeded afresh for each simulation from
@@ -301,10 +302,10 @@ maintenance, inspections, nested RBDs, capacities and other models run in
 Python, which `"auto"` chooses by itself. With `n_jobs` it runs on that many
 threads, which start at once.
 
-On one test machine, a pump pair in series with a valve (the plant above,
-over 1 000 hours) ran at about a million events (failures and repairs) a
-second in Python, 11 million compiled on one core and 20 million on four;
-an 18-component system at 0.7, 8.5 and 15 million.
+On one test machine, the plant above, over 1 000 hours, ran at about a
+million events (failures and repairs) a second in Python, 12 million
+compiled on one core and 24 million on four; a system of 12 components with
+a bridge and a vote, over 5 000 hours, at 0.8, 8.5 and 23 million.
 
 ## Which to use
 

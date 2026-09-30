@@ -364,10 +364,14 @@ class Runner:
         self._model = _System(rbd, plan, working, broken, method, _kernel)
         self._threads = _kernel.threads(jobs)
         self._pool: Any = None
+        # numba's thread count is the calling thread's, and stays set: it is
+        # put back once the run is over.
+        self._restore: Optional[int] = None
         if self._threads > 1:
             from concurrent.futures import ThreadPoolExecutor
 
             self._pool = ThreadPoolExecutor(self._threads)
+            self._restore = _kernel.get_threads()
         self._store = _Store(plan, self._model.specs, self._pool)
         rows = sum(spec.rows for spec in self._model.specs)
         size = BATCH_BYTES // (8 * rows + 9 * self._model.room)
@@ -541,3 +545,5 @@ class Runner:
     def close(self) -> None:
         if self._pool is not None:
             self._pool.shutdown()
+        if self._restore is not None:
+            self._kernel.set_threads(self._restore)
