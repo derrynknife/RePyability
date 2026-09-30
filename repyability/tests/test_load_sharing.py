@@ -130,9 +130,15 @@ def rbd(exp_aft):
     )
 
 
-def test_rbd_is_time_varying_and_non_analytic(rbd):
+def test_rbd_is_time_varying_and_analytic(rbd, weibull_aft):
     assert rbd.is_time_varying
-    assert rbd.is_analytically_solvable() is False  # a simulation node
+    # Identical Exponential baselines: a closed form, not a simulation.
+    assert rbd.is_analytically_solvable() is True
+    simulated = NonRepairableRBD(
+        [("s", "g"), ("g", "t")],
+        {"g": LoadSharingModel([weibull_aft] * 2, load=2.0, n_sims=500)},
+    )
+    assert simulated.get_non_analytic_nodes() == {"g": "LoadSharingModel"}
 
 
 def test_rbd_evaluates_and_mttf(rbd):

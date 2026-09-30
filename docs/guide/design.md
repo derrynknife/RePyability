@@ -277,7 +277,7 @@ unsure.reliability        # -> 0.955
 
 Cold standby needs lifetime models (not fixed probabilities). Its reliability
 comes from `StandbyModel`: exact for identical Exponential units, a numerical
-convolution (accurate to about 1e-3) for one unit required, and simulated
+convolution (accurate to about 1e-6) for one unit required, and simulated
 (seeded, so reproducible) otherwise; imperfect switching needs one unit
 required. Each cold design is evaluated this way, which is slower than active
 copies, so give cheap cold-standby nodes a `max_units`. A node without spares

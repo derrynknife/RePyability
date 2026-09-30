@@ -37,7 +37,7 @@ from repyability.rbd._model_utils import (
 )
 from repyability.rbd._sampling import inverse_sampler
 from repyability.rbd._streams import DURATION, FAILURE, REPAIR
-from repyability.rbd.numerical_convolution import _density_on_grid
+from repyability.rbd.numerical_convolution import ConvolvedSurvival
 from repyability.tests.keyed_draws import KeyedDraws
 
 W = surv.Weibull.from_params
@@ -208,14 +208,18 @@ def test_cold_standby_of_exponentials_with_extras(p, f0):
 
 
 def test_the_convolution_keeps_the_dead_on_arrival_apart():
-    # surpyval's density of a zero-inflated model gives f0 itself at
-    # exactly 0; the convolution takes the continuous part's instead.
+    # A unit dead on arrival adds nothing: the sum of two is the other's
+    # lifetime (or 0) as often as one of them is dead on arrival. The
+    # convolution takes them from the units' CDFs, which start at f0.
     unit = E([0.1], f0=0.2)
-    t = np.array([0.0, 1.0])
-    np.testing.assert_allclose(
-        _density_on_grid(unit, t), 0.8 * 0.1 * np.exp(-0.1 * t), rtol=1e-12
-    )
-    assert float(unit.df(0.0)) == pytest.approx(0.2)
+    assert float(unit.ff(0.0)) == pytest.approx(0.2)
+    pair = ConvolvedSurvival([unit, unit])
+    for t in (0.5, 5.0, 20.0, 60.0):
+        both = 1 - erlang2_ff(0.1, t)
+        one = math.exp(-0.1 * t)
+        assert float(pair.sf(t)) == pytest.approx(
+            0.8**2 * both + 2 * 0.2 * 0.8 * one, abs=1e-7
+        )
 
 
 def test_cold_standby_with_imperfect_switching():

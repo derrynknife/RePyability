@@ -664,6 +664,13 @@ class StandbyModel:
             return self._simulated_mean
         return float(self.random(10_000 if N is None else N, seed=seed).mean())
 
+    @property
+    def is_simulated(self) -> bool:
+        """Whether the survival function is simulated: a Kaplan-Meier fit to
+        ``n_sims`` simulated lifetimes (kept in ``model``), rather than an
+        exact closed form or a numerical convolution."""
+        return self.model is not None
+
     def sf(self, x, *args, **kwargs):
         """Survival function (reliability) of the arrangement.
 

@@ -95,8 +95,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   numbers; preventive maintenance, inspections, nested RBDs, capacities and
   other models run in Python, which `"auto"` chooses by itself.
 
+- **Know in advance how each analysis will be computed** (#127).
+  `NonRepairableRBD.analysis_routes()` and `RepairableRBD.analysis_routes()`
+  say, without running anything, how each analysis of the diagram would be
+  computed: exactly, numerically (deterministic, to a small stated error),
+  by simulation, or not at all. Each comes with the reason and the nodes that
+  decide it, in an `AnalysisRoute`.
+  - A refusal's reason is the message the method would raise, found by the
+    same check the method runs.
+  - For a repairable simulation, it also gives the engine `engine="auto"`
+    would use, and why.
+  - The saving guide's table of exact and simulated analyses is tested
+    against it.
+  - `StandbyModel` gains `is_simulated`, as `LoadSharingModel` has.
+
 ### Changed
 
+- **`is_analytically_solvable()` and `get_non_analytic_nodes()` flag only
+  simulated nodes** (#127). They counted every standby, repeated-standby and
+  load-sharing node as simulation-backed, even one with a closed form or a
+  numerical convolution. They now flag a node only when its reliability is
+  fitted to simulated lifetimes (see `is_simulated`), and so does
+  `structure_check`. A diagram with a cold spare for one unit, say, is now
+  solvable.
 - **Seeded repairable simulations give new numbers, once** (#119). Every
   random quantity a `RepairableRBD` simulation draws now comes from a
   stream of its own: each component's times to failure, its repair times,
@@ -149,16 +170,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `n_jobs=-1` counts the CPUs this process may run on, which in a
     container can be fewer than the machine has.
   - CI also tests Python 3.14.
-- **More accurate cold standby.** The numerical convolution behind a
-  `StandbyModel` (cold, one operating unit) and a `RepeatedStandbyNode` now
-  uses the trapezoidal rule. For units whose density is positive at 0,
-  such as Exponential ones, its error falls from about `1e-4` to about
-  `1e-8`, and results move by up to that much: two exponential units with
-  a 90% switch now have an MTTF of 190.00001, the formula's 190, where the
-  convolution gave 189.9. Units whose density is 0 at 0 (a Weibull with
-  shape above 1, say) are unchanged, accurate to about `1e-6`; with a
-  density infinite at 0 (a Weibull with shape below 1) the error is still
-  about `1e-3`.
+- **More accurate cold standby** (#128). The numerical convolution behind a
+  `StandbyModel` (cold, one operating unit), a `RepeatedStandbyNode` and a
+  `DegradingNode` now adds up the units' cumulative probabilities rather
+  than their densities: the probability that the sum so far ends in each
+  cell of its time grid, against the next unit's CDF half a cell back.
+  - Early-life units, whose density is infinite at 0 (a Weibull or gamma
+    with shape below 1), lost the probability near 0. Two Weibull(100, 0.8)
+    units in cold standby had an MTTF of 227.31, not 226.60; three gamma
+    units of shape 1/3 one of 108.5, not 100. They now come to 226.6007 and
+    100.001, with reliabilities within about `1e-6` (`1e-5` for gamma
+    shapes of 0.5 or less).
+  - Units whose density is positive at 0, such as Exponential ones, were
+    about `1e-4` off, and are now within `1e-7`: two exponential units with
+    a 90% switch have an MTTF of 190.000002, the formula's 190, where they
+    had 189.9. Units whose density starts at 0 move by less than `1e-6`.
+  - It needs only each unit's CDF (or survival function), not its density.
+    Building one takes about as long as before; twice as long for gamma
+    units, whose CDF costs more to evaluate than their density.
 - **Requires surpyval 0.21** (was 0.20), and drops the code that worked
   around surpyval 0.20 (#86). surpyval 0.21 draws the lifetimes of
   limited-failure-population and zero-inflated models, gives their mean and

@@ -1094,6 +1094,15 @@ class RBD:
         capacities, or a ``DegradingNode``): none in a plain RBD."""
         return {}
 
+    def _require_capacity(self) -> None:
+        """Raise unless some node has a capacity, given or from its
+        model."""
+        if not self._has_capacity():
+            raise ValueError(
+                "No node has a capacity: give each node's throughput with "
+                "capacity={node: capacity} when building the RBD."
+            )
+
     def _has_capacity(self) -> bool:
         """Whether some node has a capacity, given or from its model."""
         return bool(self.capacity) or bool(self._capacity_models())
@@ -1197,11 +1206,7 @@ class RBD:
         level of ``size`` probabilities) of the nodes whose models give
         them."""
         own = own or {}
-        if not self._has_capacity():
-            raise ValueError(
-                "No node has a capacity: give each node's throughput with "
-                "capacity={node: capacity} when building the RBD."
-            )
+        self._require_capacity()
         flow = (
             self._decomposition().flow
             if self.structure_check["is_valid"]

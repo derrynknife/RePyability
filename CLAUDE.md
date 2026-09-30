@@ -45,6 +45,18 @@
   the CHANGELOG, `seeded_event_loop.json` must be re-recorded, and the docs'
   quoted numbers updated. The rows of a chunk only affect speed.
 
+## How each analysis is computed
+
+- **`analysis_routes()` (both RBD classes) must agree with the methods.** It
+  says, without running anything, whether each public analysis is exact,
+  numerical, simulated or refused. Refusals go through checks the report
+  calls too (`_require_*` helpers, `_inspected_rate`, ...), so its reasons
+  are the methods' own messages. When a method is added, or gains a refusal
+  or changes how it computes, update `analysis_routes`:
+  `test_analysis_routes.py` checks that it covers every public method, that
+  each method does what it says on diagrams of every kind, and that the
+  saving guide's table agrees with it.
+
 ## Releasing
 
 Releases are cut from master by `.github/workflows/release.yml`, which this

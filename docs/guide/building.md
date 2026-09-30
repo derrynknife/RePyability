@@ -226,23 +226,33 @@ Path and cut sets depend only on the structure and are computed once per RBD.
 - `is_fixed` is `True` when every node is a fixed probability. Then time plays
   no part: `sf()` can be called without a time, and methods that invert
   reliability to a time raise. `is_time_varying` is its complement.
-- `is_analytically_solvable()` is `False` when a node's reliability comes
-  from a simulation-backed model: a `StandbyModel`, `RepeatedStandbyNode` or
-  `LoadSharingModel` (always counted as non-analytic, even when that model
-  has a closed form), or a nested RBD containing one.
-  `get_non_analytic_nodes()` names them. The system value is still computed
-  exactly *from* the node reliabilities; it is only as good as those nodes'
-  own estimates.
+- `is_analytically_solvable()` is `False` when some node's reliability is
+  fitted to simulated lifetimes: a `StandbyModel` or `LoadSharingModel` with
+  no closed form or numerical convolution (see their `is_simulated`), or a
+  repeated node or nested RBD of one. `get_non_analytic_nodes()` names them.
+  The system value is still computed exactly *from* the node reliabilities;
+  it is only as good as those nodes' own estimates.
+- `analysis_routes()` says how each analysis of the RBD is computed:
+  exactly, numerically, by simulation, or not at all, with the reason and
+  the nodes that decide it (see [What is exact and what is
+  simulated](saving.md#what-is-exact-and-what-is-simulated)).
 
 ```python
 shared_supply.is_fixed                      # True
 plant.is_fixed                              # False
 from repyability import StandbyModel
-standby = NonRepairableRBD(
+spare = NonRepairableRBD(
     [("s", "sb"), ("sb", "t")], {"sb": StandbyModel([unit, unit])}
 )
-standby.is_analytically_solvable()          # False
-standby.get_non_analytic_nodes()            # {'sb': 'StandbyModel'}
+spare.is_analytically_solvable()            # True: a numerical convolution
+two_of_three = NonRepairableRBD(
+    [("s", "sb"), ("sb", "t")],
+    {"sb": StandbyModel([unit] * 3, k=2, n_sims=2000, seed=1)},
+)
+two_of_three.is_analytically_solvable()     # False: simulated lifetimes
+two_of_three.get_non_analytic_nodes()       # {'sb': 'StandbyModel'}
+two_of_three.analysis_routes()["sf"].route  # 'simulated'
+two_of_three.analysis_routes()["mean"].route  # 'simulated': Monte Carlo
 ```
 
 ## Low-level building blocks

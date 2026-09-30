@@ -78,7 +78,7 @@ Other combinations raise `NotImplementedError`.
 |---|---|
 | Identical Exponential units, cold, perfect switching (any `k`) | Exact: Erlang. |
 | Identical Exponential units, warm or hot | Exact: hypoexponential. |
-| Cold, `k = 1` (any units, including imperfect switching) | Numerical convolution of the units' lifetimes: deterministic. |
+| Cold, `k = 1` (any units, including imperfect switching) | Numerical convolution of the units' lifetimes: deterministic, and accurate to about 1e-6 (1e-5 for the steepest early-life densities, a gamma with shape 0.5 or less). |
 | Everything else (warm or hot non-Exponential units, cold `k ≥ 2` non-Exponential units) | Simulation: a Kaplan–Meier fit to `n_sims` simulated lifetimes (default 10 000), seeded by `seed`, with `lower` passed as the fit's lower limit. |
 
 The simulated cases carry Monte-Carlo error, and their `sf` returns
@@ -179,11 +179,11 @@ line = NonRepairableRBD(
     {"pumps": cold, "filters": three_in_parallel},
 )
 line.sf(50)   # -> 0.9798
-line.is_analytically_solvable()   # False: a standby node is simulation-backed
+line.is_analytically_solvable()   # True: no node's reliability is simulated
 ```
 
-`is_analytically_solvable()` counts every standby, repeated-standby and
-load-sharing node as simulation-backed, even when (as here) its reliability
-is exact; see
-[Is the system time-dependent, and is it exact?](building.md#is-the-system-time-dependent-and-is-it-exact).
+`is_analytically_solvable()` is `False` only when some node's reliability is
+fitted to simulated lifetimes, and `get_non_analytic_nodes()` names those
+nodes; `analysis_routes()` says how each analysis is computed (see
+[Is the system time-dependent, and is it exact?](building.md#is-the-system-time-dependent-and-is-it-exact)).
 All of these models save with the RBD.

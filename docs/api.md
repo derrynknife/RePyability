@@ -63,6 +63,8 @@ models provided here (see [Building an RBD](guide/building.md) and
 
 ## Result types
 
+::: repyability.AnalysisRoute
+
 ::: repyability.AvailabilityResult
 
 ::: repyability.CapacityDistribution

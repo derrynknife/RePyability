@@ -41,6 +41,7 @@ from repyability.rbd.results import (
     UncertaintyResult,
     UpDownImportance,
 )
+from repyability.rbd.routes import AnalysisRoute
 from repyability.rbd.standby_node import StandbyModel
 from repyability.repairable import (
     Repairable,
@@ -73,6 +74,7 @@ __all__ = [
     "minimal_repair_time_to_nth_failure",
     "ComponentOption",
     # Result types
+    "AnalysisRoute",
     "AvailabilityResult",
     "CapacityDistribution",
     "ConfidenceInterval",

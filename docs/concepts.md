@@ -77,6 +77,7 @@ The engine is exact *given the node reliabilities*. When a node's reliability
 is itself an estimate (a simulated standby or load-sharing arrangement, or a
 Kaplan–Meier fit), the system value inherits that estimate's error, and
 `is_analytically_solvable()` flags the simulation-backed nodes.
+`analysis_routes()` says how each analysis is computed, and why.
 
 The other time functions follow from the reliability: `F = 1 − R`, the
 cumulative hazard `H = −ln R` (exact), the density `f = −dR/dt` (a numerical

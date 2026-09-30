@@ -6,15 +6,16 @@ A cold-standby arrangement fails after the *sum* of its components' lifetimes
 the convolution of the components' distributions. With imperfect switching it
 is a mixture of partial sums, weighted by how many switches succeed. This
 module computes that survival function numerically -- deterministically and
-quickly -- as a robust alternative to estimating it from Monte-Carlo samples
-with a Kaplan-Meier fit.
+quickly, from the components' cumulative distribution functions -- as a
+robust alternative to estimating it from Monte-Carlo samples with a
+Kaplan-Meier fit.
 """
 
 from typing import cast
 
 import numpy as np
 
-from ._model_utils import distribution_name, failure_time_scale, never_fails
+from ._model_utils import failure_time_scale, never_fails
 
 
 def _scalar(value) -> float:
@@ -41,26 +42,19 @@ def _upper_time(model, eps: float = 1e-10) -> float:
     return t
 
 
-def _dead_on_arrival(model) -> float:
-    """The fraction of units dead on arrival (failed at time 0): a
-    zero-inflated surpyval model's ``f0``, and 0 for any other."""
-    if distribution_name(model) is None:
-        return 0.0
-    return float(getattr(model, "f0", 0.0) or 0.0)
-
-
-def _density_on_grid(model, t: np.ndarray) -> np.ndarray:
-    """The density of the model's continuous part on the grid, with any
-    non-finite values (e.g. an infinite density at t=0 for some shapes)
-    replaced by zero. The negligible mass lost is restored by the later CDF
-    normalisation. For a zero-inflated model that leaves out the units dead
-    on arrival, whose mass its ``df`` otherwise gives at exactly 0."""
-    if _dead_on_arrival(model):
-        pdf = model.df(t, continuous=True)
-    else:
-        pdf = model.df(t)
-    pdf = np.asarray(pdf, dtype=float)
-    return np.nan_to_num(pdf, nan=0.0, posinf=0.0, neginf=0.0)
+def _cdf(model, x: np.ndarray) -> np.ndarray:
+    """The model's CDF at the times ``x``: its ``ff``, or ``1 - sf`` for a
+    model with no ``ff``, as a flat float array. For a surpyval model it
+    includes the units dead on arrival (``F(0) = f0``) and levels off below
+    1 when some units never fail (``F(inf) = p``)."""
+    ff = getattr(model, "ff", None)
+    # At 0 some models take log(0) = -inf on the way to a CDF of 0.
+    with np.errstate(divide="ignore"):
+        if callable(ff):
+            values = np.asarray(ff(x), dtype=float)
+        else:
+            values = 1.0 - np.asarray(model.sf(x), dtype=float)
+    return np.nan_to_num(np.ravel(values), nan=0.0)
 
 
 def switch_success_probs(switching_probability, n) -> list:
@@ -162,24 +156,6 @@ def _switching_weights(switching_probability, n) -> list:
     return weights
 
 
-def _sf_from_pdf(
-    pdf: np.ndarray, t: np.ndarray, at_zero: float = 0.0, finite: float = 1.0
-) -> np.ndarray:
-    """Survival function on the grid of a lifetime that is 0 with
-    probability ``at_zero``, finite with probability ``finite`` (the rest
-    never fail) and otherwise has the (possibly un-normalised) density
-    ``pdf``, scaled to its mass ``finite - at_zero`` to normalise away
-    discretisation drift."""
-    from scipy.integrate import cumulative_trapezoid
-
-    cdf = cumulative_trapezoid(pdf, t, initial=0.0)
-    total = cdf[-1]
-    mass = finite - at_zero
-    if total <= 0.0 or mass <= 0.0:
-        return np.full_like(t, 1.0 - at_zero)
-    return np.clip(1.0 - at_zero - cdf / total * mass, 0.0, 1.0)
-
-
 class ConvolvedSurvival:
     """Survival function of a cold-standby arrangement (sum of lifetimes).
 
@@ -188,34 +164,39 @@ class ConvolvedSurvival:
     component distributions. With imperfect switching, each switch onto the
     next spare succeeds only with some probability, so the lifetime is a
     mixture of partial sums (run the first component; if its switch works, run
-    the second too; and so on). This computes that mixture by numerically
-    convolving the component densities on a fine time grid. ``sf``/``ff``
-    then interpolate the pre-computed grid, so they are fast and
-    deterministic.
+    the second too; and so on). This computes that mixture numerically on a
+    fine time grid. ``sf``/``ff`` then interpolate the pre-computed grid, so
+    they are fast and deterministic.
 
     The grid runs from 0 to the sum of the components' upper times (for
     each, the smallest ``max(mean, 1) * 2 ** j`` at which its survival is
-    at most ``eps``). The densities are evaluated on it (non-finite values
-    set to 0) and convolved by FFT with the trapezoidal rule, so the error
-    falls as the square of the grid step, and each partial sum's
-    distribution is normalised to total probability 1 before the mixture
-    is formed.
+    at most ``eps``). Each partial sum's CDF is kept on it: the next
+    component is added by convolving (by FFT) the probability that the sum
+    so far ends in each cell of the grid with that component's CDF half a
+    cell back. Cumulative probabilities stay finite where densities do not
+    (at 0, for a Weibull or gamma with shape below 1), so each cell's
+    probability is exact. The result is accurate to about ``1e-6`` or
+    better, the error falling as the square of the grid step, except for
+    the steepest early-life densities: about ``1e-5`` for gamma units of
+    shape 0.5 or less, whose error falls more slowly (raise ``n_points``
+    for more).
 
     A component may be a limited-failure-population or zero-inflated
     surpyval model: a fraction ``1 - p`` of its units never fail, and a
     fraction ``f0`` fail at 0. A sum with a unit that never fails never
     fails, and one of units all dead on arrival is 0, so a partial sum is
-    finite with probability ``prod(p)``, 0 with probability ``prod(f0)``,
-    and continuous otherwise: the convolution carries the three parts, and
-    ``sf`` levels off at the probability that the arrangement never fails
-    (``mean`` is then infinite).
+    finite with probability ``prod(p)`` and 0 with probability
+    ``prod(f0)``. Both come in through the components' CDFs
+    (``F(0) = f0``, ``F(inf) = p``), and ``sf`` levels off at the
+    probability that the arrangement never fails (``mean`` is then
+    infinite).
 
     Parameters
     ----------
     models : sequence
         The component lifetime distributions, in standby order (primary
-        first). Each must expose ``df`` (density), ``sf`` (survival) and
-        ``mean``.
+        first). Each must expose ``sf`` (survival) and ``mean``; its ``ff``
+        (CDF) is used when it has one.
     switching_probability : float or sequence, optional
         Probability that a switch onto the next spare succeeds. A scalar
         applies to every switch; a sequence gives one probability per switch
@@ -284,32 +265,36 @@ class ConvolvedSurvival:
         t = np.linspace(0.0, upper, n_points)
         dt = t[1] - t[0]
 
-        # Incrementally convolve to get the density of each partial sum
-        # T_1 + ... + T_k (k = 1..n), with the probabilities that it is 0
-        # (every unit dead on arrival) and finite (none never fails): the
-        # continuous part of T + T_k is the continuous parts convolved, plus
-        # each one's continuous part while the other is 0.
-        sums = []
-        at_zero = _dead_on_arrival(models[0])
+        # The CDF on the grid of each partial sum T_1 + ... + T_k. The first
+        # is T_1's own; each next adds T to the sum S so far by
+        # conditioning on the cell S ends in:
+        #   P(S + T <= t_i) = P(S = 0) F_T(t_i)
+        #                   + sum_j P(t_j < S <= t_j+1) F_T(t_i - t_j - dt/2),
+        # a convolution of S's cell probabilities with T's CDF half a cell
+        # back (nothing from the cell after t_i: T is never below 0). A
+        # cumulative probability stays finite where a density does
+        # not (at 0 for a Weibull with shape below 1), so each cell's
+        # probability is exact; a unit dead on arrival or never failing
+        # comes in through its CDF too (F(0) = f0, F(inf) = p).
+        back = t[1:] - 0.5 * dt
+        cdf = _cdf(models[0], t)
         finite = 1.0 - never_fails(models[0])
-        pdf = _density_on_grid(models[0], t)
-        sums.append((at_zero, finite, pdf))
+        sums = [(cdf, finite)]
+        # Each model's CDF half a cell back, once for a model given twice.
+        shifted: dict = {}
         for model in models[1:]:
-            density = _density_on_grid(model, t)
-            zero = _dead_on_arrival(model)
-            # The trapezoidal rule: the sum over the grid, less half of each
-            # end's term, so the error falls as the square of the step.
-            summed = fftconvolve(pdf, density)[:n_points] * dt - 0.5 * dt * (
-                pdf[0] * density + density[0] * pdf
-            )
-            if at_zero:
-                summed = summed + at_zero * density
-            if zero:
-                summed = summed + zero * pdf
-            pdf = summed
-            at_zero *= zero
+            later = shifted.get(id(model))
+            if later is None:
+                later = np.concatenate(([0.0], _cdf(model, back)))
+                shifted[id(model)] = later
+            summed = fftconvolve(np.diff(cdf), later)[:n_points]
+            if cdf[0] > 0.0:
+                # The sum so far is 0 (every unit dead on arrival) with
+                # probability cdf[0], and the new sum is then T.
+                summed += cdf[0] * _cdf(model, t)
+            cdf = summed
             finite *= 1.0 - never_fails(model)
-            sums.append((at_zero, finite, pdf))
+            sums.append((cdf, finite))
 
         # Survival function is the weighted mixture of the partial-sum survival
         # functions (zero-weight partials are skipped, so perfect switching
@@ -318,10 +303,10 @@ class ConvolvedSurvival:
         sf = np.zeros(n_points)
         never = 0.0
         self._partials: list = []
-        for weight, (at_zero, finite, partial_pdf) in zip(weights, sums):
+        for weight, (partial_cdf, finite) in zip(weights, sums):
             if weight == 0.0 and not partials:
                 continue
-            partial = _sf_from_pdf(partial_pdf, t, at_zero, finite)
+            partial = np.clip(1.0 - partial_cdf, 0.0, 1.0)
             if partials:
                 self._partials.append((partial, 1.0 - finite))
             sf += weight * partial
