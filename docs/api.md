@@ -109,6 +109,10 @@ models provided here (see [Building an RBD](guide/building.md) and
 
 ::: repyability.AvailabilityAllocation
 
+::: repyability.SparesDemand
+
+::: repyability.SparesStock
+
 ::: repyability.MaintenancePolicy
 
 ::: repyability.FailureLimitPolicy

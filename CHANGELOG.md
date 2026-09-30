@@ -23,8 +23,9 @@ when compiled with numba (#119, #120), and `import repyability` is quicker
 (#121). Components can share a limited number of repair crews (#89), with
 exact long-run values from a Markov chain when their lives and repairs are
 exponential (#90); a duty unit and its spares can be a standby group,
-repaired one unit at a time (#91); and demonstration test planning is new
-(#129).
+repaired one unit at a time (#91); `spares_demand` and `spares_stock` count
+the spares each component uses and the stock to hold for a lead time (#95);
+and demonstration test planning is new (#129).
 
 Behaviour changes: seeded repairable simulations give different numbers,
 once, as each random quantity now has a stream of its own (#119);
@@ -201,6 +202,30 @@ surpyval 0.21 is required.
   and warm standby with one or two repairers, imperfect switching), a
   switch that always fails leaving a single unit, timelines worked by hand
   with a shared crew, and the simulation.
+- **Spares demand and stock** (#95). `RepairableRBD.spares_demand(horizon)`
+  gives the distribution of each component's replacements (its failures
+  and preventive replacements) over a horizon from new, for a system or a
+  `fleet`: a `SparesDemand`, with `mean()`, `std()`, `covered(s)` and
+  `stock(p)`, the fewest spares that last the horizon with probability
+  `p`. `RepairableRBD.spares_stock(lead_time, fill_rate=...,
+  stockout_probability=...)` gives the fewest to hold when each spare used
+  is reordered at once and arrives a lead time later (one-for-one
+  replenishment), in the long run: a `SparesStock`, with the fill rate and
+  stock-out probability it achieves and the distributions of the spares on
+  order, at a random time and as a demand finds them. A component's
+  replacements are a renewal process (an up time, the smaller of its life
+  and its replacement age, then a repair or maintenance time), counted for
+  any life and repair models on a grid refined to about 1e-6, with their
+  atoms (a replacement age, work in no time) exact; a fleet's systems add up
+  independently. Block replacement, hidden failures, standby groups and
+  waiting for repair crews are not renewal processes: the counts refuse
+  them, and `spares_demand(method="simulate")` counts every component's
+  replacements in simulations of the whole system. `analysis_routes()`
+  reports both. Checked against Poisson closed forms (constant failure
+  rates, instant replacement), a direct simulation of the renewal process
+  (Weibull lives, lognormal repairs and age replacement: from new, from a
+  random time and before a replacement) and the RBD's simulation. A new
+  guide page, Spares, covers them.
 - **Demonstration test planning** (#129): how many units, or how long a
   test, demonstrates a reliability at a confidence level, and what a
   finished test demonstrated. `demonstration_sample_size` (the success run,

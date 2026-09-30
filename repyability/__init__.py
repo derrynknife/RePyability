@@ -46,6 +46,8 @@ from repyability.rbd.results import (
     RedundancyAllocation,
     ReliabilityRedundancyAllocation,
     RestorationCriticalityIndex,
+    SparesDemand,
+    SparesStock,
     TotalCostAllocation,
     UncertaintyResult,
     UpDownImportance,
@@ -108,4 +110,6 @@ __all__ = [
     "FailureLimitPolicy",
     "MaintenancePlan",
     "AvailabilityAllocation",
+    "SparesDemand",
+    "SparesStock",
 ]

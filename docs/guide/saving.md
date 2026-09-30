@@ -67,7 +67,7 @@ Every Monte-Carlo method takes a `seed`:
 | Where | Methods |
 |---|---|
 | `NonRepairableRBD` | `random`, `mean` and `mean_time_to_failure` with `method="simulate"`, `mean_time_to_failure_interval`, `compare` |
-| `RepairableRBD` | `availability`, `cost`, `compare` |
+| `RepairableRBD` | `availability`, `cost`, `compare`, `spares_demand` with `method="simulate"` |
 | Node models | `StandbyModel(seed=...)`, `LoadSharingModel(seed=...)`, `RepeatedNode.random`, `RepeatedNode.mean` with `method="simulate"`, `RepeatedStandbyNode.random`, `StandbyModel.random`, `LoadSharingModel.random` |
 | `Repairable` | every simulation-backed method |
 
@@ -134,6 +134,7 @@ maintenance or hidden failures):
 | `capacity_distribution`, `system_capacity` | exact | From the node reliabilities (at a time) or long-run availabilities. |
 | `point_availability`, `mission_availability` | numerical | Each component's renewal equation, solved numerically (to about `1e-7`), and the system at its components' availabilities at each time. |
 | `availability` (with the capacity over time and the delivered fraction), `cost`, `compare` | simulated | Discrete-event simulation. |
+| `spares_demand`, `spares_stock` | numerical | Each component's replacements, a renewal process, counted on a grid (to about `1e-6`); `spares_demand(method="simulate")` counts them in simulations instead. |
 | `allocate_redundancy` (both kinds of RBD) | exact | Exact scoring: `method="exact"` is a proven optimum, `"greedy"` a heuristic. Cold standby (`strategy="cold"` or `"choose"`) that needs two or more units working, of units that are not identical Exponentials, is scored from 10 000 seeded simulated lifetimes. |
 
 The nodes can change a route:
@@ -155,6 +156,10 @@ The nodes can change a route:
   repair queue (up to 15,000 states); otherwise they refuse. The importance
   measures, the availability over time and the allocations refuse, and the
   simulations follow the queue, in Python.
+- **Spares.** The spares counts need each component's replacements to be a
+  renewal process: block replacement, hidden failures, standby groups and
+  waiting for repair crews make them refuse, and
+  `spares_demand(method="simulate")` counts them instead.
 - **Imperfect repair.** `Repairable` policies are analytic for a power-law
   process and simulated for imperfect repair.
 

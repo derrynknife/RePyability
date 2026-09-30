@@ -1464,3 +1464,207 @@ class AvailabilityResult(_ResultMapping):
         return self.system_failures / (
             self.n_simulations * self.time_simulated_to
         )
+
+
+@dataclass
+class SparesDemand(_ResultMapping):
+    """How many spares a component uses over a horizon: the distribution of
+    its replacements, from new, for one system or a fleet of them.
+
+    Returned (one per component) by ``RepairableRBD.spares_demand``. A
+    component uses a spare at each failure and each preventive replacement
+    (a standby group, at each of its units' failures). Like the other result
+    types it is also a read-only mapping of its fields.
+
+    Attributes
+    ----------
+    probabilities : numpy.ndarray
+        The probability of each number of replacements, ``0, 1, 2, ...``;
+        they sum to 1 (up to a tail below about 1e-12).
+    horizon : float
+        The time they are counted over, from new.
+    fleet : int
+        How many systems use them, each from new.
+    method : str
+        ``"exact"``, worked out to about 1e-6, or ``"simulate"``, the
+        fractions of simulations.
+
+    Examples
+    --------
+    A component with a constant failure rate of 0.01, replaced in no time,
+    uses a Poisson number of spares, 10 on average in 1,000 hours:
+
+    >>> import surpyval as surv
+    >>> from repyability import RepairableRBD
+    >>> rbd = RepairableRBD(
+    ...     [("s", "pump"), ("pump", "t")],
+    ...     {
+    ...         "pump": {
+    ...             "reliability": surv.Exponential.from_params([0.01]),
+    ...             "repairability": "instant",
+    ...         }
+    ...     },
+    ... )
+    >>> demand = rbd.spares_demand(1000.0)["pump"]
+    >>> round(demand.mean(), 4)
+    10.0
+    >>> demand.stock(0.95)  # covers the 1,000 hours 95% of the time
+    15
+    """
+
+    probabilities: np.ndarray
+    horizon: float
+    fleet: int
+    method: str
+
+    def mean(self) -> float:
+        """The expected number of spares used."""
+        return float(self.probabilities @ np.arange(len(self.probabilities)))
+
+    def std(self) -> float:
+        """The standard deviation of the number of spares used."""
+        counts = np.arange(len(self.probabilities))
+        mean = self.mean()
+        return float(np.sqrt(self.probabilities @ (counts - mean) ** 2))
+
+    def covered(self, stock: int) -> float:
+        """The probability that ``stock`` spares cover the horizon's
+        demand: that it is ``stock`` or fewer.
+
+        Parameters
+        ----------
+        stock : int
+            The spares held, none replenished.
+
+        Returns
+        -------
+        float
+            The probability.
+        """
+        if stock < 0:
+            return 0.0
+        return float(min(self.probabilities[: int(stock) + 1].sum(), 1.0))
+
+    def stock(self, probability: float) -> int:
+        """The fewest spares that cover the horizon's demand with at least
+        ``probability``, none replenished.
+
+        Parameters
+        ----------
+        probability : float
+            The chance of not running out, in ``[0, 1)``.
+
+        Returns
+        -------
+        int
+            The stock.
+
+        Raises
+        ------
+        ValueError
+            If ``probability`` is not in ``[0, 1)``.
+        """
+        if not 0.0 <= probability < 1.0:
+            raise ValueError(
+                f"probability must be in [0, 1), got {probability!r}."
+            )
+        cumulative = np.cumsum(self.probabilities)
+        return int(np.searchsorted(cumulative, probability - 1e-12))
+
+
+@dataclass
+class SparesStock(_ResultMapping):
+    """The stock of a component's spares that meets a target when each
+    spare used is reordered at once and arrives a lead time later
+    (one-for-one, or ``(S - 1, S)``, replenishment), in the long run.
+
+    Returned (one per component) by ``RepairableRBD.spares_stock``. With a
+    stock of ``S``, a spare is on the shelf when fewer than ``S`` are on
+    order: those used in the last lead time. Like the other result types
+    it is also a read-only mapping of its fields.
+
+    Attributes
+    ----------
+    stock : int
+        The fewest spares that meet the targets.
+    fill_rate : float
+        With that stock, the fraction of demands met from the shelf.
+    stockout_probability : float
+        With that stock, the fraction of time none is on the shelf.
+    lead_time : float
+        The time a spare ordered takes to arrive.
+    fleet : int
+        How many systems draw on the stock.
+    on_order : numpy.ndarray
+        The distribution of how many spares are on order at a random time:
+        the demand in a lead time.
+    on_order_at_demand : numpy.ndarray
+        The same, as a demand finds it (not counting itself).
+
+    Examples
+    --------
+    A component with a constant failure rate of 0.01, replaced in no time,
+    and a lead time of 300 hours: the spares on order are Poisson, 3 on
+    average, and 6 on the shelf meet 96.6% of demands:
+
+    >>> import surpyval as surv
+    >>> from repyability import RepairableRBD
+    >>> rbd = RepairableRBD(
+    ...     [("s", "pump"), ("pump", "t")],
+    ...     {
+    ...         "pump": {
+    ...             "reliability": surv.Exponential.from_params([0.01]),
+    ...             "repairability": "instant",
+    ...         }
+    ...     },
+    ... )
+    >>> stock = rbd.spares_stock(300.0, fill_rate=0.95)["pump"]
+    >>> stock.stock
+    7
+    >>> round(stock.fill_rate, 4)
+    0.9665
+    """
+
+    stock: int
+    fill_rate: float
+    stockout_probability: float
+    lead_time: float
+    fleet: int
+    on_order: np.ndarray
+    on_order_at_demand: np.ndarray
+
+    def fill_rate_for(self, stock: int) -> float:
+        """The fraction of demands a stock of ``stock`` meets from the
+        shelf: that a demand finds fewer than ``stock`` on order.
+
+        Parameters
+        ----------
+        stock : int
+            The spares held.
+
+        Returns
+        -------
+        float
+            The fill rate.
+        """
+        if stock <= 0:
+            return 0.0
+        return float(min(self.on_order_at_demand[: int(stock)].sum(), 1.0))
+
+    def stockout_probability_for(self, stock: int) -> float:
+        """The fraction of time a stock of ``stock`` leaves the shelf
+        empty: that ``stock`` or more are on order.
+
+        Parameters
+        ----------
+        stock : int
+            The spares held.
+
+        Returns
+        -------
+        float
+            The stock-out probability.
+        """
+        if stock <= 0:
+            return 1.0
+        return float(max(1.0 - self.on_order[: int(stock)].sum(), 0.0))

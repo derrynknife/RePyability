@@ -36,6 +36,9 @@ taking already-fitted lifetime models (from
   capacities (with several levels, or degrading through stages): the exact
   distribution of its capacity at a time or in the long run, the
   probability of meeting a demand, and the production availability.
+- **Spares**: how many spares each component uses over a horizon, for a
+  system or a fleet, and the stock that meets a fill rate or a stock-out
+  target for a replenishment lead time.
 - **Simulation**: seeded Monte-Carlo run to a tolerance, antithetic pairs,
   parallel runs, and comparisons of designs with common random numbers;
   repairable systems simulated compiled, with numba installed.

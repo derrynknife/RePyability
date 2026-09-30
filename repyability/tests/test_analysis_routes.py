@@ -264,6 +264,8 @@ REPAIRABLE_CALLS = {
         )
     },
     "total_cost": lambda rbd: rbd.total_cost(1000.0),
+    "spares_demand": lambda rbd: rbd.spares_demand(200.0),
+    "spares_stock": lambda rbd: rbd.spares_stock(50.0, fill_rate=0.9),
     "point_availability": lambda rbd: rbd.point_availability([10.0, 200.0]),
     "mission_availability": lambda rbd: rbd.mission_availability(200.0),
     "availability": lambda rbd: rbd.availability(200.0, mc_samples=20, seed=1),

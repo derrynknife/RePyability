@@ -44,7 +44,7 @@ from surpyval import ExactEventTime
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import _crew_chain
 from repyability.rbd import _montecarlo as montecarlo
-from repyability.rbd import _standby_chain, _streams
+from repyability.rbd import _spares, _standby_chain, _streams
 from repyability.rbd import capacity as _capacity
 from repyability.rbd._block_replacement import (
     BlockCycle,
@@ -80,6 +80,8 @@ from repyability.rbd.results import (
     FailureCriticalityIndex,
     MaintenancePlan,
     RestorationCriticalityIndex,
+    SparesDemand,
+    SparesStock,
     TotalCostAllocation,
     UpDownImportance,
 )
@@ -543,7 +545,10 @@ class _Replication:
     a restoration and -1 for a failure or planned outage. ``cost`` is the
     simulation's total cost (None when nothing is priced), ``by_category``
     and ``by_node`` its breakdown, and the ``capacity`` fields what the
-    capacity trace recorded (see ``_CapacityTrace``).
+    capacity trace recorded (see ``_CapacityTrace``). ``replacements``
+    counts each component's replacements (its failures, found ones for a
+    component with hidden failures, its preventive replacements, and a
+    standby group's units' failures): the spares it used.
     """
 
     __slots__ = (
@@ -563,6 +568,7 @@ class _Replication:
         "capacity_changes",
         "capacity_time",
         "delivered",
+        "replacements",
     )
     uptime: float
     node_up: List[float]
@@ -580,6 +586,7 @@ class _Replication:
     capacity_changes: Optional[list]
     capacity_time: Optional[list]
     delivered: Optional[float]
+    replacements: List[int]
 
 
 class _Tally:
@@ -632,6 +639,9 @@ class _Tally:
         self.unlimited_changes: dict = defaultdict(int)
         self.capacity_time: dict = defaultdict(float)
         self.delivered: List[float] = []
+        # Each replication's replacements of each node, when asked for
+        # (see RepairableRBD.spares_demand).
+        self.replacements: Optional[List[List[int]]] = None
 
     def add(self, rec: _Replication) -> None:
         """Add the next simulation's results."""
@@ -684,6 +694,8 @@ class _Tally:
                 spent[level] += time
             if rec.delivered is not None:
                 self.delivered.append(rec.delivered)
+        if self.replacements is not None:
+            self.replacements.append(rec.replacements)
 
     def state_changes(self) -> Tuple[np.ndarray, np.ndarray]:
         """Every time a simulated system changed state (``-0.0`` made
@@ -1134,6 +1146,59 @@ def _repair_rate(model) -> Optional[float]:
         return math.inf
     return _constant_rate(model)
 
+
+def _cdf(model) -> Callable[[np.ndarray], np.ndarray]:
+    """A model's CDF, for arrays of times (0 where it gives none)."""
+
+    def cdf(x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, dtype=float)
+        with np.errstate(all="ignore"):
+            values = np.asarray(model.ff(x), dtype=float).reshape(x.shape)
+        return np.nan_to_num(values, nan=0.0)
+
+    return cdf
+
+
+def _fleet(probabilities: np.ndarray, fleet: int) -> np.ndarray:
+    """The distribution of the sum of ``fleet`` independent counts, each
+    with ``probabilities`` for ``0, 1, 2, ...``."""
+    from scipy.signal import fftconvolve
+
+    def product(a, b):
+        out = np.maximum(fftconvolve(a, b), 0.0)
+        keep = np.nonzero(out > 1e-16)[0]
+        return out[: keep[-1] + 1] if keep.size else np.ones(1)
+
+    total, power = np.ones(1), np.asarray(probabilities, dtype=float)
+    while fleet:
+        if fleet & 1:
+            total = product(total, power)
+        fleet >>= 1
+        if fleet:
+            power = product(power, power)
+    return total / total.sum()
+
+
+def _whole(name: str, value, least: int = 1) -> int:
+    """``value`` as a whole number of at least ``least``, or a
+    ValueError naming it."""
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float, np.integer, np.floating))
+        or int(value) != value
+        or value < least
+    ):
+        raise ValueError(
+            f"{name} must be a whole number, {least} or more; got {value!r}."
+        )
+    return int(value)
+
+
+#: What the spares counts say when a component can wait for a repair crew.
+_SPARES_CREWS = (
+    "the spares counts assume",
+    "Count them by simulation: spares_demand(method='simulate').",
+)
 
 #: What the methods that need independent components say when a component
 #: can wait for a repair crew: what assumes it, and what to do instead.
@@ -3229,6 +3294,346 @@ class RepairableRBD(RBD):
             working_nodes, broken_nodes
         )
 
+    def _spares_nodes(self, nodes) -> list:
+        """The components whose spares are counted: ``nodes`` checked, or
+        every component that is not a nested RBD."""
+        if nodes is None:
+            return [
+                node
+                for node, component in self.components.items()
+                if not isinstance(component, RepairableRBD)
+            ]
+        chosen = list(dict.fromkeys(nodes))
+        for node in chosen:
+            if node not in self.components:
+                raise ValueError(
+                    f"Node {node!r} in nodes is not a component of this RBD."
+                )
+            if isinstance(self.components[node], RepairableRBD):
+                raise ValueError(
+                    f"Node {node!r} is a nested RBD: its spares are its "
+                    "components', which its own spares_demand counts."
+                )
+        return chosen
+
+    def _replacements(
+        self, node, long_run: bool = False
+    ) -> "_spares.Replacements":
+        """What a component's replacements follow, for counting them
+        exactly (see ``_spares``); raise if they are not counted exactly.
+        ``long_run``: for the counts in a lead time, which need a demand
+        that goes on."""
+        simulate = (
+            "count its spares by simulation: spares_demand(method='simulate')."
+        )
+        if node in self._standby:
+            raise NotImplementedError(
+                f"Component {node!r} is a standby group, whose units' "
+                f"failures depend on each other: {simulate}"
+            )
+        if node in self._inspection:
+            raise NotImplementedError(
+                f"Component {node!r}'s failures are found by inspection: "
+                f"{simulate}"
+            )
+        schedule = self._preventive.get(node)
+        if schedule is not None and schedule.policy == "block":
+            raise NotImplementedError(
+                f"Component {node!r} is replaced on a block schedule, whose "
+                f"replacements do not renew it: {simulate}"
+            )
+        component = self.components[node]
+        life, repair = component.reliability, component.time_to_replace
+        age = math.inf if schedule is None else float(schedule.interval)
+        maintenance = None if schedule is None else schedule.duration
+        if math.isinf(age):
+            up = _safe_mean(life)
+            fails = 1.0
+        else:
+            up = float(component.avg_replacement_time(age))
+            fails = float(np.ravel(_cdf(life)(np.array([age])))[0])
+        down = fails * _safe_mean(repair) + (1.0 - fails) * (
+            0.0 if maintenance is None else _safe_mean(maintenance)
+        )
+        mean_cycle = up + down
+        if long_run and not (0.0 < mean_cycle < math.inf):
+            raise NotImplementedError(
+                f"Component {node!r}'s life may never end, or has no mean, "
+                "so its demand has no long run: it has no stock level."
+            )
+        return _spares.Replacements(
+            _cdf(life),
+            _cdf(repair),
+            None if maintenance is None else _cdf(maintenance),
+            age,
+            mean_cycle,
+        )
+
+    def spares_demand(
+        self,
+        horizon: float,
+        *,
+        nodes: Optional[Collection[Hashable]] = None,
+        fleet: int = 1,
+        method: str = "exact",
+        mc_samples: Optional[int] = None,
+        seed=None,
+    ) -> Dict[Hashable, SparesDemand]:
+        """How many spares each component uses over ``[0, horizon]``, from
+        new: the distribution of its replacements, for one system or a
+        fleet of ``fleet``.
+
+        A component uses a spare at each failure and at each preventive
+        replacement; a standby group at each of its units' failures. Its
+        replacements are a renewal process: each up time (its life, or the
+        replacement age if that comes first) ends in one, then a repair or
+        maintenance time, and it starts again as new. So the ``n``-th
+        replacement comes after ``n - 1`` whole cycles and an up time, and
+        the probability of ``n`` or more by the horizon is that of their
+        sum falling within it. ``method="exact"`` works that out on a grid,
+        to about 1e-6, for components with corrective repair alone or under
+        age replacement; a fleet's is the sum of its systems', independent
+        and each from new. ``method="simulate"`` counts them in
+        ``mc_samples`` simulations of the whole system instead, which also
+        covers block replacement, hidden failures, standby groups and
+        repair crews. With constant failure rates and instant repair, the
+        counts are Poisson.
+
+        Parameters
+        ----------
+        horizon : float
+            The time counted over, from new.
+        nodes : Collection[Hashable], optional
+            The components to count for, by default every component but a
+            nested RBD (whose own ``spares_demand`` counts its components').
+        fleet : int, optional
+            How many systems, by default 1.
+        method : str, optional
+            ``"exact"`` (the default) or ``"simulate"``.
+        mc_samples : int, optional
+            The number of simulations for ``method="simulate"``, by default
+            10_000.
+        seed : int, optional
+            Seeds the simulations, by default None.
+
+        Returns
+        -------
+        dict[Hashable, SparesDemand]
+            Per component, the distribution of the spares it uses, with its
+            ``mean()``, ``std()``, and ``stock(probability)``: the fewest
+            spares that cover the horizon with that probability.
+
+        Raises
+        ------
+        ValueError
+            If ``horizon`` is negative or not finite, ``fleet`` is not a
+            whole number of at least 1, ``method`` is unknown, or ``nodes``
+            names a node that is not a component, or a nested RBD.
+        NotImplementedError
+            With ``method="exact"``, for a component under block
+            replacement, with hidden failures or a standby group, or while
+            a component can wait for a repair crew (see ``repair_crews``),
+            or if more than 2,000 replacements are likely: count them by
+            simulation.
+
+        Examples
+        --------
+        A pump with a constant failure rate of 0.01 an hour, replaced in no
+        time, for a fleet of 5 over 1,000 hours: Poisson with mean 50.
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> rbd = RepairableRBD(
+        ...     [("s", "pump"), ("pump", "t")],
+        ...     {
+        ...         "pump": {
+        ...             "reliability": surv.Exponential.from_params([0.01]),
+        ...             "repairability": "instant",
+        ...         }
+        ...     },
+        ... )
+        >>> demand = rbd.spares_demand(1000.0, fleet=5)["pump"]
+        >>> round(demand.mean(), 4)
+        50.0
+        >>> demand.stock(0.95)
+        62
+        """
+        end = _horizon(horizon)
+        fleet = _whole("fleet", fleet)
+        if method not in ("exact", "simulate"):
+            raise ValueError(
+                f"method must be 'exact' or 'simulate', got {method!r}."
+            )
+        chosen = self._spares_nodes(nodes)
+        if method == "simulate":
+            counts = self._simulated_replacements(
+                end, chosen, 10_000 if mc_samples is None else mc_samples, seed
+            )
+        else:
+            self._require_unlimited_crews(*_SPARES_CREWS)
+            models = {node: self._replacements(node) for node in chosen}
+            counts = {
+                node: _spares.count(model, end, "new")
+                for node, model in models.items()
+            }
+        return {
+            node: SparesDemand(_fleet(count, fleet), end, fleet, method)
+            for node, count in counts.items()
+        }
+
+    def _simulated_replacements(
+        self, horizon: float, nodes: list, mc_samples: int, seed
+    ) -> Dict[Any, np.ndarray]:
+        """The fractions of ``mc_samples`` simulations of ``[0, horizon]``
+        in which each of ``nodes`` was replaced ``0, 1, 2, ...`` times."""
+        montecarlo.check_count(mc_samples, False, "mc_samples")
+        tally = self._run(
+            horizon,
+            set(),
+            set(),
+            "p",
+            mc_samples,
+            False,
+            seed,
+            replacements=True,
+        )
+        counts = np.array(tally.replacements, dtype=np.int64)
+        column = {node: c for c, node in enumerate(self.components)}
+        return {
+            node: np.bincount(counts[:, column[node]]) / len(counts)
+            for node in nodes
+        }
+
+    def spares_stock(
+        self,
+        lead_time: float,
+        *,
+        fill_rate: Optional[float] = None,
+        stockout_probability: Optional[float] = None,
+        nodes: Optional[Collection[Hashable]] = None,
+        fleet: int = 1,
+    ) -> Dict[Hashable, SparesStock]:
+        """The fewest spares of each component to hold for a fill rate, or
+        to run out no more than a fraction of the time, when each spare
+        used is reordered at once and arrives ``lead_time`` later
+        (one-for-one, or ``(S - 1, S)``, replenishment), in the long run.
+
+        With a stock of ``S`` a spare is on the shelf while fewer than
+        ``S`` are on order: those used in the last lead time. The demand is
+        the component's replacements (see ``spares_demand``), in the long
+        run: from a random time the first comes at the end of what is left
+        of an up time, or after what is left of a repair or maintenance and
+        an up time, and the next after whole cycles. So the stock-out
+        probability is that of ``S`` or more replacements in a lead time
+        from a random time, and the fill rate that of fewer than ``S`` in
+        the lead time before a replacement. For a fleet, the systems'
+        demands add up. Worked out on a grid, to about 1e-6, for components
+        with corrective repair alone or under age replacement.
+
+        Parameters
+        ----------
+        lead_time : float
+            The time a spare takes to arrive once ordered.
+        fill_rate : float, optional
+            The fraction of demands to meet from the shelf, in ``(0, 1)``.
+        stockout_probability : float, optional
+            The most fraction of time to be out of stock, in ``(0, 1)``.
+            At least one of the two targets must be given; the stock meets
+            both.
+        nodes : Collection[Hashable], optional
+            The components, by default every component but a nested RBD.
+        fleet : int, optional
+            How many systems share the stock, by default 1.
+
+        Returns
+        -------
+        dict[Hashable, SparesStock]
+            Per component, the stock and what it achieves, with the
+            distributions behind them.
+
+        Raises
+        ------
+        ValueError
+            If ``lead_time`` is negative or not finite, neither target is
+            given or one is not in ``(0, 1)``, ``fleet`` is not a whole
+            number of at least 1, or ``nodes`` names a node that is not a
+            component, or a nested RBD.
+        NotImplementedError
+            For a component under block replacement, with hidden failures,
+            a standby group or a life that may never end, or while a
+            component can wait for a repair crew, or if more than 2,000
+            replacements are likely in a lead time.
+
+        Examples
+        --------
+        A pump with a constant failure rate of 0.01 an hour, replaced in no
+        time, and 300 hours to get a spare: 3 are on order on average, and
+        7 on the shelf meet 96.6% of demands.
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> rbd = RepairableRBD(
+        ...     [("s", "pump"), ("pump", "t")],
+        ...     {
+        ...         "pump": {
+        ...             "reliability": surv.Exponential.from_params([0.01]),
+        ...             "repairability": "instant",
+        ...         }
+        ...     },
+        ... )
+        >>> stock = rbd.spares_stock(300.0, fill_rate=0.95)["pump"]
+        >>> stock.stock
+        7
+        >>> round(stock.fill_rate, 4)
+        0.9665
+        """
+        tau = _horizon(lead_time)
+        fleet = _whole("fleet", fleet)
+        if fill_rate is None and stockout_probability is None:
+            raise ValueError(
+                "Give a fill_rate, a stockout_probability, or both."
+            )
+        for name, target in (
+            ("fill_rate", fill_rate),
+            ("stockout_probability", stockout_probability),
+        ):
+            if target is not None and not 0.0 < target < 1.0:
+                raise ValueError(f"{name} must be in (0, 1), got {target!r}.")
+        chosen = self._spares_nodes(nodes)
+        self._require_unlimited_crews(*_SPARES_CREWS)
+        models = {node: self._replacements(node, True) for node in chosen}
+        out: Dict[Hashable, SparesStock] = {}
+        for node, model in models.items():
+            random = _spares.count(model, tau, "random")
+            arrival = _spares.count(model, tau, "arrival")
+            on_order = _fleet(random, fleet)
+            at_demand = (
+                arrival
+                if fleet == 1
+                else _fleet(np.convolve(arrival, _fleet(random, fleet - 1)), 1)
+            )
+            result = SparesStock(0, 0.0, 1.0, tau, fleet, on_order, at_demand)
+            stock = 0
+            while not (
+                (
+                    fill_rate is None
+                    or result.fill_rate_for(stock) >= fill_rate - 1e-12
+                )
+                and (
+                    stockout_probability is None
+                    or result.stockout_probability_for(stock)
+                    <= stockout_probability + 1e-12
+                )
+            ):
+                stock += 1
+            out[node] = dataclasses.replace(
+                result,
+                stock=stock,
+                fill_rate=result.fill_rate_for(stock),
+                stockout_probability=result.stockout_probability_for(stock),
+            )
+        return out
+
     def allocate_redundancy(
         self,
         horizon: float,
@@ -5014,6 +5419,33 @@ class RepairableRBD(RBD):
                 "long-run values at each.",
             )
         )
+        # Spares: each component's replacements, counted as a renewal
+        # process, in the order the methods check them.
+        crews = r.refusal(
+            partial(self._require_unlimited_crews, *_SPARES_CREWS)
+        )
+        for name, long_run_count in (
+            ("spares_demand", False),
+            ("spares_stock", True),
+        ):
+            refusal = crews
+            which: Tuple[Hashable, ...] = ()
+            for node in self._spares_nodes(None):
+                if refusal:
+                    break
+                refusal = r.refusal(
+                    partial(self._replacements, node, long_run_count)
+                )
+                which = (node,)
+            out[name] = (
+                r.refused(refusal, which)
+                if refusal
+                else r.AnalysisRoute(
+                    r.NUMERICAL,
+                    "Each component's replacements, a renewal process, "
+                    "counted on a grid (to about 1e-6).",
+                )
+            )
         streamed = self._stream_plan(1.0, 0, False)[1]
         paired = (
             ""
@@ -6966,6 +7398,7 @@ class RepairableRBD(RBD):
         entropy: Any = None,
         widths: Optional[dict] = None,
         common: bool = False,
+        replacements: bool = False,
     ) -> "_Tally":
         """Run ``N`` simulations (then more, while ``stop`` asks for them)
         and return their totals.
@@ -6980,13 +7413,20 @@ class RepairableRBD(RBD):
         the number drawn for the entropy. ``compare`` passes both systems
         the same ``entropy`` and ``widths``, and ``common``: that, like
         ``antithetic``, needs every draw to come from a stream. With
-        ``capacity``, each simulation also follows the system's capacity.
+        ``capacity``, each simulation also follows the system's capacity;
+        with ``replacements``, the tally keeps each simulation's
+        replacements of each component, which only the Python engine
+        counts.
         """
         from tqdm import tqdm
 
         state = np.random.get_state()
         after = state
         tally = _Tally(list(self.components), self.costs, t_simulation)
+        if replacements:
+            # Only the Python engine counts them.
+            tally.replacements = []
+            engine = "python"
         runner: Any = None
         try:
             if entropy is None:
@@ -7119,6 +7559,8 @@ class RepairableRBD(RBD):
         # restorations and the system restorations they caused.
         failed, caused_down = [0] * n, [0] * n
         restored, caused_up = [0] * n, [0] * n
+        # Each component's replacements: the spares it used.
+        replaced = [0] * n
         failures = restorations = planned = 0
         changes: list = []
         deltas: list = []
@@ -7162,6 +7604,7 @@ class RepairableRBD(RBD):
                     continue  # superseded by an earlier one
                 now, broken = group.advance(event.time)
                 if broken:
+                    replaced[index[node]] += 1
                     for category, charges in failure_charges.get(node, ()):
                         rep_cost += pay(node, category, charges)
                 if now == status[node]:
@@ -7174,10 +7617,12 @@ class RepairableRBD(RBD):
                 # working unit (renewed in place, or found working), or a
                 # test that finds a hidden failure, whose repair starts now.
                 if event.preventive:
+                    replaced[index[node]] += 1
                     rep_cost += pay(node, 2, preventive_charges.get(node))
                 else:
                     rep_cost += pay(node, 3, inspection_charges.get(node))
                     if not event.status:
+                        replaced[index[node]] += 1
                         for category, charges in failure_charges.get(node, ()):
                             rep_cost += pay(node, category, charges)
                 follow = self._follow_up(event, sources[node])
@@ -7214,6 +7659,7 @@ class RepairableRBD(RBD):
             elif event.preventive:
                 # A planned outage: charged the preventive cost (a nested
                 # RBD's own costs are not counted).
+                replaced[c] += 1
                 rep_cost += pay(node, 2, preventive_charges.get(node))
             elif event.inspection:
                 # A test that takes a working unit off-line.
@@ -7224,6 +7670,7 @@ class RepairableRBD(RBD):
                 # the failure that triggers it (for a hidden failure, when an
                 # inspection finds it; for a standby group, at each unit's).
                 if node not in inspected and not grouped:
+                    replaced[c] += 1
                     for category, charges in failure_charges.get(node, ()):
                         rep_cost += pay(node, category, charges)
 
@@ -7300,6 +7747,7 @@ class RepairableRBD(RBD):
         rec.cost = rep_cost if ctx.has_costs else None
         rec.by_category, rec.by_node = by_category, by_node
         rec.capacity_changes = rec.capacity_time = rec.delivered = None
+        rec.replacements = replaced
         if trace is not None:
             trace.finish(t_simulation, rec)
         return rec
