@@ -47,6 +47,11 @@ _MIN_STEPS, _MAX_STEPS, _STEPS_PER_SPREAD = 2_000, 20_000, 40
 #: The longest grid, in steps, for the repairs and replacements that carry a
 #: unit from one block interval into the next.
 _MAX_GRID = 4_000_000
+#: The most values ``block_availability`` keeps (intervals times grid
+#: points), and the change from one interval to the next below which its
+#: availability has settled into repeating.
+_MAX_VALUES = 2**22
+_SETTLED = 1e-12
 _UNSUPPORTED = "Estimate them by simulation, with availability() or cost()."
 
 
@@ -211,37 +216,31 @@ def _masses(P: np.ndarray, C: np.ndarray, steps: int, h: float):
     return w
 
 
-def block_cycle(
-    life, repair, duration, interval: float, node=None
-) -> BlockCycle:
-    """The regeneration cycle of a component under block replacement.
+class _Grid(NamedTuple):
+    """What a unit under block replacement is followed on: the grid over a
+    block interval (step ``h``) and the ``length + 1`` points ``rho`` after
+    its start that a repair or replacement can reach; ``N``, ``A`` and
+    ``U`` over the interval for a unit put into service as new at its
+    start; ``in_repair``, the integral of the repair's survival function
+    over each cell; and the repair and the replacement."""
 
-    Parameters
-    ----------
-    life : surpyval model
-        The time to failure: parametric, with a density (no dead-on-arrival
-        units), perhaps with units that never fail.
-    repair : surpyval model
-        The time to repair (an ``ExactEventTime`` for a fixed time, at 0
-        for instant repair). Every repair must end.
-    duration : surpyval model or None
-        The time a replacement takes, or None for none.
-    interval : float
-        The block interval ``T``.
-    node : Hashable, optional
-        The component's name, for the error messages.
+    interval: float
+    steps: int
+    h: float
+    grid: np.ndarray
+    length: int
+    rho: np.ndarray
+    N: np.ndarray
+    A: np.ndarray
+    U: np.ndarray
+    in_repair: np.ndarray
+    fix: _Duration
+    replace: _Duration
 
-    Returns
-    -------
-    BlockCycle
-        The cycle's mean up time, mean length and mean number of failures.
 
-    Raises
-    ------
-    NotImplementedError
-        If a model is not one of those, or the repairs or replacements
-        take too long, compared with the interval, for the grid.
-    """
+def _grid(life, repair, duration, interval: float, node) -> _Grid:
+    """The grid and renewal functions of a unit under block replacement
+    (see ``block_cycle`` for the arguments)."""
     from scipy.signal import fftconvolve
 
     _check_life(life, node)
@@ -284,52 +283,118 @@ def block_cycle(
     # The repair still going on at a block time, for a failure in each cell
     # before it: its integral over the cell, from the end of the interval.
     in_repair = np.diff(repaired)
+    return _Grid(
+        T,
+        steps,
+        h,
+        grid,
+        length,
+        long_grid[: length + 1],
+        N,
+        A,
+        U,
+        in_repair,
+        fix,
+        replace,
+    )
+
+
+def _carry(P: np.ndarray, C: np.ndarray, density: np.ndarray, g: _Grid):
+    """Into the next interval: the CDF of when the unit is put into service
+    after this interval's end, and its integral, on ``g.rho`` from that end.
+    That is what had not happened by the end (from ``P``, that CDF over this
+    interval, and ``C``, its integral), and the ends of the repairs still
+    going on at it, of the failures in each of this interval's cells
+    (``density``, per unit time). Also returns the probability that such a
+    repair is going on at the end."""
+    from scipy.signal import fftconvolve
+
+    steps, h, length, rho = g.steps, g.h, g.length, g.rho
+    rest_P = P[steps:] - P[steps]
+    rest_C = C[steps:] - C[steps] - P[steps] * rho[: length + 1 - steps]
+    P = np.concatenate([rest_P, np.full(steps, rest_P[-1])])
+    C = np.concatenate(
+        [rest_C, rest_C[-1] + rest_P[-1] * h * np.arange(1, steps + 1)]
+    )
+    down = 0.0
+    if g.fix.fixed != 0.0:
+        late = density[::-1]  # late[m]: the cell m cells before the end
+        down = float(late @ g.in_repair[:steps])
+        ongoing = fftconvolve(
+            g.in_repair[: steps + length], late[::-1], mode="valid"
+        )[: length + 1]
+        carried = down - ongoing  # CDF of when the repair ends
+        P = P + carried
+        C = C + np.concatenate(
+            [[0.0], np.cumsum(0.5 * h * (carried[1:] + carried[:-1]))]
+        )
+    return P, C, down
+
+
+def block_cycle(
+    life, repair, duration, interval: float, node=None
+) -> BlockCycle:
+    """The regeneration cycle of a component under block replacement.
+
+    Parameters
+    ----------
+    life : surpyval model
+        The time to failure: parametric, with a density (no dead-on-arrival
+        units), perhaps with units that never fail.
+    repair : surpyval model
+        The time to repair (an ``ExactEventTime`` for a fixed time, at 0
+        for instant repair). Every repair must end.
+    duration : surpyval model or None
+        The time a replacement takes, or None for none.
+    interval : float
+        The block interval ``T``.
+    node : Hashable, optional
+        The component's name, for the error messages.
+
+    Returns
+    -------
+    BlockCycle
+        The cycle's mean up time, mean length and mean number of failures.
+
+    Raises
+    ------
+    NotImplementedError
+        If a model is not one of those, or the repairs or replacements
+        take too long, compared with the interval, for the grid.
+    """
+    from scipy.signal import fftconvolve
+
+    g = _grid(life, repair, duration, interval, node)
+    steps, h, T, rho = g.steps, g.h, g.interval, g.rho
 
     # Where the unit is put into service in the first interval: once the
     # replacement that starts the cycle is done.
-    rho = long_grid[: length + 1]
-    P = replace.cdf(rho)
-    C = rho - replace.in_progress(rho)
+    P = g.replace.cdf(rho)
+    C = rho - g.replace.in_progress(rho)
 
     up = cycle = failures = 0.0
     going = 1.0
     # Up in the middle of each cell of an interval, at its end, and failures
     # in each cell, summed over the intervals of a cycle.
-    A_middle = 0.5 * (A[1:] + A[:-1])
+    A_middle = 0.5 * (g.A[1:] + g.A[:-1])
     up_at = np.zeros(steps)
     up_at_end = 0.0
     failing = np.zeros(steps)
     for block in range(_MAX_INTERVALS):
         w = _masses(P, C, steps, h)
-        up += float(w @ U[::-1])
-        failures += float(w @ N[::-1])
-        cycle += (block + 1) * T * float(w @ A[::-1])
+        up += float(w @ g.U[::-1])
+        failures += float(w @ g.N[::-1])
+        cycle += (block + 1) * T * float(w @ g.A[::-1])
         up_at += fftconvolve(w[:steps], A_middle)[:steps]
-        up_at_end += float(w @ A[::-1])
+        up_at_end += float(w @ g.A[::-1])
         # Failures in each cell of this interval, from the units put into
         # service in it.
-        density = np.diff(fftconvolve(w, N)[: steps + 1]) / h
+        density = np.diff(fftconvolve(w, g.N)[: steps + 1]) / h
         failing += density
 
         # Carried into the next interval: what had not started by this
         # interval's end, and the repairs still going on at it.
-        rest_P = P[steps:] - P[steps]
-        rest_C = C[steps:] - C[steps] - P[steps] * rho[: length + 1 - steps]
-        P = np.concatenate([rest_P, np.full(steps, rest_P[-1])])
-        C = np.concatenate(
-            [rest_C, rest_C[-1] + rest_P[-1] * h * np.arange(1, steps + 1)]
-        )
-        if fix.fixed != 0.0:
-            late = density[::-1]  # late[m]: the cell m cells before the end
-            down = float(late @ in_repair[:steps])
-            ongoing = fftconvolve(
-                in_repair[: steps + length], late[::-1], mode="valid"
-            )[: length + 1]
-            carried = down - ongoing  # CDF of when the repair ends
-            P = P + carried
-            C = C + np.concatenate(
-                [[0.0], np.cumsum(0.5 * h * (carried[1:] + carried[:-1]))]
-            )
+        P, C, _ = _carry(P, C, density, g)
         going = float(P[-1])
         if going < _TAIL:
             break
@@ -347,9 +412,119 @@ def block_cycle(
         up,
         cycle,
         failures,
-        grid,
+        g.grid,
         np.clip(up_at / intervals, 0.0, 1.0),
         np.maximum(failing / intervals, 0.0),
         before,
-        before * float(replace.cdf(np.zeros(1))[0]),
+        before * float(g.replace.cdf(np.zeros(1))[0]),
+    )
+
+
+class BlockAvailability(NamedTuple):
+    """The point availability of a unit new at 0 under block replacement,
+    interval by interval (see ``block_availability``).
+
+    In the ``k``-th interval, a time ``s`` after its start, the unit is up
+    with probability ``smooth[k]`` (on ``grid``, linear between its points)
+    plus ``replaced[k]`` times the probability that the replacement due at
+    its start is done by ``s``: ``replace.cdf(s)``, or 1 in the first
+    interval, which the unit starts new. ``replaced[k]`` is the probability
+    that it is up just before that start, and so replaced. If ``settled``,
+    every later interval repeats the last one."""
+
+    interval: float
+    grid: np.ndarray
+    smooth: np.ndarray
+    replaced: np.ndarray
+    replace: _Duration
+    settled: bool
+
+
+def block_availability(
+    life, repair, duration, interval: float, horizon: float, node=None
+) -> BlockAvailability:
+    """The point availability of a component new at 0 under block
+    replacement, over ``[0, horizon]``, or until it repeats from one
+    interval to the next.
+
+    The unit is followed interval by interval as in ``block_cycle``, but
+    over all its intervals rather than one cycle's: each block time at
+    which it is up starts a replacement, and the next interval starts with
+    that as well as the repairs and replacements carried into it. In each
+    interval, the unit is up at ``s`` if it has been put into service (the
+    first time after the interval's start) by ``s`` and is not down after a
+    failure since: the CDF of that time, less its convolution with the
+    probability ``1 - A`` of being down. The replacement due at the
+    interval's start is kept out of the grid: it starts at the block time
+    exactly, so its end's CDF is exact at any time however short it is.
+
+    Parameters
+    ----------
+    life, repair, duration, interval, node
+        As for ``block_cycle``.
+    horizon : float
+        The last time the availability is needed at.
+
+    Returns
+    -------
+    BlockAvailability
+
+    Raises
+    ------
+    NotImplementedError
+        As ``block_cycle`` does, or if the availability has not settled
+        into repeating within the intervals the grid can keep.
+    """
+    from scipy.signal import fftconvolve
+
+    g = _grid(life, repair, duration, interval, node)
+    steps, h = g.steps, g.h
+    count = int(np.floor(horizon / g.interval)) + 1
+    most = max(3, _MAX_VALUES // (steps + 1))
+    # A replacement that starts at the interval's start: the CDF of when
+    # the unit is back in service, and its integral.
+    start_P = g.replace.cdf(g.rho)
+    start_C = g.rho - g.replace.in_progress(g.rho)
+    down = 1.0 - g.A
+    # The first interval: put into service new at 0.
+    P = np.ones(g.length + 1)
+    C = g.rho.copy()
+    other = np.zeros(g.length + 1)
+    replaced = 1.0
+    rows: list = []
+    probabilities: list = []
+    settled = False
+    for k in range(count):
+        w = _masses(P, C, steps, h)
+        row = other[: steps + 1] - fftconvolve(w, down)[: steps + 1]
+        if (
+            k >= 2
+            and abs(replaced - probabilities[-1]) < _SETTLED
+            and np.max(np.abs(row - rows[-1])) < _SETTLED
+        ):
+            settled = True
+            break
+        if len(rows) == most:
+            raise NotImplementedError(
+                f"Component {node!r}: under block replacement its "
+                f"availability from new has not settled after {most} "
+                "intervals, as far as the grid can follow it. "
+                f"{_UNSUPPORTED}"
+            )
+        rows.append(row)
+        probabilities.append(replaced)
+        density = np.diff(fftconvolve(w, g.N)[: steps + 1]) / h
+        other, C, in_repair = _carry(P, C, density, g)
+        # Up at the next block time: put into service in this interval and
+        # not in a repair at its end (so that no probability is lost).
+        replaced = float(P[steps]) - in_repair
+        P = other + replaced * start_P
+        C = C + replaced * start_C
+    return BlockAvailability(
+        g.interval,
+        g.grid,
+        np.array(rows),
+        np.array(probabilities),
+        g.replace,
+        settled,
     )

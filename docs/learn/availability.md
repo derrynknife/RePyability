@@ -177,7 +177,10 @@ transient term is down to 0.003.
 
 ### Simulating the curve
 
-For most distributions there is no such formula, so RePyability estimates
+For most distributions there is no such formula. RePyability can still
+compute the curve without simulation, by solving the renewal equation behind
+it numerically (`point_availability`, below), but a simulation shows where
+the curve comes from, and gives more besides. It estimates
 $A(t)$ by **Monte Carlo simulation**. `availability()` plays out `N`
 independent histories of the system from time 0, every component new. For
 each component it draws a time to failure, then a time to repair, then
@@ -222,6 +225,16 @@ xychart-beta
 The simulation follows the exact curve down from 1 and levels off near 0.91.
 It is not perfectly smooth, though: between 2.5 and 3.5 hours it even rises
 a little, which the exact curve never does.
+
+`point_availability` computes the exact curve for any distributions, and
+`mission_availability` its mean over a window, with no simulation:
+
+```python
+one_pump.point_availability(hours).round(3)
+# array([1.   , 0.962, 0.939, 0.927, 0.919, 0.915, 0.912, 0.911, 0.91 ,
+#        0.91 , 0.909])
+one_pump.mission_availability(5.0)   # -> 0.92555  the mean over the first 5 hours
+```
 
 ### How much to trust a simulation
 
@@ -493,7 +506,8 @@ first_shift.system_uptime / (first_shift.n_simulations * 8.0)    # -> 0.964    o
 ```
 
 A new plant is up 96.4% of its first shift, against 95.4% in the long run,
-and by the end of the shift it has settled. With slow repairs or wear-out
+and by the end of the shift it has settled; exactly,
+`plant.mission_availability(8.0)` is 0.9640. With slow repairs or wear-out
 lifetimes the transient lasts longer, and it can dip below the long-run
 value (Exercise 5).
 
@@ -576,7 +590,8 @@ maintenance](../guide/costs.md#preventive-maintenance).
     The point availability starts at 1, and the long-run value is a limit.
     Over a short window after start-up, or after an overhaul, the average
     availability can differ from it: the plant's first shift averaged 0.964,
-    not 0.9536. Simulate the window you care about.
+    not 0.9536. Compute the window you care about, with
+    `mission_availability`, or simulate it.
 
 !!! warning "Every component has its own repair crew"
     The model starts each repair the moment the component fails, and runs
@@ -609,8 +624,8 @@ maintenance](../guide/costs.md#preventive-maintenance).
       $\text{MUT} = A/\omega$, $\text{MDT} = (1 - A)/\omega$ and
       $\text{MTBF} = 1/\omega$.
     - The point availability $A(t)$ starts at 1 and settles to the long-run
-      value; RePyability simulates it, with an error that shrinks like
-      $1/\sqrt{N}$.
+      value; `point_availability` computes it exactly, and a simulation
+      estimates it, with an error that shrinks like $1/\sqrt{N}$.
     - `tolerance` simulates until an answer is precise enough; `compare`
       simulates two designs with the same random numbers, so the chance in
       the histories cancels in their difference; antithetic pairs make each

@@ -40,8 +40,23 @@ from surpyval import ExactEventTime
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd import capacity as _capacity
-from repyability.rbd._block_replacement import BlockCycle, block_cycle
-from repyability.rbd._model_utils import failure_time_scale, model_mean
+from repyability.rbd._block_replacement import (
+    BlockCycle,
+    block_availability,
+    block_cycle,
+)
+from repyability.rbd._model_utils import (
+    failure_time_scale,
+    is_fixed_probability,
+    model_mean,
+)
+from repyability.rbd._point_availability import (
+    BlockCurve,
+    InspectionCurve,
+    SystemCurve,
+)
+from repyability.rbd._point_availability import knots as point_knots
+from repyability.rbd._point_availability import unit_curve
 from repyability.rbd._sampling import (
     UniformStream,
     inverse_sampler,
@@ -1201,6 +1216,74 @@ def _overlap_times(starts, nodes, times, changes, system_timeline, t_end):
             )
         )
     return out
+
+
+#: Grid steps over a component's typical up time, for its point
+#: availability (see ``_point_availability``): the error falls as the
+#: square of the step, to about 1e-8 here.
+_POINT_STEPS = 2000
+#: The most grid points for one component's point availability.
+_POINT_MAX = 2**22
+#: The most pieces ``mission_availability`` integrates over.
+_MISSION_POINTS = 5_000_000
+
+
+def _check_times(x) -> np.ndarray:
+    """``x`` as a 1-d float array of times, all finite and non-negative."""
+    times = np.atleast_1d(np.asarray(x, dtype=float))
+    if not np.all(np.isfinite(times)) or np.any(times < 0.0):
+        raise ValueError(f"Times must be finite and non-negative, got {x!r}.")
+    return times
+
+
+def _sf_values(sf, x: np.ndarray) -> np.ndarray:
+    """A survival function's values at ``x``, as floats in ``x``'s shape."""
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.asarray(sf(x), dtype=float).reshape(np.shape(x))
+
+
+def _up_scale(model, age: Optional[float]) -> float:
+    """A typical up time for a unit with lifetime ``model`` (replaced at
+    ``age``, if given), to size its point-availability grid by: the smaller
+    of its median and the width of its middle 80%; else its typical failure
+    time (NaN if it has none, e.g. it never fails)."""
+    scale = float("nan")
+    qf = getattr(model, "qf", None)
+    if qf is not None:
+        try:
+            with np.errstate(all="ignore"):
+                q10, q50, q90 = np.ravel(
+                    np.asarray(qf(np.array([0.1, 0.5, 0.9])), dtype=float)
+                )
+            widths = [w for w in (q50, q90 - q10) if np.isfinite(w) and w > 0]
+            if widths:
+                scale = min(widths)
+        except Exception:  # a model whose qf cannot take these
+            pass
+    if not np.isfinite(scale):
+        try:
+            scale = failure_time_scale(model)
+        except Exception:  # no mean either (e.g. never fails)
+            scale = float("nan")
+    if age is not None:
+        scale = age if not np.isfinite(scale) else min(scale, age)
+    return float(scale)
+
+
+def _settling(curves) -> Tuple[float, Optional[float]]:
+    """When the point availabilities ``curves`` (see
+    ``_point_availability``) all settle: the time after which they are
+    constant (a period of None) or repeat together with the period returned
+    (a time of inf if they never do, as far as is known)."""
+    curves = list(curves)
+    settle = max((float(curve.settle) for curve in curves), default=0.0)
+    periods = {curve.period for curve in curves if curve.period is not None}
+    if not periods:
+        return settle, None
+    try:
+        return settle, _common_period(periods)
+    except NotImplementedError:  # no common period
+        return np.inf, None
 
 
 def _squeeze_values(d: dict) -> dict:
@@ -4006,6 +4089,446 @@ class RepairableRBD(RBD):
         system = self.system_probability(availability, method=method)
         return float(weights @ system)
 
+    def point_availability(
+        self,
+        x,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        method: str = "p",
+    ):
+        """The probability that the system is up at each time ``x``, with
+        every component new at 0: exact, with no simulation.
+
+        Each component's point availability ``A(t)`` follows from the
+        distributions of its up and down times by the renewal equation,
+        solved numerically (see ``repyability/rbd/_point_availability.py``):
+        its error is about 1e-7 (up to 1e-6 soon after the start). Since
+        the components fail and are repaired independently, the system's is
+        the structure function evaluated exactly at theirs, at each time.
+        It starts at 1 (less any components dead on arrival) and settles at
+        [`mean_availability`][repyability.RepairableRBD.mean_availability]
+        (or, with components replaced or inspected on a calendar, repeats
+        with the calendar about it);
+        [`availability`][repyability.RepairableRBD.availability] estimates
+        the same curve by simulation. At a time something happens -- a
+        block replacement, say -- it is the availability just after.
+
+        Components under age or block replacement are covered, as in
+        ``mean_availability``, and nested RBDs through their own point
+        availability. A component with hidden failures is up with
+        probability ``exp(-lambda * u)``, ``u`` the time since its last
+        test: as in ``mean_availability``, only with a constant failure
+        rate, instant tests and instant repair.
+
+        Each component's curve is computed on a grid of 2,000 steps over its
+        typical up time. Near a time at which its units start or stop on a
+        schedule -- at 0, at its scheduled replacements, and at the failures
+        of a lifetime known exactly -- what happens faster than a step, such
+        as a short repair, is smoothed over the step: a point value within
+        a step of such a time can be off by up to about the probability
+        that the component is under repair then. ``mission_availability``
+        is not affected.
+
+        Parameters
+        ----------
+        x : float or array-like
+            Times, from 0 (every component new).
+        working_nodes : Collection[Hashable], optional
+            Nodes that always work (availability 1), by default None.
+        broken_nodes : Collection[Hashable], optional
+            Nodes that are always failed (availability 0), by default None.
+        method : str, optional
+            Evaluate the structure function from the minimal path sets
+            (``"p"``, the default) or the cut sets (``"c"``); both give the
+            same result.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The system's point availability at each time, in ``x``'s shape.
+
+        Raises
+        ------
+        ValueError
+            If a time is negative or not finite, or a working/broken node is
+            invalid (see ``mean_availability``).
+        NotImplementedError
+            If a component has hidden failures other than with a constant
+            failure rate, instant tests and instant repair, a model that
+            block replacement's exact values do not cover (see
+            ``mean_availability``), or time scales too far apart for the
+            grid (years of running, seconds of repair, over centuries):
+            simulate it with ``availability``.
+
+        Examples
+        --------
+        One component with failure rate 0.1 and repair rate 1 is up at time
+        ``t`` with probability ``1 / 1.1 + (0.1 / 1.1) * exp(-1.1 t)``:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> rbd = RepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {
+        ...         "c": {
+        ...             "reliability": surv.Exponential.from_params([0.1]),
+        ...             "repairability": surv.Exponential.from_params([1.0]),
+        ...         }
+        ...     },
+        ... )
+        >>> rbd.point_availability([0.0, 1.0, 100.0]).round(4).tolist()
+        [1.0, 0.9394, 0.9091]
+        """
+        times = _check_times(x)
+        working_nodes = set() if working_nodes is None else set(working_nodes)
+        broken_nodes = set() if broken_nodes is None else set(broken_nodes)
+        self._validate_node_overrides(working_nodes, broken_nodes)
+        horizon = float(times.max()) if times.size else 0.0
+        curves = self._availability_curves(
+            horizon, working_nodes | broken_nodes
+        )
+        values = self._curves_at(
+            curves, times.ravel(), working_nodes, broken_nodes, method
+        )
+        if np.ndim(x) == 0:
+            return float(values[0])
+        return values.reshape(times.shape)
+
+    def mission_availability(
+        self,
+        t,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        method: str = "p",
+    ):
+        """The expected fraction of ``[0, t]`` the system is up, with every
+        component new at 0: exact, with no simulation.
+
+        It is the mean of
+        [`point_availability`][repyability.RepairableRBD.point_availability]
+        over the window, integrated by Gauss-Legendre quadrature between the
+        points where the components' curves bend, up to the time when they
+        have all settled at their long-run values (or into repeating with
+        their inspections and block replacements); past it, the integral is
+        extended exactly, so a mission of decades costs no more than one of
+        a few years. It is what
+        [`availability`][repyability.RepairableRBD.availability] estimates
+        by simulation as the mean of each simulation's uptime divided by
+        ``t_simulation``. As ``t`` grows it approaches ``mean_availability``
+        from the side of the start: from new, components that wear out
+        (Weibull shape above 1, say) fail less early on, so a long mission's
+        availability exceeds the long-run value by about ``b / t``, ``b`` a
+        constant of the components' up and down times.
+
+        Parameters
+        ----------
+        t : float or array-like
+            The windows' lengths (one mission average for each).
+        working_nodes : Collection[Hashable], optional
+            Nodes that always work (availability 1), by default None.
+        broken_nodes : Collection[Hashable], optional
+            Nodes that are always failed (availability 0), by default None.
+        method : str, optional
+            Evaluate the structure function from the minimal path sets
+            (``"p"``, the default) or the cut sets (``"c"``); both give the
+            same result.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The mission availability for each window, in ``t``'s shape (at
+            ``t = 0``, the point availability at 0).
+
+        Raises
+        ------
+        ValueError, NotImplementedError
+            As for ``point_availability``.
+
+        Examples
+        --------
+        One component with failure rate 0.1 and repair rate 1, over 10 time
+        units: ``1 / 1.1 + 0.1 / 1.1 ** 2 * (1 - exp(-11)) / 10``.
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> rbd = RepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {
+        ...         "c": {
+        ...             "reliability": surv.Exponential.from_params([0.1]),
+        ...             "repairability": surv.Exponential.from_params([1.0]),
+        ...         }
+        ...     },
+        ... )
+        >>> round(rbd.mission_availability(10.0), 4)
+        0.9174
+        """
+        windows = _check_times(t)
+        working_nodes = set() if working_nodes is None else set(working_nodes)
+        broken_nodes = set() if broken_nodes is None else set(broken_nodes)
+        self._validate_node_overrides(working_nodes, broken_nodes)
+        ends = windows.ravel()
+        horizon = float(ends.max()) if ends.size else 0.0
+        curves = self._availability_curves(
+            horizon, working_nodes | broken_nodes
+        )
+        # After ``settle`` the system's availability is constant, or repeats
+        # with ``period``: it is integrated up to ``reach``, and extended.
+        settle, period = _settling(curves.values())
+        reach = min(horizon, settle if period is None else settle + period)
+        beyond = ends > reach
+        parts = [np.array([0.0, reach]), ends[~beyond]]
+        parts += [curve.knots(0.0, reach) for curve in curves.values()]
+        if period is not None and beyond.any():
+            cycles = np.floor((ends[beyond] - settle) / period)
+            rest = ends[beyond] - settle - cycles * period
+            rest = np.clip(rest, 0.0, period)
+            parts += [np.array([settle]), settle + rest]
+        edges = np.unique(np.concatenate(parts))
+        edges = edges[(edges >= 0.0) & (edges <= reach)]
+        if len(edges) > _MISSION_POINTS:
+            raise NotImplementedError(
+                f"Integrating the availability over [0, {reach}] takes "
+                f"{len(edges)} pieces (the components' curves bend that "
+                "often), more than the limit: estimate it by simulation, "
+                "with availability()."
+            )
+        running = self._running_uptime(
+            curves, edges, working_nodes, broken_nodes, method
+        )
+
+        def uptime(x):
+            return running[np.searchsorted(edges, x)]
+
+        totals = np.empty(len(ends))
+        totals[~beyond] = uptime(ends[~beyond])
+        if beyond.any():
+            if period is None:
+                level = self._curves_at(
+                    curves,
+                    np.array([horizon]),
+                    working_nodes,
+                    broken_nodes,
+                    method,
+                )[0]
+                totals[beyond] = uptime(reach) + (ends[beyond] - reach) * level
+            else:
+                base = uptime(settle)
+                totals[beyond] = (
+                    base
+                    + cycles * (uptime(reach) - base)
+                    + (uptime(settle + rest) - base)
+                )
+        averages = np.empty(len(ends))
+        positive = ends > 0.0
+        averages[positive] = totals[positive] / ends[positive]
+        if not positive.all():
+            averages[~positive] = self._curves_at(
+                curves, np.zeros(1), working_nodes, broken_nodes, method
+            )[0]
+        if np.ndim(t) == 0:
+            return float(averages[0])
+        return averages.reshape(windows.shape)
+
+    def _running_uptime(
+        self, curves: dict, edges, working_nodes, broken_nodes, method
+    ) -> np.ndarray:
+        """The integral of the system's point availability (from its nodes'
+        ``curves``) from 0 to each of ``edges``, which start at 0 and
+        increase: 4-point Gauss-Legendre quadrature on each piece between
+        them, a block of pieces at a time."""
+        nodes, weights = np.polynomial.legendre.leggauss(4)
+        integrals = np.zeros(len(edges) - 1)
+        block = 100_000
+        for start in range(0, len(edges) - 1, block):
+            stop = min(start + block, len(edges) - 1)
+            a, b = edges[start:stop], edges[start + 1 : stop + 1]  # noqa: E203
+            middle, half = 0.5 * (a + b), 0.5 * (b - a)
+            points = (middle[:, None] + half[:, None] * nodes).ravel()
+            values = self._curves_at(
+                curves, points, working_nodes, broken_nodes, method
+            )
+            integrals[start:stop] = (
+                values.reshape(-1, len(nodes)) @ weights
+            ) * half
+        return np.concatenate([[0.0], np.cumsum(integrals)])
+
+    def _availability_curves(self, horizon: float, skip) -> dict:
+        """Each node's point availability over ``[0, horizon]``, from new,
+        as a curve (see ``_point_availability``), except the nodes in
+        ``skip`` (held working or failed)."""
+        curves: dict = {}
+        for node, component in self.components.items():
+            if node in skip:
+                continue
+            if isinstance(component, RepairableRBD):
+                inner = component._availability_curves(horizon, set())
+                curves[node] = SystemCurve(
+                    component, inner, *_settling(inner.values())
+                )
+            elif node in self._inspection:
+                curves[node] = InspectionCurve(*self._inspected_rate(node))
+            else:
+                curves[node] = self._unit_curve(node, horizon)
+        return curves
+
+    def _curves_at(
+        self, curves: dict, x: np.ndarray, working_nodes, broken_nodes, method
+    ) -> np.ndarray:
+        """The system's point availability at the times ``x``, from its
+        nodes' curves (the forced nodes held at 1 or 0)."""
+        probabilities = {node: curve.at(x) for node, curve in curves.items()}
+        for node in list(self.in_or_out) + list(working_nodes | broken_nodes):
+            probabilities[node] = np.ones(len(x))
+        probabilities = self._probabilities_with_overrides(
+            probabilities, working_nodes, broken_nodes
+        )
+        return np.asarray(
+            self.system_probability(probabilities, method=method), dtype=float
+        )
+
+    def _unit_curve(self, node, horizon: float):
+        """A component's point availability from new over ``[0, horizon]``
+        (see ``_point_availability.unit_curve``): on a grid of
+        ``_POINT_STEPS`` steps over its typical up time, with its
+        replacement age on the grid, and only as long as it takes to settle
+        at its long-run availability (to 1e-10), after which the curve holds
+        that value. Under block replacement, see ``_block_curve``."""
+        component = self.components[node]
+        for what, model in [
+            ("reliability", component.reliability),
+            ("repairability", component.time_to_replace),
+        ]:
+            if is_fixed_probability(model):
+                raise NotImplementedError(
+                    f"Component {node!r}: its {what} model is a probability, "
+                    "not a distribution of times, so its availability over "
+                    "time has no exact value. Estimate it by simulation, "
+                    "with availability()."
+                )
+        schedule = self._preventive.get(node)
+        if schedule is not None and schedule.policy == "block":
+            return self._block_curve(node, horizon)
+        age = None if schedule is None else float(schedule.interval)
+        duration = None if schedule is None else schedule.duration
+        life = component.reliability
+        if component.model_parameterization == "non-parametric":
+            up_sf = component.reliability_function
+            up_splits = np.asarray(component._knots, dtype=float)
+        else:
+            up_sf = life.sf
+            up_splits = point_knots(life)
+        repair = component.time_to_replace
+
+        def up_cdf(x):
+            return 1.0 - _sf_values(up_sf, x)
+
+        def repair_sf(s):
+            return _sf_values(repair.sf, s)
+
+        def duration_sf(s):
+            return _sf_values(duration.sf, s)
+
+        maintenance_sf = None if duration is None else duration_sf
+        try:
+            long_run: Optional[float] = self._node_availability(node)
+        except (ValueError, NotImplementedError):
+            long_run = None
+        scale = _up_scale(life, age)
+        if schedule is not None:
+            up, cycle, _, _ = self._maintenance_cycle(node, schedule)
+        else:
+            up = model_mean(life)
+            cycle = up + model_mean(repair)
+        horizon = max(horizon, 0.0)
+        step = horizon / 1024.0 if horizon > 0.0 else np.inf
+        if np.isfinite(scale):
+            step = min(step, scale / _POINT_STEPS)
+        if not np.isfinite(step):
+            step = 1.0
+        if age is not None and step < age:
+            step = age / np.ceil(age / step)
+        # Units that each reach their age are maintained at nearly fixed
+        # times, which the curve follows until they have all but ended.
+        survive = 0.0
+        if age is not None and duration is not None:
+            survive = float(_sf_values(up_sf, np.array([age]))[0])
+        end = max(horizon, 16.0 * step)
+        settles = age is None or survive ** (horizon // age) < 1e-10
+        if (
+            long_run is not None
+            and settles
+            and np.isfinite(cycle)
+            and cycle > 0.0
+        ):
+            end = min(end, max(8.0 * cycle, 16.0 * step))
+        while True:
+            n = int(np.ceil(end / step))
+            if n > _POINT_MAX:
+                step = end / _POINT_MAX
+                if age is not None and step < age:
+                    step = age / np.floor(age / step)
+                if np.isfinite(scale) and step > scale / 250.0:
+                    raise NotImplementedError(
+                        f"Component {node!r} would need more than "
+                        f"{_POINT_MAX} grid points to follow its "
+                        f"availability to {end} (its typical up time is "
+                        f"about {scale:.3g}): estimate it by simulation, "
+                        "with availability()."
+                    )
+                n = min(int(np.ceil(end / step)), _POINT_MAX)
+            try:
+                with np.errstate(divide="ignore", invalid="ignore"):
+                    curve = unit_curve(
+                        up_cdf,
+                        up_splits,
+                        repair_sf,
+                        point_knots(repair),
+                        step,
+                        n,
+                        age=age,
+                        maintenance_sf=maintenance_sf,
+                        maintenance_splits=(
+                            () if duration is None else point_knots(duration)
+                        ),
+                    )
+            except NotImplementedError as error:
+                raise NotImplementedError(
+                    f"Component {node!r}: {error}. Estimate its availability "
+                    "by simulation, with availability()."
+                ) from None
+            if end >= horizon:
+                break
+            tail = curve.times[len(curve.times) - len(curve.times) // 4 :]
+            if (
+                long_run is not None
+                and np.all(np.abs(curve.at(tail) - long_run) < 1e-10)
+                and (age is None or survive ** (end // age) < 1e-10)
+            ):
+                break
+            end = min(horizon, 4.0 * end)
+        curve.long_run = long_run
+        return curve
+
+    def _block_curve(self, node, horizon: float) -> BlockCurve:
+        """A component's point availability from new under block
+        replacement, over ``[0, horizon]`` (see
+        ``_block_replacement.block_availability``)."""
+        component = self.components[node]
+        schedule = self._preventive[node]
+        duration = schedule.duration
+        result = block_availability(
+            component.reliability,
+            component.time_to_replace,
+            duration,
+            schedule.interval,
+            max(horizon, 0.0),
+            node,
+        )
+        return BlockCurve(
+            result, np.empty(0) if duration is None else point_knots(duration)
+        )
+
     def capacity_distribution(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -5520,9 +6043,10 @@ class RepairableRBD(RBD):
             or model_mean(component.time_to_replace) != 0.0
         ):
             raise NotImplementedError(
-                f"Component {node!r} has hidden failures: its exact long-run "
-                "values are known only with a constant failure rate (an "
-                "exponential life), instant tests and instant repair. "
+                f"Component {node!r} has hidden failures: its exact values "
+                "(long-run, or from new over time) are known only with a "
+                "constant failure rate (an exponential life), instant tests "
+                "and instant repair. "
                 "Estimate them by simulation, with availability() or cost()."
             )
         return rate, inspection.interval

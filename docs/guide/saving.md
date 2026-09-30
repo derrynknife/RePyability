@@ -114,6 +114,7 @@ without `n_jobs` (see [Parallel runs](simulation.md#parallel-runs)).
 | `random`, `mean`, `mean_time_to_failure(_interval)`, `node_mttf` (composite nodes) | Monte-Carlo. |
 | `mean_availability`, `system_failure_frequency`, MUT/MDT/MTBF, `expected_cost_rate`, `total_cost`, the repairable importance measures | Exact, from the long-run node availabilities. |
 | `capacity_distribution`, `system_capacity` | Exact, from the node reliabilities (at a time) or long-run availabilities. |
+| `point_availability`, `mission_availability` | Exact: each component's renewal equation, solved numerically (to about `1e-7`), and the system at its components' availabilities at each time. |
 | `availability` (with the capacity over time and the delivered fraction), `cost`, the simulated criticality measures | Discrete-event simulation. |
 | Standby and load-sharing node reliability | Exact or numerical where a closed form or convolution applies, otherwise simulated (see [Redundancy models](redundancy-models.md#how-the-survival-function-is-obtained)). |
 | `allocate_redundancy` (both kinds of RBD) | Exact scoring; `method="exact"` is a proven optimum, `"greedy"` a heuristic. |

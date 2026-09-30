@@ -464,14 +464,29 @@ contributes its own system frequency.
 
 **Availability over time.** Before the long run, availability depends on
 time: a new system starts up (`A(0) = 1`) and settles towards the long-run
-value, possibly overshooting. There is no general closed form, so
-`availability()` simulates `N` independent histories (each component's
-alternating failures and repairs, merged in time order, with the system's
-state re-evaluated at every event) and reports the fraction of histories up
-at each time. Each point is a proportion, so its standard error is
+value, possibly overshooting. A component alternates up periods `U` and down
+periods `D`, as good as new after each: an alternating renewal process, whose
+point availability `A_i(t)` solves the renewal equation. There is a closed
+form only for exponential times; `point_availability` solves the equation
+numerically, on a grid of 2,000 steps over the component's typical up time
+(an error of about `1e-7`). Components that fail and are repaired
+independently are up or down independently at every time, so the system's
+`A(t)` is its system probability at the `A_i(t)`, and
+`mission_availability` is its mean over `[0, T]`. For a long mission that
+mean is the long-run value plus about `b/T`: for one component
+`b = A (E[C²]/(2E[C]) − E[U²]/(2E[U]))`, `C = U + D`, positive for a life
+that wears out, and for a system `Σ_i I_B^i b_i` to first order.
+
+`availability()` simulates `N` independent histories instead (each
+component's alternating failures and repairs, merged in time order, with the
+system's state re-evaluated at every event) and reports the fraction of
+histories up at each time. The histories also give what the exact methods
+do not: the counts, downtimes and costs over the window, and the criticality
+measures below. Each point is a proportion, so its standard error is
 `√(A(1 − A)/N)`; the confidence band uses the Wilson score interval, which
 stays sensible at `A = 1`. For exponential components the simulation is held
-to the exact Markov solution in the test suite.
+to the exact Markov solution in the test suite, and on the benchmark
+diagrams to `point_availability`.
 
 A nested repairable RBD runs its own history on the same clock, and the outer
 system sees a state change when the nested system's state changes.

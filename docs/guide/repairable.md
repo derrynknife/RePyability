@@ -8,9 +8,10 @@
 A [`RepairableRBD`][repyability.RepairableRBD] models a system whose
 components are repaired when they fail. The question changes from "has it
 failed yet?" to "is it up?": **availability**. Long-run quantities have exact
-closed forms; the availability over time, and a family of criticality
-measures, come from a discrete-event simulation. Theory:
-[Concepts](../concepts.md#availability).
+closed forms, and the availability over time from new is exact too; the
+histories behind it (failure counts, downtime and cost over a window) and a
+family of criticality measures come from a discrete-event simulation.
+Theory: [Concepts](../concepts.md#availability).
 
 ## Components
 
@@ -92,11 +93,50 @@ A forced node never changes state, so it contributes no failures. The
 importance measures on a repairable system are covered on
 [Importance measures](importance.md#on-a-repairable-system).
 
+## Availability over time (exact)
+
+With every component new at time 0, the probability that the system is up
+at a time `t`, its **point availability** `A(t)`, is exact, and so is its
+mean over a mission `[0, t]`:
+
+```python
+plant.point_availability([0.0, 1.0, 5.0, 50.0])   # array([1.    , 0.9808, 0.9565, 0.9536])
+plant.point_availability(1.0)                      # -> 0.9808
+plant.mission_availability(100.0)                  # -> 0.9544   mean over [0, 100]
+plant.mission_availability([10.0, 100.0, 1000.0]) # array([0.962 , 0.9544, 0.9537])
+```
+
+Each component's `A(t)` follows from the distributions of its up and down
+times by the renewal equation, solved numerically to about `1e-7`; the
+components fail and are repaired independently, so the system's is the
+exact system computation at theirs, at each time (see
+[Concepts](../concepts.md#availability)). The curve starts at 1 (less any
+units dead on arrival) and settles at `mean_availability()`, and a mission
+average differs from the long-run value by about `b / t`, for a constant `b`
+of the components' up and down times: positive for components that wear
+out, which fail less early on, and for these, which start up. A mission of
+decades costs no more than one of hours: past the time the components have
+settled, the integral is extended exactly.
+
+Both take `working_nodes`, `broken_nodes` and `method` as
+`mean_availability` does, and cover what it covers: age and block
+replacement, nested RBDs, and hidden failures with a constant failure rate
+and instant tests and repair. A component with any other hidden failures
+raises `NotImplementedError`; simulate it. Each component's curve is
+computed on a grid of 2,000 steps over its typical up time: within one step
+of a time at which its units start or stop on a schedule (at 0, and at its
+scheduled replacements), what happens faster than a step, such as a short
+repair, is smoothed over it, so a point value there can be off by up to
+about the probability that the component is under repair; mission averages
+are not affected.
+
 ## Availability over time (simulated)
 
 `availability(t_simulation, ...)` runs `N` independent simulations of the
 system from time 0 (everything new, except any `broken_nodes`) to
-`t_simulation`, and averages them:
+`t_simulation`, and averages them: the same curve as `point_availability`,
+with the histories behind it, which also give the failure counts, downtime,
+costs and criticality measures over the window:
 
 ```python
 result = plant.availability(t_simulation=100.0, N=2_000, seed=0)
@@ -134,7 +174,7 @@ up, has an interval of its own:
 
 ```python
 window = result.mean_availability_interval(confidence=0.95)
-window.estimate                   # -> 0.9539   the exact mean over 100 h is 0.9544
+window.estimate                   # -> 0.9539   plant.mission_availability(100.0) is 0.9544
 window.lower, window.upper        # (0.9523, 0.9556)
 ```
 

@@ -7,7 +7,8 @@
 
 Some quantities have no closed form and are simulated: a
 `NonRepairableRBD`'s lifetimes and mean time to failure, and a
-`RepairableRBD`'s availability over time and cost (see
+`RepairableRBD`'s histories over a window, with their costs (its
+availability over time is also exact, with `point_availability`; see
 [what is exact and what is simulated](saving.md#what-is-exact-and-what-is-simulated)).
 A simulated estimate has a sampling error, which shrinks like `1/√N`:
 halving it takes four times as many simulations. This page covers the

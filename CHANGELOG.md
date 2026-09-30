@@ -56,6 +56,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   levels counts at each in proportion, and the simulated failures and
   repairs are the same as without capacities. Over a long window the
   averages approach the exact long-run values.
+- **Exact availability over time** (#117): `RepairableRBD.point_availability(x)`
+  gives the probability that the system is up at each time `x`, every
+  component new at 0, and `mission_availability(t)` its mean over `[0, t]`:
+  what `availability()` estimates by simulation, exactly and in a fraction
+  of a second. Each component alternates up and down periods, and its point
+  availability solves the renewal equation, solved numerically on a grid of
+  2,000 steps over its typical up time (an error of about 1e-7); the
+  components are independent, so the system's is the exact system
+  computation at theirs, at each time. Down periods that start at a known
+  time (the repair of a unit dead on arrival, the first failure of an exact
+  lifetime, the first age replacement, every block replacement) are kept
+  out of the grid, exact however short they are, and so are the later age
+  replacements of units that each reach their age, which fall at nearly
+  fixed times: two units in parallel replaced at the same age are down
+  together as often as they should be. Age and block replacement, nested
+  RBDs and hidden failures with a constant failure rate are covered, as in
+  `mean_availability`. A mission of decades costs no more than one of
+  hours: once the components have settled, at their long-run values or
+  repeating with their calendar, the integral is extended exactly. The
+  curves settle at `mean_availability()`, and a long mission's average
+  exceeds it by the start-up term renewal theory predicts; on the benchmark
+  diagrams they agree with the simulation.
 
 ### Changed
 

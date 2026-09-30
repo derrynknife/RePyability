@@ -25,7 +25,8 @@ taking already-fitted lifetime models (from
 - **Redundancy and dependence**: cold, warm and hot standby; repeated nodes;
   load sharing; beta-factor and MGL common-cause groups.
 - **Repairable systems**: exact long-run availability, failure frequency and
-  MUT/MDT/MTBF; simulated availability over time with criticality measures.
+  MUT/MDT/MTBF; exact availability over time and over a mission; simulated
+  histories with criticality measures.
 - **Capacity**: how much a system delivers, from its components'
   capacities (with several levels, or degrading through stages): the exact
   distribution of its capacity at a time or in the long run, the
