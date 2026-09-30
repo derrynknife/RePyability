@@ -309,6 +309,58 @@ eight components with two crews through in 1,801 states. The chain is solved
 in well under a second for most diagrams, and in a few seconds near the
 limit.
 
+## Standby groups
+
+A duty pump with a standby is not two pumps in parallel: the standby waits,
+unused, until the duty pump fails, and may fail to start. Give a component
+spec a `"standby"` dict and the node becomes a group of identical units,
+`"k"` of them operating and the rest waiting as spares:
+
+```python
+pump = {"reliability": surv.Exponential.from_params([0.01]),     # MTTF 100 h
+        "repairability": surv.Exponential.from_params([0.1]),    # MTTR 10 h
+        "standby": {"units": 2, "switching_probability": 0.98}}
+pumps = RepairableRBD([("s", "pumps"), ("pumps", "t")], {"pumps": pump},
+                      repair_crews=1)
+pumps.mean_availability()    # -> 0.9894
+pumps.mean_down_time()       # -> 10.0   hours: until the first repair ends
+result = pumps.availability(50_000.0, mc_samples=40, seed=1)
+result.mean_availability_interval().estimate    # -> 0.9893   simulated
+```
+
+(One pump alone is up 0.9091 of the time; with a switch that always works,
+the pair is up 0.9910.)
+
+- **The units.** `"units"` (by default 2) identical units, `"k"` (by default
+  1) of which must operate for the group to be up. Each fails and is
+  repaired as the spec's `"reliability"` and `"repairability"` say, and
+  comes back as new.
+- **Spares.** A spare ages at `"dormancy_factor"` of an operating unit's
+  rate: 0 (the default) for cold standby, 1 for hot, anything between for
+  warm. A spare that fails in standby is found at once, and repaired.
+- **Switching.** When an operating unit fails, the spare that has waited
+  longest is switched in, which works with `"switching_probability"` (by
+  default 1). A failed switch leaves the position empty until a repaired
+  unit fills it; the spare waits on. With a probability of 0, a cold
+  standby group is a single unit.
+- **Repairs.** Each failed unit is repaired on its own: a job for the
+  RBD's repair crews (see [above](#repair-crews)) at the group's
+  `"priority"`, so the group's units and the other components wait for the
+  same crews. A repaired unit fills an empty position, or joins the spares.
+- **Costs.** `"repair_cost"` and `"replace_cost"` are charged at each unit's
+  failure, and `"downtime_cost"` while the group is down.
+- **Exact values.** When the units' lives and repair times are exponential,
+  the group is a small Markov chain (how many units operate, wait and are
+  under repair), and its long-run availability, failure frequency and costs
+  are exact. They enter the RBD's exact long-run values, and the importance
+  measures, like any component's. They stay exact with limited crews while
+  the group's units are the crews' only jobs (the textbook "one repairman"
+  case, as here); crews shared with other components tie the group to them,
+  and the exact values refuse. The availability over time from new is
+  simulated.
+- **Simulation.** `availability`, `cost` and `compare` simulate groups
+  whatever their units' models, in Python.
+
 ## Instantly repaired components
 
 When repairs are much faster than the time scale of interest, or there is no

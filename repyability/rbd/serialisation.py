@@ -235,6 +235,12 @@ def _serialise_component(value) -> dict:
         for key in ("preventive", "inspection"):
             if value.get(key) is not None:
                 out[key] = _serialise_schedule(value[key])
+        if value.get("standby") is not None:
+            # A standby group: numbers only.
+            out["standby"] = {
+                key: float(number) if isinstance(number, float) else number
+                for key, number in value["standby"].items()
+            }
         return out
     return serialise_model(value)
 
@@ -292,6 +298,8 @@ def _deserialise_component(d: dict) -> Any:
         for key in ("preventive", "inspection"):
             if key in d:
                 out[key] = _deserialise_schedule(d[key])
+        if "standby" in d:
+            out["standby"] = dict(d["standby"])
         return out
     return deserialise_model(d)
 

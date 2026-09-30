@@ -93,6 +93,11 @@ from, the same on every call, so the exact long-run values of a repairable RBD
 it is part of are too; `mean(mc_samples=..., seed=...)` makes a fresh estimate from new
 draws.
 
+A `StandbyModel` is one lifetime: in a repairable RBD the whole arrangement
+is replaced as one unit when it fails. For a duty unit and a standby that
+are repaired one at a time, the failed unit returning as the new spare, make
+the node a [standby group](repairable.md#standby-groups) instead.
+
 ## Repeated nodes: n identical copies
 
 [`RepeatedNode`][repyability.RepeatedNode]`(model, repeats, kind)` is

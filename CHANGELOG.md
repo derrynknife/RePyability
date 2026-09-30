@@ -22,7 +22,9 @@ Availability simulations run faster, and about ten times as fast again
 when compiled with numba (#119, #120), and `import repyability` is quicker
 (#121). Components can share a limited number of repair crews (#89), with
 exact long-run values from a Markov chain when their lives and repairs are
-exponential (#90), and demonstration test planning is new (#129).
+exponential (#90); a duty unit and its spares can be a standby group,
+repaired one unit at a time (#91); and demonstration test planning is new
+(#129).
 
 Behaviour changes: seeded repairable simulations give different numbers,
 once, as each random quantity now has a stream of its own (#119);
@@ -180,6 +182,25 @@ surpyval 0.21 is required.
   Checked against the machine-repair model's closed forms (to 1e-12), a
   chain worked by hand (an instant repair), and the simulation of #89 on a
   bridge with priorities.
+- **Repairable standby groups** (#91). A component spec's `"standby"` makes
+  the node a group of identical units, `"k"` operating and the rest waiting
+  as spares, cold, warm or hot (`"dormancy_factor"`). When an operating
+  unit fails, the spare that has waited longest is switched in, with
+  `"switching_probability"`; a failed switch leaves the position empty
+  until a repaired unit fills it. Each failed unit is repaired on its own, a
+  job for the RBD's repair crews (#89) at the group's priority, and returns
+  to fill an empty position or wait as a spare. Repair costs are charged at
+  each unit's failure. The simulations follow the group, in Python, with
+  each unit's draws from streams of its own. With exponential units the
+  group is a small Markov chain, so its long-run availability, failure
+  frequency and costs are exact and enter the RBD's exact values and
+  importance measures, also with a crew limit while the group's units are
+  the crews' only jobs (the "one repairman" case); crews shared with other
+  components, and the availability over time, are simulated. The groups are
+  saved with the RBD. Checked against the textbook chains (two-unit cold
+  and warm standby with one or two repairers, imperfect switching), a
+  switch that always fails leaving a single unit, timelines worked by hand
+  with a shared crew, and the simulation.
 - **Demonstration test planning** (#129): how many units, or how long a
   test, demonstrates a reliability at a confidence level, and what a
   finished test demonstrated. `demonstration_sample_size` (the success run,

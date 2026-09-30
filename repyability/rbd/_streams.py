@@ -44,6 +44,8 @@ import numpy as np
 
 # The kinds of quantity a stream draws.
 FAILURE, REPAIR, DURATION = 0, 1, 2
+#: The uniforms a standby group's switches are decided by.
+SWITCH = 7
 #: The kind of each cost that can be a distribution, by its cost key.
 COST_KINDS = {
     "repair_cost": 3,

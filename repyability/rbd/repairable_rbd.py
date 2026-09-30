@@ -16,7 +16,7 @@ import itertools
 import math
 import pprint
 import warnings
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from copy import copy
 from dataclasses import dataclass, field
 from fractions import Fraction
@@ -44,7 +44,7 @@ from surpyval import ExactEventTime
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import _crew_chain
 from repyability.rbd import _montecarlo as montecarlo
-from repyability.rbd import _streams
+from repyability.rbd import _standby_chain, _streams
 from repyability.rbd import capacity as _capacity
 from repyability.rbd._block_replacement import (
     BlockCycle,
@@ -202,6 +202,245 @@ def _stand_in(component, run, made: dict, path: tuple, duration=None):
     )
 
 
+@dataclass(frozen=True)
+class _Unit:
+    """A unit of a standby group: its repair is a job for the repair crews
+    under this key (a dataclass, so equal to no node name)."""
+
+    node: Any
+    unit: int
+
+
+class _StandbyDraws:
+    """What a standby group's units draw during a simulation: each unit's
+    lives and repair times from streams of its own, and the group's switches
+    from one (see ``_streams``); or, when they cannot be streamed, from the
+    unit models' ``random`` and numpy's global RNG."""
+
+    __slots__ = ("_models", "_lives", "_repairs", "_switches")
+
+    def __init__(self, models, lives=None, repairs=None, switches=None):
+        self._models = models
+        self._lives = lives
+        self._repairs = repairs
+        self._switches = switches
+
+    def life(self, unit: int) -> float:
+        if self._lives is None:
+            return self._models.reliability.random(1).item()
+        return self._lives[unit].draw()
+
+    def repair(self, unit: int) -> float:
+        if self._repairs is None:
+            return self._models.time_to_replace.random(1).item()
+        return self._repairs[unit].draw()
+
+    def switch(self) -> float:
+        if self._switches is None:
+            return float(np.random.random())
+        return self._switches.draw()
+
+
+def _uniforms(u: np.ndarray) -> np.ndarray:
+    """The draws of a stream of uniforms: the uniforms themselves."""
+    return u
+
+
+def _standby_draws(component, run, path: tuple, arrangement: "_Standby"):
+    """A standby group's draws in a run (see ``_StandbyDraws``): from
+    streams if every unit's lives and repairs have one."""
+    units = range(arrangement.units)
+    lives = [run.stream(path + (u,), _streams.FAILURE) for u in units]
+    repairs = [run.stream(path + (u,), _streams.REPAIR) for u in units]
+    if any(stream is None for stream in lives + repairs):
+        return _StandbyDraws(component)
+    return _StandbyDraws(
+        component, lives, repairs, run.stream(path, _streams.SWITCH)
+    )
+
+
+# The kinds of a standby group's own events.
+_UNIT_FAILS, _SPARE_FAILS, _UNIT_REPAIRED = 0, 1, 2
+
+
+class _StandbyGroup:
+    """A standby group's units during one simulation (a component spec's
+    ``"standby"``; see ``RepairableRBD``).
+
+    Each unit put into service as new draws a life, used up at rate 1 while
+    it operates and at ``dormancy_factor`` while it waits as a spare (the
+    cumulative-exposure model of ``StandbyModel``): a spare that uses it up
+    fails in standby, and is found at once. A failed unit's repair is a job
+    for the RBD's repair crews, under the key ``_Unit(node, unit)`` (see
+    ``_Crews``), and its repair time is drawn when it fails. When an
+    operating unit fails and a spare is waiting, the one that has waited
+    longest is switched in, which works with ``switching_probability``; a
+    failed switch leaves the position empty until a repaired unit fills it,
+    and the spare waits on. A repaired unit fills an empty position, or
+    joins the spares. The group is up while ``k`` units operate.
+
+    The group keeps its units' events in a queue of its own and has one
+    event in the RBD's queue, ``entry``: its next. The RBD passes that
+    event to ``advance``, which returns the group's state after it.
+    """
+
+    __slots__ = (
+        "_rbd",
+        "_node",
+        "_k",
+        "_dormancy",
+        "_switching",
+        "_draws",
+        "_end",
+        "_operating",
+        "_spares",
+        "_life",
+        "_since",
+        "_version",
+        "_events",
+        "_order",
+        "entry",
+        "up",
+    )
+
+    def __init__(
+        self,
+        rbd: "RepairableRBD",
+        node,
+        arrangement: "_Standby",
+        draws,
+        t_simulation: float,
+    ):
+        self._rbd = rbd
+        self._node = node
+        self._k = arrangement.k
+        self._dormancy = arrangement.dormancy_factor
+        self._switching = arrangement.switching_probability
+        self._draws = (
+            draws if isinstance(draws, _StandbyDraws) else _StandbyDraws(draws)
+        )
+        self._end = t_simulation
+        self._operating: set = set()
+        self._spares: deque = deque()
+        # Each unit's life left, as of ``_since``; and a count that a
+        # queued event of the unit's must match to be current.
+        self._life = [0.0] * arrangement.units
+        self._since = [0.0] * arrangement.units
+        self._version = [0] * arrangement.units
+        self._events: list = []
+        self._order = 0
+        self.entry: Optional["Event"] = None
+        self.up = True
+        for unit in range(arrangement.units):
+            self._life[unit] = self._draws.life(unit)
+            if unit < self._k:
+                self._operate(unit, 0.0)
+            else:
+                self._wait(unit, 0.0)
+        self._arm()
+
+    def _queue(self, time: float, kind: int, unit: int) -> None:
+        heapq.heappush(
+            self._events,
+            (time, self._order, kind, unit, self._version[unit]),
+        )
+        self._order += 1
+
+    def _operate(self, unit: int, t: float) -> None:
+        self._operating.add(unit)
+        self._since[unit] = t
+        self._queue(t + self._life[unit], _UNIT_FAILS, unit)
+
+    def _wait(self, unit: int, t: float) -> None:
+        self._spares.append(unit)
+        self._since[unit] = t
+        if self._dormancy > 0.0:
+            self._queue(
+                t + self._life[unit] / self._dormancy, _SPARE_FAILS, unit
+            )
+
+    def _repair(self, unit: int, t: float) -> None:
+        """Unit ``unit`` has failed at ``t``: its repair, drawn now, is a
+        job for a crew."""
+        self._version[unit] += 1
+        ends = t + self._draws.repair(unit)
+        crews = self._rbd._crews
+        if crews is None or crews.request(
+            _Unit(self._node, unit), t, Event(ends, None, True)
+        ):
+            self._queue(ends, _UNIT_REPAIRED, unit)
+
+    def crew_started(self, unit: int, ends: float) -> None:
+        """A crew has started unit ``unit``'s repair late: it ends at
+        ``ends``."""
+        self._queue(ends, _UNIT_REPAIRED, unit)
+        if self.entry is None or ends < self.entry.time:
+            self._arm()
+
+    def _arm(self) -> None:
+        """Queue the group's next event in the RBD's queue (an earlier one
+        already there is left, and ignored)."""
+        events, version = self._events, self._version
+        while events and events[0][4] != version[events[0][3]]:
+            heapq.heappop(events)
+        if not events or events[0][0] >= self._end:
+            self.entry = None
+            return
+        self.entry = Event(events[0][0], self._node, self.up)
+        self._rbd._event_queue.put(self.entry)
+
+    def holds(self, event: "Event") -> bool:
+        """Whether ``event``, from the RBD's queue, is the group's current
+        one (not superseded by an earlier)."""
+        return event is self.entry
+
+    def advance(self, t: float) -> Tuple[bool, int]:
+        """Take the group's event at ``t`` (its ``entry``): whether it is up
+        after it, and how many of its units failed (each is repaired)."""
+        self.entry = None
+        events, version = self._events, self._version
+        while events[0][4] != version[events[0][3]]:
+            heapq.heappop(events)
+        _, _, kind, unit, _ = heapq.heappop(events)
+        failures = 0
+        if kind == _UNIT_REPAIRED:
+            crews = self._rbd._crews
+            if crews is not None:
+                started = crews.release(_Unit(self._node, unit), t)
+                if started is not None:
+                    self._rbd._crew_started(started)
+            self._life[unit] = self._draws.life(unit)
+            if len(self._operating) < self._k:
+                self._operate(unit, t)
+            else:
+                self._wait(unit, t)
+        elif kind == _SPARE_FAILS:
+            self._spares.remove(unit)
+            failures = 1
+            self._repair(unit, t)
+        else:
+            self._operating.discard(unit)
+            failures = 1
+            self._repair(unit, t)
+            if self._spares:
+                spare = self._spares.popleft()
+                switching = self._switching
+                if switching >= 1.0 or (
+                    switching > 0.0 and self._draws.switch() < switching
+                ):
+                    # It has used up its life at the dormant rate so far (all
+                    # of it, at most: a spare due to fail in standby now).
+                    self._version[spare] += 1
+                    used = self._dormancy * (t - self._since[spare])
+                    self._life[spare] = max(self._life[spare] - used, 0.0)
+                    self._operate(spare, t)
+                else:
+                    self._spares.appendleft(spare)
+        self.up = len(self._operating) == self._k
+        self._arm()
+        return self.up, failures
+
+
 class _Crews:
     """The repair crews of one simulation (``RepairableRBD``'s
     ``repair_crews``): how many are free, the components they are working
@@ -224,7 +463,13 @@ class _Crews:
         self.holding: set = set()
         self.waiting: list = []
         self._order = 0
-        self._rank = {node: -priority.get(node, 0.0) for node in served}
+        # Higher priority first; a standby group's units have the group's.
+        self._rank = {
+            key: -priority.get(
+                key.node if isinstance(key, _Unit) else key, 0.0
+            )
+            for key in served
+        }
 
     def request(self, node, due: float, done: "Event") -> Optional["Event"]:
         """``node``'s job, due at ``due`` and ending with ``done`` if a crew
@@ -851,6 +1096,18 @@ class _Inspection(NamedTuple):
         k = np.ceil(t / self.interval)
         due = float(k * self.interval)
         return due if due >= t else float((k + 1.0) * self.interval)
+
+
+class _Standby(NamedTuple):
+    """A standby group (a component spec's ``"standby"``): ``units``
+    identical units, ``k`` of which must operate, the rest waiting as
+    spares that age at ``dormancy_factor`` of the operating rate, switched
+    in with ``switching_probability``."""
+
+    units: int
+    k: int
+    dormancy_factor: float
+    switching_probability: float
 
 
 def _constant_rate(model) -> Optional[float]:
@@ -1709,6 +1966,26 @@ class RepairableRBD(RBD):
           ``total_cost`` and ``allocate_redundancy``. ``"priority"`` is the
           component's place in the queue for a repair crew (see
           ``repair_crews``): a number, higher first, by default 0.
+          ``"standby"`` makes the node a standby group of identical units,
+          each failing and repaired as ``"reliability"`` and
+          ``"repairability"`` say: a dict of ``"units"`` (by default 2),
+          ``"k"`` (how many must operate, by default 1, fewer than
+          ``"units"``), ``"dormancy_factor"`` (how fast a spare ages, as a
+          fraction of an operating unit: 0, the default, for cold standby,
+          1 for hot) and ``"switching_probability"`` (that switching a spare
+          in works, by default 1). The group is up while ``k`` units
+          operate. When one fails, the spare that has waited longest is
+          switched in; a failed switch leaves the position empty until a
+          repaired unit fills it. A spare that fails in standby is found at
+          once. Each failed unit is repaired on its own, a job for the
+          repair crews at the group's ``"priority"``, and then fills an
+          empty position or waits as a spare. ``"repair_cost"`` and
+          ``"replace_cost"`` are charged at each unit's failure, and
+          ``"downtime_cost"`` while the group is down. A group takes no
+          ``"preventive"`` or ``"inspection"`` schedule, and no
+          ``"instant"`` repair. Its long-run values are exact from its
+          Markov chain when its units' lives and repair times are
+          exponential; it is simulated in Python.
         - A [`NonRepairable`][repyability.NonRepairable], pairing a
           reliability model with a time-to-replace model. Each node gets
           its own copy, so one object can be given for several identical
@@ -1818,6 +2095,9 @@ class RepairableRBD(RBD):
     INSPECTION_KEYS : tuple[str, ...]
         The keys of an ``"inspection"`` spec: ``"interval"``, ``"duration"``
         and ``"cost"``.
+    STANDBY_KEYS : tuple[str, ...]
+        The keys of a ``"standby"`` spec: ``"units"``, ``"k"``,
+        ``"dormancy_factor"`` and ``"switching_probability"``.
 
     Raises
     ------
@@ -1832,7 +2112,11 @@ class RepairableRBD(RBD):
         and a ``duration`` that is a model or ``"instant"``; if an
         ``"inspection"`` spec is not a dict of its keys with a positive,
         finite ``interval`` and a ``duration`` that is a model or
-        ``"instant"``, or a component has both; if a
+        ``"instant"``, or a component has both; if a ``"standby"`` spec
+        is not a dict of its keys with whole numbers ``units`` above ``k``
+        of at least 1, and a ``dormancy_factor`` and
+        ``switching_probability`` in [0, 1], or its component has a
+        schedule or instant repair; if a
         reliability model is not a surpyval parametric or
         non-parametric model or a ``StandbyModel``; if ``input_node`` or
         ``output_node`` is not in the diagram, or is not its source or sink;
@@ -1919,12 +2203,20 @@ class RepairableRBD(RBD):
     COMPONENT_SPEC_KEYS = (
         ("reliability", "repairability")
         + COST_KEYS
-        + ("preventive", "inspection", "acquisition_cost", "priority")
+        + (
+            "preventive",
+            "inspection",
+            "acquisition_cost",
+            "priority",
+            "standby",
+        )
     )
     #: The keys of a component's ``"preventive"`` spec.
     PREVENTIVE_KEYS = ("interval", "policy", "duration", "cost")
     #: The keys of a component's ``"inspection"`` spec.
     INSPECTION_KEYS = ("interval", "duration", "cost")
+    #: The keys of a component's ``"standby"`` spec.
+    STANDBY_KEYS = ("units", "k", "dormancy_factor", "switching_probability")
     #: The costs charged per action (per failure, per preventive
     #: replacement or per inspection), which may be distributions.
     _PER_ACTION_COST_KEYS = PER_FAILURE_COST_KEYS + (
@@ -1974,6 +2266,8 @@ class RepairableRBD(RBD):
         self._preventive: dict[Any, _Preventive] = {}
         # Periodic inspection, by node: the nodes whose failures are hidden.
         self._inspection: dict[Any, _Inspection] = {}
+        # Standby groups, by node: the nodes that are groups of units.
+        self._standby: dict[Any, _Standby] = {}
         # One-off purchase costs, by node (only non-zero ones).
         self.acquisition_costs: dict[Any, float] = {}
         components = copy(components)
@@ -2016,6 +2310,10 @@ class RepairableRBD(RBD):
                 if component.get("priority") is not None:
                     self._priority[name] = _validate_priority(
                         name, component["priority"]
+                    )
+                if component.get("standby") is not None:
+                    self._standby[name] = self._validate_standby(
+                        name, component
                     )
                 if component.get("acquisition_cost") is not None:
                     acquisition = self._validate_cost(
@@ -2184,6 +2482,74 @@ class RepairableRBD(RBD):
         return _Preventive(interval, policy, duration), cost
 
     @classmethod
+    def _validate_standby(cls, node, spec: dict) -> _Standby:
+        """A component spec's ``"standby"``, validated: the group of
+        units it makes the component (see ``_StandbyGroup``)."""
+        standby = spec["standby"]
+        if not isinstance(standby, dict):
+            raise ValueError(
+                f"Component {node!r}: standby must be a dict of "
+                f"{', '.join(cls.STANDBY_KEYS)}, got {standby!r}."
+            )
+        unknown = set(standby) - set(cls.STANDBY_KEYS)
+        if unknown:
+            raise ValueError(
+                f"Component {node!r}: unknown standby key(s) "
+                f"{sorted(map(str, unknown))}; it takes "
+                f"{', '.join(cls.STANDBY_KEYS)}."
+            )
+        for key in ("preventive", "inspection"):
+            if spec.get(key) is not None:
+                raise ValueError(
+                    f"Component {node!r} is a standby group, which takes no "
+                    f"{key!r} schedule."
+                )
+        if isinstance(spec["repairability"], str):
+            raise ValueError(
+                f"Component {node!r} is a standby group, whose units need a "
+                "repair time: repaired instantly, a spare would never be "
+                "needed."
+            )
+        counts = {"units": standby.get("units", 2), "k": standby.get("k", 1)}
+        for key, value in counts.items():
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float, np.integer, np.floating))
+                or int(value) != value
+                or value < 1
+            ):
+                raise ValueError(
+                    f"Component {node!r}: standby {key} must be a whole "
+                    f"number, 1 or more; got {value!r}."
+                )
+        units, k = int(counts["units"]), int(counts["k"])
+        if k >= units:
+            raise ValueError(
+                f"Component {node!r}: a standby group needs a spare, so k "
+                f"must be less than units; got k={k} and units={units}."
+            )
+        fractions = {
+            "dormancy_factor": standby.get("dormancy_factor", 0.0),
+            "switching_probability": standby.get("switching_probability", 1.0),
+        }
+        for key, value in fractions.items():
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float, np.integer, np.floating))
+                or not 0.0 <= value <= 1.0
+            ):
+                raise ValueError(
+                    f"Component {node!r}: standby {key} must be a number in "
+                    f"[0, 1]; got {value!r}."
+                )
+        return _Standby(
+            units,
+            k,
+            float(fractions["dormancy_factor"]),
+            float(fractions["switching_probability"]),
+        )
+
+    @classmethod
     def _validate_inspection(cls, node, spec) -> Tuple[_Inspection, Any]:
         """A component's ``"inspection"`` spec, validated: its schedule, and
         its cost (None if it prices nothing)."""
@@ -2337,6 +2703,16 @@ class RepairableRBD(RBD):
             if failure is None or repair is None:
                 complete = False
                 continue
+            arrangement = self._standby.get(name)
+            if arrangement is not None:
+                # Each unit's lives and repairs, and the group's switches.
+                lives, switches = self._standby_draw_counts(name, t_simulation)
+                for unit in range(arrangement.units):
+                    add(path + (unit,), _streams.FAILURE, failure, lives)
+                    add(path + (unit,), _streams.REPAIR, repair, lives)
+                if 0.0 < arrangement.switching_probability < 1.0:
+                    add(path, _streams.SWITCH, _uniforms, switches)
+                continue
             expected = self._expected_draws(name, t_simulation)
             add(path, _streams.FAILURE, failure, expected["failure"])
             add(path, _streams.REPAIR, repair, expected["repair"])
@@ -2365,6 +2741,24 @@ class RepairableRBD(RBD):
         schedule = self._preventive.get(node) or self._inspection.get(node)
         return None if schedule is None else schedule.duration
 
+    def _standby_draw_counts(
+        self, node, t_simulation: float
+    ) -> Tuple[float, float]:
+        """Roughly how many lives (and repairs) a simulation draws for each
+        unit of a standby group, and how many switches: its operating units
+        fail at their rate and its spares at the dormant one (see
+        ``_expected_draws``)."""
+        arrangement = self._standby[node]
+        life = _safe_mean(self.components[node].reliability)
+        if not life > 0.0:
+            return float("nan"), float("nan")
+        active = (
+            arrangement.k
+            + (arrangement.units - arrangement.k) * arrangement.dormancy_factor
+        )
+        failures = t_simulation * active / life
+        return failures / arrangement.units + 1.0, failures + 1.0
+
     def _expected_draws(self, node, t_simulation: float) -> Dict[str, float]:
         """Roughly how many times a simulation draws ``node``'s time to
         failure (``"failure"``: one per unit put into service), its repair
@@ -2373,6 +2767,10 @@ class RepairableRBD(RBD):
         Only how the draws are computed depends on these (see
         ``_streams``), never what they are."""
         component = self.components[node]
+        if node in self._standby:
+            # Its units' failures, each a repair charged for.
+            _, failures = self._standby_draw_counts(node, t_simulation)
+            return {"failure": failures, "repair": failures, "action": 0.0}
         life = repair = float("nan")
         if isinstance(component, NonRepairable):
             life = _safe_mean(component.reliability)
@@ -2442,12 +2840,19 @@ class RepairableRBD(RBD):
         streamed: dict[Any, Any] = {}
         for name, component in self.components.items():
             if id(component) not in made:
-                made[id(component)] = _stand_in(
-                    component,
-                    run,
-                    made,
-                    prefix + (name,),
-                    self._duration_model(name),
+                arrangement = self._standby.get(name)
+                made[id(component)] = (
+                    _stand_in(
+                        component,
+                        run,
+                        made,
+                        prefix + (name,),
+                        self._duration_model(name),
+                    )
+                    if arrangement is None
+                    else _standby_draws(
+                        component, run, prefix + (name,), arrangement
+                    )
                 )
             streamed[name] = made[id(component)]
         return streamed
@@ -2535,6 +2940,7 @@ class RepairableRBD(RBD):
                 for node, component in self.components.items()
                 if node not in self._preventive
                 and node not in self._inspection
+                and node not in self._standby
                 and not isinstance(component, RepairableRBD)
             },
             works=self._decomposition().structure_function(method),
@@ -2676,7 +3082,7 @@ class RepairableRBD(RBD):
         if not self.costs:
             return rate
 
-        if self._crews_limited():
+        if self._crews_couple():
             # Held working or broken, a node needs no crew, and the others
             # have more of them: from the chain without it.
             probabilities, weights = self._chain_probabilities(
@@ -2715,11 +3121,15 @@ class RepairableRBD(RBD):
         )
         preventive = node_costs.get("preventive_cost")
         if (per_action or preventive is not None) and not forced:
-            if self._crews_limited():
+            if self._crews_couple():
                 # Waiting for a crew, as while repaired, it cannot fail: it
                 # fails at its constant rate while it is up.
                 life = self._crew_chain_rates()[node][0]
                 failures, maintained = life * availability, 0.0
+            elif node in self._standby:
+                # Each of its units' failures is a repair.
+                failures = self._standby_long_run(node).unit_failure_frequency
+                maintained = 0.0
             else:
                 failures, maintained, _ = self._node_frequencies(node)
             rate += per_action * failures
@@ -3614,6 +4024,7 @@ class RepairableRBD(RBD):
                 or isinstance(component, RepairableRBD)
                 or node in self._preventive
                 or node in self._inspection
+                or node in self._standby
             ):
                 held.add(node)
                 continue
@@ -4305,6 +4716,8 @@ class RepairableRBD(RBD):
                 continue
             elif component_id in broken_nodes:
                 continue
+            elif component_id in self._standby:
+                continue  # started below, once the queue and crews exist
             source = sources[component_id]
             if isinstance(component, RepairableRBD):
                 source.initialize_event_queue(t_simulation)
@@ -4341,6 +4754,14 @@ class RepairableRBD(RBD):
             if crews is not None and self._crews_limited()
             else None
         )
+        # Each standby group's units, which queue the group's first event.
+        self._groups: dict[Any, _StandbyGroup] = {
+            node: _StandbyGroup(
+                self, node, arrangement, sources[node], t_simulation
+            )
+            for node, arrangement in self._standby.items()
+            if node not in working_nodes and node not in broken_nodes
+        }
         self.last_change_planned = False
         # The initial system state must reflect any forced-broken components
         # (e.g. a broken component in series starts the system down), rather
@@ -4519,7 +4940,7 @@ class RepairableRBD(RBD):
                 + (
                     "averaged over the states of the repair crews' Markov "
                     "chain."
-                    if self._crews_limited()
+                    if self._crews_couple()
                     else "from the components' long-run availabilities."
                 ),
             )
@@ -4700,6 +5121,11 @@ class RepairableRBD(RBD):
                 inner.route,
                 f"a nested RBD's long-run values, {inner.route}",
             )
+        if node in self._standby:
+            message = r.refusal(partial(self._standby_rates, node))
+            if message:
+                return r.REFUSED, message
+            return r.EXACT, "a standby group's Markov chain"
         if node in self._inspection:
             message = r.refusal(partial(self._inspected_rate, node))
             if message:
@@ -4736,7 +5162,7 @@ class RepairableRBD(RBD):
         ``analysis_routes``)."""
         from repyability.rbd import routes as r
 
-        if self._crews_limited():
+        if self._crews_couple():
             return self._crew_chain_route()
         calendars = r.refusal(self._require_calendars)
         if calendars:
@@ -4793,6 +5219,8 @@ class RepairableRBD(RBD):
             if inner.route == r.REFUSED:
                 return r.REFUSED, inner.reason
             return inner.route, f"a nested RBD's availability, {inner.route}"
+        if node in self._standby:
+            return r.REFUSED, self._standby_curve_message(node)
         message = r.refusal(partial(self._require_time_models, node))
         if not message and node in self._inspection:
             message = r.refusal(partial(self._inspected_rate, node))
@@ -5250,6 +5678,8 @@ class RepairableRBD(RBD):
                 curves[node] = SystemCurve(
                     component, inner, *_settling(inner.values())
                 )
+            elif node in self._standby:
+                self._no_standby_curve(node)
             elif node in self._inspection:
                 curves[node] = InspectionCurve(*self._inspected_rate(node))
             else:
@@ -5270,6 +5700,19 @@ class RepairableRBD(RBD):
         return np.asarray(
             self.system_probability(probabilities, method=method), dtype=float
         )
+
+    @staticmethod
+    def _standby_curve_message(node) -> str:
+        """Why a standby group has no exact availability over time."""
+        return (
+            f"Component {node!r} is a standby group, whose availability over "
+            "time is only simulated: estimate it with availability()."
+        )
+
+    def _no_standby_curve(self, node) -> NoReturn:
+        """Raise that a standby group has no exact availability over
+        time."""
+        raise NotImplementedError(self._standby_curve_message(node))
 
     def _unit_curve(self, node, horizon: float):
         """A component's point availability from new over ``[0, horizon]``
@@ -5571,13 +6014,23 @@ class RepairableRBD(RBD):
             if node in crews.holding:
                 started = crews.release(node, event.time)
                 if started is not None:
-                    ends = self._started_late(*started)
-                    if ends.time < self.t_simulation:
-                        self._event_queue.put(ends)
+                    self._crew_started(started)
             return next_event
         if next_event.status:
             return crews.request(node, event.time, next_event)
         return next_event
+
+    def _crew_started(self, started: Tuple[Any, float, Event]) -> None:
+        """A crew has started a waiting job, ``started`` as
+        ``_Crews.release`` gives it: queue the end of a component's, or
+        tell its standby group of a unit's."""
+        key, wait, ends = started
+        if isinstance(key, _Unit):
+            self._groups[key.node].crew_started(key.unit, ends.time)
+            return
+        ends = self._started_late(key, wait, ends)
+        if ends.time < self.t_simulation:
+            self._event_queue.put(ends)
 
     def _started_late(self, node, wait: float, ends: Event) -> Event:
         """A job of ``node`` that a crew starts ``wait`` after it fell due,
@@ -5589,13 +6042,21 @@ class RepairableRBD(RBD):
         return ends
 
     def _crew_served(self) -> list:
-        """The components the repair crews work on: this RBD's own, not a
-        nested RBD's (which has crews of its own)."""
-        return [
-            node
-            for node, component in self.components.items()
-            if not isinstance(component, RepairableRBD)
-        ]
+        """The jobs the repair crews work on, by key: this RBD's own
+        components, not a nested RBD's (which has crews of its own), and
+        each unit of a standby group (``_Unit(node, unit)``)."""
+        served: list = []
+        for node, component in self.components.items():
+            if isinstance(component, RepairableRBD):
+                continue
+            arrangement = self._standby.get(node)
+            if arrangement is None:
+                served.append(node)
+            else:
+                served.extend(
+                    _Unit(node, unit) for unit in range(arrangement.units)
+                )
+        return served
 
     def _crews_limited(self) -> bool:
         """Whether there are fewer repair crews than components that may
@@ -5603,6 +6064,20 @@ class RepairableRBD(RBD):
         return self.repair_crews is not None and self.repair_crews < len(
             self._crew_served()
         )
+
+    def _crews_couple(self) -> bool:
+        """Whether a job waiting for a repair crew can tie different nodes
+        together: the crews are limited, and work on more than one node's
+        jobs. With a single standby group's units the only jobs, the waiting
+        stays inside the group, whose own Markov chain counts the crews (see
+        ``_standby_long_run``), and the nodes stay independent."""
+        if not self._crews_limited():
+            return False
+        owners = {
+            key.node if isinstance(key, _Unit) else key
+            for key in self._crew_served()
+        }
+        return len(owners) > 1
 
     def _require_unlimited_crews(
         self,
@@ -5612,7 +6087,7 @@ class RepairableRBD(RBD):
         """Raise if a job may wait for a repair crew: components then no
         longer fail and recover independently, which ``assumes`` (what
         assumes it, and ``assume``): do ``advice`` instead."""
-        if self._crews_limited():
+        if self._crews_couple():
             raise NotImplementedError(
                 f"With {self.repair_crews} repair crew(s) for "
                 f"{len(self._crew_served())} components, a component can "
@@ -5638,6 +6113,11 @@ class RepairableRBD(RBD):
         scheduled maintenance or inspection, a life or repair time that is
         not exponential, or more states than it is solved for."""
         assert self.repair_crews is not None  # limited crews only
+        for node in self._standby:
+            self._no_crew_chain(
+                "it has no place for a standby group, which component "
+                f"{node!r} is"
+            )
         rates: Dict[Any, Tuple[float, float]] = {}
         for node in self._crew_served():
             component = self.components[node]
@@ -5946,6 +6426,20 @@ class RepairableRBD(RBD):
                 return self.t_simulation, self.system_state
 
             event = self._event_queue.get()
+            group = self._groups.get(event.component)
+            if group is not None:
+                # A standby group's own event (see _StandbyGroup).
+                if not group.holds(event):
+                    continue  # superseded by an earlier one
+                now, _ = group.advance(event.time)
+                if now == self.component_status[event.component]:
+                    continue
+                self.component_status[event.component] = now
+                if now != self.system_state:
+                    new_system_state = self.is_system_working(
+                        self.component_status, method
+                    )
+                continue  # the group has queued its next event
             self.component_status[event.component] = event.status
             # Only a change against the system's state can change it (the
             # structure is coherent; see _replicate).
@@ -6560,6 +7054,8 @@ class RepairableRBD(RBD):
                 "component_status",
                 "last_change_planned",
                 "_pending_failure",
+                "_crews",
+                "_groups",
             ):
                 self.__dict__.pop(name, None)
         return tally
@@ -6617,6 +7113,7 @@ class RepairableRBD(RBD):
         index, plain, works = ctx.position, ctx.plain, ctx.works
         inspected = self._inspection
         crews = self._crews
+        groups = self._groups
         n = len(index)
         # Each component's failures, the system failures they caused, its
         # restorations and the system restorations they caused.
@@ -6656,6 +7153,20 @@ class RepairableRBD(RBD):
         while heap:
             event = pop(heap)[1]
             node = event.component
+            grouped = False
+            if groups and node in groups:
+                # A standby group's own event (see _StandbyGroup): a unit
+                # failure, charged as a repair, or a repair's end.
+                group = groups[node]
+                if not group.holds(event):
+                    continue  # superseded by an earlier one
+                now, broken = group.advance(event.time)
+                if broken:
+                    for category, charges in failure_charges.get(node, ()):
+                        rep_cost += pay(node, category, charges)
+                if now == status[node]:
+                    continue
+                event, grouped = Event(event.time, node, now), True
             if (event.preventive or event.inspection) and (
                 event.status == status[node]
             ):
@@ -6711,8 +7222,8 @@ class RepairableRBD(RBD):
                 failed[c] += 1
                 # Repair and replace are charged per corrective action, at
                 # the failure that triggers it (for a hidden failure, when an
-                # inspection finds it).
-                if node not in inspected:
+                # inspection finds it; for a standby group, at each unit's).
+                if node not in inspected and not grouped:
                     for category, charges in failure_charges.get(node, ()):
                         rep_cost += pay(node, category, charges)
 
@@ -6735,6 +7246,8 @@ class RepairableRBD(RBD):
                         failures += 1
                         caused_down[c] += 1
 
+            if grouped:
+                continue  # the group has queued its next event
             # The component's next event: its next failure if it has just
             # been restored, or its restoration if it has just gone down;
             # queued only if it falls inside the window.
@@ -7182,11 +7695,13 @@ class RepairableRBD(RBD):
         with limited repair crews, its long-run probability of being up in
         their Markov chain, or a nested RBD's own, as it has crews of its
         own."""
-        if self._crews_limited():
+        if self._crews_couple():
             chain = self._crew_chain()
             if node in chain.nodes:
                 return chain.availability(node)
             return float(self.components[node].mean_availability())
+        if node in self._standby:
+            return self._standby_long_run(node).availability
         if node in self._inspection:
             rate, interval = self._inspected_rate(node)
             return float(-np.expm1(-rate * interval) / (rate * interval))
@@ -7547,7 +8062,7 @@ class RepairableRBD(RBD):
         repair crews, over the states of their Markov chain (see
         ``_chain_probabilities``). Each value is then a ratio of averages
         of system quantities."""
-        if self._crews_limited():
+        if self._crews_couple():
             return self._chain_probabilities(working_nodes, broken_nodes)
         times, weights = self._long_run_grid()
         probabilities = self._probabilities_with_overrides(
@@ -7564,6 +8079,39 @@ class RepairableRBD(RBD):
         self._require_unlimited_crews(*_IMPORTANCE_CREWS)
         return self._long_run_probabilities(working_nodes, broken_nodes)
 
+    def _standby_rates(self, node) -> Tuple[float, float]:
+        """A standby group's units' failure and repair rates, for its exact
+        long-run values; raise if their lives and repair times are not
+        exponential."""
+        component = self.components[node]
+        life = _constant_rate(component.reliability)
+        repair = _constant_rate(component.time_to_replace)
+        if life is None or repair is None:
+            raise NotImplementedError(
+                f"Component {node!r} is a standby group, whose exact "
+                "long-run values come from a Markov chain of its units, "
+                "which needs their lives and repair times exponential: "
+                "simulate it with availability() or cost()."
+            )
+        return life, repair
+
+    def _standby_long_run(self, node) -> "_standby_chain.StandbyLongRun":
+        """A standby group's long-run values, from its Markov chain (see
+        ``_standby_chain``). The crews do not tie it to other nodes here (see
+        ``_crews_couple``): its units' repairs wait only for each other,
+        with ``repair_crews`` crews when they are the crews' only jobs."""
+        life, repair = self._standby_rates(node)
+        arrangement = self._standby[node]
+        return _standby_chain.long_run(
+            arrangement.units,
+            arrangement.k,
+            life,
+            repair,
+            arrangement.dormancy_factor,
+            arrangement.switching_probability,
+            self.repair_crews if self._crews_limited() else None,
+        )
+
     def _node_frequencies(self, node) -> Tuple[float, float, float]:
         """A component's long-run failures, preventive replacements and
         planned outages, per unit time: recursive for a nested
@@ -7574,6 +8122,8 @@ class RepairableRBD(RBD):
         if isinstance(component, RepairableRBD):
             failures, planned = component._outage_frequencies()
             return failures, 0.0, planned
+        if node in self._standby:
+            return self._standby_long_run(node).failure_frequency, 0.0, 0.0
         if node in self._inspection:
             # At most one failure per inspection interval: the unit, down
             # from its failure, is renewed at the inspection that finds it.
@@ -7722,7 +8272,7 @@ class RepairableRBD(RBD):
         when the node is critical, which it is with probability
         ``I_B(i)``). With limited repair crews, see
         ``_chain_outage_frequencies``."""
-        if self._crews_limited():
+        if self._crews_couple():
             return self._chain_outage_frequencies(working_nodes, broken_nodes)
         times, weights = self._long_run_grid()
         availability = self._probabilities_with_overrides(

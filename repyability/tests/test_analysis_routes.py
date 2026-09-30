@@ -157,6 +157,19 @@ def repairable_rbds():
                 unit(priority=1), repair_crews=1, downtime_cost_rate=5.0
             ),
             "enough repair crews": system(unit(), repair_crews=3),
+            "standby group": system(
+                {
+                    "reliability": E([0.002]),
+                    "repairability": E([0.5]),
+                    "standby": {"units": 3, "switching_probability": 0.95},
+                    "repair_cost": 3.0,
+                },
+                downtime_cost_rate=5.0,
+            ),
+            "standby group, Weibull": system(
+                unit(standby={"dormancy_factor": 0.5}, repair_cost=3.0),
+                downtime_cost_rate=5.0,
+            ),
             "one repair crew, exponential": RepairableRBD(
                 EDGES,
                 {

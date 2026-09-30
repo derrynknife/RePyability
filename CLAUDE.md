@@ -48,7 +48,9 @@
   copies the simulation's queue (`_Crews`)**: which waiting job a free crew
   takes, and how instant jobs pass through. A change to one goes into the
   other; `test_crew_chain.py` checks the chain's exact values against the
-  simulation.
+  simulation. Likewise a standby group's chain (`_standby_chain.py`) copies
+  `_StandbyGroup`'s rules (switching, spares, repairs), checked by
+  `test_repairable_standby.py`.
 
 ## How each analysis is computed
 

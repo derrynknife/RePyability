@@ -146,6 +146,9 @@ The nodes can change a route:
 - **Maintenance.** Preventive maintenance makes the long-run values numerical.
 - **Hidden failures.** Their exact values need a constant failure rate, with
   instant tests and repairs; otherwise the exact methods refuse.
+- **Standby groups.** A group's long-run values are exact from its own
+  Markov chain when its units' lives and repair times are exponential, and
+  refused otherwise; its availability over time is simulated.
 - **Repair crews.** Fewer `repair_crews` than components make components wait
   for each other. With exponential lives and repairs, the long-run values
   are then exact from a Markov chain of the components' states and the
