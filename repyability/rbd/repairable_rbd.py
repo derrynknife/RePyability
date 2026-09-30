@@ -1069,23 +1069,51 @@ class Event:
 
 
 class _Preventive(NamedTuple):
-    """A node's scheduled preventive maintenance: every ``interval``
-    under the ``"age"`` or ``"block"`` policy, taking a time drawn from
-    ``duration`` (None: no time)."""
+    """A node's scheduled preventive maintenance: a replacement every
+    ``interval`` under the ``"age"`` or ``"block"`` policy, or under
+    ``"condition"`` an inspection at every multiple of ``interval`` that
+    replaces the unit if it is more likely than ``threshold`` to fail
+    before the next; a replacement takes a time drawn from ``duration``
+    (None: no time)."""
 
     interval: float
     policy: str
     duration: Any
+    threshold: float = 0.0
 
     def due(self, renewed: float) -> float:
-        """When the next preventive action falls, for a unit put into
-        service as new at ``renewed``."""
+        """When the next preventive action (under ``"condition"``, the next
+        inspection) falls, for a unit put into service as new at
+        ``renewed``, or inspected then."""
         if self.policy == "age":
             return renewed + self.interval
-        # Block: the next multiple of the interval after ``renewed`` (a unit
-        # renewed on the schedule is not renewed again there).
+        # Block, or inspections: the next multiple of the interval after
+        # ``renewed`` (a unit renewed on the schedule is not renewed again
+        # there).
         due = float(np.floor(renewed / self.interval) + 1.0) * self.interval
         return due if due > renewed else due + self.interval
+
+
+def _failures_between(model, ages: np.ndarray) -> np.ndarray:
+    """The probability that a unit of ``model`` that has survived to each
+    of ``ages`` but the last fails before the next, ``1 - sf(next) /
+    sf(age)``: from its cumulative hazard where the model gives one, which
+    keeps a small probability precise."""
+    ages = np.asarray(ages, dtype=float)
+    out = np.full(len(ages) - 1, np.nan)
+    Hf = getattr(model, "Hf", None)
+    if Hf is not None:
+        with np.errstate(all="ignore"):
+            hazard = np.asarray(Hf(ages), dtype=float)
+            out = -np.expm1(-np.maximum(np.diff(hazard), 0.0))
+    missing = np.flatnonzero(np.isnan(out))
+    if missing.size:
+        with np.errstate(all="ignore"):
+            survival = np.asarray(model.sf(ages), dtype=float)
+            now, later = survival[missing], survival[missing + 1]
+            fails = np.where(now > 0.0, 1.0 - later / now, 1.0)
+        out[missing] = np.clip(np.nan_to_num(fails, nan=1.0), 0.0, 1.0)
+    return out
 
 
 class _Inspection(NamedTuple):
@@ -2003,7 +2031,13 @@ class RepairableRBD(RBD):
           (at time 0, or at the end of a repair or of the last preventive
           action), unless it fails first; under ``"block"`` at every
           multiple of ``interval``, whatever its age, unless it is down
-          then. The replacement takes a time drawn from ``"duration"``, a
+          then. Under ``"condition"`` it is inspected at every multiple of
+          ``interval`` while it is up, in no time, and replaced if it is
+          then more likely than ``"threshold"`` (a probability, required)
+          to fail before the next inspection, given its age ``a``:
+          ``1 - R(a + interval) / R(a)``. Each inspection is charged
+          ``"inspection_cost"``, a number or a distribution drawn afresh
+          each time. The replacement takes a time drawn from ``"duration"``, a
           time-to-maintain model, during which the unit is down (a planned
           outage); ``"instant"`` (the default) takes no time, renewing the
           unit in place. Each replacement is charged ``"cost"``, a number
@@ -2156,7 +2190,8 @@ class RepairableRBD(RBD):
         Every key a spec dict may carry.
     PREVENTIVE_KEYS : tuple[str, ...]
         The keys of a ``"preventive"`` spec: ``"interval"``, ``"policy"``,
-        ``"duration"`` and ``"cost"``.
+        ``"duration"`` and ``"cost"``, and a ``"condition"`` policy's
+        ``"threshold"`` and ``"inspection_cost"``.
     INSPECTION_KEYS : tuple[str, ...]
         The keys of an ``"inspection"`` spec: ``"interval"``, ``"duration"``
         and ``"cost"``.
@@ -2277,7 +2312,14 @@ class RepairableRBD(RBD):
         )
     )
     #: The keys of a component's ``"preventive"`` spec.
-    PREVENTIVE_KEYS = ("interval", "policy", "duration", "cost")
+    PREVENTIVE_KEYS = (
+        "interval",
+        "policy",
+        "duration",
+        "cost",
+        "threshold",
+        "inspection_cost",
+    )
     #: The keys of a component's ``"inspection"`` spec.
     INSPECTION_KEYS = ("interval", "duration", "cost")
     #: The keys of a component's ``"standby"`` spec.
@@ -2352,13 +2394,15 @@ class RepairableRBD(RBD):
                     if not (isinstance(cost, float) and cost == 0.0):
                         node_costs[key] = cost
                 if component.get("preventive") is not None:
-                    schedule, cost = self._validate_preventive(
+                    schedule, cost, inspecting = self._validate_preventive(
                         name, component["preventive"]
                     )
                     if cost is not None:
                         node_costs["preventive_cost"] = cost
                     if np.isfinite(schedule.interval):
                         self._preventive[name] = schedule
+                        if inspecting is not None:
+                            node_costs["inspection_cost"] = inspecting
                 if component.get("inspection") is not None:
                     if name in self._preventive:
                         raise ValueError(
@@ -2496,9 +2540,10 @@ class RepairableRBD(RBD):
             )
 
     @classmethod
-    def _validate_preventive(cls, node, spec) -> Tuple[_Preventive, Any]:
+    def _validate_preventive(cls, node, spec) -> Tuple[_Preventive, Any, Any]:
         """A component's ``"preventive"`` spec, validated: its schedule,
-        and its cost (None if it prices nothing)."""
+        and the cost of each replacement and of each inspection (None if
+        it prices nothing)."""
         if not isinstance(spec, dict):
             raise ValueError(
                 f"Component {node!r}: preventive must be a dict with "
@@ -2525,11 +2570,37 @@ class RepairableRBD(RBD):
                 f"positive number (inf for none), got {spec['interval']!r}."
             )
         policy = spec.get("policy", "age")
-        if policy not in ("age", "block"):
+        if policy not in ("age", "block", "condition"):
             raise ValueError(
-                f"Component {node!r}: the preventive policy must be 'age' or "
-                f"'block', got {policy!r}."
+                f"Component {node!r}: the preventive policy must be 'age', "
+                f"'block' or 'condition', got {policy!r}."
             )
+        threshold = 0.0
+        if policy == "condition":
+            if spec.get("threshold") is None:
+                raise ValueError(
+                    f"Component {node!r}: the 'condition' policy needs a "
+                    "threshold: the probability of failing before the next "
+                    "inspection above which the unit is replaced."
+                )
+            threshold = spec["threshold"]
+            if (
+                isinstance(threshold, bool)
+                or not isinstance(threshold, (int, float, np.number))
+                or not 0.0 <= float(threshold) <= 1.0
+            ):
+                raise ValueError(
+                    f"Component {node!r}: the threshold must be a "
+                    f"probability, in [0, 1], got {threshold!r}."
+                )
+            threshold = float(threshold)
+        else:
+            for key in ("threshold", "inspection_cost"):
+                if spec.get(key) is not None:
+                    raise ValueError(
+                        f"Component {node!r}: {key} applies only to the "
+                        "'condition' policy, which inspects the unit."
+                    )
         duration = spec.get("duration", "instant")
         if isinstance(duration, str) and duration == "instant":
             duration = None
@@ -2539,12 +2610,19 @@ class RepairableRBD(RBD):
                 "time-to-maintain model (such as a fitted surpyval "
                 f"distribution) or 'instant', got {duration!r}."
             )
-        cost = spec.get("cost")
-        if cost is not None:
-            cost = cls._validate_component_cost(node, "preventive_cost", cost)
-            if isinstance(cost, float) and cost == 0.0:
-                cost = None
-        return _Preventive(interval, policy, duration), cost
+        costs = []
+        for key, name in (
+            ("cost", "preventive_cost"),
+            ("inspection_cost", "inspection_cost"),
+        ):
+            cost = spec.get(key)
+            if cost is not None:
+                cost = cls._validate_component_cost(node, name, cost)
+                if isinstance(cost, float) and cost == 0.0:
+                    cost = None
+            costs.append(cost)
+        schedule = _Preventive(interval, policy, duration, threshold)
+        return schedule, costs[0], costs[1]
 
     @classmethod
     def _validate_standby(cls, node, spec: dict) -> _Standby:
@@ -3202,6 +3280,7 @@ class RepairableRBD(RBD):
                 rate += _mean_cost(preventive) * maintained
         inspection = node_costs.get("inspection_cost")
         if inspection is not None and not forced:
+            self._require_no_condition(node)
             # One inspection per interval (none is skipped: repairs are
             # instant, as the exact values require).
             _, interval = self._inspected_rate(node)
@@ -3341,6 +3420,11 @@ class RepairableRBD(RBD):
             raise NotImplementedError(
                 f"Component {node!r} is replaced on a block schedule, whose "
                 f"replacements do not renew it: {simulate}"
+            )
+        if schedule is not None and schedule.policy == "condition":
+            raise NotImplementedError(
+                f"Component {node!r} is replaced on condition, at "
+                f"inspections on a calendar that do not renew it: {simulate}"
             )
         component = self.components[node]
         life, repair = component.reliability, component.time_to_replace
@@ -5099,6 +5183,9 @@ class RepairableRBD(RBD):
         # stand-ins drawing from their own streams (see
         # _streamed_components).
         sources = self.components if sources is None else sources
+        # The window's end, which the first events already look to (see
+        # _replaced_at).
+        self.t_simulation = t_simulation
 
         # Keep record of component status', initially they're all working
         component_status: dict[Any, bool] = {
@@ -5113,6 +5200,9 @@ class RepairableRBD(RBD):
         # When each working node with hidden failures is due to fail (None
         # once it has failed).
         self._pending_failure: dict[Any, Optional[float]] = {}
+        # When each working node replaced on condition is due to fail, and
+        # to be replaced (see _replaced_at).
+        self._in_service: dict[Any, Tuple[float, float]] = {}
 
         # For each component add in the initial failure
         for component_id in self.components.keys():
@@ -5172,7 +5262,6 @@ class RepairableRBD(RBD):
         # (e.g. a broken component in series starts the system down), rather
         # than assuming everything is up.
         self.system_state = self.is_system_working(component_status, method)
-        self.t_simulation = t_simulation
         self.component_status = component_status
 
     def mean_unavailability(self, *args, **kwargs) -> float:
@@ -5572,6 +5661,9 @@ class RepairableRBD(RBD):
             if life == r.EXACT:
                 return r.EXACT, "its mean life and mean repair time"
             return life, f"its mean life, {how}"
+        message = r.refusal(partial(self._require_no_condition, node))
+        if message:
+            return r.REFUSED, message
         life, how = r.model_route(component.reliability)
         if schedule.policy == "block":
             message = r.refusal(partial(self._require_block_models, node))
@@ -5654,6 +5746,8 @@ class RepairableRBD(RBD):
         if node in self._standby:
             return r.REFUSED, self._standby_curve_message(node)
         message = r.refusal(partial(self._require_time_models, node))
+        if not message:
+            message = r.refusal(partial(self._require_no_condition, node))
         if not message and node in self._inspection:
             message = r.refusal(partial(self._inspected_rate, node))
         schedule = self._preventive.get(node)
@@ -6154,6 +6248,7 @@ class RepairableRBD(RBD):
         at its long-run availability (to 1e-10), after which the curve holds
         that value. Under block replacement, see ``_block_curve``."""
         self._require_time_models(node)
+        self._require_no_condition(node)
         component = self.components[node]
         schedule = self._preventive.get(node)
         if schedule is not None and schedule.policy == "block":
@@ -6686,6 +6781,10 @@ class RepairableRBD(RBD):
     ) -> Event:
         """The next event of a component under preventive maintenance."""
         node, t = event.component, event.time
+        if event.inspection:
+            # Inspected, and kept (replacement on condition): its failure is
+            # still ahead of it.
+            return self._condition_next(node, t, schedule)
         if event.preventive:
             # Replaced: the new unit has its own life ahead of it (the
             # failure drawn for the old one never happens).
@@ -6704,18 +6803,61 @@ class RepairableRBD(RBD):
         # Working, as new, from t.
         return self._renewal(node, t, source, schedule)
 
-    @staticmethod
-    def _renewal(node, t: float, source, schedule: _Preventive) -> Event:
+    def _renewal(self, node, t: float, source, schedule: _Preventive) -> Event:
         """The first event of a unit put into service as new at ``t``: its
         failure, or its preventive replacement if that is due first (a
-        failure at the same time comes first)."""
+        failure at the same time comes first); replaced on condition, its
+        failure or its first inspection (see ``_condition_next``)."""
         life, _ = source.next_event()
+        if schedule.policy == "condition":
+            failure = t + life
+            self._in_service[node] = (
+                failure,
+                self._replaced_at(node, t, failure, schedule),
+            )
+            return self._condition_next(node, t, schedule)
         due = schedule.due(t)
         if t + life <= due:
             return Event(t + life, node, False)
         # Maintenance that takes time is a planned outage; in zero time
         # the unit is renewed in place, and stays up.
         return Event(due, node, schedule.duration is None, True)
+
+    def _replaced_at(
+        self, node, renewed: float, failure: float, schedule: _Preventive
+    ) -> float:
+        """When a unit put into service as new at ``renewed``, and due to
+        fail at ``failure``, is replaced on condition: at the first
+        inspection before its failure (and the window's end) at which it is
+        more likely than the threshold to fail before the next, given its
+        age (the time since ``renewed``); ``inf`` if at none."""
+        end = min(failure, self.t_simulation)
+        dues = []
+        due = schedule.due(renewed)
+        while due < end:
+            dues.append(due)
+            due = schedule.due(due)
+        if not dues:
+            return math.inf
+        # Its ages at those inspections, and at the one after the last.
+        ages = np.array(dues + [due]) - renewed
+        likely = _failures_between(self.components[node].reliability, ages)
+        above = np.flatnonzero(likely > schedule.threshold)
+        return dues[above[0]] if above.size else math.inf
+
+    def _condition_next(self, node, t: float, schedule: _Preventive) -> Event:
+        """The next event, from ``t``, of a working unit replaced on
+        condition: its failure, or the next inspection, which replaces the
+        unit (see ``_replaced_at``) or only checks it. A failure at an
+        inspection's time comes first."""
+        failure, replaced = self._in_service[node]
+        due = schedule.due(t)
+        if failure <= due:
+            return Event(failure, node, False)
+        if due >= replaced:
+            # Replaced, as under block replacement.
+            return Event(due, node, schedule.duration is None, True)
+        return Event(due, node, True, inspection=True)
 
     def _inspected_follow_up(
         self, event: Event, source, inspection: _Inspection
@@ -7494,6 +7636,7 @@ class RepairableRBD(RBD):
                 "component_status",
                 "last_change_planned",
                 "_pending_failure",
+                "_in_service",
                 "_crews",
                 "_groups",
             ):
@@ -7619,6 +7762,8 @@ class RepairableRBD(RBD):
                 if event.preventive:
                     replaced[index[node]] += 1
                     rep_cost += pay(node, 2, preventive_charges.get(node))
+                    # Replaced on condition: at an inspection, charged too.
+                    rep_cost += pay(node, 3, inspection_charges.get(node))
                 else:
                     rep_cost += pay(node, 3, inspection_charges.get(node))
                     if not event.status:
@@ -7657,10 +7802,12 @@ class RepairableRBD(RBD):
             if event.status:
                 restored[c] += 1
             elif event.preventive:
-                # A planned outage: charged the preventive cost (a nested
-                # RBD's own costs are not counted).
+                # A planned outage: charged the preventive cost, and the
+                # inspection's if replaced on condition (a nested RBD's own
+                # costs are not counted).
                 replaced[c] += 1
                 rep_cost += pay(node, 2, preventive_charges.get(node))
+                rep_cost += pay(node, 3, inspection_charges.get(node))
             elif event.inspection:
                 # A test that takes a working unit off-line.
                 rep_cost += pay(node, 3, inspection_charges.get(node))
@@ -8214,6 +8361,20 @@ class RepairableRBD(RBD):
                 "instead."
             )
 
+    def _require_no_condition(self, node) -> None:
+        """Raise if a component is replaced on condition (a ``"preventive"``
+        schedule with ``"policy": "condition"``): its long-run values and
+        its availability over time are known only by simulation."""
+        schedule = self._preventive.get(node)
+        if schedule is not None and schedule.policy == "condition":
+            raise NotImplementedError(
+                f"Component {node!r} is replaced on condition (at an "
+                "inspection, if it is then likely enough to fail before the "
+                "next), so its long-run values and its availability over "
+                "time have no exact value here. Estimate them by simulation, "
+                "with availability() or cost()."
+            )
+
     def _require_block_models(self, node) -> None:
         """Raise unless the exact block-replacement values cover the
         component's models (the checks ``block_cycle`` makes first)."""
@@ -8599,6 +8760,7 @@ class RepairableRBD(RBD):
         from one block time at which the unit is up (and replaced) to the
         next, with any failures and repairs in between (see
         ``_block_replacement``); it is computed once and kept."""
+        self._require_no_condition(node)
         component = self.components[node]
         if schedule.policy == "block":
             block = self._block_cycle(node)

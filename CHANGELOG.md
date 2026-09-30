@@ -25,6 +25,7 @@ exact long-run values from a Markov chain when their lives and repairs are
 exponential (#90); a duty unit and its spares can be a standby group,
 repaired one unit at a time (#91); `spares_demand` and `spares_stock` count
 the spares each component uses and the stock to hold for a lead time (#95);
+a component can be replaced on condition at periodic inspections (#96);
 and demonstration test planning is new (#129).
 
 Behaviour changes: seeded repairable simulations give different numbers,
@@ -226,6 +227,23 @@ surpyval 0.21 is required.
   (Weibull lives, lognormal repairs and age replacement: from new, from a
   random time and before a replacement) and the RBD's simulation. A new
   guide page, Spares, covers them.
+- **Replacement on condition** (#96). A `"preventive"` schedule with
+  `"policy": "condition"` inspects the unit at every multiple of its
+  `"interval"`, while it is up, and replaces it only if it is then more
+  likely than `"threshold"` to fail before the next inspection, given its
+  age (`1 - R(a + T) / R(a)`, the conditional survival `sf_given_state`
+  uses). Each inspection is charged `"inspection_cost"`, and a replacement
+  takes the schedule's `"duration"` and costs its `"cost"`, as under the
+  other policies. A threshold of 0 is block replacement at the interval,
+  draw for draw, and a threshold of 1 is run to failure; a constant failure
+  rate is replaced at every inspection or at none. The simulations
+  (`availability`, `cost`, `compare`, the event-stepping API) follow it, in
+  Python, deciding each unit's replacement once when it is put into
+  service; the exact long-run values and the availability over time refuse
+  it with the reason, and `analysis_routes()` says so. The threshold and
+  inspection cost are saved with the RBD. Checked against a timeline
+  worked by hand, block replacement and run to failure (identical results),
+  constant failure rates, and a direct simulation of the policy.
 - **Demonstration test planning** (#129): how many units, or how long a
   test, demonstrates a reliability at a confidence level, and what a
   finished test demonstrated. `demonstration_sample_size` (the success run,

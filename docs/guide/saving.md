@@ -144,7 +144,9 @@ The nodes can change a route:
   simulated lifetimes (see [Redundancy
   models](redundancy-models.md#how-the-survival-function-is-obtained)). The
   analyses built on such a node are then simulated too.
-- **Maintenance.** Preventive maintenance makes the long-run values numerical.
+- **Maintenance.** Preventive maintenance makes the long-run values numerical;
+  replacement on condition (`"policy": "condition"`) is simulated, and the
+  exact values refuse it.
 - **Hidden failures.** Their exact values need a constant failure rate, with
   instant tests and repairs; otherwise the exact methods refuse.
 - **Standby groups.** A group's long-run values are exact from its own

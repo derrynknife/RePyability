@@ -115,6 +115,17 @@ def repairable_rbds():
             "block replacement": system(
                 unit(preventive={"interval": 300.0, "policy": "block"})
             ),
+            "replaced on condition": system(
+                unit(
+                    preventive={
+                        "interval": 100.0,
+                        "policy": "condition",
+                        "threshold": 0.1,
+                        "inspection_cost": 1.0,
+                    },
+                    replace_cost=10.0,
+                )
+            ),
             "tested, constant rate": system(
                 {
                     "reliability": E([0.002]),

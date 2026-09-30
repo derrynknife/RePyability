@@ -177,7 +177,7 @@ between preventive and corrective maintenance:
 | Key | Meaning |
 |---|---|
 | `interval` | Required: the replacement interval `T` (`inf`: never). |
-| `policy` | `"age"` (the default): `T` after the unit was last put into service as new, so a failure restarts the clock. `"block"`: at `T, 2T, 3T, …` whatever the unit's age, skipped while it is down. |
+| `policy` | `"age"` (the default): `T` after the unit was last put into service as new, so a failure restarts the clock. `"block"`: at `T, 2T, 3T, …` whatever the unit's age, skipped while it is down. `"condition"`: inspected at `T, 2T, 3T, …`, and replaced if likely to fail before the next inspection (see [below](#replacement-on-condition)). |
 | `duration` | `"instant"` (the default): renewed in place, never down. Or a time-to-maintain model: the unit is down meanwhile, a *planned outage*. |
 | `cost` | Charged at each preventive replacement: a number or a distribution. |
 
@@ -319,6 +319,55 @@ year.system_failures / year.n_simulations          # -> 3.518
 year.system_planned_outages / year.n_simulations   # -> 11.92
 year.cost.by_category["preventive"]                # -> 11918.0   1000 each
 ```
+
+### Replacement on condition
+
+`"policy": "condition"` inspects the unit at every multiple of `interval`,
+while it is up, and replaces it only if it is then more likely than
+`"threshold"` to fail before the next inspection, given its age `a`:
+`1 − R(a + T) / R(a)`, the conditional survival that `NodeState` and
+`sf_given_state` use. A unit renewed a while ago is left alone, and a worn
+one is replaced at the last inspection before it is likely to fail.
+
+| Key | Meaning |
+|---|---|
+| `threshold` | Required with `"condition"`: the probability, in `[0, 1]`, above which an inspection replaces the unit. |
+| `inspection_cost` | Charged at each inspection: a number or a distribution. |
+
+`duration` and `cost` are the replacement's, as under the other policies.
+An inspection takes no time, and one due while the unit is down is skipped.
+Inspected weekly and replaced when more than 20% likely to fail before the
+next inspection, the lone pump above costs about what the best age
+replacement does:
+
+```python
+weekly = {"interval": 168.0, "policy": "condition", "threshold": 0.2,
+          "duration": surv.Weibull.from_params([8, 3]), "cost": 1000.0,
+          "inspection_cost": 20.0}
+inspected = RepairableRBD([("s", "p"), ("p", "t")],
+                          {"p": dict(pump(580), preventive=weekly)},
+                          downtime_cost_rate=500.0)
+run = inspected.cost(200_000.0, mc_samples=20, seed=1)
+run.mean_interval().estimate / 200_000.0    # -> 13.28   per hour, simulated
+```
+
+| Threshold | 0.05 | 0.1 | 0.15 | 0.2 | 0.25 | 0.3 |
+|---|---|---|---|---|---|---|
+| Cost per hour (± 0.2) | 22.12 | 16.09 | 13.62 | 13.28 | 14.03 | 14.42 |
+
+Judged on its age alone, a unit replaced on condition is replaced much as
+under age replacement (13.14 at the best age), but on the inspection
+calendar. A low threshold replaces it too young; a high one lets it fail.
+
+- **A threshold of 0** replaces the unit at every inspection: block
+  replacement at the interval. **A threshold of 1** never does: run to
+  failure, with inspections.
+- **A constant failure rate** gives the same probability at every age,
+  `1 − exp(−λT)`: the unit is replaced at every inspection or at none, and
+  it fails as often either way.
+- **Simulated.** The exact long-run values and the availability over time
+  refuse a component replaced on condition, with the reason; `availability`,
+  `cost` and `compare` simulate it, in Python.
 
 ## Hidden failures and inspection
 

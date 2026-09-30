@@ -43,7 +43,8 @@ taking already-fitted lifetime models (from
   parallel runs, and comparisons of designs with common random numbers;
   repairable systems simulated compiled, with numba installed.
 - **Cost, design and maintenance**: exact and simulated running costs,
-  including scheduled (age or block) preventive replacement at system level,
+  including scheduled (age or block) preventive replacement at system level
+  and replacement on condition at periodic inspections,
   with its intervals chosen for a cost or availability target, hidden
   failures found by periodic inspection, with the test intervals chosen for a
   PFDavg target, the total cost of ownership, optimal redundancy allocation
