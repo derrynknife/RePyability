@@ -20,6 +20,7 @@ import pytest
 import surpyval as surv
 
 from repyability.non_repairable import NonRepairable
+from repyability.rbd import _streams
 from repyability.rbd.non_repairable_rbd import NonRepairableRBD
 from repyability.rbd.repairable_rbd import RepairableRBD
 
@@ -122,14 +123,22 @@ def _nestable():
 
 
 @pytest.mark.parametrize("levels", [1, 2])
-def test_a_nested_rbd_simulates_exactly_as_it_does_alone(levels):
+def test_a_nested_rbd_simulates_exactly_as_it_does_alone(levels, monkeypatch):
     # A nested RBD runs its own simulation on the outer one's clock. As the
-    # outer's only node it draws the same numbers in the same order, so its
-    # state changes, and the outer system's, fall at exactly the same times.
+    # outer's only node, with its components' streams named as they are
+    # alone (not under "sub", which gives them streams of their own), it
+    # draws the same numbers, so its state changes, and the outer system's,
+    # fall at exactly the same times.
     alone = _nestable().availability(t_simulation=30.0, N=200, seed=13)
     nested = _nestable()
     for _ in range(levels):
         nested = _wrapped(nested)
+    path_key = _streams.path_key
+    monkeypatch.setattr(
+        _streams,
+        "path_key",
+        lambda path: path_key(tuple(n for n in path if n != "sub")),
+    )
     result = nested.availability(t_simulation=30.0, N=200, seed=13)
     np.testing.assert_array_equal(result.timeline, alone.timeline)
     np.testing.assert_array_equal(result.availability, alone.availability)

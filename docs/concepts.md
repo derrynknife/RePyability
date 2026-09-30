@@ -132,14 +132,18 @@ same `N`, without biasing the estimate:
   removes most of the variance.
 
 In a `RepairableRBD` both work component by component: each component draws
-from a stream of its own, keyed by the seed, its place in the diagram and
-the simulation (or the pair), so its `k`-th draw is matched, or paired,
-however the components' events interleave.
+each quantity (its times to failure, its repairs, ...) from a stream of its
+own, keyed by the seed, its place in the diagram and the quantity, and laid
+out so that the stream's `k`-th draw in simulation `r` (or pair `r`) is
+fixed by those alone. Its `k`-th draw is then matched, or paired, however
+the components' events interleave, and every simulation is the same however
+the run is split up: over processes or threads, or in a run to a tolerance.
 
-A parallel run splits the simulations into blocks seeded in turn from one
-`numpy.random.SeedSequence`, whose spawned seeds give independent streams.
-The block, not the process that runs it, fixes the random numbers, so the
-results do not depend on the number of processes.
+A parallel run of a `NonRepairableRBD` splits the lifetimes into blocks
+seeded in turn from one `numpy.random.SeedSequence`, whose spawned seeds
+give independent streams. The block, not the process that runs it, fixes
+the random numbers, so the results do not depend on the number of
+processes.
 
 ### Fault trees
 

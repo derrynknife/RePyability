@@ -1,12 +1,13 @@
 """Batched random draws that reproduce surpyval's own sampling exactly.
 
 surpyval draws a sample from a plain parametric model as ``qf(u) + gamma``,
-taking one uniform ``u`` from numpy's global RNG per sample. The simulations
-used to make those draws one call at a time, and each call costs tens of
-microseconds of scipy/surpyval overhead. Taking the *same* uniforms from the
-global RNG in one block, in the same order, and applying ``qf`` to the block
-yields the same numbers at a fraction of the cost, so seeded results do not
-change.
+taking one uniform ``u`` from numpy's global RNG per sample. Making those
+draws one call at a time costs tens of microseconds of scipy/surpyval
+overhead each. Taking the *same* uniforms from the global RNG in one block,
+in the same order, and applying ``qf`` to the block yields the same numbers
+at a fraction of the cost. (``RepairableRBD``'s simulations take their
+uniforms from streams of their own instead, see ``_streams``, and turn
+them into draws with the same samplers.)
 
 :func:`inverse_sampler` returns ``None`` for any model whose sampling it
 cannot reproduce exactly (nested RBDs, standby nodes, fixed-probability
@@ -22,7 +23,7 @@ infinite for a unit that never fails, 0 for one dead on arrival.
 """
 
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 import numpy as np
 from scipy.special import ndtri
@@ -117,28 +118,6 @@ def inverse_sampler(model) -> Optional[Sampler]:
     return None
 
 
-def sampler_key(model) -> Optional[tuple]:
-    """A key that plain parametric models with the same distribution and
-    parameters share, so that they can share one sampler; ``None`` for any
-    other model.
-
-    A :class:`UniformStream` applies each sampler it is asked for to its
-    whole block of uniforms, so three identical pumps with a sampler each
-    cost three evaluations of the quantile function per block, and with one
-    shared sampler cost one. Each draw still takes the next uniform, so the
-    values drawn are the same either way.
-    """
-    if not isinstance(model, Parametric) or model.p != 1 or model.f0 != 0:
-        return None
-    params = np.asarray(model.params)
-    return (
-        model.dist,
-        params.dtype.str,
-        tuple(params.ravel().tolist()),
-        model.gamma,
-    )
-
-
 def draw_rows(samplers: list[Sampler], size: int) -> list[np.ndarray]:
     """``size`` rounds of one draw from each sampler, in order, as a list of
     ``size``-long arrays (one per sampler).
@@ -149,50 +128,3 @@ def draw_rows(samplers: list[Sampler], size: int) -> list[np.ndarray]:
     """
     u = np.random.random_sample((size, len(samplers)))
     return [column(u, j, sampler) for j, sampler in enumerate(samplers)]
-
-
-class UniformStream:
-    """Single draws from many samplers, in any interleaving, from pre-drawn
-    blocks of the global RNG's uniforms.
-
-    Each call to :meth:`draw` takes the next uniform in the global stream,
-    exactly as a ``random(1)`` call would, but the uniforms are drawn a block
-    at a time and each sampler's ``qf`` is applied to the whole block at
-    once. :meth:`close` rewinds the global RNG to just after the last uniform
-    handed out, so it ends exactly where the single draws would have left it.
-
-    ``samplers`` holds the samplers of the models drawing from the stream,
-    one for each distinct model (see :func:`sampler_key`).
-    """
-
-    def __init__(self, block_size: int = 1024):
-        self.block_size = block_size
-        self.samplers: dict = {}
-        self._state: Any = None  # np.random.get_state() before the block
-        self._block = np.empty(0)
-        self._pos = 0
-        self._values: dict = {}
-
-    def draw(self, sampler: Sampler) -> float:
-        if self._pos == len(self._block):
-            self._state = np.random.get_state()
-            self._block = np.random.random_sample(self.block_size)
-            self._pos = 0
-            self._values = {}
-        values = self._values.get(sampler)
-        if values is None:
-            values = self._values[sampler] = np.asarray(
-                sampler(self._block), dtype=float
-            ).tolist()
-        value = values[self._pos]
-        self._pos += 1
-        return value
-
-    def close(self) -> None:
-        if self._state is not None:
-            np.random.set_state(self._state)
-            np.random.random_sample(self._pos)
-            self._state = None
-            self._block = np.empty(0)
-            self._pos = 0
-            self._values = {}

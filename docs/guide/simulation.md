@@ -11,17 +11,20 @@ Some quantities have no closed form and are simulated: a
 availability over time is also exact, with `point_availability`; see
 [what is exact and what is simulated](saving.md#what-is-exact-and-what-is-simulated)).
 A simulated estimate has a sampling error, which shrinks like `1/√N`:
-halving it takes four times as many simulations. This page covers the
-options that choose `N` for you, that get the same precision from fewer
-simulations, that spread the simulations over several processes, and that
-compare two designs far more precisely than two separate runs can.
+halving it takes four times as many simulations. This page covers how a
+repairable system's simulations draw their random numbers, and the options
+that choose `N` for you, that get the same precision from fewer
+simulations, that spread the simulations over several CPUs, that compare
+two designs far more precisely than two separate runs can, and that run the
+simulations compiled.
 
 | Option | Where | What it does |
 |---|---|---|
 | `tolerance`, `confidence`, `max_N` / `max_samples` | `availability`, `cost`; `mean`, `mean_time_to_failure`, `mean_time_to_failure_interval` | Simulate until the estimate is known to within `tolerance`. |
 | `antithetic=True` | the same, and `NonRepairableRBD.random` | Simulate in antithetic pairs. |
-| `n_jobs` | the same | Run the simulations over several processes. |
+| `n_jobs` | the same, and `RepairableRBD.compare` | Run the simulations on several CPUs. |
 | `compare(other, ...)` | `RepairableRBD`, `NonRepairableRBD` | The difference between two designs, simulated with common random numbers. |
+| `engine` | `RepairableRBD`'s `availability`, `cost` and `compare` | Run the simulations compiled, with numba. |
 
 The examples use two units in parallel and the plant of
 [Repairable systems](repairable.md):
@@ -55,6 +58,42 @@ plant = RepairableRBD(
 )
 ```
 
+## Random streams
+
+A `RepairableRBD` simulation draws each random quantity from a stream of its
+own: each component's times to failure, its repair times, its maintenance or
+test times, and each cost given as a distribution. A stream is named by the
+component's place (its node name, and the names down through nested RBDs)
+and the quantity, and seeded from the run's `seed`, and simulation `r` takes
+the same numbers from it whatever the rest of the run does. So:
+
+- a simulation does not depend on how many the run has, on the order they
+  run in, on how many processes or threads run them, or on which engine: the
+  first 100 simulations of a run of 1 000 are a run of 100;
+- one component's draws never depend on another's: a component modelled
+  the same way fails and is repaired at the same times whatever the rest of
+  the system is, which is what [`compare`](#comparing-two-designs) builds
+  on;
+- without a `seed`, the run takes one number from numpy's global RNG as its
+  seed, so `np.random.seed(s)` beforehand makes it the run `seed=s` gives;
+  the global RNG is otherwise left as it was.
+
+```python
+short = plant.availability(t_simulation=100.0, N=100, seed=0)
+long = plant.availability(t_simulation=100.0, N=1_000, seed=0)
+bool((short.uptimes == long.uptimes[:100]).all())   # True
+```
+
+A stream's numbers come in blocks of simulations as wide as the draws a
+simulation is expected to take from it allow, so which number a simulation
+gets depends on the component's models and on the window too: a run over
+another window, or a component in another place, draws other numbers. A
+model whose draws cannot be streamed (other than a surpyval parametric one,
+or a subclass of the component classes, which may draw its events its own
+way) draws from numpy's global RNG, seeded afresh for each simulation from
+the run's seed: the run stays reproducible, but that component cannot take
+part in antithetic pairs or common random numbers.
+
 ## Simulating to a tolerance
 
 `tolerance` says how precise the estimate must be: within `tolerance` either
@@ -81,8 +120,8 @@ simulations:
 result = plant.availability(t_simulation=100.0, N=1_000, seed=0, tolerance=0.001)
 result.n_simulations                  # -> 6000
 window = result.mean_availability_interval()
-window.estimate                       # -> 0.9538   the exact value is 0.9544
-window.upper - window.estimate        # -> 0.00095
+window.estimate                       # -> 0.9547   the exact value is 0.9544
+window.upper - window.estimate        # -> 0.00094
 ```
 
 If the tolerance is not reached within `max_N` simulations (`max_samples`
@@ -118,16 +157,17 @@ depend on the draws in a less simple way, and gain less, but still gain:
 ```python
 single = plant.availability(t_simulation=100.0, N=2_000, seed=0)
 pairs = plant.availability(t_simulation=100.0, N=2_000, seed=0, antithetic=True)
-single.mean_availability_interval().standard_error   # -> 0.00085
-pairs.mean_availability_interval().standard_error    # -> 0.00065
+single.mean_availability_interval().standard_error   # -> 0.00082
+pairs.mean_availability_interval().standard_error    # -> 0.00063
 ```
 
 The pairs, not the simulations, are independent, so the intervals are worked
 out from the pairs' means (`result.antithetic` records it), and `N` (or
 `mc_samples`) must be even. `NonRepairableRBD.random(size,
 antithetic=True)` returns the pairs themselves: lifetimes `2i` and `2i + 1`.
-In a `RepairableRBD` each component draws from a stream of its own, keyed
-from the seed, so an antithetic run's numbers differ from a plain run's.
+In a `RepairableRBD` every [stream](#random-streams) is paired, so an
+antithetic run of `N` simulations is the first `N/2` of the run without
+pairs, each followed by its mirror image.
 
 Every component's draws must be replayable from uniform random numbers:
 surpyval parametric distributions, and the composite nodes built from them.
@@ -135,25 +175,29 @@ Otherwise `antithetic=True` raises `NotImplementedError`.
 
 ## Parallel runs
 
-`n_jobs=k` runs the simulations over `k` processes (`-1`: one per CPU). They
-are split into blocks, of 250 availability or cost simulations or 10 000
-lifetimes, seeded in turn from `seed`, so the result depends on the seed and
-not on the number of processes: `n_jobs=1` and `n_jobs=8` give the same
-numbers. They are not the numbers of a run without `n_jobs`, which draws
-every simulation from one stream.
+`n_jobs=k` runs the simulations on `k` CPUs (`-1`: all of them). A
+`RepairableRBD`'s simulations each draw from their own
+[streams](#random-streams), so the result is the same to the last bit for
+any `n_jobs`, and without it:
 
 ```python
 fast = plant.availability(t_simulation=100.0, N=2_000, seed=0, n_jobs=2)
-same = plant.availability(t_simulation=100.0, N=2_000, seed=0, n_jobs=1)
+same = plant.availability(t_simulation=100.0, N=2_000, seed=0)
 bool((fast.uptimes == same.uptimes).all())   # True
 ```
 
-Each process is sent a copy of the diagram and returns the totals of its
-blocks, so this pays off for long simulations (many failures and repairs in
-a window, or lifetimes that must be simulated event by event), not for a
-few thousand lifetimes that are drawn in one vectorised step. It works with
-`tolerance` (checked after each batch of `N`) and `antithetic`; `verbose`
-has no effect.
+The [compiled engine](#the-compiled-engine) runs them on `k` threads. The
+Python engine sends blocks of 250 of them to `k` processes, each with a copy
+of the diagram, and adds up their results in order, so it pays off for long
+simulations (many failures and repairs in a window).
+
+A `NonRepairableRBD`'s lifetimes are split over the processes in blocks of
+10 000, seeded in turn from `seed`, so the result depends on the seed and
+not on the number of processes, but it is not the result of a run without
+`n_jobs`, which draws every lifetime from one stream. It pays off for
+lifetimes that must be simulated event by event, not for a few thousand
+that are drawn in one vectorised step. Both work with `tolerance` (checked
+after each batch of `N`) and `antithetic`.
 
 A process needs RePyability, surpyval and scipy loaded before it can
 simulate, and how long that takes depends on how the platform starts
@@ -196,7 +240,7 @@ faster = RepairableRBD(
     {"A": repairable(0.1, 2.0), "B": repairable(0.1, 2.0), "C": repairable(0.02, 0.5)},
 )
 gain = faster.compare(plant, t_simulation=100.0, N=2_000, seed=0)
-gain.estimate          # -> 0.0056    the exact difference is 0.00568
+gain.estimate          # -> 0.0058    the exact difference is 0.00568
 gain.standard_error    # -> 0.00017
 ```
 
@@ -222,6 +266,46 @@ Both kinds need every component's draws to be replayable, as antithetic
 pairs do. A non-parametric model draws its own random numbers, which the two
 systems would not share, so it raises `NotImplementedError`.
 
+## The compiled engine
+
+A `RepairableRBD`'s simulations run in Python. With
+[numba](https://numba.pydata.org), an optional dependency, installed, they
+can run compiled instead, about ten times as fast on one core, and faster
+still on several:
+
+```bash
+pip install "repyability[fast]"
+```
+
+`engine="auto"`, the default of `availability`, `cost` and `compare`, then
+compiles a run when the compiled engine simulates the system and the run is
+long enough to repay loading it: about a third of a second from numba's
+cache (some seconds the first time ever, while numba compiles it).
+`engine="numba"` asks for it outright, and raises an error if numba is not
+installed or the system is one it does not simulate; `engine="python"` keeps
+to Python. The two engines give the same results, to the last bit: the
+compiled loop is the Python one over arrays, reading the same
+[streams](#random-streams).
+
+```python
+fast = plant.availability(t_simulation=100.0, N=2_000, seed=0)
+slow = plant.availability(t_simulation=100.0, N=2_000, seed=0, engine="python")
+bool((fast.uptimes == slow.uptimes).all())   # True, with numba or without
+```
+
+The compiled engine simulates plain components (`reliability` and
+`repairability` specs, or `NonRepairable` objects, with surpyval parametric
+models) in any structure, with nodes held working or broken, costs,
+antithetic pairs, tolerances and common random numbers. Preventive
+maintenance, inspections, nested RBDs, capacities and other models run in
+Python, which `"auto"` chooses by itself. With `n_jobs` it runs on that many
+threads, which start at once.
+
+On one test machine, a pump pair in series with a valve (the plant above,
+over 1 000 hours) ran at about a million events (failures and repairs) a
+second in Python, 11 million compiled on one core and 20 million on four;
+an 18-component system at 0.7, 8.5 and 15 million.
+
 ## Which to use
 
 - **A precision to meet:** give a `tolerance`, rather than guessing `N`.
@@ -229,4 +313,5 @@ systems would not share, so it raises `NotImplementedError`.
   separate estimates, whose errors add up.
 - **A quantity that rises with the components' lifetimes:** try
   `antithetic=True`, and check that the standard error falls.
-- **Long simulations:** spread them over the cores with `n_jobs`.
+- **Long simulations:** install numba (`pip install "repyability[fast]"`)
+  for the compiled engine, and spread them over the cores with `n_jobs`.

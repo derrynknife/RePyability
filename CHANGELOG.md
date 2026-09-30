@@ -78,24 +78,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   curves settle at `mean_availability()`, and a long mission's average
   exceeds it by the start-up term renewal theory predicts; on the benchmark
   diagrams they agree with the simulation.
+- **A compiled simulation engine** (#119). With numba installed, an
+  optional dependency (`pip install "repyability[fast]"`),
+  `RepairableRBD.availability()`, `cost()` and `compare()` can run their
+  simulations compiled: about ten times as fast as in Python on one core,
+  and faster still on several (`n_jobs` runs it on that many threads). A new
+  argument, `engine`, chooses: `"auto"` (the default) compiles when numba is
+  installed, the engine simulates the system and the run is long enough to
+  repay loading it (a third of a second from numba's cache; some seconds
+  the first time ever, while numba compiles it); `"numba"` asks for it, and
+  `"python"` keeps to Python. The two give the same results, to the last
+  bit: the compiled loop is the Python one over arrays, reading the same
+  random streams, and CI checks them against each other. It simulates plain
+  components (surpyval parametric models) in any structure, with nodes held
+  working or broken, costs, antithetic pairs, tolerances and common random
+  numbers; preventive maintenance, inspections, nested RBDs, capacities and
+  other models run in Python, which `"auto"` chooses by itself.
 
 ### Changed
 
-- **Faster availability simulation** (#120). `RepairableRBD.availability()`
-  and `cost()` run 1.6–2.7× faster per core, and every seeded result is the
-  same, to the last bit.
+- **Seeded repairable simulations give new numbers, once** (#119). Every
+  random quantity a `RepairableRBD` simulation draws now comes from a
+  stream of its own: each component's times to failure, its repair times,
+  its maintenance or test times, and each cost given as a distribution,
+  named by the component's place and the quantity and seeded from the
+  run's seed. The results are as correct as before, but a seeded run of
+  `availability()`, `cost()` or `compare()` gives different numbers than in
+  0.10, within their sampling error. In exchange:
+  - a simulation is the same however the run is split up: a run with
+    `n_jobs` gives the same results as one without (before, a parallel run
+    differed from a serial one), a run to a tolerance that stops after `n`
+    simulations is the run of `N=n`, and the first `n` simulations of any
+    run are a run of `n`;
+  - one component's draws never depend on another's, and each simulation's
+    `k`-th draw of each stream is fixed, so antithetic pairs pair every
+    quantity (costs too, which were unpaired) and `compare` matches every
+    one (costs too);
+  - a model whose draws cannot be streamed no longer sends every other
+    component back to drawing one number at a time: it draws from numpy's
+    global RNG, seeded afresh for each simulation, and the rest stream;
+  - without a seed, a run takes one number from numpy's global RNG as its
+    seed (so `np.random.seed(s)` beforehand gives the run `seed=s` gives)
+    and otherwise leaves it as it was, where it used to consume as many
+    numbers as the simulations drew.
+  Stepping a system through its events by hand (`initialize_event_queue`,
+  `next_event`) still draws from the global RNG, as before.
+- **Faster availability simulation** (#120, #119). Even without the
+  compiled engine, `RepairableRBD.availability()` and `cost()` run 3.8–5.9×
+  faster per core than in 0.10.
   - The loop works the event queue's heap directly, comparing times as
     floats.
   - The structure function is evaluated only when an event could change
     the system (a repair can't take a coherent system down, nor a failure
     bring it up), and it is called directly.
-  - Identical models share their quantile function's evaluations. Normal
-    and lognormal quantiles skip scipy.stats' argument checks (surpyval
-    [#469](https://github.com/derrynknife/SurPyval/issues/469)).
+  - Normal and lognormal quantiles skip scipy.stats' argument checks
+    (surpyval [#469](https://github.com/derrynknife/SurPyval/issues/469)).
   - A component with no maintenance or inspection takes its next draw
     directly.
-  - Each simulation works out its components' criticality measures for
-    all the components at once, instead of one at a time.
+  - Each simulation adds up its components' up times, and their overlaps
+    with the system's, as it goes, instead of working them out from their
+    timelines at the end.
 - **Faster start-up** (#121). `import repyability` no longer loads
   scipy.signal, tqdm or the process-pool machinery until a call needs them
   (about 0.2 s less here; surpyval's share is

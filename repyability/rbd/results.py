@@ -316,7 +316,7 @@ class FailureCriticalityIndex(_ResultMapping):
 
     >>> share = fci.per_component_failure
     >>> {node: round(share[node], 2) for node in sorted(share)}
-    {'a': 0.92, 'b': 0.91}
+    {'a': 0.91, 'b': 0.91}
     """
 
     per_system_failure: Dict[Hashable, float]
@@ -429,7 +429,7 @@ class Criticalities(_ResultMapping):
     >>> {node: round(float(v), 4) for node, v in oci.up.items()}
     {'a': 1.0, 'b': 1.0}
     >>> {node: round(float(v), 2) for node, v in oci.down.items()}
-    {'a': 0.53, 'b': 0.51}
+    {'a': 0.55, 'b': 0.5}
     >>> crit["iou"] is crit.iou  # dict-style access also works
     True
     """
@@ -514,14 +514,14 @@ class CostResult(_ResultMapping):
     ... )
     >>> result = rbd.cost(t_simulation=100.0, N=200, seed=0)
     >>> round(result.mean, 2), round(result.std, 2)
-    (1351.33, 442.78)
+    (1354.77, 429.75)
     >>> round(result.by_category["repair"], 2)  # 100 per failure
-    896.0
+    909.5
     >>> round(result.by_category["system_downtime"], 2)  # 50 per hour down
-    455.33
+    445.27
     >>> interval = result.mean_interval(0.95)
     >>> round(interval.lower, 2), round(interval.upper, 2)
-    (1289.96, 1412.69)
+    (1295.21, 1414.33)
     """
 
     samples: np.ndarray

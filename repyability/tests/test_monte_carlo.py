@@ -20,9 +20,8 @@ from scipy.stats import norm
 
 from repyability import NonRepairableRBD, RepairableRBD, StandbyModel
 from repyability.rbd import _montecarlo as montecarlo
-from repyability.rbd import non_repairable_rbd
+from repyability.rbd import _streams, non_repairable_rbd
 from repyability.rbd.non_repairable_rbd import _check_lifetimes
-from repyability.rbd.repairable_rbd import _KeyedStreams
 
 E = surv.Exponential.from_params
 W = surv.Weibull.from_params
@@ -192,31 +191,46 @@ def identity(u):
     return u
 
 
+def uniform_streams(antithetic: bool) -> _streams.Run:
+    """Streams of plain uniforms for components "a" and "b", in blocks of
+    four simulations (or pairs) and chunks of eight rows."""
+    specs = {
+        ((node,), _streams.FAILURE): _streams.Spec(
+            (node,), _streams.FAILURE, identity, 8, 4
+        )
+        for node in "ab"
+    }
+    return _streams.Run(_streams.Plan(7, antithetic, specs), reseed=False)
+
+
 def test_each_component_pairs_its_own_draws():
-    streams = _KeyedStreams(7, antithetic=True)
-    a, b = streams.for_node(("a",)), streams.for_node(("b",))
-    streams.begin(0)
-    first_a = [a.draw(identity) for _ in range(70)]  # past a block of 64
-    first_b = [b.draw(identity) for _ in range(3)]
+    run = uniform_streams(antithetic=True)
+    a = run.stream(("a",), _streams.FAILURE)
+    b = run.stream(("b",), _streams.FAILURE)
+    run.begin(0)
+    first_a = [a.draw() for _ in range(70)]  # past several chunks
+    first_b = [b.draw() for _ in range(3)]
     # The second of the pair: in another order, and b draws more, but
     # each component's k-th draw is one minus its k-th in the first.
-    streams.begin(1)
-    second_b = [b.draw(identity) for _ in range(5)]
-    second_a = [a.draw(identity) for _ in range(70)]
+    run.begin(1)
+    second_b = [b.draw() for _ in range(5)]
+    second_a = [a.draw() for _ in range(70)]
     np.testing.assert_allclose(np.add(first_a, second_a), 1.0, atol=1e-15)
     np.testing.assert_allclose(np.add(first_b, second_b[:3]), 1.0, atol=1e-15)
     assert len(set(first_a)) == 70 and set(first_a).isdisjoint(first_b)
-    # The next pair draws afresh.
-    streams.begin(2)
-    fresh = a.draw(identity)
-    assert all(abs(fresh - u) > 1e-12 for u in first_a + second_a)
-    # Without pairs, every replication draws afresh.
-    plain = _KeyedStreams(7)
-    c = plain.for_node(("a",))
+    # The next pair draws afresh, in the same block and in the next.
+    for replication in (2, 8):
+        run.begin(replication)
+        fresh = a.draw()
+        assert all(abs(fresh - u) > 1e-12 for u in first_a + second_a)
+    # Without pairs, every replication draws afresh: the first one what
+    # the first pair did.
+    plain = uniform_streams(antithetic=False)
+    c = plain.stream(("a",), _streams.FAILURE)
     plain.begin(0)
-    assert c.draw(identity) == first_a[0]
+    assert [c.draw() for _ in range(70)] == first_a
     plain.begin(1)
-    assert abs(c.draw(identity) - (1 - first_a[0])) > 1e-12
+    assert abs(c.draw() - (1 - first_a[0])) > 1e-12
 
 
 def test_antithetic_runs_are_reproducible():
@@ -306,11 +320,11 @@ def test_parallel_results_do_not_depend_on_the_processes():
     exact = window_mean(lambda t: plant_availability(1.0, t))
     interval = one.mean_availability_interval()
     assert abs(interval.estimate - exact) < 4 * interval.standard_error
-    # A block is the same whether or not it runs in its own process.
-    block = rbd.availability(
-        T, N=250, seed=montecarlo.block_seed(np.random.SeedSequence(4))
-    )
-    np.testing.assert_array_equal(one.uptimes[:250], block.uptimes)
+    # Nor on whether it runs in processes at all: each simulation is the
+    # same however the run is cut up, so the first 250 are a run of 250.
+    assert_same_results(one, rbd.availability(T, N=600, seed=4))
+    first = rbd.availability(T, N=250, seed=4, n_jobs=2)
+    np.testing.assert_array_equal(one.uptimes[:250], first.uptimes)
     assert not np.array_equal(one.uptimes[:250], one.uptimes[250:500])
 
 
@@ -373,11 +387,30 @@ def test_compare_costs_against_the_exact_difference():
     assert abs(gain.estimate - exact) < 4 * gain.standard_error
 
 
-def keyed_uptimes(rbd, n, key):
+def keyed_uptimes(rbd, n, key, widths):
     tally = rbd._run(
-        T, set(), set(), "p", n, False, key, streams=_KeyedStreams(key)
+        T,
+        set(),
+        set(),
+        "p",
+        n,
+        False,
+        None,
+        entropy=key,
+        widths=widths,
+        common=True,
     )
     return np.asarray(tally.uptimes)
+
+
+def common_widths(*rbds):
+    """The narrowest width each stream has in any of ``rbds``, as
+    ``compare`` gives two systems."""
+    widths: dict = {}
+    for rbd in rbds:
+        for name, spec in rbd._stream_specs(T)[0].items():
+            widths[name] = min(widths.get(name, spec.width), spec.width)
+    return widths
 
 
 def test_the_same_component_fails_and_is_repaired_alike():
@@ -391,10 +424,15 @@ def test_the_same_component_fails_and_is_repaired_alike():
         {"p1": pump(1.0), "p2": pump(1.0)},
     )
     slow = RepairableRBD([("s", "p1"), ("p1", "t")], {"p1": pump(3.0)})
+    widths = common_widths(one, two, slow)
     for key in (1, 2, 3):
-        spare = keyed_uptimes(two, 300, key) - keyed_uptimes(one, 300, key)
+        up = {
+            name: keyed_uptimes(rbd, 300, key, widths)
+            for name, rbd in (("one", one), ("two", two), ("slow", slow))
+        }
+        spare = up["two"] - up["one"]
         assert spare.min() >= -1e-9 and spare.max() > 0
-        faster = keyed_uptimes(one, 300, key) - keyed_uptimes(slow, 300, key)
+        faster = up["one"] - up["slow"]
         assert faster.min() >= -1e-9 and faster.max() > 0
     # With independent draws some simulations would go the other way.
     np.random.seed(0)

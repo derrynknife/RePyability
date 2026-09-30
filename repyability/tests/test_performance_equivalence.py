@@ -13,9 +13,7 @@ these tests hold the fast path to that reference:
 - the per-sample loops of the warm-standby and load-sharing simulations run
   for every sample at once: same arithmetic, same tie-breaks;
 - the repairable simulation's event queue drops ``queue.PriorityQueue``'s
-  locking but keeps its heap, so events come out in the same order, and its
-  components (nested RBDs' included) draw from one stream of uniforms, in the
-  order they drew from the global RNG;
+  locking but keeps its heap, so events come out in the same order;
 - composite nodes (standby, repeated, load-sharing, regression, nested RBDs)
   replay their ``random(1)`` for a whole block of samples, so an RBD
   containing them is batched too;
@@ -23,16 +21,13 @@ these tests hold the fast path to that reference:
   Berge's algorithm (the minimal cut sets are unique, so they must match
   exactly), and that decomposition runs on an explicit stack;
 - the repairable simulation's event loop queues ``(time, event)`` pairs,
-  skips the structure function where a coherent system cannot change, gives
-  identical models one sampler, and draws a plain component's next event
-  directly. It has no slow path left to compare with, so seeded results
-  recorded before these changes (``seeded_event_loop.json``) must still
-  come out;
-- after each simulation, the components' uptimes and overlaps with the
-  system are worked out for all the components at once, and must equal
-  what the timeline functions give one component at a time, to the last
-  bit; normal and lognormal quantiles skip scipy.stats' argument checks,
-  and must equal surpyval's to the last bit.
+  skips the structure function where a coherent system cannot change, and
+  draws a plain component's next event directly. It has no slow path left
+  to compare with, so seeded results recorded when its draws last changed
+  (``seeded_event_loop.json``) must still come out (its draws, and a
+  reference simulation, are tested in ``test_simulation_engines``);
+- normal and lognormal quantiles skip scipy.stats' argument checks, and
+  must equal surpyval's to the last bit.
 
 Floating-point samples are compared to 1e-12 relative (the fast paths do the
 same operations, so they agree to the last bit here; the tolerance only
@@ -64,6 +59,7 @@ from repyability import (
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import (
     _sampling,
+    _streams,
     non_repairable_rbd,
     repairable_rbd,
     standby_node,
@@ -376,22 +372,6 @@ def test_inverse_sampler_draws_defective_models_by_their_quantiles(model):
 )
 def test_inverse_sampler_declines_what_it_cannot_reproduce(model):
     assert _sampling.inverse_sampler(model) is None
-
-
-def test_uniform_stream_matches_single_draws_across_blocks():
-    models = [PLAIN_MODELS[k] for k in ("weibull", "lognormal", "exact")]
-    order = np.random.default_rng(4).integers(0, 3, size=100)
-    np.random.seed(5)
-    expected = [models[i].random(1).item() for i in order]
-    after_single_draws = rng_state()
-
-    np.random.seed(5)
-    stream = _sampling.UniformStream(block_size=7)  # force many refills
-    samplers = [_sampling.inverse_sampler(m) for m in models]
-    drawn = [stream.draw(samplers[i]) for i in order]
-    stream.close()
-    assert drawn == expected
-    assert_same_rng_state(rng_state(), after_single_draws)
 
 
 # -- NonRepairableRBD.random -------------------------------------------------
@@ -921,118 +901,6 @@ def repairable_rbds():
     }
 
 
-NESTED = [
-    "nested_koon",
-    "nested_one_level",
-    "nested_two_levels",
-    "nested_maintained",
-]
-
-
-def simulate_both(monkeypatch, rbd, **kwargs):
-    fast = rbd.availability(**kwargs)
-    with monkeypatch.context() as m:
-        m.setattr(repairable_rbd, "inverse_sampler", lambda model: None)
-        assert rbd._streamed_components(_sampling.UniformStream()) is None
-        reference = rbd.availability(**kwargs)
-    return fast, reference
-
-
-@pytest.mark.parametrize("name", sorted(repairable_rbds()))
-def test_repairable_simulation_is_identical(name, monkeypatch):
-    rbd = repairable_rbds()[name]
-    assert rbd._streamed_components(_sampling.UniformStream()) is not None
-    first = rbd.nodes[0]
-    for kwargs in (
-        dict(t_simulation=300.0, N=60, seed=21),
-        dict(t_simulation=200.0, N=30, seed=22, method="c"),
-        dict(t_simulation=200.0, N=30, seed=23, working_nodes=[first]),
-        dict(t_simulation=200.0, N=30, seed=24, broken_nodes=[first]),
-    ):
-        fast, reference = simulate_both(monkeypatch, rbd, **kwargs)
-        assert_same(fast, reference)
-
-
-@pytest.mark.parametrize("name", sorted(repairable_rbds()))
-def test_repairable_simulation_leaves_the_global_rng_unchanged(
-    name, monkeypatch
-):
-    rbd = repairable_rbds()[name]
-    np.random.seed(25)
-    fast = rbd.availability(150.0, N=25)
-    after_fast = rng_state()
-    with monkeypatch.context() as m:
-        m.setattr(repairable_rbd, "inverse_sampler", lambda model: None)
-        np.random.seed(25)
-        reference = rbd.availability(150.0, N=25)
-    assert_same(fast, reference)
-    assert_same_rng_state(rng_state(), after_fast)
-
-
-@pytest.mark.parametrize("forced", ["working_nodes", "broken_nodes"])
-@pytest.mark.parametrize("name", NESTED)
-def test_forcing_a_nested_rbd_is_identical(name, forced, monkeypatch):
-    rbd = repairable_rbds()[name]
-    for node, component in rbd.components.items():
-        if isinstance(component, RepairableRBD):
-            fast, reference = simulate_both(
-                monkeypatch,
-                rbd,
-                t_simulation=200.0,
-                N=30,
-                seed=26,
-                **{forced: [node]},
-            )
-            assert_same(fast, reference)
-
-
-def test_nested_rbd_that_cannot_be_streamed_falls_back_entirely(monkeypatch):
-    # A model that draws through np.random.binomial cannot be reproduced by
-    # the stream. Streaming the other components' draws would change their
-    # order, so nothing is streamed.
-    rbd = RepairableRBD(
-        [("s", "a"), ("a", "sub"), ("sub", "t")],
-        {
-            "a": {
-                "reliability": W([70, 1.5]),
-                "repairability": surv.Exponential.from_params([0.8]),
-            },
-            "sub": repairable_pair(40, binomial_first([40, 2])),
-        },
-    )
-    assert rbd._streamed_components(_sampling.UniformStream()) is None
-    fast, reference = simulate_both(
-        monkeypatch, rbd, t_simulation=200.0, N=30, seed=27
-    )
-    assert_same(fast, reference)
-
-
-def test_a_maintenance_time_that_cannot_be_streamed_falls_back(monkeypatch):
-    # A maintenance time drawn through np.random.binomial cannot be
-    # streamed, so nothing is; the one-draw simulation still runs.
-    rbd = RepairableRBD(
-        [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
-        {
-            name: {
-                "reliability": W([70, 2]),
-                "repairability": surv.Exponential.from_params([0.8]),
-                "preventive": {
-                    "interval": 30.0,
-                    "duration": binomial_first([2, 1.5]),
-                    "cost": 5.0,
-                },
-            }
-            for name in "ab"
-        },
-    )
-    assert rbd._streamed_components(_sampling.UniformStream()) is None
-    fast, reference = simulate_both(
-        monkeypatch, rbd, t_simulation=200.0, N=30, seed=31
-    )
-    assert_same(fast, reference)
-    assert fast.system_planned_outages > 0
-
-
 def test_subclassed_components_keep_their_own_event_methods():
     # A subclass may draw its events its own way, so the simulation calls
     # the component itself rather than streaming its draws.
@@ -1061,7 +929,10 @@ def test_subclassed_components_keep_their_own_event_methods():
                 "sub": component,
             },
         )
-        assert rbd._streamed_components(_sampling.UniformStream()) is None
+        plan, complete = rbd._stream_plan(200.0, 1, False)
+        assert not complete
+        sources = rbd._streamed_components(_streams.Run(plan, reseed=True))
+        assert sources["sub"] is rbd.components["sub"]
         calls.clear()
         rbd.availability(200.0, N=5, seed=30)
         assert kind in calls
@@ -1278,30 +1149,6 @@ def test_event_loop_reproduces_the_recorded_results(runs, name):
             assert result[key] == value, key
 
 
-def test_identical_models_share_a_sampler():
-    rbd = instrument_air()
-    stream = _sampling.UniformStream()
-    streamed = rbd._streamed_components(stream)
-    assert streamed["A"]._failure is streamed["B"]._failure
-    assert streamed["A"]._repair is streamed["C"]._repair
-    assert streamed["vote"]._failure is streamed["dvote"]._failure
-    assert streamed["A"]._failure is not streamed["D"]._failure
-    # The filter, the compressors, the dryers, the receiver, the header and
-    # the voting nodes: six failure models and six repair models.
-    assert len(stream.samplers) == 12
-
-
-def test_sharing_samplers_draws_the_same(monkeypatch):
-    rbd = instrument_air()
-    kwargs = dict(t_simulation=100000.0, N=20, seed=4)
-    shared = rbd.availability(**kwargs)
-    monkeypatch.setattr(repairable_rbd, "sampler_key", lambda model: None)
-    stream = _sampling.UniformStream()
-    streamed = rbd._streamed_components(stream)
-    assert streamed["A"]._failure is not streamed["B"]._failure
-    assert_same(shared, rbd.availability(**kwargs))
-
-
 @pytest.mark.parametrize("name", sorted(rbds()))
 def test_structure_functions_are_coherent(name):
     # The event loop skips the structure function for a restoration while
@@ -1342,44 +1189,6 @@ def overlaps_one_at_a_time(starts, events, system_timeline, t_end):
             )
         )
     return out
-
-
-@pytest.mark.parametrize("seed", range(40))
-def test_overlaps_worked_out_at_once_are_exact(seed):
-    rng = np.random.default_rng(seed)
-    t_end = 100.0
-    # On a grid, so that changes often coincide (with each other, with the
-    # system's, and at 0); on a coarse one for half the seeds.
-    step = 2.5 if seed % 2 else 0.1
-
-    def alternating(start, size):
-        up, out = start, []
-        for t in np.sort(rng.choice(np.arange(0.0, t_end, step), size)):
-            up = 1 - up
-            out.append((float(t), 1 if up else -1))
-        return out
-
-    starts = [int(rng.random() < 0.8) for _ in range(int(rng.integers(1, 7)))]
-    events = [
-        (t, c, e)
-        for c, start in enumerate(starts)
-        for t, e in alternating(start, int(rng.integers(0, 12)))
-    ]
-    events.sort(key=lambda event: event[0])  # stable: in time order
-    system_start = int(rng.random() < 0.7)
-    system_timeline = [(0.0, system_start)]
-    system_timeline += alternating(system_start, int(rng.integers(0, 10)))
-    system_timeline += [(t_end, 0)]
-    fast = repairable_rbd._overlap_times(
-        starts,
-        [c for _, c, _ in events],
-        [t for t, _, _ in events],
-        [e for _, _, e in events],
-        system_timeline,
-        t_end,
-    )
-    expected = overlaps_one_at_a_time(starts, events, system_timeline, t_end)
-    assert fast == expected  # to the last bit
 
 
 # -- composite nodes inside an RBD --------------------------------------------

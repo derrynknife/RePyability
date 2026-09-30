@@ -4,7 +4,9 @@ import numpy as np
 import pytest
 import surpyval as surv
 
+from repyability.rbd._streams import FAILURE, REPAIR
 from repyability.rbd.repairable_rbd import RepairableRBD
+from repyability.tests.keyed_draws import KeyedDraws
 
 
 def test_repairable_rbd_missing_repairability_component():
@@ -60,6 +62,7 @@ def test_repairable_rbd_availability_one_component_1N():
 
     # Let's run the sim for 50 units of time
     t_simulation = 50
+    draws = KeyedDraws(rbd, t_simulation, seed)
 
     # Form expected availability
     # At t=0, availability=1 (it starts working)
@@ -67,7 +70,7 @@ def test_repairable_rbd_availability_one_component_1N():
     exp_availability = [1]
 
     # Get first failure event
-    t_next_event = reliability_dist.random(1)[0]
+    t_next_event = draws.next(("c",), FAILURE)
     is_comp_working = True
 
     while t_next_event < t_simulation:
@@ -79,7 +82,7 @@ def test_repairable_rbd_availability_one_component_1N():
 
             # And get the next repair event
             # (the current time + the next event random sample)
-            t_next_event += repairability_dist.random(1)[0]
+            t_next_event += draws.next(("c",), REPAIR)
 
         else:
             # Repair event to be applied
@@ -88,7 +91,7 @@ def test_repairable_rbd_availability_one_component_1N():
             is_comp_working = True
 
             # And get the next failure event
-            t_next_event += reliability_dist.random(1)[0]
+            t_next_event += draws.next(("c",), FAILURE)
 
     # Now check if expected == actual, remembering to reset the seed
     np.random.seed(seed)
@@ -135,6 +138,7 @@ def test_repairable_rbd_availability_one_component_10N():
 
     # Let's run the sim for 50 units of time
     t_simulation = 50
+    draws = KeyedDraws(rbd, t_simulation, seed)
 
     # Form expected availability
     # At t=0, availability=1 (it starts working)
@@ -147,7 +151,7 @@ def test_repairable_rbd_availability_one_component_10N():
         exp_timeline[0] += 1
 
         # Get first failure event
-        t_next_event = reliability_dist.random(1)[0]
+        t_next_event = draws.next(("c",), FAILURE, i)
         is_comp_working = True
 
         while t_next_event < t_simulation:
@@ -158,7 +162,7 @@ def test_repairable_rbd_availability_one_component_10N():
 
                 # And get the next repair event
                 # (the current time + the next event random sample)
-                t_next_event += repairability_dist.random(1)[0]
+                t_next_event += draws.next(("c",), REPAIR, i)
 
             else:
                 # Repair event to be applied
@@ -166,7 +170,7 @@ def test_repairable_rbd_availability_one_component_10N():
                 is_comp_working = True
 
                 # And get the next failure event
-                t_next_event += reliability_dist.random(1)[0]
+                t_next_event += draws.next(("c",), FAILURE, i)
 
     # Make the time and availability lists, sorted by time
     exp_t = sorted(exp_timeline.keys())
@@ -223,18 +227,19 @@ def test_repairable_rbd_availability_two_parallel_components_1N():
     # Before anything, set the numpy seed randomly
     seed = np.random.randint(0, 100)
     np.random.seed(seed)
+    draws = KeyedDraws(rbd, 50, seed)
 
     # Get the first failure event for each component
     next_component_events = {
         "c1": {
             "component": "c1",
             "type": "failure",
-            "time": reliability_dist.random(1)[0],
+            "time": draws.next(("c1",), FAILURE),
         },
         "c2": {
             "component": "c2",
             "type": "failure",
-            "time": reliability_dist.random(1)[0],
+            "time": draws.next(("c2",), FAILURE),
         },
     }
 
@@ -288,7 +293,7 @@ def test_repairable_rbd_availability_two_parallel_components_1N():
             next_component_events[component] = {
                 "component": component,
                 "type": "repair",
-                "time": next_event["time"] + repairability_dist.random(1)[0],
+                "time": next_event["time"] + draws.next((component,), REPAIR),
             }
 
         # Else, the next event is a repair, set the component's state to
@@ -305,7 +310,7 @@ def test_repairable_rbd_availability_two_parallel_components_1N():
             next_component_events[component] = {
                 "component": component,
                 "type": "failure",
-                "time": next_event["time"] + reliability_dist.random(1)[0],
+                "time": next_event["time"] + draws.next((component,), FAILURE),
             }
 
         # Get next event
@@ -356,18 +361,19 @@ def test_repairable_rbd_availability_two_series_components_1N():
     # Before anything, set the numpy seed randomly
     seed = np.random.randint(0, 100)
     np.random.seed(seed)
+    draws = KeyedDraws(rbd, 50, seed)
 
     # Get the first failure event for each component
     next_component_events = {
         "c1": {
             "component": "c1",
             "type": "failure",
-            "time": reliability_dist.random(1)[0],
+            "time": draws.next(("c1",), FAILURE),
         },
         "c2": {
             "component": "c2",
             "type": "failure",
-            "time": reliability_dist.random(1)[0],
+            "time": draws.next(("c2",), FAILURE),
         },
     }
 
@@ -421,7 +427,7 @@ def test_repairable_rbd_availability_two_series_components_1N():
             next_component_events[component] = {
                 "component": component,
                 "type": "repair",
-                "time": next_event["time"] + repairability_dist.random(1)[0],
+                "time": next_event["time"] + draws.next((component,), REPAIR),
             }
 
         # Else, the next event is a repair, set the component's state to
@@ -438,7 +444,7 @@ def test_repairable_rbd_availability_two_series_components_1N():
             next_component_events[component] = {
                 "component": component,
                 "type": "failure",
-                "time": next_event["time"] + reliability_dist.random(1)[0],
+                "time": next_event["time"] + draws.next((component,), FAILURE),
             }
 
         # Get next event

@@ -75,7 +75,10 @@ surpyval samples from numpy's **global** random number generator, so a seed
 is applied to it for the duration of the call and the caller's generator
 state is restored afterwards. Seeded calls are reproducible without
 disturbing the surrounding program; unseeded calls draw from wherever the
-global generator is.
+global generator is. A `RepairableRBD`'s simulations draw from random
+streams of their own instead, one for each component and quantity, seeded
+from `seed` (see [Random streams](simulation.md#random-streams)); an
+unseeded run takes its seed from the global generator.
 
 ```python
 rbd.mean(1_000, seed=0) == rbd.mean(1_000, seed=0)   # True
@@ -98,10 +101,12 @@ results do not depend on which internal path a model takes. Non-parametric
 nodes are the exception: surpyval takes one seed from the global generator
 for each call rather than one random number for each draw, so a block of
 their draws differs from the same draws made one at a time. Their results
-are still reproducible. A parallel run
-(`n_jobs`) seeds each block of simulations in turn from `seed`, so its
-results do not depend on the number of processes; they differ from a run
-without `n_jobs` (see [Parallel runs](simulation.md#parallel-runs)).
+are still reproducible. A parallel run of a `NonRepairableRBD` (`n_jobs`)
+seeds each block of simulations in turn from `seed`, so its results do not
+depend on the number of processes; they differ from a run without
+`n_jobs`. A `RepairableRBD`'s results are the same with `n_jobs` or
+without, and with either engine (see [Parallel
+runs](simulation.md#parallel-runs)).
 
 ## What is exact and what is simulated
 
@@ -141,14 +146,17 @@ without `n_jobs` (see [Parallel runs](simulation.md#parallel-runs)).
 - **Simulations** are vectorised where the models allow it: `mean()` of a
   system of parametric components draws 100 000 lifetimes in well under a
   second. Availability simulations step through events, so their cost grows
-  with `N` times the number of failures and repairs in the window.
+  with `N` times the number of failures and repairs in the window; with
+  numba installed (`pip install "repyability[fast]"`) they run compiled,
+  about ten times as fast (see [The compiled
+  engine](simulation.md#the-compiled-engine)).
 - **Monte-Carlo error** shrinks like `1/√N`: use the confidence intervals
   (`mean_time_to_failure_interval`, `mean_availability_interval`,
   `availability_interval`, `CostResult.mean_interval`) to judge `N`, or pass
   a `tolerance` to simulate until they are narrow enough. Antithetic pairs
   and common random numbers (`compare`) get more precision from each
-  simulation, and `n_jobs` spreads the simulations over several processes:
-  see [Simulation precision and speed](simulation.md).
+  simulation, and `n_jobs` spreads the simulations over several CPUs: see
+  [Simulation precision and speed](simulation.md).
 
 !!! note "Known limit: long paths through a mesh"
     The minimal path sets of the part of a diagram that does not reduce are

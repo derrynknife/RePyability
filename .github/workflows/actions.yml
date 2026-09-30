@@ -70,6 +70,33 @@ jobs:
           name: coverage-html-report
           path: htmlcov/
 
+  test-numba:
+    # numba is optional, so the other jobs run without it (and test that
+    # everything falls back to the Python engine); this one installs it, so
+    # the compiled engine runs and its results are checked against Python's.
+    name: test (with numba, Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.14']
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set-up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install the package with the compiled engine
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev,fast]
+          python -c "import numba; print('numba', numba.__version__)"
+
+      - name: pytest
+        run: python -m pytest -q
+
   test-minimum:
     # CI otherwise installs the newest surpyval, so once surpyval releases,
     # nothing would test the oldest one pyproject.toml still allows.

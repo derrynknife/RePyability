@@ -28,6 +28,23 @@
   allows; raise that minimum, rather than keep code for older versions,
   once RePyability needs what a newer surpyval does.
 
+## Simulation engines and seeded results
+
+- **A `RepairableRBD` simulation has two engines that must agree to the last
+  bit**: the Python event loop (`RepairableRBD._replicate`) and the compiled
+  one (`repyability/rbd/_kernel.py`, numba, the optional `fast` extra). A
+  change to the loop's events, arithmetic or order goes into both;
+  `test_simulation_engines.py` checks them against each other (run by CI's
+  `test (with numba, ...)` jobs) and the Python loop against a reference
+  written from the streams' definition. What the compiled engine does not
+  simulate, `_compiled.unsupported` sends to Python.
+- **The random streams (`repyability/rbd/_streams.py`) define every seeded
+  result.** Changing how a stream is named, seeded or laid out (its width,
+  `BLOCK_DRAWS`, `MAX_WIDTH`, `first_rows`, the expected draws in
+  `_expected_draws`) changes seeded results: that is a behaviour change for
+  the CHANGELOG, `seeded_event_loop.json` must be re-recorded, and the docs'
+  quoted numbers updated. The rows of a chunk only affect speed.
+
 ## Releasing
 
 Releases are cut from master by `.github/workflows/release.yml`, which this
