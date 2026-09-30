@@ -67,7 +67,7 @@ def serialise_model(model: Any) -> dict:
             "kind": "standby",
             "reliabilities": [serialise_model(m) for m in model.reliabilities],
             "k": model.k,
-            "n_sims": model.n_sims,
+            "mc_samples": model.mc_samples,
             "switching_probability": model.switching_probability,
             "dormancy_factor": model.dormancy_factor,
         }
@@ -101,7 +101,7 @@ def serialise_model(model: Any) -> dict:
             "models": [m.to_dict() for m in model.models],
             "load": model.load,
             "k": model.k,
-            "n_sims": model.n_sims,
+            "mc_samples": model.mc_samples,
         }
     if distribution_name(model) is not None or isinstance(
         model, NonParametric
@@ -147,7 +147,7 @@ def deserialise_model(d: dict) -> Any:
         return StandbyModel(
             [deserialise_model(m) for m in d["reliabilities"]],
             k=d["k"],
-            n_sims=d.get("n_sims", 10_000),
+            mc_samples=d.get("mc_samples", d.get("n_sims", 10_000)),
             switching_probability=d.get("switching_probability", 1.0),
             dormancy_factor=d.get("dormancy_factor", 0.0),
         )
@@ -175,7 +175,7 @@ def deserialise_model(d: dict) -> Any:
             [surpyval.from_dict(md) for md in d["models"]],
             load=d["load"],
             k=d["k"],
-            n_sims=d.get("n_sims", 10_000),
+            mc_samples=d.get("mc_samples", d.get("n_sims", 10_000)),
         )
     raise ValueError(f"Unknown model kind {kind!r}.")
 

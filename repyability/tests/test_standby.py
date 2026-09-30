@@ -69,7 +69,7 @@ def test_a_simulated_arrangement_has_one_mean():
     # the same at every call, the area under its sf, and made without
     # touching numpy's global RNG.
     w = Weibull.from_params([100, 2])
-    sim = StandbyModel([w, w, w], k=2, n_sims=2000, seed=1)
+    sim = StandbyModel([w, w, w], k=2, mc_samples=2000, seed=1)
     assert sim.model is not None
     before = np.random.get_state()[1].copy()
     assert sim.mean() == sim.mean() == sim.random(2000, seed=1).mean()
@@ -78,7 +78,7 @@ def test_a_simulated_arrangement_has_one_mean():
     area = np.trapezoid(np.ravel(sim.sf(t)), t)
     assert area == pytest.approx(sim.mean(), rel=1e-4)
     # A fresh estimate, from new draws, when asked for.
-    assert sim.mean(N=2000, seed=2) != sim.mean()
+    assert sim.mean(mc_samples=2000, seed=2) != sim.mean()
 
 
 def test_a_repairable_rbds_exact_values_repeat_with_a_simulated_node():

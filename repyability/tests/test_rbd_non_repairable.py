@@ -278,4 +278,8 @@ def test_a_system_that_cannot_fail_has_infinite_lifetimes(path):
     assert rbd.sf(50) == 1.0
     lifetimes = _within(20, lambda: rbd.random(5, seed=0))
     assert np.all(np.isinf(lifetimes))
-    assert np.isinf(_within(20, lambda: rbd.mean(20, seed=0)))
+    assert np.isinf(rbd.mean())
+    simulated = _within(
+        20, lambda: rbd.mean(method="simulate", mc_samples=20, seed=0)
+    )
+    assert np.isinf(simulated)

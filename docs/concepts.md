@@ -422,10 +422,11 @@ probability `1 − β(1 − β)` (0.79 at `β = 0.3`).
 
 Common cause is currently reflected in `sf()` / `ff()` (and quantities derived
 from them) and persists through serialisation. Groups must be symmetric
-(identical member models) and disjoint. The Monte-Carlo `random()`, `mean()`
-and MTTF interval sample the members independently and do not include CCF: an
-MTTF integrates over the whole life, where `Q` is no longer small, so it is
-outside this model. The probability-dependent importance/sensitivity and the
+(identical member models) and disjoint. An MTTF integrates over the whole
+life, where `Q` is no longer small, so it is outside this model: the exact
+`mean()` refuses CCF groups, and the Monte-Carlo `random()`,
+`mean(method="simulate")` and MTTF interval sample the members independently,
+leaving the common cause out. The probability-dependent importance/sensitivity and the
 condition-based methods do not yet account for it and raise a clear error on a
 CCF RBD; `structural_importance`, being probability-free, is unaffected.
 **Alpha-factor**, a data-estimable reparameterisation of the same
@@ -482,7 +483,7 @@ mean is the long-run value plus about `b/T`: for one component
 `b = A (E[C²]/(2E[C]) − E[U²]/(2E[U]))`, `C = U + D`, positive for a life
 that wears out, and for a system `Σ_i I_B^i b_i` to first order.
 
-`availability()` simulates `N` independent histories instead (each
+`availability()` simulates `mc_samples` independent histories instead (each
 component's alternating failures and repairs, merged in time order, with the
 system's state re-evaluated at every event) and reports the fraction of
 histories up at each time. The histories also give what the exact methods

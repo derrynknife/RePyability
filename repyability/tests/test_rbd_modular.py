@@ -354,8 +354,10 @@ def test_repairable_methods_match_the_unreduced_engine(name):
     # The structure function is the same, so the simulation is too.
     for method in ("p", "c"):
         assert_same(
-            rbd.availability(200.0, N=20, seed=5, method=method),
-            reference.availability(200.0, N=20, seed=5, method=method),
+            rbd.availability(200.0, mc_samples=20, seed=5, method=method),
+            reference.availability(
+                200.0, mc_samples=20, seed=5, method=method
+            ),
         )
 
 

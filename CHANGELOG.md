@@ -108,8 +108,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - The saving guide's table of exact and simulated analyses is tested
     against it.
   - `StandbyModel` gains `is_simulated`, as `LoadSharingModel` has.
+- **The exact system MTTF** (#122). `NonRepairableRBD.mean()` and
+  `mean_time_to_failure()` integrate the exact system reliability,
+  `MTTF = ∫ R(t) dt`, by adaptive Gauss-Legendre quadrature to about `1e-10`,
+  relative, instead of averaging 100 000 simulated lifetimes (a standard
+  error of about 0.3%). The integral splits at the node models' quantiles,
+  the steps of non-parametric fits and the grids of numerical curves, and
+  follows heavy tails until what is left is negligible. A system that may
+  never fail, or whose tail falls too slowly for a finite mean, has an
+  infinite MTTF. The MTTF is as exact as the node reliabilities it is made
+  of, and `analysis_routes()` says which nodes limit it. Nested RBDs and
+  `RepeatedNode`s bring their exact MTTFs too (`node_mttf`, `mean`).
+- **Demonstration test planning** (#129): how many units, or how long a
+  test, demonstrates a reliability at a confidence level, and what a
+  finished test demonstrated. `demonstration_sample_size` (the success run,
+  and binomial tests that allow failures), `demonstrated_reliability` (the
+  Clopper-Pearson bound, surpyval's `success_run` with no failures), and
+  Weibayes plans that test each unit for several missions when the Weibull
+  shape is known (`test_multiple`, `shape`, `demonstration_test_multiple`).
+  For a constant failure rate, `mtbf_test_time` and `demonstrated_mtbf`
+  (chi-squared). `demonstration_pass_probability` and
+  `mtbf_pass_probability` give a plan's operating characteristic: the
+  chance a design passes, for its consumer's and producer's risks. A new
+  guide page, Demonstration testing, covers them.
 
 ### Changed
+
+- **`mean()` is exact** (#122). `NonRepairableRBD.mean()` and
+  `mean_time_to_failure()` return the exact MTTF (see Added), so they give
+  different numbers than in 0.10, within the old estimate's sampling error.
+  `method="simulate"` gives the Monte-Carlo estimate as before, with the
+  same seeded numbers; a simulation option (`mc_samples`, `seed`,
+  `tolerance`, ...) given without it is ignored, with a
+  `DeprecationWarning`. The exact MTTF refuses common-cause groups (their
+  models split a failure probability they assume is small, and over a
+  whole lifetime it runs to 1), where the simulated one left them out
+  without a warning; `method="simulate"` still does. `node_mttf()` no
+  longer simulates: a nested RBD's and a repeated node's MTTF are exact,
+  and a simulated standby or load-sharing node's is the mean of the
+  lifetimes it was built from; its `mc_samples` and `seed` are ignored and
+  deprecated. `RepeatedNode.mean()` is exact too, and simulates with
+  `method="simulate"`.
+- **One name for the number of simulations** (#105): `mc_samples`, and
+  `max_samples` for its cap, everywhere. `RepairableRBD.availability()`,
+  `cost()` and `compare()` took `N` and `max_N`; `StandbyModel` and
+  `LoadSharingModel` took `n_sims` (now the attribute `mc_samples`); the
+  node models' `mean()` took `N`; and `Repairable`'s simulated policies
+  took `n_simulations`. The old names still work, with a
+  `DeprecationWarning`, until 1.0. Saved files store `mc_samples`; files
+  that store `n_sims` still load. (A result's `n_simulations`, the number
+  of simulations it was made from, keeps its name.)
 
 - **`is_analytically_solvable()` and `get_non_analytic_nodes()` flag only
   simulated nodes** (#127). They counted every standby, repeated-standby and
@@ -129,8 +177,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - a simulation is the same however the run is split up: a run with
     `n_jobs` gives the same results as one without (before, a parallel run
     differed from a serial one), a run to a tolerance that stops after `n`
-    simulations is the run of `N=n`, and the first `n` simulations of any
-    run are a run of `n`;
+    simulations is the run of `mc_samples=n`, and the first `n`
+    simulations of any run are a run of `n`;
   - one component's draws never depend on another's, and each simulation's
     `k`-th draw of each stream is fixed, so antithetic pairs pair every
     quantity (costs too, which were unpaired) and `compare` matches every
@@ -202,6 +250,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI also runs the tests on the oldest surpyval `pyproject.toml` allows, so
   the declared minimum stays tested after surpyval releases.
 
+### Deprecated
+
+- `N` and `max_N` (`RepairableRBD.availability()`, `cost()`, `compare()`),
+  `n_sims` (`StandbyModel`, `LoadSharingModel`), `N` (the node models'
+  `mean()`) and `n_simulations` (`Repairable`): use `mc_samples` and
+  `max_samples` (#105).
+- Simulation options passed to `NonRepairableRBD.mean()` or
+  `mean_time_to_failure()` without `method="simulate"`, and `node_mttf()`'s
+  `mc_samples` and `seed`: they are ignored (#122).
+- `RepeatedStandbyNode`'s `N` and `lower`, which it has ignored since its
+  reliability became a numerical convolution: passing them now warns.
+
 ### Fixed
 
 - A repairable component whose reliability is a cold `StandbyModel` with a
@@ -217,7 +277,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `mean()` is now the mean of the lifetimes simulated when the node was
   built, which its Kaplan-Meier `sf` is fitted to. It is the same on every
   call, consistent with `sf`, and reproducible with the node's `seed`.
-  `mean(N=..., seed=...)` still makes a fresh estimate.
+  `mean(mc_samples=..., seed=...)` still makes a fresh estimate.
 - A `RepairableRBD` accepted a component of any type, so a `Repairable` (a
   model of imperfect repair, which cannot be a node) or a bare surpyval
   model failed only at the first analysis, with an `AttributeError`. The

@@ -1,7 +1,9 @@
 import numpy as np
 
+from repyability.utils.deprecation import ignored, renamed
 from repyability.utils.wrappers import numpy_seed
 
+from ._mean_lifetime import mean_lifetime, model_knots
 from ._sampling import RowSampler, inverse_sampler
 
 REPEATED_NODE_TYPES = {"parallel", "series"}
@@ -16,8 +18,8 @@ class RepeatedNode:
     arranged in series (the node fails at the first copy failure) or in
     parallel (at the last). Its survival function is exact:
     ``R(x) ** repeats`` in series and ``1 - F(x) ** repeats`` in parallel,
-    with ``R`` and ``F`` the model's ``sf`` and ``ff``. Its ``mean`` is a
-    Monte-Carlo estimate.
+    with ``R`` and ``F`` the model's ``sf`` and ``ff``, and so is its
+    ``mean``, the area under ``sf``.
 
     As an RBD node, ``sf``/``ff`` give its reliability, ``random`` its
     lifetimes for Monte-Carlo system simulation and ``mean`` its MTTF.
@@ -114,22 +116,43 @@ class RepeatedNode:
 
         return RowSampler(self.repeats, draw)
 
-    def mean(self, N=1_000_000, seed=None):
-        """Mean lifetime (MTTF) of the node, by Monte Carlo.
+    def mean(self, mc_samples=None, seed=None, *, method="exact", N=None):
+        """Mean lifetime (MTTF) of the node.
 
-        The mean of ``N`` draws of ``random``, not an exact integral.
+        Exact by default: the area under ``sf``, integrated by adaptive
+        Gauss-Legendre quadrature to about ``1e-10``, relative, and ``inf``
+        if the node may never fail (its model has units that never fail,
+        and the node needs only them). ``method="simulate"`` estimates it
+        instead, as the mean of ``mc_samples`` draws of ``random``.
 
         Parameters
         ----------
-        N : int, optional
-            The number of draws, by default 1_000_000.
+        mc_samples : int, optional
+            With ``method="simulate"``: the number of draws, by default
+            1_000_000.
         seed : int or None, optional
-            Seed for the draws (see ``random``), by default None.
+            With ``method="simulate"``: the seed for the draws (see
+            ``random``), by default None.
+        method : {"exact", "simulate"}, optional
+            How to find the mean, by default ``"exact"``.
+        N : int, optional
+            Deprecated: the old name of ``mc_samples``.
 
         Returns
         -------
         float
-            The estimated mean lifetime.
+            The mean lifetime, or with ``method="simulate"`` its estimate.
+
+        Raises
+        ------
+        ValueError
+            If ``method`` is neither ``"exact"`` nor ``"simulate"``.
+
+        Warns
+        -----
+        DeprecationWarning
+            If ``N`` is given, or a simulation option without
+            ``method="simulate"`` (it is ignored).
 
         Examples
         --------
@@ -137,10 +160,25 @@ class RepeatedNode:
         >>> from repyability import RepeatedNode
         >>> unit = surv.Weibull.from_params([100.0, 2.0])
         >>> node = RepeatedNode(unit, 3, "series")
-        >>> round(float(node.mean(N=10_000, seed=1)), 1)  # exact: 51.17
+        >>> round(node.mean(), 4)  # 100 * Gamma(1.5) / sqrt(3)
+        51.1663
+        >>> round(node.mean(method="simulate", mc_samples=10_000, seed=1), 1)
         51.1
         """
-        return self.random(N, seed=seed).mean()
+        mc_samples = renamed("mc_samples", mc_samples, "N", N)
+        if method == "exact":
+            ignored(
+                "RepeatedNode.mean()",
+                "the mean is exact unless method='simulate'.",
+                {"mc_samples": mc_samples, "seed": seed},
+            )
+            return mean_lifetime(self.sf, model_knots(self.model))
+        if method != "simulate":
+            raise ValueError(
+                f"method must be 'exact' or 'simulate', got {method!r}."
+            )
+        count = 1_000_000 if mc_samples is None else mc_samples
+        return float(self.random(count, seed=seed).mean())
 
     def sf(self, x):
         """Survival function (reliability) of the node, exactly.

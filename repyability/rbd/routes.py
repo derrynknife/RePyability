@@ -92,7 +92,8 @@ def model_route(model) -> Tuple[str, str]:
         if model.is_simulated:
             return (
                 SIMULATED,
-                f"a Kaplan-Meier fit to {model.n_sims} simulated lifetimes",
+                f"a Kaplan-Meier fit to {model.mc_samples} simulated "
+                "lifetimes",
             )
         if isinstance(model._sf_model, ConvolvedSurvival):
             return NUMERICAL, "a numerical convolution of its units' lives"
@@ -115,6 +116,40 @@ def model_route(model) -> Tuple[str, str]:
     if isinstance(model, NonParametric):
         return EXACT, "its fitted curve"
     return EXACT, "its own sf"
+
+
+def mean_route(model) -> Tuple[str, str]:
+    """How a node model's mean lifetime (its ``mean()``) is found: the route,
+    and a phrase saying how, or the message its ``mean()`` would raise."""
+    from .degrading_node import DegradingNode
+    from .load_sharing_node import LoadSharingModel
+    from .non_repairable_rbd import NonRepairableRBD
+    from .regression_node import RegressionNode
+    from .repeated_node import RepeatedNode
+    from .standby_node import StandbyModel
+
+    if isinstance(model, NonRepairableRBD):
+        message = refusal(model._require_lifetimes)
+        if message:
+            return REFUSED, message
+    if isinstance(model, (NonRepairableRBD, RepeatedNode)):
+        route, how = model_route(model)
+        if route == EXACT:
+            return NUMERICAL, "the area under its exact reliability"
+        return route, f"the area under its reliability, from {how}"
+    if isinstance(model, DegradingNode):
+        return EXACT, "the sum of its stages' mean times"
+    if isinstance(model, (StandbyModel, LoadSharingModel)):
+        if model.is_simulated:
+            return (
+                SIMULATED,
+                f"the mean of the {model.mc_samples} lifetimes simulated "
+                "when it was built",
+            )
+        return model_route(model)
+    if isinstance(model, RegressionNode):
+        return NUMERICAL, "the mean of its survival function on a grid"
+    return EXACT, "its model's mean"
 
 
 def with_nodes(

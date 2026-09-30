@@ -189,7 +189,7 @@ def test_every_draw_comes_from_its_stream(name, antithetic, monkeypatch):
     monkeypatch.setattr(_streams.Stream, "draw", recorded)
     window = 150.0
     rbd.availability(
-        window, N=12, seed=31, antithetic=antithetic, engine="python"
+        window, mc_samples=12, seed=31, antithetic=antithetic, engine="python"
     )
     entropy = _streams.entropy_of(31)
     kinds = set()
@@ -313,7 +313,7 @@ def test_plain_simulation_matches_the_reference(name, options):
     t_end, n = 120.0, 30
     result = rbd.availability(
         t_end,
-        N=n,
+        mc_samples=n,
         seed=41,
         engine="python",
         working_nodes=options.get("working"),
@@ -402,23 +402,30 @@ def systems_of_every_kind():
 def test_a_simulation_is_the_same_however_the_run_is_cut_up(name):
     rbd = systems_of_every_kind()[name]
     window = 20000.0 if name == "instrument air" else 150.0
-    whole = rbd.availability(window, N=40, seed=51, engine="python")
+    whole = rbd.availability(window, mc_samples=40, seed=51, engine="python")
     identical(
         whole,
-        rbd.availability(window, N=40, seed=51, engine="python", n_jobs=2),
+        rbd.availability(
+            window, mc_samples=40, seed=51, engine="python", n_jobs=2
+        ),
     )
-    first = rbd.availability(window, N=15, seed=51, engine="python")
+    first = rbd.availability(window, mc_samples=15, seed=51, engine="python")
     np.testing.assert_array_equal(first.uptimes, whole.uptimes[:15])
     # A run to a tolerance that stops after n simulations is a run of n.
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
         stopped = rbd.availability(
-            window, N=20, seed=51, engine="python", tolerance=1e-9, max_N=40
+            window,
+            mc_samples=20,
+            seed=51,
+            engine="python",
+            tolerance=1e-9,
+            max_samples=40,
         )
     n = stopped.n_simulations
     identical(
         stopped,
-        rbd.availability(window, N=n, seed=51, engine="python"),
+        rbd.availability(window, mc_samples=n, seed=51, engine="python"),
     )
 
 
@@ -437,7 +444,7 @@ def test_a_nested_rbd_can_be_held_working_or_broken(name, forced):
     for node, component in rbd.components.items():
         if isinstance(component, RepairableRBD):
             options = dict(
-                t_simulation=200.0, N=30, seed=26, **{forced: [node]}
+                t_simulation=200.0, mc_samples=30, seed=26, **{forced: [node]}
             )
             result = rbd.availability(engine="python", **options)
             identical(
@@ -450,7 +457,7 @@ def test_a_nested_rbd_can_be_held_working_or_broken(name, forced):
 def test_an_unstreamable_maintenance_time_still_takes_time():
     rbd = systems_of_every_kind()["unstreamable maintenance"]
     assert not rbd._stream_specs(200.0)[1]
-    result = rbd.availability(200.0, N=30, seed=31)
+    result = rbd.availability(200.0, mc_samples=30, seed=31)
     assert result.system_planned_outages > 0
     assert result.node_uptime["a"] < 200.0 * 30
 
@@ -468,14 +475,14 @@ def test_an_unstreamable_component_leaves_the_others_alone():
             "b": {"reliability": W([40, 2]), "repairability": E([0.5])},
         },
     )
-    a_mixed = mixed.availability(300.0, N=50, seed=3).node_uptime["a"]
-    a_plain = plain.availability(300.0, N=50, seed=3).node_uptime["a"]
+    a_mixed = mixed.availability(300.0, mc_samples=50, seed=3).node_uptime["a"]
+    a_plain = plain.availability(300.0, mc_samples=50, seed=3).node_uptime["a"]
     assert a_mixed == a_plain
     # Antithetic pairs and common random numbers need every draw streamed.
     with pytest.raises(NotImplementedError):
-        mixed.availability(100.0, N=10, seed=1, antithetic=True)
+        mixed.availability(100.0, mc_samples=10, seed=1, antithetic=True)
     with pytest.raises(NotImplementedError):
-        mixed.compare(plain, 100.0, N=10, seed=1)
+        mixed.compare(plain, 100.0, mc_samples=10, seed=1)
 
 
 @pytest.mark.parametrize("name", ["costed_pairs", "maintained", "nested_koon"])
@@ -483,18 +490,18 @@ def test_the_global_rng_is_left_as_it_was(name):
     rbd = repairable_rbds()[name]
     np.random.seed(7)
     before = np.random.get_state()[1].copy()
-    rbd.availability(100.0, N=10, seed=3)
+    rbd.availability(100.0, mc_samples=10, seed=3)
     assert np.array_equal(np.random.get_state()[1], before)
     # Without a seed, the run takes one number, and is the run that
     # seeding with the same number gives.
     np.random.seed(7)
-    unseeded = rbd.availability(100.0, N=10)
+    unseeded = rbd.availability(100.0, mc_samples=10)
     after = np.random.get_state()
     np.random.seed(7)
     np.random.randint(0, 2**62, dtype=np.int64)
     expected = np.random.get_state()
     assert np.array_equal(after[1], expected[1]) and after[2] == expected[2]
-    identical(unseeded, rbd.availability(100.0, N=10, seed=7))
+    identical(unseeded, rbd.availability(100.0, mc_samples=10, seed=7))
 
 
 # -- the engines --------------------------------------------------------------
@@ -502,7 +509,9 @@ def test_the_global_rng_is_left_as_it_was(name):
 
 def test_an_unknown_engine_is_refused():
     with pytest.raises(ValueError, match="engine"):
-        plain_rbds()["bridge"].availability(10.0, N=2, seed=1, engine="fast")
+        plain_rbds()["bridge"].availability(
+            10.0, mc_samples=2, seed=1, engine="fast"
+        )
 
 
 @pytest.mark.parametrize(
@@ -519,8 +528,8 @@ def test_the_compiled_engine_says_what_it_cannot_run(name, reason):
     assert reason in _compiled.unsupported(rbd, plan, None)
     # "auto" runs it in Python.
     identical(
-        rbd.availability(100.0, N=5, seed=2),
-        rbd.availability(100.0, N=5, seed=2, engine="python"),
+        rbd.availability(100.0, mc_samples=5, seed=2),
+        rbd.availability(100.0, mc_samples=5, seed=2, engine="python"),
     )
 
 
@@ -561,34 +570,40 @@ def test_a_subclassed_component_runs_in_python(monkeypatch):
 
     monkeypatch.setattr(_compiled, "worthwhile", lambda plan, N: True)
     monkeypatch.setattr(_compiled, "Runner", compiled)
-    rbd.availability(100.0, N=5, seed=2)
+    rbd.availability(100.0, mc_samples=5, seed=2)
 
 
 @needs_numba
 def test_the_compiled_engine_refuses_what_it_cannot_run():
     rbd = repairable_rbds()["maintained"]
     with pytest.raises(NotImplementedError, match="preventive maintenance"):
-        rbd.availability(100.0, N=5, seed=2, engine="numba")
+        rbd.availability(100.0, mc_samples=5, seed=2, engine="numba")
 
 
 def test_without_numba_the_compiled_engine_cannot_be_asked_for(monkeypatch):
     monkeypatch.setattr(_compiled, "available", lambda: False)
     rbd = plain_rbds()["bridge"]
     with pytest.raises(ImportError, match="repyability\\[fast\\]"):
-        rbd.availability(10.0, N=2, seed=1, engine="numba")
+        rbd.availability(10.0, mc_samples=2, seed=1, engine="numba")
     # "auto" runs in Python.
-    rbd.availability(10.0, N=2, seed=1)
+    rbd.availability(10.0, mc_samples=2, seed=1)
 
 
 @needs_numba
 @pytest.mark.parametrize(
     "options",
     [
-        dict(t_simulation=300.0, N=60, seed=21),
-        dict(t_simulation=200.0, N=30, seed=22, method="c"),
-        dict(t_simulation=200.0, N=40, seed=26, antithetic=True),
-        dict(t_simulation=500.0, N=700, seed=27, n_jobs=3),
-        dict(t_simulation=100.0, N=50, seed=28, tolerance=1e-9, max_N=150),
+        dict(t_simulation=300.0, mc_samples=60, seed=21),
+        dict(t_simulation=200.0, mc_samples=30, seed=22, method="c"),
+        dict(t_simulation=200.0, mc_samples=40, seed=26, antithetic=True),
+        dict(t_simulation=500.0, mc_samples=700, seed=27, n_jobs=3),
+        dict(
+            t_simulation=100.0,
+            mc_samples=50,
+            seed=28,
+            tolerance=1e-9,
+            max_samples=150,
+        ),
     ],
     ids=["plain", "cut sets", "antithetic", "threads", "tolerance"],
 )
@@ -609,7 +624,7 @@ def test_the_engines_agree_with_forced_nodes(forced):
         first = rbd.nodes[0]
         for engine in ("python", "numba"):
             options = dict(
-                t_simulation=200.0, N=30, seed=24, **{forced: [first]}
+                t_simulation=200.0, mc_samples=30, seed=24, **{forced: [first]}
             )
             if engine == "python":
                 python = rbd.availability(engine=engine, **options)
@@ -643,8 +658,12 @@ def test_the_engines_agree_on_large_systems(pairs):
     assert len(rbd.components) > _compiled.MAX_TABLED
     for options in ({}, {"antithetic": True}, {"n_jobs": 2}):
         identical(
-            rbd.availability(200.0, N=40, seed=3, engine="python", **options),
-            rbd.availability(200.0, N=40, seed=3, engine="numba", **options),
+            rbd.availability(
+                200.0, mc_samples=40, seed=3, engine="python", **options
+            ),
+            rbd.availability(
+                200.0, mc_samples=40, seed=3, engine="numba", **options
+            ),
         )
 
 
@@ -654,7 +673,7 @@ def test_a_run_on_threads_leaves_numbas_thread_count_alone():
 
     before = numba.get_num_threads()
     plain_rbds()["bridge"].availability(
-        100.0, N=50, seed=1, engine="numba", n_jobs=2
+        100.0, mc_samples=50, seed=1, engine="numba", n_jobs=2
     )
     assert numba.get_num_threads() == before
 
@@ -663,8 +682,8 @@ def test_a_run_on_threads_leaves_numbas_thread_count_alone():
 def test_the_engines_agree_on_costs_and_comparisons():
     rbd = plain_rbds()["costed"]
     identical(
-        rbd.cost(200.0, N=50, seed=5, engine="python"),
-        rbd.cost(200.0, N=50, seed=5, engine="numba"),
+        rbd.cost(200.0, mc_samples=50, seed=5, engine="python"),
+        rbd.cost(200.0, mc_samples=50, seed=5, engine="numba"),
     )
     faster = RepairableRBD(
         [("s", "x"), ("x", "y"), ("s", "z"), ("y", "t"), ("z", "t")],
@@ -686,13 +705,18 @@ def test_the_engines_agree_on_costs_and_comparisons():
             rbd.compare(
                 faster,
                 100.0,
-                N=300,
+                mc_samples=300,
                 seed=6,
                 quantity=quantity,
                 engine="python",
             ),
             rbd.compare(
-                faster, 100.0, N=300, seed=6, quantity=quantity, engine="numba"
+                faster,
+                100.0,
+                mc_samples=300,
+                seed=6,
+                quantity=quantity,
+                engine="numba",
             ),
         )
 
@@ -704,9 +728,9 @@ def test_the_compiled_engine_runs_out_and_carries_on(monkeypatch):
     # with more, and ends with the same results.
     rbd = plain_rbds()["koon"]
     monkeypatch.setattr(_streams, "first_rows", lambda expected: 1)
-    expected = rbd.availability(300.0, N=200, seed=8, engine="python")
+    expected = rbd.availability(300.0, mc_samples=200, seed=8, engine="python")
     monkeypatch.setattr(_compiled, "BATCH_BYTES", 2**12)
-    short = rbd.availability(300.0, N=200, seed=8, engine="numba")
+    short = rbd.availability(300.0, mc_samples=200, seed=8, engine="numba")
     identical(expected, short)
     assert short.system_failures > 0
 
@@ -749,8 +773,8 @@ def test_auto_compiles_long_runs(monkeypatch):
 
     monkeypatch.setattr(_compiled, "Runner", spy)
     monkeypatch.setattr(_compiled, "compiled", lambda: False)
-    rbd.availability(100.0, N=10, seed=1)
+    rbd.availability(100.0, mc_samples=10, seed=1)
     assert not chosen
     monkeypatch.setattr(_compiled, "AUTO_DRAWS", 1)
-    rbd.availability(100.0, N=10, seed=1)
+    rbd.availability(100.0, mc_samples=10, seed=1)
     assert chosen

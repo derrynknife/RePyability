@@ -35,11 +35,13 @@ from numpy.typing import ArrayLike
 from scipy.optimize import brentq
 from surpyval import NonParametric
 
+from repyability.utils.deprecation import ignored
 from repyability.utils.wrappers import conditional_survival, numpy_seed
 
 from . import _montecarlo as montecarlo
 from . import capacity as _capacity
 from . import redundancy_allocation
+from ._mean_lifetime import mean_lifetime, model_knots
 from ._model_utils import is_fixed_probability, model_mean, parametric_spec
 from ._sampling import RowSampler, row_sampler
 from .ccf import CCFGroup
@@ -3268,7 +3270,7 @@ class NonRepairableRBD(RBD):
         True
         >>> trio = NonRepairableRBD(
         ...     [("s", "a"), ("a", "t")],
-        ...     {"a": StandbyModel([unit] * 3, k=2, n_sims=2000, seed=1)},
+        ...     {"a": StandbyModel([unit] * 3, k=2, mc_samples=2000, seed=1)},
         ... )
         >>> trio.is_analytically_solvable()
         False
@@ -3310,7 +3312,9 @@ class NonRepairableRBD(RBD):
         >>> rbd = NonRepairableRBD(
         ...     [("s", "a"), ("a", "b"), ("b", "t")],
         ...     {
-        ...         "a": StandbyModel([unit] * 3, k=2, n_sims=2000, seed=1),
+        ...         "a": StandbyModel(
+        ...             [unit] * 3, k=2, mc_samples=2000, seed=1
+        ...         ),
         ...         "b": unit,
         ...     },
         ... )
@@ -3513,13 +3517,28 @@ class NonRepairableRBD(RBD):
             )
             + independent,
         )
+        lifetimes = r.refusal(self._require_lifetimes)
+        grouped_inside = tuple(
+            n
+            for n, m in self.reliabilities.items()
+            if isinstance(m, NonRepairableRBD) and m._grouped()
+        )
         give(
-            ("mean", "mean_time_to_failure", "mean_time_to_failure_interval"),
-            r.AnalysisRoute(
-                r.SIMULATED,
-                "The mean of Monte-Carlo lifetimes (see random)."
-                + independent,
+            ("mean", "mean_time_to_failure"),
+            (
+                r.refused(lifetimes, grouped_inside)
+                if lifetimes
+                else built(
+                    r.NUMERICAL,
+                    "The exact reliability, integrated over time by adaptive "
+                    "Gauss-Legendre quadrature (to about 1e-10, relative).",
+                )
             ),
+        )
+        out["mean_time_to_failure_interval"] = r.AnalysisRoute(
+            r.SIMULATED,
+            "The mean of Monte-Carlo lifetimes (see random), with its "
+            "confidence interval." + independent,
         )
         replay = r.refusal(self._require_replayable)
         out["compare"] = (
@@ -3531,11 +3550,16 @@ class NonRepairableRBD(RBD):
                 "numbers." + independent,
             )
         )
-        out["node_mttf"] = r.with_nodes(
-            r.EXACT,
-            "Each node's own mean lifetime.",
-            {n: self._mttf_route(m) for n, m in self.reliabilities.items()},
-            "means",
+        means = {n: r.mean_route(m) for n, m in self.reliabilities.items()}
+        refusals = {
+            n: how for n, (route, how) in means.items() if route == r.REFUSED
+        }
+        out["node_mttf"] = (
+            r.refused(next(iter(refusals.values())), tuple(refusals))
+            if refusals
+            else r.with_nodes(
+                r.EXACT, "Each node's own mean lifetime.", means, "means"
+            )
         )
         allocation = r.refusal(self._require_no_ccf_for_allocation)
         give(
@@ -3569,23 +3593,6 @@ class NonRepairableRBD(RBD):
         )
         return dict(sorted(out.items()))
 
-    @staticmethod
-    def _mttf_route(model) -> Tuple[str, str]:
-        """How ``node_mttf`` finds a node's mean lifetime: its route, and a
-        phrase saying how."""
-        from repyability.rbd import routes as r
-        from repyability.rbd.regression_node import RegressionNode
-
-        if isinstance(model, (NonRepairableRBD, RepeatedNode)):
-            return r.SIMULATED, "the mean of Monte-Carlo lifetimes"
-        if isinstance(model, (StandbyModel, LoadSharingModel)):
-            if model.is_simulated:
-                return r.SIMULATED, "the mean of Monte-Carlo lifetimes"
-            return r.model_route(model)
-        if isinstance(model, RegressionNode):
-            return r.NUMERICAL, "the mean of its survival function on a grid"
-        return r.EXACT, "its model's mean"
-
     def random(
         self,
         size,
@@ -3612,8 +3619,9 @@ class NonRepairableRBD(RBD):
 
         Common-cause groups are ignored, without a warning: their
         basic-event model assumes a small failure probability, while a
-        lifetime runs to ``Q = 1``. The same applies to ``mean``,
-        ``mean_time_to_failure`` and ``mean_time_to_failure_interval``.
+        lifetime runs to ``Q = 1``. The same applies to
+        ``mean(method="simulate")``, ``mean_time_to_failure_interval`` and
+        ``compare``; the exact ``mean`` refuses them.
         Fixed-probability nodes have no lifetime (surpyval draws 0/1 event
         indicators for them), so the samples are not meaningful for an RBD
         containing any.
@@ -3855,69 +3863,104 @@ class NonRepairableRBD(RBD):
 
     def mean(
         self,
-        mc_samples: int = 100_000,
+        mc_samples: Optional[int] = None,
         seed=None,
         *,
+        method: str = "exact",
         tolerance: Optional[float] = None,
-        confidence: float = 0.95,
+        confidence: Optional[float] = None,
         max_samples: Optional[int] = None,
         antithetic: bool = False,
         n_jobs: Optional[int] = None,
-    ):
-        """Mean time to failure (MTTF) of the system, by Monte-Carlo.
+    ) -> float:
+        """Mean time to failure (MTTF) of the system.
 
-        The average of ``random(mc_samples, seed=seed)`` (see
-        [`random`][repyability.NonRepairableRBD.random]), so it ignores
-        common-cause groups and is not meaningful for fixed-probability
-        nodes. The estimate's standard error is the lifetimes' standard
-        deviation over ``sqrt(mc_samples)``; use
-        ``mean_time_to_failure_interval`` to get it with a confidence
-        interval. This is also the MTTF used for this RBD when it is
-        nested as a node of another RBD (see ``node_mttf``).
+        Exact by default: the area under the system reliability,
+        ``MTTF = integral from 0 to infinity of R(t) dt``, with ``R`` the
+        exact [`sf`][repyability.NonRepairableRBD.sf], integrated by
+        adaptive Gauss-Legendre quadrature to about ``1e-10``, relative. It
+        is as exact as the node reliabilities it is made of: a node whose
+        reliability is a numerical convolution, or a fit to simulated
+        lifetimes, brings its own error (see ``analysis_routes``). A system
+        that may never fail has an infinite MTTF, ``inf``: one that needs
+        only nodes some of whose units never fail (a
+        limited-failure-population model, ``PerfectReliability``). A
+        fixed-probability node counts as working, or failed, from the start
+        and for good, as ``sf`` takes it. This is also the MTTF this RBD
+        brings to another it is nested in (see ``node_mttf``).
+
+        ``method="simulate"`` estimates the MTTF instead, as the mean of
+        ``mc_samples`` simulated lifetimes (see
+        [`random`][repyability.NonRepairableRBD.random], which leaves out
+        common-cause groups); the estimate's standard error is the
+        lifetimes' standard deviation over ``sqrt(mc_samples)``.
+        ``mean_time_to_failure_interval`` gives such an estimate with its
+        confidence interval.
 
         Parameters
         ----------
         mc_samples : int, optional
-            Number of system lifetimes to simulate, by default 100_000.
+            With ``method="simulate"``: the number of system lifetimes to
+            simulate, by default 100_000.
         seed : int or None, optional
-            Seed for reproducibility (see ``random``), by default None.
+            With ``method="simulate"``: the seed for reproducibility (see
+            ``random``), by default None.
+        method : {"exact", "simulate"}, optional
+            How to find the MTTF, by default ``"exact"``.
         tolerance : float, optional
-            Simulate until the MTTF is known to within ``tolerance`` (in
-            the lifetimes' units) either side, at ``confidence``: after the
-            first ``mc_samples`` lifetimes, and each further ``mc_samples``,
-            the run stops once the half-width of the confidence interval
-            of the mean is at most ``tolerance``, or ``max_samples`` have
-            been drawn (then with a RuntimeWarning). By default None: exactly
-            ``mc_samples``. A run that stops at ``m`` lifetimes gives the
-            result of a run of ``m`` from the start (without ``n_jobs``).
+            With ``method="simulate"``: simulate until the MTTF is known to
+            within ``tolerance`` (in the lifetimes' units) either side, at
+            ``confidence``. After the first ``mc_samples`` lifetimes, and
+            each further ``mc_samples``, the run stops once the half-width of
+            the confidence interval of the mean is at most ``tolerance``, or
+            ``max_samples`` have been drawn (then with a RuntimeWarning). By
+            default None: exactly ``mc_samples``. A run that stops at ``m``
+            lifetimes gives the result of a run of ``m`` from the start
+            (without ``n_jobs``).
         confidence : float, optional
-            The confidence level ``tolerance`` is judged at, by default
-            0.95.
+            With ``method="simulate"``: the confidence level ``tolerance``
+            is judged at, by default 0.95.
         max_samples : int, optional
-            The most lifetimes a run to ``tolerance`` draws, by default 100
-            times ``mc_samples``.
+            With ``method="simulate"``: the most lifetimes a run to
+            ``tolerance`` draws, by default 100 times ``mc_samples``.
         antithetic : bool, optional
-            Draw the lifetimes in antithetic pairs (see ``random``), by
-            default False. ``mc_samples`` must then be even.
+            With ``method="simulate"``: draw the lifetimes in antithetic
+            pairs (see ``random``), by default False. ``mc_samples`` must
+            then be even.
         n_jobs : int, optional
-            Draw in parallel over ``n_jobs`` processes (see ``random``), by
-            default None.
+            With ``method="simulate"``: draw in parallel over ``n_jobs``
+            processes (see ``random``), by default None.
 
         Returns
         -------
         float
-            The MTTF estimate.
+            The MTTF (``inf`` if the system may never fail), or with
+            ``method="simulate"`` its estimate.
 
         Raises
         ------
         ValueError
-            If an option is invalid (see ``random``; ``max_samples``
-            without a ``tolerance``, or smaller than ``mc_samples``).
+            If ``method`` is neither ``"exact"`` nor ``"simulate"``; for the
+            exact MTTF, if every node is fixed-probability, so the system has
+            no lifetimes; or if a simulation option is invalid (see
+            ``random``; ``max_samples`` without a ``tolerance``, or smaller
+            than ``mc_samples``).
+        NotImplementedError
+            For the exact MTTF, if the RBD (or an RBD nested in it) has
+            common-cause groups. Their models split a failure probability
+            they assume is small (see [`CCFGroup`][repyability.CCFGroup]),
+            while over a whole lifetime it runs to 1.
+
+        Warns
+        -----
+        DeprecationWarning
+            If a simulation option is given without ``method="simulate"``:
+            it is ignored.
 
         Examples
         --------
-        A single exponential component with failure rate 0.01 has an
-        exact MTTF of 100:
+        A single exponential component with failure rate 0.01 has an MTTF
+        of 100:
 
         >>> import surpyval as surv
         >>> from repyability import NonRepairableRBD
@@ -3925,67 +3968,162 @@ class NonRepairableRBD(RBD):
         ...     [("s", "c"), ("c", "t")],
         ...     {"c": surv.Exponential.from_params([0.01])},
         ... )
-        >>> print(f"{rbd.mean(mc_samples=10_000, seed=1):.1f}")
+        >>> round(rbd.mean(), 9)
+        100.0
+        >>> estimate = rbd.mean(method="simulate", mc_samples=10_000, seed=1)
+        >>> print(f"{estimate:.1f}")
         98.9
+
+        Two in parallel last 100 + 100 - 50 = 150 on average:
+
+        >>> pair = NonRepairableRBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        ...     {n: surv.Exponential.from_params([0.01]) for n in "ab"},
+        ... )
+        >>> round(pair.mean(), 9)
+        150.0
         """
+        if method == "exact":
+            ignored(
+                "mean()",
+                "the MTTF is exact unless method='simulate'.",
+                {
+                    "mc_samples": mc_samples,
+                    "seed": seed,
+                    "tolerance": tolerance,
+                    "confidence": confidence,
+                    "max_samples": max_samples,
+                    "antithetic": antithetic,
+                    "n_jobs": n_jobs,
+                },
+            )
+            return self._exact_mean()
+        if method != "simulate":
+            raise ValueError(
+                f"method must be 'exact' or 'simulate', got {method!r}."
+            )
         samples = self._mttf_samples(
-            mc_samples,
+            100_000 if mc_samples is None else mc_samples,
             seed,
             tolerance,
-            confidence,
+            0.95 if confidence is None else confidence,
             max_samples,
             antithetic,
             n_jobs,
         )
         return samples.mean().item()
 
+    def _exact_mean(self) -> float:
+        """The exact MTTF: the area under the system reliability."""
+        self._require_lifetimes()
+        knots = [model_knots(m) for m in self.reliabilities.values()]
+        return mean_lifetime(
+            lambda t: self.sf(t), np.concatenate([np.empty(0), *knots])
+        )
+
+    def _require_lifetimes(self) -> None:
+        """Raise unless the system's exact mean lifetime is defined: its
+        reliability must vary with time, and hold over whole lifetimes,
+        which common-cause groups' models do not."""
+        if self.is_fixed:
+            raise ValueError(
+                "System reliability does not vary with time (all nodes are "
+                "fixed-probability): the system has no lifetimes to average."
+            )
+        if self._grouped():
+            raise NotImplementedError(
+                "The exact MTTF does not account for common-cause (CCF) "
+                "groups: their models split a failure probability they "
+                "assume is small (see CCFGroup), while over a whole lifetime "
+                "it runs to 1. method='simulate' estimates the MTTF with the "
+                "common cause left out."
+            )
+
+    def _grouped(self) -> bool:
+        """Whether this RBD, or one nested in it, has common-cause groups."""
+        return bool(self.ccf_groups) or any(
+            isinstance(model, NonRepairableRBD) and model._grouped()
+            for model in self.reliabilities.values()
+        )
+
     def mean_time_to_failure(
         self,
-        mc_samples: int = 100_000,
+        mc_samples: Optional[int] = None,
         seed=None,
         *,
+        method: str = "exact",
         tolerance: Optional[float] = None,
-        confidence: float = 0.95,
+        confidence: Optional[float] = None,
         max_samples: Optional[int] = None,
         antithetic: bool = False,
         n_jobs: Optional[int] = None,
-    ):
+    ) -> float:
         """Mean time to failure (MTTF) of the system; the same as ``mean``.
 
-        A Monte-Carlo estimate from ``mc_samples`` simulated lifetimes (see
-        [`mean`][repyability.NonRepairableRBD.mean]); common-cause groups
-        are ignored.
+        Exact by default, and with ``method="simulate"`` a Monte-Carlo
+        estimate from ``mc_samples`` simulated lifetimes, which leaves out
+        common-cause groups (see [`mean`][repyability.NonRepairableRBD.mean]).
 
         Parameters
         ----------
         mc_samples : int, optional
-            Number of system lifetimes to simulate, by default 100_000.
+            With ``method="simulate"``: the number of system lifetimes to
+            simulate, by default 100_000.
         seed : int or None, optional
-            Seed for reproducibility (see ``random``), by default None.
+            With ``method="simulate"``: the seed for reproducibility (see
+            ``random``), by default None.
+        method : {"exact", "simulate"}, optional
+            How to find the MTTF, by default ``"exact"``.
         tolerance : float, optional
-            Simulate until the MTTF is known to within ``tolerance`` either
-            side (see ``mean``), by default None.
+            With ``method="simulate"``: simulate until the MTTF is known to
+            within ``tolerance`` either side (see ``mean``), by default None.
         confidence : float, optional
-            The confidence level ``tolerance`` is judged at, by default
-            0.95.
+            With ``method="simulate"``: the confidence level ``tolerance``
+            is judged at, by default 0.95.
         max_samples : int, optional
-            The most lifetimes a run to ``tolerance`` draws, by default 100
-            times ``mc_samples``.
+            With ``method="simulate"``: the most lifetimes a run to
+            ``tolerance`` draws, by default 100 times ``mc_samples``.
         antithetic : bool, optional
-            Draw the lifetimes in antithetic pairs (see ``random``), by
-            default False.
+            With ``method="simulate"``: draw the lifetimes in antithetic
+            pairs (see ``random``), by default False.
         n_jobs : int, optional
-            Draw in parallel over ``n_jobs`` processes (see ``random``), by
-            default None.
+            With ``method="simulate"``: draw in parallel over ``n_jobs``
+            processes (see ``random``), by default None.
 
         Returns
         -------
         float
-            The MTTF estimate.
+            The MTTF, or its estimate.
+
+        Raises
+        ------
+        ValueError, NotImplementedError
+            As for ``mean``.
+
+        Warns
+        -----
+        DeprecationWarning
+            As for ``mean``.
         """
+        if method == "exact":
+            ignored(
+                "mean_time_to_failure()",
+                "the MTTF is exact unless method='simulate'.",
+                {
+                    "mc_samples": mc_samples,
+                    "seed": seed,
+                    "tolerance": tolerance,
+                    "confidence": confidence,
+                    "max_samples": max_samples,
+                    "antithetic": antithetic,
+                    "n_jobs": n_jobs,
+                },
+            )
+            return self._exact_mean()
         return self.mean(
             mc_samples,
             seed=seed,
+            method=method,
             tolerance=tolerance,
             confidence=confidence,
             max_samples=max_samples,
@@ -4006,7 +4144,9 @@ class NonRepairableRBD(RBD):
     ) -> ConfidenceInterval:
         """Monte-Carlo MTTF estimate with a confidence interval.
 
-        The MTTF is the mean of ``mc_samples`` simulated system lifetimes
+        ``mean`` gives the MTTF exactly; this estimates it by simulation, as
+        ``mean(method="simulate")`` does, and says how precise the estimate
+        is. The MTTF is the mean of ``mc_samples`` simulated system lifetimes
         (see [`random`][repyability.NonRepairableRBD.random]; common-cause
         groups are ignored). By the central limit theorem its sampling
         error is normal with standard error
@@ -4743,20 +4883,20 @@ class NonRepairableRBD(RBD):
         }
 
     def node_mttf(
-        self, mc_samples: int = 100_000, seed=None
+        self, mc_samples: Optional[int] = None, seed=None
     ) -> dict[Any, float]:
         """Mean time to failure (MTTF) of each component node.
 
-        Each node's MTTF comes from its own model:
+        Each node's MTTF comes from its own model, without simulating:
 
+        - a nested ``NonRepairableRBD`` or a
+          [`RepeatedNode`][repyability.RepeatedNode]: the area under its
+          reliability (see [`mean`][repyability.NonRepairableRBD.mean]);
         - a [`StandbyModel`][repyability.StandbyModel] or
           [`LoadSharingModel`][repyability.LoadSharingModel]: its
-          ``mean(mc_samples)``, exact when the node has a closed form or
-          convolution, otherwise a Monte-Carlo estimate from
-          ``mc_samples`` lifetimes;
-        - a nested ``NonRepairableRBD`` or a
-          [`RepeatedNode`][repyability.RepeatedNode]: a Monte-Carlo
-          estimate from ``mc_samples`` lifetimes;
+          ``mean()``, exact where it has a closed form or convolution, and
+          otherwise the mean of the lifetimes simulated when it was built,
+          which its reliability is fitted to;
         - a fixed-probability node: 0.0, as it has no time dimension;
         - any other model: its own ``mean()``, e.g. the exact mean of a
           surpyval distribution, except that a limited-failure-population
@@ -4769,11 +4909,9 @@ class NonRepairableRBD(RBD):
         Parameters
         ----------
         mc_samples : int, optional
-            Number of Monte-Carlo samples for the nodes estimated by
-            simulation, by default 100_000.
+            Ignored and deprecated: no node's MTTF is simulated.
         seed : int or None, optional
-            Seeds numpy's global RNG for the whole call, restoring the
-            caller's state afterwards (see ``random``), by default None.
+            Ignored and deprecated.
 
         Returns
         -------
@@ -4786,6 +4924,13 @@ class NonRepairableRBD(RBD):
         AttributeError
             If a node's model has no ``mean()`` method (e.g.
             [`PerfectReliability`][repyability.PerfectReliability]).
+        NotImplementedError
+            If a nested RBD has common-cause groups (see ``mean``).
+
+        Warns
+        -----
+        DeprecationWarning
+            If ``mc_samples`` or ``seed`` is given.
 
         Examples
         --------
@@ -4801,24 +4946,28 @@ class NonRepairableRBD(RBD):
         >>> {k: round(v, 2) for k, v in sorted(rbd.node_mttf().items())}
         {'a': 100.0, 'b': 0.0}
         """
+        ignored(
+            "node_mttf()",
+            "no node's MTTF is simulated.",
+            {"mc_samples": mc_samples, "seed": seed},
+        )
         out: dict[Any, float] = {}
-        with numpy_seed(seed):
-            for node in self.nodes:
-                model = self.reliabilities[node]
-                if isinstance(
-                    model,
-                    (
-                        StandbyModel,
-                        LoadSharingModel,
-                        NonRepairableRBD,
-                        RepeatedNode,
-                    ),
-                ):
-                    out[node] = float(np.atleast_1d(model.mean(mc_samples))[0])
-                elif is_fixed_probability(model):
-                    out[node] = 0.0
-                else:
-                    out[node] = model_mean(model)
+        for node in self.nodes:
+            model = self.reliabilities[node]
+            if isinstance(
+                model,
+                (
+                    StandbyModel,
+                    LoadSharingModel,
+                    NonRepairableRBD,
+                    RepeatedNode,
+                ),
+            ):
+                out[node] = float(np.ravel(model.mean())[0])
+            elif is_fixed_probability(model):
+                out[node] = 0.0
+            else:
+                out[node] = model_mean(model)
         return out
 
     # Importance measures

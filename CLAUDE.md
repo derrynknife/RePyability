@@ -57,6 +57,17 @@
   each method does what it says on diagrams of every kind, and that the
   saving guide's table agrees with it.
 
+## API conventions
+
+- **One name for the number of simulations**: `mc_samples`, and `max_samples`
+  for its cap in a run to a `tolerance`, in every method and constructor
+  that simulates; `seed` seeds it (#105). The old names (`N`, `max_N`,
+  `n_sims`, `n_simulations`) warn until 1.0, through
+  `repyability/utils/deprecation.py`. Use these names in new code.
+- **Exact by default, simulation on request.** Where an analysis can be
+  computed exactly or numerically, that is the default, and the Monte-Carlo
+  estimate is a `method="simulate"` away (as for `NonRepairableRBD.mean`).
+
 ## Releasing
 
 Releases are cut from master by `.github/workflows/release.yml`, which this

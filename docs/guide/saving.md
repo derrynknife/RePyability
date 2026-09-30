@@ -52,7 +52,7 @@ into a list, and loading turns it back). Loading with the wrong class
     - **Models surpyval does not know** (your own class with an `sf`) cannot
       be saved: `to_dict` raises `NotImplementedError`.
     - **Simulation-backed standby and load-sharing nodes** are saved by their
-      inputs (`n_sims`, `dormancy_factor`, ...) but not their `seed`, and are
+      inputs (`mc_samples`, `dormancy_factor`, ...) but not their `seed`, and are
       re-simulated when loaded. A reloaded simulated node's reliability can
       therefore differ from the original within Monte-Carlo error. Nodes with
       an exact reliability (cold `k = 1` standby, identical Exponential
@@ -66,9 +66,9 @@ Every Monte-Carlo method takes a `seed`:
 
 | Where | Methods |
 |---|---|
-| `NonRepairableRBD` | `random`, `mean`, `mean_time_to_failure`, `mean_time_to_failure_interval`, `compare`, `node_mttf` |
+| `NonRepairableRBD` | `random`, `mean` and `mean_time_to_failure` with `method="simulate"`, `mean_time_to_failure_interval`, `compare` |
 | `RepairableRBD` | `availability`, `cost`, `compare` |
-| Node models | `StandbyModel(seed=...)`, `LoadSharingModel(seed=...)`, `RepeatedNode.random`/`mean`, `RepeatedStandbyNode.random`, `StandbyModel.random`, `LoadSharingModel.random` |
+| Node models | `StandbyModel(seed=...)`, `LoadSharingModel(seed=...)`, `RepeatedNode.random`, `RepeatedNode.mean` with `method="simulate"`, `RepeatedStandbyNode.random`, `StandbyModel.random`, `LoadSharingModel.random` |
 | `Repairable` | every simulation-backed method |
 
 surpyval samples from numpy's **global** random number generator, so a seed
@@ -81,7 +81,7 @@ from `seed` (see [Random streams](simulation.md#random-streams)); an
 unseeded run takes its seed from the global generator.
 
 ```python
-rbd.mean(1_000, seed=0) == rbd.mean(1_000, seed=0)   # True
+(rbd.random(1_000, seed=0) == rbd.random(1_000, seed=0)).all()   # True
 ```
 
 A seed reproduces a result on the same platform. numpy's mathematical
@@ -128,7 +128,8 @@ maintenance or hidden failures):
 | `df`, `hf` | numerical | The exact reliability, differentiated numerically. |
 | `time_to_reliability`, `bx_life`, `remaining_life` | numerical | The exact reliability, inverted by root-finding. |
 | `parameter_sensitivity` | numerical | The exact Birnbaum importance times a numerical parameter derivative. |
-| `random`, `mean`, `mean_time_to_failure`, `mean_time_to_failure_interval` | simulated | Monte Carlo. |
+| `mean`, `mean_time_to_failure` | numerical | The exact reliability, integrated over time by quadrature (to about `1e-10`). |
+| `random`, `mean_time_to_failure_interval` | simulated | Monte Carlo. |
 | `mean_availability`, `system_failure_frequency`, `mean_up_time`, `mean_down_time`, `mean_time_between_failures`, `expected_cost_rate`, `total_cost`, and the repairable importance measures | exact | From the long-run node availabilities. |
 | `capacity_distribution`, `system_capacity` | exact | From the node reliabilities (at a time) or long-run availabilities. |
 | `point_availability`, `mission_availability` | numerical | Each component's renewal equation, solved numerically (to about `1e-7`), and the system at its components' availabilities at each time. |
@@ -195,13 +196,13 @@ routes["availability"].engine      # 'python': no compiled engine for tests
 - **Simulations** are vectorised where the models allow it: `mean()` of a
   system of parametric components draws 100 000 lifetimes in well under a
   second. Availability simulations step through events, so their cost grows
-  with `N` times the number of failures and repairs in the window; with
+  with `mc_samples` times the number of failures and repairs in the window; with
   numba installed (`pip install "repyability[fast]"`) they run compiled,
   about ten times as fast (see [The compiled
   engine](simulation.md#the-compiled-engine)).
 - **Monte-Carlo error** shrinks like `1/√N`: use the confidence intervals
   (`mean_time_to_failure_interval`, `mean_availability_interval`,
-  `availability_interval`, `CostResult.mean_interval`) to judge `N`, or pass
+  `availability_interval`, `CostResult.mean_interval`) to judge `mc_samples`, or pass
   a `tolerance` to simulate until they are narrow enough. Antithetic pairs
   and common random numbers (`compare`) get more precision from each
   simulation, and `n_jobs` spreads the simulations over several CPUs: see

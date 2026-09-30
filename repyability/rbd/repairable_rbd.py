@@ -82,6 +82,7 @@ from repyability.rbd.results import (
     UpDownImportance,
 )
 from repyability.rbd.routes import AnalysisRoute
+from repyability.utils.deprecation import renamed
 
 
 class _StreamedRBD:
@@ -563,7 +564,7 @@ def _stopping_rule(
     run: then with a warning)."""
     montecarlo.check_confidence(confidence)
     limit = montecarlo.sample_limit(
-        N, tolerance, max_N, antithetic, ("N", "max_N")
+        N, tolerance, max_N, antithetic, ("mc_samples", "max_samples")
     )
     if limit is None:
         return None
@@ -581,7 +582,7 @@ def _stopping_rule(
             limit,
             antithetic,
             target,
-            "max_N",
+            "max_samples",
         )
 
     return stop
@@ -1721,7 +1722,7 @@ class RepairableRBD(RBD):
     ... )
     >>> round(pumps.mean_availability(), 4)  # 1 - (1 / 11) ** 2
     0.9917
-    >>> result = pumps.availability(t_simulation=50, N=200, seed=0)
+    >>> result = pumps.availability(t_simulation=50, mc_samples=200, seed=0)
     >>> window = result.n_simulations * result.time_simulated_to
     >>> round(float(result.system_uptime) / window, 4)  # simulated
     0.9925
@@ -4485,14 +4486,15 @@ class RepairableRBD(RBD):
                 return r.REFUSED, message
             return r.EXACT, "hidden failures at a constant rate"
         schedule = self._preventive.get(node)
-        life, how = r.model_route(component.reliability)
         if schedule is None:
             message = r.refusal(component.mean_availability)
             if message:
                 return r.REFUSED, message
+            life, how = r.mean_route(component.reliability)
             if life == r.EXACT:
                 return r.EXACT, "its mean life and mean repair time"
-            return life, f"its mean life, from {how}"
+            return life, f"its mean life, {how}"
+        life, how = r.model_route(component.reliability)
         if schedule.policy == "block":
             message = r.refusal(partial(self._require_block_models, node))
             if message:
@@ -5484,22 +5486,25 @@ class RepairableRBD(RBD):
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
         method: str = "p",
-        N: int = 10_000,
+        mc_samples: Optional[int] = None,
         verbose: bool = False,
         seed: Optional[int] = None,
         *,
         tolerance: Optional[float] = None,
         confidence: float = 0.95,
-        max_N: Optional[int] = None,
+        max_samples: Optional[int] = None,
         antithetic: bool = False,
         n_jobs: Optional[int] = None,
         demand: Optional[float] = None,
         engine: str = "auto",
+        N: Optional[int] = None,
+        max_N: Optional[int] = None,
     ) -> AvailabilityResult:
         """Simulate the system's availability over ``[0, t_simulation]``.
 
-        Runs ``N`` independent Monte-Carlo (discrete-event) simulations of
-        the system from time 0, each starting with every component working
+        Runs ``mc_samples`` independent Monte-Carlo (discrete-event)
+        simulations of the system from time 0, each starting with every
+        component working
         (except ``broken_nodes``). Each component alternates failure and
         repair independently of the others and of the system state: it
         fails after a time drawn from its reliability model and is
@@ -5552,7 +5557,7 @@ class RepairableRBD(RBD):
             Evaluate the system state from the minimal path sets (``"p"``,
             the default) or the minimal cut sets (``"c"``); the results are
             identical.
-        N : int, optional
+        mc_samples : int, optional
             Number of simulations, by default 10_000.
         verbose : bool, optional
             If True, displays a progress bar of the simulations, by default
@@ -5578,19 +5583,19 @@ class RepairableRBD(RBD):
             Simulate until the mean availability over the window (the
             fraction of it the system is up) is known to within
             ``tolerance`` either side, at ``confidence``: after the first
-            ``N`` simulations, and each further ``N``, the run stops once
-            the half-width of the confidence interval of
+            ``mc_samples`` simulations, and each further ``mc_samples``, the
+            run stops once the half-width of the confidence interval of
             ``result.mean_availability_interval()`` is at most
-            ``tolerance``, or ``max_N`` simulations have run (then with a
-            RuntimeWarning). By default None: exactly ``N``. A run that
-            stops after ``n`` simulations gives the result of a run of
-            ``N=n``.
+            ``tolerance``, or ``max_samples`` simulations have run (then
+            with a RuntimeWarning). By default None: exactly
+            ``mc_samples``. A run that stops after ``n`` simulations gives
+            the result of a run of ``mc_samples=n``.
         confidence : float, optional
             The confidence level ``tolerance`` is judged at, by default
             0.95.
-        max_N : int, optional
+        max_samples : int, optional
             The most simulations a run to ``tolerance`` makes, by default
-            100 times ``N``.
+            100 times ``mc_samples``.
         antithetic : bool, optional
             Run the simulations in antithetic pairs, by default False: in
             the second simulation of a pair, each stream (see ``seed``)
@@ -5599,10 +5604,11 @@ class RepairableRBD(RBD):
             late in the other. Each simulation is still a correct one, but
             the pair's results are negatively correlated, so their mean
             varies less than two independent simulations': a narrower
-            interval for the same ``N``. The pairs, not the simulations,
-            are independent, and the result's intervals are worked out from
-            the pairs' means. ``N`` (and ``max_N``) must be even, and every
-            draw must come from a stream (surpyval parametric models), else
+            interval for the same ``mc_samples``. The pairs, not the
+            simulations, are independent, and the result's intervals are
+            worked out from the pairs' means. ``mc_samples`` (and
+            ``max_samples``) must be even, and every draw must come from a
+            stream (surpyval parametric models), else
             ``NotImplementedError``.
         n_jobs : int, optional
             Run the simulations in parallel on ``n_jobs`` CPUs (-1: all of
@@ -5632,6 +5638,10 @@ class RepairableRBD(RBD):
             level): its design capacity. If that is unlimited, no delivered
             fraction is worked out unless a demand is given.
 
+        N : int, optional
+            Deprecated: the old name of ``mc_samples``.
+        max_N : int, optional
+            Deprecated: the old name of ``max_samples``.
         Returns
         -------
         AvailabilityResult
@@ -5647,10 +5657,11 @@ class RepairableRBD(RBD):
         ValueError
             If a working/broken node is unknown, is the input or output
             node, or is in both sets, if ``method`` is not ``"p"`` or
-            ``"c"``, or if ``N``, ``tolerance``, ``confidence``, ``max_N``,
-            ``n_jobs`` or ``engine`` is invalid (``N`` odd with
-            ``antithetic``, ``max_N`` without a tolerance or below ``N``,
-            ...); or if a ``demand`` is not a positive, finite number, or is
+            ``"c"``, or if ``mc_samples``, ``tolerance``, ``confidence``,
+            ``max_samples``, ``n_jobs`` or ``engine`` is invalid
+            (``mc_samples`` odd with ``antithetic``, ``max_samples`` without
+            a tolerance or below ``mc_samples``, ...); or if a ``demand`` is
+            not a positive, finite number, or is
             given for an RBD with no capacities.
         NotImplementedError
             With ``antithetic``, if a component's draws cannot be replayed;
@@ -5673,7 +5684,7 @@ class RepairableRBD(RBD):
         >>> rbd = RepairableRBD(
         ...     [("s", "a"), ("a", "b"), ("b", "t")], {"a": unit, "b": unit}
         ... )
-        >>> result = rbd.availability(t_simulation=50, N=200, seed=0)
+        >>> result = rbd.availability(t_simulation=50, mc_samples=200, seed=0)
         >>> float(result.timeline[0]), float(result.availability[0])
         (0.0, 1.0)
         >>> float(result.timeline[-1])
@@ -5695,6 +5706,10 @@ class RepairableRBD(RBD):
         >>> {node: round(float(v), 4) for node, v in oci.up.items()}
         {'a': 1.0, 'b': 1.0}
         """
+        mc_samples = renamed("mc_samples", mc_samples, "N", N)
+        N = 10_000 if mc_samples is None else mc_samples
+        max_N = renamed("max_samples", max_samples, "max_N", max_N)
+
         return self._simulated(
             t_simulation,
             working_nodes,
@@ -5717,19 +5732,21 @@ class RepairableRBD(RBD):
         self,
         other: "RepairableRBD",
         t_simulation: float,
-        N: int = 10_000,
+        mc_samples: Optional[int] = None,
         seed: Optional[int] = None,
         *,
         quantity: str = "availability",
         confidence: float = 0.95,
         n_jobs: Optional[int] = None,
         engine: str = "auto",
+        N: Optional[int] = None,
     ) -> ConfidenceInterval:
         """How much better (or worse) this system is than ``other``, by
         simulation with common random numbers.
 
-        Both systems are simulated ``N`` times over ``[0, t_simulation]``
-        (every component working at the start), and in each simulation a
+        Both systems are simulated ``mc_samples`` times over
+        ``[0, t_simulation]`` (every component working at the start), and in
+        each simulation a
         component in the same place in both (the same node name, and the
         same names down through nested RBDs) draws the same random numbers
         in both: the same failures and repairs where it is modelled the
@@ -5747,7 +5764,7 @@ class RepairableRBD(RBD):
             The system to compare with.
         t_simulation : float
             The window each simulation covers.
-        N : int, optional
+        mc_samples : int, optional
             The number of simulations of each system, by default 10_000.
         seed : int, optional
             Seed for a reproducible comparison, by default None: a number
@@ -5766,6 +5783,8 @@ class RepairableRBD(RBD):
             What runs the simulations: ``"python"``, ``"numba"`` or
             ``"auto"`` (the default), as in ``availability``.
 
+        N : int, optional
+            Deprecated: the old name of ``mc_samples``.
         Returns
         -------
         ConfidenceInterval
@@ -5777,8 +5796,9 @@ class RepairableRBD(RBD):
         Raises
         ------
         ValueError
-            If ``quantity``, ``N``, ``confidence``, ``n_jobs`` or ``engine``
-            is invalid, or a system to compare by cost has no costs.
+            If ``quantity``, ``mc_samples``, ``confidence``, ``n_jobs`` or
+            ``engine`` is invalid, or a system to compare by cost has no
+            costs.
         NotImplementedError
             If a component's draws cannot be replayed from a stream of its
             own (a non-parametric model, for example), or, with
@@ -5804,7 +5824,9 @@ class RepairableRBD(RBD):
         ...         [("s", "p1"), ("s", "p2"), ("p1", "t"), ("p2", "t")],
         ...         {"p1": pump, "p2": pump},
         ...     )
-        >>> gain = pumps(1.0).compare(pumps(2.0), 100.0, N=2000, seed=0)
+        >>> gain = pumps(1.0).compare(
+        ...     pumps(2.0), 100.0, mc_samples=2000, seed=0
+        ... )
         >>> round(gain.estimate, 4), round(gain.standard_error, 5)
         (0.0196, 0.00042)
 
@@ -5814,13 +5836,16 @@ class RepairableRBD(RBD):
         runs of 2000 simulations would estimate it with a standard error of
         about 0.00058.
         """
+        mc_samples = renamed("mc_samples", mc_samples, "N", N)
+        N = 10_000 if mc_samples is None else mc_samples
+
         if quantity not in ("availability", "cost"):
             raise ValueError(
                 "quantity must be 'availability' or 'cost', got "
                 f"{quantity!r}."
             )
         montecarlo.check_confidence(confidence)
-        montecarlo.check_count(N, False, "N")
+        montecarlo.check_count(N, False, "mc_samples")
         if quantity == "cost":
             for rbd in (self, other):
                 if not rbd.has_costs:
@@ -5907,7 +5932,7 @@ class RepairableRBD(RBD):
         # except those forced broken, which can make the system start down.
         initial_status = {c: c not in broken_nodes for c in self.components}
         initial_up = bool(self.is_system_working(initial_status, method))
-        montecarlo.check_count(N, antithetic, "N")
+        montecarlo.check_count(N, antithetic, "mc_samples")
         stop = _stopping_rule(
             N, tolerance, confidence, max_N, antithetic, target, t_simulation
         )
@@ -6412,16 +6437,18 @@ class RepairableRBD(RBD):
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
         method: str = "p",
-        N: int = 10_000,
+        mc_samples: Optional[int] = None,
         verbose: bool = False,
         seed: Optional[int] = None,
         *,
         tolerance: Optional[float] = None,
         confidence: float = 0.95,
-        max_N: Optional[int] = None,
+        max_samples: Optional[int] = None,
         antithetic: bool = False,
         n_jobs: Optional[int] = None,
         engine: str = "auto",
+        N: Optional[int] = None,
+        max_N: Optional[int] = None,
     ) -> Optional[CostResult]:
         """Simulate the cost of running the system for ``t_simulation``.
 
@@ -6459,7 +6486,7 @@ class RepairableRBD(RBD):
             Evaluate the system state from the minimal path sets (``"p"``,
             the default) or the minimal cut sets (``"c"``); the results are
             identical.
-        N : int, optional
+        mc_samples : int, optional
             Number of simulations, each giving one sample of the window's
             total cost, by default 10_000.
         verbose : bool, optional
@@ -6474,15 +6501,15 @@ class RepairableRBD(RBD):
             Simulate until the mean cost of a window is known to within
             ``tolerance`` (in the costs' currency) either side, at
             ``confidence`` (the half-width of ``mean_interval()``): as in
-            ``availability``, checked after the first ``N`` simulations
-            and each further ``N``, up to ``max_N``. By default None:
-            exactly ``N``.
+            ``availability``, checked after the first ``mc_samples``
+            simulations and each further ``mc_samples``, up to
+            ``max_samples``. By default None: exactly ``mc_samples``.
         confidence : float, optional
             The confidence level ``tolerance`` is judged at, by default
             0.95.
-        max_N : int, optional
+        max_samples : int, optional
             The most simulations a run to ``tolerance`` makes, by default
-            100 times ``N``.
+            100 times ``mc_samples``.
         antithetic : bool, optional
             Run the simulations in antithetic pairs (see ``availability``),
             by default False. The draws of costs given as distributions are
@@ -6494,6 +6521,10 @@ class RepairableRBD(RBD):
             What runs the simulations: ``"python"``, ``"numba"`` or
             ``"auto"`` (the default), as in ``availability``.
 
+        N : int, optional
+            Deprecated: the old name of ``mc_samples``.
+        max_N : int, optional
+            Deprecated: the old name of ``max_samples``.
         Returns
         -------
         CostResult or None
@@ -6527,7 +6558,7 @@ class RepairableRBD(RBD):
         ...     },
         ...     downtime_cost_rate=50.0,
         ... )
-        >>> result = rbd.cost(t_simulation=100.0, N=200, seed=0)
+        >>> result = rbd.cost(t_simulation=100.0, mc_samples=200, seed=0)
         >>> round(result.mean, 2)  # mean cost of a 100-hour window
         1354.77
         >>> round(result.percentile(90), 2)  # 9 windows in 10 cost less
@@ -6535,6 +6566,10 @@ class RepairableRBD(RBD):
         >>> round(result.cost_rate, 2), round(rbd.expected_cost_rate(), 2)
         (13.55, 13.64)
         """
+        mc_samples = renamed("mc_samples", mc_samples, "N", N)
+        N = 10_000 if mc_samples is None else mc_samples
+        max_N = renamed("max_samples", max_samples, "max_N", max_N)
+
         if not self.has_costs:
             return None
         return self._simulated(

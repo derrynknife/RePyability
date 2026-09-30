@@ -81,8 +81,8 @@ def test_weibull_warm_sits_between_cold_and_hot():
     # land between the cold sum and the hot parallel arrangement.
     W = surv.Weibull.from_params([50.0, 2.0])
     cold = StandbyModel([W, W]).mean()
-    warm = StandbyModel([W, W], dormancy_factor=0.4, n_sims=4000, seed=7)
-    hot = StandbyModel([W, W], dormancy_factor=1.0, n_sims=4000, seed=7)
+    warm = StandbyModel([W, W], dormancy_factor=0.4, mc_samples=4000, seed=7)
+    hot = StandbyModel([W, W], dormancy_factor=1.0, mc_samples=4000, seed=7)
     assert warm.model is not None  # simulated, not closed form
     assert float(hot.mean()) < float(warm.mean()) < float(cold)
 

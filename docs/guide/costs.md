@@ -91,7 +91,7 @@ cost accumulation and returns a [`CostResult`][repyability.CostResult]: one
 total cost per simulated window.
 
 ```python
-costs = plant.cost(t_simulation=1000.0, N=500, seed=0)
+costs = plant.cost(t_simulation=1000.0, mc_samples=500, seed=0)
 costs.mean              # mean total cost of a window
 costs.cost_rate         # mean / t_simulation: converges to expected_cost_rate()
 costs.percentile(90)    # a planning budget: 9 windows in 10 cost less
@@ -101,7 +101,7 @@ costs.by_component      # mean cost attributable to each costed component
 ```
 
 `cost()` takes the same arguments as `availability()` (`working_nodes`,
-`broken_nodes`, `method`, `N`, `verbose`, `seed`, and `tolerance`,
+`broken_nodes`, `method`, `mc_samples`, `verbose`, `seed`, and `tolerance`,
 `antithetic`, `n_jobs` and `engine`: see
 [Simulation precision and speed](simulation.md)). The same result comes with
 `availability(...)` as `result.cost`, so one simulation gives both answers.
@@ -314,7 +314,7 @@ as a failure: `system_planned_outages` counts the times one took the system
 down.
 
 ```python
-year = alone(580).availability(t_simulation=8760.0, N=500, seed=0)
+year = alone(580).availability(t_simulation=8760.0, mc_samples=500, seed=0)
 year.system_failures / year.n_simulations          # -> 3.518
 year.system_planned_outages / year.n_simulations   # -> 11.92
 year.cost.by_category["preventive"]                # -> 11918.0   1000 each
@@ -410,7 +410,7 @@ both = RepairableRBD(
     [("s", "v1"), ("s", "v2"), ("v1", "t"), ("v2", "t")],
     {"v1": tested(8760.0), "v2": tested(8760.0)},
 )
-decade = both.availability(t_simulation=10 * 8760.0, N=20000, seed=0)
+decade = both.availability(t_simulation=10 * 8760.0, mc_samples=20000, seed=0)
 1 - decade.system_uptime / (decade.n_simulations * decade.time_simulated_to)
 # -> 3.9e-4
 decade.system_planned_outages / decade.n_simulations   # -> 9.0   one per test

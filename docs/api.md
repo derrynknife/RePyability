@@ -61,6 +61,22 @@ models provided here (see [Building an RBD](guide/building.md) and
 
 ::: repyability.minimal_repair_time_to_nth_failure
 
+## Demonstration test planning
+
+::: repyability.demonstration_sample_size
+
+::: repyability.demonstrated_reliability
+
+::: repyability.demonstration_test_multiple
+
+::: repyability.demonstration_pass_probability
+
+::: repyability.mtbf_test_time
+
+::: repyability.demonstrated_mtbf
+
+::: repyability.mtbf_pass_probability
+
 ## Result types
 
 ::: repyability.AnalysisRoute

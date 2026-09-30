@@ -133,14 +133,14 @@ are not affected.
 
 ## Availability over time (simulated)
 
-`availability(t_simulation, ...)` runs `N` independent simulations of the
+`availability(t_simulation, ...)` runs `mc_samples` independent simulations of the
 system from time 0 (everything new, except any `broken_nodes`) to
 `t_simulation`, and averages them: the same curve as `point_availability`,
 with the histories behind it, which also give the failure counts, downtime,
 costs and criticality measures over the window:
 
 ```python
-result = plant.availability(t_simulation=100.0, N=2_000, seed=0)
+result = plant.availability(t_simulation=100.0, mc_samples=2_000, seed=0)
 result.timeline[:3]       # array([0.    , 0.0259, 0.027 ])  times the mean availability changes
 result.availability[:3]   # array([1.    , 0.9995, 0.999 ])  mean availability at those times
 result.availability[-1]   # -> 0.9495   at t = 100
@@ -150,13 +150,13 @@ np.interp(50, result.timeline, result.availability)   # -> 0.9607   at t = 50
 | Argument | Meaning |
 |---|---|
 | `t_simulation` | The length of each simulated history. |
-| `N` | The number of histories (default 10 000). Error shrinks like `1/√N`. |
+| `mc_samples` | The number of histories `N` (default 10 000). Error shrinks like `1/√N`. |
 | `seed` | Seeds the run for reproducibility: each component draws from random streams of its own (see [Random streams](simulation.md#random-streams)). numpy's global RNG is left as it was. |
 | `working_nodes`, `broken_nodes` | Components that never fail, or that are down throughout. |
 | `method` | `"p"` or `"c"`, for deciding whether the system is up; same result. |
 | `verbose` | Show a progress bar. |
-| `tolerance`, `confidence`, `max_N` | Simulate until the mean availability over the window is known to within `tolerance` (see [Simulation precision and speed](simulation.md#simulating-to-a-tolerance)). |
-| `antithetic` | Simulate in antithetic pairs, for a more precise mean from the same `N` (see [Antithetic pairs](simulation.md#antithetic-pairs)). |
+| `tolerance`, `confidence`, `max_samples` | Simulate until the mean availability over the window is known to within `tolerance` (see [Simulation precision and speed](simulation.md#simulating-to-a-tolerance)). |
+| `antithetic` | Simulate in antithetic pairs, for a more precise mean from the same `mc_samples` (see [Antithetic pairs](simulation.md#antithetic-pairs)). |
 | `n_jobs` | Run the simulations on several CPUs, with the same result as on one (see [Parallel runs](simulation.md#parallel-runs)). |
 | `engine` | `"python"`, `"numba"` (compiled) or `"auto"`, the default: the same results, faster compiled (see [The compiled engine](simulation.md#the-compiled-engine)). |
 | `demand` | With node capacities, the demand the delivered fraction is measured against (see [System capacity](capacity.md#over-a-window-simulated)). |
@@ -200,7 +200,7 @@ one is up than the other far more precisely than two separate runs (see
 | `system_planned_outages` | The times preventive maintenance or a test took the system down (not failures). |
 | `node_uptime`, `node_downtime` | Per-node totals. |
 | `mean_up_time`, `mean_down_time`, `failure_frequency` | Simulation estimates of the exact MUT, MDT and frequency above. |
-| `n_simulations`, `time_simulated_to` | `N` and `t_simulation`. |
+| `n_simulations`, `time_simulated_to` | `mc_samples` and `t_simulation`. |
 | `criticalities` | The criticality measures (below). |
 | `cost` | The simulated costs, or `None` when nothing is priced (see [Costs](costs.md#the-simulated-cost-distribution)). |
 | `capacity_timeline`, `capacity`, `capacity_time`, `mean_capacity`, `demand`, `delivered`, `delivered_fraction`, `delivered_fraction_interval(confidence)` | With node capacities: the mean capacity over time, the time at each capacity, and the fraction of the demand delivered (see [System capacity](capacity.md#over-a-window-simulated)). `None` without capacities. |
@@ -252,7 +252,7 @@ fuse = RepairableRBD(
            "repairability": "instant"}},
 )
 fuse.mean_availability()                                     # -> 1.0
-fuse.availability(50.0, N=100, seed=0).availability.min()    # -> 1.0
+fuse.availability(50.0, mc_samples=100, seed=0).availability.min()    # -> 1.0
 ```
 
 Invisible to availability, visible to cost: see [Costs](costs.md).
@@ -274,7 +274,7 @@ nested = RepairableRBD(
 )
 nested.mean_availability()         # -> 0.9536   the same system as `plant`
 nested.system_failure_frequency()  # -> 0.03497
-nested.availability(t_simulation=100.0, N=2_000, seed=0).availability[-1]   # -> 0.951
+nested.availability(t_simulation=100.0, mc_samples=2_000, seed=0).availability[-1]   # -> 0.951
 ```
 
 Use one `RepairableRBD` object per place it appears: the same object used for

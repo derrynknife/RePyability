@@ -75,7 +75,7 @@ def simulated_standby_rbd() -> NonRepairableRBD:
     unit = surv.Weibull.from_params([5, 1.1])
     return NonRepairableRBD(
         [(1, 7), (7, 8)],
-        {7: StandbyModel([unit] * 3, k=2, n_sims=500, seed=1)},
+        {7: StandbyModel([unit] * 3, k=2, mc_samples=500, seed=1)},
     )
 
 

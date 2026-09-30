@@ -11,7 +11,7 @@ signature and docstring, see the [API reference](../api.md).
 |---|---|
 | [Building an RBD](building.md) | Edges and node models, k-out-of-n nodes, a component that appears in several places, nested RBDs, validation, path and cut sets, and the structural checks. |
 | [Fault trees](fault-trees.md) | Static fault trees (OR, AND and VOTE gates, repeated events): the exact top event probability, minimal cut sets ranked by probability, importance measures, and conversion to and from block diagrams. |
-| [Reliability of a system](reliability.md) | `sf`/`ff`, density and hazard, conditional survival, per-node values, forcing nodes working or failed, lifetimes and MTTF, inverting reliability to a time (B*X* life), and the uncertainty that uncertain component models give the system reliability. |
+| [Reliability of a system](reliability.md) | `sf`/`ff`, density and hazard, conditional survival, per-node values, forcing nodes working or failed, lifetimes and the exact MTTF, inverting reliability to a time (B*X* life), and the uncertainty that uncertain component models give the system reliability. |
 | [Importance measures](importance.md) | Birnbaum, improvement potential, risk achievement and reduction worth, criticality, Fussell–Vesely, structural importance, and parameter sensitivity. |
 | [Condition-based evaluation](condition-based.md) | Reliability, remaining life and importance given each component's current age, and covariate-dependent components (fixed operating conditions or a load schedule). |
 | [Redundancy models](redundancy-models.md) | Cold, warm and hot standby, repeated nodes, repeated standby, and load-sharing groups. |
@@ -21,6 +21,7 @@ signature and docstring, see the [API reference](../api.md).
 | [Costs](costs.md) | The long-run cost rate in closed form, the simulated cost distribution, costs drawn from distributions, scheduled preventive maintenance and the intervals that meet a system target, hidden failures found by periodic inspection (PFDavg for safety functions), and the total cost of ownership with the redundancy that minimises it. |
 | [Design and allocation](design.md) | How many redundant copies to fit (redundancy allocation), apportioning a reliability target among components (reliability allocation), and an availability target, as MTTF and MTTR targets (availability allocation). |
 | [Maintenance policies](maintenance.md) | Age replacement, overhaul under minimal or imperfect repair, failure-count replacement, and the expected time to the *n*-th failure. |
+| [Demonstration testing](demonstration.md) | How many units, or how long a test, demonstrates a reliability or an MTBF at a confidence level, what a finished test demonstrated, and the chance a design passes. |
 | [Simulation precision and speed](simulation.md) | Simulating until an estimate is precise enough, antithetic pairs, parallel runs, and comparing two designs with common random numbers. |
 | [Saving, reproducibility and performance](saving.md) | JSON round-trips, seeding, what is exact and what is simulated, and how the engine scales. |
 

@@ -198,7 +198,7 @@ def test_uncosted_rbd_still_round_trips():
 def test_instant_repair_availability_is_one():
     rbd = one_component({"repairability": "instant"})
     assert rbd.mean_availability() == pytest.approx(1.0)
-    result = rbd.availability(t_simulation=50.0, N=100, seed=1)
+    result = rbd.availability(t_simulation=50.0, mc_samples=100, seed=1)
     # Every outage has zero length, so availability never dips.
     assert np.all(result.availability == 1.0)
     assert result.system_downtime == pytest.approx(0.0)
@@ -209,7 +209,7 @@ def test_instant_repair_still_fails_and_costs():
     # frequency 1/MTTF and each one is charged.
     rbd = one_component({"repairability": "instant", "repair_cost": 100.0})
     assert rbd.expected_cost_rate() == pytest.approx(100.0 / 10.0)
-    result = rbd.cost(t_simulation=500.0, N=400, seed=5)
+    result = rbd.cost(t_simulation=500.0, mc_samples=400, seed=5)
     assert result.cost_rate == pytest.approx(10.0, rel=0.05)
 
 
@@ -239,14 +239,14 @@ def test_cost_simulation_converges_to_the_closed_form():
     # The whole point of building the exact rate first: the Monte-Carlo mean
     # must converge to it. (A long window drowns the start-up transient.)
     rbd = full_cost_rbd()
-    result = rbd.cost(t_simulation=1000.0, N=600, seed=3)
+    result = rbd.cost(t_simulation=1000.0, mc_samples=600, seed=3)
     assert result.cost_rate == pytest.approx(
         rbd.expected_cost_rate(), rel=0.05
     )
 
 
 def test_cost_breakdowns_are_internally_consistent():
-    result = full_cost_rbd().cost(t_simulation=200.0, N=300, seed=4)
+    result = full_cost_rbd().cost(t_simulation=200.0, mc_samples=300, seed=4)
     assert set(result.by_category) == {
         "repair",
         "replace",
@@ -270,7 +270,9 @@ def test_cost_breakdowns_are_internally_consistent():
 
 
 def test_repair_and_replace_are_charged_separately_at_each_failure():
-    result = full_cost_rbd().availability(t_simulation=200.0, N=100, seed=4)
+    result = full_cost_rbd().availability(
+        t_simulation=200.0, mc_samples=100, seed=4
+    )
     # One component in series: every component failure is a system failure.
     failures_per_replication = result.system_failures / 100
     assert result.cost.by_category["repair"] == pytest.approx(
@@ -295,7 +297,7 @@ def test_mean_interval_covers_the_exact_expected_cost():
     )
     exact = 500.0 * lam * uptime + (22.0 + 50.0) * (T - uptime)
 
-    result = full_cost_rbd().cost(t_simulation=T, N=400, seed=2)
+    result = full_cost_rbd().cost(t_simulation=T, mc_samples=400, seed=2)
     interval = result.mean_interval(0.99)
     assert interval.lower < exact < interval.upper
     assert interval.estimate == result.mean
@@ -305,8 +307,8 @@ def test_mean_interval_covers_the_exact_expected_cost():
 
 
 def test_more_replications_sharpen_the_mean_but_not_the_spread():
-    few = full_cost_rbd().cost(t_simulation=100.0, N=100, seed=1)
-    many = full_cost_rbd().cost(t_simulation=100.0, N=400, seed=1)
+    few = full_cost_rbd().cost(t_simulation=100.0, mc_samples=100, seed=1)
+    many = full_cost_rbd().cost(t_simulation=100.0, mc_samples=400, seed=1)
     # The mean's standard error shrinks like 1/sqrt(N)...
     assert few.mean_se / many.mean_se == pytest.approx(2.0, rel=0.3)
     # ...while how much a window's cost varies is a property of the system.
@@ -314,7 +316,7 @@ def test_more_replications_sharpen_the_mean_but_not_the_spread():
 
 
 def test_mean_interval_confidence():
-    result = full_cost_rbd().cost(t_simulation=50.0, N=20, seed=0)
+    result = full_cost_rbd().cost(t_simulation=50.0, mc_samples=20, seed=0)
 
     def width(interval):
         return interval.upper - interval.lower
@@ -326,26 +328,33 @@ def test_mean_interval_confidence():
 
 
 def test_cost_is_reproducible_with_a_seed():
-    a = full_cost_rbd().cost(t_simulation=100.0, N=50, seed=9)
-    b = full_cost_rbd().cost(t_simulation=100.0, N=50, seed=9)
+    a = full_cost_rbd().cost(t_simulation=100.0, mc_samples=50, seed=9)
+    b = full_cost_rbd().cost(t_simulation=100.0, mc_samples=50, seed=9)
     assert np.allclose(a.samples, b.samples)
 
 
 def test_cost_rides_along_on_availability():
-    result = full_cost_rbd().availability(t_simulation=100.0, N=50, seed=9)
+    result = full_cost_rbd().availability(
+        t_simulation=100.0, mc_samples=50, seed=9
+    )
     assert result.cost is not None
     assert result.cost.mean > 0.0
 
 
 def test_cost_is_none_when_nothing_is_priced():
     rbd = one_component()
-    assert rbd.cost(t_simulation=100.0, N=10, seed=0) is None
-    assert rbd.availability(t_simulation=100.0, N=10, seed=0).cost is None
+    assert rbd.cost(t_simulation=100.0, mc_samples=10, seed=0) is None
+    assert (
+        rbd.availability(t_simulation=100.0, mc_samples=10, seed=0).cost
+        is None
+    )
 
 
 def test_forced_working_node_simulates_to_zero_cost():
     rbd = one_component({"repair_cost": 100.0}, downtime_cost_rate=50.0)
-    result = rbd.cost(t_simulation=100.0, N=30, seed=2, working_nodes=["c"])
+    result = rbd.cost(
+        t_simulation=100.0, mc_samples=30, seed=2, working_nodes=["c"]
+    )
     assert np.allclose(result.samples, 0.0)
 
 
@@ -362,7 +371,7 @@ def test_cost_distribution_enters_the_closed_form_through_its_mean():
 
 def test_random_costs_average_to_the_distribution_mean():
     rbd = one_component({"repair_cost": REPAIR_COST})
-    result = rbd.availability(t_simulation=200.0, N=100, seed=6)
+    result = rbd.availability(t_simulation=200.0, mc_samples=100, seed=6)
     # ~1,800 failures, each charged a fresh draw: the average charge per
     # failure is the mean, 100, to within a standard error of about 1.2.
     charged = result.cost.by_category["repair"] * 100
@@ -376,7 +385,7 @@ def test_pricing_never_changes_the_failure_simulation():
     # money differs.
     def simulate(spec):
         rbd = one_component(spec)
-        return rbd.availability(t_simulation=200.0, N=100, seed=6)
+        return rbd.availability(t_simulation=200.0, mc_samples=100, seed=6)
 
     unpriced = simulate({})
     fixed = simulate({"repair_cost": 100.0, "downtime_cost": 22.0})
@@ -395,14 +404,14 @@ def test_pricing_never_changes_the_failure_simulation():
 
 def test_random_costs_are_reproducible():
     rbd = one_component({"repair_cost": REPAIR_COST})
-    a = rbd.cost(t_simulation=100.0, N=50, seed=9)
-    b = rbd.cost(t_simulation=100.0, N=50, seed=9)
+    a = rbd.cost(t_simulation=100.0, mc_samples=50, seed=9)
+    b = rbd.cost(t_simulation=100.0, mc_samples=50, seed=9)
     assert np.array_equal(a.samples, b.samples)
     # Seeding numpy's global RNG, rather than passing a seed, works too.
     np.random.seed(9)
-    c = rbd.cost(t_simulation=100.0, N=50)
+    c = rbd.cost(t_simulation=100.0, mc_samples=50)
     np.random.seed(9)
-    d = rbd.cost(t_simulation=100.0, N=50)
+    d = rbd.cost(t_simulation=100.0, mc_samples=50)
     assert np.array_equal(c.samples, d.samples)
 
 
@@ -430,6 +439,6 @@ def test_cost_distributions_survive_a_json_round_trip():
     assert restored.expected_cost_rate() == pytest.approx(
         rbd.expected_cost_rate()
     )
-    a = rbd.cost(t_simulation=100.0, N=20, seed=1)
-    b = restored.cost(t_simulation=100.0, N=20, seed=1)
+    a = rbd.cost(t_simulation=100.0, mc_samples=20, seed=1)
+    b = restored.cost(t_simulation=100.0, mc_samples=20, seed=1)
     assert np.array_equal(a.samples, b.samples)

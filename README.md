@@ -16,8 +16,11 @@ taking already-fitted lifetime models (from
   events) evaluated exactly, with cut sets, importance measures and
   conversion to and from block diagrams.
 - **Reliability**: exact system reliability, hazard and conditional survival;
-  MTTF with confidence intervals; B*X* life; uncertainty intervals from
-  uncertain (fitted) component models.
+  the exact MTTF (or simulated, with confidence intervals); B*X* life;
+  uncertainty intervals from uncertain (fitted) component models.
+- **Testing**: demonstration test plans (the units, or the test time, that
+  demonstrate a reliability or an MTBF), what a test demonstrated, and the
+  chance a design passes.
 - **Importance**: Birnbaum, improvement potential, RAW, RRW, criticality,
   Fussell–Vesely, structural importance and parameter sensitivity.
 - **Live state**: reliability, remaining life and importance given each

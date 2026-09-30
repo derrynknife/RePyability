@@ -88,7 +88,7 @@ def test_acquisition_cost_alone_prices_no_running_cost():
     )
     assert not rbd.has_costs
     assert rbd.expected_cost_rate() == 0.0
-    assert rbd.cost(t_simulation=10.0, N=5, seed=0) is None
+    assert rbd.cost(t_simulation=10.0, mc_samples=5, seed=0) is None
     assert rbd.total_cost(1e6) == 7.0
     # A cost of 0 is left out.
     free = RepairableRBD(SERIES, {"pump": spec(1e-3, 0.1, acquisition_cost=0)})
@@ -121,12 +121,12 @@ def test_invalid_horizons_are_rejected(bad):
 def test_simulated_cost_reports_the_acquisition_cost_separately():
     # Buying the system is not a running cost: the samples are unchanged
     # and the acquisition cost is reported beside them.
-    priced = pump_rbd().cost(t_simulation=2000.0, N=50, seed=1)
+    priced = pump_rbd().cost(t_simulation=2000.0, mc_samples=50, seed=1)
     unpriced = RepairableRBD(
         SERIES,
         {"pump": spec(1e-3, 0.1, repair_cost=500.0)},
         downtime_cost_rate=100.0,
-    ).cost(t_simulation=2000.0, N=50, seed=1)
+    ).cost(t_simulation=2000.0, mc_samples=50, seed=1)
     assert priced.acquisition_cost == 20000.0
     assert unpriced.acquisition_cost == 0.0
     np.testing.assert_array_equal(priced.samples, unpriced.samples)
@@ -356,7 +356,7 @@ def test_the_chosen_designs_simulated_cost_converges_to_its_rate():
     explicit = drawn_out(
         edges, components, best.units, downtime_cost_rate=300.0
     )
-    result = explicit.cost(t_simulation=2000.0, N=300, seed=5)
+    result = explicit.cost(t_simulation=2000.0, mc_samples=300, seed=5)
     assert result.acquisition_cost == best.acquisition_cost
     assert result.cost_rate == pytest.approx(best.cost_rate, rel=0.03)
 

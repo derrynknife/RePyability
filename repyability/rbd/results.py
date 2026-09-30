@@ -264,7 +264,7 @@ class UpDownImportance(_ResultMapping):
     ...     [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
     ...     {"a": unit, "b": unit},
     ... )
-    >>> result = rbd.availability(t_simulation=50, N=200, seed=0)
+    >>> result = rbd.availability(t_simulation=50, mc_samples=200, seed=0)
     >>> oci = result.criticalities.operational_criticality_index
     >>> {node: round(float(v), 4) for node, v in oci.down.items()}
     {'a': 1.0, 'b': 1.0}
@@ -306,7 +306,7 @@ class FailureCriticalityIndex(_ResultMapping):
     >>> rbd = RepairableRBD(
     ...     [("s", "a"), ("a", "b"), ("b", "t")], {"a": unit, "b": unit}
     ... )
-    >>> result = rbd.availability(t_simulation=50, N=200, seed=0)
+    >>> result = rbd.availability(t_simulation=50, mc_samples=200, seed=0)
     >>> fci = result.criticalities.failure_criticality_index
     >>> round(sum(fci.per_system_failure.values()), 4)
     1.0
@@ -357,7 +357,7 @@ class RestorationCriticalityIndex(_ResultMapping):
     ...     [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
     ...     {"a": unit, "b": unit},
     ... )
-    >>> result = rbd.availability(t_simulation=50, N=200, seed=0)
+    >>> result = rbd.availability(t_simulation=50, mc_samples=200, seed=0)
     >>> share = result.criticalities.restoration_criticality_index.by_system
     >>> {node: round(share[node], 1) for node in sorted(share)}
     {'a': 0.5, 'b': 0.5}
@@ -420,7 +420,8 @@ class Criticalities(_ResultMapping):
     >>> rbd = RepairableRBD(
     ...     [("s", "a"), ("a", "b"), ("b", "t")], {"a": unit, "b": unit}
     ... )
-    >>> crit = rbd.availability(t_simulation=50, N=200, seed=0).criticalities
+    >>> result = rbd.availability(t_simulation=50, mc_samples=200, seed=0)
+    >>> crit = result.criticalities
 
     In series the system is up only while every node is up, but each node
     is down for only about half of the system's down time:
@@ -512,7 +513,7 @@ class CostResult(_ResultMapping):
     ...     },
     ...     downtime_cost_rate=50.0,
     ... )
-    >>> result = rbd.cost(t_simulation=100.0, N=200, seed=0)
+    >>> result = rbd.cost(t_simulation=100.0, mc_samples=200, seed=0)
     >>> round(result.mean, 2), round(result.std, 2)
     (1354.77, 429.75)
     >>> round(result.by_category["repair"], 2)  # 100 per failure
@@ -584,8 +585,8 @@ class CostResult(_ResultMapping):
         with standard error ``mean_se``, from which the interval
         ``mean +/- z * mean_se`` is built, for the normal quantile ``z`` of
         ``confidence``; the lower bound is clipped at 0. Use it to judge
-        whether ``N`` was large enough; for the range a single window's cost
-        could fall in, use ``percentile`` instead.
+        whether ``mc_samples`` was large enough; for the range a single
+        window's cost could fall in, use ``percentile`` instead.
 
         Parameters
         ----------
@@ -1120,7 +1121,7 @@ class AvailabilityResult(_ResultMapping):
         Number of system restorations observed across all simulations
         (changes from down to up, after a failure or a planned outage).
     n_simulations : int
-        The number of simulations run (``N``).
+        The number of simulations run (``mc_samples``).
     cost : CostResult, optional
         The simulated cost distribution, when the RBD declares any costs;
         ``None`` when nothing is priced (no cost model to run).
@@ -1171,7 +1172,7 @@ class AvailabilityResult(_ResultMapping):
     ...         }
     ...     },
     ... )
-    >>> result = rbd.availability(t_simulation=50, N=200, seed=0)
+    >>> result = rbd.availability(t_simulation=50, mc_samples=200, seed=0)
     >>> float(result.availability[0])  # every simulation starts up
     1.0
     >>> window = result.n_simulations * result.time_simulated_to

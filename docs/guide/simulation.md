@@ -5,22 +5,23 @@
     these options shrink it, is taught in [Lesson
     6](../learn/availability.md#precise-enough-sooner).
 
-Some quantities have no closed form and are simulated: a
-`NonRepairableRBD`'s lifetimes and mean time to failure, and a
-`RepairableRBD`'s histories over a window, with their costs (its
-availability over time is also exact, with `point_availability`; see
-[what is exact and what is simulated](saving.md#what-is-exact-and-what-is-simulated)).
+Some quantities are simulated: a `NonRepairableRBD`'s lifetimes, and a
+`RepairableRBD`'s histories over a window, with their costs. (A
+`NonRepairableRBD`'s mean time to failure is exact, and can be simulated
+too; a `RepairableRBD`'s availability over time is also exact, with
+`point_availability`: see
+[what is exact and what is simulated](saving.md#what-is-exact-and-what-is-simulated).)
 A simulated estimate has a sampling error, which shrinks like `1/√N`:
 halving it takes four times as many simulations. This page covers how a
 repairable system's simulations draw their random numbers, and the options
-that choose `N` for you, that get the same precision from fewer
+that choose `mc_samples` for you, that get the same precision from fewer
 simulations, that spread the simulations over several CPUs, that compare
 two designs far more precisely than two separate runs can, and that run the
 simulations compiled.
 
 | Option | Where | What it does |
 |---|---|---|
-| `tolerance`, `confidence`, `max_N` / `max_samples` | `availability`, `cost`; `mean`, `mean_time_to_failure`, `mean_time_to_failure_interval` | Simulate until the estimate is known to within `tolerance`. |
+| `tolerance`, `confidence`, `max_samples` | `availability`, `cost`; `mean` and `mean_time_to_failure` with `method="simulate"`, `mean_time_to_failure_interval` | Simulate until the estimate is known to within `tolerance`. |
 | `antithetic=True` | the same, and `NonRepairableRBD.random` | Simulate in antithetic pairs. |
 | `n_jobs` | the same, and `RepairableRBD.compare` | Run the simulations on several CPUs. |
 | `compare(other, ...)` | `RepairableRBD`, `NonRepairableRBD` | The difference between two designs, simulated with common random numbers. |
@@ -79,8 +80,8 @@ the same numbers from it whatever the rest of the run does. So:
   the global RNG is otherwise left as it was.
 
 ```python
-short = plant.availability(t_simulation=100.0, N=100, seed=0)
-long = plant.availability(t_simulation=100.0, N=1_000, seed=0)
+short = plant.availability(t_simulation=100.0, mc_samples=100, seed=0)
+long = plant.availability(t_simulation=100.0, mc_samples=1_000, seed=0)
 bool((short.uptimes == long.uptimes[:100]).all())   # True
 ```
 
@@ -110,23 +111,23 @@ ci.upper - ci.estimate     # -> 0.49     at most the tolerance
 ci.estimate                # -> 114.56   the exact MTTF is 114.58
 ```
 
-`mean` and `mean_time_to_failure` take the same arguments and return the
-estimate alone. For a `RepairableRBD`, `availability(tolerance=...)` judges
+With `method="simulate"`, `mean` and `mean_time_to_failure` take the same
+arguments and return the estimate alone (by default they are exact). For a `RepairableRBD`, `availability(tolerance=...)` judges
 the mean availability over the window, the fraction of it the system is up
 (`result.mean_availability_interval()`), and `cost(tolerance=...)` the mean
-cost of a window (`result.mean_interval()`), checking after every `N`
+cost of a window (`result.mean_interval()`), checking after every `mc_samples`
 simulations:
 
 ```python
-result = plant.availability(t_simulation=100.0, N=1_000, seed=0, tolerance=0.001)
+result = plant.availability(t_simulation=100.0, mc_samples=1_000, seed=0, tolerance=0.001)
 result.n_simulations                  # -> 6000
 window = result.mean_availability_interval()
 window.estimate                       # -> 0.9547   the exact value is 0.9544
 window.upper - window.estimate        # -> 0.00094
 ```
 
-If the tolerance is not reached within `max_N` simulations (`max_samples`
-lifetimes), by default 100 times `N`, the run stops there with a
+If the tolerance is not reached within `max_samples` simulations (or
+lifetimes), by default 100 times `mc_samples`, the run stops there with a
 `RuntimeWarning`, and the result is from those. A run that stops after `n`
 simulations is the run of `N = n` from the start: the further simulations
 continue the same random numbers. (`mean_availability_interval()` is the
@@ -156,18 +157,18 @@ what makes the pairing work so well for it. A window's availability and cost
 depend on the draws in a less simple way, and gain less, but still gain:
 
 ```python
-single = plant.availability(t_simulation=100.0, N=2_000, seed=0)
-pairs = plant.availability(t_simulation=100.0, N=2_000, seed=0, antithetic=True)
+single = plant.availability(t_simulation=100.0, mc_samples=2_000, seed=0)
+pairs = plant.availability(t_simulation=100.0, mc_samples=2_000, seed=0, antithetic=True)
 single.mean_availability_interval().standard_error   # -> 0.00082
 pairs.mean_availability_interval().standard_error    # -> 0.00063
 ```
 
 The pairs, not the simulations, are independent, so the intervals are worked
-out from the pairs' means (`result.antithetic` records it), and `N` (or
-`mc_samples`) must be even. `NonRepairableRBD.random(size,
+out from the pairs' means (`result.antithetic` records it), and
+`mc_samples` must be even. `NonRepairableRBD.random(size,
 antithetic=True)` returns the pairs themselves: lifetimes `2i` and `2i + 1`.
 In a `RepairableRBD` every [stream](#random-streams) is paired, so an
-antithetic run of `N` simulations is the first `N/2` of the run without
+antithetic run of `mc_samples` simulations is the first half of the run without
 pairs, each followed by its mirror image.
 
 Every component's draws must be replayable from uniform random numbers:
@@ -182,8 +183,8 @@ Otherwise `antithetic=True` raises `NotImplementedError`.
 any `n_jobs`, and without it:
 
 ```python
-fast = plant.availability(t_simulation=100.0, N=2_000, seed=0, n_jobs=2)
-same = plant.availability(t_simulation=100.0, N=2_000, seed=0)
+fast = plant.availability(t_simulation=100.0, mc_samples=2_000, seed=0, n_jobs=2)
+same = plant.availability(t_simulation=100.0, mc_samples=2_000, seed=0)
 bool((fast.uptimes == same.uptimes).all())   # True
 ```
 
@@ -198,7 +199,7 @@ not on the number of processes, but it is not the result of a run without
 `n_jobs`, which draws every lifetime from one stream. It pays off for
 lifetimes that must be simulated event by event, not for a few thousand
 that are drawn in one vectorised step. Both work with `tolerance` (checked
-after each batch of `N`) and `antithetic`.
+after each batch of `mc_samples`) and `antithetic`.
 
 A process needs RePyability, surpyval and scipy loaded before it can
 simulate, and how long that takes depends on how the platform starts
@@ -240,7 +241,7 @@ faster = RepairableRBD(
     edges,
     {"A": repairable(0.1, 2.0), "B": repairable(0.1, 2.0), "C": repairable(0.02, 0.5)},
 )
-gain = faster.compare(plant, t_simulation=100.0, N=2_000, seed=0)
+gain = faster.compare(plant, t_simulation=100.0, mc_samples=2_000, seed=0)
 gain.estimate          # -> 0.0058    the exact difference is 0.00568
 gain.standard_error    # -> 0.00017
 ```
@@ -289,8 +290,8 @@ compiled loop is the Python one over arrays, reading the same
 [streams](#random-streams).
 
 ```python
-fast = plant.availability(t_simulation=100.0, N=2_000, seed=0)
-slow = plant.availability(t_simulation=100.0, N=2_000, seed=0, engine="python")
+fast = plant.availability(t_simulation=100.0, mc_samples=2_000, seed=0)
+slow = plant.availability(t_simulation=100.0, mc_samples=2_000, seed=0, engine="python")
 bool((fast.uptimes == slow.uptimes).all())   # True, with numba or without
 ```
 
@@ -313,7 +314,7 @@ up in a table of every state, so those events cost more.
 
 ## Which to use
 
-- **A precision to meet:** give a `tolerance`, rather than guessing `N`.
+- **A precision to meet:** give a `tolerance`, rather than guessing `mc_samples`.
 - **A choice between designs:** `compare` them, rather than comparing two
   separate estimates, whose errors add up.
 - **A quantity that rises with the components' lifetimes:** try

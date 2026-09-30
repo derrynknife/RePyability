@@ -34,7 +34,7 @@ def test_capacities_of_one_reproduce_the_availability():
         {"a": UNIT, "b": UNIT},
         capacity={"a": 1, "b": 1},
     )
-    result = series.availability(50, N=300, seed=1)
+    result = series.availability(50, mc_samples=300, seed=1)
     np.testing.assert_array_equal(result.capacity_timeline, result.timeline)
     np.testing.assert_allclose(result.capacity, result.availability)
     window = result.n_simulations * result.time_simulated_to
@@ -49,14 +49,14 @@ def test_capacities_of_one_reproduce_the_availability():
         {"a": UNIT, "b": UNIT},
         capacity={"a": 1, "b": 1},
     )
-    result = pair.availability(50, N=300, seed=2, demand=1)
+    result = pair.availability(50, mc_samples=300, seed=2, demand=1)
     np.testing.assert_allclose(result.delivered, result.uptimes / 50)
 
 
 def test_the_long_run_average_matches_the_exact_capacity():
     plant = pumps()
     exact = plant.capacity_distribution()
-    result = plant.availability(2000, N=200, seed=2, demand=100)
+    result = plant.availability(2000, mc_samples=200, seed=2, demand=100)
     assert result.mean_capacity == pytest.approx(exact.mean(), rel=2e-3)
     interval = result.delivered_fraction_interval(0.999)
     assert interval.lower <= exact.delivered_fraction(100) <= interval.upper
@@ -83,7 +83,7 @@ def test_a_deterministic_trace():
         },
         capacity={"a": 1, "b": 2},
     )
-    result = plant.availability(40, N=2, seed=0)
+    result = plant.availability(40, mc_samples=2, seed=0)
     np.testing.assert_array_equal(
         result.capacity_timeline, [0, 10, 12, 15, 19, 22, 24, 34, 36, 38, 40]
     )
@@ -103,7 +103,7 @@ def test_levels_while_up_count_in_proportion():
         {"a": UNIT},
         capacity={"a": {100: 0.8, 50: 0.2}},
     )
-    result = plant.availability(2000, N=100, seed=3)
+    result = plant.availability(2000, mc_samples=100, seed=3)
     exact = plant.capacity_distribution()
     assert result.demand == 100.0
     assert result.mean_capacity == pytest.approx(exact.mean(), rel=5e-3)
@@ -123,7 +123,7 @@ def test_an_unlimited_capacity():
         {"a": UNIT, "b": UNIT},
         capacity={"a": 5},
     )
-    result = plant.availability(50, N=50, seed=0)
+    result = plant.availability(50, mc_samples=50, seed=0)
     assert result.capacity[0] == math.inf
     assert result.mean_capacity == math.inf
     # No finite design capacity, so no delivered fraction without a demand.
@@ -131,7 +131,7 @@ def test_an_unlimited_capacity():
     assert result.delivered_fraction is None
     with pytest.raises(ValueError, match="no delivered fractions"):
         result.delivered_fraction_interval()
-    result = plant.availability(2000, N=100, seed=0, demand=5)
+    result = plant.availability(2000, mc_samples=100, seed=0, demand=5)
     assert result.delivered_fraction == pytest.approx(
         plant.capacity_distribution().delivered_fraction(5), abs=2e-3
     )
@@ -139,8 +139,8 @@ def test_an_unlimited_capacity():
 
 def test_parallel_runs_give_the_same_capacity():
     plant = pumps()
-    one = plant.availability(100, N=500, seed=5, n_jobs=1, demand=100)
-    two = plant.availability(100, N=500, seed=5, n_jobs=2, demand=100)
+    one = plant.availability(100, mc_samples=500, seed=5, n_jobs=1, demand=100)
+    two = plant.availability(100, mc_samples=500, seed=5, n_jobs=2, demand=100)
     np.testing.assert_array_equal(one.capacity_timeline, two.capacity_timeline)
     np.testing.assert_array_equal(one.capacity, two.capacity)
     np.testing.assert_array_equal(one.delivered, two.delivered)
@@ -152,7 +152,7 @@ def test_parallel_runs_give_the_same_capacity():
 
 def test_antithetic_pairs_and_the_interval():
     result = pumps().availability(
-        200, N=100, seed=7, antithetic=True, demand=100
+        200, mc_samples=100, seed=7, antithetic=True, demand=100
     )
     interval = result.delivered_fraction_interval()
     assert interval.n_samples == 100
@@ -163,7 +163,7 @@ def test_antithetic_pairs_and_the_interval():
 
 def test_without_capacities_nothing_is_recorded():
     result = RepairableRBD([("s", "a"), ("a", "t")], {"a": UNIT}).availability(
-        10, N=5, seed=0
+        10, mc_samples=5, seed=0
     )
     for name in (
         "capacity_timeline",
@@ -179,20 +179,20 @@ def test_without_capacities_nothing_is_recorded():
     # The failures and repairs are the same with or without capacities.
     with_capacity = RepairableRBD(
         [("s", "a"), ("a", "t")], {"a": UNIT}, capacity={"a": 2}
-    ).availability(10, N=5, seed=0)
+    ).availability(10, mc_samples=5, seed=0)
     np.testing.assert_array_equal(with_capacity.uptimes, result.uptimes)
 
 
 @pytest.mark.parametrize("demand", [0.0, -1.0, math.inf, math.nan])
 def test_the_demand_must_be_positive_and_finite(demand):
     with pytest.raises(ValueError, match="positive, finite"):
-        pumps().availability(10, N=2, seed=0, demand=demand)
+        pumps().availability(10, mc_samples=2, seed=0, demand=demand)
 
 
 def test_a_demand_needs_capacities():
     plain = RepairableRBD([("s", "a"), ("a", "t")], {"a": UNIT})
     with pytest.raises(ValueError, match="no node has one"):
-        plain.availability(10, N=2, seed=0, demand=5)
+        plain.availability(10, mc_samples=2, seed=0, demand=5)
 
 
 def test_capacities_from_models_are_not_simulated():
@@ -202,14 +202,14 @@ def test_capacities_from_models_are_not_simulated():
         {"a": {"reliability": stages, "repairability": E([1.0])}},
     )
     with pytest.raises(NotImplementedError, match="DegradingNode"):
-        staged.availability(10, N=2, seed=0)
+        staged.availability(10, mc_samples=2, seed=0)
     # Given a capacity of its own, the node is followed as up or down.
     given = RepairableRBD(
         [("s", "a"), ("a", "t")],
         {"a": {"reliability": stages, "repairability": E([1.0])}},
         capacity={"a": 80},
     )
-    result = given.availability(10, N=2, seed=0)
+    result = given.availability(10, mc_samples=2, seed=0)
     assert result.demand == 80.0
     # The cost simulation does not follow the capacity.
-    assert staged.cost(10, N=2, seed=0) is None
+    assert staged.cost(10, mc_samples=2, seed=0) is None

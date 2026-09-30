@@ -44,7 +44,7 @@ def test_age_replacement_before_the_failure_prevents_every_failure():
             "preventive": {"interval": 6, "cost": 1.0},
         }
     )
-    result = rbd.availability(60.0, N=3, seed=1)
+    result = rbd.availability(60.0, mc_samples=3, seed=1)
     assert result.cost.by_category["preventive"] == 9.0
     assert result.cost.by_category["replace"] == 0.0
     assert result.system_failures == 0
@@ -63,7 +63,7 @@ def test_a_failure_at_the_replacement_age_is_a_failure():
             "preventive": {"interval": 10, "cost": 1.0},
         }
     )
-    cost = rbd.cost(60.0, N=2, seed=1)
+    cost = rbd.cost(60.0, mc_samples=2, seed=1)
     assert cost.by_category["replace"] == 5 * 5.0  # at 10, 20, 30, 40, 50
     assert cost.by_category["preventive"] == 0.0
 
@@ -80,7 +80,7 @@ def test_block_replacement_falls_on_the_calendar():
             "preventive": {"interval": 25, "policy": "block", "cost": 1.0},
         }
     )
-    result = rbd.availability(100.0, N=3, seed=1)
+    result = rbd.availability(100.0, mc_samples=3, seed=1)
     assert result.cost.by_category["replace"] == 8 * 5.0
     assert result.cost.by_category["preventive"] == 3 * 1.0
     # Instant repairs are zero-length failures of the system.
@@ -98,7 +98,7 @@ def test_block_replacement_is_skipped_while_the_unit_is_down():
             "preventive": {"interval": 25, "policy": "block", "cost": 1.0},
         }
     )
-    result = rbd.availability(100.0, N=1, seed=1)
+    result = rbd.availability(100.0, mc_samples=1, seed=1)
     # 0-10 up, 10-30 down, 30-40 up, 40-60 down, 60-70 up, 70-90 down,
     # 90-100 up: the new units reach no block time alive.
     assert result.cost.by_category["preventive"] == 0.0
@@ -110,7 +110,7 @@ def test_block_replacement_is_skipped_while_the_unit_is_down():
             "preventive": {"interval": 25, "policy": "block", "cost": 1.0},
         }
     )
-    result = rbd.availability(100.0, N=1, seed=1)
+    result = rbd.availability(100.0, mc_samples=1, seed=1)
     # Replaced (in zero time) at 25, 50 and 75, before it can fail.
     assert result.cost.by_category["preventive"] == 3.0
     assert result.system_uptime == 100.0
@@ -129,7 +129,7 @@ def test_maintenance_that_takes_time_is_a_planned_outage():
         },
         downtime_cost_rate=7.0,
     )
-    result = rbd.availability(420.0, N=2, seed=1)
+    result = rbd.availability(420.0, mc_samples=2, seed=1)
     assert per_run(result, result.system_uptime) == 400.0
     assert per_run(result, result.system_downtime) == 20.0
     assert per_run(result, result.node_downtime["c"]) == 20.0
@@ -172,7 +172,7 @@ def test_a_planned_outage_of_a_redundant_unit_does_not_stop_the_system():
     rbd = RepairableRBD(
         [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")], pumps
     )
-    result = rbd.availability(420.0, N=1, seed=1)
+    result = rbd.availability(420.0, mc_samples=1, seed=1)
     assert result.system_uptime == 420.0
     assert result.system_planned_outages == 0
     assert result.node_downtime["a"] == 20.0
@@ -214,7 +214,7 @@ def test_a_nested_rbds_planned_outage_is_planned_for_its_parent():
             "v": {"reliability": X(1000), "repairability": X(1)},
         },
     )
-    result = parent.availability(420.0, N=2, seed=1)
+    result = parent.availability(420.0, mc_samples=2, seed=1)
     assert per_run(result, result.system_planned_outages) == 10
     assert result.system_failures == 0
     # (In the long run v fails too; hold it working to see sub alone.)
@@ -268,7 +268,7 @@ def test_age_replacement_rate_is_the_non_repairable_rate():
         float(unit.cost_rate(T)), rel=1e-12
     )
     # ...and the simulation converges to it.
-    result = rbd.cost(t_simulation=5000.0, N=200, seed=2)
+    result = rbd.cost(t_simulation=5000.0, mc_samples=200, seed=2)
     interval = result.mean_interval(0.999)
     assert interval.lower <= exact * 5000.0 <= interval.upper
 
@@ -287,7 +287,7 @@ def test_block_replacement_cannot_help_an_exponential_unit():
         }
     )
     t = m * T
-    result = rbd.cost(t_simulation=t, N=400, seed=3)
+    result = rbd.cost(t_simulation=t, mc_samples=400, seed=3)
     assert result.by_category["preventive"] == cp * (m - 1)
     failures = result.samples - cp * (m - 1)
     mean, se = failures.mean(), failures.std(ddof=1) / math.sqrt(400)
@@ -356,7 +356,7 @@ def test_the_renewal_cycle_gives_each_nodes_availability():
 def test_the_exact_long_run_values_match_a_long_simulation():
     rbd = maintained_system()
     t, n = 20_000.0, 40
-    result = rbd.availability(t, N=n, seed=5)
+    result = rbd.availability(t, mc_samples=n, seed=5)
     window = n * t
     assert result.system_uptime / window == pytest.approx(
         rbd.mean_availability(), abs=0.002
@@ -388,12 +388,12 @@ def test_block_replacement_has_exact_long_run_values():
         }
     )
     t = 50_000.0
-    result = rbd.availability(t_simulation=t, N=20, seed=2)
+    result = rbd.availability(t_simulation=t, mc_samples=20, seed=2)
     window = result.mean_availability_interval()
     assert abs(rbd.mean_availability() - window.estimate) < 4 * (
         window.standard_error
     )
-    cost = rbd.cost(t_simulation=t, N=20, seed=3).mean_interval()
+    cost = rbd.cost(t_simulation=t, mc_samples=20, seed=3).mean_interval()
     assert abs(rbd.expected_cost_rate() * t - cost.estimate) < 4 * (
         cost.standard_error
     )
@@ -439,8 +439,8 @@ def test_an_infinite_interval_is_no_maintenance(policy):
 
     plain, maintained = build(False), build(True)
     assert_identical(
-        plain.availability(800.0, N=30, seed=7),
-        maintained.availability(800.0, N=30, seed=7),
+        plain.availability(800.0, mc_samples=30, seed=7),
+        maintained.availability(800.0, mc_samples=30, seed=7),
     )
     assert plain.expected_cost_rate() == maintained.expected_cost_rate()
     assert plain.mean_up_time() == maintained.mean_up_time()
@@ -454,7 +454,9 @@ def test_forced_nodes_are_not_maintained():
             "preventive": {"interval": 10.0, "cost": 1.0},
         }
     )
-    assert rbd.cost(100.0, N=3, seed=1, working_nodes=["c"]).mean == 0.0
+    assert (
+        rbd.cost(100.0, mc_samples=3, seed=1, working_nodes=["c"]).mean == 0.0
+    )
     assert rbd.expected_cost_rate(working_nodes=["c"]) == 0.0
     assert rbd.expected_cost_rate() > 0.0
 
@@ -501,7 +503,7 @@ def test_a_zero_cost_prices_nothing():
     }
     rbd = single(spec)
     assert not rbd.has_costs
-    assert rbd.cost(100.0, N=2, seed=1) is None
+    assert rbd.cost(100.0, mc_samples=2, seed=1) is None
     spec["preventive"]["cost"] = 1.0
     assert single(spec).has_costs
 
@@ -510,8 +512,8 @@ def test_a_maintained_rbd_round_trips_through_json():
     rbd = maintained_system()
     again = RepairableRBD.from_json(rbd.to_json())
     assert_identical(
-        rbd.availability(500.0, N=10, seed=8),
-        again.availability(500.0, N=10, seed=8),
+        rbd.availability(500.0, mc_samples=10, seed=8),
+        again.availability(500.0, mc_samples=10, seed=8),
     )
     assert again.expected_cost_rate() == rbd.expected_cost_rate()
 

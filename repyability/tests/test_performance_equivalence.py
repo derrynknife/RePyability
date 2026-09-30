@@ -397,11 +397,12 @@ def test_random_is_identical_to_the_event_loop(name):
 
 def test_random_mean_and_interval_use_the_fast_path_unchanged(monkeypatch):
     rbd = rbds()["bridge"]
-    fast_mean = rbd.mean(3000, seed=8)
+    fast_mean = rbd.mean(method="simulate", mc_samples=3000, seed=8)
     fast_interval = rbd.mean_time_to_failure_interval(3000, seed=9)
     no_fast_path(monkeypatch)
     assert rbd._random_vectorised(1) is None
-    assert rbd.mean(3000, seed=8) == pytest.approx(fast_mean, rel=RTOL)
+    slow_mean = rbd.mean(method="simulate", mc_samples=3000, seed=8)
+    assert slow_mean == pytest.approx(fast_mean, rel=RTOL)
     assert_same(rbd.mean_time_to_failure_interval(3000, seed=9), fast_interval)
 
 
@@ -466,7 +467,7 @@ COLD_UNITS = [
 
 @pytest.mark.parametrize("k", [2, 3, 4])
 def test_cold_standby_k_is_identical_to_the_queue_loop(k, monkeypatch):
-    model = StandbyModel(COLD_UNITS, k=k, n_sims=50, seed=0)
+    model = StandbyModel(COLD_UNITS, k=k, mc_samples=50, seed=0)
     fast = model.random(3000, seed=13)
     np.random.seed(14)
     model.random(200)
@@ -483,9 +484,9 @@ def test_cold_standby_k_is_identical_to_the_queue_loop(k, monkeypatch):
 
 def test_cold_standby_fit_is_unchanged(monkeypatch):
     t = np.linspace(0, 500, 26)
-    fast = StandbyModel(COLD_UNITS, k=2, n_sims=2000, seed=15).sf(t)
+    fast = StandbyModel(COLD_UNITS, k=2, mc_samples=2000, seed=15).sf(t)
     no_fast_path(monkeypatch)
-    slow = StandbyModel(COLD_UNITS, k=2, n_sims=2000, seed=15).sf(t)
+    slow = StandbyModel(COLD_UNITS, k=2, mc_samples=2000, seed=15).sf(t)
     np.testing.assert_allclose(fast, slow, rtol=RTOL, atol=0)
 
 
@@ -500,7 +501,11 @@ def budgets_with_ties(size, n):
 @pytest.mark.parametrize("ties", [False, True])
 def test_warm_standby_is_identical_per_sample(k, dormancy, ties):
     model = StandbyModel(
-        [W([100, 2.0])] * 4, k=k, dormancy_factor=dormancy, n_sims=10, seed=0
+        [W([100, 2.0])] * 4,
+        k=k,
+        dormancy_factor=dormancy,
+        mc_samples=10,
+        seed=0,
     )
     budgets = (
         budgets_with_ties(3000, 4)
@@ -531,7 +536,7 @@ def test_warm_standby_plays_infinite_budgets_out_sample_by_sample(
     # A unit that never fails has an infinite budget: its samples go through
     # the per-sample loop, the rest all at once, with the same results.
     model = StandbyModel(
-        [W([100, 2.0])] * 3, k=1, dormancy_factor=0.3, n_sims=10, seed=0
+        [W([100, 2.0])] * 3, k=1, dormancy_factor=0.3, mc_samples=10, seed=0
     )
     budgets = budgets_with_ties(20, 3)
     budgets[3, 1] = np.inf
@@ -565,7 +570,7 @@ def weibull_aft():
 @pytest.mark.parametrize("ties", [False, True])
 def test_load_sharing_is_identical_per_sample(weibull_aft, k, ties):
     model = LoadSharingModel(
-        [weibull_aft] * 3, load=2.0, k=k, n_sims=10, seed=0
+        [weibull_aft] * 3, load=2.0, k=k, mc_samples=10, seed=0
     )
     tau = (
         budgets_with_ties(3000, 3).T
@@ -585,7 +590,9 @@ def test_load_sharing_is_identical_per_sample(weibull_aft, k, ties):
 def test_load_sharing_degenerate_inputs_use_the_per_sample_loop(
     weibull_aft, bad, monkeypatch
 ):
-    model = LoadSharingModel([weibull_aft] * 3, load=2.0, n_sims=10, seed=0)
+    model = LoadSharingModel(
+        [weibull_aft] * 3, load=2.0, mc_samples=10, seed=0
+    )
     tau = budgets_with_ties(20, 3).T
     if bad == "inf_threshold":
         tau[1, 5] = np.inf
@@ -605,13 +612,17 @@ def test_load_sharing_degenerate_inputs_use_the_per_sample_loop(
 
 def test_load_sharing_fit_is_unchanged(weibull_aft, monkeypatch):
     t = np.linspace(0, 200, 21)
-    fast = LoadSharingModel([weibull_aft] * 3, load=2.0, n_sims=2000, seed=20)
+    fast = LoadSharingModel(
+        [weibull_aft] * 3, load=2.0, mc_samples=2000, seed=20
+    )
     monkeypatch.setattr(
         LoadSharingModel,
         "_lifetimes",
         lambda self, tau: self._lifetimes_by_sample(tau),
     )
-    slow = LoadSharingModel([weibull_aft] * 3, load=2.0, n_sims=2000, seed=20)
+    slow = LoadSharingModel(
+        [weibull_aft] * 3, load=2.0, mc_samples=2000, seed=20
+    )
     np.testing.assert_allclose(fast.sf(t), slow.sf(t), rtol=RTOL, atol=0)
 
 
@@ -934,7 +945,7 @@ def test_subclassed_components_keep_their_own_event_methods():
         sources = rbd._streamed_components(_streams.Run(plan, reseed=True))
         assert sources["sub"] is rbd.components["sub"]
         calls.clear()
-        rbd.availability(200.0, N=5, seed=30)
+        rbd.availability(200.0, mc_samples=5, seed=30)
         assert kind in calls
 
 
@@ -952,7 +963,7 @@ def test_nested_rbds_step_by_hand_as_before_after_a_simulation():
     # availability() hands nested RBDs their stand-ins only for the run:
     # afterwards they draw from their components again.
     used = repairable_rbds()["nested_two_levels"]
-    used.availability(300.0, N=10, seed=28)
+    used.availability(300.0, mc_samples=10, seed=28)
     fresh = repairable_rbds()["nested_two_levels"]
     np.random.seed(29)
     expected = step_by_hand(fresh, 2000.0)
@@ -1033,44 +1044,49 @@ def seeded_runs():
         runs[name] = (
             rbd,
             "availability",
-            dict(t_simulation=300.0, N=40, seed=21),
+            dict(t_simulation=300.0, mc_samples=40, seed=21),
         )
         runs[f"{name}, cut sets"] = (
             rbd,
             "availability",
-            dict(t_simulation=200.0, N=20, seed=22, method="c"),
+            dict(t_simulation=200.0, mc_samples=20, seed=22, method="c"),
         )
         runs[f"{name}, antithetic"] = (
             rbd,
             "availability",
-            dict(t_simulation=200.0, N=20, seed=26, antithetic=True),
+            dict(t_simulation=200.0, mc_samples=20, seed=26, antithetic=True),
         )
         runs[f"{name}, first broken"] = (
             rbd,
             "availability",
-            dict(t_simulation=200.0, N=20, seed=24, broken_nodes=[first]),
+            dict(
+                t_simulation=200.0,
+                mc_samples=20,
+                seed=24,
+                broken_nodes=[first],
+            ),
         )
         if rbd.has_costs:
             runs[f"{name}, cost"] = (
                 rbd,
                 "cost",
-                dict(t_simulation=200.0, N=20, seed=25),
+                dict(t_simulation=200.0, mc_samples=20, seed=25),
             )
     air = instrument_air()
     runs["instrument air"] = (
         air,
         "availability",
-        dict(t_simulation=600000.0, N=6, seed=1, method="c"),
+        dict(t_simulation=600000.0, mc_samples=6, seed=1, method="c"),
     )
     runs["instrument air, n_jobs"] = (
         air,
         "availability",
-        dict(t_simulation=60000.0, N=300, seed=3, n_jobs=2),
+        dict(t_simulation=60000.0, mc_samples=300, seed=3, n_jobs=2),
     )
     runs["pumps with capacities"] = (
         pumps_with_capacities(),
         "availability",
-        dict(t_simulation=100.0, N=50, seed=5, demand=100),
+        dict(t_simulation=100.0, mc_samples=50, seed=5, demand=100),
     )
     return runs
 
@@ -1218,11 +1234,15 @@ def composite_nodes(aft):
             [W([300, 2.0]), W([280, 1.7]), L([5.5, 0.4])],
             k=1,
             dormancy_factor=0.3,
-            n_sims=50,
+            mc_samples=50,
             seed=1,
         ),
         "standby_warm_k2": StandbyModel(
-            [W([300, 2.0])] * 4, k=2, dormancy_factor=0.6, n_sims=50, seed=1
+            [W([300, 2.0])] * 4,
+            k=2,
+            dormancy_factor=0.6,
+            mc_samples=50,
+            seed=1,
         ),
         "standby_cold_k1": StandbyModel(
             [W([300, 2.0]), L([5.5, 0.4]), W([250, 1.2], gamma=5)], k=1
@@ -1233,7 +1253,9 @@ def composite_nodes(aft):
         "standby_cold_k1_switch_list": StandbyModel(
             [W([300, 2.0])] * 3, k=1, switching_probability=[0.95, 0.8]
         ),
-        "standby_cold_k2": StandbyModel(COLD_UNITS, k=2, n_sims=50, seed=1),
+        "standby_cold_k2": StandbyModel(
+            COLD_UNITS, k=2, mc_samples=50, seed=1
+        ),
         "repeated_parallel": RepeatedNode(W([500, 2.0]), 3, "parallel"),
         "repeated_series": RepeatedNode(L([6.0, 0.5]), 2, "series"),
         "repeated_standby": RepeatedStandbyNode(W([300, 2.0]), 3),
@@ -1241,11 +1263,11 @@ def composite_nodes(aft):
             W([300, 2.0]), 3, switching_probability=0.85
         ),
         "load_sharing": LoadSharingModel(
-            [aft] * 3, load=2.0, n_sims=50, seed=1
+            [aft] * 3, load=2.0, mc_samples=50, seed=1
         ),
         # Different units, so their order matters.
         "load_sharing_mixed": LoadSharingModel(
-            [aft, aft, other_aft()], load=2.0, n_sims=50, seed=1
+            [aft, aft, other_aft()], load=2.0, mc_samples=50, seed=1
         ),
         "regression": RegressionNode(aft, covariates=[1.2]),
         "nested_rbd": NonRepairableRBD(
@@ -1365,7 +1387,7 @@ def test_nan_inside_a_composite_node_falls_back(
 
     if where == "standby":
         monkeypatch.setattr(standby_node, "inverse_sampler", nan_sampler)
-        node = StandbyModel(COLD_UNITS, k=2, n_sims=5, seed=0)
+        node = StandbyModel(COLD_UNITS, k=2, mc_samples=5, seed=0)
     else:
         node = rbd_with(W([500, 2]))
         monkeypatch.setattr(_sampling, "inverse_sampler", nan_sampler)

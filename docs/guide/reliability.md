@@ -91,14 +91,16 @@ its own age, see [Condition-based evaluation](condition-based.md).
 ```python
 rbd.node_sf(50)       # {'pump1': 0.7788, 'pump2': 0.7788, 'valve': 0.8825, 's': 1.0, 't': 1.0}
 rbd.node_ff(50)       # the complements
-rbd.node_mttf(seed=0) # {'pump1': 88.62, 'pump2': 88.62, 'valve': 180.55}
+rbd.node_mttf()       # {'pump1': 88.62, 'pump2': 88.62, 'valve': 180.55}
 ```
 
 `node_sf` and `node_ff` include the input and output nodes (always 1 and 0).
-`node_mttf` excludes them; it takes each model's own mean, uses `mc_samples`
-Monte-Carlo draws for simulation-backed models (standby, load sharing,
-repeated and nested nodes), and reports 0 for a fixed-probability node, which
-has no lifetime.
+`node_mttf` excludes them. It takes each model's own mean, without
+simulating: a nested RBD's or repeated node's is the area under its
+reliability, and a standby or load-sharing node's is exact where it has a
+closed form or convolution, and otherwise the mean of the lifetimes its
+reliability was fitted to. A fixed-probability node, which has no lifetime,
+gets 0.
 
 ## Forcing nodes working or failed
 
@@ -135,25 +137,28 @@ lifetime; the system fails when its last working path is broken.
 rbd.random(5, seed=1)   # array([ 0.47, 42.19, 65.11, 87.97, 18.34])
 ```
 
-The mean time to failure is the mean of `mc_samples` such lifetimes
-(default 100 000); `mean` and `mean_time_to_failure` are the same.
-`mean_time_to_failure_interval` adds its sampling uncertainty as a
+The mean time to failure is exact: the area under the system reliability,
+`MTTF = ∫ R(t) dt`, which is integrated numerically to about `1e-10`.
+`mean` and `mean_time_to_failure` are the same. `method="simulate"`
+estimates it instead, as the mean of `mc_samples` such lifetimes (default
+100 000), and `mean_time_to_failure_interval` gives that estimate with its
+sampling uncertainty, as a
 [`ConfidenceInterval`][repyability.ConfidenceInterval]:
 
 ```python
-rbd.mean_time_to_failure(seed=0)   # -> 93.76
+rbd.mean_time_to_failure()   # -> 93.82
+rbd.mean_time_to_failure(method="simulate", seed=0)   # -> 93.76
 ci = rbd.mean_time_to_failure_interval(mc_samples=100_000, confidence=0.95, seed=0)
 ci.estimate          # -> 93.76
 ci.lower, ci.upper   # (93.49, 94.03)
 ci.standard_error    # -> 0.1373   sample std / √mc_samples
 ```
 
-The interval narrows like `1/√mc_samples`. Common-cause groups are not
-included in these simulated quantities (see
-[Common-cause failures](common-cause.md#what-honours-a-ccf-group)). A node
-some of whose units never fail (a surpyval model with `p < 1`) draws
-infinite lifetimes for them, so a system that can outlast its failing nodes
-has an infinite MTTF.
+The interval narrows like `1/√mc_samples`. The exact MTTF refuses
+common-cause groups, and the simulation leaves them out (see
+[Common-cause failures](common-cause.md#what-honours-a-ccf-group)). A system
+that can outlast its failing nodes has an infinite MTTF: one that needs only
+a node some of whose units never fail (a surpyval model with `p < 1`).
 
 To simulate until the MTTF is known to a given precision, pass a
 `tolerance`: `mean_time_to_failure_interval(tolerance=0.5)` keeps adding

@@ -147,14 +147,16 @@ about `Q = 0.5` it comes out *more* reliable than an independent pair
 |---|---|
 | `sf`, `ff`, `reliability`, `unreliability`, and what is derived from them (`df`, `hf`, `Hf`, `cs`, `time_to_reliability`, `bx_life`) | Include the common cause, exactly. |
 | `structural_importance` | Unaffected (it does not use probabilities). |
-| `random`, `mean`, `mean_time_to_failure`, `mean_time_to_failure_interval` | Sample members **independently**: the common cause is not included, since a lifetime runs to `Q = 1`, outside the model. |
+| `random`, `mean(method="simulate")`, `mean_time_to_failure_interval`, `compare` | Sample members **independently**: the common cause is not included, since a lifetime runs to `Q = 1`, outside the model. |
+| `mean`, `mean_time_to_failure` (exact by default) | Raise `NotImplementedError`, for the same reason: the exact MTTF integrates the reliability over whole lifetimes. |
 | The probability-based importance measures, `parameter_sensitivity`, and the condition-based methods | Raise `NotImplementedError`. |
 | `working_nodes` / `broken_nodes` naming a group member | Raises `NotImplementedError`. |
 | `allocate_redundancy` | Not supported (duplicating a member would have to extend its group). |
 
 ```python
-pair_ccf.mean(seed=0)   # -> 1147.4   the same as without the group
-pair.mean(seed=0)       # -> 1147.4
+pair_ccf.mean(method="simulate", seed=0)   # -> 1147.4   the same as without the group
+pair.mean(method="simulate", seed=0)       # -> 1147.4
+pair.mean()                                # -> 1145.8   exact, without the group
 ```
 
 Groups are saved with the RBD. An *alpha-factor* model, a data-estimable

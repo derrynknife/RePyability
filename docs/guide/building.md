@@ -247,7 +247,7 @@ spare = NonRepairableRBD(
 spare.is_analytically_solvable()            # True: a numerical convolution
 two_of_three = NonRepairableRBD(
     [("s", "sb"), ("sb", "t")],
-    {"sb": StandbyModel([unit] * 3, k=2, n_sims=2000, seed=1)},
+    {"sb": StandbyModel([unit] * 3, k=2, mc_samples=2000, seed=1)},
 )
 two_of_three.is_analytically_solvable()     # False: simulated lifetimes
 two_of_three.get_non_analytic_nodes()       # {'sb': 'StandbyModel'}

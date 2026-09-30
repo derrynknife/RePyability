@@ -55,7 +55,7 @@ hot.sf(150)       # -> 0.2006   the same as two units in parallel (0.1997)
 `k` operating units at once is supported for every dormancy:
 
 ```python
-two_of_three = StandbyModel([pump, pump, pump], k=2, n_sims=20_000, seed=0)
+two_of_three = StandbyModel([pump, pump, pump], k=2, mc_samples=20_000, seed=0)
 two_of_three.sf(100)   # -> 0.512
 ```
 
@@ -79,7 +79,7 @@ Other combinations raise `NotImplementedError`.
 | Identical Exponential units, cold, perfect switching (any `k`) | Exact: Erlang. |
 | Identical Exponential units, warm or hot | Exact: hypoexponential. |
 | Cold, `k = 1` (any units, including imperfect switching) | Numerical convolution of the units' lifetimes: deterministic, and accurate to about 1e-6 (1e-5 for the steepest early-life densities, a gamma with shape 0.5 or less). |
-| Everything else (warm or hot non-Exponential units, cold `k ≥ 2` non-Exponential units) | Simulation: a Kaplan–Meier fit to `n_sims` simulated lifetimes (default 10 000), seeded by `seed`, with `lower` passed as the fit's lower limit. |
+| Everything else (warm or hot non-Exponential units, cold `k ≥ 2` non-Exponential units) | Simulation: a Kaplan–Meier fit to `mc_samples` simulated lifetimes (default 10 000), seeded by `seed`, with `lower` passed as the fit's lower limit. |
 
 The simulated cases carry Monte-Carlo error, and their `sf` returns
 one-element arrays even for a scalar time. For hot standby with non-Exponential
@@ -90,7 +90,7 @@ and draw lifetimes; `cs(x, X)` is its conditional survival. A standby node
 cannot take a [condition-based state](condition-based.md). When the
 arrangement is simulated, `mean()` is the mean of the lifetimes its fit is made
 from, the same on every call, so the exact long-run values of a repairable RBD
-it is part of are too; `mean(N=..., seed=...)` makes a fresh estimate from new
+it is part of are too; `mean(mc_samples=..., seed=...)` makes a fresh estimate from new
 draws.
 
 ## Repeated nodes: n identical copies
@@ -106,8 +106,9 @@ three_in_series.sf(50)     # -> 0.4724   = pump.sf(50) ** 3
 three_in_parallel.sf(50)   # -> 0.9892   = 1 − pump.ff(50) ** 3
 ```
 
-Its reliability is exact. `mean(N=1_000_000, seed=None)` is a Monte-Carlo
-estimate from `N` draws. A `RepeatedNode` is *n* distinct copies; for the
+Its reliability is exact, and so is its `mean()`, the area under it;
+`mean(method="simulate", mc_samples=1_000_000)` estimates it from that many
+draws instead. A `RepeatedNode` is *n* distinct copies; for the
 *same* component in several places, see
 [One component in several places](building.md#one-component-in-several-places).
 
@@ -123,8 +124,8 @@ RepeatedStandbyNode(pump, 2).sf(150)                            # -> 0.6342
 RepeatedStandbyNode(pump, 2, switching_probability=0.9).sf(150) # -> 0.5813
 ```
 
-Its `N` and `lower` arguments are accepted for backwards compatibility and
-unused.
+Its `N` and `lower` arguments are ignored, and deprecated: passing them
+warns.
 
 ## Load sharing
 
@@ -161,7 +162,7 @@ p = RegressionNode(unit, covariates=[1.0]).sf(50)[0]
 
 - Identical units with an **Exponential** baseline have an exact
   (hypoexponential) group lifetime and `is_simulated` is `False`. Otherwise
-  the survival function is a Kaplan–Meier fit to `n_sims` simulated lifetimes
+  the survival function is a Kaplan–Meier fit to `mc_samples` simulated lifetimes
   (seeded by `seed`), and `is_simulated` is `True`.
 - With no load effect the units neither share stress nor accelerate, and the
   group reduces exactly to `k`-out-of-`n` parallel.

@@ -150,12 +150,12 @@ def test_one_component_matches_the_simulation():
     )
     rbd = alone(spec)
     t = 50_000.0
-    result = rbd.availability(t_simulation=t, N=20, seed=3)
+    result = rbd.availability(t_simulation=t, mc_samples=20, seed=3)
     window = result.mean_availability_interval()
     assert abs(rbd.mean_availability() - window.estimate) < 4 * (
         window.standard_error
     )
-    cost = rbd.cost(t_simulation=t, N=20, seed=4).mean_interval()
+    cost = rbd.cost(t_simulation=t, mc_samples=20, seed=4).mean_interval()
     assert abs(rbd.expected_cost_rate() * t - cost.estimate) < 4 * (
         cost.standard_error
     )
@@ -166,7 +166,7 @@ def test_repairs_longer_than_the_interval():
     # intervals. Exact values against the simulation's long-run averages.
     spec = component(W([50, 1.5]), E([1 / 40.0]), 20.0)
     rbd = alone(spec)
-    result = rbd.availability(t_simulation=50_000.0, N=20, seed=5)
+    result = rbd.availability(t_simulation=50_000.0, mc_samples=20, seed=5)
     window = result.mean_availability_interval()
     assert abs(rbd.mean_availability() - window.estimate) < 4 * (
         window.standard_error
@@ -215,7 +215,7 @@ def test_a_synchronised_pair_matches_the_simulation():
     exact = rbd.mean_availability()
     # The pair is down whenever both are replaced: far from 1 - q_a q_b.
     assert exact < 1.0 - (1.0 - naive["a"]) * (1.0 - naive["b"]) - 0.005
-    result = rbd.availability(t_simulation=100_000.0, N=20, seed=6)
+    result = rbd.availability(t_simulation=100_000.0, mc_samples=20, seed=6)
     window = result.mean_availability_interval()
     assert abs(exact - window.estimate) < 4 * window.standard_error
     t = result.n_simulations * result.time_simulated_to
@@ -266,7 +266,9 @@ def test_a_non_parametric_life():
     with pytest.raises(NotImplementedError, match="parametric"):
         rbd.mean_availability()
     # The simulation still covers it.
-    assert rbd.availability(t_simulation=500.0, N=5, seed=1) is not None
+    assert (
+        rbd.availability(t_simulation=500.0, mc_samples=5, seed=1) is not None
+    )
 
 
 def test_a_nested_rbd_on_the_same_calendar():

@@ -28,7 +28,7 @@ def _result():
     rbd = RepairableRBD(
         [("s", "A"), ("s", "B"), ("A", "t"), ("B", "t")], comps
     )
-    return rbd.availability(t_simulation=15.0, N=100, seed=1)
+    return rbd.availability(t_simulation=15.0, mc_samples=100, seed=1)
 
 
 def test_availability_returns_typed_result():

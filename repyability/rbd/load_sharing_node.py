@@ -30,9 +30,12 @@ exact closed form (a hypoexponential distribution); otherwise the survival
 function is a Kaplan-Meier fit to simulated lifetimes (like ``StandbyModel``).
 """
 
+import warnings
+
 import numpy as np
 from surpyval import Hypoexponential, KaplanMeier
 
+from repyability.utils.deprecation import renamed
 from repyability.utils.wrappers import conditional_survival, numpy_seed
 
 from ._model_utils import is_exponential
@@ -104,7 +107,8 @@ class LoadSharingModel:
       lifetime is hypoexponential with stage rates
       ``s * lambda * phi(L / s)`` for ``s = N, ..., k`` survivors.
     - **Simulated** otherwise, or when two of those stage rates coincide:
-      a Kaplan-Meier fit to ``n_sims`` lifetimes drawn with ``random``.
+      a Kaplan-Meier fit to ``mc_samples`` lifetimes drawn with
+      ``random``.
       ``is_simulated`` tells which applies.
 
     As an RBD node, ``sf``/``ff`` give its reliability, ``random`` its
@@ -125,7 +129,7 @@ class LoadSharingModel:
     k : int, optional
         The minimum number of surviving units for the group to work, from
         1 to ``len(models)``, by default 1.
-    n_sims : int, optional
+    mc_samples : int, optional
         The number of simulated lifetimes behind the Kaplan-Meier fit when
         no closed form applies, by default 10_000.
     lower : float, optional
@@ -135,6 +139,8 @@ class LoadSharingModel:
         Seed for the simulation, making the fit reproducible: numpy's
         global RNG is seeded for the draw and restored afterwards. By
         default None (not reproducible).
+    n_sims : int, optional
+        Deprecated: the old name of ``mc_samples``.
 
     Attributes
     ----------
@@ -183,7 +189,7 @@ class LoadSharingModel:
     ``seed`` makes the fit reproducible:
 
     >>> w = surv.WeibullAFT.fit(x, Z=load)
-    >>> sim = LoadSharingModel([w, w], load=2.0, n_sims=2000, seed=1)
+    >>> sim = LoadSharingModel([w, w], load=2.0, mc_samples=2000, seed=1)
     >>> sim.is_simulated
     True
     >>> round(float(sim.sf([50.0])[0]), 2)
@@ -195,10 +201,15 @@ class LoadSharingModel:
         models,
         load,
         k=1,
-        n_sims=10_000,
+        mc_samples=None,
         lower=-np.inf,
         seed=None,
+        *,
+        n_sims=None,
     ):
+        mc_samples = renamed("mc_samples", mc_samples, "n_sims", n_sims)
+        if mc_samples is None:
+            mc_samples = 10_000
         models = list(models)
         if len(models) == 0:
             raise ValueError("LoadSharingModel needs at least one unit.")
@@ -220,7 +231,7 @@ class LoadSharingModel:
         self.load = float(load)
         self.k = int(k)
         self.N = len(models)
-        self.n_sims = n_sims
+        self.mc_samples = mc_samples
 
         self._baselines = [_baseline(m) for m in models]
         # phi_table[i, s-1] = unit i's aging rate when s units share the load.
@@ -249,7 +260,7 @@ class LoadSharingModel:
         if self._sf_model is not None:
             self.model = None
         else:
-            x_random = self.random(n_sims, seed=seed)
+            x_random = self.random(mc_samples, seed=seed)
             self.model = KaplanMeier.fit(x_random, set_lower_limit=lower)
             # The simulated lifetimes' mean, for mean().
             self._simulated_mean = float(np.mean(x_random))
@@ -366,20 +377,21 @@ class LoadSharingModel:
             out[j] = t
         return out
 
-    def mean(self, N=None, seed=None):
+    def mean(self, mc_samples=None, seed=None, *, N=None):
         """Mean lifetime (MTTF) of the group.
 
         Exact (the hypoexponential mean, the sum of the stage means) when
         the closed form applies. When the group is simulated it is the mean
-        of the ``n_sims`` lifetimes simulated at construction, which the
-        Kaplan-Meier fit behind ``sf`` is made from: a Monte-Carlo
+        of the ``mc_samples`` lifetimes simulated at construction, which
+        the Kaplan-Meier fit behind ``sf`` is made from: a Monte-Carlo
         estimate, but the same on every call (and reproducible with the
-        constructor's ``seed``). Give ``N`` or ``seed`` for a fresh
-        estimate instead: the mean of ``N`` new draws of ``random``.
+        constructor's ``seed``). Give ``mc_samples`` or ``seed`` for a fresh
+        estimate instead: the mean of ``mc_samples`` new draws of
+        ``random``.
 
         Parameters
         ----------
-        N : int, optional
+        mc_samples : int, optional
             The number of new draws for a fresh Monte-Carlo estimate
             (10_000 if only ``seed`` is given). By default None: the mean of
             the lifetimes simulated at construction. Ignored when the closed
@@ -387,17 +399,21 @@ class LoadSharingModel:
         seed : int or None, optional
             Seed for those new draws (see ``random``), by default None.
             Ignored when the closed form applies.
+        N : int, optional
+            Deprecated: the old name of ``mc_samples``.
 
         Returns
         -------
         float
             The mean lifetime.
         """
+        mc_samples = renamed("mc_samples", mc_samples, "N", N)
         if self._sf_model is not None:
             return float(np.ravel(self._sf_model.mean())[0])
-        if N is None and seed is None:
+        if mc_samples is None and seed is None:
             return self._simulated_mean
-        return float(self.random(10_000 if N is None else N, seed=seed).mean())
+        count = 10_000 if mc_samples is None else mc_samples
+        return float(self.random(count, seed=seed).mean())
 
     def sf(self, x, *args, **kwargs):
         """Survival function (reliability) of the group.
@@ -475,6 +491,17 @@ class LoadSharingModel:
         False if they are the exact hypoexponential closed form.
         """
         return self._sf_model is None
+
+    @property
+    def n_sims(self) -> int:
+        """Deprecated: the old name of ``mc_samples``."""
+        warnings.warn(
+            "n_sims is deprecated: use mc_samples. n_sims will be removed "
+            "in 1.0.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.mc_samples
 
 
 def _all_distinct(rates, rtol=1e-6):

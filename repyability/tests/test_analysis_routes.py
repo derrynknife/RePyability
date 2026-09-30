@@ -51,7 +51,10 @@ def nonrepairable_rbds():
         ),
         "simulated standby": NonRepairableRBD(
             EDGES,
-            {"a": StandbyModel([unit] * 3, k=2, n_sims=2000, seed=1), **rest},
+            {
+                "a": StandbyModel([unit] * 3, k=2, mc_samples=2000, seed=1),
+                **rest,
+            },
         ),
         "repeated standby": NonRepairableRBD(
             EDGES, {"a": RepeatedStandbyNode(unit, 2), **rest}
@@ -80,7 +83,11 @@ def nonrepairable_rbds():
             {
                 "a": NonRepairableRBD(
                     [("s", "x"), ("x", "t")],
-                    {"x": StandbyModel([unit] * 3, k=2, n_sims=500, seed=2)},
+                    {
+                        "x": StandbyModel(
+                            [unit] * 3, k=2, mc_samples=500, seed=2
+                        )
+                    },
                 ),
                 **rest,
             },
@@ -121,7 +128,7 @@ def repairable_rbds():
             "simulated standby life": system(
                 {
                     "reliability": StandbyModel(
-                        [life] * 3, k=2, n_sims=2000, seed=1
+                        [life] * 3, k=2, mc_samples=2000, seed=1
                     ),
                     "repairability": repair,
                 }
@@ -185,13 +192,13 @@ NONREPAIRABLE_CALLS = {
     ),
     "structural_importance": lambda rbd: rbd.structural_importance(),
     "random": lambda rbd: rbd.random(200, seed=1),
-    "mean": lambda rbd: rbd.mean(2000, seed=1),
-    "mean_time_to_failure": lambda rbd: rbd.mean_time_to_failure(2000, seed=1),
+    "mean": lambda rbd: rbd.mean(),
+    "mean_time_to_failure": lambda rbd: rbd.mean_time_to_failure(),
     "mean_time_to_failure_interval": (
         lambda rbd: rbd.mean_time_to_failure_interval(2000, seed=1)
     ),
     "compare": lambda rbd: rbd.compare(rbd, 2000, seed=1),
-    "node_mttf": lambda rbd: rbd.node_mttf(2000, seed=1),
+    "node_mttf": lambda rbd: rbd.node_mttf(),
     "allocate_redundancy": lambda rbd: rbd.allocate_redundancy(
         {"b": 1.0}, budget=2, t=X
     ),
@@ -227,9 +234,9 @@ REPAIRABLE_CALLS = {
     "total_cost": lambda rbd: rbd.total_cost(1000.0),
     "point_availability": lambda rbd: rbd.point_availability([10.0, 200.0]),
     "mission_availability": lambda rbd: rbd.mission_availability(200.0),
-    "availability": lambda rbd: rbd.availability(200.0, N=20, seed=1),
-    "cost": lambda rbd: rbd.cost(200.0, N=20, seed=1),
-    "compare": lambda rbd: rbd.compare(rbd, 200.0, N=20, seed=1),
+    "availability": lambda rbd: rbd.availability(200.0, mc_samples=20, seed=1),
+    "cost": lambda rbd: rbd.cost(200.0, mc_samples=20, seed=1),
+    "compare": lambda rbd: rbd.compare(rbd, 200.0, mc_samples=20, seed=1),
 }
 
 
@@ -302,7 +309,10 @@ def test_nodes_are_routed_by_how_their_reliability_is_found():
         (surv.KaplanMeier.fit([1.0, 2.0, 3.0]), routes.EXACT),
         (StandbyModel([E([0.01])] * 3, k=2), routes.EXACT),
         (StandbyModel([unit, unit]), routes.NUMERICAL),
-        (StandbyModel([unit] * 3, k=2, n_sims=500, seed=1), routes.SIMULATED),
+        (
+            StandbyModel([unit] * 3, k=2, mc_samples=500, seed=1),
+            routes.SIMULATED,
+        ),
         (RepeatedStandbyNode(unit, 3), routes.NUMERICAL),
         (RepeatedNode(unit, 3, "series"), routes.EXACT),
         (DegradingNode([(1.0, unit), (0.5, unit)]), routes.NUMERICAL),
@@ -329,7 +339,11 @@ def test_common_cause_groups_refuse_what_does_not_model_them():
     assert report["sf"].route == routes.EXACT
     assert report["birnbaum_importance"].route == routes.REFUSED
     assert report["allocate_redundancy"].route == routes.REFUSED
-    assert "sampled independently" in report["mean"].reason
+    assert report["mean"].route == routes.REFUSED
+    assert (
+        "sampled independently"
+        in report["mean_time_to_failure_interval"].reason
+    )
 
 
 def test_the_repairable_report_names_the_refusing_component():
@@ -381,7 +395,7 @@ def test_a_load_sharing_group_is_simulated_only_without_a_closed_form():
         Z=load.reshape(-1, 1),
     )
     closed = LoadSharingModel([exponential] * 2, load=2.0)
-    fitted = LoadSharingModel([weibull] * 2, load=2.0, n_sims=500, seed=3)
+    fitted = LoadSharingModel([weibull] * 2, load=2.0, mc_samples=500, seed=3)
     assert routes.model_route(closed)[0] == routes.EXACT
     assert routes.model_route(fitted)[0] == routes.SIMULATED
 

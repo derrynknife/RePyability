@@ -112,7 +112,9 @@ def test_repairable_rbd_availability_one_component_1N():
 
     # Now check if expected == actual, remembering to reset the seed
     np.random.seed(seed)
-    simulation_results = rbd.availability(t_simulation=t_simulation, N=1)
+    simulation_results = rbd.availability(
+        t_simulation=t_simulation, mc_samples=1
+    )
     actual_t = simulation_results["timeline"]
     actual_availability = simulation_results["availability"]
 
@@ -197,7 +199,7 @@ def test_repairable_rbd_availability_one_component_10N():
     # Now check if expected == actual, remembering to reset the seed
     np.random.seed(seed)
     simulation_results = rbd.availability(
-        t_simulation=t_simulation, N=n_simulations
+        t_simulation=t_simulation, mc_samples=n_simulations
     )
     actual_t = simulation_results["timeline"]
     actual_availability = simulation_results["availability"]
@@ -335,7 +337,9 @@ def test_repairable_rbd_availability_two_parallel_components_1N():
 
     # Now check if expected == actual, remembering to reset the seed
     np.random.seed(seed)
-    simulation_results = rbd.availability(t_simulation=t_simulation, N=1)
+    simulation_results = rbd.availability(
+        t_simulation=t_simulation, mc_samples=1
+    )
     actual_t = simulation_results["timeline"]
     actual_availability = simulation_results["availability"]
 
@@ -469,7 +473,9 @@ def test_repairable_rbd_availability_two_series_components_1N():
 
     # Now check if expected == actual, remembering to reset the seed
     np.random.seed(seed)
-    simulation_results = rbd.availability(t_simulation=t_simulation, N=1)
+    simulation_results = rbd.availability(
+        t_simulation=t_simulation, mc_samples=1
+    )
     actual_t = simulation_results["timeline"]
     actual_availability = simulation_results["availability"]
 

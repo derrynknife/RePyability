@@ -155,9 +155,9 @@ def test_importances_and_mttf_with_regression_node(rbd):
     imp = rbd.importances_given_state(30.0, {"a": NodeState(age=40.0)})
     assert set(imp) == {"birnbaum", "criticality"}
     assert "a" in imp["birnbaum"] and "b" in imp["birnbaum"]
-    mttf = rbd.node_mttf(mc_samples=1500, seed=1)
+    mttf = rbd.node_mttf()
     assert mttf["a"] > 0.0 and mttf["b"] > 0.0
-    assert rbd.mean(2000, seed=1) > 0.0
+    assert rbd.mean() > 0.0
 
 
 # -- serialisation --------------------------------------------------------

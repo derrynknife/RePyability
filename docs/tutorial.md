@@ -101,10 +101,11 @@ A scalar time returns a float; an array returns a numpy array. Reliability is
 computed **exactly** (not by simulation) from the diagram, so these calls are
 cheap and repeatable.
 
-Mean time to failure is a simulated quantity; seed it for reproducibility:
+The mean time to failure is exact too: the area under the reliability curve,
+integrated numerically.
 
 ```python
-rbd.mean_time_to_failure(seed=0)   # -> 8250.3   h (Monte-Carlo)
+rbd.mean_time_to_failure()   # -> 8246.6   h
 ```
 
 ## 4. When should we service it?
@@ -358,7 +359,7 @@ availability, and which component causes the outages, come from a seeded
 discrete-event simulation:
 
 ```python
-result = rep.availability(t_simulation=20000, N=2000, seed=0)
+result = rep.availability(t_simulation=20000, mc_samples=2000, seed=0)
 result.availability[-1]   # -> 0.999    availability at 20 000 h
 result.criticalities.failure_criticality_index.per_system_failure["ctrl"]
 # -> 0.922   the controller caused 92% of the outages

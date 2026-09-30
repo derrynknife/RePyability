@@ -77,8 +77,8 @@ def weibull_aft():
 
 def test_reproducible_with_seed(weibull_aft):
     waft = weibull_aft
-    a = LoadSharingModel([waft, waft], load=2.0, k=1, n_sims=500, seed=7)
-    b = LoadSharingModel([waft, waft], load=2.0, k=1, n_sims=500, seed=7)
+    a = LoadSharingModel([waft, waft], load=2.0, k=1, mc_samples=500, seed=7)
+    b = LoadSharingModel([waft, waft], load=2.0, k=1, mc_samples=500, seed=7)
     assert a.is_simulated is True
     t = np.array([30.0, 90.0])
     assert np.allclose(a.sf(t), b.sf(t))
@@ -88,13 +88,13 @@ def test_a_simulated_group_has_one_mean(weibull_aft):
     # The mean of the lifetimes its fit is made from, the same at every
     # call, and made without touching numpy's global RNG.
     group = LoadSharingModel(
-        [weibull_aft] * 2, load=2.0, k=1, n_sims=500, seed=7
+        [weibull_aft] * 2, load=2.0, k=1, mc_samples=500, seed=7
     )
     assert group.is_simulated
     before = np.random.get_state()[1].copy()
     assert group.mean() == group.mean() == group.random(500, seed=7).mean()
     assert np.array_equal(np.random.get_state()[1], before)
-    assert group.mean(N=500, seed=8) != group.mean()
+    assert group.mean(mc_samples=500, seed=8) != group.mean()
 
 
 # -- dependent failure: sharing shortens life -----------------------------
@@ -136,15 +136,15 @@ def test_rbd_is_time_varying_and_analytic(rbd, weibull_aft):
     assert rbd.is_analytically_solvable() is True
     simulated = NonRepairableRBD(
         [("s", "g"), ("g", "t")],
-        {"g": LoadSharingModel([weibull_aft] * 2, load=2.0, n_sims=500)},
+        {"g": LoadSharingModel([weibull_aft] * 2, load=2.0, mc_samples=500)},
     )
     assert simulated.get_non_analytic_nodes() == {"g": "LoadSharingModel"}
 
 
 def test_rbd_evaluates_and_mttf(rbd):
     assert 0.0 < float(rbd.sf(60.0)) < 1.0
-    assert rbd.mean(2000, seed=1) > 0.0
-    mttf = rbd.node_mttf(mc_samples=1500, seed=1)
+    assert rbd.mean() > 0.0
+    mttf = rbd.node_mttf()
     assert mttf["g"] > 0.0 and mttf["c"] > 0.0
 
 
@@ -199,7 +199,9 @@ def test_simulated_group_gives_the_shape_it_is_given(x, shape):
     load = rng.uniform(0.5, 2.0, size=400)
     lives = rng.weibull(2.0, size=400) * 80.0 / np.exp(0.4 * (load - 1))
     waft = surv.WeibullAFT.fit(lives + 1e-3, Z=load.reshape(-1, 1))
-    group = LoadSharingModel([waft, waft], load=2.0, k=1, n_sims=500, seed=7)
+    group = LoadSharingModel(
+        [waft, waft], load=2.0, k=1, mc_samples=500, seed=7
+    )
     assert group.is_simulated
     for function in (group.sf, group.ff):
         assert np.shape(function(x)) == shape

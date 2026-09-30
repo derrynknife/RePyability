@@ -256,7 +256,7 @@ def test_a_standby_arrangement_as_the_lifetime(form):
         standby = StandbyModel(
             [surv.Weibull.from_params([1000, 2.5])] * 2,
             dormancy_factor=0.3,
-            n_sims=5000,
+            mc_samples=5000,
             seed=1,
         )
     unit = NonRepairable(standby, surv.Exponential.from_params([1 / 24]))
@@ -305,7 +305,7 @@ def test_a_standby_that_may_never_fail_is_never_replaced():
     from repyability import StandbyModel
 
     never = surv.Weibull.from_params([1000, 2.5], p=0.6)
-    unit = NonRepairable(StandbyModel([never, never], n_sims=2000, seed=0))
+    unit = NonRepairable(StandbyModel([never, never], mc_samples=2000, seed=0))
     unit.set_costs_planned_and_unplanned(1, 5)
     assert unit.find_optimal_replacement() == np.inf
 

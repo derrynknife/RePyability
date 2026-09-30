@@ -7,6 +7,15 @@ directly from the top-level package, e.g.::
 """
 
 from repyability._version import __version__
+from repyability.demonstration import (
+    demonstrated_mtbf,
+    demonstrated_reliability,
+    demonstration_pass_probability,
+    demonstration_sample_size,
+    demonstration_test_multiple,
+    mtbf_pass_probability,
+    mtbf_test_time,
+)
 from repyability.fault_tree import FaultTree
 from repyability.maintenance import FailureLimitPolicy, MaintenancePolicy
 from repyability.non_repairable import NonRepairable
@@ -72,6 +81,14 @@ __all__ = [
     "MGL",
     "CCFGroup",
     "minimal_repair_time_to_nth_failure",
+    # Demonstration test planning
+    "demonstration_sample_size",
+    "demonstrated_reliability",
+    "demonstration_test_multiple",
+    "demonstration_pass_probability",
+    "mtbf_test_time",
+    "demonstrated_mtbf",
+    "mtbf_pass_probability",
     "ComponentOption",
     # Result types
     "AnalysisRoute",
