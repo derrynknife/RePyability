@@ -4214,11 +4214,12 @@ class RepairableRBD(RBD):
         a few years. It is what
         [`availability`][repyability.RepairableRBD.availability] estimates
         by simulation as the mean of each simulation's uptime divided by
-        ``t_simulation``. As ``t`` grows it approaches ``mean_availability``
-        from the side of the start: from new, components that wear out
-        (Weibull shape above 1, say) fail less early on, so a long mission's
-        availability exceeds the long-run value by about ``b / t``, ``b`` a
-        constant of the components' up and down times.
+        ``t_simulation``. As ``t`` grows it approaches ``mean_availability``,
+        from which it differs by about ``b / t``, ``b`` a constant of the
+        components' up and down times: positive unless their lives vary
+        more than exponential ones do, and largest for components that wear
+        out (Weibull shape above 1, say), which from new fail less early
+        on.
 
         Parameters
         ----------

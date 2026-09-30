@@ -113,10 +113,11 @@ exact system computation at theirs, at each time (see
 [Concepts](../concepts.md#availability)). The curve starts at 1 (less any
 units dead on arrival) and settles at `mean_availability()`, and a mission
 average differs from the long-run value by about `b / t`, for a constant `b`
-of the components' up and down times: positive for components that wear
-out, which fail less early on, and for these, which start up. A mission of
-decades costs no more than one of hours: past the time the components have
-settled, the integral is extended exactly.
+of the components' up and down times. `b` is positive unless the lives vary
+more than exponential ones do, and largest for components that wear out,
+which fail less early on. A mission of decades costs no more than one of
+hours: past the time the components have settled, the integral is extended
+exactly.
 
 Both take `working_nodes`, `broken_nodes` and `method` as
 `mean_availability` does, and cover what it covers: age and block
