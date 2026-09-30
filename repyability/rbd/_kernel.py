@@ -213,11 +213,13 @@ def _simulate(todo, lo, hi, first, t_end, system, structure, draws, out):
         category_out[row] = 0.0
         node_cost_out[row] = 0.0
         status[:] = start
-        # Which components are up, as bits, for the truth table.
+        # Which components are up, as bits, for the truth table (kept only
+        # with a table: shifting by 64 bits or more is undefined).
         mask = 0
-        for c in range(n):
-            if start[c]:
-                mask |= 1 << c
+        if tabled:
+            for c in range(n):
+                if start[c]:
+                    mask |= 1 << c
         lives[:] = 0
         repairs[:] = 0
         charged[:] = 0
@@ -265,10 +267,11 @@ def _simulate(todo, lo, hi, first, t_end, system, structure, draws, out):
             up_at[c] = system_up_t
             down_at[c] = system_down_t
             status[c] = state
-            if state:
-                mask |= 1 << c
-            else:
-                mask &= ~(1 << c)
+            if tabled:
+                if state:
+                    mask |= 1 << c
+                else:
+                    mask &= ~(1 << c)
             if state:
                 counts_out[row, 2, c] += 1
             else:

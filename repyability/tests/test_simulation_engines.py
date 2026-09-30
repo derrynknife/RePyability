@@ -586,6 +586,37 @@ def test_the_engines_agree_with_forced_nodes(forced):
                 identical(python, rbd.availability(engine=engine, **options))
 
 
+def pairs_in_series(pairs):
+    """``pairs`` pairs of redundant units, one pair after another."""
+    edges, previous, components = [], ["s"], {}
+    for i in range(pairs):
+        pair = [f"a{i}", f"b{i}"]
+        edges += [(p, unit) for p in previous for unit in pair]
+        previous = pair
+        for unit in pair:
+            components[unit] = {
+                "reliability": W([50 + i, 1.5]),
+                "repairability": E([1.0]),
+            }
+    edges += [(p, "t") for p in previous]
+    return RepairableRBD(edges, components)
+
+
+@needs_numba
+@pytest.mark.parametrize("pairs", [12, 35])
+def test_the_engines_agree_on_large_systems(pairs):
+    # More components than the compiled loop tabulates the system's states
+    # for, and more than bits in a 64-bit mask: it works the structure
+    # function out at each event instead.
+    rbd = pairs_in_series(pairs)
+    assert len(rbd.components) > _compiled.MAX_TABLED
+    for options in ({}, {"antithetic": True}, {"n_jobs": 2}):
+        identical(
+            rbd.availability(200.0, N=40, seed=3, engine="python", **options),
+            rbd.availability(200.0, N=40, seed=3, engine="numba", **options),
+        )
+
+
 @needs_numba
 def test_a_run_on_threads_leaves_numbas_thread_count_alone():
     import numba
