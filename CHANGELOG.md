@@ -26,7 +26,8 @@ exponential (#90); a duty unit and its spares can be a standby group,
 repaired one unit at a time (#91); `spares_demand` and `spares_stock` count
 the spares each component uses and the stock to hold for a lead time (#95);
 a component can be replaced on condition at periodic inspections (#96);
-and demonstration test planning is new (#129).
+phased missions are new, exact and simulated (#100, #101), and so is
+demonstration test planning (#129).
 
 Behaviour changes: seeded repairable simulations give different numbers,
 once, as each random quantity now has a stream of its own (#119);
@@ -244,6 +245,26 @@ surpyval 0.21 is required.
   inspection cost are saved with the RBD. Checked against a timeline
   worked by hand, block replacement and run to failure (identical results),
   constant failure rates, and a direct simulation of the policy.
+- **Phased missions** (#100, #101). `PhasedMission([(name, duration, rbd),
+  ...])` is a mission through phases (take-off, cruise, landing), each with
+  its own duration and `NonRepairableRBD` over the same components: a node
+  name is one component, with one model, whose life runs through the whole
+  mission, so a component lost in one phase stays lost in the later ones.
+  `reliability()`, `unreliability()` (to its own precision when small) and
+  `phase_failure_probabilities()` (the chance of getting through the
+  earlier phases and failing in each) are exact: each component's life is a
+  chain of independent segments, one per phase (Esary and Ziehms), and the
+  phases' minimal path sets over the segments are decomposed together, each
+  distinct sub-problem once, up to 200,000 of them.
+  `method="simulate"` draws each component's life once per mission, and
+  `reliability_interval` gives the simulated reliability with a confidence
+  interval, to a `tolerance`, with antithetic pairs if asked. Checked
+  against one phase (the diagram's `sf` at its duration), phases of one
+  diagram (its `sf` at their total), series and parallel phases in closed
+  form, missions worked out by enumerating the phase each component fails
+  in (repeated nodes, nested RBDs, fixed probabilities and a phase of no
+  duration among them), and the simulation.
+  A new guide page, Phased missions, covers it.
 - **Demonstration test planning** (#129): how many units, or how long a
   test, demonstrates a reliability at a confidence level, and what a
   finished test demonstrated. `demonstration_sample_size` (the success run,

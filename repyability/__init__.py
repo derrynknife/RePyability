@@ -28,6 +28,7 @@ from repyability.rbd.helper_classes import (
 from repyability.rbd.load_sharing_node import LoadSharingModel
 from repyability.rbd.node_state import NodeState
 from repyability.rbd.non_repairable_rbd import NonRepairableRBD
+from repyability.rbd.phased_mission import PhasedMission
 from repyability.rbd.rbd import RBD
 from repyability.rbd.redundancy_allocation import ComponentOption
 from repyability.rbd.regression_node import RegressionNode
@@ -66,6 +67,7 @@ __all__ = [
     "NonRepairableRBD",
     "RepairableRBD",
     "FaultTree",
+    "PhasedMission",
     # Component models
     "NonRepairable",
     "Repairable",

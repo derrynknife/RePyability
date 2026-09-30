@@ -15,6 +15,8 @@ explanations and runnable examples, see the [user guide](guide/index.md).
 
 ::: repyability.FaultTree
 
+::: repyability.PhasedMission
+
 ## Node models
 
 Anything exposing `sf`/`ff` can be a node; these are the composite and helper

@@ -18,6 +18,9 @@ taking already-fitted lifetime models (from
 - **Reliability**: exact system reliability, hazard and conditional survival;
   the exact MTTF (or simulated, with confidence intervals); B*X* life;
   uncertainty intervals from uncertain (fitted) component models.
+- **Phased missions**: missions through phases (take-off, cruise,
+  landing), each with its own diagram over the same components: the exact
+  mission reliability and the chance of failing in each phase.
 - **Testing**: demonstration test plans (the units, or the test time, that
   demonstrate a reliability or an MTBF), what a test demonstrated, and the
   chance a design passes.

@@ -94,6 +94,7 @@ nav:
       - Building an RBD: guide/building.md
       - Fault trees: guide/fault-trees.md
       - Reliability of a system: guide/reliability.md
+      - Phased missions: guide/phased-missions.md
       - Importance measures: guide/importance.md
       - Condition-based evaluation: guide/condition-based.md
       - Redundancy models: guide/redundancy-models.md
