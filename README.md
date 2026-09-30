@@ -29,7 +29,8 @@ taking already-fitted lifetime models (from
   load sharing; beta-factor and MGL common-cause groups.
 - **Repairable systems**: exact long-run availability, failure frequency and
   MUT/MDT/MTBF; exact availability over time and over a mission; simulated
-  histories with criticality measures, and shared repair crews.
+  histories with criticality measures; and shared repair crews, exact in
+  the long run for exponential components.
 - **Capacity**: how much a system delivers, from its components'
   capacities (with several levels, or degrading through stages): the exact
   distribution of its capacity at a time or in the long run, the

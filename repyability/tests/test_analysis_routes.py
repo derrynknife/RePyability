@@ -157,6 +157,21 @@ def repairable_rbds():
                 unit(priority=1), repair_crews=1, downtime_cost_rate=5.0
             ),
             "enough repair crews": system(unit(), repair_crews=3),
+            "one repair crew, exponential": RepairableRBD(
+                EDGES,
+                {
+                    node: {
+                        "reliability": E([0.002]),
+                        "repairability": E([0.5]),
+                        "priority": priority,
+                        "repair_cost": 3.0,
+                    }
+                    for node, priority in zip("abc", (1, 0, 0))
+                },
+                repair_crews=1,
+                downtime_cost_rate=5.0,
+                capacity={"a": 5.0, "b": 5.0, "c": 10.0},
+            ),
         }
     )
     return out

@@ -252,14 +252,14 @@ pump = {"reliability": surv.Exponential.from_params([0.1]),     # MTTF 10 h
         "repairability": surv.Exponential.from_params([0.5])}   # MTTR 2 h
 three = [("s", p) for p in "xyz"] + [(p, "t") for p in "xyz"]
 one_crew = RepairableRBD(three, {p: dict(pump) for p in "xyz"}, repair_crews=1)
+one_crew.mean_availability()    # -> 0.9746
 result = one_crew.availability(20_000.0, mc_samples=40, seed=1)
-result.mean_availability_interval().estimate    # -> 0.9747   exact: 0.9746
+result.mean_availability_interval().estimate    # -> 0.9747   simulated
 RepairableRBD(three, {p: dict(pump) for p in "xyz"}).mean_availability()   # -> 0.9954   a crew each
 ```
 
-(The exact value is the machine-repair model's: with one crew, the number of
-pumps down is a birth-death chain, and the system is down when all three
-are.)
+(With one crew the number of pumps down is the machine-repair model's
+birth-death chain, and the system is down when all three are.)
 
 - **What needs a crew.** Every job that brings a component back up: a repair
   or replacement, preventive maintenance that takes time, and a test that
@@ -270,20 +270,44 @@ are.)
   finish takes the waiting job of the highest `"priority"` (a component
   spec key, by default 0), and of those the one that fell due first, and
   stays with it until it is done. A test that waits keeps the component
-  off-line, and it does not age.
+  off-line, and it does not age. A job with `"instant"` repair takes a crew
+  for no time: it waits only when every crew is busy.
 - **Nested RBDs** have crews of their own: a nested `RepairableRBD`'s
   components are repaired by its `repair_crews`, not by its parent's.
-- **Exact methods.** With fewer crews than components, components wait for
-  each other, so they no longer fail and recover independently: the exact
-  methods (`mean_availability`, `point_availability`, the importance
-  measures and the rest) raise `NotImplementedError`, and
-  `analysis_routes()` says so. The simulations (`availability`, `cost`,
-  `compare`) follow the queue, in Python. With at least as many crews as
-  components nothing waits, and every result is as without crews.
+- **Exact long-run values.** With fewer crews than components, components
+  wait for each other, so they no longer fail and recover independently.
+  When the components the crews work on all have exponential lives and
+  exponential (or instant) repairs, with no scheduled maintenance or
+  inspection, the system is a Markov chain: its state is which components
+  are under repair and which are waiting, in the order the crews will take
+  them. `mean_availability`, `node_availability`,
+  `system_failure_frequency`, `mean_up_time`, `mean_down_time`,
+  `mean_time_between_failures`, `expected_cost_rate`, `total_cost` and
+  `capacity_distribution` solve it exactly, for up to 15,000 states. A
+  component held working or broken (`working_nodes`, `broken_nodes`) needs
+  no crew, and the others share them.
+- **What is simulated.** Other lives or repair times, scheduled maintenance
+  and inspections, and larger chains make the exact values refuse, with the
+  reason. The importance measures, the availability over time
+  (`point_availability`, `mission_availability`) and the allocations assume
+  independent components, so they refuse whenever a job can wait. The
+  simulations (`availability`, `cost`, `compare`) follow the queue whatever
+  the components, in Python. With at least as many crews as components,
+  nothing waits, and every result is as without crews.
 
 ```python
-one_crew.analysis_routes()["mean_availability"].route   # 'refused'
+routes = one_crew.analysis_routes()
+routes["mean_availability"].route     # 'exact'
+routes["birnbaum_importance"].route   # 'refused'
 ```
+
+The chain's size is set by the queue. First come, first served, every order
+in which the waiting components can have failed is a state of its own: seven
+components with one crew make 13,700 states, and eight with two crews make
+54,805, too many. Priorities fix much of the order, so a priority each lets
+eight components with two crews through in 1,801 states. The chain is solved
+in well under a second for most diagrams, and in a few seconds near the
+limit.
 
 ## Instantly repaired components
 

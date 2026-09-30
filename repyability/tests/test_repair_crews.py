@@ -1,6 +1,8 @@
 """Shared repair crews in the RepairableRBD simulation (#89): the machine
 repair model's closed form, results unchanged with enough crews, the order
-in which crews take waiting jobs, and what the exact methods refuse."""
+in which crews take waiting jobs, and what the exact methods refuse. The
+exact long-run values for exponential components (#90) are tested in
+``test_crew_chain.py``."""
 
 import numpy as np
 import pytest
@@ -200,6 +202,8 @@ def test_runs_with_crews_are_reproducible_and_split_alike():
     ],
 )
 def test_the_exact_methods_refuse_while_a_job_can_wait(method):
+    # Weibull lives and lognormal repairs: the crews' Markov chain (#90)
+    # does not cover them, and the rest assume independent components.
     with pytest.raises(NotImplementedError, match="repair crew"):
         method(system(1))
     method(system(3))  # enough crews: nothing waits

@@ -600,9 +600,12 @@ maintenance](../guide/costs.md#preventive-maintenance).
     it independently of every other repair, as if each component had its
     own technician on site. With one shared crew, waiting for spares or
     travel time, outages last longer and overlap more, so the model is
-    optimistic. It also lets components keep running, and failing, while the
-    system is down; in a real plant a pump that stops with the plant may
-    not.
+    optimistic. `repair_crews` shares a number of crews (see [Repair
+    crews](../guide/repairable.md#repair-crews)): the simulation follows
+    the queue, and with exponential lives and repairs the long-run values
+    stay exact. The model also lets components keep running, and failing,
+    while the system is down; in a real plant a pump that stops with the
+    plant may not.
 
 !!! warning "Simulated numbers carry sampling error"
     Everything `availability()` returns is an estimate. Quote it with its

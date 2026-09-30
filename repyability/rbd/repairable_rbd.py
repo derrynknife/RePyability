@@ -30,6 +30,7 @@ from typing import (
     Iterable,
     List,
     NamedTuple,
+    NoReturn,
     Optional,
     Tuple,
     Union,
@@ -41,6 +42,7 @@ from scipy.special import expit, logit, logsumexp, softmax
 from surpyval import ExactEventTime
 
 from repyability.non_repairable import NonRepairable
+from repyability.rbd import _crew_chain
 from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd import _streams
 from repyability.rbd import capacity as _capacity
@@ -868,6 +870,32 @@ def _constant_rate(model) -> Optional[float]:
     return rate if constant and exponential else None
 
 
+def _repair_rate(model) -> Optional[float]:
+    """The rate of an exponential repair time, ``inf`` for an instant one
+    (in no time), or None."""
+    if _safe_mean(model) == 0.0:
+        return math.inf
+    return _constant_rate(model)
+
+
+#: What the methods that need independent components say when a component
+#: can wait for a repair crew: what assumes it, and what to do instead.
+_IMPORTANCE_CREWS = (
+    "the importance measures assume",
+    "Simulate the system with availability(), whose criticality indices "
+    "rank the components by the system failures they cause.",
+)
+_OVER_TIME_CREWS = (
+    "the availability over time from new assumes",
+    "Simulate it with availability(); the long-run values are exact.",
+)
+_ALLOCATION_CREWS = (
+    "the allocations assume",
+    "Compare designs by their long-run values, or simulate them with "
+    "compare().",
+)
+
+
 def _horizon(horizon) -> float:
     """``horizon`` as a finite, non-negative float, or a ValueError."""
     try:
@@ -1612,7 +1640,10 @@ class RepairableRBD(RBD):
       ``mean_time_between_failures``, ``expected_cost_rate``,
       ``capacity_distribution`` (with node capacities) and the importance
       measures. A component under age or block replacement enters through
-      its renewal cycle instead (see ``node_availability``).
+      its renewal cycle instead (see ``node_availability``). With fewer
+      ``repair_crews`` than components, the long-run values come from the
+      Markov chain of the components and the repair queue, for exponential
+      components (see ``mean_availability``).
     - Monte-Carlo simulation of a finite window ``[0, t_simulation]`` that
       starts with every component working: ``availability`` (availability
       over time, criticality measures and, with node capacities, the
@@ -1735,9 +1766,12 @@ class RepairableRBD(RBD):
         no time needs no crew. A nested ``RepairableRBD``'s components are
         worked on by its own crews. With fewer crews than components,
         components wait for each other: the simulations (``availability``,
-        ``cost``, ``compare``) follow the queue, in Python, and the exact
-        methods raise ``NotImplementedError``. With at least as many, no
-        job waits, and every result is as without crews.
+        ``cost``, ``compare``) follow the queue, in Python. The exact
+        long-run values then come from a Markov chain of the components'
+        states and the queue when their lives and repairs are exponential
+        (see ``mean_availability``); the other exact methods, which assume
+        independent components, raise ``NotImplementedError``. With at
+        least as many, no job waits, and every result is as without crews.
 
     Attributes
     ----------
@@ -2558,6 +2592,11 @@ class RepairableRBD(RBD):
         leave failures hidden for longer. The rate is least near ``tau =
         sqrt(2 * c_i / (lambda * c_d))``.
 
+        With limited ``repair_crews``, ``A_sys``, ``A_i`` and ``omega_i``
+        come from the crews' Markov chain (see ``mean_availability``): a
+        component waiting for a crew is down, and pays its downtime cost,
+        and it fails at its constant rate while it is up.
+
         Every cost is optional and defaults to 0, so any subset can be
         priced; with nothing priced (see ``has_costs``) this is 0.0. Costs
         are undiscounted, and only this RBD's own costs count: costs
@@ -2591,8 +2630,9 @@ class RepairableRBD(RBD):
             If something is priced and a component is under block
             replacement with models its exact values do not cover (see
             ``node_availability``), or has hidden failures other than with
-            a constant failure rate,
-            instant tests and instant repair: simulate it with ``cost``.
+            a constant failure rate, instant tests and instant repair; or,
+            while a component can wait for a repair crew, as for
+            ``mean_availability``: simulate it with ``cost``.
 
         Examples
         --------
@@ -2636,11 +2676,22 @@ class RepairableRBD(RBD):
         if not self.costs:
             return rate
 
-        node_availability = _squeeze_values(
-            self._probabilities_with_overrides(
-                self.node_availability(), working_nodes, broken_nodes
+        if self._crews_limited():
+            # Held working or broken, a node needs no crew, and the others
+            # have more of them: from the chain without it.
+            probabilities, weights = self._chain_probabilities(
+                working_nodes, broken_nodes
             )
-        )
+            node_availability = {
+                node: float(weights @ probabilities[node])
+                for node in self.nodes
+            }
+        else:
+            node_availability = _squeeze_values(
+                self._probabilities_with_overrides(
+                    self.node_availability(), working_nodes, broken_nodes
+                )
+            )
         for node in self.costs:
             rate += self._node_cost_rate(
                 node, node_availability[node], node in forced
@@ -2664,7 +2715,13 @@ class RepairableRBD(RBD):
         )
         preventive = node_costs.get("preventive_cost")
         if (per_action or preventive is not None) and not forced:
-            failures, maintained, _ = self._node_frequencies(node)
+            if self._crews_limited():
+                # Waiting for a crew, as while repaired, it cannot fail: it
+                # fails at its constant rate while it is up.
+                life = self._crew_chain_rates()[node][0]
+                failures, maintained = life * availability, 0.0
+            else:
+                failures, maintained, _ = self._node_frequencies(node)
             rate += per_action * failures
             if preventive is not None:
                 rate += _mean_cost(preventive) * maintained
@@ -2859,6 +2916,8 @@ class RepairableRBD(RBD):
             values do not cover (see ``node_availability``), or has hidden
             failures other than with a constant failure rate, instant tests
             and instant repair: its long-run values are not known exactly.
+            Or if a component can wait for a repair crew (see
+            ``repair_crews``): the search assumes that none does.
 
         Examples
         --------
@@ -2937,6 +2996,8 @@ class RepairableRBD(RBD):
                 )
             max_unavailability = 1.0 - target
 
+        # Adding copies adds jobs for the crews: the search assumes none waits.
+        self._require_unlimited_crews(*_ALLOCATION_CREWS)
         # Every node's availability (and unavailability) over the times the
         # long-run values average over, and each component's own cost.
         times, weights = self._long_run_grid()
@@ -3113,7 +3174,9 @@ class RepairableRBD(RBD):
             If ``weights`` has no entry for a component allocated an
             availability.
         NotImplementedError
-            As for ``mean_availability``.
+            As for ``mean_availability``, or if a component can wait for a
+            repair crew (see ``repair_crews``): the allocation assumes
+            independent components.
 
         Examples
         --------
@@ -3298,7 +3361,9 @@ class RepairableRBD(RBD):
             lever can change; or if a component has a non-parametric
             reliability model.
         NotImplementedError
-            As for ``mean_availability``.
+            As for ``mean_availability``, or if a component can wait for a
+            repair crew (see ``repair_crews``): the allocation assumes
+            independent components.
 
         Warns
         -----
@@ -3530,6 +3595,7 @@ class RepairableRBD(RBD):
         corrective repair alone: they fail and take time to repair, with no
         preventive or inspection schedule, and are not in ``fixed``); and
         the set of the others, which keep theirs."""
+        self._require_unlimited_crews(*_ALLOCATION_CREWS)
         held = set()
         if fixed is not None:
             held = set(fixed)
@@ -4400,6 +4466,19 @@ class RepairableRBD(RBD):
                 "mean_time_between_failures",
                 "mean_up_time",
                 "mean_down_time",
+            ),
+            long_run,
+        )
+        # The importance measures and allocations assume independent
+        # components, which limited repair crews make them not.
+        importance = r.refusal(
+            partial(self._require_unlimited_crews, *_IMPORTANCE_CREWS)
+        )
+        allocation = r.refusal(
+            partial(self._require_unlimited_crews, *_ALLOCATION_CREWS)
+        )
+        give(
+            (
                 "birnbaum_importance",
                 "improvement_potential",
                 "risk_achievement_worth",
@@ -4408,7 +4487,7 @@ class RepairableRBD(RBD):
                 "fussell_vesely",
                 "fussel_vesely",
             ),
-            long_run,
+            r.refused(importance) if importance else long_run,
         )
         if self.has_costs:
             give(
@@ -4437,7 +4516,12 @@ class RepairableRBD(RBD):
             else from_long_run(
                 r.EXACT,
                 "The exact long-run distribution of the system's capacity, "
-                "from the components' long-run availabilities.",
+                + (
+                    "averaged over the states of the repair crews' Markov "
+                    "chain."
+                    if self._crews_limited()
+                    else "from the components' long-run availabilities."
+                ),
             )
         )
         no_capacity = r.refusal(self._require_capacity)
@@ -4453,15 +4537,24 @@ class RepairableRBD(RBD):
         give(("point_availability", "mission_availability"), self._over_time())
         give(
             ("allocate_redundancy", "availability_allocation"),
-            from_long_run(
-                r.EXACT,
-                "A search over the exact long-run values of the candidates.",
+            (
+                r.refused(allocation)
+                if allocation
+                else from_long_run(
+                    r.EXACT,
+                    "A search over the exact long-run values of the "
+                    "candidates.",
+                )
             ),
         )
-        out["mttf_mttr_allocation"] = from_long_run(
-            r.NUMERICAL,
-            "A solver for the components' MTTF and MTTR targets, over the "
-            "exact long-run values.",
+        out["mttf_mttr_allocation"] = (
+            r.refused(allocation)
+            if allocation
+            else from_long_run(
+                r.NUMERICAL,
+                "A solver for the components' MTTF and MTTR targets, over the "
+                "exact long-run values.",
+            )
         )
         # The optimisers, called for every node they can choose for.
         targets = r.refusal(partial(self._interval_targets, None, None))
@@ -4643,9 +4736,8 @@ class RepairableRBD(RBD):
         ``analysis_routes``)."""
         from repyability.rbd import routes as r
 
-        crews = r.refusal(self._require_unlimited_crews)
-        if crews:
-            return r.refused(crews)
+        if self._crews_limited():
+            return self._crew_chain_route()
         calendars = r.refusal(self._require_calendars)
         if calendars:
             return r.refused(calendars)
@@ -4660,6 +4752,33 @@ class RepairableRBD(RBD):
             "The structure function over the components' long-run "
             "availabilities, exactly.",
             nodes,
+            "long-run values",
+        )
+
+    def _crew_chain_route(self) -> "AnalysisRoute":
+        """How the exact long-run values are found with limited repair
+        crews: from their Markov chain, and nested RBDs' own values."""
+        from repyability.rbd import routes as r
+
+        chain = r.refusal(self._require_crew_chain)
+        if chain:
+            return r.refused(chain)
+        nested = {
+            node: self._node_long_run(node)
+            for node, component in self.components.items()
+            if isinstance(component, RepairableRBD)
+        }
+        refusals = {
+            n: how for n, (route, how) in nested.items() if route == r.REFUSED
+        }
+        if refusals:
+            return r.refused(next(iter(refusals.values())), tuple(refusals))
+        return r.with_nodes(
+            r.EXACT,
+            "The long-run distribution of the Markov chain of the "
+            "components' states and the repair queue, solved exactly, and "
+            "the system's values averaged over its states.",
+            nested,
             "long-run values",
         )
 
@@ -4692,7 +4811,9 @@ class RepairableRBD(RBD):
         ``analysis_routes``)."""
         from repyability.rbd import routes as r
 
-        crews = r.refusal(self._require_unlimited_crews)
+        crews = r.refusal(
+            partial(self._require_unlimited_crews, *_OVER_TIME_CREWS)
+        )
         if crews:
             return r.refused(crews)
         nodes = {node: self._node_over_time(node) for node in self.components}
@@ -4764,6 +4885,20 @@ class RepairableRBD(RBD):
         function. This is exact for a constant failure rate, instant tests
         and instant repair (see ``node_availability``).
 
+        With fewer ``repair_crews`` than components, a failed component can
+        wait for a crew, and the components no longer fail and recover
+        independently. When the components the crews work on have
+        exponential lives and exponential (or instant) repairs, with no
+        scheduled maintenance or inspection, the system is a Markov chain:
+        its state is which components are under repair and which are
+        waiting, in the order the crews will take them. Its long-run
+        distribution is solved exactly (for up to 15,000 states), and the
+        availability is the system's, state by state, averaged over it. A
+        node held working never fails and one held broken is never
+        repaired, so neither needs a crew: the chain is of the others. A
+        nested ``RepairableRBD`` has crews of its own, and enters through
+        its own long-run availability.
+
         Parameters
         ----------
         working_nodes : Collection[Hashable], optional
@@ -4793,8 +4928,11 @@ class RepairableRBD(RBD):
             If a component is under block replacement with models its exact
             values do not cover (see ``node_availability``), or has hidden
             failures other than with a constant failure rate, instant tests
-            and instant repair:
-            simulate it with ``availability``.
+            and instant repair; or, while a component can wait for a repair
+            crew, if the Markov chain does not cover the components (a life
+            or repair that is not exponential, scheduled maintenance or an
+            inspection) or would have more than 15,000 states: simulate it
+            with ``availability``.
 
         Examples
         --------
@@ -4822,11 +4960,11 @@ class RepairableRBD(RBD):
         self._validate_node_overrides(working_nodes, broken_nodes)
 
         # Over one period of the inspection schedules, if any (see
-        # _long_run_grid); otherwise at one point, as the node availabilities
-        # are constant.
-        times, weights = self._long_run_grid()
-        availability = self._probabilities_with_overrides(
-            self._availabilities_at(times), working_nodes, broken_nodes
+        # _long_run_grid), or over the states of the repair crews' Markov
+        # chain; otherwise at one point, as the node availabilities are
+        # constant.
+        availability, weights = self._long_run_probabilities(
+            working_nodes, broken_nodes
         )
         system = self.system_probability(availability, method=method)
         return float(weights @ system)
@@ -4899,7 +5037,9 @@ class RepairableRBD(RBD):
             failure rate, instant tests and instant repair, a model that
             block replacement's exact values do not cover (see
             ``mean_availability``), or time scales too far apart for the
-            grid (years of running, seconds of repair, over centuries):
+            grid (years of running, seconds of repair, over centuries); or
+            if a component can wait for a repair crew (see
+            ``repair_crews``), as the curves assume independent components:
             simulate it with ``availability``.
 
         Examples
@@ -5100,7 +5240,7 @@ class RepairableRBD(RBD):
         """Each node's point availability over ``[0, horizon]``, from new,
         as a curve (see ``_point_availability``), except the nodes in
         ``skip`` (held working or failed)."""
-        self._require_unlimited_crews()
+        self._require_unlimited_crews(*_OVER_TIME_CREWS)
         curves: dict = {}
         for node, component in self.components.items():
             if node in skip:
@@ -5290,7 +5430,9 @@ class RepairableRBD(RBD):
         [`RBD.system_capacity`][repyability.RBD.system_capacity]), and
         averaged over the schedules of components inspected or replaced on
         a calendar, which are down together more often than independent
-        ones would be.
+        ones would be. With limited ``repair_crews``, it is averaged over
+        the states of the crews' Markov chain instead (see
+        ``mean_availability``).
 
         Parameters
         ----------
@@ -5462,18 +5604,170 @@ class RepairableRBD(RBD):
             self._crew_served()
         )
 
-    def _require_unlimited_crews(self) -> None:
+    def _require_unlimited_crews(
+        self,
+        assumes: str = "these values assume",
+        advice: str = "Simulate the system with availability() or cost().",
+    ) -> None:
         """Raise if a job may wait for a repair crew: components then no
-        longer fail and recover independently, which the exact methods
-        assume."""
+        longer fail and recover independently, which ``assumes`` (what
+        assumes it, and ``assume``): do ``advice`` instead."""
         if self._crews_limited():
             raise NotImplementedError(
                 f"With {self.repair_crews} repair crew(s) for "
                 f"{len(self._crew_served())} components, a component can "
                 "wait for a crew, so the components no longer fail and "
-                "recover independently, which the exact methods assume. "
-                "Simulate the system with availability() or cost()."
+                f"recover independently, which {assumes}. {advice}"
             )
+
+    def _no_crew_chain(self, why: str) -> NoReturn:
+        """Raise that the repair crews' Markov chain does not cover this RBD,
+        because ``why``."""
+        raise NotImplementedError(
+            f"With {self.repair_crews} repair crew(s) for "
+            f"{len(self._crew_served())} components, a component can wait "
+            "for a crew, and the exact long-run values come from a Markov "
+            "chain of the components' states and the repair queue: "
+            f"{why}. Simulate the system with availability() or cost()."
+        )
+
+    def _crew_chain_rates(self) -> Dict[Any, Tuple[float, float]]:
+        """The failure and repair rates (``inf`` for an instant repair) of
+        the components the repair crews work on, for their Markov chain
+        (see ``_crew_chain.py``). Raise if the chain does not cover them:
+        scheduled maintenance or inspection, a life or repair time that is
+        not exponential, or more states than it is solved for."""
+        assert self.repair_crews is not None  # limited crews only
+        rates: Dict[Any, Tuple[float, float]] = {}
+        for node in self._crew_served():
+            component = self.components[node]
+            if node in self._preventive:
+                self._no_crew_chain(
+                    "it has no place for scheduled maintenance, which "
+                    f"component {node!r} has"
+                )
+            if node in self._inspection:
+                self._no_crew_chain(
+                    "it has no place for inspections, which component "
+                    f"{node!r} has"
+                )
+            life = _constant_rate(component.reliability)
+            if life is None:
+                self._no_crew_chain(
+                    "it needs exponential lives (a constant failure rate), "
+                    f"and component {node!r}'s is not"
+                )
+            repair = _repair_rate(component.time_to_replace)
+            if repair is None:
+                self._no_crew_chain(
+                    "it needs exponential repair times (or instant repair), "
+                    f"and component {node!r}'s are not"
+                )
+            rates[node] = (life, repair)
+        count = _crew_chain.state_count(
+            [self._priority.get(node, 0.0) for node in rates],
+            [math.isinf(repair) for _, repair in rates.values()],
+            self.repair_crews,
+        )
+        if count > _crew_chain.MAX_STATES:
+            self._no_crew_chain(
+                f"here it has {count:,} states, more than the "
+                f"{_crew_chain.MAX_STATES:,} it is solved for"
+            )
+        return rates
+
+    def _require_crew_chain(self) -> None:
+        """Raise if the exact long-run values with limited repair crews
+        cannot be computed: the Markov chain does not cover the components
+        (see ``_crew_chain_rates``), or nested RBDs' calendars fall together
+        (see ``_require_calendars``)."""
+        self._crew_chain_rates()
+        self._require_calendars()
+
+    def _crew_chain(
+        self, forced: frozenset = frozenset()
+    ) -> "_crew_chain.CrewChain":
+        """The Markov chain of the components the repair crews work on, and
+        its long-run distribution (see ``_crew_chain.py``), leaving out the
+        nodes in ``forced``: held working a node never fails, and held
+        broken it is never repaired, so neither needs a crew. Solved once
+        for each set of rates and kept."""
+        self._require_crew_chain()
+        rates = self._crew_chain_rates()
+        assert self.repair_crews is not None  # limited crews only
+        nodes = [node for node in rates if node not in forced]
+        priorities = [self._priority.get(node, 0.0) for node in nodes]
+        key = (
+            self.repair_crews,
+            tuple(zip(nodes, (rates[node] for node in nodes), priorities)),
+        )
+        cache = self.__dict__.setdefault("_crew_chains", {})
+        if key not in cache:
+            cache[key] = _crew_chain.solve(
+                nodes,
+                [rates[node][0] for node in nodes],
+                [rates[node][1] for node in nodes],
+                priorities,
+                self.repair_crews,
+            )
+        return cache[key]
+
+    def _chain_probabilities(
+        self, working_nodes, broken_nodes
+    ) -> Tuple[dict, np.ndarray]:
+        """With limited repair crews, every node's availability in each
+        state of their Markov chain (1 or 0 for the components the crews
+        work on and those held working or broken, and a nested RBD's own
+        long-run availability, as it has crews of its own), and the states'
+        long-run probabilities: the long-run values are then averages over
+        the states, as over the times of ``_long_run_grid``."""
+        working_nodes = set(working_nodes or ())
+        broken_nodes = set(broken_nodes or ())
+        self._validate_node_overrides(working_nodes, broken_nodes)
+        chain = self._crew_chain(frozenset(working_nodes | broken_nodes))
+        size = len(chain.probabilities)
+        out: dict = {
+            node: chain.up[:, k].astype(float)
+            for k, node in enumerate(chain.nodes)
+        }
+        for node, component in self.components.items():
+            if node in working_nodes:
+                out[node] = np.ones(size)
+            elif node in broken_nodes:
+                out[node] = np.zeros(size)
+            elif node not in out:
+                out[node] = np.full(size, float(component.mean_availability()))
+        for node in self.in_or_out:
+            out[node] = np.ones(size)
+        return out, chain.probabilities
+
+    def _chain_outage_frequencies(
+        self, working_nodes, broken_nodes
+    ) -> Tuple[float, float]:
+        """``_outage_frequencies`` with limited repair crews, over the
+        states of their Markov chain: in each, a component that is up fails
+        at its constant rate, and takes the system down if it is critical
+        there. A nested RBD enters through its own frequencies, as it has
+        crews of its own."""
+        availability, weights = self._chain_probabilities(
+            working_nodes, broken_nodes
+        )
+        forced = set(working_nodes or ()) | set(broken_nodes or ())
+        rates = self._crew_chain_rates()
+        birnbaum = super()._birnbaum_importance(availability)
+        failures = planned = 0.0
+        for node in self.components:
+            if node in forced:
+                continue
+            importance = np.asarray(birnbaum[node])
+            if node in rates:
+                life = rates[node][0]
+                node_failures, node_planned = life * availability[node], 0.0
+            else:
+                node_failures, _, node_planned = self._node_frequencies(node)
+            failures += float(weights @ (importance * node_failures))
+            planned += float(weights @ (importance * node_planned))
+        return failures, planned
 
     def _maintained_follow_up(
         self, event: Event, source, schedule: _Preventive
@@ -6834,6 +7128,10 @@ class RepairableRBD(RBD):
         Other hidden failures have no exact long-run values here: simulate
         them.
 
+        With limited ``repair_crews``, a component's is its long-run
+        probability of being up in the crews' Markov chain (see
+        ``mean_availability``): waiting for a crew, it is down.
+
         Returns
         -------
         dict[Hashable, float]
@@ -6850,7 +7148,9 @@ class RepairableRBD(RBD):
             parametric model with a density, dead-on-arrival units, repairs
             that may never end, or repairs or maintenance far longer than
             the interval), or has hidden failures other than with a
-            constant failure rate, instant tests and instant repair.
+            constant failure rate, instant tests and instant repair; or,
+            while a component can wait for a repair crew, as for
+            ``mean_availability``.
 
         Examples
         --------
@@ -6878,8 +7178,15 @@ class RepairableRBD(RBD):
         return node_av
 
     def _node_availability(self, node) -> float:
-        """A component's long-run availability (see ``node_availability``)."""
-        self._require_unlimited_crews()
+        """A component's long-run availability (see ``node_availability``):
+        with limited repair crews, its long-run probability of being up in
+        their Markov chain, or a nested RBD's own, as it has crews of its
+        own."""
+        if self._crews_limited():
+            chain = self._crew_chain()
+            if node in chain.nodes:
+                return chain.availability(node)
+            return float(self.components[node].mean_availability())
         if node in self._inspection:
             rate, interval = self._inspected_rate(node)
             return float(-np.expm1(-rate * interval) / (rate * interval))
@@ -7234,15 +7541,28 @@ class RepairableRBD(RBD):
     def _long_run_probabilities(
         self, working_nodes, broken_nodes
     ) -> Tuple[dict, np.ndarray]:
-        """The node availabilities the long-run importance measures are
-        evaluated at (with the forced nodes held at 1 or 0), over the times
-        of ``_long_run_grid``, and those times' weights: each measure is
-        then a ratio of time-averaged system quantities."""
+        """The node availabilities the long-run values are evaluated at
+        (with the forced nodes held at 1 or 0), over the times of
+        ``_long_run_grid``, and those times' weights; or, with limited
+        repair crews, over the states of their Markov chain (see
+        ``_chain_probabilities``). Each value is then a ratio of averages
+        of system quantities."""
+        if self._crews_limited():
+            return self._chain_probabilities(working_nodes, broken_nodes)
         times, weights = self._long_run_grid()
         probabilities = self._probabilities_with_overrides(
             self._availabilities_at(times), working_nodes, broken_nodes
         )
         return probabilities, weights
+
+    def _importance_probabilities(
+        self, working_nodes, broken_nodes
+    ) -> Tuple[dict, np.ndarray]:
+        """``_long_run_probabilities`` for the importance measures, which
+        assume that the components fail and are repaired independently: not
+        while a component can wait for a repair crew."""
+        self._require_unlimited_crews(*_IMPORTANCE_CREWS)
+        return self._long_run_probabilities(working_nodes, broken_nodes)
 
     def _node_frequencies(self, node) -> Tuple[float, float, float]:
         """A component's long-run failures, preventive replacements and
@@ -7338,6 +7658,11 @@ class RepairableRBD(RBD):
         the zero-length outages an instantly repaired component causes;
         planned outages (preventive maintenance) are not failures.
 
+        With limited ``repair_crews`` the formula is summed over the states
+        of the crews' Markov chain (see ``mean_availability``): in each, a
+        component that is up fails at its constant rate, and takes the
+        system down if it is critical there.
+
         Parameters
         ----------
         working_nodes : Collection[Hashable], optional
@@ -7361,7 +7686,9 @@ class RepairableRBD(RBD):
             non-parametric reliability model.
         NotImplementedError
             If a component is under block replacement with models its exact
-            values do not cover (see ``node_availability``).
+            values do not cover (see ``node_availability``); or, while a
+            component can wait for a repair crew, as for
+            ``mean_availability``.
 
         Examples
         --------
@@ -7393,7 +7720,10 @@ class RepairableRBD(RBD):
         ``sum_i I_B(i) * omega_i`` over the nodes' failures, and the same
         over their planned outages (a node's outage takes the system down
         when the node is critical, which it is with probability
-        ``I_B(i)``)."""
+        ``I_B(i)``). With limited repair crews, see
+        ``_chain_outage_frequencies``."""
+        if self._crews_limited():
+            return self._chain_outage_frequencies(working_nodes, broken_nodes)
         times, weights = self._long_run_grid()
         availability = self._probabilities_with_overrides(
             self._availabilities_at(times), working_nodes, broken_nodes
@@ -7460,6 +7790,8 @@ class RepairableRBD(RBD):
             If a working/broken node is unknown, is the input or output
             node, or is in both sets; or if a component has a
             non-parametric reliability model.
+        NotImplementedError
+            As for ``mean_availability``.
 
         Examples
         --------
@@ -7518,6 +7850,8 @@ class RepairableRBD(RBD):
             If a working/broken node is unknown, is the input or output
             node, or is in both sets; or if a component has a
             non-parametric reliability model.
+        NotImplementedError
+            As for ``mean_availability``.
 
         Examples
         --------
@@ -7577,6 +7911,8 @@ class RepairableRBD(RBD):
             If a working/broken node is unknown, is the input or output
             node, or is in both sets; or if a component has a
             non-parametric reliability model.
+        NotImplementedError
+            As for ``mean_availability``.
 
         Examples
         --------
@@ -7644,6 +7980,10 @@ class RepairableRBD(RBD):
             If a working/broken node is unknown, is the input or output
             node, or is in both sets; or if a component has a
             non-parametric reliability model.
+        NotImplementedError
+            If a component can wait for a repair crew (see
+            ``repair_crews``): the measures assume that the components fail
+            and are repaired independently. Or as for ``mean_availability``.
 
         Examples
         --------
@@ -7665,7 +8005,7 @@ class RepairableRBD(RBD):
         >>> round(rbd.birnbaum_importance(working_nodes=["a"])["b"], 4)
         1.0
         """
-        node_probabilities, weights = self._long_run_probabilities(
+        node_probabilities, weights = self._importance_probabilities(
             working_nodes, broken_nodes
         )
         return _squeeze_values(
@@ -7705,6 +8045,10 @@ class RepairableRBD(RBD):
             If a working/broken node is unknown, is the input or output
             node, or is in both sets; or if a component has a
             non-parametric reliability model.
+        NotImplementedError
+            If a component can wait for a repair crew (see
+            ``repair_crews``): the measures assume that the components fail
+            and are repaired independently. Or as for ``mean_availability``.
 
         Examples
         --------
@@ -7722,7 +8066,7 @@ class RepairableRBD(RBD):
         >>> {node: round(p, 4) for node, p in potential.items()}
         {'a': 0.1111, 'b': 0.2778}
         """
-        node_probabilities, weights = self._long_run_probabilities(
+        node_probabilities, weights = self._importance_probabilities(
             working_nodes, broken_nodes
         )
         return _squeeze_values(
@@ -7767,6 +8111,10 @@ class RepairableRBD(RBD):
             If a working/broken node is unknown, is the input or output
             node, or is in both sets; or if a component has a
             non-parametric reliability model.
+        NotImplementedError
+            If a component can wait for a repair crew (see
+            ``repair_crews``): the measures assume that the components fail
+            and are repaired independently. Or as for ``mean_availability``.
 
         Examples
         --------
@@ -7787,7 +8135,7 @@ class RepairableRBD(RBD):
         >>> {node: round(r, 4) for node, r in raw.items()}
         {'a': 2.25, 'b': 2.25}
         """
-        node_probabilities, weights = self._long_run_probabilities(
+        node_probabilities, weights = self._importance_probabilities(
             working_nodes, broken_nodes
         )
         return _squeeze_values(
@@ -7833,6 +8181,10 @@ class RepairableRBD(RBD):
             If a working/broken node is unknown, is the input or output
             node, or is in both sets; or if a component has a
             non-parametric reliability model.
+        NotImplementedError
+            If a component can wait for a repair crew (see
+            ``repair_crews``): the measures assume that the components fail
+            and are repaired independently. Or as for ``mean_availability``.
 
         Examples
         --------
@@ -7850,7 +8202,7 @@ class RepairableRBD(RBD):
         >>> {node: round(r, 4) for node, r in rrw.items()}
         {'a': 1.3333, 'b': 2.6667}
         """
-        node_probabilities, weights = self._long_run_probabilities(
+        node_probabilities, weights = self._importance_probabilities(
             working_nodes, broken_nodes
         )
         return _squeeze_values(
@@ -7910,6 +8262,10 @@ class RepairableRBD(RBD):
             node, or is in both sets; if a component has a non-parametric
             reliability model; or if ``kind`` is neither ``"failure"`` nor
             ``"success"``.
+        NotImplementedError
+            If a component can wait for a repair crew (see
+            ``repair_crews``): the measures assume that the components fail
+            and are repaired independently. Or as for ``mean_availability``.
 
         References
         ----------
@@ -7942,7 +8298,7 @@ class RepairableRBD(RBD):
         >>> {node: round(c, 4) for node, c in criticality.items()}
         {'a': 1.0, 'b': 1.0}
         """
-        node_probabilities, weights = self._long_run_probabilities(
+        node_probabilities, weights = self._importance_probabilities(
             working_nodes, broken_nodes
         )
         return _squeeze_values(
@@ -8005,6 +8361,10 @@ class RepairableRBD(RBD):
             working/broken node is unknown, is the input or output node, or
             is in both sets; or if a component has a non-parametric
             reliability model.
+        NotImplementedError
+            If a component can wait for a repair crew (see
+            ``repair_crews``): the measures assume that the components fail
+            and are repaired independently. Or as for ``mean_availability``.
 
         Examples
         --------
@@ -8025,7 +8385,7 @@ class RepairableRBD(RBD):
         >>> {node: round(v, 4) for node, v in fv.items()}
         {'a': 0.375, 'b': 0.75}
         """
-        node_probabilities, weights = self._long_run_probabilities(
+        node_probabilities, weights = self._importance_probabilities(
             working_nodes, broken_nodes
         )
         return _squeeze_values(

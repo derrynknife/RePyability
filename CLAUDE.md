@@ -44,6 +44,11 @@
   `_expected_draws`) changes seeded results: that is a behaviour change for
   the CHANGELOG, `seeded_event_loop.json` must be re-recorded, and the docs'
   quoted numbers updated. The rows of a chunk only affect speed.
+- **The repair crews' Markov chain (`repyability/rbd/_crew_chain.py`)
+  copies the simulation's queue (`_Crews`)**: which waiting job a free crew
+  takes, and how instant jobs pass through. A change to one goes into the
+  other; `test_crew_chain.py` checks the chain's exact values against the
+  simulation.
 
 ## How each analysis is computed
 

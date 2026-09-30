@@ -20,8 +20,9 @@ system's availability over time and over a mission is exact from new
 be computed: exactly, numerically, by simulation or not at all (#127).
 Availability simulations run faster, and about ten times as fast again
 when compiled with numba (#119, #120), and `import repyability` is quicker
-(#121). Components can share a limited number of repair crews (#89), and
-demonstration test planning is new (#129).
+(#121). Components can share a limited number of repair crews (#89), with
+exact long-run values from a Markov chain when their lives and repairs are
+exponential (#90), and demonstration test planning is new (#129).
 
 Behaviour changes: seeded repairable simulations give different numbers,
 once, as each random quantity now has a stream of its own (#119);
@@ -155,11 +156,30 @@ surpyval 0.21 is required.
   nested RBD has crews of its own. The simulations (`availability`, `cost`,
   `compare`) follow the queue, in Python, with the same streams, so seeded
   runs stay reproducible and paired; the exact methods refuse while a job
-  can wait, and `analysis_routes()` says so. With the default (None), or at
-  least as many crews as components, nothing waits and every result is the
-  same as before. The crews and priorities are saved with the RBD. Checked
-  against the machine-repair model's closed form (identical exponential
-  units in parallel or k-out-of-n, with one or more crews).
+  can wait (but see #90), and `analysis_routes()` says so. With the default
+  (None), or at least as many crews as components, nothing waits and every
+  result is the same as before. The crews and priorities are saved with the
+  RBD. Checked against the machine-repair model's closed form (identical
+  exponential units in parallel or k-out-of-n, with one or more crews).
+- **Exact long-run values with shared repair crews** (#90). When the
+  components the crews work on have exponential lives and exponential (or
+  instant) repairs, with no scheduled maintenance or inspection, the system
+  is a Markov chain: its state is which components are under repair and
+  which wait, in the order the crews will take them. `mean_availability`,
+  `node_availability`, `system_failure_frequency`, `mean_up_time`,
+  `mean_down_time`, `mean_time_between_failures`, `expected_cost_rate`,
+  `total_cost` and `capacity_distribution` solve it exactly, for up to
+  15,000 states (seven components first come, first served, or more with
+  priorities, which fix the queue's order); a component held working or
+  broken needs no crew. Beyond that, or with other lives, repairs,
+  maintenance or inspections, the exact values refuse with the reason; the
+  importance measures, the availability over time and the allocations,
+  which assume independent components, refuse whenever a job can wait.
+  `analysis_routes()` reports each. The chain is solved directly, keeping
+  every state's probability to its relative precision however small.
+  Checked against the machine-repair model's closed forms (to 1e-12), a
+  chain worked by hand (an instant repair), and the simulation of #89 on a
+  bridge with priorities.
 - **Demonstration test planning** (#129): how many units, or how long a
   test, demonstrates a reliability at a confidence level, and what a
   finished test demonstrated. `demonstration_sample_size` (the success run,
