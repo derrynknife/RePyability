@@ -78,7 +78,7 @@ Other combinations raise `NotImplementedError`.
 |---|---|
 | Identical Exponential units, cold, perfect switching (any `k`) | Exact: Erlang. |
 | Identical Exponential units, warm or hot | Exact: hypoexponential. |
-| Cold, `k = 1` (any units, including imperfect switching) | Numerical convolution of the units' lifetimes: deterministic. |
+| Cold, `k = 1` (any units, including imperfect switching) | Numerical convolution of the units' lifetimes: deterministic, and accurate to about 1e-6 (1e-5 for the steepest early-life densities, a gamma with shape 0.5 or less). |
 | Everything else (warm or hot non-Exponential units, cold `k ≥ 2` non-Exponential units) | Simulation: a Kaplan–Meier fit to `n_sims` simulated lifetimes (default 10 000), seeded by `seed`, with `lower` passed as the fit's lower limit. |
 
 The simulated cases carry Monte-Carlo error, and their `sf` returns
