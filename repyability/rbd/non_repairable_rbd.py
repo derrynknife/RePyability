@@ -663,6 +663,22 @@ class NonRepairableRBD(RBD):
                 node_failures[node_name] = 1.0 - np.asarray(model.sf(x))
         return node_failures
 
+    def _importance_inputs(
+        self, x, working_nodes, broken_nodes
+    ) -> Tuple[Dict[Any, Any], Dict[Any, Any]]:
+        """The nodes' reliabilities and probabilities of failing at ``x``
+        that the importance measures are worked out from, with the working
+        and broken nodes held (after checking them): the second from each
+        model's own ``ff`` (see ``_base_node_failures``), so that a small
+        one keeps its precision."""
+        node_probabilities = self._probabilities_with_overrides(
+            self.node_sf(x), working_nodes, broken_nodes
+        )
+        node_failures = self._base_node_failures(
+            x, set(working_nodes or ()), set(broken_nodes or ())
+        )
+        return node_probabilities, node_failures
+
     def _validate_ccf_groups(self, ccf_groups) -> list:
         """Validate common-cause groups against the RBD structure.
 
@@ -5452,7 +5468,12 @@ class NonRepairableRBD(RBD):
         system reliability changes with node ``i``'s reliability, which is
         also the probability that node ``i`` is critical (the system works
         if ``i`` works and fails if ``i`` fails). It does not depend on node
-        ``i``'s own reliability. Exact; it assumes independent nodes.
+        ``i``'s own reliability. Exact; it assumes independent nodes. It is
+        worked out for every node at once, as the derivative of the system
+        reliability: a sum of products of the nodes' reliabilities and
+        probabilities of failing (their models' ``sf`` and ``ff``), so a
+        small one keeps its full relative precision, where the difference
+        above would cancel in a reliable system.
 
         Parameters
         ----------
@@ -5503,12 +5524,14 @@ class NonRepairableRBD(RBD):
         {'a': 1.0, 'b': 0.1}
         """
         self._require_no_ccf()
-        node_probabilities = self._probabilities_with_overrides(
-            self.node_sf(x), working_nodes, broken_nodes
+        node_probabilities, node_failures = self._importance_inputs(
+            x, working_nodes, broken_nodes
         )
         return cast(
             Dict[Any, Union[float, np.ndarray]],
-            super()._birnbaum_importance(node_probabilities),
+            super()._birnbaum_importance(
+                node_probabilities, node_failures=node_failures
+            ),
         )
 
     @check_x
@@ -5522,8 +5545,10 @@ class NonRepairableRBD(RBD):
 
         ``IP_i = R_sys(i working) - R_sys``: how much the system reliability
         would rise if node ``i`` were made perfect. It equals
-        ``B_i * (1 - R_i)``, with ``B_i`` the Birnbaum importance. Exact; it
-        assumes independent nodes.
+        ``B_i * (1 - R_i)``, with ``B_i`` the Birnbaum importance, and is
+        worked out as that product (with ``1 - R_i`` from the node's model's
+        ``ff``), so a small one keeps its precision. Exact; it assumes
+        independent nodes.
 
         Parameters
         ----------
@@ -5570,12 +5595,14 @@ class NonRepairableRBD(RBD):
         {'p1': 0.0095, 'p2': 0.0095, 'v': 0.0495}
         """
         self._require_no_ccf()
-        node_probabilities = self._probabilities_with_overrides(
-            self.node_sf(x), working_nodes, broken_nodes
+        node_probabilities, node_failures = self._importance_inputs(
+            x, working_nodes, broken_nodes
         )
         return cast(
             Dict[Any, Union[float, np.ndarray]],
-            super()._improvement_potential(node_probabilities),
+            super()._improvement_potential(
+                node_probabilities, node_failures=node_failures
+            ),
         )
 
     @check_x
@@ -5638,12 +5665,14 @@ class NonRepairableRBD(RBD):
         {'p1': 2.437, 'p2': 2.437, 'v': 16.8067}
         """
         self._require_no_ccf()
-        node_probabilities = self._probabilities_with_overrides(
-            self.node_sf(x), working_nodes, broken_nodes
+        node_probabilities, node_failures = self._importance_inputs(
+            x, working_nodes, broken_nodes
         )
         return cast(
             Dict[Any, Union[float, np.ndarray]],
-            super()._risk_achievement_worth(node_probabilities),
+            super()._risk_achievement_worth(
+                node_probabilities, node_failures=node_failures
+            ),
         )
 
     @check_x
@@ -5707,12 +5736,14 @@ class NonRepairableRBD(RBD):
         {'p1': 1.19, 'p2': 1.19, 'v': 5.95}
         """
         self._require_no_ccf()
-        node_probabilities = self._probabilities_with_overrides(
-            self.node_sf(x), working_nodes, broken_nodes
+        node_probabilities, node_failures = self._importance_inputs(
+            x, working_nodes, broken_nodes
         )
         return cast(
             Dict[Any, Union[float, np.ndarray]],
-            super()._risk_reduction_worth(node_probabilities),
+            super()._risk_reduction_worth(
+                node_probabilities, node_failures=node_failures
+            ),
         )
 
     @check_x
@@ -5809,12 +5840,14 @@ class NonRepairableRBD(RBD):
         {'p1': 0.0909, 'p2': 0.0909, 'v': 1.0}
         """
         self._require_no_ccf()
-        node_probabilities = self._probabilities_with_overrides(
-            self.node_sf(x), working_nodes, broken_nodes
+        node_probabilities, node_failures = self._importance_inputs(
+            x, working_nodes, broken_nodes
         )
         return cast(
             Dict[Any, Union[float, np.ndarray]],
-            super()._criticality_importance(node_probabilities, kind),
+            super()._criticality_importance(
+                node_probabilities, kind, node_failures=node_failures
+            ),
         )
 
     @check_x
@@ -5837,7 +5870,10 @@ class NonRepairableRBD(RBD):
                    prod over j in C of (1 - R_j), divided by (1 - R_sys)
 
         The sum over-estimates the union, so values can exceed 1 when the
-        failure probabilities are not small.
+        failure probabilities are not small. Each ``1 - R`` is worked out in
+        its own right (a node's from its model's ``ff``, the system's as
+        [`ff`][repyability.NonRepairableRBD.ff] is), so small ones keep
+        their precision.
 
         With ``fv_type="p"`` the same formula is applied to the minimal path
         sets instead: the numerator sums, over the minimal path sets
@@ -5895,15 +5931,14 @@ class NonRepairableRBD(RBD):
         {'p1': 0.1681, 'p2': 0.1681, 'v': 0.8403}
         """
         self._require_no_ccf()
-        rel_dict = {}
-        for node_name, node in self.reliabilities.items():
-            rel_dict[node_name] = node.sf(x)
-        rel_dict = self._probabilities_with_overrides(
-            rel_dict, working_nodes, broken_nodes
+        node_probabilities, node_failures = self._importance_inputs(
+            x, working_nodes, broken_nodes
         )
         return cast(
             Dict[Any, Union[float, np.ndarray]],
-            super()._fussell_vesely(rel_dict, fv_type),
+            super()._fussell_vesely(
+                node_probabilities, fv_type, node_failures=node_failures
+            ),
         )
 
     def fussel_vesely(

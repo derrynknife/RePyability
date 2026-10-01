@@ -230,20 +230,59 @@ def test_regression_node(regression_model):
         )
 
 
-def test_the_risk_worths_stay_as_they_are():
-    # RAW and RRW divide by the system's unreliability, worked out as a sum
-    # of products already: they agree with ff's.
+@pytest.mark.parametrize("q", QS)
+def test_importance_measures(q):
+    # A 2-out-of-3 system of identical components, failing with
+    # probability F = q**2 (3 - 2q): each one is critical when exactly one
+    # of the other two works.
+    rbd = two_of_three({n: FIXED(q) for n in "abc"})
+    Q = Fraction(q)
+    P = 1 - Q
+    F = Q**2 * (3 - 2 * Q)
+    birnbaum = 2 * P * Q
+    want = {
+        "birnbaum_importance": birnbaum,
+        "improvement_potential": birnbaum * Q,
+        "criticality_importance": birnbaum * Q / F,
+        "fussell_vesely": 2 * Q**2 / F,
+        "risk_achievement_worth": (1 - P**2) / F,
+        "risk_reduction_worth": F / Q**2,
+    }
+    for name, value in want.items():
+        assert getattr(rbd, name)()["a"] == approx(float(value)), name
+    success = rbd.criticality_importance(kind="success")["a"]
+    assert success == approx(float(birnbaum * P / (1 - F)))
+
+
+@pytest.mark.parametrize("q", QS)
+def test_birnbaum_importance_in_a_bridge(q):
+    # The bridge's core is meshed: its importance comes through the Shannon
+    # decomposition, not the modules' closed forms. With identical
+    # components, the bridge element's is 2 q**2 p**2, and the five add up
+    # to dR/dp, R = 2p**2 + 2p**3 - 5p**4 + 2p**5.
+    rbd = bridge({n: FIXED(q) for n in "abcde"})
+    Q = Fraction(q)
+    P = 1 - Q
+    middle = 2 * Q**2 * P**2
+    total = 4 * P + 6 * P**2 - 20 * P**3 + 10 * P**4
+    importance = rbd.birnbaum_importance()
+    assert importance["c"] == approx(float(middle))
+    for node in "abde":
+        assert importance[node] == approx(float((total - middle) / 4))
+
+
+def test_importance_over_time():
     rbd = two_of_three({n: UNIT for n in "abc"})
-    x = 200.0
-    raw = rbd.risk_achievement_worth(x)
-    rrw = rbd.risk_reduction_worth(x)
-    for node in "abc":
-        assert raw[node] == approx(
-            rbd.ff(x, broken_nodes=[node]) / rbd.ff(x), 1e-12
-        )
-        assert rrw[node] == approx(
-            rbd.ff(x) / rbd.ff(x, working_nodes=[node]), 1e-12
-        )
+    x = np.array([1e-7, 1e-3, 10.0, 1000.0])
+    want = [
+        float(2 * Fraction(p) * Fraction(q))
+        for p, q in zip(UNIT.sf(x), UNIT.ff(x))
+    ]
+    got = rbd.birnbaum_importance(x)["a"]
+    np.testing.assert_allclose(got, want, rtol=RTOL, atol=0.0)
+    # Held working, "a" leaves "b" critical when "c" has failed.
+    held = rbd.birnbaum_importance(x, working_nodes=["a"])["b"]
+    np.testing.assert_allclose(held, UNIT.ff(x), rtol=RTOL, atol=0.0)
 
 
 # -- RepairableRBD.mean_unavailability --------------------------------------
@@ -395,3 +434,94 @@ def test_ordinary_values_agree_with_the_availability(extra):
         )
     with pytest.raises(ValueError):
         rbd.mean_unavailability(method="x")
+
+
+# -- Birnbaum importance and the failure frequency of a RepairableRBD -------
+
+
+@pytest.mark.parametrize("mttf", [1e2, 1e5, 1e8, 1e11])
+def test_the_failure_frequency_of_a_parallel_pair(mttf):
+    # Each unit is down a fraction U = 1 / (MTTF + 1) of the time, and fails
+    # 1 / (MTTF + 1) times per unit time; the pair fails when one fails
+    # while the other is down: 2 U**2 per unit time, for U**2 of the time.
+    unit = {"reliability": E([1 / mttf]), "repairability": EXACT([1.0])}
+    rbd = repairable_pair(unit)
+    U = 1 / (Fraction(1 / (1 / mttf)) + 1)
+    frequency = 2 * U**2
+    assert rbd.birnbaum_importance()["a"] == approx(float(U), 1e-13)
+    assert rbd.improvement_potential()["a"] == approx(float(U**2), 1e-13)
+    assert rbd.risk_achievement_worth()["a"] == approx(float(1 / U), 1e-13)
+    assert rbd.system_failure_frequency() == approx(float(frequency), 1e-13)
+    assert rbd.mean_time_between_failures() == approx(
+        float(1 / frequency), 1e-13
+    )
+    assert rbd.mean_up_time() == approx(float((1 - U**2) / frequency), 1e-13)
+    assert rbd.mean_down_time() == approx(0.5, 1e-13)
+
+
+def test_the_failure_frequency_with_one_repair_crew():
+    # The pair fails when the working unit fails while the other is under
+    # repair, and is down until that repair is done.
+    lam, mu = 1e-6, 1.0
+    unit = {"reliability": E([lam]), "repairability": E([mu])}
+    rbd = repairable_pair(unit, repair_crews=1)
+    r = Fraction(lam) / Fraction(mu)
+    frequency = 2 * r * Fraction(lam) / (1 + 2 * r + 2 * r**2)
+    assert rbd.system_failure_frequency() == approx(float(frequency), 1e-12)
+    assert rbd.mean_down_time() == approx(1 / mu, 1e-12)
+
+
+@pytest.mark.parametrize("rate", [1e-5, 1e-8, 1e-11])
+def test_the_failure_frequency_of_a_pair_tested_together(rate):
+    # Each unit fails at the constant rate while it is up, and the pair
+    # when one does while the other has failed since the last test:
+    # (1 / tau) * integral of 2 * rate * exp(-rate t) (1 - exp(-rate t)),
+    # which is (1 - exp(-rate tau))**2 / tau.
+    tau = 8760.0
+    component = {
+        "reliability": E([rate]),
+        "repairability": "instant",
+        "inspection": {"interval": tau},
+    }
+    rbd = repairable_pair(component)
+    getcontext().prec = 60
+    x = Decimal(rate) * Decimal(tau)
+    want = (1 - (-x).exp()) ** 2 / Decimal(tau)
+    assert rbd.system_failure_frequency() == approx(float(want), 1e-13)
+
+
+def test_the_failure_frequency_under_age_replacement():
+    # A unit replaced at age 1 fails first with probability F(1) = 1e-9.
+    life = surv.Weibull.from_params([1000.0, 3.0])
+    unit = {
+        "reliability": life,
+        "repairability": EXACT([1.0]),
+        "preventive": {"interval": 1.0},
+    }
+    rbd = RepairableRBD([("s", "a"), ("a", "t")], {"a": unit})
+    fails = -np.expm1(-((1.0 / 1000.0) ** 3))
+    cycle = NonRepairable(life).avg_replacement_time(1.0) + fails * 1.0
+    assert rbd.system_failure_frequency() == approx(fails / cycle, 1e-12)
+
+
+@pytest.mark.parametrize("mttf", [1e3, 1e9, 1e13])
+def test_planned_outages_at_block_times(mttf):
+    # "a" is replaced every 100 hours, taking 2: the pair goes down then
+    # only if "b" is down, a fraction U of the time.
+    a = {
+        "reliability": surv.Weibull.from_params([1e6, 2.0]),
+        "repairability": EXACT([1.0]),
+        "preventive": {
+            "interval": 100.0,
+            "policy": "block",
+            "duration": EXACT([2.0]),
+        },
+    }
+    b = {"reliability": E([1 / mttf]), "repairability": EXACT([1.0])}
+    rbd = RepairableRBD(
+        [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")], {"a": a, "b": b}
+    )
+    U = 1 / (Fraction(1 / (1 / mttf)) + 1)
+    up_before = Fraction(rbd._block_cycle("a").before)
+    planned = rbd._outage_frequencies()[1]
+    assert planned == approx(float(up_before * U / 100), 1e-12)

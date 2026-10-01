@@ -1788,6 +1788,16 @@ _UNSTREAMED = (
 )
 
 
+def _failed_by(component: NonRepairable, age: float, survives: float) -> float:
+    """The probability that a component's unit fails before ``age``: from
+    its model's own ``ff``, which keeps a small one's precision, or one less
+    ``survives`` (its survival there) for a non-parametric model, whose
+    survival the component interpolates."""
+    if component.model_parameterization == "non-parametric":
+        return 1.0 - survives
+    return float(np.ravel(component.reliability.ff(age))[0])
+
+
 def _common_period(intervals: Iterable[float]) -> float:
     """The least common multiple of the inspection intervals: the period
     after which the schedules repeat together."""
@@ -7452,12 +7462,14 @@ class RepairableRBD(RBD):
         at its constant rate, and takes the system down if it is critical
         there. A nested RBD enters through its own frequencies, as it has
         crews of its own."""
-        availability, weights = self._chain_probabilities(
-            working_nodes, broken_nodes
+        availability, unavailability, weights = (
+            self._long_run_unavailabilities(working_nodes, broken_nodes)
         )
         forced = set(working_nodes or ()) | set(broken_nodes or ())
         rates = self._crew_chain_rates()
-        birnbaum = super()._birnbaum_importance(availability)
+        birnbaum = super()._birnbaum_importance(
+            availability, node_failures=unavailability
+        )
         failures = planned = 0.0
         for node in self.components:
             if node in forced:
@@ -9430,12 +9442,11 @@ class RepairableRBD(RBD):
         schedule = self._preventive.get(node)
         if schedule is None:
             return float(np.atleast_1d(component.mean_unavailability())[0])
-        up, cycle, _, survives = self._maintenance_cycle(node, schedule)
+        up, cycle, fails, survives = self._maintenance_cycle(node, schedule)
         if schedule.policy == "block":
             return max(0.0, (cycle - up) / cycle)
-        # Down for a repair after a failure before the age, else for the
-        # maintenance: the failure's probability from the model's own ff.
-        fails = float(np.ravel(component.reliability.ff(schedule.interval))[0])
+        # Down for a repair after a failure before the age (its probability
+        # from the model's own ff), else for the maintenance.
         maintenance = (
             0.0 if schedule.duration is None else model_mean(schedule.duration)
         )
@@ -9793,25 +9804,42 @@ class RepairableRBD(RBD):
         instants = np.array(sorted(due)) * period
         # Just after each block time, before its replacements start (an
         # inspection due then is done).
-        base = self._availabilities_at(instants + 1e-9 * period)
-        before, after = dict(base), dict(base)
+        just_after = instants + 1e-9 * period
+        up, down = self._availabilities_at(just_after), (
+            self._unavailabilities_at(just_after)
+        )
+        before, after = dict(up), dict(up)
+        before_down, after_down = dict(down), dict(down)
         for column, key in enumerate(sorted(due)):
             for node in due[key]:
                 cycle = self._block_cycle(node)
-                before[node] = np.array(before[node], dtype=float)
-                after[node] = np.array(after[node], dtype=float)
-                before[node][column] = cycle.before
-                after[node][column] = cycle.after
-        before = self._probabilities_with_overrides(
-            before, working_nodes, broken_nodes
+                for works, fails, value in (
+                    (before, before_down, cycle.before),
+                    (after, after_down, cycle.after),
+                ):
+                    works[node] = np.array(works[node], dtype=float)
+                    fails[node] = np.array(fails[node], dtype=float)
+                    works[node][column] = value
+                    fails[node][column] = 1.0 - value
+        # The fall in the system availability, as the rise in its
+        # unavailability: a difference of small values in a reliable
+        # system, not of values near 1.
+        rise = self._system_unreliability(
+            self._probabilities_with_overrides(
+                after, working_nodes, broken_nodes
+            ),
+            self._failures_with_overrides(
+                after_down, working_nodes, broken_nodes
+            ),
+        ) - self._system_unreliability(
+            self._probabilities_with_overrides(
+                before, working_nodes, broken_nodes
+            ),
+            self._failures_with_overrides(
+                before_down, working_nodes, broken_nodes
+            ),
         )
-        after = self._probabilities_with_overrides(
-            after, working_nodes, broken_nodes
-        )
-        fall = np.asarray(self.system_probability(before)) - np.asarray(
-            self.system_probability(after)
-        )
-        return float(np.sum(fall)) / period
+        return float(np.sum(rise)) / period
 
     def _long_run_grid(self) -> Tuple[np.ndarray, np.ndarray]:
         """The times, and their weights (which sum to 1), that the exact
@@ -9954,12 +9982,12 @@ class RepairableRBD(RBD):
 
     def _importance_probabilities(
         self, working_nodes, broken_nodes
-    ) -> Tuple[dict, np.ndarray]:
-        """``_long_run_probabilities`` for the importance measures, which
-        assume that the components fail and are repaired independently: not
-        while a component can wait for a repair crew."""
+    ) -> Tuple[dict, dict, np.ndarray]:
+        """``_long_run_unavailabilities`` for the importance measures,
+        which assume that the components fail and are repaired
+        independently: not while a component can wait for a repair crew."""
         self._require_unlimited_crews(*_IMPORTANCE_CREWS)
-        return self._long_run_probabilities(working_nodes, broken_nodes)
+        return self._long_run_unavailabilities(working_nodes, broken_nodes)
 
     def _standby_rates(self, node) -> Tuple[float, float]:
         """A standby group's units' failure and repair rates, for its exact
@@ -10056,15 +10084,16 @@ class RepairableRBD(RBD):
         survives = float(
             np.ravel(component.reliability_function(schedule.interval))[0]
         )
+        fails = _failed_by(component, schedule.interval, survives)
         maintenance = (
             0.0 if schedule.duration is None else model_mean(schedule.duration)
         )
         cycle = (
             up
-            + (1.0 - survives) * model_mean(component.time_to_replace)
+            + fails * model_mean(component.time_to_replace)
             + survives * maintenance
         )
-        cache[key] = (up, cycle, 1.0 - survives, survives)
+        cache[key] = (up, cycle, fails, survives)
         return cache[key]
 
     def system_failure_frequency(
@@ -10090,7 +10119,10 @@ class RepairableRBD(RBD):
         the cycle's mean length for one under block replacement, and a
         nested ``RepairableRBD``'s own
         ``system_failure_frequency``. Exact for independent repairable
-        nodes, with no simulation. Every system failure counts, including
+        nodes, with no simulation. Each Birnbaum importance is a sum of
+        products of the node availabilities and unavailabilities, so a small
+        frequency (a reliable redundant system's, say) keeps its full
+        relative precision. Every system failure counts, including
         the zero-length outages an instantly repaired component causes;
         planned outages (preventive maintenance) are not failures.
 
@@ -10164,10 +10196,18 @@ class RepairableRBD(RBD):
         availability = self._probabilities_with_overrides(
             self._availabilities_at(times), working_nodes, broken_nodes
         )
+        unavailability = self._failures_with_overrides(
+            self._unavailabilities_at(times), working_nodes, broken_nodes
+        )
         forced = (set() if working_nodes is None else set(working_nodes)) | (
             set() if broken_nodes is None else set(broken_nodes)
         )
-        birnbaum = super()._birnbaum_importance(availability)
+        # Each node's Birnbaum importance, from the nodes' unavailabilities
+        # as well as their availabilities, so that a small one (a node
+        # backed up by reliable redundancy) keeps its precision.
+        birnbaum = super()._birnbaum_importance(
+            availability, node_failures=unavailability
+        )
         failures = planned = 0.0
         blocks = set(self._block_nodes())
         for node in self.components:
@@ -10201,7 +10241,8 @@ class RepairableRBD(RBD):
     ) -> float:
         """Returns the system's long-run Mean Time Between Failures.
 
-        Exact: ``MTBF = 1 / system_failure_frequency`` — the mean length of
+        Exact, to full precision however rare the failures:
+        ``MTBF = 1 / system_failure_frequency`` — the mean length of
         one full up-down cycle, i.e. ``MTBF = MUT + MDT`` (when there are
         no planned outages: preventive maintenance that takes time also
         ends up periods, so MTBF is then longer). Infinite if the system
@@ -10262,7 +10303,8 @@ class RepairableRBD(RBD):
 
         Exact: the mean duration of an uninterrupted working period of the
         system (sometimes called the repairable-system MTTF),
-        ``MUT = mean_availability / system_failure_frequency``. A planned
+        ``MUT = mean_availability / system_failure_frequency``, to full
+        precision however rare the failures. A planned
         outage (preventive maintenance that takes time) also ends a working
         period, so its frequency is added to the failure frequency. If the
         system never goes down it is infinite when the system is up and
@@ -10323,8 +10365,10 @@ class RepairableRBD(RBD):
         """Returns the system's long-run Mean Down Time.
 
         Exact: the mean duration of a system outage (the repairable-system
-        MTTR), ``MDT = mean_unavailability / system_failure_frequency``.
-        Planned outages (preventive maintenance that takes time) count as
+        MTTR), ``MDT = mean_unavailability / system_failure_frequency``,
+        both worked out in their own right, so a reliable system's keeps
+        its precision. Planned outages (preventive maintenance that takes
+        time) count as
         outages, so their frequency is added to the failure frequency. If
         the system never goes down it is 0.0 when the system is always up
         and infinite when it is down.
@@ -10391,7 +10435,12 @@ class RepairableRBD(RBD):
         if node i does), and how much the system availability changes per
         unit change in node i's availability. The node availabilities are
         those of ``node_availability``, with ``working_nodes`` and
-        ``broken_nodes`` held at 1 and 0.
+        ``broken_nodes`` held at 1 and 0. It is worked out for every node
+        at once, as the derivative of the system availability: a sum of
+        products of the node availabilities and unavailabilities (each
+        worked out in its own right, see ``mean_unavailability``), so a
+        small one keeps its full relative precision, where the difference
+        above would cancel in a reliable system.
 
         Note: Birnbaum's measure of importance assumes all nodes are
         independent.
@@ -10441,11 +10490,13 @@ class RepairableRBD(RBD):
         >>> round(rbd.birnbaum_importance(working_nodes=["a"])["b"], 4)
         1.0
         """
-        node_probabilities, weights = self._importance_probabilities(
-            working_nodes, broken_nodes
+        node_probabilities, node_failures, weights = (
+            self._importance_probabilities(working_nodes, broken_nodes)
         )
         return _squeeze_values(
-            super()._birnbaum_importance(node_probabilities, weights)
+            super()._birnbaum_importance(
+                node_probabilities, weights, node_failures
+            )
         )
 
     def improvement_potential(
@@ -10457,9 +10508,11 @@ class RepairableRBD(RBD):
         nodes' long-run availabilities.
 
         Exact, with no simulation: ``A_sys(A_i = 1) - A_sys``, the gain in
-        the system's long-run availability if node i never failed. The node
-        availabilities are those of ``node_availability``, with
-        ``working_nodes`` and ``broken_nodes`` held at 1 and 0.
+        the system's long-run availability if node i never failed, worked
+        out as ``I_B(i) * (1 - A_i)`` (see ``birnbaum_importance``) so that
+        a small one keeps its precision. The node availabilities are those
+        of ``node_availability``, with ``working_nodes`` and
+        ``broken_nodes`` held at 1 and 0.
 
         Parameters
         ----------
@@ -10502,11 +10555,13 @@ class RepairableRBD(RBD):
         >>> {node: round(p, 4) for node, p in potential.items()}
         {'a': 0.1111, 'b': 0.2778}
         """
-        node_probabilities, weights = self._importance_probabilities(
-            working_nodes, broken_nodes
+        node_probabilities, node_failures, weights = (
+            self._importance_probabilities(working_nodes, broken_nodes)
         )
         return _squeeze_values(
-            super()._improvement_potential(node_probabilities, weights)
+            super()._improvement_potential(
+                node_probabilities, weights, node_failures
+            )
         )
 
     def risk_achievement_worth(
@@ -10571,11 +10626,13 @@ class RepairableRBD(RBD):
         >>> {node: round(r, 4) for node, r in raw.items()}
         {'a': 2.25, 'b': 2.25}
         """
-        node_probabilities, weights = self._importance_probabilities(
-            working_nodes, broken_nodes
+        node_probabilities, node_failures, weights = (
+            self._importance_probabilities(working_nodes, broken_nodes)
         )
         return _squeeze_values(
-            super()._risk_achievement_worth(node_probabilities, weights)
+            super()._risk_achievement_worth(
+                node_probabilities, weights, node_failures
+            )
         )
 
     def risk_reduction_worth(
@@ -10638,11 +10695,13 @@ class RepairableRBD(RBD):
         >>> {node: round(r, 4) for node, r in rrw.items()}
         {'a': 1.3333, 'b': 2.6667}
         """
-        node_probabilities, weights = self._importance_probabilities(
-            working_nodes, broken_nodes
+        node_probabilities, node_failures, weights = (
+            self._importance_probabilities(working_nodes, broken_nodes)
         )
         return _squeeze_values(
-            super()._risk_reduction_worth(node_probabilities, weights)
+            super()._risk_reduction_worth(
+                node_probabilities, weights, node_failures
+            )
         )
 
     def criticality_importance(
@@ -10734,12 +10793,15 @@ class RepairableRBD(RBD):
         >>> {node: round(c, 4) for node, c in criticality.items()}
         {'a': 1.0, 'b': 1.0}
         """
-        node_probabilities, weights = self._importance_probabilities(
-            working_nodes, broken_nodes
+        node_probabilities, node_failures, weights = (
+            self._importance_probabilities(working_nodes, broken_nodes)
         )
         return _squeeze_values(
             super()._criticality_importance(
-                node_probabilities, kind, weights=weights
+                node_probabilities,
+                kind,
+                weights=weights,
+                node_failures=node_failures,
             )
         )
 
@@ -10759,7 +10821,9 @@ class RepairableRBD(RBD):
         unavailability, ``1 - A_i``, from ``node_availability`` (with
         ``working_nodes`` and ``broken_nodes`` held at availability 1 and
         0), and the system's is ``1 - A_sys``; both are exact, with no
-        simulation. The sum over cut sets is the usual rare-event
+        simulation, and worked out in their own right (see
+        ``mean_unavailability``), so small ones keep their precision. The
+        sum over cut sets is the usual rare-event
         approximation of the probability that some cut set containing node
         i has occurred, so with large unavailabilities the measure can
         exceed 1. If the system never fails, the ratio is ``nan`` or
@@ -10821,12 +10885,15 @@ class RepairableRBD(RBD):
         >>> {node: round(v, 4) for node, v in fv.items()}
         {'a': 0.375, 'b': 0.75}
         """
-        node_probabilities, weights = self._importance_probabilities(
-            working_nodes, broken_nodes
+        node_probabilities, node_failures, weights = (
+            self._importance_probabilities(working_nodes, broken_nodes)
         )
         return _squeeze_values(
             super()._fussell_vesely(
-                node_probabilities, fv_type, weights=weights
+                node_probabilities,
+                fv_type,
+                weights=weights,
+                node_failures=node_failures,
             )
         )
 

@@ -199,6 +199,9 @@ class RegressionNode:
         ``model.ff(x, Z)`` at the fixed covariates, or
         ``-expm1(-model.Hf_tvc(x, schedule))`` along the schedule: worked
         out in its own right, so that a small one keeps its precision.
+        Along a schedule that is the precision of the model's ``Hf_tvc``,
+        which for a proportional-odds model loses it where the cumulative
+        hazard is small (surpyval #528).
 
         Parameters
         ----------

@@ -1041,11 +1041,8 @@ class RBD:
         false: then None) and that it fails, in one pass, each a sum of
         products that keeps a small one's precision (see
         ``_system_unreliability``)."""
-        arrays, size = self._node_arrays(node_probabilities)
-        failures = (
-            None
-            if node_failures is None
-            else self._node_arrays(node_failures)[0]
+        arrays, failures, size = self._node_pairs(
+            node_probabilities, node_failures
         )
         up, down = self._decomposition().probabilities(
             arrays, failures, shape=size, works=works, fails=True
@@ -1072,6 +1069,50 @@ class RBD:
                 np.atleast_1d(np.asarray(out[node], dtype=float))
             )
         return out
+
+    def _node_pairs(
+        self, node_probabilities: Dict, node_failures: Optional[Dict] = None
+    ) -> tuple[dict, dict, int]:
+        """Each intermediate node's probabilities of working and of failing,
+        as 1-d arrays of one length, and that length (see ``_node_arrays``):
+        the second from ``node_failures`` when it is given (as for
+        ``_system_unreliability``), else one less the first."""
+        p, size = self._node_arrays(node_probabilities)
+        if node_failures is None:
+            return p, {node: 1.0 - value for node, value in p.items()}, size
+        q, length = self._node_arrays(node_failures)
+        if length != size:
+            raise ValueError("Probability arrays must be same length")
+        return p, q, size
+
+    def _importances(
+        self, node_probabilities: Dict, node_failures: Optional[Dict] = None
+    ) -> tuple[dict, np.ndarray, np.ndarray, dict, dict]:
+        """Every node's Birnbaum importance (the derivative of the system's
+        probability of working with respect to the node's), the
+        probabilities that the system works and that it fails, and the
+        nodes' probabilities of working and of failing (see
+        ``_node_pairs``), as 1-d arrays of one length.
+
+        All come from one pass of the decomposition (see
+        ``Decomposition.value_and_gradient``), and each is a sum of
+        products, so a small one keeps its full relative precision: the
+        importance ``R(i works) - R(i failed)`` would be a difference of
+        two values near 1 in a reliable system."""
+        p, q, size = self._node_pairs(node_probabilities, node_failures)
+        works, fails, gradient = self._decomposition().value_and_gradient(
+            p, q, shape=size
+        )
+
+        def full(value: Any) -> np.ndarray:
+            return np.array(
+                np.broadcast_to(np.asarray(value, dtype=float), (size,))
+            )
+
+        importance = {
+            node: full(gradient.get(node, 0.0)) for node in self.nodes
+        }
+        return importance, full(works), full(fails), p, q
 
     def _node_arrays(self, node_probabilities: Dict) -> tuple[dict, int]:
         """Each intermediate node's probability as a 1-d array, and their
@@ -2393,11 +2434,15 @@ class RBD:
         self,
         node_probabilities: dict[Any, ArrayLike],
         weights: Optional[np.ndarray] = None,
+        node_failures: Optional[dict[Any, ArrayLike]] = None,
     ) -> dict[Any, np.ndarray]:
-        """Returns the Birnbaum measure of importance for all nodes.
+        """Returns the Birnbaum measure of importance for all nodes:
+        ``R(i works) - R(i failed)``, the derivative of the system's
+        probability of working with respect to node ``i``'s.
 
-        Note: Birnbaum's measure of importance assumes all nodes are
-        independent.
+        It is worked out for every node at once, as a sum of products (see
+        ``_importances``), so a small one keeps its precision. Note:
+        Birnbaum's measure of importance assumes all nodes are independent.
 
         Parameters
         ----------
@@ -2411,6 +2456,11 @@ class RBD:
             see ``RepairableRBD._long_run_grid``), by default None: one
             value per element. The same for every importance helper here;
             each ratio is then of averages.
+        node_failures : Dict, optional
+            Each node's probability of failing, when it is known more
+            precisely than one less its probability of working (from a
+            reliable node's ``ff``, say), by default None. The same for
+            every importance helper here (see ``_system_unreliability``).
 
         Returns
         -------
@@ -2418,37 +2468,29 @@ class RBD:
             Dictionary with node names as keys and Birnbaum importances as
             values
         """
-
-        node_importance: dict[Any, np.ndarray] = {}
-        for node in self.nodes:
-            node_probabilities_i = {
-                **node_probabilities,
-                **{node: np.ones_like(node_probabilities[node])},
-            }
-            guaranteed = self.system_probability(node_probabilities_i)
-            node_probabilities_i = {
-                **node_probabilities,
-                **{node: np.zeros_like(node_probabilities[node])},
-            }
-            guaranteed_not: np.ndarray = self.system_probability(
-                node_probabilities_i
-            )
-            node_importance[node] = _averaged(
-                guaranteed - guaranteed_not, weights
-            )
-        return node_importance
+        importance = self._importances(node_probabilities, node_failures)[0]
+        return {
+            node: _averaged(value, weights)
+            for node, value in importance.items()
+        }
 
     def _improvement_potential(
         self,
         node_probabilities: dict[Any, ArrayLike],
         weights: Optional[np.ndarray] = None,
+        node_failures: Optional[dict[Any, ArrayLike]] = None,
     ) -> dict[Any, np.ndarray]:
-        """Returns the improvement potential of all nodes.
+        """Returns the improvement potential of all nodes: ``R(i works) -
+        R``, which is ``I_B(i) * (1 - p_i)`` (the system's probability of
+        working is linear in each node's), worked out as that product so
+        that a small one keeps its precision.
 
         Parameters
         ----------
-        x : ArrayLike
-            Time/s as a number or iterable
+        node_probabilities : Dict
+            The probability that each node works (arrays of one length).
+        weights, node_failures : optional
+            As for ``_birnbaum_importance``.
 
         Returns
         -------
@@ -2456,79 +2498,80 @@ class RBD:
             Dictionary with node names as keys and improvement potentials as
             values
         """
-        node_importance: dict[Any, np.ndarray] = {}
-        for node in self.nodes:
-            node_probabilities_i = {
-                **node_probabilities,
-                **{node: np.ones_like(node_probabilities[node])},
-            }
-            when_working = self.system_probability(node_probabilities_i)
-            as_is: np.ndarray = self.system_probability(node_probabilities)
-            node_importance[node] = _averaged(when_working - as_is, weights)
-        return node_importance
+        importance, _, _, _, q = self._importances(
+            node_probabilities, node_failures
+        )
+        return {
+            node: _averaged(importance[node] * q[node], weights)
+            for node in self.nodes
+        }
 
     def _risk_achievement_worth(
         self,
         node_probabilities: dict[Any, ArrayLike],
         weights: Optional[np.ndarray] = None,
+        node_failures: Optional[dict[Any, ArrayLike]] = None,
     ) -> dict[Any, np.ndarray]:
         """Returns the RAW importance per Modarres & Kaminskiy. That is RAW_i =
         (unreliability of system given i failed) /
-        (nominal system unreliability).
+        (nominal system unreliability), each unreliability a sum of
+        products (see ``_system_unreliability``).
 
         Parameters
         ----------
-        x : ArrayLike
-            Time/s as a number or iterable
+        node_probabilities : Dict
+            The probability that each node works (arrays of one length).
+        weights, node_failures : optional
+            As for ``_birnbaum_importance``.
 
         Returns
         -------
         dict[Any, float]
             Dictionary with node names as keys and RAW importances as values
         """
+        p, q, _ = self._node_pairs(node_probabilities, node_failures)
+        as_is = _averaged(self._system_unreliability(p, q), weights)
         node_importance: dict[Any, np.ndarray] = {}
-        as_is = self._system_unreliability(node_probabilities)
         for node in self.nodes:
-            node_probabilities_i = {
-                **node_probabilities,
-                **{node: np.zeros_like(node_probabilities[node])},
-            }
-            when_failed = self._system_unreliability(node_probabilities_i)
-            node_importance[node] = _averaged(
-                when_failed, weights
-            ) / _averaged(as_is, weights)
+            one, zero = np.ones_like(p[node]), np.zeros_like(p[node])
+            when_failed = self._system_unreliability(
+                {**p, node: zero}, {**q, node: one}
+            )
+            node_importance[node] = _averaged(when_failed, weights) / as_is
         return node_importance
 
     def _risk_reduction_worth(
         self,
         node_probabilities: dict[Any, ArrayLike],
         weights: Optional[np.ndarray] = None,
+        node_failures: Optional[dict[Any, ArrayLike]] = None,
     ) -> dict[Any, np.ndarray]:
         """Returns the RRW importance per Modarres & Kaminskiy. That is RRW_i =
         (nominal unreliability of system) /
-        (unreliability of system given i is working).
+        (unreliability of system given i is working), each unreliability a
+        sum of products (see ``_system_unreliability``).
 
         Parameters
         ----------
-        x : ArrayLike
-            Time/s as a number or iterable
+        node_probabilities : Dict
+            The probability that each node works (arrays of one length).
+        weights, node_failures : optional
+            As for ``_birnbaum_importance``.
 
         Returns
         -------
         dict[Any, float]
             Dictionary with node names as keys and RRW importances as values
         """
+        p, q, _ = self._node_pairs(node_probabilities, node_failures)
+        as_is = _averaged(self._system_unreliability(p, q), weights)
         node_importance: dict[Any, np.ndarray] = {}
-        as_is = self._system_unreliability(node_probabilities)
         for node in self.nodes:
-            node_probabilities_i = {
-                **node_probabilities,
-                **{node: np.ones_like(node_probabilities[node])},
-            }
-            working = self._system_unreliability(node_probabilities_i)
-            node_importance[node] = _averaged(as_is, weights) / _averaged(
-                working, weights
+            one, zero = np.ones_like(p[node]), np.zeros_like(p[node])
+            working = self._system_unreliability(
+                {**p, node: one}, {**q, node: zero}
             )
+            node_importance[node] = as_is / _averaged(working, weights)
         return node_importance
 
     def _criticality_importance(
@@ -2536,6 +2579,7 @@ class RBD:
         node_probabilities: dict[Any, ArrayLike],
         kind: str = "failure",
         weights: Optional[np.ndarray] = None,
+        node_failures: Optional[dict[Any, ArrayLike]] = None,
     ) -> dict[Any, np.ndarray]:
         """The criticality importance of every node.
 
@@ -2543,8 +2587,9 @@ class RBD:
         (Rausand & Høyland), ``I_B(i) * (1 - p_i) / (1 - P_sys)``: the
         probability that node ``i`` has failed and is critical, given that
         the system has failed, i.e. the share of system failures node ``i``
-        accounts for. It is computed from the system unreliability directly
-        (a sum of products, like the reliability), so it is not lost to
+        accounts for. It is computed from the system unreliability and the
+        Birnbaum importance directly (sums of products, like the
+        reliability; see ``_importances``), so it is not lost to
         cancellation in ``1 - P_sys`` however reliable the system is; it is
         ``nan`` where the system cannot fail.
 
@@ -2560,6 +2605,8 @@ class RBD:
             The probability that each node works (arrays of one length).
         kind : str, optional
             ``"failure"`` (the default) or ``"success"``.
+        weights, node_failures : optional
+            As for ``_birnbaum_importance``.
 
         Returns
         -------
@@ -2575,54 +2622,21 @@ class RBD:
             raise ValueError(
                 f"kind must be 'failure' or 'success', got {kind!r}."
             )
-        node_importance: dict[Any, np.ndarray] = {}
-        if kind == "success":
-            bi: dict[Any, np.ndarray] = self._birnbaum_importance(
-                node_probabilities
-            )
-            system_sf = _averaged(
-                self.system_probability(node_probabilities), weights
-            )
-            for node in self.nodes:
-                critical = _averaged(
-                    bi[node] * node_probabilities[node], weights
-                )
-                with np.errstate(divide="ignore", invalid="ignore"):
-                    node_importance[node] = np.where(
-                        system_sf > 0, critical / system_sf, np.nan
-                    )
-            return node_importance
-        # Failure-oriented: from the system unreliability itself, so that
-        # small unreliabilities keep their precision (1 - P_sys would
-        # cancel).
-        p, size = self._node_arrays(
-            {
-                node: np.asarray(node_probabilities[node], dtype=float)
-                for node in self.nodes
-            }
+        importance, works, fails, p, q = self._importances(
+            node_probabilities, node_failures
         )
-        q = {node: 1.0 - value for node, value in p.items()}
-        structure = self._decomposition()
-
-        def unreliability(node=None, failed=False):
-            # The system unreliability, with ``node`` failed or working.
-            if node is None:
-                return structure.probabilities(p, q, size, works=False)[1]
-            one, zero = np.ones_like(p[node]), np.zeros_like(p[node])
-            forced_p = {**p, node: zero if failed else one}
-            forced_q = {**q, node: one if failed else zero}
-            return structure.probabilities(
-                forced_p, forced_q, size, works=False
-            )[1]
-
-        system_ff = _averaged(unreliability(), weights)
+        # Success-oriented: critical and working, over the system working;
+        # failure-oriented: critical and failed, over the system failing
+        # (from the system unreliability itself, so that a small one keeps
+        # its precision, where 1 - P_sys would cancel).
+        system, member = (works, p) if kind == "success" else (fails, q)
+        system = _averaged(system, weights)
+        node_importance: dict[Any, np.ndarray] = {}
         for node in self.nodes:
-            failed = unreliability(node, failed=True)
-            working = unreliability(node, failed=False)
-            critical = _averaged((failed - working) * q[node], weights)
+            critical = _averaged(importance[node] * member[node], weights)
             with np.errstate(divide="ignore", invalid="ignore"):
                 node_importance[node] = np.where(
-                    system_ff > 0, critical / system_ff, np.nan
+                    system > 0, critical / system, np.nan
                 )
         return node_importance
 
@@ -2632,6 +2646,7 @@ class RBD:
         fv_type: str = "c",
         approx: bool = True,
         weights: Optional[np.ndarray] = None,
+        node_failures: Optional[dict[Any, ArrayLike]] = None,
     ) -> dict[Any, np.ndarray]:
         """Calculate Fussell-Vesely importance of all components at time/s x.
 
@@ -2647,16 +2662,23 @@ class RBD:
             "c" - cut-set
             "p" - path-set
 
+        Each set's probability is a product of its nodes' probabilities of
+        failing, and the system's probability of failing is a sum of
+        products (see ``_system_unreliability``), so a small one keeps its
+        precision.
+
         Parameters
         ----------
-        x : ArrayLike
-            Time/s as a number or iterable
+        node_probabilities : Dict
+            The probability that each node works (arrays of one length).
         fv_type : str, optional
             Dictates the method of calculation, 'c' = cut-set and
             'p' = path-set, by default "c"
         approx: bool, optional
             If True uses the sum of failure probabilities as the approximate
             solution to the (1 - PI(1 - Q)) product, by default True
+        weights, node_failures : optional
+            As for ``_birnbaum_importance``.
 
         Returns
         -------
@@ -2670,17 +2692,7 @@ class RBD:
             If ``fv_type`` is not 'c' (cut-set) or 'p' (path-set), or if the
             node probability arrays are not all the same length.
         """
-        node_probabilities_new: dict[Any, np.ndarray] = {}
-        lengths = np.array([], dtype=np.int64)
-        for k, v in node_probabilities.items():
-            node_probabilities_new[k] = np.atleast_1d(v)
-            lengths = np.append(lengths, len(node_probabilities_new[k]))
-
-        if np.any(lengths[0] != lengths[1:]):
-            raise ValueError("Probability arrays must be same length")
-        else:
-            # get shape of input array
-            array_shape = lengths[0]
+        p, q, size = self._node_pairs(node_probabilities, node_failures)
 
         # Get node-sets based on what method was requested
         if fv_type == "c":
@@ -2698,43 +2710,29 @@ class RBD:
                 fv_type={fv_type} was given."
             )
 
-        # Get system unreliability, this will be the denominator for all node
-        # importance calcs
-        system_probability_complement = np.float64(
-            1.0
-        ) - self.system_probability(node_probabilities_new)
+        # The system unreliability, the denominator for every node.
+        system_ff = _averaged(self._system_unreliability(p, q), weights)
 
-        # The return dict
         node_importance: dict[Any, np.ndarray] = {}
-
-        # For each node,
         for this_node in self.nodes:
-            # Sum up the probabilities of the node_sets containing the node
-            # from failing
-            node_fv_numerator = (
-                np.zeros(array_shape) if approx else np.ones(array_shape)
-            )
+            # The probabilities of the sets containing the node failing:
+            # their sum, or the probability that at least one does,
+            # 1 - PI(1 - Q), as -expm1(sum(log1p(-Q))) to keep a small one.
+            numerator = np.zeros(size)
             for node_set in node_sets:
-                node_set_fail_prob = np.ones(array_shape)
                 if this_node not in node_set:
                     continue
-                else:
-                    for other_node in node_set:
-                        node_set_fail_prob *= (
-                            np.ones(array_shape)
-                            - node_probabilities_new[other_node]
-                        )
+                set_fails = np.ones(size)
+                for other_node in node_set:
+                    set_fails = set_fails * q[other_node]
                 if approx:
-                    node_fv_numerator += node_set_fail_prob
+                    numerator = numerator + set_fails
                 else:
-                    node_fv_numerator *= (
-                        np.ones(array_shape) - node_set_fail_prob
-                    )
-
-            node_fv_numerator = (
-                node_fv_numerator if approx else 1 - node_fv_numerator
+                    with np.errstate(divide="ignore"):
+                        numerator = numerator + np.log1p(-set_fails)
+            if not approx:
+                numerator = -np.expm1(numerator)
+            node_importance[this_node] = (
+                _averaged(numerator, weights) / system_ff
             )
-            node_importance[this_node] = _averaged(
-                node_fv_numerator, weights
-            ) / _averaged(system_probability_complement, weights)
         return node_importance

@@ -322,17 +322,27 @@ class Decomposition:
         )
 
     def value_and_gradient(
-        self, p: Dict[Any, float], q: Dict[Any, float]
-    ) -> tuple[float, float, Dict[Any, float]]:
-        """For single probabilities ``p`` and their complements ``q``: the
+        self, p: Dict[Any, Any], q: Dict[Any, Any], shape=None
+    ) -> tuple[Any, Any, Dict[Any, Any]]:
+        """For the nodes' probabilities ``p`` and their complements ``q``
+        (single probabilities, or arrays of shape ``shape``): the
         probability that the system works, that it fails, and the
         derivative of the first with respect to each node's probability
         (its Birnbaum importance; nodes it does not depend on may be
-        missing). All three keep their full relative precision."""
+        missing). All three keep their full relative precision: through
+        the modules, the derivative is a product of the modules' own
+        derivatives, each a product or a sum of products of their members'
+        probabilities; in the core, it is taken from whichever of the
+        probabilities of working and of failing is the smaller (element by
+        element), so that it is a difference of small values, not of
+        values near 1."""
         if self.always_works:
-            return 1.0, 0.0, {}
+            if shape is None:
+                return 1.0, 0.0, {}
+            return np.ones(shape), np.zeros(shape), {}
         R, Q = self._forward(p, q)
-        adjoint = [0.0] * len(self.terms)
+        # None: a term the root does not reach.
+        adjoint: list = [None] * len(self.terms)
         if self.root is not None:
             works, fails = R[self.root], Q[self.root]
             adjoint[self.root] = 1.0
@@ -344,16 +354,21 @@ class Decomposition:
             )
             # From whichever end is accurate: a difference of two values
             # near 1 would cancel.
-            if works <= fails:
-                for c, d in d_works.items():
-                    adjoint[c] = d
+            if np.ndim(works) == 0 and np.ndim(fails) == 0:
+                if works <= fails:
+                    for c, d in d_works.items():
+                        adjoint[c] = d
+                else:
+                    for c, d in d_fails.items():
+                        adjoint[c] = -d
             else:
-                for c, d in d_fails.items():
-                    adjoint[c] = -d
-        gradient: Dict[Any, float] = {}
+                from_works = np.asarray(works) <= np.asarray(fails)
+                for c, d in d_works.items():
+                    adjoint[c] = np.where(from_works, d, -d_fails[c])
+        gradient: Dict[Any, Any] = {}
         for i in range(len(self.terms) - 1, -1, -1):
             a = adjoint[i]
-            if not a:
+            if a is None:
                 continue
             term = self.terms[i]
             kind = term[0]

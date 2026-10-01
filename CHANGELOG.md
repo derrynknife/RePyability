@@ -611,9 +611,29 @@ required.
   precision. `Hf` and `df` (so `hf`) keep it too, the mean down time and
   the downtime cost rate take the precise unavailability, and
   `NonRepairable.mean_unavailability`, a series `RepeatedNode`'s `ff` and
-  a `RegressionNode`'s `ff` are worked out directly. Ordinary values move
-  only by rounding. The risk worths, which divided by an unreliability
-  worked out in its own right already, are unchanged.
+  a `RegressionNode`'s `ff` are worked out directly (along a covariate
+  schedule, a proportional-odds model's still loses it: surpyval #528).
+  Ordinary values move only by rounding.
+- **Importance measures and failure frequencies keep their precision**
+  (#148). Birnbaum importance was `R(i works) - R(i failed)`, a difference
+  of two values near 1 in a reliable system: in a parallel pair of units
+  down 1e-12 of the time it was 2e-5 off, and below about 1e-16 it was 0.
+  So were the measures built on it and the system failure frequency
+  (`sum_i I_B(i) * omega_i`), and with it `mean_time_between_failures`,
+  `mean_up_time` and `mean_down_time`, the quantities a high-demand safety
+  function's failure rate (PFH) comes from. Birnbaum importance is now
+  every node's derivative of the system's probability of working, from one
+  pass of the decomposition: products through the modules, and in a
+  meshed core a difference of the smaller conditional probabilities. Every
+  importance measure (Birnbaum, improvement potential, criticality, the
+  risk worths and Fussell–Vesely) takes each node's probability of failing
+  from its model's `ff` (or, for a repairable component, its unavailability
+  worked out in its own right), and the planned outages at block
+  replacements are the rise in the system's unavailability. An
+  age-replaced component's failures per cycle come from its model's `ff`.
+  All keep full relative precision; ordinary values move only by
+  rounding. Birnbaum importance is also faster: one pass for every node,
+  not two system evaluations per node (30 times as fast for 300 nodes).
 - A repairable component whose reliability is a cold `StandbyModel` with a
   unit that may never fail (a surpyval model with `p < 1`) had a long-run
   availability of NaN. It is now 1, as for any component some of whose
