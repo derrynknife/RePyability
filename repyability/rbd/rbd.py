@@ -1016,6 +1016,17 @@ class RBD:
             return np.array(works, dtype=float)
         return 1 - np.asarray(fails, dtype=float)
 
+    def _system_unreliability(self, node_probabilities: Dict) -> np.ndarray:
+        """The probability that the system fails, worked out as a sum of
+        products in its own right rather than as one less the probability
+        that it works, so that a small one keeps its precision (the risk
+        worths divide by it)."""
+        arrays, size = self._node_arrays(node_probabilities)
+        _, fails = self._decomposition().probabilities(
+            arrays, shape=size, works=False, fails=True
+        )
+        return np.array(fails, dtype=float)
+
     def _node_arrays(self, node_probabilities: Dict) -> tuple[dict, int]:
         """Each intermediate node's probability as a 1-d array, and their
         common length."""
@@ -2430,13 +2441,13 @@ class RBD:
             Dictionary with node names as keys and RAW importances as values
         """
         node_importance: dict[Any, np.ndarray] = {}
-        as_is: np.ndarray = 1 - self.system_probability(node_probabilities)
+        as_is = self._system_unreliability(node_probabilities)
         for node in self.nodes:
             node_probabilities_i = {
                 **node_probabilities,
                 **{node: np.zeros_like(node_probabilities[node])},
             }
-            when_failed = 1 - self.system_probability(node_probabilities_i)
+            when_failed = self._system_unreliability(node_probabilities_i)
             node_importance[node] = _averaged(
                 when_failed, weights
             ) / _averaged(as_is, weights)
@@ -2462,13 +2473,13 @@ class RBD:
             Dictionary with node names as keys and RRW importances as values
         """
         node_importance: dict[Any, np.ndarray] = {}
-        as_is: np.ndarray = 1 - self.system_probability(node_probabilities)
+        as_is = self._system_unreliability(node_probabilities)
         for node in self.nodes:
             node_probabilities_i = {
                 **node_probabilities,
                 **{node: np.ones_like(node_probabilities[node])},
             }
-            working = 1 - self.system_probability(node_probabilities_i)
+            working = self._system_unreliability(node_probabilities_i)
             node_importance[node] = _averaged(as_is, weights) / _averaged(
                 working, weights
             )

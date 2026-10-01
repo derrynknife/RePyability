@@ -27,7 +27,9 @@ repaired one unit at a time (#91); `spares_demand` and `spares_stock` count
 the spares each component uses and the stock to hold for a lead time (#95);
 a component can be replaced on condition at periodic inspections (#96);
 phased missions are new, exact and simulated (#100, #101), and so is
-demonstration test planning (#129).
+demonstration test planning (#129). An option decides meshed diagrams with
+a binary decision diagram, in milliseconds where the path sets took
+minutes (#102).
 
 Behaviour changes: seeded repairable simulations give different numbers,
 once, as each random quantity now has a stream of its own (#119);
@@ -265,6 +267,29 @@ surpyval 0.21 is required.
   in (repeated nodes, nested RBDs, fixed probabilities and a phase of no
   duration among them), and the simulation.
   A new guide page, Phased missions, covers it.
+- **A decision diagram for meshed diagrams** (#102), an option for now:
+  `repyability.rbd.modular.CORE_METHOD = "bdd"` before building an RBD
+  decides the part the reduction to modules leaves (the core) with a
+  binary decision diagram built from its graph (`bdd.py`), instead of the
+  Shannon decomposition of its minimal path sets. The core's vertices are
+  decided in a topological order chosen to keep the frontier narrow (the
+  better of a greedy and a breadth-first order), and each state (the
+  frontier's reached vertices, and any repeated component decided for a
+  later appearance) is solved once; a component drawn in several places is
+  decided where it first appears, so the diagram is ordered and, reduced,
+  canonical. Its size grows with the mesh's width rather than its number of
+  paths: six bridges in series take 0.06 seconds against 9, fifty bridges
+  or a 10 × 10 grid, which the path sets do not finish, a fraction of a
+  second, and a long mesh no longer reaches Python's recursion limit. The
+  diagram has the plan's format, so the probabilities, their complements,
+  the gradients and the cut sets replay it unchanged; the structure
+  function walks it, the simulated lifetimes come from it, and the path
+  sets are found from it only when asked for. Checked against the path-set
+  route on 400 random diagrams with k-out-of-n nodes and repeated
+  components (path and cut sets, relevant nodes, probabilities, gradients,
+  structure function, lifetimes), through the public methods, against the
+  closed form of forty bridges in series, and by the whole test suite run
+  with it on.
 - **Demonstration test planning** (#129): how many units, or how long a
   test, demonstrates a reliability at a confidence level, and what a
   finished test demonstrated. `demonstration_sample_size` (the success run,
@@ -410,6 +435,13 @@ surpyval 0.21 is required.
 
 ### Fixed
 
+- **Risk achievement and reduction worth keep their precision** when the
+  system's unreliability is small: they divide unreliabilities, which were
+  computed as one less a reliability close to 1, losing digits (for a
+  system failing with probability 1e-12 given a component works, all but
+  four). They are now worked out as failure probabilities in their own
+  right, to full precision; values move slightly, most for very reliable
+  systems.
 - A repairable component whose reliability is a cold `StandbyModel` with a
   unit that may never fail (a surpyval model with `p < 1`) had a long-run
   availability of NaN. It is now 1, as for any component some of whose

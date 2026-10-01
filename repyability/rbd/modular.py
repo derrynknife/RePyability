@@ -62,6 +62,7 @@ from typing import (
 
 import numpy as np
 
+from repyability.rbd import bdd
 from repyability.rbd.min_path_sets import min_path_sets as find_min_path_sets
 from repyability.rbd.rbd_graph import RBDGraph
 from repyability.rbd.shannon import (
@@ -82,6 +83,13 @@ NO_PATHS = "RBD has no paths through! Need to re-evaluate the KooN nodes."
 # The compiled structure function writes out the core's path (or cut) sets
 # when they hold at most this many nodes in all, and loops over them if not.
 _WRITTEN_OUT = 5000
+
+#: How the core is decided (#102): ``"paths"`` (the default), by the
+#: Shannon decomposition of its minimal path sets, or ``"bdd"``, by a
+#: binary decision diagram built from its graph without listing them (see
+#: ``bdd.py``), much smaller for a meshed core. An option for now: it is
+#: read when a diagram is decomposed (on construction).
+CORE_METHOD = "paths"
 
 
 class FlowGraph:
@@ -166,18 +174,35 @@ class Decomposition:
         root: Optional[int] = None,
         core: Optional[Iterable[Iterable[int]]] = None,
         flow: Optional[FlowGraph] = None,
+        plan: Optional[tuple] = None,
     ):
         self.terms = list(terms)
         self.root = root
-        self.core: Optional[List[tuple]] = (
+        self._core: Optional[List[tuple]] = (
             None if core is None else [tuple(ps) for ps in core]
         )
-        self.always_works = root is None and core is None
+        self.always_works = root is None and core is None and plan is None
         self.nodes = frozenset(t[1] for t in self.terms if t[0] == NODE)
         self.flow = flow
-        self._core_plan: Optional[tuple] = None
+        # A core given as a decision diagram built from its graph (see
+        # bdd.py) rather than by its path sets, which are then found from
+        # it only when asked for.
+        self.from_graph = plan is not None
+        self._core_plan: Optional[tuple] = plan
         self._core_cut_sets: Optional[List[tuple]] = None
         self._functions: Dict[str, Callable] = {}
+
+    @property
+    def core(self) -> Optional[List[tuple]]:
+        """The core's minimal path sets, over term positions (None without
+        a core); for a core decided from its graph, found from its decision
+        diagram on first use."""
+        if self._core is None and self.from_graph:
+            assert self._core_plan is not None
+            self._core = sorted(
+                tuple(sorted(s)) for s in bdd.path_sets(self._core_plan)
+            )
+        return self._core
 
     def __getstate__(self) -> dict:
         # The compiled structure functions cannot be pickled; they are
@@ -391,6 +416,20 @@ class Decomposition:
             result = "True"
         elif self.root is not None:
             result = value[self.root]
+        elif self.from_graph:
+            # One decision per variable on the way from the root.
+            steps, root = self.core_plan()
+            used = sorted({pivot for pivot, _, _ in steps})
+            index = {c: j for j, c in enumerate(used)}
+            namespace["walk"] = bdd.walk
+            namespace["plan"] = (
+                [(index[p], a, i) for p, a, i in steps],
+                root,
+            )
+            lines.append(
+                "v = (" + "".join(value[c] + ", " for c in used) + ")"
+            )
+            result = "walk(plan, v)"
         else:
             sets = self.core if method == "p" else self.core_cut_sets()
             inner, outer = (
@@ -446,6 +485,8 @@ class Decomposition:
                 values[i] = np.sort(members, axis=0)[len(members) - term[2]]
         if self.root is not None:
             return np.asarray(values[self.root], dtype=float)
+        if self.from_graph:
+            return bdd.lifetime(self.core_plan(), values, size)
         out = np.full(size, -np.inf)
         for path_set in self.core or []:
             path_life = np.full(size, np.inf)
@@ -859,6 +900,7 @@ def decompose(
     output_node,
     reduce: bool = True,
     aliases: Optional[Dict[Hashable, Hashable]] = None,
+    core: Optional[str] = None,
 ) -> Decomposition:
     """The modular decomposition of the RBD diagram ``graph``.
 
@@ -866,6 +908,9 @@ def decompose(
     diagram, with the minimal path sets found by the memoised search (for
     structures that are not valid RBDs, whose semantics are those of that
     search).
+
+    ``core`` is how what the reduction leaves is decided: ``"paths"`` or
+    ``"bdd"`` (see ``CORE_METHOD``, the default).
 
     ``aliases`` maps each node that stands for a component drawn in more
     than one place (a repeated node) to that component. Every appearance
@@ -875,8 +920,12 @@ def decompose(
     Raises
     ------
     ValueError
-        If no set of working nodes can reach the output node.
+        If no set of working nodes can reach the output node, or ``core``
+        is unknown.
     """
+    method = CORE_METHOD if core is None else core
+    if method not in ("paths", "bdd"):
+        raise ValueError(f"core must be 'paths' or 'bdd', got {method!r}.")
     if not reduce:
         terms = [(NODE, n) for n in graph.nodes]
         position = {n: i for i, (_, n) in enumerate(terms)}
@@ -910,11 +959,55 @@ def decompose(
             terms[v] = (NODE, aliases.get(terms[v][1], terms[v][1]))
         tree, position = _tree(terms, [v])
         return Decomposition(tree, root=position[v], flow=flow)
-    path_sets = find_min_path_sets(
-        rbd_graph=reduction.core_graph(), curr_node=_SINK, solns={}
-    )
-    decomposition = _from_path_sets(
-        reduction.terms, path_sets, (_SOURCE, _SINK), aliases
-    )
+    if method == "bdd":
+        decomposition = _from_graph(reduction, aliases)
+    else:
+        path_sets = find_min_path_sets(
+            rbd_graph=reduction.core_graph(), curr_node=_SINK, solns={}
+        )
+        decomposition = _from_path_sets(
+            reduction.terms, path_sets, (_SOURCE, _SINK), aliases
+        )
     decomposition.flow = flow
     return decomposition
+
+
+def _from_graph(
+    reduction: "_Reduction", aliases: Dict[Hashable, Hashable]
+) -> Decomposition:
+    """The decomposition whose core is the binary decision diagram of what
+    ``reduction`` leaves, built from its graph (see ``bdd.py``). Every
+    appearance of a component drawn in several places stands for one
+    variable, named after the component, as in ``_from_path_sets``."""
+    terms = list(reduction.terms)
+    alive = sorted(reduction.alive)
+    canonical: Dict[Hashable, int] = {}
+    variable: Dict[int, int] = {}
+    for v in alive:
+        if terms[v][0] != NODE:
+            variable[v] = v
+            continue
+        node = terms[v][1]
+        component = aliases.get(node, node)
+        if component not in canonical:
+            canonical[component] = v
+            terms[v] = (NODE, component)
+        variable[v] = canonical[component]
+    sequence = bdd.order(alive, reduction.pred, reduction.succ, _SOURCE, _SINK)
+    steps, root = bdd.build(
+        sequence,
+        reduction.pred,
+        reduction.succ,
+        reduction.k,
+        _SOURCE,
+        _SINK,
+        variable,
+    )
+    if root == bdd.FAIL:
+        raise ValueError(NO_PATHS)
+    if root == bdd.WORK:
+        return Decomposition([])
+    tree, position = _tree(terms, sorted({p for p, _, _ in steps}))
+    return Decomposition(
+        tree, plan=([(position[p], a, i) for p, a, i in steps], root)
+    )
