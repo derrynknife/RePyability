@@ -235,6 +235,14 @@ def _serialise_component(value) -> dict:
         if value.get("group") is not None:
             # A maintenance group's name, as a node's is.
             out["group"] = value["group"]
+        if value.get("repair") is not None:
+            # Imperfect repair: the model's name and its restoration factor.
+            out["repair"] = {
+                "model": value["repair"]["model"],
+                "q": float(value["repair"]["q"]),
+            }
+        if value.get("replace_after") is not None:
+            out["replace_after"] = int(value["replace_after"])
         for key in ("preventive", "inspection"):
             if value.get(key) is not None:
                 out[key] = _serialise_schedule(value[key])
@@ -307,6 +315,10 @@ def _deserialise_component(d: dict) -> Any:
             out["priority"] = d["priority"]
         if "group" in d:
             out["group"] = _node_name(d["group"])
+        if "repair" in d:
+            out["repair"] = dict(d["repair"])
+        if "replace_after" in d:
+            out["replace_after"] = d["replace_after"]
         for key in ("preventive", "inspection"):
             if key in d:
                 out[key] = _deserialise_schedule(d[key])

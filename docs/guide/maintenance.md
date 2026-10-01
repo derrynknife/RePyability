@@ -14,8 +14,10 @@ ends of how effective a repair is:
 - [`Repairable`][repyability.Repairable]: failures are **repaired** in a way
   that restores the unit only partly (imperfect repair) or not at all
   (minimal repair, "as bad as old"), and the unit is periodically
-  **overhauled or replaced** to as good as new. A repaired unit does not
-  renew, so a `Repairable` is a standalone tool, not an RBD node.
+  **overhauled or replaced** to as good as new. A `Repairable` is a
+  standalone tool, not an RBD node; in a `RepairableRBD` a component's
+  `"repair"` simulates the same imperfect repair (see [Repairable
+  systems](repairable.md#imperfect-repair)).
 
 Fitting the lifetime or recurrence models is surpyval's job; these classes
 take fitted models. Theory: [Concepts](../concepts.md#maintenance-models).

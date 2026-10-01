@@ -161,6 +161,21 @@ def repairable_rbds():
                 | {"c": unit()},
                 maintenance_groups={"train": {"setup_cost": 50.0}},
             ),
+            "imperfect repair": system(
+                unit(
+                    repair={"model": "kijima1", "q": 0.5},
+                    repair_cost=1.0,
+                    replace_cost=10.0,
+                )
+            ),
+            "imperfect repair, replaced and maintained": system(
+                unit(
+                    repair={"model": "kijima2", "q": 0.8},
+                    replace_after=3,
+                    preventive={"interval": 300.0},
+                    replace_cost=10.0,
+                )
+            ),
             "tested, constant rate": system(
                 {
                     "reliability": E([0.002]),

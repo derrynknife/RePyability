@@ -70,6 +70,8 @@ def unsupported(rbd, plan: _streams.Plan, capacity) -> Optional[str]:
         return "standby groups"
     if rbd._maintenance:
         return "maintenance groups"
+    if rbd._imperfect:
+        return "imperfect repair"
     if rbd._preventive:
         return "scheduled preventive maintenance"
     if rbd._inspection:

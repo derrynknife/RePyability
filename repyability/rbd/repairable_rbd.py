@@ -181,14 +181,142 @@ class _StreamedComponent:
         return self._repair.draw(), True
 
 
-def _stand_in(component, run, made: dict, path: tuple, duration=None):
+def _aged_life(model, age: float, u: float) -> float:
+    """The life left to a unit of lifetime ``model`` at virtual age
+    ``age``, from the uniform ``u``: the ``x`` with ``H(age + x) = H(age) -
+    log(u)`` (``H`` the cumulative hazard), as surpyval's virtual-age
+    renewal models draw it (``conditional_gaps``). A plain Exponential or
+    Weibull is worked in closed form, any other model by surpyval."""
+    dist = getattr(model, "dist", None)
+    name = getattr(dist, "name", None)
+    if (
+        name in ("Exponential", "Weibull")
+        and getattr(model, "p", None) == 1
+        and getattr(model, "f0", None) == 0
+        and not getattr(model, "gamma", 0)
+    ):
+        exposure = 0.0 - math.log(u) if u > 0.0 else math.inf
+        if name == "Exponential":
+            return exposure / float(model.params[0])
+        alpha, beta = (float(p) for p in model.params)
+        hazard = (age / alpha) ** beta if age > 0.0 else 0.0
+        if hazard == 0.0:
+            # As new (or too young for its hazard to register).
+            return max(alpha * exposure ** (1.0 / beta) - age, 0.0)
+        # alpha * (H(age) + exposure) ** (1 / beta) - age, without the
+        # cancellation.
+        return age * math.expm1(math.log1p(exposure / hazard) / beta)
+    from surpyval.recurrent.renewal.renewal_model import conditional_gaps
+
+    return float(conditional_gaps(model, np.array([age]), np.array([u]))[0])
+
+
+class _ImperfectComponent(_StreamedComponent):
+    """Stands in for a component repaired imperfectly (a spec's
+    ``"repair"``; see ``RepairableRBD``) during a simulation, keeping the
+    unit's virtual age (Kijima): a repair after an operating time ``x``
+    takes it from ``v`` to ``v + q * x`` (Kijima I) or ``q * (v + x)``
+    (Kijima II), and its next life is drawn given it (``_aged_life``),
+    from a stream of its own. A unit as new draws from its life stream, as
+    any component does. At the ``replace_after``-th failure since it was
+    renewed it is replaced instead, as new, and a scheduled replacement
+    renews it too (``reset``). ``operated`` is its operating time since it
+    was renewed, which age replacement counts. Without streams, it draws
+    from its models and numpy's global RNG."""
+
+    __slots__ = (
+        "_unit",
+        "_aged",
+        "_q",
+        "_second",
+        "_limit",
+        "_x",
+        "age",
+        "operated",
+        "count",
+    )
+
+    def __init__(
+        self,
+        unit,
+        imperfect: "_Imperfect",
+        failure=None,
+        repair=None,
+        aged=None,
+        duration=None,
+        model=None,
+    ):
+        super().__init__(failure, repair, duration, model)
+        self._unit = unit
+        self._aged = aged
+        self._q = imperfect.q
+        self._second = imperfect.kijima == "kijima2"
+        self._limit = imperfect.replace_after
+        self._x = 0.0
+        self.age = self.operated = 0.0
+        self.count = 0
+
+    def reset(self):
+        self._fails_next = True
+        self.age = self.operated = 0.0
+        self.count = 0
+
+    @property
+    def replacing(self) -> bool:
+        """Whether the unit's failure (the last drawn) is the
+        ``replace_after``-th since it was renewed, which replaces it."""
+        return self._limit is not None and self.count + 1 >= self._limit
+
+    def next_event(self):
+        if self._fails_next:
+            self._fails_next = False
+            if self.age > 0.0:
+                u = (
+                    self._aged.draw()
+                    if self._aged is not None
+                    else float(np.random.random())
+                )
+                x = _aged_life(self._unit.reliability, self.age, u)
+            elif self._failure is not None:
+                x = self._failure.draw()
+            else:
+                x = self._unit.reliability.random(1).item()
+            self._x = x
+            return x, False
+        self._fails_next = True
+        if self.replacing:
+            self.age = self.operated = 0.0
+            self.count = 0
+        else:
+            x = self._x
+            self.count += 1
+            self.operated += x
+            self.age = (
+                self._q * (self.age + x)
+                if self._second
+                else self.age + self._q * x
+            )
+        if self._repair is not None:
+            return self._repair.draw(), True
+        return self._unit.time_to_replace.random(1).item(), True
+
+
+def _stand_in(
+    component,
+    run,
+    made: dict,
+    path: tuple,
+    duration=None,
+    imperfect: Optional["_Imperfect"] = None,
+):
     """What a component draws its events from during ``availability()``
     (see ``RepairableRBD._streamed_components``): a stand-in taking its
     draws from its own streams, or the component itself when they cannot be
     streamed (a model other than a surpyval parametric one, or a subclass,
     which may draw its events its own way), which then draws from numpy's
     global RNG. ``path`` is the node's place, nested RBDs included, which
-    names its streams; ``duration`` its maintenance or test time model."""
+    names its streams; ``duration`` its maintenance or test time model, and
+    ``imperfect`` its imperfect repair (see ``_ImperfectComponent``)."""
     if type(component) is RepairableRBD:
         return _StreamedRBD(
             component, component._streamed_components(run, made, path)
@@ -197,6 +325,18 @@ def _stand_in(component, run, made: dict, path: tuple, duration=None):
         return component
     failure = run.stream(path, _streams.FAILURE)
     repair = run.stream(path, _streams.REPAIR)
+    if imperfect is not None:
+        if failure is None or repair is None:
+            return _ImperfectComponent(component, imperfect, model=duration)
+        return _ImperfectComponent(
+            component,
+            imperfect,
+            failure,
+            repair,
+            run.stream(path, _streams.AGED),
+            run.stream(path, _streams.DURATION),
+            duration,
+        )
     if failure is None or repair is None:
         return component
     return _StreamedComponent(
@@ -532,6 +672,8 @@ _CATEGORIES = (
     "system_downtime",
     "setup",
 )
+# The category of a repair's own cost (all an imperfect repair is charged).
+_REPAIR = _CATEGORIES.index("repair")
 
 
 class _Replication:
@@ -1103,6 +1245,17 @@ class _Preventive(NamedTuple):
         # there).
         due = float(np.floor(renewed / self.interval) + 1.0) * self.interval
         return due if due > renewed else due + self.interval
+
+
+class _Imperfect(NamedTuple):
+    """A component's imperfect repair (#109): ``kijima`` (``"kijima1"`` or
+    ``"kijima2"``) and its restoration factor ``q`` (0 renews, 1 is minimal
+    repair), and the failure at which it is replaced instead, counting
+    from its last renewal (None for never)."""
+
+    kijima: str
+    q: float
+    replace_after: Optional[int]
 
 
 class _MaintenanceGroup(NamedTuple):
@@ -2091,6 +2244,23 @@ class RepairableRBD(RBD):
           ``repair_crews``): a number, higher first, by default 0.
           ``"group"`` names the component's maintenance group (see
           ``maintenance_groups``), any hashable value.
+          ``"repair"`` makes its repairs imperfect, by Kijima's
+          virtual-age models: a dict of a ``"model"``, ``"kijima1"`` or
+          ``"kijima2"``, and a restoration factor ``"q"`` in [0, 1]. A
+          repair after the unit has operated ``x`` since the last takes
+          its virtual age from ``v`` to ``v + q * x`` (Kijima I) or
+          ``q * (v + x)`` (Kijima II), and each life is drawn given it:
+          ``H(v + X) = H(v) + E``, ``E`` exponential, ``H`` the cumulative
+          hazard. ``q = 0`` renews the unit at every repair (the default)
+          and ``q = 1`` is minimal repair. ``"replace_after"``, a whole
+          number ``N`` (with a ``"repair"`` of ``q`` above 0), replaces the
+          unit, as new, at the ``N``-th failure since it was renewed. A
+          repair is then charged only its ``"repair_cost"``; a replacement
+          its ``"repair_cost"`` and ``"replace_cost"``, and it uses a spare.
+          A preventive replacement renews the unit, and age replacement
+          counts its operating time since it was renewed. The exact
+          methods refuse such a component; the simulations follow it, in
+          Python.
           ``"standby"`` makes the node a standby group of identical units,
           each failing and repaired as ``"reliability"`` and
           ``"repairability"`` say: a dict of ``"units"`` (by default 2),
@@ -2241,6 +2411,9 @@ class RepairableRBD(RBD):
     GROUP_KEYS : tuple[str, ...]
         The keys of a maintenance group's options: ``"setup_cost"`` and
         ``"system_down"``.
+    REPAIR_MODELS : tuple[str, ...]
+        The imperfect repair models a ``"repair"`` can name:
+        ``"kijima1"`` and ``"kijima2"``.
     INSPECTION_KEYS : tuple[str, ...]
         The keys of an ``"inspection"`` spec: ``"interval"``, ``"duration"``
         and ``"cost"``.
@@ -2279,7 +2452,12 @@ class RepairableRBD(RBD):
         component in no group, or a group's member has hidden failures or
         is a standby group, or ``maintenance_groups`` names a group no
         component is in, or has options other than a non-negative
-        ``"setup_cost"`` and a boolean ``"system_down"``.
+        ``"setup_cost"`` and a boolean ``"system_down"``; or if a
+        ``"repair"`` is not a dict of a known ``"model"`` and a ``"q"`` in
+        [0, 1], a ``"replace_after"`` is not a whole number of at least 1
+        given with a ``q`` above 0, or an imperfectly repaired component
+        is a standby group, is replaced on condition, or has a lifetime
+        model with no ``Hf`` and ``qf``.
     TypeError
         If a component is not a spec dict, a ``NonRepairable`` or a
         ``RepairableRBD`` (a ``Repairable``, which models imperfect repair,
@@ -2364,8 +2542,12 @@ class RepairableRBD(RBD):
             "priority",
             "standby",
             "group",
+            "repair",
+            "replace_after",
         )
     )
+    #: The models of imperfect repair a spec's ``"repair"`` can name.
+    REPAIR_MODELS = ("kijima1", "kijima2")
     #: The keys of a component's ``"preventive"`` spec.
     PREVENTIVE_KEYS = (
         "interval",
@@ -2441,6 +2623,8 @@ class RepairableRBD(RBD):
         self.acquisition_costs: dict[Any, float] = {}
         # Each component's maintenance group, by node (see _maintenance).
         self._member_group: dict[Any, Hashable] = {}
+        # Components repaired imperfectly, by node (see _ImperfectComponent).
+        self._imperfect: dict[Any, _Imperfect] = {}
         components = copy(components)
         reliability = {}
         repairability = {}
@@ -2490,6 +2674,9 @@ class RepairableRBD(RBD):
                     )
                 if component.get("group") is not None:
                     self._member_group[name] = component["group"]
+                imperfect = self._validate_imperfect(name, component)
+                if imperfect is not None:
+                    self._imperfect[name] = imperfect
                 if component.get("acquisition_cost") is not None:
                     acquisition = self._validate_cost(
                         name, "acquisition_cost", component["acquisition_cost"]
@@ -2571,6 +2758,80 @@ class RepairableRBD(RBD):
         self.components = components
         self.repairability = copy(repairability)
         self._maintenance = self._validate_groups(maintenance_groups)
+
+    def _validate_imperfect(self, node, spec: dict) -> Optional[_Imperfect]:
+        """A component spec's imperfect repair (``"repair"`` and
+        ``"replace_after"``), validated; None if it is renewed by every
+        repair, as by default (a restoration factor of 0)."""
+        repair, limit = spec.get("repair"), spec.get("replace_after")
+        if repair is None and limit is None:
+            return None
+        q, model = 0.0, ""
+        if repair is not None:
+            if (
+                not isinstance(repair, dict)
+                or set(repair) != {"model", "q"}
+                or repair["model"] not in self.REPAIR_MODELS
+            ):
+                raise ValueError(
+                    f"Component {node!r}: repair must be a dict of a "
+                    f"'model' ({' or '.join(map(repr, self.REPAIR_MODELS))}) "
+                    f"and its restoration factor 'q', got {repair!r}."
+                )
+            q = repair["q"]
+            if (
+                isinstance(q, bool)
+                or not isinstance(q, (int, float, np.number))
+                or not 0.0 <= float(q) <= 1.0
+            ):
+                raise ValueError(
+                    f"Component {node!r}: the restoration factor q must be "
+                    "a number in [0, 1] (0 renews the unit, 1 is minimal "
+                    f"repair), got {q!r}."
+                )
+            q, model = float(q), repair["model"]
+        if limit is not None:
+            if (
+                isinstance(limit, bool)
+                or not isinstance(limit, (int, np.integer))
+                or limit < 1
+            ):
+                raise ValueError(
+                    f"Component {node!r}: replace_after must be a whole "
+                    f"number of failures of at least 1, got {limit!r}."
+                )
+            if q == 0.0:
+                raise ValueError(
+                    f"Component {node!r}: replace_after needs imperfect "
+                    "repair (a 'repair' with q above 0): renewed by every "
+                    "repair, the unit is as new after each failure anyway."
+                )
+            limit = int(limit)
+        if q == 0.0:
+            return None
+        if spec.get("standby") is not None:
+            raise ValueError(
+                f"Component {node!r} is a standby group, whose units are "
+                "renewed by their repairs, so it cannot be repaired "
+                "imperfectly."
+            )
+        preventive = spec.get("preventive")
+        if isinstance(preventive, dict) and preventive.get("policy") == (
+            "condition"
+        ):
+            raise ValueError(
+                f"Component {node!r} is replaced on condition, judged by its "
+                "age as new, so it cannot be repaired imperfectly."
+            )
+        life = spec["reliability"]
+        if not (hasattr(life, "Hf") and hasattr(life, "qf")):
+            raise ValueError(
+                f"Component {node!r}: an imperfectly repaired unit's lives "
+                "are drawn given its virtual age, which needs a lifetime "
+                "model with a cumulative hazard (Hf) and quantiles (qf), "
+                "such as a surpyval distribution."
+            )
+        return _Imperfect(model, q, limit)
 
     def _validate_groups(
         self, options: Optional[dict]
@@ -3024,6 +3285,9 @@ class RepairableRBD(RBD):
             expected = self._expected_draws(name, t_simulation)
             add(path, _streams.FAILURE, failure, expected["failure"])
             add(path, _streams.REPAIR, repair, expected["repair"])
+            if name in self._imperfect:
+                # A life after each repair, given the unit's virtual age.
+                add(path, _streams.AGED, _uniforms, expected["repair"])
             duration = self._duration_model(name)
             if duration is not None:
                 sampler = inverse_sampler(duration)
@@ -3159,6 +3423,7 @@ class RepairableRBD(RBD):
                         made,
                         prefix + (name,),
                         self._duration_model(name),
+                        self._imperfect.get(name),
                     )
                     if arrangement is None
                     else _standby_draws(
@@ -3617,6 +3882,12 @@ class RepairableRBD(RBD):
                 f"Component {node!r} is renewed early at the stops of its "
                 f"maintenance group, which depend on the other members: "
                 f"{simulate}"
+            )
+        if node in self._imperfect:
+            raise NotImplementedError(
+                f"Component {node!r} is repaired imperfectly "
+                f"({self._imperfect_phrase(node)}), so its replacements are "
+                f"not a renewal process of lives as new: {simulate}"
             )
         component = self.components[node]
         life, repair = component.reliability, component.time_to_replace
@@ -5371,10 +5642,15 @@ class RepairableRBD(RBD):
         """
         working_nodes = set() if working_nodes is None else set(working_nodes)
         broken_nodes = set() if broken_nodes is None else set(broken_nodes)
-        # What the components draw their events from: themselves, or
-        # stand-ins drawing from their own streams (see
-        # _streamed_components).
-        sources = self.components if sources is None else sources
+        # What the components draw their events from: themselves (an
+        # imperfectly repaired one through a stand-in keeping its virtual
+        # age, kept for next_event), or stand-ins drawing from their own
+        # streams (see _streamed_components), which the caller passes to
+        # next_event too.
+        if sources is None:
+            sources = self._step_sources = self._own_sources()
+        else:
+            self.__dict__.pop("_step_sources", None)
         # The window's end, which the first events already look to (see
         # _replaced_at).
         self.t_simulation = t_simulation
@@ -5848,6 +6124,9 @@ class RepairableRBD(RBD):
                 inner.route,
                 f"a nested RBD's long-run values, {inner.route}",
             )
+        message = r.refusal(partial(self._require_perfect_repair, node))
+        if message:
+            return r.REFUSED, message
         if node in self._standby:
             message = r.refusal(partial(self._standby_rates, node))
             if message:
@@ -5956,6 +6235,8 @@ class RepairableRBD(RBD):
         message = r.refusal(partial(self._require_time_models, node))
         if not message:
             message = r.refusal(partial(self._require_no_condition, node))
+        if not message:
+            message = r.refusal(partial(self._require_perfect_repair, node))
         if not message:
             message = r.refusal(partial(self._require_no_opportunities, node))
         if not message and node in self._inspection:
@@ -6460,6 +6741,7 @@ class RepairableRBD(RBD):
         self._require_time_models(node)
         self._require_no_condition(node)
         self._require_no_opportunities(node)
+        self._require_perfect_repair(node)
         component = self.components[node]
         schedule = self._preventive.get(node)
         if schedule is not None and schedule.policy == "block":
@@ -6869,6 +7151,11 @@ class RepairableRBD(RBD):
                     "it has no place for inspections, which component "
                     f"{node!r} has"
                 )
+            if node in self._imperfect:
+                self._no_crew_chain(
+                    "it has no place for imperfect repair, which component "
+                    f"{node!r} has"
+                )
             life = _constant_rate(component.reliability)
             if life is None:
                 self._no_crew_chain(
@@ -7027,7 +7314,10 @@ class RepairableRBD(RBD):
                 self._replaced_at(node, t, failure, schedule),
             )
             return self._condition_next(node, t, schedule)
-        due = schedule.due(t)
+        # Back from an imperfect repair, the unit is as old as its operating
+        # time since it was renewed, which age replacement counts.
+        start = t - source.operated if node in self._imperfect else t
+        due = schedule.due(start if schedule.policy == "age" else t)
         if t + life <= due:
             event = Event(t + life, node, False)
         else:
@@ -7036,9 +7326,25 @@ class RepairableRBD(RBD):
             event = Event(due, node, schedule.duration is None, True)
         if node in self._early_members:
             # Kept, should a stop of its group renew it early (see _stop).
-            self._renewed_at[node] = t
+            self._renewed_at[node] = start
             self._pending_event[node] = event
         return event
+
+    def _own_sources(self) -> dict:
+        """What the components draw their events from when no streams are
+        given: themselves, but for an imperfectly repaired one, a stand-in
+        keeping its virtual age (see ``_ImperfectComponent``), drawing from
+        its models and numpy's global RNG."""
+        if not self._imperfect:
+            return self.components
+        sources = dict(self.components)
+        for node, imperfect in self._imperfect.items():
+            sources[node] = _ImperfectComponent(
+                self.components[node],
+                imperfect,
+                model=self._duration_model(node),
+            )
+        return sources
 
     def _stop(self, group, t: float, trigger=None) -> List[Event]:
         """A stop of maintenance ``group`` at ``t``, opened by ``trigger``
@@ -7239,7 +7545,8 @@ class RepairableRBD(RBD):
             raise ValueError("Need to initialize the event queue")
         # The components' draws come from the same sources the queue was
         # initialised with (see initialize_event_queue).
-        sources = self.components if sources is None else sources
+        if sources is None:
+            sources = getattr(self, "_step_sources", self.components)
         new_system_state = copy(self.system_state)
 
         # Use a while loop to find the next time/event at which the system
@@ -7920,6 +8227,7 @@ class RepairableRBD(RBD):
                 "_renewing",
                 "_crews",
                 "_groups",
+                "_step_sources",
             ):
                 self.__dict__.pop(name, None)
         return tally
@@ -7985,6 +8293,9 @@ class RepairableRBD(RBD):
         restored, caused_up = [0] * n, [0] * n
         # Each component's replacements: the spares it used.
         replaced = [0] * n
+        # Imperfect repair (#109): a failure repaired, not replaced, uses no
+        # spare and is charged only its repair.
+        imperfect = self._imperfect
         # Opportunistic maintenance (#108): each member's early renewals.
         maintenance, member_group = self._maintenance, self._member_group
         cancelled, early = self._cancelled, self._early
@@ -8021,6 +8332,20 @@ class RepairableRBD(RBD):
         # When each group last stopped: the work started at one instant is
         # one stop, with one set-up.
         stopped: Dict[Hashable, float] = {}
+
+        def corrective(node, c: int) -> float:
+            """Charge a failure's corrective action, and count the spare a
+            replacement uses: an imperfect repair (see _ImperfectComponent)
+            uses none, and is charged only as a repair."""
+            charge = 0.0
+            renewed = not imperfect or node not in imperfect
+            renewed = renewed or sources[node].replacing
+            if renewed:
+                replaced[c] += 1
+            for category, charges in failure_charges.get(node, ()):
+                if renewed or category == _REPAIR:
+                    charge += pay(node, category, charges)
+            return charge
 
         def stop(group, t: float, trigger=None) -> float:
             """Open a stop of maintenance ``group`` (see ``_stop``): queue
@@ -8083,9 +8408,7 @@ class RepairableRBD(RBD):
                 else:
                     rep_cost += pay(node, 3, inspection_charges.get(node))
                     if not event.status:
-                        replaced[index[node]] += 1
-                        for category, charges in failure_charges.get(node, ()):
-                            rep_cost += pay(node, category, charges)
+                        rep_cost += corrective(node, index[node])
                 follow = self._follow_up(event, sources[node])
                 next_event: Optional[Event] = (
                     follow
@@ -8135,9 +8458,12 @@ class RepairableRBD(RBD):
                 # the failure that triggers it (for a hidden failure, when an
                 # inspection finds it; for a standby group, at each unit's).
                 if node not in inspected and not grouped:
-                    replaced[c] += 1
-                    for category, charges in failure_charges.get(node, ()):
-                        rep_cost += pay(node, category, charges)
+                    if imperfect and node in imperfect:
+                        rep_cost += corrective(node, c)
+                    else:
+                        replaced[c] += 1
+                        for category, charges in failure_charges.get(node, ()):
+                            rep_cost += pay(node, category, charges)
                 if node in member_group:
                     rep_cost += stop(member_group[node], t, node)
 
@@ -8620,6 +8946,7 @@ class RepairableRBD(RBD):
         with limited repair crews, its long-run probability of being up in
         their Markov chain, or a nested RBD's own, as it has crews of its
         own."""
+        self._require_perfect_repair(node)
         if self._crews_couple():
             chain = self._crew_chain()
             if node in chain.nodes:
@@ -8703,6 +9030,31 @@ class RepairableRBD(RBD):
                 "next), so its long-run values and its availability over "
                 "time have no exact value here. Estimate them by simulation, "
                 "with availability() or cost()."
+            )
+
+    def _imperfect_phrase(self, node) -> str:
+        """How a component is repaired imperfectly, in words."""
+        imperfect = self._imperfect[node]
+        kind = "I" if imperfect.kijima == "kijima1" else "II"
+        phrase = f"Kijima {kind}, q = {imperfect.q:g}"
+        if imperfect.replace_after is not None:
+            phrase += (
+                f", replaced at failure {imperfect.replace_after} since it "
+                "was renewed"
+            )
+        return phrase
+
+    def _require_perfect_repair(self, node) -> None:
+        """Raise if a component is repaired imperfectly (a spec's
+        ``"repair"``): a repair does not renew it, so its long-run values
+        and its availability over time are known only by simulation."""
+        if node in self._imperfect:
+            raise NotImplementedError(
+                f"Component {node!r} is repaired imperfectly "
+                f"({self._imperfect_phrase(node)}), so a repair does not "
+                "renew it: its long-run values and its availability over "
+                "time have no exact value here. Estimate them by "
+                "simulation, with availability() or cost()."
             )
 
     def _require_no_opportunities(self, node) -> None:
@@ -9108,6 +9460,7 @@ class RepairableRBD(RBD):
         RepairableRBD (whose own preventive replacements are not this RBD's
         to count), ``1 / (MTTF + MTTR)`` failures for a NonRepairable, and
         from its renewal cycle for one under age replacement."""
+        self._require_perfect_repair(node)
         component = self.components[node]
         if isinstance(component, RepairableRBD):
             failures, planned = component._outage_frequencies()
@@ -9143,6 +9496,7 @@ class RepairableRBD(RBD):
         ``_block_replacement``); it is computed once and kept."""
         self._require_no_condition(node)
         self._require_no_opportunities(node)
+        self._require_perfect_repair(node)
         component = self.components[node]
         if schedule.policy == "block":
             block = self._block_cycle(node)

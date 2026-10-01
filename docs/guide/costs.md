@@ -19,7 +19,7 @@ Costs are optional keys of a component's dict, plus one system-level rate:
 | Where | Key | Charged |
 |---|---|---|
 | Component | `repair_cost` | Per failure (labour, a callout). A number or a distribution. |
-| Component | `replace_cost` | Per failure (the spare part). A number or a distribution. |
+| Component | `replace_cost` | Per failure (the spare part); for a component repaired imperfectly, only per replacement (see [Imperfect repair](repairable.md#imperfect-repair)). A number or a distribution. |
 | Component | `downtime_cost` | Per unit time *this component* is down, even if the system is up (a degraded-mode or per-leg penalty). A number. |
 | Component | `acquisition_cost` | Once, to buy the unit. A number. Not a running cost: see [the total cost of ownership](#the-total-cost-of-ownership). |
 | System | `downtime_cost_rate=` | Per unit time the *system* is down (lost production). A number. |

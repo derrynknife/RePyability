@@ -43,9 +43,10 @@ A component can be given as:
   [Costs](costs.md#preventive-maintenance)), for a component whose
   failures are hidden until a proof test finds them, periodic inspection
   (`"inspection"`; see [Costs](costs.md#hidden-failures-and-inspection)),
-  and its place in the queue for a repair crew (`"priority"`; see
-  [below](#repair-crews)). Any other key raises `ValueError`, so a
-  mistyped cost key is never silently priced at zero;
+  its place in the queue for a repair crew (`"priority"`; see
+  [below](#repair-crews)), and imperfect repair (`"repair"` and
+  `"replace_after"`; see [below](#imperfect-repair)). Any other key raises
+  `ValueError`, so a mistyped cost key is never silently priced at zero;
 - `"repairability": "instant"` for a component repaired in zero time (see
   [below](#instantly-repaired-components));
 - a [`NonRepairable`][repyability.NonRepairable]`(reliability,
@@ -59,10 +60,10 @@ The constructor also takes `k`, `input_node`, `output_node` and
 [`NonRepairableRBD`](building.md), `downtime_cost_rate` (see
 [Costs](costs.md)) and `repair_crews` (see [below](#repair-crews)).
 
-Every repair restores a component to as good as new, components fail and are
-repaired independently of each other (unless they wait for a repair crew),
-and a component keeps its own failure/repair cycle whether or not the system
-is up.
+Every repair restores a component to as good as new (unless it is repaired
+imperfectly), components fail and are repaired independently of each other
+(unless they wait for a repair crew), and a component keeps its own
+failure/repair cycle whether or not the system is up.
 
 ## Long-run availability and frequencies (exact)
 
@@ -360,6 +361,72 @@ the pair is up 0.9910.)
   simulated.
 - **Simulation.** `availability`, `cost` and `compare` simulate groups
   whatever their units' models, in Python.
+
+## Imperfect repair
+
+A patched pump is still an old pump. By default every repair renews a
+component, as good as new; a spec's `"repair"` makes its repairs imperfect,
+by Kijima's virtual-age models (as surpyval's `GeneralizedRenewal` and
+[`Repairable`](maintenance.md#imperfect-repair-repairable) do):
+
+| Key | Meaning |
+|---|---|
+| `"repair"` | `{"model": "kijima1" or "kijima2", "q": q}`. A repair after the unit has operated `x` since the last one takes its virtual age from `v` to `v + q x` (Kijima I: the repair undoes a fraction `1 - q` of the age added since the last) or `q (v + x)` (Kijima II: of all of it). `q = 0` renews it (the default), `q = 1` is minimal repair, "as bad as old". |
+| `"replace_after"` | `N`: the `N`-th failure since the unit was renewed replaces it, as new, instead of repairing it. |
+
+Each life is drawn given the unit's virtual age `v`, `H(v + X) = H(v) +
+E` with `E` exponential, as surpyval draws it. A pump that wears out,
+repaired in about 23 h, with lost production at 500 an hour, over five
+years from new:
+
+```python
+def pump(**repair):
+    return {"reliability": surv.Weibull.from_params([1000, 2.5]),     # MTTF 887 h
+            "repairability": surv.LogNormal.from_params([3.0, 0.5]),  # 23 h
+            "repair_cost": 500.0, "replace_cost": 5000.0, **repair}
+
+def line(**repair):
+    return RepairableRBD([("s", "p"), ("p", "t")], {"p": pump(**repair)},
+                         downtime_cost_rate=500.0)
+
+five_years = 43_800.0
+renewed = line().availability(five_years, mc_samples=20, seed=1)
+patched = line(repair={"model": "kijima1", "q": 0.5}).availability(
+    five_years, mc_samples=20, seed=1)
+renewed.mean_availability_interval().estimate     # -> 0.9759
+patched.mean_availability_interval().estimate     # -> 0.5295
+```
+
+| Repair | Up | Failures a year | Cost an hour |
+|---|---|---|---|
+| As new (`q = 0`) | 0.976 | 9.4 | 17.9 |
+| Kijima I, `q = 0.25` | 0.683 | 122 | 166 |
+| Kijima I, `q = 0.5` | 0.530 | 181 | 246 |
+| Minimal (`q = 1`) | 0.389 | 235 | 319 |
+| Kijima II, `q = 0.5` | 0.957 | 16.6 | 22.5 |
+| Kijima II, `q = 0.9` | 0.890 | 42.5 | 57.5 |
+| Kijima I, `q = 0.5`, replaced at the 2nd failure | 0.970 | 11.8 | 19.1 |
+| Kijima I, `q = 0.5`, replaced at the 4th failure | 0.961 | 15.3 | 22.8 |
+
+Under Kijima I the virtual age only grows, so a unit that is never renewed
+fails ever more often; under Kijima II it settles. Replacing the unit
+every few failures (or on a preventive schedule) bounds it.
+
+- **Costs and spares.** A repair is charged its `"repair_cost"`; a
+  replacement, at the `N`-th failure or at any failure of a unit renewed by
+  its repairs, its `"repair_cost"` and `"replace_cost"`, and uses a spare
+  (see [Spares](spares.md)).
+- **Maintenance.** A preventive replacement renews the unit; under age
+  replacement its age is its operating time since it was renewed, which
+  repairs do not reset. Proof tests find its hidden failures as for any
+  component, and a found failure is repaired imperfectly too. A standby
+  group, or replacement on condition, cannot be repaired imperfectly.
+- **Exact or simulated.** A repair does not renew the unit, so the exact
+  long-run values, the availability over time and the spares counts refuse
+  it, with the reason; `availability`, `cost` and `compare` simulate it, in
+  Python, with its own streams (seeds, antithetic pairs and common random
+  numbers work as for any component). `q = 0`, and `replace_after=1`
+  whatever `q`, are the component renewed at every failure, draw for draw.
 
 ## Instantly repaired components
 

@@ -1,334 +1,325 @@
-"""
-Tests the imperfect-repair (generalized-renewal / Kijima) support in the
-``Repairable`` component: sourcing E[N(t)] from a simulation-backed
-``GeneralizedRenewal`` model rather than an analytic ``cif``.
+"""Imperfect repair in a RepairableRBD (#109): a component's repairs take
+its virtual age forward by Kijima's models instead of renewing it, its
+lives are drawn given that age, and it can be replaced at the N-th failure
+since it was renewed."""
 
-The exact anchors use the ``q = 1`` (minimal-repair) limit, where the
-generalized-renewal process reduces to the baseline's cumulative hazard and the
-optimal overhaul interval has a closed form.
-"""
-
-import warnings
+import math
 
 import numpy as np
 import pytest
 import surpyval as surv
-from surpyval.recurrent import CrowAMSAA, GeneralizedRenewal
+from surpyval.recurrent.renewal.renewal_model import conditional_gaps
 
-from repyability.maintenance import FailureLimitPolicy
-from repyability.repairable import (
-    Repairable,
-    minimal_repair_time_to_nth_failure,
+from repyability import RepairableRBD
+from repyability.rbd import routes as r
+from repyability.rbd.repairable_rbd import _aged_life
+
+E, W, L = (
+    surv.Exponential.from_params,
+    surv.Weibull.from_params,
+    surv.LogNormal.from_params,
 )
+X = surv.ExactEventTime.from_params
+
+WORN = {
+    "reliability": W([100.0, 2.0]),
+    "repairability": E([0.5]),
+    "repair_cost": 10.0,
+    "replace_cost": 100.0,
+}
 
 
-def _gr(q, alpha=100.0, beta=2.0, kijima="ii"):
-    """A generalized-renewal model, Weibull baseline, restoration factor q."""
-    return GeneralizedRenewal.fit_from_parameters(
-        [alpha, beta], q, kijima=kijima, dist=surv.Weibull
+def single(spec, **options):
+    return RepairableRBD([("s", "c"), ("c", "t")], {"c": spec}, **options)
+
+
+def kijima(model, q, **more):
+    return {"repair": {"model": model, "q": q}, **more}
+
+
+def states(rbd, until):
+    rbd.initialize_event_queue(until)
+    changes = [rbd.next_event()]
+    while changes[-1][0] < until:
+        changes.append(rbd.next_event())
+    return changes
+
+
+def same_runs(one, other, t=1000.0):
+    a = one.availability(t, mc_samples=200, seed=1)
+    b = other.availability(t, mc_samples=200, seed=1)
+    return (
+        np.array_equal(a.timeline, b.timeline)
+        and np.array_equal(a.availability, b.availability)
+        and np.array_equal(a.cost.samples, b.cost.samples)
     )
 
 
-def test_is_simulated_flag():
-    # A generalized-renewal (mcf-only) model is simulation-backed...
-    assert Repairable(_gr(0.5)).is_simulated is True
-    # ...while an analytic cumulative-intensity model (cif) is not.
-    analytic = Repairable(CrowAMSAA.from_params([0.5, 1.6]))
-    assert analytic.is_simulated is False
-
-
-def test_requires_cif_or_mcf():
-    class NoCounting:
-        pass
-
-    with pytest.raises(ValueError, match="cif|mcf"):
-        Repairable(NoCounting())
-
-
-def test_q1_expected_failures_matches_cumulative_hazard():
-    """At q=1 the process is minimal repair, so E[N(t)] equals the baseline
-    Weibull cumulative hazard ``(t/alpha)**beta``."""
-    rep = Repairable(_gr(1.0, alpha=100.0, beta=2.0))
-    t = np.array([50.0, 100.0, 150.0])
-    enf = rep._expected_failures(t, seed=3, n_simulations=8000)
-    expected = (t / 100.0) ** 2.0
-    np.testing.assert_allclose(enf, expected, rtol=0.05)
-
-
-def test_cost_and_cost_rate_contract():
-    rep = Repairable(_gr(0.5))
-    rep.set_repair_and_overhaul_costs(1.0, 5.0)
-    assert isinstance(rep.cost(100.0, seed=1, mc_samples=300), float)
-    assert isinstance(rep.cost_rate(100.0, seed=1, mc_samples=300), float)
-    arr = rep.cost_rate(np.array([100.0, 200.0]), seed=1, mc_samples=300)
-    assert isinstance(arr, np.ndarray) and arr.shape == (2,)
-
-
-def test_optimal_interval_matches_analytic_at_q1():
-    """For minimal repair (q=1) with a Weibull baseline the optimal overhaul
-    interval has the closed form ``alpha * (co/(cr*(beta-1))) ** (1/beta)``;
-    the simulated optimum must land near it."""
-    alpha, beta, cr, co = 100.0, 2.0, 1.0, 5.0
-    analytic = alpha * (co / (cr * (beta - 1.0))) ** (1.0 / beta)
-    rep = Repairable(_gr(1.0, alpha=alpha, beta=beta))
-    rep.set_repair_and_overhaul_costs(cr, co)
-    interval = rep.find_optimal_overhaul_interval(
-        seed=2, mc_samples=1200, max_interval=600.0
+def test_a_timeline_worked_by_hand():
+    # Failing at age 30, repaired in 5, Kijima I with q = 0.5: from new it
+    # fails at 30 (virtual age 15 after the repair, so 15 left), at 50
+    # (age 22.5, 7.5 left) and at 62.5, its third failure, which replaces
+    # it: as new at 67.5, it fails at 97.5, and so on.
+    rbd = single(
+        {
+            "reliability": X(30.0),
+            "repairability": X(5.0),
+            "repair_cost": 10.0,
+            "replace_cost": 100.0,
+            **kijima("kijima1", 0.5, replace_after=3),
+        }
     )
-    assert interval == pytest.approx(analytic, rel=0.12)
+    assert states(rbd, 200.0) == [
+        (30.0, False),
+        (35.0, True),
+        (50.0, False),
+        (55.0, True),
+        (62.5, False),
+        (67.5, True),
+        (97.5, False),
+        (102.5, True),
+        (117.5, False),
+        (122.5, True),
+        (130.0, False),
+        (135.0, True),
+        (165.0, False),
+        (170.0, True),
+        (185.0, False),
+        (190.0, True),
+        (197.5, False),
+        (200.0, False),
+    ]
+    result = rbd.availability(200.0, mc_samples=2, seed=1)
+    assert result.mean_availability_interval().estimate == pytest.approx(
+        157.5 / 200.0
+    )
+    # Six repairs and three replacements: each charged its repair, and a
+    # replacement its part too, which it takes from the spares.
+    assert result.cost.by_category["repair"] == 9 * 10.0
+    assert result.cost.by_category["replace"] == 3 * 100.0
+    used = rbd.spares_demand(200.0, method="simulate", mc_samples=2, seed=1)
+    assert used["c"].probabilities[3] == 1.0
 
 
-def test_default_horizon_finds_the_minimal_repair_optimum():
-    """Near-minimal repair drives the simulated virtual age to where the
-    baseline survival underflows; surpyval then ends those histories early and
-    the simulated E[N(t)] stops growing. The search must not take that for a
-    falling cost rate: it used to return its default horizon (1329) here."""
-    alpha, beta, cr, co = 100.0, 2.0, 10.0, 50.0
-    analytic = alpha * (co / (cr * (beta - 1.0))) ** (1.0 / beta)  # 223.6
-    rep = Repairable(_gr(1.0, alpha=alpha, beta=beta, kijima="i"))
-    rep.set_repair_and_overhaul_costs(cr, co)
-    with warnings.catch_warnings():
-        # Nothing may surface: neither surpyval's warnings about the stalled
-        # attempts the search discarded, nor a "still falling" warning.
-        warnings.simplefilter("error")
-        policy = rep.optimal_overhaul_policy(seed=0, mc_samples=400)
-    assert policy.interval == pytest.approx(analytic, rel=0.12)
+def test_age_replacement_counts_the_operating_time():
+    # Replaced at an operating age of 40: from new it fails at 30 and,
+    # repaired by 35, is 30 old (virtual age 15, so 15 left), so it is
+    # replaced at 45 before failing; and again after each failure.
+    rbd = single(
+        {
+            "reliability": X(30.0),
+            "repairability": X(5.0),
+            **kijima("kijima1", 0.5),
+            "preventive": {"interval": 40.0, "cost": 1.0},
+        }
+    )
+    assert states(rbd, 200.0) == [
+        (30.0, False),
+        (35.0, True),
+        (75.0, False),
+        (80.0, True),
+        (120.0, False),
+        (125.0, True),
+        (165.0, False),
+        (170.0, True),
+        (200.0, True),
+    ]
+    # Replaced at 45, 90, 135 and 180.
+    assert rbd.cost(200.0, mc_samples=2, seed=1).by_category[
+        "preventive"
+    ] == pytest.approx(4.0)
 
-    def exact_rate(t):
-        return (cr * (t / alpha) ** beta + co) / t
 
-    # The cost rate is flat near its minimum: the interval found costs
-    # within 1% of the true optimum.
-    assert exact_rate(policy.interval) == pytest.approx(
-        exact_rate(analytic), rel=0.01
+def test_no_restoration_is_the_component_renewed_at_every_repair():
+    assert single(dict(WORN, **kijima("kijima1", 0.0)))._imperfect == {}
+    assert same_runs(
+        single(dict(WORN, **kijima("kijima2", 0.0))), single(WORN)
     )
 
 
-class _CutShort:
-    """A simulation-backed stand-in whose E[N(t)] is minimal repair of a
-    Weibull(100, 2), but whose "simulator" is cut short beyond ``limit``
-    (warning as surpyval does), so E[N(t)] stops growing there."""
+@pytest.mark.parametrize("model", ["kijima1", "kijima2"])
+@pytest.mark.parametrize(
+    "more",
+    [
+        {},
+        {"preventive": {"interval": 80.0, "duration": E([1.0]), "cost": 5}},
+        {"inspection": {"interval": 20.0}},
+    ],
+    ids=["plain", "age replacement", "hidden failures"],
+)
+def test_replacement_at_every_failure_is_renewal(model, more):
+    # Replaced at its first failure, the unit is as new after every one:
+    # the same draws, costs and spares as the component renewed by its
+    # repairs.
+    imperfect = single(
+        dict(WORN, **kijima(model, 0.6, replace_after=1), **more)
+    )
+    assert same_runs(imperfect, single(dict(WORN, **more)))
 
-    def __init__(self, limit, message):
-        self.limit = limit
-        self.message = message
 
-    def mcf(self, t, items=1000, random_state=None):
-        t = np.asarray(t, dtype=float)
-        if t.max() > self.limit:
-            warnings.warn(self.message)
-        return (np.minimum(t, self.limit) / 100.0) ** 2.0
+@pytest.mark.parametrize("model", ["kijima1", "kijima2"])
+def test_minimal_repair_follows_the_cumulative_hazard(model):
+    # As bad as old, repaired at once: failures come at the intensity of
+    # the life's hazard, E[N(t)] = H(t) = (t / 100) ** 2 (the power law).
+    rbd = single(
+        {
+            "reliability": W([100.0, 2.0]),
+            "repairability": "instant",
+            **kijima(model, 1.0),
+        }
+    )
+    for t, expected in ((100.0, 1.0), (300.0, 9.0)):
+        result = rbd.availability(t, mc_samples=4000, seed=2)
+        count = result.system_failures / result.n_simulations
+        assert count == pytest.approx(
+            expected, abs=4 * math.sqrt(expected / 4000)
+        )
+
+
+@pytest.mark.parametrize("model", ["kijima1", "kijima2"])
+def test_a_wearing_unit_does_worse_the_less_a_repair_restores(model):
+    availability, failures = [], []
+    for q in (0.0, 0.25, 0.5, 0.75, 1.0):
+        result = single(dict(WORN, **kijima(model, q))).availability(
+            1000.0, mc_samples=300, seed=4
+        )
+        availability.append(result.mean_availability_interval().estimate)
+        failures.append(result.system_failures)
+    assert all(np.diff(availability) < 0.0)
+    assert all(np.diff(failures) > 0)
+
+
+def test_a_constant_failure_rate_does_not_age():
+    # Exponential lives have no memory: however little a repair restores,
+    # the unit fails at the same rate.
+    unit = dict(WORN, reliability=E([0.02]))
+    renewed = single(unit).availability(5000.0, mc_samples=400, seed=5)
+    patched = single(dict(unit, **kijima("kijima1", 1.0))).availability(
+        5000.0, mc_samples=400, seed=5
+    )
+    assert patched.system_failures == pytest.approx(
+        renewed.system_failures, rel=0.03
+    )
+
+
+def test_hidden_failures_are_repaired_imperfectly():
+    tested = dict(WORN, repairability=E([1.0]), inspection={"interval": 20.0})
+    renewed = single(tested).availability(2000.0, mc_samples=200, seed=6)
+    patched = single(dict(tested, **kijima("kijima2", 0.8))).availability(
+        2000.0, mc_samples=200, seed=6
+    )
+    assert patched.system_failures > 1.2 * renewed.system_failures
+
+
+def test_seeds_antithetic_pairs_compare_and_processes():
+    rbd = single(dict(WORN, **kijima("kijima1", 0.5, replace_after=4)))
+    a = rbd.cost(2000.0, mc_samples=100, seed=8)
+    assert np.array_equal(
+        a.samples, rbd.cost(2000.0, mc_samples=100, seed=8).samples
+    )
+    paired = rbd.cost(2000.0, mc_samples=100, seed=8, antithetic=True)
+    assert paired.mean == pytest.approx(a.mean, rel=0.05)
+    same = rbd.compare(rbd, 2000.0, mc_samples=50, seed=8, quantity="cost")
+    assert same.estimate == 0.0 and same.standard_error == 0.0
+    split = rbd.cost(2000.0, mc_samples=100, seed=8, n_jobs=2)
+    assert np.array_equal(np.sort(split.samples), np.sort(a.samples))
+    assert rbd.analysis_routes()["availability"].engine == "python"
+
+
+def test_a_nested_diagram_repairs_imperfectly_too():
+    inner = single(
+        {
+            "reliability": X(30.0),
+            "repairability": X(5.0),
+            **kijima("kijima1", 0.5, replace_after=3),
+        }
+    )
+    parent = RepairableRBD([("s", "x"), ("x", "t")], {"x": inner})
+    result = parent.availability(200.0, mc_samples=2, seed=1)
+    assert result.mean_availability_interval().estimate == pytest.approx(
+        157.5 / 200.0
+    )
 
 
 @pytest.mark.parametrize(
-    "message",
-    [
-        "Some sequences produced a near-zero interarrival time (< tol) "
-        "before reaching T, indicating a possible asymptote; they were "
-        "terminated early at their last event.",
-        "Some sequences reached max_events (10000) before T; increase "
-        "max_events or check the model parameters.",
-    ],
-    ids=["stalled", "max events"],
+    "model", [W([100.0, 2.0]), W([3.0, 0.7]), E([0.01]), L([3.0, 0.5])]
 )
-def test_a_simulation_cut_short_shortens_the_search(message):
-    """Beyond 600 the stand-in's E[N(t)] is flat, so over a horizon of 2000
-    the cost rate would fall to the horizon. The search halves the horizon
-    (2000, 1000, 500) until the simulation is no longer cut short, finds the
-    true optimum, and drops the warnings of the attempts it discarded."""
-    rep = Repairable(_CutShort(600.0, message))
-    rep.set_repair_and_overhaul_costs(10.0, 50.0)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        interval = rep.find_optimal_overhaul_interval(max_interval=2000.0)
-    # 100 * sqrt(5), to the spacing of the search grid.
-    assert interval == pytest.approx(100.0 * 5.0**0.5, rel=0.012)
+def test_the_aged_life_is_surpyvals(model):
+    rng = np.random.default_rng(1)
+    for age in (0.0, 0.5, 10.0, 80.0, 300.0):
+        for u in rng.uniform(size=5):
+            expected = conditional_gaps(model, np.array([age]), np.array([u]))
+            assert _aged_life(model, age, u) == pytest.approx(
+                expected[0], rel=1e-9, abs=1e-12
+            )
 
 
-def test_an_optimum_beyond_max_interval_warns():
-    """A cost rate still falling at the horizon is not an optimum: the
-    horizon is returned with a warning to search further."""
-    rep = Repairable(_CutShort(np.inf, "unused"))
-    rep.set_repair_and_overhaul_costs(10.0, 50_000.0)  # optimum 7071
-    with pytest.warns(UserWarning, match="Raise max_interval"):
-        interval = rep.find_optimal_overhaul_interval(max_interval=2000.0)
-    assert interval == 2000.0
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        interval = rep.find_optimal_overhaul_interval(max_interval=20_000.0)
-    assert interval == pytest.approx(100.0 * 5000.0**0.5, rel=0.012)
-
-
-def test_an_optimum_beyond_the_horizon_warns():
-    """With overhauls 1000 times dearer than repairs, the minimal-repair
-    optimum (3162) lies beyond the default horizon (15 times the mean,
-    1329.34). The search returns at most the horizon and warns, once, that
-    the cost rate is still falling there, rather than returning a false
-    optimum. A simulator that cannot resolve failures that far makes it
-    shorten the horizon first, to where the baseline survival is 1e-10, and
-    say so."""
-    rep = Repairable(_gr(1.0, kijima="i"))
-    rep.set_repair_and_overhaul_costs(1.0, 1000.0)
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        interval = rep.find_optimal_overhaul_interval(seed=0, mc_samples=200)
-    messages = [str(w.message) for w in caught]
-    assert len(messages) == 1
-    assert "still falling at the search horizon" in messages[0]
-    if "shortened from 1329.34" in messages[0]:
-        assert interval == pytest.approx(100.0 * np.log(1e10) ** 0.5)
-    else:
-        assert "Raise max_interval" in messages[0]
-        assert interval == pytest.approx(15.0 * 100.0 * np.sqrt(np.pi) / 2)
-
-
-def test_stalls_the_search_cannot_avoid_are_reported():
-    """When the simulation is cut short at every horizon the search tries
-    (as it can be for q > 1, where the virtual age outruns the real age),
-    the simulator's warning must reach the caller, not be
-    swallowed with those of the discarded attempts."""
-    rep = Repairable(
-        _CutShort(
-            1e-9,
-            "Some sequences produced a near-zero interarrival time (< tol) "
-            "before reaching T; they were ended early at their last event.",
-        )
+def test_the_exact_methods_refuse_imperfect_repair():
+    rbd = single(dict(WORN, **kijima("kijima2", 0.5)), downtime_cost_rate=1.0)
+    for method in (
+        rbd.mean_availability,
+        rbd.node_availability,
+        rbd.system_failure_frequency,
+        rbd.expected_cost_rate,
+        lambda: rbd.point_availability([10.0]),
+        rbd.birnbaum_importance,
+    ):
+        with pytest.raises(NotImplementedError, match="repaired imperfectly"):
+            method()
+    with pytest.raises(NotImplementedError, match="repaired imperfectly"):
+        rbd.spares_demand(100.0)
+    report = rbd.analysis_routes()
+    assert report["mean_availability"].route == r.REFUSED
+    assert "Kijima II, q = 0.5" in report["mean_availability"].reason
+    assert report["availability"].route == r.SIMULATED
+    crewed = RepairableRBD(
+        [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        {
+            "a": dict(WORN, reliability=E([0.01]), **kijima("kijima1", 0.5)),
+            "b": dict(WORN, reliability=E([0.01])),
+        },
+        repair_crews=1,
     )
-    rep.set_repair_and_overhaul_costs(10.0, 50.0)
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        rep.find_optimal_overhaul_interval(max_interval=2000.0)
-    messages = [str(w.message) for w in caught]
-    assert any("near-zero interarrival time" in m for m in messages)
+    with pytest.raises(NotImplementedError, match="imperfect repair"):
+        crewed.mean_availability()
 
 
-def test_repairs_that_age_the_unit_bring_the_overhaul_forward():
-    """With q > 1 each repair leaves the unit older than before the
-    failure, so it wears out faster than under minimal repair and should be
-    overhauled sooner than minimal repair's optimum, 100 * sqrt(5)."""
-    rep = Repairable(_gr(1.5, kijima="i"))
-    rep.set_repair_and_overhaul_costs(10.0, 50.0)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")  # the simulator may report stalls
-        interval = rep.find_optimal_overhaul_interval(seed=0, mc_samples=100)
-    assert 100.0 < interval < 100.0 * 5.0**0.5
+@pytest.mark.parametrize(
+    "more, message",
+    [
+        ({"repair": "kijima1"}, "must be a dict"),
+        ({"repair": {"model": "arai", "q": 0.5}}, "must be a dict"),
+        ({"repair": {"model": "kijima1"}}, "must be a dict"),
+        ({"repair": {"model": "kijima1", "q": 1.5}}, r"in \[0, 1\]"),
+        ({"repair": {"model": "kijima1", "q": True}}, r"in \[0, 1\]"),
+        ({"replace_after": 3}, "needs imperfect repair"),
+        (kijima("kijima1", 0.0, replace_after=3), "needs imperfect repair"),
+        (kijima("kijima1", 0.5, replace_after=0), "at least 1"),
+        (kijima("kijima1", 0.5, replace_after=2.5), "at least 1"),
+        (kijima("kijima1", 0.5, standby={"units": 2}), "standby group"),
+        (
+            kijima(
+                "kijima1",
+                0.5,
+                preventive={
+                    "interval": 10.0,
+                    "policy": "condition",
+                    "threshold": 0.1,
+                },
+            ),
+            "on condition",
+        ),
+    ],
+)
+def test_the_spec_is_checked(more, message):
+    with pytest.raises(ValueError, match=message):
+        single(dict(WORN, **more))
 
 
-def test_reproducible_with_seed():
-    # Kijima I (the optimum, near 314, lies inside the horizon).
-    rep = Repairable(_gr(0.5, kijima="i"))
-    rep.set_repair_and_overhaul_costs(1.0, 5.0)
-    p1 = rep.optimal_overhaul_policy(
-        seed=7, mc_samples=400, max_interval=600.0
-    )
-    p2 = rep.optimal_overhaul_policy(
-        seed=7, mc_samples=400, max_interval=600.0
-    )
-    assert p1.interval == p2.interval
-    assert p1.cost_rate == p2.cost_rate
-
-
-def test_costs_required_and_ordered():
-    rep = Repairable(_gr(0.5))
-    with pytest.raises(ValueError, match="costs not set"):
-        rep.find_optimal_overhaul_interval(seed=1, mc_samples=200)
-    with pytest.raises(ValueError, match="less than"):
-        rep.set_repair_and_overhaul_costs(5.0, 1.0)
-
-
-# -- Replace-at-N-th-failure policy ---------------------------------------
-
-
-def test_minimal_repair_time_to_nth_failure_closed_form():
-    # T_1 is just the baseline mean: alpha * Gamma(1 + 1/beta).
-    from scipy.special import gamma
-
-    assert minimal_repair_time_to_nth_failure(100.0, 2.0, 1) == pytest.approx(
-        100.0 * gamma(1.5)
-    )
-    # A monotone increasing sequence.
-    ts = [
-        minimal_repair_time_to_nth_failure(100.0, 2.0, n) for n in range(1, 6)
-    ]
-    assert all(a < b for a, b in zip(ts, ts[1:]))
-    with pytest.raises(ValueError):
-        minimal_repair_time_to_nth_failure(100.0, 2.0, 0)
-
-
-def test_expected_time_to_nth_failure_matches_closed_form_at_q1():
-    rep = Repairable(_gr(1.0, alpha=100.0, beta=2.0))
-    for n in (3, 6):
-        sim = rep.expected_time_to_nth_failure(n, seed=1, mc_samples=5000)
-        exact = minimal_repair_time_to_nth_failure(100.0, 2.0, n)
-        assert sim == pytest.approx(exact, rel=0.05)
-
-
-def test_expected_time_to_nth_failure_analytic_raises():
-    analytic = Repairable(CrowAMSAA.from_params([0.5, 1.6]))
-    with pytest.raises(ValueError, match="minimal_repair_time_to_nth_failure"):
-        analytic.expected_time_to_nth_failure(3)
-
-
-def test_expected_time_to_nth_failure_validation():
-    rep = Repairable(_gr(0.5))
-    with pytest.raises(ValueError, match="positive"):
-        rep.expected_time_to_nth_failure(0, seed=1, mc_samples=200)
-
-
-def test_optimal_failure_limit_policy():
-    rep = Repairable(_gr(0.4, kijima="i"))
-    rep.set_repair_and_overhaul_costs(1.0, 5.0)
-    policy = rep.optimal_failure_limit_policy(
-        seed=3, mc_samples=1200, max_failures=25
-    )
-    assert isinstance(policy, FailureLimitPolicy)
-    assert policy.failure_count >= 1
-    assert policy.cost_rate > 0
-    # Reproducible for a fixed seed.
-    again = rep.optimal_failure_limit_policy(
-        seed=3, mc_samples=1200, max_failures=25
-    )
-    assert policy == again
-
-
-def test_failure_limit_costs_required():
-    rep = Repairable(_gr(0.5))
-    with pytest.raises(ValueError, match="costs not set"):
-        rep.find_optimal_replacement_failure_count(seed=1, mc_samples=200)
-
-
-def test_the_simulations_seed_goes_by_random_state():
-    """surpyval 0.21 renamed the simulations' ``seed`` to ``random_state``
-    (``seed`` warns until 0.22 removes it): the seed goes by the new name,
-    so nothing warns, and it reaches the model."""
-    rep = Repairable(_gr(0.5))
-    rep.set_repair_and_overhaul_costs(1.0, 10.0)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", DeprecationWarning)
-        rep.cost([50.0, 150.0], seed=3, mc_samples=100)
-        rep.expected_time_to_nth_failure(2, seed=3, mc_samples=100)
-
-    class Recording:
-        """A model that records the random_state its simulations get."""
-
-        def __init__(self):
-            self.seen = []
-
-        def mcf(self, x, items=1000, random_state=None):
-            self.seen.append(("mcf", random_state))
-            return np.asarray(x, dtype=float) / 100.0
-
-        def count_terminated_simulation(
-            self, events, items=1000, random_state=None
-        ):
-            self.seen.append(("count", random_state))
-            return GeneralizedRenewal.fit_from_parameters(
-                [100.0, 2.0], 0.5, kijima="ii", dist=surv.Weibull
-            ).count_terminated_simulation(events, items=items)
-
-    model = Recording()
-    rep = Repairable(model)
-    rep.set_repair_and_overhaul_costs(1.0, 10.0)
-    rep.cost([50.0], seed=7, mc_samples=50)
-    rep.expected_time_to_nth_failure(1, seed=7, mc_samples=50)
-    assert ("mcf", 7) in model.seen and ("count", 7) in model.seen
+def test_imperfect_repair_is_saved():
+    rbd = single(dict(WORN, **kijima("kijima2", 0.7, replace_after=4)))
+    loaded = RepairableRBD.from_json(rbd.to_json())
+    assert loaded._imperfect == rbd._imperfect
+    a = rbd.cost(500.0, mc_samples=50, seed=2)
+    b = loaded.cost(500.0, mc_samples=50, seed=2)
+    assert np.array_equal(a.samples, b.samples)

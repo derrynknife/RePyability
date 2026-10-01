@@ -46,6 +46,9 @@ import numpy as np
 FAILURE, REPAIR, DURATION = 0, 1, 2
 #: The uniforms a standby group's switches are decided by.
 SWITCH = 7
+#: The uniforms an imperfectly repaired unit's lives are drawn from, given
+#: its virtual age (a unit as new draws from its ``FAILURE`` stream).
+AGED = 8
 #: The kind of each cost that can be a distribution, by its cost key.
 COST_KINDS = {
     "repair_cost": 3,

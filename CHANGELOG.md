@@ -27,7 +27,8 @@ repaired one unit at a time (#91); `spares_demand` and `spares_stock` count
 the spares each component uses and the stock to hold for a lead time (#95);
 a component can be replaced on condition at periodic inspections (#96),
 or early at a stop of its maintenance group, sharing its set-up
-(opportunistic maintenance, #108);
+(opportunistic maintenance, #108), and repaired imperfectly, by Kijima's
+virtual age, or replaced at the N-th failure (#109);
 phased missions are new, exact and simulated (#100, #101), as are the
 two-terminal reliability of undirected networks (#104) and demonstration
 test planning (#129). Meshed diagrams are decided by a
@@ -251,6 +252,29 @@ required.
   inspection cost are saved with the RBD. Checked against a timeline
   worked by hand, block replacement and run to failure (identical results),
   constant failure rates, and a direct simulation of the policy.
+- **Imperfect repair** (#109). A component spec's `"repair": {"model":
+  "kijima1" | "kijima2", "q": q}` makes its repairs imperfect: a repair
+  after the unit has operated `x` since the last takes its virtual age from
+  `v` to `v + q x` (Kijima I) or `q (v + x)` (Kijima II), and each life is
+  drawn given it (`H(v + X) = H(v) + E`, as surpyval's virtual-age models
+  draw it; in closed form for Exponential and Weibull lives, by surpyval's
+  `conditional_gaps` otherwise), from a stream of its own. `q = 0` renews
+  the unit at every repair, as before, and `q = 1` is minimal repair.
+  `"replace_after": N` replaces the unit, as new, at the N-th failure since
+  it was renewed. A repair is charged its `"repair_cost"`; a replacement its
+  `"repair_cost"` and `"replace_cost"`, and it uses a spare. A preventive
+  replacement renews the unit, and age replacement counts its operating
+  time since it was renewed; hidden failures are repaired imperfectly too.
+  The simulations (`availability`, `cost`, `compare`, the event-stepping
+  API, nested diagrams) follow it, in Python; the exact long-run values,
+  the availability over time and the spares counts refuse it with the
+  reason, and `analysis_routes()` says so. Saved with the RBD. Checked
+  against timelines worked by hand (with replacement at the third failure,
+  and age replacement), the cumulative hazard under minimal repair (the
+  power law), availability falling and failures rising with `q`, `q = 0`
+  and `replace_after=1` against the renewed component (identical draws,
+  with age replacement and hidden failures too), and the closed-form lives
+  against surpyval's.
 - **Opportunistic maintenance** (#108). Components with the same `"group"`
   form a maintenance group: each failure of a member, and each scheduled
   replacement, opens a *stop* of the group, at which every other member

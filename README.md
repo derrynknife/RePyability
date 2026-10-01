@@ -35,8 +35,9 @@ taking already-fitted lifetime models (from
 - **Repairable systems**: exact long-run availability, failure frequency and
   MUT/MDT/MTBF; exact availability over time and over a mission; simulated
   histories with criticality measures; shared repair crews, exact in the
-  long run for exponential components; and repairable standby groups (a
-  duty unit and its spares, repaired one at a time).
+  long run for exponential components; repairable standby groups (a duty
+  unit and its spares, repaired one at a time); and imperfect repair
+  (Kijima's virtual age), with replacement at the N-th failure.
 - **Capacity**: how much a system delivers, from its components'
   capacities (with several levels, or degrading through stages): the exact
   distribution of its capacity at a time or in the long run, the
@@ -48,8 +49,9 @@ taking already-fitted lifetime models (from
   parallel runs, and comparisons of designs with common random numbers;
   repairable systems simulated compiled, with numba installed.
 - **Cost, design and maintenance**: exact and simulated running costs,
-  including scheduled (age or block) preventive replacement at system level
-  and replacement on condition at periodic inspections,
+  including scheduled (age or block) preventive replacement at system level,
+  replacement on condition at periodic inspections and opportunistic
+  maintenance of grouped components at each other's stops,
   with its intervals chosen for a cost or availability target, hidden
   failures found by periodic inspection, with the test intervals chosen for a
   PFDavg target, the total cost of ownership, optimal redundancy allocation
