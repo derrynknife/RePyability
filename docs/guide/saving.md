@@ -22,7 +22,7 @@ text = rbd.to_json(indent=2)    # a JSON string (keyword arguments go to json.du
 clone = NonRepairableRBD.from_json(text)
 clone.sf(30) == rbd.sf(30)      # True
 type(RBD.from_dict(data)).__name__   # 'NonRepairableRBD': the base class dispatches on type
-data["type"], data["repyability_version"]   # ('NonRepairableRBD', '0.11.0')
+data["type"], data["repyability_version"]   # ('NonRepairableRBD', '0.11')
 ```
 
 What is saved:

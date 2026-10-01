@@ -3,12 +3,12 @@ name: release
 # Publishes the package to PyPI, in either of two ways.
 #
 # 1. Run this workflow by hand on master (Actions -> release -> Run workflow;
-#    `gh workflow run release.yml --ref master -f version=X.Y.Z`; or the REST
+#    `gh workflow run release.yml --ref master -f version=X.Y`; or the REST
 #    API). It checks that the version typed in matches
 #    repyability/_version.py, that CHANGELOG.md has a dated section for it,
-#    that the tag vX.Y.Z does not exist yet, that CI passed on the commit and
+#    that the tag vX.Y does not exist yet, that CI passed on the commit and
 #    that PyPI does not have the version. It then builds, publishes to PyPI,
-#    and last creates the tag vX.Y.Z and a GitHub Release. The release notes
+#    and last creates the tag vX.Y and a GitHub Release. The release notes
 #    open with the CHANGELOG section's summary, followed by GitHub's
 #    generated list of pull requests. `dry_run` does the checks and the build
 #    only.
@@ -31,7 +31,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "The version to release, as in repyability/_version.py (e.g. 0.9.0)"
+        description: "The version to release, major.minor, as in repyability/_version.py (e.g. 0.11)"
         required: true
         type: string
       dry_run:
@@ -66,6 +66,10 @@ jobs:
           REQUESTED: ${{ inputs.version }}
         run: |
           set -euo pipefail
+          if ! [[ "$REQUESTED" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::'$REQUESTED' isn't major.minor: versions have two parts (e.g. 0.11)."
+            exit 1
+          fi
           if [ "$GITHUB_REF" != "refs/heads/master" ]; then
             echo "::error::Releases are cut from master, not $GITHUB_REF."
             exit 1

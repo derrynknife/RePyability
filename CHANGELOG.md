@@ -2,12 +2,14 @@
 
 All notable changes to this project are documented in this file.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+Versions have two parts, major.minor (until 0.10.1 they had three): from
+1.0, a release that breaks compatibility raises the major number, and any
+other release, fixes included, the minor.
 
 ## [Unreleased]
 
-## [0.11.0] - 2026-09-30
+## [0.11] - 2026-09-30
 
 How much a system can deliver, and exact answers where there were
 estimates. System capacity gives the exact distribution of what a diagram
@@ -413,6 +415,9 @@ required.
 
 ### Changed
 
+- **Versions have two parts**, major.minor: this release is 0.11, not
+  0.11.0, and the next, whether it adds or fixes, will be 0.12. From 1.0,
+  only a release that breaks compatibility raises the major number.
 - **Cost breakdowns have a seventh category** (#108):
   `CostResult.by_category` (and so `cost()` and `availability().cost`)
   gains `"setup"`, a maintenance group's set-up costs, 0.0 without groups.

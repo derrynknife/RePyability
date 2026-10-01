@@ -81,17 +81,23 @@ Releases are cut from master by `.github/workflows/release.yml`, which this
 session can run: it cannot push tags or create GitHub Releases itself. Every
 merge and release needs the maintainer's go-ahead.
 
+Versions have two parts, major.minor, from 0.11 (they had three until
+0.10.1): from 1.0, a release that breaks compatibility raises the major
+number, and any other release, fixes included, the minor. There are no
+patch releases, and `release.yml` refuses a version that isn't
+major.minor.
+
 1. On the working branch, bump `repyability/_version.py`. Roll the CHANGELOG
-   `[Unreleased]` section into `## [X.Y.Z] - YYYY-MM-DD`, opening with a
+   `[Unreleased]` section into `## [X.Y] - YYYY-MM-DD`, opening with a
    summary paragraph and the behaviour changes (they open the release notes),
    and update the version in `docs/guide/saving.md`. PR to dev, then dev to
    master, listing "Closes #N" for each finished issue: commit messages'
    "(#N)" close nothing.
 2. When CI has passed on master's merge commit, run the workflow with
    `actions_run_trigger`: `run_workflow`, workflow `release.yml`, ref
-   `master`, inputs `{"version": "X.Y.Z", "dry_run": "true"}`. If that
+   `master`, inputs `{"version": "X.Y", "dry_run": "true"}`. If that
    passes, run it again with `"dry_run": "false"`. Then check the run, the
-   tag, the GitHub Release and `https://pypi.org/pypi/repyability/X.Y.Z/json`.
+   tag, the GitHub Release and `https://pypi.org/pypi/repyability/X.Y/json`.
 
 ## surpyval workarounds to remove
 
