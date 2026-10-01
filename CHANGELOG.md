@@ -17,7 +17,8 @@ can deliver from its components' capacities (#97), with components that
 work at several levels (#98), and the simulation follows the capacity
 delivered over a window: the production availability (#99). A repairable
 system's availability over time and over a mission is exact from new
-(#117), and so is a system's mean time to failure (#122).
+(#117), and so are its expected failures, outages, downtime and cost over
+a window (#123), and a system's mean time to failure (#122).
 `analysis_routes()` says, without running anything, how each analysis will
 be computed: exactly, numerically, by simulation or not at all (#127).
 Availability simulations run faster, and about ten times as fast again
@@ -124,6 +125,35 @@ required.
   curves settle at `mean_availability()`, and a long mission's average
   exceeds it by the start-up term renewal theory predicts; on the benchmark
   diagrams they agree with the simulation.
+- **Exact expected failures, outages and cost over a window** (#123).
+  `RepairableRBD.expected_failures(t)` gives the expected number of system
+  failures in `[0, t)`, every component new at 0;
+  `expected_events(t)` an `ExpectedEvents`: the system's expected failures,
+  planned outages and downtime, and each component's failures, corrective
+  and preventive actions, tests and downtime; and `expected_cost(t)` an
+  `ExpectedCost`: the expected cost of the window by the same categories
+  and components as `cost()`, with the acquisition cost beside it
+  (`total`). They are the means `availability()` and `cost()` estimate,
+  exactly and with no simulation, where `total_cost()` assumes the
+  long-run rate from the start. A component's failure takes the system
+  down if it is critical then, which, the components being independent,
+  it is with probability its Birnbaum importance at their availabilities
+  then: the system's failures are the time-dependent Birnbaum/Vesely
+  formula, integrated over the window, with each component's expected
+  failures from its renewal equation on the grid of its availability (to
+  about 1e-7). Events at exact times are counted exactly and together: a
+  replacement due at the window's end falls after it, as in the
+  simulation, and components replaced at the same age or block times take
+  the system down once, and make one stop of their maintenance group.
+  Past the time the components settle, the counts grow at their long-run
+  rates, so a window of decades costs no more than one of a few years.
+  They cover what the availability over time covers (age and block
+  replacement, nested RBDs, hidden failures with a constant failure rate
+  and instant tests and repair) and refuse the rest with the reason, as
+  `analysis_routes()` reports. Checked against the alternating renewal
+  process's closed forms, the formula integrated by quadrature, tests of
+  hidden failures, timelines worked by hand, the long-run rates they
+  settle at, and the simulation's means.
 - **A compiled simulation engine** (#119). With numba installed, an
   optional dependency (`pip install "repyability[fast]"`),
   `RepairableRBD.availability()`, `cost()` and `compare()` can run their
@@ -232,8 +262,9 @@ required.
   replacements are a renewal process (an up time, the smaller of its life
   and its replacement age, then a repair or maintenance time), counted for
   any life and repair models on a grid refined to about 1e-6, with their
-  atoms (a replacement age, work in no time) exact; a fleet's systems add up
-  independently. Block replacement, hidden failures, standby groups and
+  atoms (a replacement age, work in no time) exact, over `[0, horizon)` as
+  the simulation counts them (a replacement at the horizon itself falls
+  after it); a fleet's systems add up independently. Block replacement, hidden failures, standby groups and
   waiting for repair crews are not renewal processes: the counts refuse
   them, and `spares_demand(method="simulate")` counts every component's
   replacements in simulations of the whole system. `analysis_routes()`

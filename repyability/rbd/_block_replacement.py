@@ -429,8 +429,9 @@ class BlockAvailability(NamedTuple):
     plus ``replaced[k]`` times the probability that the replacement due at
     its start is done by ``s``: ``replace.cdf(s)``, or 1 in the first
     interval, which the unit starts new. ``replaced[k]`` is the probability
-    that it is up just before that start, and so replaced. If ``settled``,
-    every later interval repeats the last one."""
+    that it is up just before that start, and so replaced. ``failures[k]``
+    is its expected number of failures in the interval by each point of
+    ``grid``. If ``settled``, every later interval repeats the last one."""
 
     interval: float
     grid: np.ndarray
@@ -438,6 +439,7 @@ class BlockAvailability(NamedTuple):
     replaced: np.ndarray
     replace: _Duration
     settled: bool
+    failures: np.ndarray
 
 
 def block_availability(
@@ -493,14 +495,20 @@ def block_availability(
     replaced = 1.0
     rows: list = []
     probabilities: list = []
+    failing: list = []
     settled = False
     for k in range(count):
         w = _masses(P, C, steps, h)
         row = other[: steps + 1] - fftconvolve(w, down)[: steps + 1]
+        # Failures in each cell of this interval, from the units put into
+        # service in it, and their running count over the interval.
+        density = np.diff(fftconvolve(w, g.N)[: steps + 1]) / h
+        failures = np.concatenate([[0.0], np.cumsum(density * h)])
         if (
             k >= 2
             and abs(replaced - probabilities[-1]) < _SETTLED
             and np.max(np.abs(row - rows[-1])) < _SETTLED
+            and np.max(np.abs(failures - failing[-1])) < _SETTLED
         ):
             settled = True
             break
@@ -513,7 +521,7 @@ def block_availability(
             )
         rows.append(row)
         probabilities.append(replaced)
-        density = np.diff(fftconvolve(w, g.N)[: steps + 1]) / h
+        failing.append(failures)
         other, C, in_repair = _carry(P, C, density, g)
         # Up at the next block time: put into service in this interval and
         # not in a repair at its end (so that no probability is lost).
@@ -527,4 +535,5 @@ def block_availability(
         np.array(probabilities),
         g.replace,
         settled,
+        np.array(failing),
     )

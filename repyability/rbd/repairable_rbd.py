@@ -60,6 +60,7 @@ from repyability.rbd._model_utils import (
     model_mean,
 )
 from repyability.rbd._point_availability import (
+    Atoms,
     BlockCurve,
     InspectionCurve,
     SystemCurve,
@@ -80,6 +81,8 @@ from repyability.rbd.results import (
     ConfidenceInterval,
     CostResult,
     Criticalities,
+    ExpectedCost,
+    ExpectedEvents,
     FailureCriticalityIndex,
     MaintenancePlan,
     RestorationCriticalityIndex,
@@ -2088,6 +2091,37 @@ def _settling(curves) -> Tuple[float, Optional[float]]:
         return np.inf, None
 
 
+class _Jumps(NamedTuple):
+    """What the system does at the times its nodes fail or are taken down
+    at exact times (see ``RepairableRBD._atom_groups``): the times, the
+    probability at each that the system fails there, and that a planned
+    outage takes it down there, and how much its point availability there
+    falls with them (``drop``)."""
+
+    times: np.ndarray
+    failures: np.ndarray
+    planned: np.ndarray
+    drop: np.ndarray
+
+
+def _matched(times: np.ndarray, at: np.ndarray, values: np.ndarray):
+    """``values``, given at the times ``at``, summed at each of ``times``
+    (sorted) that they fall on exactly; 0 at the others."""
+    index = np.searchsorted(times, at)
+    hit = index < len(times)
+    hit[hit] = times[index[hit]] == at[hit]
+    return np.bincount(index[hit], values[hit], len(times))
+
+
+def _shaped(values: np.ndarray, t, times: np.ndarray):
+    """``values``, one per time, as a float for a scalar ``t``, else in the
+    shape of ``times``."""
+    values = np.asarray(values, dtype=float)
+    if np.ndim(t) == 0:
+        return float(values[0])
+    return values.reshape(times.shape)
+
+
 def _squeeze_values(d: dict) -> dict:
     """Convert a dict of 1-element arrays (as produced by the base RBD
     importance helpers) to a dict of plain floats. Steady-state availability
@@ -3917,8 +3951,10 @@ class RepairableRBD(RBD):
         with ``acquisition_cost`` the sum of the components'
         ``"acquisition_cost"``. The running cost is the long-run rate,
         exact over a horizon long compared with the components' cycles;
-        ``cost`` simulates a finite window from new (whose ``CostResult``
-        gives the same ``acquisition_cost`` separately).
+        ``expected_cost(horizon).total`` is the exact expected cost of
+        owning the system from new, and ``cost`` simulates a window from new
+        (whose ``CostResult`` gives the same ``acquisition_cost``
+        separately).
 
         Parameters
         ----------
@@ -4075,7 +4111,7 @@ class RepairableRBD(RBD):
         mc_samples: Optional[int] = None,
         seed=None,
     ) -> Dict[Hashable, SparesDemand]:
-        """How many spares each component uses over ``[0, horizon]``, from
+        """How many spares each component uses over ``[0, horizon)``, from
         new: the distribution of its replacements, for one system or a
         fleet of ``fleet``.
 
@@ -4086,14 +4122,15 @@ class RepairableRBD(RBD):
         maintenance time, and it starts again as new. So the ``n``-th
         replacement comes after ``n - 1`` whole cycles and an up time, and
         the probability of ``n`` or more by the horizon is that of their
-        sum falling within it. ``method="exact"`` works that out on a grid,
-        to about 1e-6, for components with corrective repair alone or under
-        age replacement; a fleet's is the sum of its systems', independent
-        and each from new. ``method="simulate"`` counts them in
-        ``mc_samples`` simulations of the whole system instead, which also
-        covers block replacement, hidden failures, standby groups and
-        repair crews. With constant failure rates and instant repair, the
-        counts are Poisson.
+        sum falling before it (a replacement at the horizon itself falls
+        after it, as in the simulation). ``method="exact"`` works that out
+        on a grid, to about 1e-6, for components with corrective repair
+        alone or under age replacement; a fleet's is the sum of its
+        systems', independent and each from new. ``method="simulate"``
+        counts them in ``mc_samples`` simulations of the whole system
+        instead, which also covers block replacement, hidden failures,
+        standby groups and repair crews. With constant failure rates and
+        instant repair, the counts are Poisson.
 
         Parameters
         ----------
@@ -4180,7 +4217,7 @@ class RepairableRBD(RBD):
     def _simulated_replacements(
         self, horizon: float, nodes: list, mc_samples: int, seed
     ) -> Dict[Any, np.ndarray]:
-        """The fractions of ``mc_samples`` simulations of ``[0, horizon]``
+        """The fractions of ``mc_samples`` simulations of ``[0, horizon)``
         in which each of ``nodes`` was replaced ``0, 1, 2, ...`` times."""
         montecarlo.check_count(mc_samples, False, "mc_samples")
         tally = self._run(
@@ -6130,6 +6167,21 @@ class RepairableRBD(RBD):
             )
         )
         give(("point_availability", "mission_availability"), self._over_time())
+        window = self._over_time(
+            "Each component's expected events from its renewal equation, "
+            "solved on a grid (to about 1e-7), and the system's failures by "
+            "the time-dependent Birnbaum/Vesely formula."
+        )
+        give(("expected_failures", "expected_events"), window)
+        out["expected_cost"] = (
+            window
+            if self.has_costs
+            else r.AnalysisRoute(
+                r.EXACT,
+                "No running cost is priced, so the expected cost is 0 (with "
+                "any acquisition costs beside it).",
+            )
+        )
         give(
             ("allocate_redundancy", "availability_allocation"),
             (
@@ -6459,9 +6511,17 @@ class RepairableRBD(RBD):
             return life, f"a life from {how}"
         return r.NUMERICAL, "its renewal equation, solved on a grid"
 
-    def _over_time(self) -> "AnalysisRoute":
+    def _over_time(
+        self,
+        reason: str = (
+            "Each component's renewal equation solved on a grid (to about "
+            "1e-7), and the system exactly at its components' availabilities "
+            "at each time."
+        ),
+    ) -> "AnalysisRoute":
         """How the availability over time from new is found (see
-        ``analysis_routes``)."""
+        ``analysis_routes``), and what is built on it (the expected events
+        over a window): the method's ``reason``."""
         from repyability.rbd import routes as r
 
         crews = r.refusal(
@@ -6475,14 +6535,7 @@ class RepairableRBD(RBD):
         }
         if refusals:
             return r.refused(next(iter(refusals.values())), tuple(refusals))
-        return r.with_nodes(
-            r.NUMERICAL,
-            "Each component's renewal equation solved on a grid (to about "
-            "1e-7), and the system exactly at its components' availabilities "
-            "at each time.",
-            nodes,
-            "availabilities",
-        )
+        return r.with_nodes(r.NUMERICAL, reason, nodes, "availabilities")
 
     def _engine_choice(self, capacity: bool) -> Tuple[str, str]:
         """The engine ``engine="auto"`` runs a long simulation on, and why
@@ -6866,6 +6919,407 @@ class RepairableRBD(RBD):
             return float(averages[0])
         return averages.reshape(windows.shape)
 
+    def _window(
+        self,
+        t,
+        working_nodes,
+        broken_nodes,
+        method: str,
+        nodes: bool = False,
+        setups: bool = False,
+    ):
+        """The windows ``t`` checked, flat, and the nodes' curves and the
+        system's expected events over them (see ``_window_counts``): the
+        forced nodes have no curves. With ``setups``, the stops of each
+        maintenance group with a set-up cost are counted too."""
+        if method not in ("p", "c"):
+            raise ValueError("`method` must be either 'p' or 'c'")
+        windows = _check_times(t)
+        working = set() if working_nodes is None else set(working_nodes)
+        broken = set() if broken_nodes is None else set(broken_nodes)
+        self._validate_node_overrides(working, broken)
+        forced = working | broken
+        ends = windows.ravel()
+        horizon = float(ends.max()) if ends.size else 0.0
+        curves = self._availability_curves(horizon, forced, counts=True)
+        groups = None
+        if setups:
+            groups = {
+                name: [node for node in spec.members if node not in forced]
+                for name, spec in self._maintenance.items()
+                if spec.setup_cost
+            }
+        counts = self._window_counts(
+            curves, ends, working, broken, method, nodes=nodes, groups=groups
+        )
+        return windows, ends, curves, counts, working, broken
+
+    def expected_failures(
+        self,
+        t,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        method: str = "p",
+    ):
+        """The expected number of system failures in ``[0, t)``, with every
+        component new at 0: exact, with no simulation.
+
+        A component's failure takes the system down if the component is
+        critical then: if the system is up with it and down without it.
+        The components fail and are repaired independently, so at a time
+        ``s`` that is so with probability ``I_B^i(s)``, the component's
+        Birnbaum importance at the components' point availabilities then,
+        and the system's expected failures are
+
+        ```text
+        integral from 0 to t of  sum_i I_B^i(s) dM_i(s)
+        ```
+
+        ``M_i(s)`` the component's expected failures by ``s``: the
+        time-dependent form of the Birnbaum/Vesely formula, whose long-run
+        rate is ``system_failure_frequency``. Each ``M_i`` follows from the
+        component's renewal equation, solved on the same grid as its point
+        availability (see ``point_availability``), to about 1e-7; the
+        integral is summed between the points where the curves bend, and
+        extended exactly past the time they have settled. Failures at exact
+        times (units dead on arrival, an exact lifetime) are taken together
+        when several fall at once. It is what ``availability`` estimates as
+        ``system_failures / n_simulations``: every system failure counts,
+        including the zero-length outages an instantly repaired component
+        causes; planned outages do not (see ``expected_events``).
+
+        Parameters
+        ----------
+        t : float or array-like
+            The windows' lengths (one count for each).
+        working_nodes : Collection[Hashable], optional
+            Nodes that always work, and never fail, by default None.
+        broken_nodes : Collection[Hashable], optional
+            Nodes that are always failed, by default None.
+        method : str, optional
+            Evaluate the structure function from the minimal path sets
+            (``"p"``, the default) or the cut sets (``"c"``); both give the
+            same result.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The expected number of system failures in each window, in
+            ``t``'s shape.
+
+        Raises
+        ------
+        ValueError, NotImplementedError
+            As for ``point_availability``.
+
+        Examples
+        --------
+        One component with failure rate 0.1 and repair rate 1 fails at the
+        rate 0.1 while it is up, ``0.1 * (10 / 1.1 + 0.1 / 1.1 ** 2 * (1 -
+        exp(-11)))`` times in 10 time units:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> rbd = RepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {
+        ...         "c": {
+        ...             "reliability": surv.Exponential.from_params([0.1]),
+        ...             "repairability": surv.Exponential.from_params([1.0]),
+        ...         }
+        ...     },
+        ... )
+        >>> round(rbd.expected_failures(10.0), 4)
+        0.9174
+        """
+        windows, _, _, counts, _, _ = self._window(
+            t, working_nodes, broken_nodes, method
+        )
+        return _shaped(counts["failures"], t, windows)
+
+    def expected_events(
+        self,
+        t,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        method: str = "p",
+    ) -> ExpectedEvents:
+        """What the system and each component are expected to do in
+        ``[0, t)``, with every component new at 0: exact, with no
+        simulation.
+
+        The system's failures are those of ``expected_failures``, and its
+        planned outages are counted the same way, from its components'
+        preventive maintenance that takes time; its down time is ``t * (1
+        - mission_availability(t))``. Each component's failures, corrective
+        and preventive actions and tests follow from its renewal equation,
+        solved on the grid of its point availability (see
+        ``point_availability``), to about 1e-7, and its down time is the
+        integral of its unavailability. The maintenance due at exact times
+        (at a replacement age, at block times) is counted exactly, and
+        maintenance of several components due at the same time takes the
+        system down at most once. It is the mean of what ``availability``
+        counts in each simulation of the window, and events at ``t`` itself
+        fall outside the window, as there.
+
+        A component's corrective actions, at each of which its
+        ``repair_cost`` and ``replace_cost`` are charged, are its failures,
+        except for hidden failures: those found by a test in the window. A
+        nested RBD's failures are its system failures, and its own
+        maintenance is not this RBD's to count. A forced node does nothing:
+        held working it is never down, held broken it is down throughout.
+
+        Parameters
+        ----------
+        t : float or array-like
+            The windows' lengths.
+        working_nodes : Collection[Hashable], optional
+            Nodes that always work, by default None.
+        broken_nodes : Collection[Hashable], optional
+            Nodes that are always failed, by default None.
+        method : str, optional
+            Evaluate the structure function from the minimal path sets
+            (``"p"``, the default) or the cut sets (``"c"``); both give the
+            same result.
+
+        Returns
+        -------
+        ExpectedEvents
+            The system's expected failures, planned outages and down time,
+            and each component's expected failures, corrective and
+            preventive actions, tests and down time: floats for one window,
+            arrays in ``t``'s shape for several.
+
+        Raises
+        ------
+        ValueError, NotImplementedError
+            As for ``point_availability``.
+
+        Examples
+        --------
+        A pump that wears out, replaced at 600 hours in about 7 (a planned
+        outage), over a year:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> rbd = RepairableRBD(
+        ...     [("s", "p"), ("p", "t")],
+        ...     {
+        ...         "p": {
+        ...             "reliability": surv.Weibull.from_params([1000, 2.5]),
+        ...             "repairability": surv.LogNormal.from_params([3, 0.5]),
+        ...             "preventive": {
+        ...                 "interval": 600.0,
+        ...                 "duration": surv.Weibull.from_params([8, 3]),
+        ...             },
+        ...         }
+        ...     },
+        ... )
+        >>> year = rbd.expected_events(8760.0)
+        >>> round(year.system_failures, 3), round(year.node_preventive["p"], 3)
+        (3.706, 11.275)
+        >>> round(year.system_planned_outages, 3)  # each replacement
+        11.275
+        """
+        windows, ends, curves, counts, working, broken = self._window(
+            t, working_nodes, broken_nodes, method, nodes=True
+        )
+        node_events = {
+            node: curve.events(ends) for node, curve in curves.items()
+        }
+        zero = np.zeros(len(ends))
+
+        def shaped(values) -> Any:
+            return _shaped(values, t, windows)
+
+        def per_node(key: str) -> dict:
+            return {
+                node: shaped(
+                    node_events[node][key] if node in curves else zero
+                )
+                for node in self.components
+            }
+
+        downtime = {
+            node: shaped(
+                counts["downtime"][node]
+                if node in curves
+                else (ends if node in broken else zero)
+            )
+            for node in self.components
+        }
+        return ExpectedEvents(
+            window=shaped(ends),
+            system_failures=shaped(counts["failures"]),
+            system_planned_outages=shaped(counts["planned"]),
+            system_downtime=shaped(np.maximum(ends - counts["uptime"], 0.0)),
+            node_failures=per_node("failures"),
+            node_corrective=per_node("corrective"),
+            node_preventive=per_node("preventive"),
+            node_inspections=per_node("inspections"),
+            node_downtime=downtime,
+        )
+
+    def expected_cost(
+        self,
+        t,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        method: str = "p",
+    ) -> ExpectedCost:
+        """The expected cost of running the system for ``t``, from new:
+        exact, with no simulation.
+
+        Each category is its events' expected number over ``[0, t)`` (see
+        ``expected_events``) times its mean cost, as ``cost`` charges them:
+        ``repair_cost`` and ``replace_cost`` at each corrective action, the
+        preventive cost at each preventive replacement, the inspection cost
+        at each test, ``downtime_cost`` over each component's expected down
+        time, ``downtime_cost_rate`` over the system's, and a maintenance
+        group's set-up cost once per stop (each failure or replacement of a
+        member, those at one instant one stop). It is the mean that
+        ``cost`` estimates by simulation, with its distribution;
+        ``total_cost`` is the long-run approximation, exact only over a
+        window long compared with the components' cycles. As ``t`` grows
+        this approaches ``expected_cost_rate() * t`` plus a constant, of the
+        early years from new.
+
+        Every cost is optional, and a cost given as a distribution enters
+        through its mean. Only this RBD's own costs count, not those inside
+        a nested ``RepairableRBD``. With nothing priced (see
+        ``has_costs``), every category is 0, without any checks.
+
+        Parameters
+        ----------
+        t : float or array-like
+            The windows' lengths.
+        working_nodes : Collection[Hashable], optional
+            Nodes that always work: they incur no corrective, preventive,
+            inspection or downtime cost, by default None.
+        broken_nodes : Collection[Hashable], optional
+            Nodes that are always failed: they incur no corrective cost, but
+            their own downtime cost throughout, by default None.
+        method : str, optional
+            Evaluate the structure function from the minimal path sets
+            (``"p"``, the default) or the cut sets (``"c"``); both give the
+            same result.
+
+        Returns
+        -------
+        ExpectedCost
+            The expected cost of each window, by category and component,
+            with the acquisition cost beside it.
+
+        Raises
+        ------
+        ValueError, NotImplementedError
+            When something is priced, as for ``point_availability``.
+
+        Examples
+        --------
+        A pump bought for 20,000, failing on average every 1000 hours,
+        repaired in 10 at 500 per repair, with lost production at 100 per
+        hour, owned for a year:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> rbd = RepairableRBD(
+        ...     [("s", "p"), ("p", "t")],
+        ...     {
+        ...         "p": {
+        ...             "reliability": surv.Exponential.from_params([1e-3]),
+        ...             "repairability": surv.Exponential.from_params([0.1]),
+        ...             "repair_cost": 500.0,
+        ...             "acquisition_cost": 20000.0,
+        ...         }
+        ...     },
+        ...     downtime_cost_rate=100.0,
+        ... )
+        >>> year = rbd.expected_cost(8760.0)
+        >>> round(year.mean), round(year.total)
+        (13000, 33000)
+        >>> round(rbd.total_cost(8760.0))  # at the long-run rate
+        33010
+        """
+        if not self.has_costs:
+            windows = _check_times(t)
+            zero = _shaped(np.zeros(windows.size), t, windows)
+            return ExpectedCost(
+                window=_shaped(windows.ravel(), t, windows),
+                mean=zero,
+                by_category={category: zero for category in _CATEGORIES},
+                by_component={},
+                acquisition_cost=self.acquisition_cost,
+            )
+        windows, ends, curves, counts, working, broken = self._window(
+            t, working_nodes, broken_nodes, method, nodes=True, setups=True
+        )
+        node_events = {
+            node: curve.events(ends) for node, curve in curves.items()
+        }
+        categories = {
+            category: np.zeros(len(ends)) for category in _CATEGORIES
+        }
+        by_component: Dict[Hashable, Any] = {}
+        for node, node_costs in self.costs.items():
+            own = np.zeros(len(ends))
+            charges = []
+            events = node_events.get(node)
+            if events is not None:
+                for key, category, kind in (
+                    ("repair_cost", "repair", "corrective"),
+                    ("replace_cost", "replace", "corrective"),
+                    ("preventive_cost", "preventive", "preventive"),
+                    ("inspection_cost", "inspection", "inspections"),
+                ):
+                    if key in node_costs:
+                        charges.append(
+                            (
+                                category,
+                                _mean_cost(node_costs[key]) * events[kind],
+                            )
+                        )
+            rate = node_costs.get("downtime_cost", 0.0)
+            if rate:
+                down = (
+                    counts["downtime"][node]
+                    if node in curves
+                    else (ends if node in broken else np.zeros(len(ends)))
+                )
+                charges.append(("component_downtime", rate * down))
+            for category, charge in charges:
+                categories[category] = categories[category] + charge
+                own = own + charge
+            by_component[node] = _shaped(own, t, windows)
+        if self.downtime_cost_rate:
+            categories["system_downtime"] = self.downtime_cost_rate * (
+                np.maximum(ends - counts["uptime"], 0.0)
+            )
+        for name, spec in self._maintenance.items():
+            if not spec.setup_cost:
+                continue
+            # Each failure or replacement of a member is a stop, but those
+            # at one instant are one.
+            stops = -counts["overlaps"].get(name, np.zeros(len(ends)))
+            for node in spec.members:
+                if node in node_events:
+                    stops = stops + (
+                        node_events[node]["failures"]
+                        + node_events[node]["preventive"]
+                    )
+            categories["setup"] = categories["setup"] + spec.setup_cost * stops
+        mean = sum(categories.values())
+        return ExpectedCost(
+            window=_shaped(ends, t, windows),
+            mean=_shaped(mean, t, windows),
+            by_category={
+                category: _shaped(values, t, windows)
+                for category, values in categories.items()
+            },
+            by_component=by_component,
+            acquisition_cost=self.acquisition_cost,
+        )
+
     def _running_uptime(
         self, curves: dict, edges, working_nodes, broken_nodes, method
     ) -> np.ndarray:
@@ -6889,17 +7343,309 @@ class RepairableRBD(RBD):
             ) * half
         return np.concatenate([[0.0], np.cumsum(integrals)])
 
-    def _availability_curves(self, horizon: float, skip) -> dict:
+    def _filled(
+        self, probabilities: dict, size: int, working_nodes, broken_nodes
+    ) -> dict:
+        """The nodes' ``probabilities`` (arrays of ``size``), with the input
+        and output nodes, and the forced nodes held at 1 or 0, added."""
+        out = dict(probabilities)
+        for node in list(self.in_or_out) + list(working_nodes | broken_nodes):
+            out[node] = np.ones(size)
+        return self._probabilities_with_overrides(
+            out, working_nodes, broken_nodes
+        )
+
+    def _atom_groups(
+        self, curves: dict, atoms: dict, working_nodes, broken_nodes
+    ) -> _Jumps:
+        """The system at the times its nodes fail or are taken down at
+        exact times (their ``atoms``): a unit dead on arrival at 0, an exact
+        lifetime, a replacement at its age or at a block time.
+
+        Nodes due at one time go down together, so the system fails there
+        if it is up just before and down just after: since they only go
+        down, that is the fall in its availability, worked out as the rise
+        in its unavailability (a sum of products, which keeps a small one's
+        precision). A node's value just before is its point availability
+        there with its own events' fall (``drop``) added back; just after,
+        less the probabilities of its failures, then of its planned outages
+        (the failures are taken to come first). The others are at their
+        point availability there: tests and restorations due then are
+        done. One node alone fails the system with the probability of its
+        failure times its Birnbaum importance there."""
+        down = [
+            a.times[(a.failure > 0.0) | (a.planned > 0.0)]
+            for a in atoms.values()
+        ]
+        times = np.unique(np.concatenate(down)) if down else np.empty(0)
+        if not times.size:
+            empty = np.empty(0)
+            return _Jumps(empty, empty, empty, empty)
+        at, before, failed, planned = {}, {}, {}, {}
+        for node, curve in curves.items():
+            value = np.asarray(curve.at(times.copy()), dtype=float)
+            a = atoms[node]
+            drop = _matched(times, a.times, a.drop)
+            failing = _matched(times, a.times, a.failure)
+            stopping = _matched(times, a.times, a.planned)
+            at[node] = value
+            before[node] = np.clip(value + drop, 0.0, 1.0)
+            failed[node] = np.clip(before[node] - failing, 0.0, 1.0)
+            planned[node] = np.clip(failed[node] - stopping, 0.0, 1.0)
+
+        def unreliability(values: dict) -> np.ndarray:
+            return self._system_unreliability(
+                self._filled(values, len(times), working_nodes, broken_nodes)
+            )
+
+        now, first = unreliability(at), unreliability(before)
+        after, last = unreliability(failed), unreliability(planned)
+        return _Jumps(
+            times,
+            np.maximum(after - first, 0.0),
+            np.maximum(last - after, 0.0),
+            np.maximum(now - first, 0.0),
+        )
+
+    def _system_atoms(self, curves: dict, stop: float) -> Atoms:
+        """This RBD's own failures and planned outages at exact times before
+        ``stop``, from its nodes' ``curves``, as a node of another (see
+        ``Atoms``)."""
+        atoms = {node: curve.atoms(stop) for node, curve in curves.items()}
+        jumps = self._atom_groups(curves, atoms, set(), set())
+        return Atoms(
+            jumps.times,
+            jumps.failures,
+            jumps.planned,
+            np.zeros(len(jumps.times)),
+            jumps.drop,
+        )
+
+    def _window_counts(
+        self,
+        curves: dict,
+        ends,
+        working_nodes,
+        broken_nodes,
+        method: str,
+        nodes: bool = False,
+        groups: Optional[dict] = None,
+    ) -> dict:
+        """The system's expected up time, failures and planned outages in
+        ``[0, end)`` for each of ``ends``, from its nodes' ``curves`` (which
+        count their events); with ``nodes``, each node's expected down time
+        too; and for each of ``groups`` (a name and members), the expected
+        number of its members' failures and replacements that fall at one
+        instant with another's (each stop of a maintenance group is one).
+
+        The up time integrates the system's point availability as
+        ``mission_availability`` does. A node's failure takes the system
+        down if the node is critical then, which, the nodes being
+        independent, it is at ``t`` with probability ``I_B(t)``, its
+        Birnbaum importance at the nodes' availabilities then: the system's
+        failures are ``integral of sum_i I_B^i(t) dM_i(t)``, ``M_i(t)`` the
+        node's expected failures by ``t``, and its planned outages likewise.
+        It is summed over the pieces between the nodes' knots, each node's
+        expected failures in a piece times its mean importance over the
+        piece (by Gauss-Legendre quadrature, at the points the up time is
+        integrated at), which is exact to the square of the pieces' length
+        where both vary; the events at exact times are kept apart and taken
+        together (see ``_atom_groups``). Past the time the nodes have all
+        settled, every count is extended exactly: at its long-run rate, or
+        a period at a time.
+        """
+        ends = np.asarray(ends, dtype=float).ravel()
+        horizon = float(ends.max()) if ends.size else 0.0
+        settle, period = _settling(curves.values())
+        reach = min(horizon, settle if period is None else settle + period)
+        beyond = ends > reach
+        atoms = {node: curve.atoms(reach) for node, curve in curves.items()}
+        jumps = self._atom_groups(curves, atoms, working_nodes, broken_nodes)
+        parts = [np.array([0.0, reach]), ends[~beyond], jumps.times]
+        parts += [curve.knots(0.0, reach) for curve in curves.values()]
+        cycles = rest = np.empty(0)
+        if period is not None and beyond.any():
+            cycles = np.floor((ends[beyond] - settle) / period)
+            rest = np.clip(
+                ends[beyond] - settle - cycles * period, 0.0, period
+            )
+            parts += [np.array([settle]), settle + rest]
+        edges = np.unique(np.concatenate(parts))
+        edges = edges[(edges >= 0.0) & (edges <= reach)]
+        if len(edges) > _MISSION_POINTS:
+            raise NotImplementedError(
+                f"Counting the expected events over [0, {reach}] takes "
+                f"{len(edges)} pieces (the components' curves bend that "
+                "often), more than the limit: estimate them by simulation, "
+                "with availability() or cost()."
+            )
+        pieces = len(edges) - 1
+
+        # Each node's expected failures and planned outages in each piece,
+        # less those at exact times (taken together, below).
+        spread_failures, spread_planned = {}, {}
+        for node, curve in curves.items():
+            events = curve.events(edges)
+            failures = np.diff(events["failures"])
+            planned = np.diff(events["planned"])
+            own = atoms[node]
+            if own.times.size:
+                piece = np.searchsorted(edges, own.times, side="right") - 1
+                keep = (piece >= 0) & (piece < pieces)
+                failures -= np.bincount(piece[keep], own.failure[keep], pieces)
+                planned -= np.bincount(piece[keep], own.planned[keep], pieces)
+            spread_failures[node] = np.maximum(failures, 0.0)
+            spread_planned[node] = np.maximum(planned, 0.0)
+
+        gauss, weights = np.polynomial.legendre.leggauss(4)
+        uptime = np.zeros(pieces)
+        failures = np.zeros(pieces)
+        planned = np.zeros(pieces)
+        downtime = {node: np.zeros(pieces) for node in curves} if nodes else {}
+        block = 25_000
+        for start in range(0, pieces, block):
+            stop = min(start + block, pieces)
+            a, b = edges[start:stop], edges[start + 1 : stop + 1]  # noqa: E203
+            middle, half = 0.5 * (a + b), 0.5 * (b - a)
+            points = (middle[:, None] + half[:, None] * gauss).ravel()
+            values = {node: curve.at(points) for node, curve in curves.items()}
+            # The system's availability and every node's importance at each
+            # point, in one pass.
+            importance, works, fails, _, _ = self._importances(
+                self._filled(values, len(points), working_nodes, broken_nodes)
+            )
+            up = works if method == "p" else 1.0 - fails
+            uptime[start:stop] = (up.reshape(-1, 4) @ weights) * half
+            for node in downtime:
+                down = 1.0 - values[node]
+                downtime[node][start:stop] = (
+                    down.reshape(-1, 4) @ weights
+                ) * half
+            # A node's events in a piece, weighed by its mean importance
+            # over the piece.
+            for node in curves:
+                mean = (importance[node].reshape(-1, 4) @ weights) / 2.0
+                failures[start:stop] += (
+                    mean * spread_failures[node][start:stop]
+                )
+                planned[start:stop] += mean * spread_planned[node][start:stop]
+        if jumps.times.size:
+            piece = np.searchsorted(edges, jumps.times, side="right") - 1
+            np.add.at(failures, piece, jumps.failures)
+            np.add.at(planned, piece, jumps.planned)
+
+        def running(values: np.ndarray) -> np.ndarray:
+            return np.concatenate([[0.0], np.cumsum(values)])
+
+        series: Dict[Any, np.ndarray] = {
+            "uptime": running(uptime),
+            "failures": running(failures),
+            "planned": running(planned),
+        }
+        for node, values in downtime.items():
+            series[("downtime", node)] = running(values)
+        for name, members in (groups or {}).items():
+            series[("overlaps", name)] = running(
+                self._overlaps(atoms, members, edges)
+            )
+
+        # Past ``reach``: constant rates, or a period at a time.
+        rates: dict = {}
+        if period is None and beyond.any():
+            rates = self._settled_rates(
+                curves, reach, horizon, working_nodes, broken_nodes, method
+            )
+        out: dict = {"downtime": {}, "overlaps": {}}
+        inside = np.searchsorted(edges, ends[~beyond])
+        for key, values in series.items():
+            totals = np.empty(len(ends))
+            totals[~beyond] = values[inside]
+            if beyond.any():
+                if period is None:
+                    rate = rates.get(key, 0.0)
+                    totals[beyond] = values[-1] + (ends[beyond] - reach) * rate
+                else:
+                    base = values[np.searchsorted(edges, settle)]
+                    partial = values[np.searchsorted(edges, settle + rest)]
+                    totals[beyond] = (
+                        base + cycles * (values[-1] - base) + (partial - base)
+                    )
+            if isinstance(key, tuple):
+                out[key[0]][key[1]] = totals
+            else:
+                out[key] = totals
+        return out
+
+    def _settled_rates(
+        self, curves: dict, reach, horizon, working_nodes, broken_nodes, method
+    ) -> dict:
+        """What ``_window_counts`` counts, per unit time, once every node's
+        curve is constant: the system's availability, its failures and
+        planned outages (each node's rates, from its counts' slope then,
+        times its Birnbaum importance), and each node's unavailability."""
+        x = np.array([horizon])
+        values = {node: curve.at(x) for node, curve in curves.items()}
+        filled = self._filled(values, 1, working_nodes, broken_nodes)
+        rates: dict = {
+            "uptime": float(
+                np.ravel(self.system_probability(filled, method=method))[0]
+            )
+        }
+        importance = self._importances(filled)[0]
+        span = np.array([reach, reach + max(reach, 1.0)])
+        failures = planned = 0.0
+        for node, curve in curves.items():
+            events = curve.events(span)
+            width = span[1] - span[0]
+            weight = float(importance[node][0])
+            failures += weight * np.diff(events["failures"])[0] / width
+            planned += weight * np.diff(events["planned"])[0] / width
+            rates[("downtime", node)] = 1.0 - float(values[node][0])
+        rates["failures"], rates["planned"] = failures, planned
+        return rates
+
+    @staticmethod
+    def _overlaps(atoms: dict, members, edges: np.ndarray) -> np.ndarray:
+        """In each piece between ``edges``, the expected number of the
+        ``members``' failures and replacements at exact times that fall at
+        one instant with another member's: at each such instant the
+        members' expected number, less the probability of at least one
+        (they are independent). A maintenance group charges one set-up per
+        instant."""
+        pieces = len(edges) - 1
+        own = [atoms[m] for m in members if m in atoms]
+        acting = [a.times[(a.failure + a.preventive) > 0.0] for a in own]
+        if len(own) < 2 or not any(t.size for t in acting):
+            return np.zeros(pieces)
+        times = np.unique(np.concatenate(acting))
+        expected = np.zeros(len(times))
+        none = np.ones(len(times))
+        for a in own:
+            chance = np.clip(
+                _matched(times, a.times, a.failure + a.preventive), 0.0, 1.0
+            )
+            expected += chance
+            none *= 1.0 - chance
+        overlap = np.maximum(expected - (1.0 - none), 0.0)
+        piece = np.searchsorted(edges, times, side="right") - 1
+        keep = (piece >= 0) & (piece < pieces)
+        return np.bincount(piece[keep], overlap[keep], pieces)
+
+    def _availability_curves(
+        self, horizon: float, skip, counts: bool = False
+    ) -> dict:
         """Each node's point availability over ``[0, horizon]``, from new,
         as a curve (see ``_point_availability``), except the nodes in
-        ``skip`` (held working or failed)."""
+        ``skip`` (held working or failed). With ``counts``, the curves
+        count the nodes' expected events too, and follow them until they
+        have settled as well."""
         self._require_unlimited_crews(*_OVER_TIME_CREWS)
         curves: dict = {}
         for node, component in self.components.items():
             if node in skip:
                 continue
             if isinstance(component, RepairableRBD):
-                inner = component._availability_curves(horizon, set())
+                inner = component._availability_curves(horizon, set(), counts)
                 curves[node] = SystemCurve(
                     component, inner, *_settling(inner.values())
                 )
@@ -6908,7 +7654,7 @@ class RepairableRBD(RBD):
             elif node in self._inspection:
                 curves[node] = InspectionCurve(*self._inspected_rate(node))
             else:
-                curves[node] = self._unit_curve(node, horizon)
+                curves[node] = self._unit_curve(node, horizon, counts)
         return curves
 
     def _curves_at(
@@ -6939,13 +7685,16 @@ class RepairableRBD(RBD):
         time."""
         raise NotImplementedError(self._standby_curve_message(node))
 
-    def _unit_curve(self, node, horizon: float):
+    def _unit_curve(self, node, horizon: float, counts: bool = False):
         """A component's point availability from new over ``[0, horizon]``
         (see ``_point_availability.unit_curve``): on a grid of
         ``_POINT_STEPS`` steps over its typical up time, with its
         replacement age on the grid, and only as long as it takes to settle
         at its long-run availability (to 1e-10), after which the curve holds
-        that value. Under block replacement, see ``_block_curve``."""
+        that value. With ``counts`` it counts the component's expected
+        events too, until they grow at their long-run rates (to 1e-7), and
+        at those rates after. Under block replacement, see
+        ``_block_curve``."""
         self._require_time_models(node)
         self._require_no_condition(node)
         self._require_no_opportunities(node)
@@ -6977,8 +7726,11 @@ class RepairableRBD(RBD):
         maintenance_sf = None if duration is None else duration_sf
         try:
             long_run: Optional[float] = self._node_availability(node)
+            rates: Optional[Tuple[float, float, float]] = (
+                self._node_frequencies(node) if counts else None
+            )
         except (ValueError, NotImplementedError):
-            long_run = None
+            long_run, rates = None, None
         scale = _up_scale(life, age)
         if schedule is not None:
             up, cycle, _, _ = self._maintenance_cycle(node, schedule)
@@ -7036,12 +7788,16 @@ class RepairableRBD(RBD):
                         maintenance_splits=(
                             () if duration is None else point_knots(duration)
                         ),
+                        counts=counts,
                     )
             except NotImplementedError as error:
                 raise NotImplementedError(
                     f"Component {node!r}: {error}. Estimate its availability "
                     "by simulation, with availability()."
                 ) from None
+            events = curve.unit_events
+            if events is not None and rates is not None:
+                events.failure_rate, events.preventive_rate = rates[:2]
             if end >= horizon:
                 break
             tail = curve.times[len(curve.times) - len(curve.times) // 4 :]
@@ -7049,10 +7805,15 @@ class RepairableRBD(RBD):
                 long_run is not None
                 and np.all(np.abs(curve.at(tail) - long_run) < 1e-10)
                 and (age is None or survive ** (end // age) < 1e-10)
+                and (events is None or events.settled())
             ):
                 break
             end = min(horizon, 4.0 * end)
         curve.long_run = long_run
+        if curve.unit_events is not None and long_run is None:
+            # Followed to the horizon: no rates past it.
+            curve.unit_events.failure_rate = None
+            curve.unit_events.preventive_rate = None
         return curve
 
     def _block_curve(self, node, horizon: float) -> BlockCurve:

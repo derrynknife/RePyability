@@ -664,6 +664,175 @@ class CostResult(_ResultMapping):
 
 
 @dataclass
+class ExpectedEvents(_ResultMapping):
+    """What a system is expected to do over a window from new: returned by
+    ``RepairableRBD.expected_events``.
+
+    Every value is exact (numerical, with no simulation): the mean of what
+    ``RepairableRBD.availability`` counts in each simulation of the window,
+    and divides by ``n_simulations``. Events at the window's end itself
+    fall outside it, as in the simulation. Each value is a float for one
+    window, or an array in the shape of the windows given.
+
+    Attributes
+    ----------
+    window : float or numpy.ndarray
+        The window's length, from new.
+    system_failures : float or numpy.ndarray
+        The expected number of system failures in the window (changes from
+        up to down caused by a failure, including the zero-length outages
+        an instantly repaired component causes).
+    system_planned_outages : float or numpy.ndarray
+        The expected number of planned outages of the system: changes from
+        up to down caused by preventive maintenance that takes time.
+    system_downtime : float or numpy.ndarray
+        The expected time the system is down in the window,
+        ``window * (1 - mission_availability(window))``.
+    node_failures : dict
+        Each component's expected number of failures (a nested RBD's: its
+        system failures).
+    node_corrective : dict
+        Each component's expected number of corrective actions, at each of
+        which ``repair_cost`` and ``replace_cost`` are charged: its failures,
+        or for hidden failures, those found by a test in the window.
+    node_preventive : dict
+        Each component's expected number of preventive replacements (age or
+        block), at each of which its preventive cost is charged.
+    node_inspections : dict
+        Each component's expected number of tests (of hidden failures).
+    node_downtime : dict
+        Each component's expected time down in the window.
+
+    Examples
+    --------
+    One component with failure rate 0.1 and repair rate 1, over 10 time
+    units, fails ``0.1 * (10 / 1.1 + 0.1 / 1.1 ** 2 * (1 - exp(-11)))``
+    times on average:
+
+    >>> import surpyval as surv
+    >>> from repyability import RepairableRBD
+    >>> rbd = RepairableRBD(
+    ...     [("s", "c"), ("c", "t")],
+    ...     {
+    ...         "c": {
+    ...             "reliability": surv.Exponential.from_params([0.1]),
+    ...             "repairability": surv.Exponential.from_params([1.0]),
+    ...         }
+    ...     },
+    ... )
+    >>> window = rbd.expected_events(10.0)
+    >>> round(window.system_failures, 4)
+    0.9174
+    >>> round(window.node_downtime["c"], 3)
+    0.826
+    """
+
+    window: Any
+    system_failures: Any
+    system_planned_outages: Any
+    system_downtime: Any
+    node_failures: Dict[Hashable, Any]
+    node_corrective: Dict[Hashable, Any]
+    node_preventive: Dict[Hashable, Any]
+    node_inspections: Dict[Hashable, Any]
+    node_downtime: Dict[Hashable, Any]
+
+
+@dataclass
+class ExpectedCost(_ResultMapping):
+    """The expected cost of running a system over a window from new:
+    returned by ``RepairableRBD.expected_cost``.
+
+    Exact (numerical, with no simulation): the mean that
+    ``RepairableRBD.cost`` estimates, by the same categories, from each
+    category's expected events (see
+    [`ExpectedEvents`][repyability.ExpectedEvents]) times its mean cost,
+    and the expected downtimes times their rates. Each value is a float for
+    one window, or an array in the shape of the windows given.
+
+    Attributes
+    ----------
+    window : float or numpy.ndarray
+        The window's length, from new.
+    mean : float or numpy.ndarray
+        The expected running cost of the window: the sum of
+        ``by_category``.
+    by_category : dict
+        The expected cost of ``"repair"`` and ``"replace"`` (per corrective
+        action), ``"preventive"`` (per preventive replacement),
+        ``"inspection"`` (per test), ``"component_downtime"``,
+        ``"system_downtime"`` and ``"setup"`` (once per stop of a
+        maintenance group), as in ``CostResult``.
+    by_component : dict
+        The expected cost attributable to each costed component (its
+        repair, replace, preventive, inspection and own downtime cost).
+    acquisition_cost : float
+        The one-off cost of buying the components, not in ``mean``.
+
+    Examples
+    --------
+    One component with MTTF 10 and MTTR 1, at 100 per repair, and 50 per
+    unit time of system downtime, over 100 time units:
+
+    >>> import surpyval as surv
+    >>> from repyability import RepairableRBD
+    >>> rbd = RepairableRBD(
+    ...     [("s", "c"), ("c", "t")],
+    ...     {
+    ...         "c": {
+    ...             "reliability": surv.Exponential.from_params([0.1]),
+    ...             "repairability": surv.Exponential.from_params([1.0]),
+    ...             "repair_cost": 100.0,
+    ...         }
+    ...     },
+    ...     downtime_cost_rate=50.0,
+    ... )
+    >>> cost = rbd.expected_cost(100.0)
+    >>> round(cost.mean, 2)  # cost() simulates about this, with its spread
+    1360.33
+    >>> round(cost.by_category["repair"], 2)  # 100 per failure
+    909.92
+    >>> round(cost.by_category["system_downtime"], 2)  # 50 per unit down
+    450.41
+    >>> round(cost.cost_rate, 2), round(rbd.expected_cost_rate(), 2)
+    (13.6, 13.64)
+    """
+
+    window: Any
+    mean: Any
+    by_category: Dict[str, Any]
+    by_component: Dict[Hashable, Any]
+    acquisition_cost: float = 0.0
+
+    @property
+    def total(self) -> Any:
+        """The cost of owning the system for the window from new:
+        ``acquisition_cost + mean``.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The total cost for each window.
+        """
+        return self.acquisition_cost + self.mean
+
+    @property
+    def cost_rate(self) -> Any:
+        """The mean cost per unit time over the window, ``mean / window``
+        (nan for a window of 0); it approaches
+        ``RepairableRBD.expected_cost_rate()`` as the window grows.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The cost rate for each window.
+        """
+        with np.errstate(invalid="ignore", divide="ignore"):
+            rate = np.divide(self.mean, self.window)
+        return float(rate) if np.ndim(rate) == 0 else rate
+
+
+@dataclass
 class ReliabilityRedundancyAllocation(_ResultMapping):
     """The component reliability and number of copies chosen for each
     node by ``NonRepairableRBD.allocate_reliability_redundancy``.

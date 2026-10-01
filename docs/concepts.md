@@ -485,12 +485,29 @@ mean is the long-run value plus about `b/T`: for one component
 `b = A (E[C²]/(2E[C]) − E[U²]/(2E[U]))`, `C = U + D`, positive for a life
 that wears out, and for a system `Σ_i I_B^i b_i` to first order.
 
+**Expected events over a window.** The frequency formula holds at every
+time, not only in the long run: a component failing at `t` fails the system
+if it is critical then, with probability `I_B^i(t)` at the availabilities
+`A_j(t)`. So the system's expected failures in `[0, T)` from new are
+
+```
+E[N(T)] = ∫₀ᵀ Σ_i I_B^i(t) dM_i(t)
+```
+
+with `M_i(t)` component `i`'s expected failures by `t`, its renewal
+function, which the renewal equation gives alongside `A_i(t)`.
+`expected_failures` and `expected_events` compute it, with the system's
+planned outages counted the same way and the expected downtimes as
+integrals of the unavailabilities; their long-run rates are `ω` and the
+like. Events at exact times (replacements due at the same age or block
+time) are taken together: they take the system down at most once.
+
 `availability()` simulates `mc_samples` independent histories instead (each
 component's alternating failures and repairs, merged in time order, with the
 system's state re-evaluated at every event) and reports the fraction of
 histories up at each time. The histories also give what the exact methods
-do not: the counts, downtimes and costs over the window, and the criticality
-measures below. Each point is a proportion, so its standard error is
+do not: how much the counts, downtimes and costs over the window vary, and
+the criticality measures below. Each point is a proportion, so its standard error is
 `√(A(1 − A)/N)`; the confidence band uses the Wilson score interval, which
 stays sensible at `A = 1`. For exponential components the simulation is held
 to the exact Markov solution in the test suite, and on the benchmark
@@ -591,9 +608,11 @@ cost rate = downtime_cost_rate · (1 − A_sys)
           + Σ (1 − A_i) · downtime_cost_i
 ```
 
-A cost distribution enters through its mean, by linearity of expectation. The
-cost over a finite window is random, and its distribution has no closed form,
-so `cost()` simulates it: each history accumulates the charges at its failures
+A cost distribution enters through its mean, by linearity of expectation. By
+the same linearity the expected cost of a finite window from new is exact:
+`expected_cost` sums each category's expected events over the window (see
+availability above) times its mean cost. The cost of a window is random,
+though, and its distribution has no closed form, so `cost()` simulates it: each history accumulates the charges at its failures
 and the downtime it incurs. Its **spread** (standard deviation, percentiles)
 is a property of the system; the **uncertainty of its mean** shrinks like
 `1/√N`. As the window grows, the simulated cost per unit time converges to the

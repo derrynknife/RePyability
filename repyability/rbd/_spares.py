@@ -21,14 +21,15 @@ replacement finds the ``s`` before it within ``tau`` if ``X + V^{*(s-1)} +
 U <= tau``, which decides the fill rate of a stock of ``s`` replenished one
 for one.
 
-The distributions are put on a grid with the replacement age on it. Their
-atoms at 0 (dead on arrival, work in no time) and at the age are kept apart
-and exactly, so a sum of them that falls at the time counted to is counted
-in full. The rest is rounded to the grid twice, each value down to a grid
-point and up to the next. The mean of the two, from a grid point, is the
+The distributions are put on a grid with the replacement age on it. Their atoms
+at 0 (dead on arrival, work in no time) and at the age are kept apart and
+exactly, so a sum of them that falls at the time counted to is left out in
+full: the count is over ``[0, t)``, as the simulation counts, and windows one
+after another add up. The rest is rounded to the grid twice, each value down to
+a grid point and up to the next. The mean of the two, from a grid point, is the
 probability half a step later to second order, and is read off half a step
-earlier than the time wanted. The grid is refined until the probabilities
-move less than ``TOLERANCE``.
+earlier than the time wanted. The grid is refined until the probabilities move
+less than ``TOLERANCE``.
 """
 
 import math
@@ -149,12 +150,13 @@ class _Grid:
         return _Dist(rest, np.zeros(self.size))
 
     def at_most(self, up: _Dist, down: _Dist) -> float:
-        """``P(X <= end)`` from ``X`` rounded up and down: its atoms up to
-        the end, and the mean of its roundings' continuous parts, which
+        """``P(X < end)`` from ``X`` rounded up and down: its atoms before
+        the end (one at the end itself falls after it, as in the
+        simulation), and the mean of its roundings' continuous parts, which
         from a grid point is the probability half a step later, read half
         a step before the end."""
-        reach = int(math.floor(self.end / self.step * (1.0 + 1e-12) + 1e-9))
-        atoms = float(up.atoms[: reach + 1].sum())
+        reach = int(math.ceil(self.end / self.step * (1.0 - 1e-12) - 1e-9))
+        atoms = float(up.atoms[:reach].sum())
         cumulative = 0.5 * (np.cumsum(up.rest) + np.cumsum(down.rest))
         position = self.end / self.step - 0.5
         if position < 0.0:

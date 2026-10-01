@@ -142,6 +142,7 @@ maintenance or hidden failures):
 | `mean_availability`, `system_failure_frequency`, `mean_up_time`, `mean_down_time`, `mean_time_between_failures`, `expected_cost_rate`, `total_cost`, and the repairable importance measures | exact | From the long-run node availabilities. |
 | `capacity_distribution`, `system_capacity` | exact | From the node reliabilities (at a time) or long-run availabilities. |
 | `point_availability`, `mission_availability` | numerical | Each component's renewal equation, solved numerically (to about `1e-7`), and the system at its components' availabilities at each time. |
+| `expected_failures`, `expected_events` | numerical | Each component's expected events from its renewal equation, on the grid of its availability (to about `1e-7`), and the system's failures by the time-dependent Birnbaum/Vesely formula; `expected_cost` prices them, numerically when anything is priced. |
 | `availability` (with the capacity over time and the delivered fraction), `cost`, `compare` | simulated | Discrete-event simulation. |
 | `spares_demand`, `spares_stock` | numerical | Each component's replacements, a renewal process, counted on a grid (to about `1e-6`); `spares_demand(method="simulate")` counts them in simulations instead. |
 | `allocate_redundancy` (both kinds of RBD) | exact | Exact scoring: `method="exact"` is a proven optimum, `"greedy"` a heuristic. Cold standby (`strategy="cold"` or `"choose"`) that needs two or more units working, of units that are not identical Exponentials, is scored from 10 000 seeded simulated lifetimes. |

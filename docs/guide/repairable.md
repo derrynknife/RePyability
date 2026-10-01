@@ -8,9 +8,10 @@
 A [`RepairableRBD`][repyability.RepairableRBD] models a system whose
 components are repaired when they fail. The question changes from "has it
 failed yet?" to "is it up?": **availability**. Long-run quantities have exact
-closed forms, and the availability over time from new is exact too; the
-histories behind it (failure counts, downtime and cost over a window) and a
-family of criticality measures come from a discrete-event simulation.
+closed forms, and the availability over time from new is exact too, and so
+are the expected failures, downtime and cost over a window; the histories
+behind them (how much those counts and costs vary) and a family of
+criticality measures come from a discrete-event simulation.
 Theory: [Concepts](../concepts.md#availability).
 
 ## Components
@@ -133,6 +134,56 @@ scheduled replacements), what happens faster than a step, such as a short
 repair, is smoothed over it, so a point value there can be off by up to
 about the probability that the component is under repair; mission averages
 are not affected.
+
+## Expected events over a window (exact)
+
+From the same curves, the expected number of system failures in a window
+`[0, t)` from new is exact, and so is everything else the simulation counts
+on average:
+
+```python
+plant.expected_failures([10.0, 100.0, 1000.0])   # array([ 0.3384,  3.4853, 34.9538])
+window = plant.expected_events(100.0)
+window.system_failures    # -> 3.485   the simulation below finds 3.508
+window.system_downtime    # -> 4.556   = 100 * (1 - plant.mission_availability(100))
+window.node_failures      # {'A': 9.099, 'B': 9.099, 'C': 1.925}
+window.node_downtime      # {'A': 9.008, 'B': 9.008, 'C': 3.772}
+```
+
+A component's failure takes the system down if the component is critical
+then, which, the components being independent, it is with probability its
+Birnbaum importance at their availabilities at that time. So the system's
+expected failures are the time-dependent form of the Birnbaum/Vesely
+formula,
+
+```text
+E[system failures in [0, t)] = ∫₀ᵗ Σᵢ I_B,i(s) dMᵢ(s)
+```
+
+with `Mᵢ(s)` component *i*'s expected failures by `s`, which its renewal
+equation gives on the grid of its point availability (to about `1e-7`). In
+the long run they come at `system_failure_frequency()`: `3.497` per 100
+here. [`ExpectedEvents`][repyability.ExpectedEvents] holds the system's
+expected failures, planned outages and downtime, and each component's
+failures, corrective actions (at which its repair and replace costs are
+charged: its failures, or for hidden failures those a test finds),
+preventive replacements, tests and downtime.
+
+- **Events at exact times are counted exactly.** An event at `t` itself
+  falls after the window, as in the simulation, so windows one after
+  another add up; components replaced at the same age or block times, or
+  dead on arrival together, take the system down once.
+- **They cover what `point_availability` covers** (age and block
+  replacement, nested RBDs, hidden failures with a constant failure rate and
+  instant tests and repair), take `working_nodes`, `broken_nodes` and
+  `method`, and take an array of windows as well as one. A window of decades
+  costs no more than a few years: past the time the components settle, the
+  counts grow at their long-run rates.
+- **Only the means are exact.** How much the counts vary, and the chance of
+  no failure in the window, come from the simulation.
+
+`expected_cost` prices the same events (see
+[Costs](costs.md#the-expected-cost-of-a-window-exact)).
 
 ## Availability over time (simulated)
 

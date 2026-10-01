@@ -146,18 +146,27 @@ def test_the_exact_demand_agrees_with_the_rbd_s_simulation():
     )
 
 
-def test_a_replacement_at_the_horizon_counts():
-    # A unit that would last 1,000 hours, replaced every 100 in no time: ten
-    # replacements by 1,000 hours, the last at exactly 1,000.
+def test_a_replacement_at_the_horizon_falls_after_it():
+    # A unit that would last 1,000 hours, replaced every 100 in no time:
+    # nine replacements before 1,000 hours, the tenth at exactly 1,000,
+    # which falls after the window, as in the simulation (so that windows
+    # one after another add up).
     spec = {
         "reliability": X(1_000.0),
         "repairability": "instant",
         "preventive": {"interval": 100.0},
     }
-    demand = single(spec).spares_demand(1_000.0)["c"]
-    assert demand.probabilities[10] == pytest.approx(1.0)
-    assert single(spec).spares_demand(999.0)["c"].probabilities[9] == (
+    rbd = single(spec)
+    assert rbd.spares_demand(1_000.0)["c"].probabilities[9] == (
         pytest.approx(1.0)
+    )
+    assert rbd.spares_demand(1_000.5)["c"].probabilities[10] == (
+        pytest.approx(1.0)
+    )
+    simulated = rbd.spares_demand(1_000.0, method="simulate", mc_samples=20)
+    assert simulated["c"].probabilities[9] == 1.0
+    assert rbd.expected_events(1_000.0).node_preventive["c"] == (
+        pytest.approx(9.0)
     )
 
 

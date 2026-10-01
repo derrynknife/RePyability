@@ -125,6 +125,34 @@ interval.lower < plant.expected_cost_rate() * 1000.0 < interval.upper   # True
 replace, preventive and own downtime cost (lost production is a system cost
 and is not attributed to components).
 
+## The expected cost of a window (exact)
+
+The long-run rate times a window is the window's expected cost only once the
+components have settled: from new, the first stretch costs less (or more).
+`expected_cost(t)` gives the expected cost of `[0, t)` from new exactly, by
+the same categories as the simulation:
+
+```python
+window = plant.expected_cost(1000.0)
+window.mean           # -> 121155   cost() above estimates 121703 ± 1666
+window.by_category    # repair 45983.07, replace 28848.37, system_downtime 46323.67, the rest 0
+window.by_component   # {'A': 18183.47, 'B': 18183.47, 'C': 38464.5}
+window.cost_rate      # -> 121.16   per unit time, against 121.23 in the long run
+plant.expected_cost([10.0, 100.0]).cost_rate   # array([113.45, 120.45])
+```
+
+Each category is its events' expected number over the window (see
+[Repairable systems](repairable.md#expected-events-over-a-window-exact))
+times its mean cost: the repair and replace costs at each corrective action,
+the preventive cost at each preventive replacement, the inspection cost at
+each test, the downtime rates over the expected downtimes, and a maintenance
+group's set-up once per stop (replacements due at one instant are one
+stop). It returns an [`ExpectedCost`][repyability.ExpectedCost], with
+`mean`, `by_category`, `by_component`, `acquisition_cost`, `total` (the two
+added) and `cost_rate`. It covers what the availability over time covers,
+and refuses the rest with the reason; with nothing priced, every category is
+0. For the spread of a window's cost, simulate it with `cost()`.
+
 ## Costs drawn from distributions
 
 `repair_cost` and `replace_cost` can be a distribution of the cost instead of
@@ -641,6 +669,15 @@ line = RepairableRBD([("s", "pump"), ("pump", "t")], {"pump": pump},
 line.acquisition_cost          # -> 20000.0
 line.expected_cost_rate()      # -> 1.4851   (500 + 100 × 10) / 1010 per hour
 line.total_cost(87600.0)       # -> 150099.0   ten years
+```
+
+`total_cost` runs the system at its long-run rate from the start. The
+exact expected cost of owning it from new is `expected_cost(H).total`: the
+pump is new at the start, so it is down a little less early on than in the
+long run.
+
+```python
+line.expected_cost(87600.0).total   # -> 150089
 ```
 
 ### Buying redundancy

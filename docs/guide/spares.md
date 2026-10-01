@@ -107,8 +107,10 @@ a renewal process. Its `n`-th replacement comes after `n − 1` whole cycles
 or maintenance time) and one more up time, so the probability of `n` or more
 by the horizon is that of their sum falling within it. `spares_demand`
 works that out on a grid, refined until the probabilities agree to about
-`1e-6`. The atoms (a replacement age, work in no time) are kept exact, so a
-replacement that falls at the horizon counts in full.
+`1e-6`. The atoms (a replacement age, work in no time) are kept exact, and
+the count is over `[0, horizon)`, as the simulation counts: a replacement at
+the horizon itself falls after it, so that horizons one after another add
+up.
 
 `spares_stock` counts the same way in a lead time in the long run. From a
 random time, the first replacement ends what is left of an up time, or

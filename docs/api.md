@@ -99,6 +99,10 @@ models provided here (see [Building an RBD](guide/building.md) and
 
 ::: repyability.CostResult
 
+::: repyability.ExpectedEvents
+
+::: repyability.ExpectedCost
+
 ::: repyability.ConfidenceInterval
 
 ::: repyability.UncertaintyResult
