@@ -76,6 +76,14 @@
   that simulates; `seed` seeds it (#105). The old names (`N`, `max_N`,
   `n_sims`, `n_simulations`) warn until 1.0, through
   `repyability/utils/deprecation.py`. Use these names in new code.
+- **A deprecation gives one minor release's notice.** It warns in one
+  minor release and the next removes it: non-parametric RBD nodes and the
+  standby and load-sharing models' fits to simulated lifetimes warn in
+  0.11 (a `FutureWarning`, always shown, through
+  `repyability/utils/deprecation.py`) and go in 0.12 (#149).
+  `test_the_removal_is_the_next_minor_release` fails once the version
+  reaches `REMOVAL`, until they are removed. (The renamed simulation
+  arguments above, deprecated earlier, are still due in 1.0.)
 - **Exact by default, simulation on request.** Where an analysis can be
   computed exactly or numerically, that is the default, and the Monte-Carlo
   estimate is a `method="simulate"` away (as for `NonRepairableRBD.mean`).

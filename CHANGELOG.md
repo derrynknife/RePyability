@@ -37,7 +37,9 @@ phased missions are new, exact and simulated (#100, #101), as are the
 two-terminal reliability of undirected networks (#104) and demonstration
 test planning (#129). Meshed diagrams are decided by a
 binary decision diagram, in milliseconds where their path sets took
-minutes (#102, #103).
+minutes (#102, #103). Non-parametric nodes, and the fits to simulated
+lifetimes behind some standby and load-sharing models, are deprecated and
+go in 0.12.
 
 Behaviour changes: seeded repairable simulations give different numbers,
 once, as each random quantity now has a stream of its own (#119);
@@ -558,6 +560,26 @@ required.
   `mc_samples` and `seed`: they are ignored (#122).
 - `RepeatedStandbyNode`'s `N` and `lower`, which it has ignored since its
   reliability became a numerical convolution: passing them now warns.
+- **Non-parametric nodes** (a surpyval `KaplanMeier`, `NelsonAalen` or
+  other non-parametric fit as a node's life or repair time, directly or
+  inside a standby, repeated or degrading node or a `NonRepairable`): an
+  RBD built with one warns, with a `FutureWarning`, and 0.12 will refuse
+  it (#149). Their curves end at the data, so the MTTF, B-lives and long-run
+  values beyond it are artefacts, and their draws cannot be paired or
+  streamed. Fit a parametric distribution in surpyval instead. The
+  standalone `NonRepairable` maintenance policies keep them.
+- **The fit to simulated lifetimes** that stands in for a reliability with
+  no exact or numerical form: warm and hot standby, and cold standby with
+  two or more units operating, of units that are not identical
+  Exponentials (`StandbyModel`), and load sharing of units that are not
+  identical with an Exponential baseline (`LoadSharingModel`). Such a
+  model warns when built, with a `FutureWarning`. In 0.12 it will still
+  draw lifetimes for simulations, but have no `sf`: the analyses that
+  need one will refuse, and point to the system's simulations (#149). #135, #138
+  and #139 would make most of these cases exact or numerical. Hot
+  standby is *k*-out-of-*n*: its units as parallel nodes are exact now.
+  `allocate_redundancy`'s scoring of cold standby that needs two copies
+  working uses such a model internally, without the warning.
 
 ### Fixed
 

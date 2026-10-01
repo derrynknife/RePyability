@@ -82,7 +82,12 @@ Other combinations raise `NotImplementedError`.
 | Everything else (warm or hot non-Exponential units, cold `k ≥ 2` non-Exponential units) | Simulation: a Kaplan–Meier fit to `mc_samples` simulated lifetimes (default 10 000), seeded by `seed`, with `lower` passed as the fit's lower limit. |
 
 The simulated cases carry Monte-Carlo error, and their `sf` returns
-one-element arrays even for a scalar time. For hot standby with non-Exponential
+one-element arrays even for a scalar time. **The fit to simulated
+lifetimes is deprecated** (such a model warns when built): in 0.12 these
+arrangements will still draw lifetimes for simulations, but have no `sf`,
+so the analyses that need one will refuse and point to the system's
+simulations. Exact and numerical methods for most of them are planned
+(#135, #138). For hot standby with non-Exponential
 units, drawing the units as ordinary parallel nodes gives the exact answer.
 
 `mean()` and `random(size, seed=None)` give the arrangement's mean lifetime
@@ -168,7 +173,10 @@ p = RegressionNode(unit, covariates=[1.0]).sf(50)[0]
 - Identical units with an **Exponential** baseline have an exact
   (hypoexponential) group lifetime and `is_simulated` is `False`. Otherwise
   the survival function is a Kaplan–Meier fit to `mc_samples` simulated lifetimes
-  (seeded by `seed`), and `is_simulated` is `True`.
+  (seeded by `seed`), and `is_simulated` is `True`. That fit is deprecated,
+  as for standby: from 0.12 such a group has no `sf`, and is simulated only
+  in the system's simulations (a numerical method for identical units is
+  planned, #139).
 - With no load effect the units neither share stress nor accelerate, and the
   group reduces exactly to `k`-out-of-`n` parallel.
 - The units must be AFT models (they need the time-scaling `phi(load)`);

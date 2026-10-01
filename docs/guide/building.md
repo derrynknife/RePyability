@@ -45,7 +45,7 @@ A node model is anything that exposes `sf(t)` and `ff(t)`:
 | Model | Use it for |
 |---|---|
 | A surpyval parametric distribution (`Weibull`, `Exponential`, `LogNormal`, …) | An ordinary component with a fitted lifetime. |
-| A surpyval non-parametric fit (`KaplanMeier`, `NelsonAalen`, …) | A component described directly by its data. |
+| A surpyval non-parametric fit (`KaplanMeier`, `NelsonAalen`, …) | Deprecated, and refused from 0.12: its curve ends at the data. Fit a parametric distribution in surpyval instead. |
 | `surpyval.FixedEventProbability` | A component with a fixed probability of failure (a demand, a mission). |
 | [`PerfectReliability`][repyability.PerfectReliability] / [`PerfectUnreliability`][repyability.PerfectUnreliability] | A node that never fails / has always failed (a junction, a placeholder). |
 | [`StandbyModel`][repyability.StandbyModel], [`RepeatedStandbyNode`][repyability.RepeatedStandbyNode] | Standby redundancy (see [Redundancy models](redundancy-models.md)). |

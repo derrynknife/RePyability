@@ -35,7 +35,7 @@ import warnings
 import numpy as np
 from surpyval import Hypoexponential, KaplanMeier
 
-from repyability.utils.deprecation import renamed
+from repyability.utils.deprecation import renamed, warn_simulated_fit
 from repyability.utils.wrappers import conditional_survival, numpy_seed
 
 from ._model_utils import is_exponential
@@ -260,6 +260,10 @@ class LoadSharingModel:
         if self._sf_model is not None:
             self.model = None
         else:
+            warn_simulated_fit(
+                "LoadSharingModel",
+                "units that are not identical with an Exponential baseline",
+            )
             x_random = self.random(mc_samples, seed=seed)
             self.model = KaplanMeier.fit(x_random, set_lower_limit=lower)
             # The simulated lifetimes' mean, for mean().

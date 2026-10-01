@@ -35,7 +35,11 @@ from numpy.typing import ArrayLike
 from scipy.optimize import brentq
 from surpyval import NonParametric
 
-from repyability.utils.deprecation import ignored
+from repyability.utils.deprecation import (
+    ignored,
+    nonparametric_nodes,
+    warn_nonparametric,
+)
 from repyability.utils.wrappers import conditional_survival, numpy_seed
 
 from . import _montecarlo as montecarlo
@@ -499,6 +503,7 @@ class NonRepairableRBD(RBD):
                 pass
 
         self.reliabilities = reliabilities
+        warn_nonparametric(nonparametric_nodes(reliabilities))
         self.repeated = repeated
         self.ccf_groups = self._validate_ccf_groups(ccf_groups)
 
@@ -1878,12 +1883,18 @@ class NonRepairableRBD(RBD):
                         for model, n in zip(models[i], counts)
                         for _ in range(n)
                     ]
-                    standby = StandbyModel(
-                        units,
-                        k=fewest[i],
-                        switching_probability=switching[i],
-                        seed=0,
-                    )
+                    with warnings.catch_warnings():
+                        # Scoring a candidate, not the user's model:
+                        # its fit's deprecation is not theirs to act on.
+                        warnings.filterwarnings(
+                            "ignore", "This StandbyModel", FutureWarning
+                        )
+                        standby = StandbyModel(
+                            units,
+                            k=fewest[i],
+                            switching_probability=switching[i],
+                            seed=0,
+                        )
                     known[counts] = float(np.ravel(standby.ff(x))[0])
                 return known[counts]
 

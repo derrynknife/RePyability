@@ -70,7 +70,9 @@ def test_the_old_node_model_names_still_work_and_warn(unit_aft):
     with pytest.warns(DeprecationWarning, match="ignores N"):
         RepeatedStandbyNode(w, 2, N=1000)
     with warnings.catch_warnings():
-        warnings.simplefilter("error")
+        # The new names don't warn. (A simulated StandbyModel's fit does,
+        # with a FutureWarning: see test_deprecated_models.py.)
+        warnings.simplefilter("error", DeprecationWarning)
         RepeatedStandbyNode(w, 2)
         StandbyModel([w] * 3, k=2, mc_samples=100, seed=1).mean()
 

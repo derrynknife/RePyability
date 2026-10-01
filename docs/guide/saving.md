@@ -97,6 +97,7 @@ Simulations involving non-parametric nodes (Kaplan–Meier and the other
 surpyval non-parametric fits) are reproducible too: surpyval seeds their
 draws from the global generator
 ([surpyval issue #361](https://github.com/derrynknife/SurPyval/issues/361)).
+Non-parametric nodes are deprecated, though, and go in 0.12.
 
 The simulations draw the same random numbers in the same order however they
 are computed internally (in blocks for speed, or one at a time), so seeded

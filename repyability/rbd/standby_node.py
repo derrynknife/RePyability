@@ -4,7 +4,7 @@ from queue import PriorityQueue
 import numpy as np
 from surpyval import Hypoexponential, KaplanMeier
 
-from repyability.utils.deprecation import renamed
+from repyability.utils.deprecation import renamed, warn_simulated_fit
 from repyability.utils.wrappers import numpy_seed
 
 from ._model_utils import is_exponential
@@ -293,6 +293,15 @@ class StandbyModel:
                 self._sf_model = closed_form
                 self.model = None
             else:
+                warn_simulated_fit(
+                    "StandbyModel",
+                    (
+                        "hot standby, which is k-out-of-n: its units as "
+                        "parallel nodes give the exact reliability"
+                        if self.dormancy_factor == 1.0
+                        else "warm standby"
+                    ),
+                )
                 self._simulate(mc_samples, seed, lower)
         elif rate is not None and is_perfect_switching(switching_probability):
             # Identical exponential units: the cold standby lifetime is exactly
@@ -322,6 +331,9 @@ class StandbyModel:
                     "switching_probability is only supported for k=1 cold"
                     " standby; for k>=2 leave it at 1.0 (perfect switching)."
                 )
+            warn_simulated_fit(
+                "StandbyModel", f"cold standby with {k} units operating"
+            )
             self._simulate(mc_samples, seed, lower)
 
     def _simulate(self, mc_samples, seed, lower) -> None:

@@ -93,7 +93,11 @@ if TYPE_CHECKING:
     from repyability.rbd.chunks import SimulationChunk
 
 from repyability.rbd.routes import AnalysisRoute
-from repyability.utils.deprecation import renamed
+from repyability.utils.deprecation import (
+    nonparametric_nodes,
+    renamed,
+    warn_nonparametric,
+)
 
 
 class _StreamedRBD:
@@ -2845,6 +2849,15 @@ class RepairableRBD(RBD):
                 repairability[name] = component.time_to_replace
             else:
                 raise TypeError(self._unknown_component(name, component))
+        warn_nonparametric(
+            nonparametric_nodes(
+                {
+                    name: spec
+                    for name, spec in self._init_args["components"].items()
+                    if not isinstance(spec, RepairableRBD)
+                }
+            )
+        )
 
         super().__init__(
             edges,
