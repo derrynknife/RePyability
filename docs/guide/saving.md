@@ -210,17 +210,17 @@ routes["availability"].engine      # 'python': no compiled engine for tests
   and `fussell_vesely(fv_type="p")` list every path set, and
   `get_all_path_sets()` every simple path: avoid them on large redundant
   diagrams.
-- **Meshed diagrams: the decision-diagram option.** Set
-  `repyability.rbd.modular.CORE_METHOD = "bdd"` before building an RBD and
-  the part that does not reduce is decided by a binary decision diagram
-  built from its graph, without listing its path sets. Its size grows with
-  how wide the mesh is, not with how many paths it has. Six bridges in
-  series (4,096 minimal path sets) take about 9 seconds the usual way and
-  0.06 seconds with it; eight or more, or a grid of 5 × 12 nodes, take
-  longer than 40 seconds the usual way, while fifty bridges take 0.01
-  seconds and a 10 × 10 grid 0.2. Every result is the same to rounding (the
-  whole test suite passes with it on), and small cores are as fast either
-  way. It is an option for now; the default stays the path sets.
+- **Meshed diagrams: a decision diagram.** A part that does not reduce
+  and may have more than a hundred minimal path sets is decided by a
+  binary decision diagram built from its graph instead, without listing
+  them. Its size grows with how wide the mesh is, not with how many paths
+  it has. Six bridges in series (4,096 minimal path sets) take about 9
+  seconds by their path sets and 0.06 seconds this way; eight or more, or
+  a grid of 5 × 12 nodes, take longer than 40 seconds by path sets, while
+  fifty bridges take 0.01 seconds and a 10 × 10 grid 0.2. Every result is
+  the same to rounding either way (the whole test suite passes with
+  either forced). To force one, set `repyability.rbd.modular.CORE_METHOD`
+  to `"paths"` or `"bdd"` (by default `"auto"`) before building the RBD.
 - **Simulations** are vectorised where the models allow it: `mean()` of a
   system of parametric components draws 100 000 lifetimes in well under a
   second. Availability simulations step through events, so their cost grows
@@ -242,8 +242,9 @@ routes["availability"].engine      # 'python': no compiled engine for tests
     non-series-parallel part with a path of about a thousand or more nodes
     exceeds Python's default recursion limit of 1,000 and raises
     `RecursionError`. Raise the limit before building such an RBD:
-    `sys.setrecursionlimit(10_000)` handles paths of several thousand nodes,
-    or use the decision-diagram option above, which builds without
-    recursion (four hundred bridges in series, 2,000 nodes, in 0.13
-    seconds). Series chains and parallel groups are reduced first, so long
-    chains and wide systems are not affected.
+    `sys.setrecursionlimit(10_000)` handles paths of several thousand nodes.
+    A mesh with more than a hundred minimal path sets is decided by its
+    decision diagram (above), which builds without recursion: four hundred
+    bridges in series, 2,000 nodes, take 0.13 seconds. Series chains and
+    parallel groups are reduced first, so long chains and wide systems are
+    not affected.

@@ -301,20 +301,29 @@ def pivots(plan: tuple) -> List[Hashable]:
 
 def path_sets(plan: tuple) -> set:
     """The minimal path sets of the structure a plan decides: the sets of
-    variables whose working makes it work, with no smaller one."""
+    variables whose working makes it work, with no smaller one. With the
+    pivot working the structure is as its active branch, failed as its
+    inactive one; the inactive branch's sets work either way, and the
+    active branch's, with the pivot, unless they hold one of those."""
     steps, root = plan
-    sets: List[List[frozenset]] = [[], [frozenset()]]
+    variables = pivots(plan)
+    # Sets as bitmasks (a bit per variable): a union or a subset test is
+    # one integer operation.
+    bit = {v: 1 << i for i, v in enumerate(variables)}
+    sets: List[List[int]] = [[], [0]]
     for pivot, active, inactive in steps:
         without = sets[inactive]
         sets.append(
             without
             + [
-                s | {pivot}
+                s | bit[pivot]
                 for s in sets[active]
-                if not any(other <= s for other in without)
+                if not any(other & s == other for other in without)
             ]
         )
-    return set(sets[root])
+    return {
+        frozenset(v for v in variables if mask & bit[v]) for mask in sets[root]
+    }
 
 
 def lifetime(plan: tuple, lifetimes: Sequence[Any], size: int) -> np.ndarray:

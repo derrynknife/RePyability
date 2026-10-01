@@ -84,12 +84,20 @@ NO_PATHS = "RBD has no paths through! Need to re-evaluate the KooN nodes."
 # when they hold at most this many nodes in all, and loops over them if not.
 _WRITTEN_OUT = 5000
 
-#: How the core is decided (#102): ``"paths"`` (the default), by the
-#: Shannon decomposition of its minimal path sets, or ``"bdd"``, by a
-#: binary decision diagram built from its graph without listing them (see
-#: ``bdd.py``), much smaller for a meshed core. An option for now: it is
-#: read when a diagram is decomposed (on construction).
-CORE_METHOD = "paths"
+#: How the core is decided: ``"paths"``, by the Shannon decomposition of
+#: its minimal path sets, ``"bdd"``, by a binary decision diagram built
+#: from its graph without listing them (see ``bdd.py``; #102), or
+#: ``"auto"`` (the default, #103): the decision diagram for a core that may
+#: have more than ``AUTO_PATHS`` minimal path sets, which multiply in a
+#: meshed core while the diagram grows with the mesh's width, and the path
+#: sets for a smaller one. Read when a diagram is decomposed (on
+#: construction).
+CORE_METHOD = "auto"
+#: The most minimal path sets (as ``_path_count`` bounds them) for which
+#: ``"auto"`` lists them: beyond, the decision diagram is several times
+#: smaller and the listing slows (a hundred take about a tenth of a second
+#: to decompose, four thousand about nine).
+AUTO_PATHS = 100
 
 
 class FlowGraph:
@@ -909,8 +917,8 @@ def decompose(
     structures that are not valid RBDs, whose semantics are those of that
     search).
 
-    ``core`` is how what the reduction leaves is decided: ``"paths"`` or
-    ``"bdd"`` (see ``CORE_METHOD``, the default).
+    ``core`` is how what the reduction leaves is decided: ``"paths"``,
+    ``"bdd"`` or ``"auto"`` (see ``CORE_METHOD``, the default).
 
     ``aliases`` maps each node that stands for a component drawn in more
     than one place (a repeated node) to that component. Every appearance
@@ -924,8 +932,10 @@ def decompose(
         is unknown.
     """
     method = CORE_METHOD if core is None else core
-    if method not in ("paths", "bdd"):
-        raise ValueError(f"core must be 'paths' or 'bdd', got {method!r}.")
+    if method not in ("paths", "bdd", "auto"):
+        raise ValueError(
+            f"core must be 'paths', 'bdd' or 'auto', got {method!r}."
+        )
     if not reduce:
         terms = [(NODE, n) for n in graph.nodes]
         position = {n: i for i, (_, n) in enumerate(terms)}
@@ -959,6 +969,9 @@ def decompose(
             terms[v] = (NODE, aliases.get(terms[v][1], terms[v][1]))
         tree, position = _tree(terms, [v])
         return Decomposition(tree, root=position[v], flow=flow)
+    if method == "auto":
+        many = _path_count(reduction) > AUTO_PATHS
+        method = "bdd" if many else "paths"
     if method == "bdd":
         decomposition = _from_graph(reduction, aliases)
     else:
@@ -970,6 +983,40 @@ def decompose(
         )
     decomposition.flow = flow
     return decomposition
+
+
+def _path_count(reduction: "_Reduction", cap: int = 10**15) -> int:
+    """At least as many as the minimal path sets of what ``reduction``
+    leaves (capped at ``cap``): the ways of reaching each vertex, from its
+    predecessors' in topological order, a vertex that needs ``k`` of them
+    combining ``k`` of their ways (the elementary symmetric sum of degree
+    ``k``). Each path set is one of these ways; a way may hold another, or
+    a component twice, so there may be fewer."""
+    waiting = {
+        v: sum(1 for u in reduction.pred[v] if u != _SOURCE)
+        for v in reduction.alive
+    }
+    ready = [v for v, n in waiting.items() if n == 0]
+    ways: Dict[int, int] = {_SOURCE: 1}
+
+    def combined(v: int) -> int:
+        k = reduction.k[v]
+        sums = [1] + [0] * k
+        for u in reduction.pred[v]:
+            x = ways.get(u, 0)
+            for j in range(k, 0, -1):
+                sums[j] = min(sums[j] + sums[j - 1] * x, cap)
+        return sums[k]
+
+    while ready:
+        v = ready.pop()
+        ways[v] = combined(v)
+        for w in reduction.succ[v]:
+            if w in waiting:
+                waiting[w] -= 1
+                if waiting[w] == 0:
+                    ready.append(w)
+    return combined(_SINK)
 
 
 def _from_graph(

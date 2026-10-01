@@ -131,12 +131,11 @@ def bridges(n):
     return edges
 
 
-def test_a_chain_of_bridges_too_meshed_to_list_its_paths(monkeypatch):
+def test_a_chain_of_bridges_too_meshed_to_list_its_paths():
     # Forty bridges in series have 4 ** 40 minimal path sets; the decision
-    # diagram grows with them one by one.
+    # diagram grows with them one by one, and is chosen for them (#103).
     p = 0.9
     bridge = 2 * p**2 + 2 * p**3 - 5 * p**4 + 2 * p**5
-    monkeypatch.setattr(modular, "CORE_METHOD", "bdd")
     edges = bridges(40)
     names = {n for e in edges for n in e} - {"s", "t"}
     joints = {n for n in names if n.startswith("j")}
@@ -147,6 +146,7 @@ def test_a_chain_of_bridges_too_meshed_to_list_its_paths(monkeypatch):
             for n in names
         },
     )
+    assert rbd._decomposition().from_graph
     steps, _ = rbd._decomposition().core_plan()
     assert len(steps) < 40 * 20
     assert rbd.sf() == pytest.approx(bridge**40, rel=1e-12)
@@ -258,8 +258,44 @@ def test_the_diagram_is_reduced():
 
 def test_the_option_is_checked():
     rbd = RBD([("s", "a"), ("a", "t")])
-    with pytest.raises(ValueError, match="'paths' or 'bdd'"):
+    with pytest.raises(ValueError, match="'paths', 'bdd' or 'auto'"):
         decompose(rbd.G, "s", "t", core="zdd")
+
+
+@pytest.mark.parametrize(
+    "count, route", [(1, "paths"), (2, "paths"), (3, "bdd"), (8, "bdd")]
+)
+def test_the_decision_diagram_is_chosen_for_large_cores(count, route):
+    # A bridge has six directed paths through it (four minimal path sets:
+    # a path through the middle holds another), so a chain of n has a
+    # bound of 6 ** n: two bridges (36) are listed, three (216) are beyond
+    # AUTO_PATHS (100).
+    rbd = RBD(bridges(count))
+    structure = decompose(rbd.G, "s", "t", core="auto")
+    assert structure.from_graph == (route == "bdd")
+    reduction = modular._Reduction(rbd.G, "s", "t")
+    reduction.run()
+    assert modular._path_count(reduction) == 6**count
+    if count <= 3:
+        assert len(structure.path_sets()) == 4**count
+
+
+def test_the_path_count_bounds_the_path_sets():
+    for seed in range(150):
+        rng = np.random.default_rng(seed)
+        edges, k = random_diagram(rng, int(rng.integers(3, 12)))
+        rbd = RBD(edges, k=k, on_infeasible_rbd="ignore")
+        if not rbd.structure_check["is_valid"]:
+            continue
+        reduction = modular._Reduction(rbd.G, "s", "t")
+        reduction.run()
+        if len(reduction.alive) < 2:
+            continue
+        try:
+            paths = decompose(rbd.G, "s", "t", core="paths")
+        except ValueError:
+            continue
+        assert modular._path_count(reduction) >= len(paths.core or [])
 
 
 def test_the_orders_are_topological():
