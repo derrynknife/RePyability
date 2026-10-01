@@ -124,25 +124,25 @@ places, nested diagrams):
 | Sampled lifetimes or histories, and distributions or percentiles of an outcome over a window | Simulated | Yes: the answer is a sample. |
 | Comparing two designs (`compare`) | Simulated, with common random numbers | No, where both are exact: compare their exact values. |
 | The uncertainty from fitted component parameters (`sf_uncertainty`) | Sampled over the parameters | Sampling is the method. Intervals on the MTTF and B*X* life are missing (#133). |
-| Small failure probabilities, with a simulated node | Rare-event simulation (`unreliability_interval`) | Only while the node is simulated: an exact diagram gives `ff` directly. |
+| Small failure probabilities, with a simulated node | Rare-event simulation (`unreliability_interval`) | Only while the node is simulated: an exact diagram gives `ff` directly (losing relative precision below about 1e-12, until #148). |
 | Expected failures, outages and cost over a finite window | Simulated (`cost`, `availability`) | No: could be exact for independent components (#123). |
 | Capacity delivered over time, from new | Simulated | No: could be exact (#124). |
 | Repairable analyses from the components' current state, not new | Not available | Could be exact for independent components (#125). |
 | **Components** | | |
 | Warm or hot standby of non-exponential units | Simulated: a fit to simulated lifetimes | No: could be exact (#135). Hot standby is *k*-out-of-*n*: draw the units as parallel nodes for an exact answer now. |
-| Cold standby with two or more units operating, and load sharing, of non-exponential units | Simulated: a fit to simulated lifetimes | No: could be numerical (not planned yet). |
+| Cold standby with two or more units operating, and load sharing, of non-exponential units | Simulated: a fit to simulated lifetimes | No: could be numerical (#138 for two units operating, #139 for load sharing). |
 | Anything a simulated node is part of | Simulated through that node | Only while the node is simulated. |
-| Common-cause groups: MTTF, importance, allocation, and analyses given ages | Refused (a simulated MTTF leaves the groups out) | The MTTF needs a lifetime model for the groups (#132); the rest could be exact (not planned yet). |
-| Kaplan–Meier lives in a repairable system | Long run refused; over time numerical | No: the fit's mean could serve when it ends in a failure (not planned yet). |
+| Common-cause groups: MTTF, importance, allocation, and analyses given ages | Refused (a simulated MTTF leaves the groups out) | The MTTF and the analyses given ages need a lifetime model for the groups (#132); importance and allocation could be exact (#140). |
+| Kaplan–Meier lives in a repairable system | Long run refused; over time numerical | No: the fit's mean could serve when it ends in a failure (#141). |
 | **Architecture and maintenance** | | |
-| Phased missions over 200,000 states, and networks over 100,000 paths | Refused, pointing to `method="simulate"` | No: decision diagrams could keep them exact (not planned yet). |
-| Hidden failures found by tests (a constant failure rate with instant tests and repairs is exact) | Simulated | No: could be numerical (not planned yet; for SIL, #136). |
-| Replacement on condition at periodic inspections | Simulated | No: could be numerical (not planned yet). |
-| Shared repair crews | Long run exact for exponential lives and repairs; the rest simulated | Over time and importance, with exponential lives: could be exact from the same Markov chain (not planned yet). Other lives: yes, in general. |
-| Standby groups (a duty unit and its spares, repaired) | Long run and importance exact for exponential units; the rest simulated | Over time, with exponential units: could be exact from the same Markov chain (not planned yet). Other units: yes, in general. |
+| Phased missions over 200,000 states, and networks over 100,000 paths | Refused, pointing to `method="simulate"` | No: decision diagrams could keep them exact (#142, #143). |
+| Hidden failures found by tests (a constant failure rate with instant tests and repairs is exact) | Simulated | No: could be numerical (#144; for SIL, #136). |
+| Replacement on condition at periodic inspections | Simulated | No: could be numerical (#145). |
+| Shared repair crews | Long run exact for exponential lives and repairs; the rest simulated | Over time and importance, with exponential lives: could be exact from the same Markov chain (#146). Other lives: yes, in general. |
+| Standby groups (a duty unit and its spares, repaired) | Long run and importance exact for exponential units; the rest simulated | Over time, with exponential units: could be exact from the same Markov chain (#146). Other units: yes, in general. |
 | Opportunistic maintenance (renewals at a group's stops) | Simulated | Yes: each member's renewals depend on the others' ages. |
 | Imperfect repair (Kijima), with or without replacement at the *N*-th failure | Simulated | Yes, in general: a repair does not renew the unit. |
-| Spares of block-replaced or tested components | Simulated (`spares_demand(method="simulate")`) | No: could be numerical (not planned yet). With crews, standby groups, opportunistic maintenance or imperfect repair: yes. |
+| Spares of block-replaced or tested components | Simulated (`spares_demand(method="simulate")`) | No: could be numerical (#147). With crews, standby groups, opportunistic maintenance or imperfect repair: yes. |
 
 For your own diagram, `analysis_routes()` says how each analysis will be
 computed (exact, numerical, simulated or refused) and why, without running
