@@ -576,11 +576,13 @@ least complete total, and merging the states that agree on them.
 
 In the long run the probability of each level is the fraction of time spent
 at it: the components' long-run availabilities stand in for their
-reliabilities, as for the long-run availability. Over a finite window,
-which starts with everything new, the availability simulation follows the
-capacity too: after every component event it works out the capacity the
-components that are up give, and the fraction of the demand delivered over
-the window is the time average of `min(C, d) / d`.
+reliabilities, as for the long-run availability. Over time from new, their
+point availabilities `A_i(t)` do (`point_capacity`), and the fraction of the
+demand delivered over a window is the time average of `E[min(C, d)] / d`
+(`mission_capacity`). The availability simulation follows the capacity too:
+after every component event it works out the capacity the components that
+are up give, and the spread of the delivered fraction from window to window
+comes from it.
 
 **Multi-state components.** A component can itself have several levels: a
 pump at full, half or no output. The distribution of each node's capacity
@@ -592,7 +594,8 @@ stages is in stage `j` at time `t` with probability
 `P(S_{j-1} ≤ t < S_j)`, where `S_j` is the sum of its first `j` stages'
 times. In the long run, renewed after each failure, it spends its up time in
 each stage in proportion to the stage's mean time (the renewal-reward
-theorem).
+theorem); from new, it is in stage `j` at `t` if its first unit is, or a
+unit put into service at `s` is at age `t − s`, summed over its renewals.
 
 ## Costs
 

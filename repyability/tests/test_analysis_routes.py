@@ -337,6 +337,8 @@ REPAIRABLE_CALLS = {
     "expected_failures": lambda rbd: rbd.expected_failures([10.0, 200.0]),
     "expected_events": lambda rbd: rbd.expected_events(200.0),
     "expected_cost": lambda rbd: rbd.expected_cost(200.0),
+    "point_capacity": lambda rbd: rbd.point_capacity([10.0, 200.0]),
+    "mission_capacity": lambda rbd: rbd.mission_capacity(200.0),
     "availability": lambda rbd: rbd.availability(200.0, mc_samples=20, seed=1),
     "simulate_chunk": lambda rbd: rbd.simulate_chunk(200.0, 10, 30, seed=1),
     "availability_from_chunks": lambda rbd: rbd.availability_from_chunks(
@@ -573,6 +575,7 @@ def test_the_readme_says_what_is_simulated():
             (repairable["costed_pairs"], "availability", "simulated"),
             (repairable["costed_pairs"], "expected_events", "numerical"),
             (repairable["costed_pairs"], "expected_cost", "numerical"),
+            (repairable["capacities"], "mission_capacity", "numerical"),
         ],
         "Comparing two designs (`compare`)": [
             (plain, "compare", "simulated"),
@@ -583,10 +586,6 @@ def test_the_readme_says_what_is_simulated():
         "Small failure probabilities, with a simulated node": [
             (nonrepairable["simulated standby"], "ff", "simulated"),
             (plain, "ff", "exact"),
-        ],
-        "Capacity delivered over time, from new": [
-            (repairable["capacities"], "availability", "simulated"),
-            (repairable["capacities"], "capacity_distribution", "exact"),
         ],
         "Repairable analyses from the components' current state, "
         "not new": [],

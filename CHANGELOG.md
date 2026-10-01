@@ -11,37 +11,36 @@ other release, fixes included, the minor.
 
 ## [0.11] - 2026-09-30
 
-How much a system can deliver, and exact answers where there were
-estimates. System capacity gives the exact distribution of what a diagram
-can deliver from its components' capacities (#97), with components that
-work at several levels (#98), and the simulation follows the capacity
-delivered over a window: the production availability (#99). A repairable
-system's availability over time and over a mission is exact from new
-(#117), and so are its expected failures, outages, downtime and cost over
-a window (#123), and a system's mean time to failure (#122).
-`analysis_routes()` says, without running anything, how each analysis will
-be computed: exactly, numerically, by simulation or not at all (#127).
-Availability simulations run faster, and about ten times as fast again
-when compiled with numba (#119, #120), and `import repyability` is quicker
-(#121). Components can share a limited number of repair crews (#89), with
-exact long-run values from a Markov chain when their lives and repairs are
-exponential (#90); a duty unit and its spares can be a standby group,
+How much a system can deliver, and exact answers where there were estimates.
+System capacity gives the exact distribution of what a diagram can deliver
+from its components' capacities (#97), with components that work at several
+levels (#98), and the simulation follows the capacity delivered over a
+window: the production availability (#99), which is exact over time from new
+too (#124). A repairable system's availability over time and over a mission
+is exact from new (#117), and so are its expected failures, outages,
+downtime and cost over a window (#123), and a system's mean time to failure
+(#122). `analysis_routes()` says, without running anything, how each
+analysis will be computed: exactly, numerically, by simulation or not at all
+(#127). Availability simulations run faster, and about ten times as fast
+again when compiled with numba (#119, #120), and `import repyability` is
+quicker (#121). Components can share a limited number of repair crews (#89),
+with exact long-run values from a Markov chain when their lives and repairs
+are exponential (#90); a duty unit and its spares can be a standby group,
 repaired one unit at a time (#91); `spares_demand` and `spares_stock` count
 the spares each component uses and the stock to hold for a lead time (#95);
-a component can be replaced on condition at periodic inspections (#96),
-or early at a stop of its maintenance group, sharing its set-up
-(opportunistic maintenance, #108), and repaired imperfectly, by Kijima's
-virtual age, or replaced at the N-th failure (#109); a simulation run can
-be split across machines and merged (#114); and small failure
-probabilities are estimated by rare-event simulation (#115), and keep
-their full precision where they are exact (#148);
-phased missions are new, exact and simulated (#100, #101), as are the
-two-terminal reliability of undirected networks (#104) and demonstration
-test planning (#129). Meshed diagrams are decided by a
-binary decision diagram, in milliseconds where their path sets took
-minutes (#102, #103). Non-parametric nodes, and the fits to simulated
-lifetimes behind some standby and load-sharing models, are deprecated;
-everything deprecated goes in 0.12, and warns with a `FutureWarning`.
+a component can be replaced on condition at periodic inspections (#96), or
+early at a stop of its maintenance group, sharing its set-up (opportunistic
+maintenance, #108), and repaired imperfectly, by Kijima's virtual age, or
+replaced at the N-th failure (#109); a simulation run can be split across
+machines and merged (#114); and small failure probabilities are estimated by
+rare-event simulation (#115), and keep their full precision where they are
+exact (#148); phased missions are new, exact and simulated (#100, #101), as
+are the two-terminal reliability of undirected networks (#104) and
+demonstration test planning (#129). Meshed diagrams are decided by a binary
+decision diagram, in milliseconds where their path sets took minutes (#102,
+#103). Non-parametric nodes, and the fits to simulated lifetimes behind some
+standby and load-sharing models, are deprecated; everything deprecated goes
+in 0.12, and warns with a `FutureWarning`.
 
 Behaviour changes: seeded repairable simulations give different numbers,
 once, as each random quantity now has a stream of its own (#119);
@@ -154,6 +153,25 @@ required.
   process's closed forms, the formula integrated by quadrature, tests of
   hidden failures, timelines worked by hand, the long-run rates they
   settle at, and the simulation's means.
+- **Exact capacity over time from new** (#124).
+  `RepairableRBD.point_capacity(x)` gives the distribution of the system's
+  capacity at each time `x`, every component new at 0, and
+  `mission_capacity(t)` the expected fraction of a window spent at each
+  level, so its `delivered_fraction(demand)` is the production
+  availability of the window, which `availability(demand=...)` estimated
+  by simulation: both `CapacityDistribution`s, as `capacity_distribution()`
+  gives in the long run, which they settle at. Each component is up at
+  `t` with its point availability (#117), at its levels while up in
+  proportion, and the system's distribution is the same exact computation
+  at those. A degrading component (`DegradingNode`) is in each stage with
+  the probability its first unit is, by its age, or a later unit is, by
+  its renewals, solved on the grid of its availability, and a nested RBD
+  with capacities brings its own distribution over time: neither of which
+  the simulation follows. The window's mean is integrated as
+  `mission_availability` integrates the availability. Checked against
+  binomial pumps at their availabilities, a degrading pump's Markov chain,
+  the long run, a nested skid drawn flat, and the simulation's delivered
+  fraction.
 - **A compiled simulation engine** (#119). With numba installed, an
   optional dependency (`pip install "repyability[fast]"`),
   `RepairableRBD.availability()`, `cost()` and `compare()` can run their

@@ -70,6 +70,12 @@ that each reach their replacement age, one after another, at ``(n + 1)
 age`` plus ``n`` maintenance times (exactly for a fixed or no maintenance
 time, from the sum's distribution on ``ChainDips``' fine grid otherwise).
 Past the grid's end the counts grow at their long-run rates.
+
+A unit that degrades through stages (``stages``) is in stage ``j`` at ``t``
+if its first unit is, by its age, or a unit put into service at ``s`` is,
+by its age ``t - s``: the renewals against the probability of being in the
+stage at each age, as for the failures; past the grid's end, the long-run
+shares of the up time.
 """
 
 from typing import Callable, Dict, NamedTuple, Optional, Tuple
@@ -308,6 +314,7 @@ def unit_curve(
     maintenance_sf: Optional[Callable] = None,
     maintenance_splits=(),
     counts: bool = False,
+    stages: Optional[Callable] = None,
 ) -> "GridCurve":
     """The point availability of a unit new at 0 over ``[0, n step]``, on
     the grid ``k step`` (see the module's docstring).
@@ -320,7 +327,10 @@ def unit_curve(
     ``maintenance_sf`` (none: no time). The ``*_splits`` are times at which
     those distributions change quickly (their quantiles): the integrals
     split the cells there. With ``counts``, the curve counts the unit's
-    expected events too (see ``UnitEvents``).
+    expected events too (see ``UnitEvents``). ``stages``, for a unit that
+    degrades through stages, gives the probability that a unit is in each
+    of them at each age (one row per stage): the curve then follows the
+    unit's stage over time too (see ``StageCurves``).
     """
     t = step * np.arange(n + 1)
     size = n + 1
@@ -438,6 +448,24 @@ def unit_curve(
     if preventive > 0.0 and maintenance_sf is not None:
         dips.append((preventive, limit, maintenance_sf, maintenance_splits))
     curve = GridCurve(step, smooth, dips, chain=chain)
+    if stages is not None:
+        # In each stage: the first unit by its own age, the later ones by
+        # the renewals against the probability at each age (a unit renewed
+        # at a grid point itself, spread over its hat, is renewed before
+        # it half the time).
+        occupied = np.atleast_2d(np.asarray(stages(t), dtype=float))
+        occupied = occupied.copy()
+        occupied[:, 0] *= 0.5
+        curve.stages = StageCurves(
+            t,
+            stages,
+            np.vstack(
+                [
+                    np.maximum(_convolve(later, row, size), 0.0)
+                    for row in occupied
+                ]
+            ),
+        )
     if not counts:
         return curve
     others = None
@@ -890,6 +918,51 @@ class UnitEvents:
         return True
 
 
+class StageCurves:
+    """Which stage a unit that degrades through stages is in, from new (see
+    ``unit_curve``): ``first(x)``, the probability that the first unit is
+    in each stage at ``x`` (one row per stage), and ``later``, that a later
+    one is, at each grid point of ``times``. Past the grid's end the unit's
+    up time is shared among the stages as ``fractions`` (set by the caller
+    when the grid has settled): the long-run share of its up time in
+    each."""
+
+    def __init__(self, times: np.ndarray, first: Callable, later):
+        self.times = times
+        self.first = first
+        self.later = later
+        self.fractions: Optional[np.ndarray] = None
+
+    def shares(self, x: np.ndarray) -> np.ndarray:
+        """The share of the probability that the unit is up at each ``x``
+        that falls in each stage (one row per stage)."""
+        x = np.asarray(x, dtype=float)
+        inside = np.minimum(x, self.times[-1])
+        occupied = np.atleast_2d(np.asarray(self.first(inside), dtype=float))
+        occupied = occupied + np.vstack(
+            [np.interp(inside, self.times, row) for row in self.later]
+        )
+        total = occupied.sum(axis=0)
+        shares = np.zeros_like(occupied)
+        shares[0] = 1.0  # where it cannot be up: a new unit's first stage
+        np.divide(occupied, total, out=shares, where=total > 0.0)
+        if self.fractions is not None:
+            shares[:, x > self.times[-1]] = self.fractions[:, None]
+        return shares
+
+    def settled(self, tolerance: float = 1e-8) -> bool:
+        """Whether the shares have reached ``fractions`` over the last
+        quarter of the grid."""
+        if self.fractions is None:
+            return False
+        n = len(self.times) - 1
+        tail = self.times[n - n // 4 :]  # noqa: E203
+        shares = self.shares(tail)
+        return bool(
+            np.all(np.abs(shares - self.fractions[:, None]) <= tolerance)
+        )
+
+
 class GridCurve:
     """A unit's point availability on a grid from 0, linear between its
     points, less its dips: ``(probability, start, sf, splits)`` for a down
@@ -898,7 +971,8 @@ class GridCurve:
     ``chain`` (see ``ChainDips``). After the grid's end the curve holds
     ``long_run`` if given (it has settled there by then), and the grid then
     reaches the times it is needed at. ``unit_events``, if counted, are the
-    unit's expected events (see ``UnitEvents``)."""
+    unit's expected events (see ``UnitEvents``), and ``stages``, if
+    followed, the stages of a unit that degrades (see ``StageCurves``)."""
 
     period = None
 
@@ -916,6 +990,15 @@ class GridCurve:
         self.long_run = long_run
         self.chain = chain
         self.unit_events: Optional[UnitEvents] = None
+        self.stages: Optional[StageCurves] = None
+
+    def stages_at(self, x: np.ndarray) -> np.ndarray:
+        """The probability that the unit is up and in each of its stages
+        at each time ``x`` (one row per stage): its point availability
+        shared among the stages (see ``StageCurves``), so that the rows add
+        up to it."""
+        assert self.stages is not None, "stages were not asked for"
+        return self.stages.shares(x) * self.at(np.asarray(x, dtype=float))
 
     def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
         """The unit's expected events before each time ``x`` (in
