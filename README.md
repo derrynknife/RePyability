@@ -124,7 +124,7 @@ places, nested diagrams):
 | Sampled lifetimes or histories, and distributions or percentiles of an outcome over a window | Simulated | Yes: the answer is a sample. |
 | Comparing two designs (`compare`) | Simulated, with common random numbers | No, where both are exact: compare their exact values. |
 | The uncertainty from fitted component parameters (`sf_uncertainty`) | Sampled over the parameters | Sampling is the method. Intervals on the MTTF and B*X* life are missing (#133). |
-| Small failure probabilities, with a simulated node | Rare-event simulation (`unreliability_interval`) | Only while the node is simulated: an exact diagram gives `ff` directly (losing relative precision below about 1e-12, until #148). |
+| Small failure probabilities, with a simulated node | Rare-event simulation (`unreliability_interval`) | Only while the node is simulated: an exact diagram gives `ff` directly, to full precision however small (a numerical node, such as a cold-standby group of non-exponential units, to its own accuracy, about 1e-6). |
 | Expected failures, outages and cost over a finite window | Simulated (`cost`, `availability`) | No: could be exact for independent components (#123). |
 | Capacity delivered over time, from new | Simulated | No: could be exact (#124). |
 | Repairable analyses from the components' current state, not new | Not available | Could be exact for independent components (#125). |

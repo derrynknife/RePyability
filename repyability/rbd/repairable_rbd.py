@@ -1788,6 +1788,21 @@ _UNSTREAMED = (
 )
 
 
+def _inspected_unavailability(x: float) -> float:
+    """The long-run unavailability ``1 - (1 - exp(-x)) / x`` of a unit with
+    a constant failure rate, found failed only by tests (instant, with an
+    instant repair), ``x`` the rate times the test interval: about
+    ``x / 2``. Worked out so that a small one keeps its precision, by its
+    series ``x / 2! - x**2 / 3! + x**3 / 4! - ...`` below 1/2, where the
+    subtraction would cancel."""
+    if x >= 0.5:
+        return float((x + np.expm1(-x)) / x)
+    total = 0.0
+    for k in range(16, 0, -1):
+        total = 1.0 / math.factorial(k + 1) - x * total
+    return float(x * total)
+
+
 def _common_period(intervals: Iterable[float]) -> float:
     """The least common multiple of the inspection intervals: the period
     after which the schedules repeat together."""
@@ -3794,7 +3809,7 @@ class RepairableRBD(RBD):
 
         # Production lost while the *system* is down.
         if self.downtime_cost_rate:
-            unavailability = 1.0 - self.mean_availability(
+            unavailability = self.mean_unavailability(
                 working_nodes, broken_nodes
             )
             rate += self.downtime_cost_rate * unavailability
@@ -4506,7 +4521,10 @@ class RepairableRBD(RBD):
             node: np.atleast_1d(np.asarray(a, dtype=float))
             for node, a in self._availabilities_at(times).items()
         }
-        down = {node: 1.0 - a for node, a in up.items()}
+        down = {
+            node: np.atleast_1d(np.asarray(u, dtype=float))
+            for node, u in self._unavailabilities_at(times).items()
+        }
         copy_cost = {}
         for node in self.components:
             rate = self._node_cost_rate(node, self._node_availability(node))
@@ -5880,19 +5898,36 @@ class RepairableRBD(RBD):
         self.system_state = self.is_system_working(component_status, method)
         self.component_status = component_status
 
-    def mean_unavailability(self, *args, **kwargs) -> float:
+    def mean_unavailability(
+        self,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        method: str = "p",
+    ) -> float:
         """Returns the system's long-run (steady-state) unavailability.
 
-        Exactly ``1 - mean_availability(*args, **kwargs)``: the long-run
-        fraction of time the system is down.
+        ``1 - mean_availability()``: the long-run fraction of time the
+        system is down, exact as
+        [`mean_availability`][repyability.RepairableRBD.mean_availability]
+        is, and over the same cases. It is worked out in its own right,
+        from each component's unavailability (``MTTR / (MTTF + MTTR)``,
+        say, or ``1 - exp(-lambda * u)`` at a time ``u`` since a test), as
+        a sum of products over the structure, so that a small one keeps its
+        full relative precision: a PFDavg of ``1e-12`` gets ``1e-12``,
+        where one less the availability would keep only about four digits
+        of it.
 
         Parameters
         ----------
-        *args
-            Positional arguments of ``mean_availability``
-            (``working_nodes``, ``broken_nodes``, ``method``).
-        **kwargs
-            Keyword arguments of ``mean_availability``.
+        working_nodes : Collection[Hashable], optional
+            Condition on these nodes always working (unavailability 0), by
+            default None.
+        broken_nodes : Collection[Hashable], optional
+            Condition on these nodes being failed (unavailability 1), by
+            default None.
+        method : str, optional
+            ``"p"`` or ``"c"``, as for ``mean_availability``; both give the
+            same result, computed the same way.
 
         Returns
         -------
@@ -5903,8 +5938,37 @@ class RepairableRBD(RBD):
         ------
         ValueError
             As for ``mean_availability``.
+        NotImplementedError
+            As for ``mean_availability``.
+
+        Examples
+        --------
+        Two components in parallel, each down a millionth of the time, are
+        down together a millionth of a millionth of it:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> unit = {
+        ...     "reliability": surv.Exponential.from_params([1e-6]),
+        ...     "repairability": surv.ExactEventTime.from_params([1.0]),
+        ... }
+        >>> rbd = RepairableRBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        ...     {"a": unit, "b": unit},
+        ... )
+        >>> f"{rbd.mean_unavailability():.6e}"
+        '9.999980e-13'
         """
-        return 1 - self.mean_availability(*args, **kwargs)
+        if method not in ("p", "c"):
+            raise ValueError("`method` must be either 'p' or 'c'")
+        working_nodes = set() if working_nodes is None else set(working_nodes)
+        broken_nodes = set() if broken_nodes is None else set(broken_nodes)
+        self._validate_node_overrides(working_nodes, broken_nodes)
+        availability, unavailability, weights = (
+            self._long_run_unavailabilities(working_nodes, broken_nodes)
+        )
+        system = self._system_unreliability(availability, unavailability)
+        return float(weights @ system)
 
     def analysis_routes(self) -> Dict[str, "AnalysisRoute"]:
         """How each analysis of this RBD is computed, found without running
@@ -9367,6 +9431,41 @@ class RepairableRBD(RBD):
         up, cycle, _, _ = self._maintenance_cycle(node, schedule)
         return min(1.0, up / cycle)
 
+    def _node_unavailability(self, node) -> float:
+        """A component's long-run unavailability: as ``_node_availability``
+        gives its availability, but worked out in its own right (from the
+        down states, or the mean down time over the cycle), so that a small
+        one keeps its precision."""
+        self._require_perfect_repair(node)
+        if self._crews_couple():
+            chain = self._crew_chain()
+            if node in chain.nodes:
+                return chain.unavailability(node)
+            return float(self.components[node].mean_unavailability())
+        if node in self._standby:
+            return self._standby_long_run(node).unavailability
+        if node in self._inspection:
+            rate, interval = self._inspected_rate(node)
+            return _inspected_unavailability(rate * interval)
+        component = self.components[node]
+        schedule = self._preventive.get(node)
+        if schedule is None:
+            return float(np.atleast_1d(component.mean_unavailability())[0])
+        up, cycle, _, survives = self._maintenance_cycle(node, schedule)
+        if schedule.policy == "block":
+            return max(0.0, (cycle - up) / cycle)
+        # Down for a repair after a failure before the age, else for the
+        # maintenance: the failure's probability from the model's own ff.
+        fails = float(np.ravel(component.reliability.ff(schedule.interval))[0])
+        maintenance = (
+            0.0 if schedule.duration is None else model_mean(schedule.duration)
+        )
+        down = (
+            fails * model_mean(component.time_to_replace)
+            + survives * maintenance
+        )
+        return min(1.0, down / cycle)
+
     def _require_one_inspected(self) -> None:
         """Raise if more than one component has hidden failures, when no
         intervals are given to choose from (``optimal_inspection_intervals``
@@ -9797,6 +9896,64 @@ class RepairableRBD(RBD):
         for node in self.in_or_out:
             out[node] = np.ones(len(times))
         return out
+
+    def _unavailabilities_at(self, times: np.ndarray) -> dict:
+        """Every node's unavailability at each of ``times``, as
+        ``_availabilities_at`` gives their availabilities, each worked out
+        in its own right so that a small one keeps its precision:
+        ``1 - exp(-lambda * u)`` by ``expm1`` for a component with hidden
+        failures, ``_node_unavailability`` for one whose value is constant.
+        (A block-replaced component's profile is numerical, to about 1e-7,
+        so one less it loses nothing.)"""
+        out: dict = {}
+        blocks = set(self._block_nodes())
+        for node in self.components:
+            if node in self._inspection:
+                rate, interval = self._inspected_rate(node)
+                since = times - interval * np.floor(times / interval)
+                out[node] = -np.expm1(-rate * since)
+            elif node in blocks:
+                out[node] = 1.0 - self._block_profile(node, times)
+            else:
+                out[node] = np.full(
+                    len(times), self._node_unavailability(node)
+                )
+        for node in self.in_or_out:
+            out[node] = np.zeros(len(times))
+        return out
+
+    def _long_run_unavailabilities(
+        self, working_nodes, broken_nodes
+    ) -> Tuple[dict, dict, np.ndarray]:
+        """``_long_run_probabilities``, with every node's unavailability
+        too (at each time of ``_long_run_grid``, or in each state of the
+        repair crews' Markov chain), each worked out in its own right, so
+        that the system's unavailability keeps a small one's precision."""
+        if self._crews_couple():
+            probabilities, weights = self._chain_probabilities(
+                working_nodes, broken_nodes
+            )
+            forced = set(working_nodes or ()) | set(broken_nodes or ())
+            chain = self._crew_chain(frozenset(forced))
+            # In each state a node in the chain, or held working or broken,
+            # is up or down for certain: one less it is exact.
+            failures = {
+                node: 1.0 - value for node, value in probabilities.items()
+            }
+            for node, component in self.components.items():
+                if node not in forced and node not in chain.nodes:
+                    failures[node] = np.full(
+                        len(weights), float(component.mean_unavailability())
+                    )
+            return probabilities, failures, weights
+        times, weights = self._long_run_grid()
+        probabilities = self._probabilities_with_overrides(
+            self._availabilities_at(times), working_nodes, broken_nodes
+        )
+        failures = self._failures_with_overrides(
+            self._unavailabilities_at(times), working_nodes, broken_nodes
+        )
+        return probabilities, failures, weights
 
     def _long_run_probabilities(
         self, working_nodes, broken_nodes
@@ -10233,11 +10390,11 @@ class RepairableRBD(RBD):
         >>> rbd.mean_down_time(working_nodes=["a"])  # never down
         0.0
         """
-        availability = self.mean_availability(working_nodes, broken_nodes)
+        unavailability = self.mean_unavailability(working_nodes, broken_nodes)
         omega = sum(self._outage_frequencies(working_nodes, broken_nodes))
         if omega > 0.0:
-            return (1.0 - float(availability)) / omega
-        return 0.0 if availability >= 1.0 else float("inf")
+            return unavailability / omega
+        return 0.0 if unavailability <= 0.0 else float("inf")
 
     def birnbaum_importance(
         self,

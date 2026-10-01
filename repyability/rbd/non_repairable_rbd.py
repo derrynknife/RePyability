@@ -645,6 +645,24 @@ class NonRepairableRBD(RBD):
                 ].sf(x)
         return node_probabilities
 
+    def _base_node_failures(
+        self, x, working_nodes, broken_nodes
+    ) -> Dict[Any, np.ndarray]:
+        """Per-node probability of failing by ``x``, from each model's own
+        ``ff`` (which keeps a small one's precision, where one less its
+        reliability would not), honouring the working/broken overrides."""
+        node_failures: dict[Any, np.ndarray] = {}
+        for node_name, model in self.reliabilities.items():
+            if node_name in working_nodes:
+                node_failures[node_name] = PerfectReliability.ff(x)
+            elif node_name in broken_nodes:
+                node_failures[node_name] = PerfectUnreliability.ff(x)
+            elif hasattr(model, "ff"):
+                node_failures[node_name] = model.ff(x)
+            else:
+                node_failures[node_name] = 1.0 - np.asarray(model.sf(x))
+        return node_failures
+
     def _validate_ccf_groups(self, ccf_groups) -> list:
         """Validate common-cause groups against the RBD structure.
 
@@ -750,6 +768,18 @@ class NonRepairableRBD(RBD):
         """The combinations of the common-cause groups' shock outcomes (see
         ``_ccf_system_probability``): for each, its probability and the node
         reliabilities given it, under which the nodes are independent."""
+        for weight, node_probabilities, _ in self._ccf_outcomes(
+            base_probabilities, None, working_nodes, broken_nodes
+        ):
+            yield weight, node_probabilities
+
+    def _ccf_outcomes(
+        self, base_probabilities, base_failures, working_nodes, broken_nodes
+    ) -> Iterator[tuple]:
+        """``_ccf_conditions``, with the nodes' probabilities of failing
+        given each outcome too when ``base_failures`` (each node's own
+        ``ff``) is given, so that a small one keeps its precision (else
+        None)."""
         from itertools import product
 
         forced = working_nodes | broken_nodes
@@ -761,12 +791,18 @@ class NonRepairableRBD(RBD):
                 )
 
         # Each group's mutually-exclusive shock outcomes: (weight, {member:
-        # reliability}) for every subset that can fail together plus the
-        # no-shock case, from the model's decomposition of Q(t) (taken from a
-        # representative member, since groups are symmetric).
+        # reliability}, {member: unreliability}) for every subset that can
+        # fail together plus the no-shock case, from the model's
+        # decomposition of Q(t) (taken from a representative member, since
+        # groups are symmetric).
         group_outcomes = []
         for group in self.ccf_groups:
-            Q = 1.0 - np.atleast_1d(base_probabilities[group.members[0]])
+            first = group.members[0]
+            Q = (
+                1.0 - np.atleast_1d(base_probabilities[first])
+                if base_failures is None
+                else np.atleast_1d(np.asarray(base_failures[first], float))
+            )
             q_independent, shocks = group.model.decompose(group.members, Q)
             r_independent = 1.0 - q_independent
             outcomes = []
@@ -784,6 +820,14 @@ class NonRepairableRBD(RBD):
                             )
                             for member in group.members
                         },
+                        {
+                            member: (
+                                np.ones_like(Q)
+                                if member in subset
+                                else q_independent
+                            )
+                            for member in group.members
+                        },
                     )
                 )
             # No common-cause shock: every member fails only independently.
@@ -791,17 +835,23 @@ class NonRepairableRBD(RBD):
                 (
                     1.0 - total_shock,
                     {member: r_independent for member in group.members},
+                    {member: q_independent for member in group.members},
                 )
             )
             group_outcomes.append(outcomes)
 
         for combo in product(*group_outcomes):
             node_probabilities = dict(base_probabilities)
+            node_failures = (
+                None if base_failures is None else dict(base_failures)
+            )
             weight: Any = 1.0
-            for outcome_weight, member_probs in combo:
+            for outcome_weight, member_probs, member_fails in combo:
                 weight = weight * outcome_weight
                 node_probabilities.update(member_probs)
-            yield weight, node_probabilities
+                if node_failures is not None:
+                    node_failures.update(member_fails)
+            yield weight, node_probabilities, node_failures
 
     def _require_no_ccf_for_states(self) -> None:
         """Raise if the RBD has CCF groups, for the condition-based methods
@@ -879,25 +929,41 @@ class NonRepairableRBD(RBD):
                 "sf() / ff()."
             )
 
+    @check_x
     def ff(
-        self, x: Optional[ArrayLike] = None, *args, **kwargs
+        self,
+        x: Optional[ArrayLike] = None,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        method: str = "p",
     ) -> Union[float, np.ndarray]:
         """System unreliability (failure probability) at time/s ``x``.
 
-        ``1 - sf(x)``: the probability that the system has failed by
-        ``x``. Exact, and honours common-cause groups, as
-        [`sf`][repyability.NonRepairableRBD.sf] does.
+        The probability that the system has failed by ``x``: ``1 - sf(x)``,
+        exact, and honouring common-cause groups and the working/broken
+        nodes, as [`sf`][repyability.NonRepairableRBD.sf] does. It is
+        worked out in its own right, from each node's probability of
+        failing (its model's ``ff``), as a sum of products, so a small
+        one keeps its full relative precision: a system that fails with
+        probability ``1e-15`` gets ``1e-15``, where ``1 - sf(x)`` would
+        lose it (``sf`` rounds to within ``1e-16`` of 1). A node's own
+        precision limits it: a numerical one, such as a cold-standby group
+        of non-exponential units (a convolution), is accurate to about
+        ``1e-6``, so a smaller probability through it needs
+        [`unreliability_interval`][repyability.NonRepairableRBD.unreliability_interval].
 
         Parameters
         ----------
         x : array_like, optional
             Time/s as a number or an array. May be omitted only for a
             fixed-probability RBD.
-        *args
-            Further positional arguments of ``sf`` (``working_nodes``,
-            ``broken_nodes``, ``method``).
-        **kwargs
-            Keyword arguments of ``sf``.
+        working_nodes : Collection[Hashable], optional
+            Nodes to treat as working (unreliability 0), by default none.
+        broken_nodes : Collection[Hashable], optional
+            Nodes to treat as failed (unreliability 1), by default none.
+        method : str, optional
+            ``"p"`` or ``"c"``, as for ``sf``; both give the same result,
+            computed the same way.
 
         Returns
         -------
@@ -925,8 +991,60 @@ class NonRepairableRBD(RBD):
         ... )
         >>> round(rbd.ff(), 4)
         0.01
+
+        A small probability keeps its precision: three components in
+        parallel, each failing with probability ``1e-6``, fail together
+        with probability ``1e-18``:
+
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", n) for n in "abc"] + [(n, "t") for n in "abc"],
+        ...     {n: FixedEventProbability.from_params(1e-6) for n in "abc"},
+        ... )
+        >>> f"{rbd.ff():.6g}"
+        '1e-18'
         """
-        return 1 - self.sf(x, *args, **kwargs)
+        return self._sf_and_ff(
+            x, working_nodes, broken_nodes, method, sf=False
+        )[1]
+
+    def _sf_and_ff(
+        self, x, working_nodes, broken_nodes, method: str = "p", sf=True
+    ) -> Tuple[Any, np.ndarray]:
+        """The system's reliability (unless ``sf`` is false: then None) and
+        unreliability at ``x``, after checking the arguments as ``sf``
+        does. Each is a sum of products of the nodes' own reliabilities and
+        failure probabilities (their models' ``sf`` and ``ff``), so that a
+        small one of either keeps its precision; with common-cause groups,
+        summed over their outcomes as for ``sf`` (``method`` changes
+        nothing here)."""
+        if method not in ("p", "c"):
+            raise ValueError("`method` must be either 'p' or 'c'")
+        working_nodes = set() if working_nodes is None else set(working_nodes)
+        broken_nodes = set() if broken_nodes is None else set(broken_nodes)
+        self._validate_node_overrides(working_nodes, broken_nodes)
+
+        node_probabilities = self._base_node_probabilities(
+            x, working_nodes, broken_nodes
+        )
+        node_failures = self._base_node_failures(
+            x, working_nodes, broken_nodes
+        )
+        if not self.ccf_groups:
+            return self._system_probabilities(
+                node_probabilities, node_failures, works=sf
+            )
+        up: Any = 0.0
+        down: Any = 0.0
+        for weight, probabilities, failures in self._ccf_outcomes(
+            node_probabilities, node_failures, working_nodes, broken_nodes
+        ):
+            works, fails = self._system_probabilities(
+                probabilities, failures, works=sf
+            )
+            weight = np.asarray(weight)
+            up = up + weight * works if sf else None
+            down = down + weight * fails
+        return up, down
 
     def capacity_distribution(
         self,
@@ -2806,8 +2924,9 @@ class NonRepairableRBD(RBD):
     def unreliability(self, x: Optional[ArrayLike] = None, *args, **kwargs):
         """System unreliability at time/s ``x``; the same as ``ff``.
 
-        ``1 - sf(x)``, the probability that the system has failed by ``x``
-        (see [`ff`][repyability.NonRepairableRBD.ff]).
+        ``1 - sf(x)``, the probability that the system has failed by ``x``,
+        worked out in its own right, so that a small one keeps its
+        precision (see [`ff`][repyability.NonRepairableRBD.ff]).
 
         Parameters
         ----------
@@ -2815,10 +2934,10 @@ class NonRepairableRBD(RBD):
             Time/s as a number or an array. May be omitted only for a
             fixed-probability RBD.
         *args
-            Further positional arguments of ``sf`` (``working_nodes``,
+            Further positional arguments of ``ff`` (``working_nodes``,
             ``broken_nodes``, ``method``).
         **kwargs
-            Keyword arguments of ``sf``.
+            Keyword arguments of ``ff``.
 
         Returns
         -------
@@ -2833,7 +2952,7 @@ class NonRepairableRBD(RBD):
         NotImplementedError
             As for ``sf``.
         """
-        return 1 - self.sf(x, *args, **kwargs)
+        return self.ff(x, *args, **kwargs)
 
     def reliability(self, x: Optional[ArrayLike] = None, *args, **kwargs):
         """System reliability at time/s ``x``; the same as ``sf``.
@@ -2923,22 +3042,35 @@ class NonRepairableRBD(RBD):
         return conditional_survival(self, x, X, *args, **kwargs)
 
     @check_x
-    def Hf(self, x: Optional[ArrayLike] = None, **kwargs) -> np.ndarray:
+    @check_x
+    def Hf(
+        self,
+        x: Optional[ArrayLike] = None,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        method: str = "p",
+    ) -> np.ndarray:
         """System cumulative hazard ``H(x) = -ln R(x)`` at time/s ``x``.
 
         Exact given the exact system reliability ``R(x)`` from
         [`sf`][repyability.NonRepairableRBD.sf] (so it honours
         common-cause groups); +inf wherever the system reliability has
-        reached zero.
+        reached zero. While the system is more likely to work than not, it
+        is ``-log1p(-F(x))``, from the unreliability ``F`` of
+        [`ff`][repyability.NonRepairableRBD.ff], so that a small one keeps
+        its precision.
 
         Parameters
         ----------
         x : array_like, optional
             Time/s as a number or an array. May be omitted only for a
             fixed-probability RBD.
-        **kwargs
-            Keyword arguments of ``sf`` (``working_nodes``,
-            ``broken_nodes``, ``method``).
+        working_nodes : Collection[Hashable], optional
+            Nodes to treat as working, by default none (as for ``sf``).
+        broken_nodes : Collection[Hashable], optional
+            Nodes to treat as failed, by default none (as for ``sf``).
+        method : str, optional
+            ``"p"`` or ``"c"``, as for ``sf``.
 
         Returns
         -------
@@ -2967,25 +3099,35 @@ class NonRepairableRBD(RBD):
         >>> round(rbd.Hf(50), 6)
         0.5
         """
-        sf = np.asarray(self.sf(x, **kwargs), dtype=float)
+        sf, ff = self._sf_and_ff(x, working_nodes, broken_nodes, method)
         with np.errstate(divide="ignore"):
-            return -np.log(sf)
+            return np.where(
+                ff < 0.5, -np.log1p(-np.minimum(ff, 0.5)), -np.log(sf)
+            )
 
     @check_x
     def df(
-        self, x: Optional[ArrayLike] = None, dx: float = 1e-6, **kwargs
+        self,
+        x: Optional[ArrayLike] = None,
+        dx: float = 1e-6,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        method: str = "p",
     ) -> np.ndarray:
         """System failure density ``f(x) = -dR/dx`` at time/s ``x``.
 
         Computed by a central finite difference of the system reliability
         from [`sf`][repyability.NonRepairableRBD.sf] (so it honours
         common-cause groups), with step ``h = dx * max(|x|, 1)``: relative
-        to ``x`` for ``|x| >= 1``, absolute below. The lower point is
-        clipped at 0, so the step never crosses into negative time (the
-        difference is one-sided near 0), and negative results (numerical
-        noise) are clipped to 0. It assumes ``R`` is smooth near ``x``,
-        which does not hold for step-function node models such as a
-        Kaplan-Meier fit.
+        to ``x`` for ``|x| >= 1``, absolute below. While the system is more
+        likely to work than not, the difference is taken of its
+        unreliability from [`ff`][repyability.NonRepairableRBD.ff]
+        instead, which keeps its precision where the reliability's change
+        would be lost to rounding. The lower point is clipped at 0, so the
+        step never crosses into negative time (the difference is one-sided
+        near 0), and negative results (numerical noise) are clipped to 0.
+        It assumes ``R`` is smooth near ``x``, which does not hold for
+        step-function node models such as a Kaplan-Meier fit.
 
         Parameters
         ----------
@@ -2994,9 +3136,12 @@ class NonRepairableRBD(RBD):
             fixed-probability RBD (whose density is 0).
         dx : float, optional
             Relative finite-difference step, by default 1e-6.
-        **kwargs
-            Keyword arguments of ``sf`` (``working_nodes``,
-            ``broken_nodes``, ``method``).
+        working_nodes : Collection[Hashable], optional
+            Nodes to treat as working, by default none (as for ``sf``).
+        broken_nodes : Collection[Hashable], optional
+            Nodes to treat as failed, by default none (as for ``sf``).
+        method : str, optional
+            ``"p"`` or ``"c"``, as for ``sf``.
 
         Returns
         -------
@@ -3028,11 +3173,16 @@ class NonRepairableRBD(RBD):
         h = dx * np.maximum(np.abs(x), 1.0)
         x_hi = x + h
         x_lo = np.maximum(x - h, 0.0)
-        density = (
-            np.asarray(self.sf(x_lo, **kwargs), dtype=float)
-            - np.asarray(self.sf(x_hi, **kwargs), dtype=float)
-        ) / (x_hi - x_lo)
-        return np.clip(density, 0.0, None)
+        sf_lo, ff_lo = self._sf_and_ff(
+            x_lo, working_nodes, broken_nodes, method
+        )
+        sf_hi, ff_hi = self._sf_and_ff(
+            x_hi, working_nodes, broken_nodes, method
+        )
+        # The change in whichever of the two is the smaller keeps its
+        # precision; that in the other would be lost to rounding.
+        change = np.where(ff_hi <= 0.5, ff_hi - ff_lo, sf_lo - sf_hi)
+        return np.clip(change / (x_hi - x_lo), 0.0, None)
 
     @check_x
     def hf(
@@ -4288,7 +4438,8 @@ class NonRepairableRBD(RBD):
         Each runs until the half-width of the interval is at most
         ``relative_tolerance`` times the estimate, or ``max_samples``
         lifetimes are spent (with a ``RuntimeWarning``). Where the exact
-        unreliability is known, ``ff(x)`` gives it at once; this method is
+        unreliability is known, ``ff(x)`` gives it at once, to full
+        precision however small it is; this method is
         for diagrams whose nodes are simulated (a standby or load-sharing
         node without a closed form), and for checking.
 

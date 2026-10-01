@@ -27,12 +27,14 @@ State = Tuple[int, int, int]
 
 class StandbyLongRun(NamedTuple):
     """A group's long-run values: the fraction of time it is up, its failures
-    (up to down) per unit time, and its units' failures per unit time (the
-    repairs it pays for)."""
+    (up to down) per unit time, its units' failures per unit time (the
+    repairs it pays for), and the fraction of time it is down (summed over
+    the states it is down in, so that a small one keeps its precision)."""
 
     availability: float
     failure_frequency: float
     unit_failure_frequency: float
+    unavailability: float
 
 
 def _transitions(
@@ -125,8 +127,8 @@ def long_run(
     Returns
     -------
     StandbyLongRun
-        The group's availability, failure frequency and unit failure
-        frequency.
+        The group's availability, failure frequency, unit failure frequency
+        and unavailability.
     """
     states, rates = _transitions(units, k, lam, mu, dormancy, switching, crews)
     index = {state: i for i, state in enumerate(states)}
@@ -142,7 +144,7 @@ def long_run(
     relative = np.linalg.solve(balance[1:, 1:], -balance[1:, 0])
     probabilities = np.append(1.0, np.maximum(relative, 0.0))
     probabilities /= probabilities.sum()
-    availability = failures = unit_failures = 0.0
+    availability = unavailability = failures = unit_failures = 0.0
     for state, p in zip(states, probabilities):
         operating, spares, _ = state
         unit_failures += p * (operating + spares * dormancy) * lam
@@ -151,4 +153,8 @@ def long_run(
             # Up to down: an operating unit fails, and no spare takes over.
             takeover = switching if spares else 0.0
             failures += p * k * lam * (1.0 - takeover)
-    return StandbyLongRun(availability, failures, unit_failures)
+        else:
+            unavailability += p
+    return StandbyLongRun(
+        availability, failures, unit_failures, unavailability
+    )

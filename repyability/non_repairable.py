@@ -313,6 +313,12 @@ class NonRepairable:
     def mean_unavailability(self) -> float:
         """Long-run unavailability, ``1 - mean_availability()``.
 
+        ``MTTR / (MTTF + MTTR)``, worked out in its own right (not as one
+        less the availability), so that a small one keeps its precision;
+        with units that never fail or replacements that never finish, the
+        probability that the unit ends down for good (see
+        ``mean_availability``).
+
         Returns
         -------
         float
@@ -335,7 +341,11 @@ class NonRepairable:
         >>> round(unit.mean_unavailability(), 4)
         0.0196
         """
-        return 1 - self.mean_availability()
+        if isinstance(self.reliability, NonParametric):
+            raise ValueError(
+                "Mean Availability requires a parametric reliability model"
+            )
+        return self._long_run_unavailability()
 
     def mean_availability(self) -> float:
         """Long-run availability, ``MTTF / (MTTF + MTTR)``.
@@ -408,6 +418,18 @@ class NonRepairable:
         mttf = model_mean(self.reliability)
         mttr = model_mean(self.time_to_replace)
         return mttf / (mttr + mttf), 1.0 / (mttf + mttr)
+
+    def _long_run_unavailability(self) -> float:
+        """The long-run unavailability (see ``mean_unavailability``), as
+        ``_long_run`` gives the availability."""
+        up_for_good = never_fails(self.reliability)
+        down_for_good = never_fails(self.time_to_replace)
+        if up_for_good or down_for_good:
+            ends_down = (1.0 - up_for_good) * down_for_good
+            return ends_down / (up_for_good + ends_down)
+        mttf = model_mean(self.reliability)
+        mttr = model_mean(self.time_to_replace)
+        return mttr / (mttr + mttf)
 
     def failure_frequency(self) -> float:
         """Long-run failure frequency (failures per unit time).

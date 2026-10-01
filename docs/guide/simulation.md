@@ -268,7 +268,11 @@ blocks that `random(size, seed=seed, n_jobs=...)` draws.
 A highly reliable system rarely fails, so plain sampling sees few
 failures: estimating a probability `p` to ±10 % takes about `384 / p`
 lifetimes, some 4e10 for `p = 1e-8`. Where the unreliability is exact,
-`ff(x)` gives it at once. Where a node is simulated, as a warm-standby
+`ff(x)` gives it at once, to full precision however small it is (it is
+worked out from the components' own failure probabilities, not as one less
+the reliability); through a numerical node, such as a cold-standby group of
+non-exponential units, only to that node's accuracy, about 1e-6. Where a
+node is simulated, as a warm-standby
 group of Weibull pumps is (its reliability is fitted to 20 000 simulated
 lifetimes, none of which ends in the first 50 hours), the far tail has no
 exact value, and `unreliability_interval(x)` estimates `P(T <= x)` by

@@ -13,7 +13,7 @@ path sets, and the probability scaling used by reliability allocation.
 import pprint
 import warnings
 from collections import defaultdict
-from typing import Any, Dict, Hashable, Iterable, Iterator, Optional
+from typing import Any, Dict, Hashable, Iterable, Iterator, Optional, Tuple
 
 import networkx as nx
 import numpy as np
@@ -1016,16 +1016,62 @@ class RBD:
             return np.array(works, dtype=float)
         return 1 - np.asarray(fails, dtype=float)
 
-    def _system_unreliability(self, node_probabilities: Dict) -> np.ndarray:
+    def _system_unreliability(
+        self, node_probabilities: Dict, node_failures: Optional[Dict] = None
+    ) -> np.ndarray:
         """The probability that the system fails, worked out as a sum of
         products in its own right rather than as one less the probability
-        that it works, so that a small one keeps its precision (the risk
-        worths divide by it)."""
+        that it works, so that a small one keeps its precision (``ff``,
+        the long-run unavailability, and the risk worths, which divide by
+        it). ``node_failures`` gives each node's probability of failing,
+        when it is known more precisely than one less its probability of
+        working (from a reliable node's ``ff``, say): without it, the
+        nodes' are ``1 - p``."""
+        return self._system_probabilities(
+            node_probabilities, node_failures, works=False
+        )[1]
+
+    def _system_probabilities(
+        self,
+        node_probabilities: Dict,
+        node_failures: Optional[Dict] = None,
+        works: bool = True,
+    ) -> Tuple[Optional[np.ndarray], np.ndarray]:
+        """The probabilities that the system works (unless ``works`` is
+        false: then None) and that it fails, in one pass, each a sum of
+        products that keeps a small one's precision (see
+        ``_system_unreliability``)."""
         arrays, size = self._node_arrays(node_probabilities)
-        _, fails = self._decomposition().probabilities(
-            arrays, shape=size, works=False, fails=True
+        failures = (
+            None
+            if node_failures is None
+            else self._node_arrays(node_failures)[0]
         )
-        return np.array(fails, dtype=float)
+        up, down = self._decomposition().probabilities(
+            arrays, failures, shape=size, works=works, fails=True
+        )
+        return (
+            np.array(up, dtype=float) if works else None,
+            np.array(down, dtype=float),
+        )
+
+    def _failures_with_overrides(
+        self, node_failures: dict, working_nodes, broken_nodes
+    ) -> dict:
+        """A copy of ``node_failures`` (each node's probability of failing)
+        with the nodes held working at 0 and those held broken at 1, as
+        ``_probabilities_with_overrides`` holds their probabilities of
+        working at 1 and 0."""
+        out = dict(node_failures)
+        for node in working_nodes or ():
+            out[node] = np.zeros_like(
+                np.atleast_1d(np.asarray(out[node], dtype=float))
+            )
+        for node in broken_nodes or ():
+            out[node] = np.ones_like(
+                np.atleast_1d(np.asarray(out[node], dtype=float))
+            )
+        return out
 
     def _node_arrays(self, node_probabilities: Dict) -> tuple[dict, int]:
         """Each intermediate node's probability as a 1-d array, and their

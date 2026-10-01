@@ -196,6 +196,10 @@ class RegressionNode:
     def ff(self, x: ArrayLike) -> np.ndarray:
         """Unreliability: ``1 - sf(x)``.
 
+        ``model.ff(x, Z)`` at the fixed covariates, or
+        ``-expm1(-model.Hf_tvc(x, schedule))`` along the schedule: worked
+        out in its own right, so that a small one keeps its precision.
+
         Parameters
         ----------
         x : array_like
@@ -207,7 +211,11 @@ class RegressionNode:
             The probability of failing by each ``x``; always an array, as
             for ``sf``.
         """
-        return 1.0 - self.sf(x)
+        x = np.atleast_1d(np.asarray(x, dtype=float))
+        if self.schedule is not None:
+            H = np.asarray(self.model.Hf_tvc(x, self.schedule), dtype=float)
+            return -np.expm1(-H)
+        return np.asarray(self.model.ff(x, self._Z(len(x))), dtype=float)
 
     def _survival_grid(self):
         """A cached ``(t, sf(t))`` grid spanning the bulk of the lifetime.

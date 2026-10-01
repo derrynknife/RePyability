@@ -32,7 +32,8 @@ or early at a stop of its maintenance group, sharing its set-up
 (opportunistic maintenance, #108), and repaired imperfectly, by Kijima's
 virtual age, or replaced at the N-th failure (#109); a simulation run can
 be split across machines and merged (#114); and small failure
-probabilities are estimated by rare-event simulation (#115);
+probabilities are estimated by rare-event simulation (#115), and keep
+their full precision where they are exact (#148);
 phased missions are new, exact and simulated (#100, #101), as are the
 two-terminal reliability of undirected networks (#104) and demonstration
 test planning (#129). Meshed diagrams are decided by a
@@ -46,7 +47,7 @@ once, as each random quantity now has a stream of its own (#119);
 `mean()` and `mean_time_to_failure()` are exact, the old estimate is
 behind `method="simulate"`, and the exact MTTF refuses common-cause groups
 (#122); the number of simulations is `mc_samples` everywhere, and its cap
-`max_samples`, with the old names deprecated until 1.0 (#105);
+`max_samples`, with the old names deprecated until 0.12 (#105);
 `is_analytically_solvable()` flags only simulated nodes (#127); cold-standby
 reliabilities are more accurate, so they move slightly (#128); a cost
 breakdown has a seventh category, `"setup"` (#108); and surpyval 0.21 is
@@ -450,7 +451,7 @@ required.
   `LoadSharingModel` took `n_sims` (now the attribute `mc_samples`); the
   node models' `mean()` took `N`; and `Repairable`'s simulated policies
   took `n_simulations`. The old names still work, with a
-  `DeprecationWarning`, until 1.0. Saved files store `mc_samples`; files
+  `FutureWarning`, until 0.12. Saved files store `mc_samples`; files
   that store `n_sims` still load. (A result's `n_simulations`, the number
   of simulations it was made from, keeps its name.)
 
@@ -597,6 +598,22 @@ required.
   four). They are now worked out as failure probabilities in their own
   right, to full precision; values move slightly, most for very reliable
   systems.
+- **Small failure probabilities keep their precision** (#148).
+  `NonRepairableRBD.ff` and `unreliability` were one less the reliability,
+  and `RepairableRBD.mean_unavailability` one less the availability, which
+  keeps only about 1e-16 of absolute precision: a 2-out-of-3 system
+  failing with probability 3e-15 was 0.08 % off, and below about 1e-16 it
+  got 0. They are now worked out in their own right, as sums of products
+  of each component's own probability of being failed (its model's `ff`;
+  `MTTR / (MTTF + MTTR)`; `1 - exp(-λu)` between tests; or its Markov
+  chain's down states, with repair crews or in a standby group), honouring
+  common-cause groups and working or broken nodes, to full relative
+  precision. `Hf` and `df` (so `hf`) keep it too, the mean down time and
+  the downtime cost rate take the precise unavailability, and
+  `NonRepairable.mean_unavailability`, a series `RepeatedNode`'s `ff` and
+  a `RegressionNode`'s `ff` are worked out directly. Ordinary values move
+  only by rounding. The risk worths, which divided by an unreliability
+  worked out in its own right already, are unchanged.
 - A repairable component whose reliability is a cold `StandbyModel` with a
   unit that may never fail (a surpyval model with `p < 1`) had a long-run
   availability of NaN. It is now 1, as for any component some of whose

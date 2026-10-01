@@ -208,7 +208,9 @@ class RepeatedNode:
         """Cumulative failure probability of the node, ``1 - sf(x)``.
 
         ``1 - model.sf(x) ** repeats`` in series and
-        ``model.ff(x) ** repeats`` in parallel.
+        ``model.ff(x) ** repeats`` in parallel, each worked out from the
+        model's ``ff`` so that a small one keeps its precision (in series,
+        as ``-expm1(repeats * log1p(-model.ff(x)))``).
 
         Parameters
         ----------
@@ -222,7 +224,12 @@ class RepeatedNode:
             following ``model.ff``.
         """
         if self.kind == SERIES:
-            ff = 1 - (self.model.sf(x) ** self.repeats)
+            # A unit that has failed for certain makes log1p(-1) = -inf, on
+            # the way to the right answer (1).
+            with np.errstate(divide="ignore"):
+                ff = -np.expm1(
+                    self.repeats * np.log1p(-np.asarray(self.model.ff(x)))
+                )
         else:
             ff = self.model.ff(x) ** self.repeats
         return ff

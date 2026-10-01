@@ -103,7 +103,8 @@ class BetaFactor:
 
         Each member's failure probability ``Q`` splits into an independent
         part and one whole-group shock. The RBD calls this at each
-        evaluation time with ``Q = 1 - sf(t)`` of the group's first member.
+        evaluation time with ``Q``, the probability that the group's first
+        member has failed by then.
 
         Parameters
         ----------
@@ -234,7 +235,8 @@ class MGL:
         ``Q_1 = (1 - beta) * Q``, and each specific set of ``k >= 2``
         members fails together with the basic-event probability ``Q_k``
         given in the class description. The RBD calls this at each
-        evaluation time with ``Q = 1 - sf(t)`` of the group's first member.
+        evaluation time with ``Q``, the probability that the group's first
+        member has failed by then.
 
         Parameters
         ----------
@@ -280,8 +282,10 @@ class CCFGroup:
 
     Pass groups to [`NonRepairableRBD`][repyability.NonRepairableRBD] as
     ``ccf_groups=[...]``. At each time the RBD takes the members' failure
-    probability ``Q = 1 - sf(t)``, splits it with the model's
-    ``decompose`` into independent failures and mutually exclusive shocks,
+    probability ``Q`` (``1 - sf(t)``, or for the RBD's ``ff`` their model's
+    own ``ff(t)``, which keeps a small one's precision), splits it with the
+    model's ``decompose`` into independent failures and mutually exclusive
+    shocks,
     and computes the exact system reliability by conditioning on every
     group's shock outcome. The groups enter the RBD's ``sf`` and ``ff``
     and the methods built on them (``sf`` raises ``NotImplementedError``

@@ -25,7 +25,8 @@ def test_rel_unrel(rbd_series: NonRepairableRBD):
     t = 5
     rel = rbd_series.reliability(t)
     unrel = rbd_series.unreliability(t)
-    assert unrel == 1 - rel
+    # Worked out in its own right (#148), so equal to rounding.
+    assert unrel == pytest.approx(1 - rel, rel=1e-14, abs=0.0)
 
 
 # Test sf() w/ simple series NonRepairableRBD
