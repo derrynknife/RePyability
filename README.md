@@ -84,6 +84,72 @@ that teaches system reliability from a single part's lifetime to designing
 and maintaining whole systems, working every idea out by hand and then with
 RePyability, with exercises and worked answers.
 
+## When is a simulation needed?
+
+RePyability computes exactly by default: by closed forms, or by
+deterministic numerical methods (quadrature, convolution, renewal equations)
+that give the same answer every run, to a small stated error. It simulates
+only when
+
+- the answer is itself random: sampled lifetimes or histories, or the
+  spread of an outcome over a window (a cost's percentiles, how many
+  failures);
+- components depend on each other in a way no exact method solves in
+  general; or
+- an exact method could exist but has not been written yet.
+
+**Exact or numerical, in any architecture** (series, parallel,
+*k*-out-of-*n*, bridges and other meshed diagrams, components in several
+places, nested diagrams):
+
+- **components:** surpyval lifetime distributions and fixed
+  probabilities; Kaplan–Meier fits (but not in a repairable system's
+  long-run values); repeated nodes; cold standby with one unit operating
+  (any units); standby and load sharing of identical exponential units;
+  common-cause groups, for the system's reliability;
+- **non-repairable questions:** reliability, hazard, MTTF, B*X* life and
+  importance measures at any time, also given each component's current age;
+  the distribution of the system's capacity;
+- **repairable questions,** for independent components repaired when they
+  fail and replaced on age or block schedules: the long-run availability,
+  failure frequency, MUT/MDT/MTBF and cost rate; the availability over time
+  and over a mission from new; the capacity distribution in the long run;
+  and, without block replacement, the spares used over a horizon.
+
+**Simulated**, or refused with the simulation to run instead:
+
+| Situation | Today | Must it be simulated? |
+|---|---|---|
+| **What you ask** | | |
+| Sampled lifetimes or histories, and distributions or percentiles of an outcome over a window | Simulated | Yes: the answer is a sample. |
+| Comparing two designs (`compare`) | Simulated, with common random numbers | No, where both are exact: compare their exact values. |
+| The uncertainty from fitted component parameters (`sf_uncertainty`) | Sampled over the parameters | Sampling is the method. Intervals on the MTTF and B*X* life are missing (#133). |
+| Small failure probabilities, with a simulated node | Rare-event simulation (`unreliability_interval`) | Only while the node is simulated: an exact diagram gives `ff` directly. |
+| Expected failures, outages and cost over a finite window | Simulated (`cost`, `availability`) | No: could be exact for independent components (#123). |
+| Capacity delivered over time, from new | Simulated | No: could be exact (#124). |
+| Repairable analyses from the components' current state, not new | Not available | Could be exact for independent components (#125). |
+| **Components** | | |
+| Warm or hot standby of non-exponential units | Simulated: a fit to simulated lifetimes | No: could be exact (#135). Hot standby is *k*-out-of-*n*: draw the units as parallel nodes for an exact answer now. |
+| Cold standby with two or more units operating, and load sharing, of non-exponential units | Simulated: a fit to simulated lifetimes | No: could be numerical (not planned yet). |
+| Anything a simulated node is part of | Simulated through that node | Only while the node is simulated. |
+| Common-cause groups: MTTF, importance, allocation, and analyses given ages | Refused (a simulated MTTF leaves the groups out) | The MTTF needs a lifetime model for the groups (#132); the rest could be exact (not planned yet). |
+| Kaplan–Meier lives in a repairable system | Long run refused; over time numerical | No: the fit's mean could serve when it ends in a failure (not planned yet). |
+| **Architecture and maintenance** | | |
+| Phased missions over 200,000 states, and networks over 100,000 paths | Refused, pointing to `method="simulate"` | No: decision diagrams could keep them exact (not planned yet). |
+| Hidden failures found by tests (a constant failure rate with instant tests and repairs is exact) | Simulated | No: could be numerical (not planned yet; for SIL, #136). |
+| Replacement on condition at periodic inspections | Simulated | No: could be numerical (not planned yet). |
+| Shared repair crews | Long run exact for exponential lives and repairs; the rest simulated | Over time and importance, with exponential lives: could be exact from the same Markov chain (not planned yet). Other lives: yes, in general. |
+| Standby groups (a duty unit and its spares, repaired) | Long run and importance exact for exponential units; the rest simulated | Over time, with exponential units: could be exact from the same Markov chain (not planned yet). Other units: yes, in general. |
+| Opportunistic maintenance (renewals at a group's stops) | Simulated | Yes: each member's renewals depend on the others' ages. |
+| Imperfect repair (Kijima), with or without replacement at the *N*-th failure | Simulated | Yes, in general: a repair does not renew the unit. |
+| Spares of block-replaced or tested components | Simulated (`spares_demand(method="simulate")`) | No: could be numerical (not planned yet). With crews, standby groups, opportunistic maintenance or imperfect repair: yes. |
+
+For your own diagram, `analysis_routes()` says how each analysis will be
+computed (exact, numerical, simulated or refused) and why, without running
+anything; a refusal's message names the simulation to run instead. The
+[guide](https://derrynknife.github.io/RePyability/guide/saving/#what-is-exact-and-what-is-simulated)
+lists every method's route.
+
 ## Install
 RePyability can be installed via pip using the PyPI [repository](https://pypi.org/project/repyability/)
 

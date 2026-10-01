@@ -26,8 +26,9 @@ from repyability import (
     RepeatedNode,
     RepeatedStandbyNode,
     StandbyModel,
+    network,
 )
-from repyability.rbd import routes
+from repyability.rbd import phased_mission, routes
 from repyability.tests.test_performance_equivalence import binomial_first
 from repyability.tests.test_simulation_engines import (
     identical,
@@ -539,3 +540,164 @@ def test_the_guide_s_table_agrees_with_the_report():
                     assert report[name].route == cells[1], (cls, name)
                     checked += 1
     assert checked >= 30
+
+
+def test_the_readme_says_what_is_simulated():
+    # The README's table of what is simulated: each situation it lists is
+    # routed as it says, on a diagram of that kind. When a route changes
+    # (say, warm standby made exact), the README must change with it.
+    readme = (Path(__file__).resolve().parents[2] / "README.md").read_text()
+    nonrepairable, repairable = nonrepairable_rbds(), repairable_rbds()
+
+    def alone(node):
+        return NonRepairableRBD([("s", "a"), ("a", "t")], {"a": node})
+
+    unit = W([100, 2])
+    rng = np.random.default_rng(0)
+    load = rng.uniform(0.5, 2.0, size=400)
+    weibull = surv.WeibullAFT.fit(
+        rng.weibull(2.0, size=400) * 80.0 / np.exp(0.4 * (load - 1)) + 1e-3,
+        Z=load.reshape(-1, 1),
+    )
+    sharing = LoadSharingModel([weibull] * 2, load=2.0, mc_samples=500, seed=3)
+    plain, ccf = nonrepairable["plain"], nonrepairable["common cause"]
+    crew = repairable["one repair crew, exponential"]
+    group = repairable["standby group"]
+    claims = {
+        "Sampled lifetimes or histories, and distributions or percentiles "
+        "of an outcome over a window": [
+            (plain, "random", "simulated"),
+            (repairable["costed_pairs"], "availability", "simulated"),
+        ],
+        "Comparing two designs (`compare`)": [
+            (plain, "compare", "simulated"),
+            (repairable["costed_pairs"], "compare", "simulated"),
+        ],
+        "The uncertainty from fitted component parameters "
+        "(`sf_uncertainty`)": [(plain, "sf_uncertainty", "simulated")],
+        "Small failure probabilities, with a simulated node": [
+            (nonrepairable["simulated standby"], "ff", "simulated"),
+            (plain, "ff", "exact"),
+        ],
+        "Expected failures, outages and cost over a finite window": [
+            (repairable["costed_pairs"], "cost", "simulated"),
+        ],
+        "Capacity delivered over time, from new": [
+            (repairable["capacities"], "availability", "simulated"),
+            (repairable["capacities"], "capacity_distribution", "exact"),
+        ],
+        "Repairable analyses from the components' current state, "
+        "not new": [],
+        "Warm or hot standby of non-exponential units": [
+            (
+                alone(
+                    StandbyModel(
+                        [unit] * 2, dormancy_factor=f, mc_samples=500, seed=1
+                    )
+                ),
+                "sf",
+                "simulated",
+            )
+            for f in (0.5, 1.0)
+        ],
+        "Cold standby with two or more units operating, and load sharing, "
+        "of non-exponential units": [
+            (nonrepairable["simulated standby"], "sf", "simulated"),
+            (alone(sharing), "sf", "simulated"),
+        ],
+        "Anything a simulated node is part of": [
+            (nonrepairable["nested"], "sf", "simulated"),
+        ],
+        "Common-cause groups: MTTF, importance, allocation, and analyses "
+        "given ages": [(ccf, "sf", "exact")]
+        + [
+            (ccf, name, "refused")
+            for name in (
+                "mean",
+                "birnbaum_importance",
+                "allocate_redundancy",
+                "sf_given_state",
+            )
+        ],
+        "Kaplan–Meier lives in a repairable system": [
+            (
+                repairable["non-parametric life"],
+                "mean_availability",
+                "refused",
+            ),
+            (
+                repairable["non-parametric life"],
+                "point_availability",
+                "numerical",
+            ),
+        ],
+        "Phased missions over 200,000 states, and networks over 100,000 "
+        "paths": [],
+        "Hidden failures found by tests (a constant failure rate with "
+        "instant tests and repairs is exact)": [
+            (repairable["tested, Weibull"], "mean_availability", "refused"),
+            (
+                repairable["tested, constant rate"],
+                "mean_availability",
+                "exact",
+            ),
+        ],
+        "Replacement on condition at periodic inspections": [
+            (
+                repairable["replaced on condition"],
+                "mean_availability",
+                "refused",
+            ),
+            (repairable["replaced on condition"], "availability", "simulated"),
+        ],
+        "Shared repair crews": [
+            (crew, "mean_availability", "exact"),
+            (crew, "point_availability", "refused"),
+            (crew, "birnbaum_importance", "refused"),
+            (repairable["one repair crew"], "mean_availability", "refused"),
+        ],
+        "Standby groups (a duty unit and its spares, repaired)": [
+            (group, "mean_availability", "exact"),
+            (group, "birnbaum_importance", "exact"),
+            (group, "point_availability", "refused"),
+            (
+                repairable["standby group, Weibull"],
+                "mean_availability",
+                "refused",
+            ),
+        ],
+        "Opportunistic maintenance (renewals at a group's stops)": [
+            (
+                repairable["opportunistic maintenance"],
+                "mean_availability",
+                "refused",
+            ),
+        ],
+        "Imperfect repair (Kijima), with or without replacement at the "
+        "*N*-th failure": [
+            (repairable["imperfect repair"], "mean_availability", "refused"),
+            (
+                repairable["imperfect repair, replaced and maintained"],
+                "mean_availability",
+                "refused",
+            ),
+        ],
+        "Spares of block-replaced or tested components": [
+            (repairable["block replacement"], "spares_demand", "refused"),
+            (repairable["tested, constant rate"], "spares_demand", "refused"),
+        ],
+    }
+    rows = [
+        line.split("|")[1].strip()
+        for line in readme.split("## When is a simulation needed?")[1]
+        .split("\n## ")[0]
+        .splitlines()
+        if line.startswith("| ") and not line.startswith("| **")
+    ][1:]
+    assert sorted(rows) == sorted(claims)
+    for situation, checks in claims.items():
+        for rbd, analysis, route in checks:
+            found = rbd.analysis_routes()[analysis].route
+            assert found == route, (situation, analysis, found)
+    assert phased_mission.MAX_STATES == 200_000
+    assert network.MAX_PATHS == 100_000

@@ -412,6 +412,11 @@ required.
   `mtbf_pass_probability` give a plan's operating characteristic: the
   chance a design passes, for its consumer's and producer's risks. A new
   guide page, Demonstration testing, covers them.
+- **When is a simulation needed?** The README says, by what you ask, the
+  components and the maintenance, what is computed exactly, what is
+  simulated, and which of those simulations must be and which could be made
+  exact (with the issues that would do it). A test keeps it in line with
+  `analysis_routes()`.
 
 ### Changed
 

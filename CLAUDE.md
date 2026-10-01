@@ -63,6 +63,11 @@
   `test_analysis_routes.py` checks that it covers every public method, that
   each method does what it says on diagrams of every kind, and that the
   saving guide's table agrees with it.
+- **The README's "When is a simulation needed?" table follows the routes.**
+  It says, by what is asked, the components and the maintenance, what is
+  simulated and whether it must be (or could be exact, with the issue).
+  `test_the_readme_says_what_is_simulated` checks each row against
+  `analysis_routes()`: when an analysis is made exact, update its row.
 
 ## API conventions
 

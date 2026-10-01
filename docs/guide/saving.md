@@ -122,6 +122,11 @@ Each analysis is computed one of four ways:
 - **simulated**: Monte Carlo, reproducible with a seed;
 - **refused**: the method raises, and says why.
 
+The [README](https://github.com/derrynknife/RePyability#when-is-a-simulation-needed)
+sums this up by what you ask, the components and the maintenance, and says
+which of the simulated analyses must be simulated and which could be made
+exact.
+
 On a diagram of plain components (surpyval distributions, with no preventive
 maintenance or hidden failures):
 
