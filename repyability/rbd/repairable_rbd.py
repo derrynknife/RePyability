@@ -11,8 +11,10 @@ in ``_streams``, and its compiled engine in ``_compiled`` and
 """
 
 import dataclasses
+import hashlib
 import heapq
 import itertools
+import json
 import math
 import pprint
 import warnings
@@ -22,6 +24,7 @@ from dataclasses import dataclass, field
 from fractions import Fraction
 from functools import partial
 from typing import (
+    TYPE_CHECKING,
     Any,
     Callable,
     Collection,
@@ -85,6 +88,10 @@ from repyability.rbd.results import (
     TotalCostAllocation,
     UpDownImportance,
 )
+
+if TYPE_CHECKING:
+    from repyability.rbd.chunks import SimulationChunk
+
 from repyability.rbd.routes import AnalysisRoute
 from repyability.utils.deprecation import renamed
 
@@ -857,6 +864,124 @@ class _Tally:
             times.append(chunk_times)
             deltas.append(chunk_deltas)
         return np.concatenate(times) + 0.0, np.concatenate(deltas)
+
+    # The totals that are lists of floats, one per node, and the counts.
+    _NODE_SUMS = (
+        "node_uptime",
+        "node_downtime",
+        "intersection_uptime",
+        "intersection_downtime",
+        "union_uptime",
+        "union_downtime",
+    )
+    _COUNTS = (
+        "system_restorations",
+        "system_failures",
+        "system_planned_outages",
+    )
+
+    def merge(self, other: "_Tally") -> None:
+        """Add ``other``'s simulations, which come after this tally's (see
+        ``SimulationChunk``). The per-simulation values follow on in order;
+        the totals are added, so they can differ from one run's in the last
+        digits (a run adds simulation by simulation)."""
+        self.n += other.n
+        self.system_uptime += other.system_uptime
+        self.system_downtime += other.system_downtime
+        for name in self._COUNTS:
+            setattr(self, name, getattr(self, name) + getattr(other, name))
+        for name in self._NODE_SUMS:
+            mine = getattr(self, name)
+            for c, value in enumerate(getattr(other, name)):
+                mine[c] += value
+        for totals, counts in zip(self.counts, other.counts):
+            for c, count in enumerate(counts):
+                totals[c] += count
+        for c, count in enumerate(other.opportunistic):
+            self.opportunistic[c] += count
+        times, deltas = other.state_changes()
+        self.change_arrays.append((times, deltas))
+        self.uptimes.extend(other.uptimes)
+        self.cost_samples.extend(other.cost_samples)
+        for key, amount in other.cost_by_category.items():
+            self.cost_by_category[key] += amount
+        for node, amount in other.cost_by_component.items():
+            self.cost_by_component[node] += amount
+        for time, change in other.capacity_changes.items():
+            self.capacity_changes[time] += change
+        for time, change in other.unlimited_changes.items():
+            self.unlimited_changes[time] += change
+        for level, time in other.capacity_time.items():
+            self.capacity_time[level] += time
+        self.delivered.extend(other.delivered)
+
+    def to_dict(self) -> dict:
+        """The totals, as JSON data (see ``SimulationChunk.to_dict``)."""
+        times, deltas = self.state_changes()
+        return {
+            "nodes": list(self.nodes),
+            "t_simulation": self.t_simulation,
+            "n": self.n,
+            "changes": times.tolist(),
+            "deltas": deltas.tolist(),
+            "counts": [list(counts) for counts in self.counts],
+            **{name: getattr(self, name) for name in self._COUNTS},
+            "system_uptime": self.system_uptime,
+            "system_downtime": self.system_downtime,
+            **{name: list(getattr(self, name)) for name in self._NODE_SUMS},
+            "uptimes": list(self.uptimes),
+            "cost_samples": list(self.cost_samples),
+            "cost_by_category": dict(self.cost_by_category),
+            "cost_by_component": [
+                [node, amount]
+                for node, amount in self.cost_by_component.items()
+            ],
+            "capacity_changes": sorted(self.capacity_changes.items()),
+            "unlimited_changes": sorted(self.unlimited_changes.items()),
+            "capacity_time": sorted(self.capacity_time.items()),
+            "delivered": list(self.delivered),
+            "opportunistic": list(self.opportunistic),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "_Tally":
+        """The totals ``to_dict`` gave (node names as JSON gives them
+        back)."""
+        from repyability.rbd.serialisation import _node_name
+
+        nodes = [_node_name(node) for node in data["nodes"]]
+        components = [
+            _node_name(node) for node, _ in data["cost_by_component"]
+        ]
+        tally = cls(nodes, dict.fromkeys(components), data["t_simulation"])
+        tally.n = int(data["n"])
+        tally.changes = [float(t) for t in data["changes"]]
+        tally.deltas = [int(d) for d in data["deltas"]]
+        tally.counts = [[int(c) for c in counts] for counts in data["counts"]]
+        for name in cls._COUNTS:
+            setattr(tally, name, int(data[name]))
+        tally.system_uptime = float(data["system_uptime"])
+        tally.system_downtime = float(data["system_downtime"])
+        for name in cls._NODE_SUMS:
+            setattr(tally, name, [float(v) for v in data[name]])
+        tally.uptimes = [float(v) for v in data["uptimes"]]
+        tally.cost_samples = [float(v) for v in data["cost_samples"]]
+        tally.cost_by_category.update(
+            {key: float(v) for key, v in data["cost_by_category"].items()}
+        )
+        tally.cost_by_component = {
+            _node_name(node): float(amount)
+            for node, amount in data["cost_by_component"]
+        }
+        for name in ("capacity_changes", "capacity_time"):
+            totals = getattr(tally, name)
+            for key, value in data[name]:
+                totals[float(key)] = float(value)
+        for time, change in data["unlimited_changes"]:
+            tally.unlimited_changes[float(time)] = int(change)
+        tally.delivered = [float(v) for v in data["delivered"]]
+        tally.opportunistic = [int(c) for c in data["opportunistic"]]
+        return tally
 
     def criticality_counts(self) -> Tuple[dict, dict]:
         """The failure and restoration counts behind the criticality
@@ -6037,6 +6162,16 @@ class RepairableRBD(RBD):
                 engine_reason=why,
             )
         )
+        out["simulate_chunk"] = out["availability"]
+        out["availability_from_chunks"] = (
+            out["availability"]
+            if given
+            else r.AnalysisRoute(
+                r.SIMULATED,
+                "Simulated chunks of a run (see simulate_chunk), merged into "
+                "its result.",
+            )
+        )
         engine, why = self._engine_choice(capacity=False)
         out["cost"] = r.AnalysisRoute(
             r.SIMULATED,
@@ -7872,6 +8007,259 @@ class RepairableRBD(RBD):
             engine=engine,
         )
 
+    def simulate_chunk(
+        self,
+        t_simulation: float,
+        start: int,
+        stop: int,
+        *,
+        seed: int,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        method: str = "p",
+        antithetic: bool = False,
+        demand: Optional[float] = None,
+        engine: str = "auto",
+        n_jobs: Optional[int] = None,
+        verbose: bool = False,
+    ) -> "SimulationChunk":
+        """Run simulations ``start`` to ``stop - 1`` of the run
+        ``availability(t_simulation, mc_samples=N, seed=seed, ...)`` makes,
+        for any ``N`` of at least ``stop``, and return them as a chunk to
+        merge with the run's others.
+
+        Each simulation draws from streams of its own, seeded from ``seed``
+        and its position in the run (see
+        [Random streams](guide/simulation.md#random-streams)), so it
+        comes out the same wherever and whenever it runs, by either engine,
+        in any company. A run can so be split across processes, machines or
+        preemptible workers: each runs its chunk, saves it
+        (``SimulationChunk.to_json``) and sends it back, and
+        ``availability_from_chunks`` merges the chunks into the run's
+        [`AvailabilityResult`][repyability.AvailabilityResult]. Chunks of
+        simulations ``0`` to ``N - 1`` give the result of
+        ``availability(..., mc_samples=N)``: the same simulations, so the
+        same per-simulation values and timeline, with totals added up chunk
+        by chunk (equal to the last digits or so).
+
+        Parameters
+        ----------
+        t_simulation : float
+            The window each simulation covers, from 0.
+        start : int
+            The first simulation to run, by its position in the run (from
+            0; even with ``antithetic``, so that a chunk holds whole pairs).
+        stop : int
+            The simulation after the last to run (above ``start``; even with
+            ``antithetic``).
+        seed : int
+            The run's seed, required: chunks of a run share it.
+        working_nodes : Collection[Hashable], optional
+            Nodes held working, as for ``availability``.
+        broken_nodes : Collection[Hashable], optional
+            Nodes held broken, as for ``availability``.
+        method : str, optional
+            ``"p"`` or ``"c"``, as for ``availability``, by default ``"p"``.
+        antithetic : bool, optional
+            Simulate in antithetic pairs, as for ``availability``, by
+            default False.
+        demand : float, optional
+            A demand on the system's capacity, as for ``availability``.
+        engine : str, optional
+            ``"auto"``, ``"python"`` or ``"numba"``, as for
+            ``availability``: the chunk is the same either way.
+        n_jobs : int, optional
+            Run the chunk on several CPUs, as for ``availability``.
+        verbose : bool, optional
+            Show a progress bar, by default False.
+
+        Returns
+        -------
+        SimulationChunk
+            The simulations' totals, with the run's settings.
+
+        Raises
+        ------
+        ValueError
+            If ``seed`` is None, ``start`` and ``stop`` are not whole
+            numbers with ``0 <= start < stop`` (even, with ``antithetic``),
+            or the other arguments are invalid, as for ``availability``.
+        NotImplementedError
+            As for ``availability``.
+
+        Examples
+        --------
+        Two chunks of a run, merged, are the run:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> E = surv.Exponential.from_params
+        >>> rbd = RepairableRBD(
+        ...     [("s", "a"), ("a", "t")],
+        ...     {"a": {"reliability": E([0.1]), "repairability": E([1.0])}},
+        ... )
+        >>> first = rbd.simulate_chunk(100.0, 0, 300, seed=1)
+        >>> rest = rbd.simulate_chunk(100.0, 300, 500, seed=1)
+        >>> merged = rbd.availability_from_chunks([first, rest])
+        >>> whole = rbd.availability(100.0, mc_samples=500, seed=1)
+        >>> bool((merged.uptimes == whole.uptimes).all())
+        True
+        """
+        from repyability.rbd.chunks import SimulationChunk
+
+        if seed is None:
+            raise ValueError(
+                "A chunk needs the run's seed: the chunks of a run share it."
+            )
+        for name, value in (("start", start), ("stop", stop)):
+            if isinstance(value, bool) or not isinstance(
+                value, (int, np.integer)
+            ):
+                raise ValueError(
+                    f"{name} must be a whole number, got {value!r}."
+                )
+        if not 0 <= start < stop:
+            raise ValueError(
+                f"The chunk must be simulations start to stop - 1, with 0 <= "
+                f"start < stop; got start={start!r}, stop={stop!r}."
+            )
+        if antithetic and (start % 2 or stop % 2):
+            raise ValueError(
+                "With antithetic pairs, start and stop must be even, so that "
+                "the chunk holds whole pairs."
+            )
+        working = set() if working_nodes is None else set(working_nodes)
+        broken = set() if broken_nodes is None else set(broken_nodes)
+        self._validate_node_overrides(working, broken)
+        self.is_system_working(
+            {c: c not in broken for c in self.components}, method
+        )
+        capacity = None
+        if self._has_capacity():
+            capacity = _CapacityRecorder(self, demand)
+        elif demand is not None:
+            raise ValueError(
+                "A demand is measured against capacities, and no node has "
+                "one: give them with capacity={node: capacity}."
+            )
+        entropy = _streams.entropy_of(seed)
+        tally = self._run(
+            t_simulation,
+            working,
+            broken,
+            method,
+            int(stop - start),
+            verbose,
+            seed,
+            antithetic,
+            capacity=capacity,
+            jobs=None if n_jobs is None else montecarlo.jobs(n_jobs),
+            engine=engine,
+            entropy=entropy,
+            first=int(start),
+        )
+        settings = {
+            "t_simulation": float(t_simulation),
+            "entropy": entropy,
+            "method": method,
+            "working_nodes": sorted(working, key=repr),
+            "broken_nodes": sorted(broken, key=repr),
+            "antithetic": bool(antithetic),
+            "demand": None if demand is None else float(demand),
+            "fingerprint": self._fingerprint(),
+        }
+        return SimulationChunk([(int(start), int(stop))], settings, tally)
+
+    def availability_from_chunks(self, chunks) -> AvailabilityResult:
+        """The result of the simulations of ``chunks`` (see
+        ``simulate_chunk``), as ``availability`` gives it: merged, in
+        order of their positions in the run.
+
+        Chunks of simulations ``0`` to ``N - 1`` give the result of
+        ``availability(t_simulation, mc_samples=N, seed=seed, ...)``: the
+        same per-simulation values (``uptimes``, the costs' ``samples``) and
+        timeline, and the same totals to the last digits or so (the run
+        adds them simulation by simulation, the merge chunk by chunk).
+        Chunks with gaps between them give the result of the simulations
+        they hold. With costs, the result's ``cost`` is the simulated cost
+        distribution, as ``cost`` gives it.
+
+        Parameters
+        ----------
+        chunks : SimulationChunk, or an iterable of them
+            The chunks, or their ``to_dict`` data: of one run of this
+            system, holding different simulations.
+
+        Returns
+        -------
+        AvailabilityResult
+            The result of their simulations.
+
+        Raises
+        ------
+        ValueError
+            If the chunks are of different runs, of another system (or of
+            it saved by another RePyability version), or their simulations
+            overlap or interleave.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD, SimulationChunk
+        >>> E = surv.Exponential.from_params
+        >>> rbd = RepairableRBD(
+        ...     [("s", "a"), ("a", "t")],
+        ...     {"a": {"reliability": E([0.1]), "repairability": E([1.0])}},
+        ... )
+        >>> saved = rbd.simulate_chunk(100.0, 0, 200, seed=3).to_json()
+        >>> chunk = SimulationChunk.from_json(saved)
+        >>> rbd.availability_from_chunks(chunk).n_simulations
+        200
+        """
+        from repyability.rbd.chunks import SimulationChunk
+
+        if isinstance(chunks, (SimulationChunk, dict)):
+            chunks = [chunks]
+        chunk = SimulationChunk.merge(chunks)
+        settings = chunk.settings
+        fingerprint = self._fingerprint()
+        if (
+            settings["fingerprint"] is not None
+            and fingerprint is not None
+            and settings["fingerprint"] != fingerprint
+        ):
+            raise ValueError(
+                "The chunks were simulated with another system (or with "
+                "this one saved by another RePyability version)."
+            )
+        broken = set(settings["broken_nodes"])
+        capacity = None
+        if self._has_capacity():
+            capacity = _CapacityRecorder(self, settings["demand"])
+        initial_up = bool(
+            self.is_system_working(
+                {c: c not in broken for c in self.components},
+                settings["method"],
+            )
+        )
+        return self._availability_result(
+            chunk._tally,
+            settings["t_simulation"],
+            initial_up,
+            settings["antithetic"],
+            capacity,
+        )
+
+    def _fingerprint(self) -> Optional[str]:
+        """A hash of this system saved as JSON (with the RePyability
+        version), which chunks of its runs carry; None if it cannot be
+        saved."""
+        try:
+            text = json.dumps(self.to_dict(), sort_keys=True)
+        except Exception:
+            return None
+        return hashlib.sha256(text.encode()).hexdigest()
+
     def compare(
         self,
         other: "RepairableRBD",
@@ -8124,9 +8512,10 @@ class RepairableRBD(RBD):
         widths: Optional[dict] = None,
         common: bool = False,
         replacements: bool = False,
+        first: int = 0,
     ) -> "_Tally":
-        """Run ``N`` simulations (then more, while ``stop`` asks for them)
-        and return their totals.
+        """Run ``N`` simulations, from simulation ``first`` (then more,
+        while ``stop`` asks for them), and return their totals.
 
         Every draw comes from a stream of its own (see ``_streams``), seeded
         from the run's ``entropy``: the ``seed``, or without one a number
@@ -8197,7 +8586,7 @@ class RepairableRBD(RBD):
                     ),
                     jobs,
                 )
-            start, goal = 0, N
+            start, goal = first, first + N
             while True:
                 runner(start, goal)
                 more = 0 if stop is None else stop(tally)

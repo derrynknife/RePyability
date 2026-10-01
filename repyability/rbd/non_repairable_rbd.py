@@ -69,6 +69,10 @@ from .uncertainty import draw_models
 #: each block is seeded by its position, so a parallel draw does not depend
 #: on the number of processes.
 RANDOM_BLOCK = 10_000
+#: About how many uniforms a vectorised draw works on at once: a large draw
+#: takes its uniforms in rows of this many, from the same stream, so its
+#: lifetimes are the same as in one piece, but its arrays stay in cache.
+DRAW_UNIFORMS = 2**20
 
 
 def _random_block(task) -> np.ndarray:
@@ -76,6 +80,14 @@ def _random_block(task) -> np.ndarray:
     rbd, size, seed, antithetic = task
     with numpy_seed(seed):
         return rbd._draw(size, antithetic)
+
+
+def _row_blocks(size: int, width: int):
+    """``(first row, rows)`` blocks of ``size`` rows of ``width`` uniforms,
+    about ``DRAW_UNIFORMS`` a block."""
+    rows = max(1, DRAW_UNIFORMS // max(width, 1))
+    for first in range(0, size, rows):
+        yield first, min(rows, size - first)
 
 
 def _check_lifetimes(lifetimes: np.ndarray) -> None:
@@ -3535,6 +3547,11 @@ class NonRepairableRBD(RBD):
                 )
             ),
         )
+        out["random_block"] = r.AnalysisRoute(
+            r.SIMULATED,
+            "A block of the Monte-Carlo lifetimes random draws with n_jobs."
+            + independent,
+        )
         out["mean_time_to_failure_interval"] = r.AnalysisRoute(
             r.SIMULATED,
             "The mean of Monte-Carlo lifetimes (see random), with its "
@@ -3694,6 +3711,74 @@ class NonRepairableRBD(RBD):
         jobs = None if n_jobs is None else montecarlo.jobs(n_jobs)
         return self._simulate_lifetimes(size, seed, antithetic, jobs, None)
 
+    def random_block(
+        self, block: int, seed: int, *, antithetic: bool = False
+    ) -> np.ndarray:
+        """Block ``block`` of the lifetimes ``random(size, seed=seed,
+        n_jobs=...)`` draws: lifetimes ``block * RANDOM_BLOCK`` to
+        ``(block + 1) * RANDOM_BLOCK - 1`` of them, for any ``n_jobs``.
+
+        With ``n_jobs``, ``random`` draws its lifetimes in blocks of
+        ``RANDOM_BLOCK`` (10 000), each seeded from ``seed`` and its
+        position alone. This draws one, so a large draw can be split across
+        machines, or any block of it drawn again to check it. A last,
+        shorter block of a draw is the start of the full block.
+
+        Parameters
+        ----------
+        block : int
+            The block's position, from 0.
+        seed : int
+            The draw's seed, required.
+        antithetic : bool, optional
+            Draw in antithetic pairs, as ``random`` does with
+            ``antithetic=True``, by default False.
+
+        Returns
+        -------
+        numpy.ndarray
+            The block's ``RANDOM_BLOCK`` lifetimes.
+
+        Raises
+        ------
+        ValueError
+            If ``block`` is not a whole number of at least 0, or ``seed``
+            is None.
+        NotImplementedError
+            As for ``random`` with ``antithetic``.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> unit = surv.Weibull.from_params([100, 2])
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        ...     {"a": unit, "b": unit},
+        ... )
+        >>> whole = rbd.random(30_000, seed=5, n_jobs=1)
+        >>> second = rbd.random_block(1, seed=5)
+        >>> bool((second == whole[10_000:20_000]).all())
+        True
+        """
+        if (
+            isinstance(block, bool)
+            or not isinstance(block, (int, np.integer))
+            or block < 0
+        ):
+            raise ValueError(
+                f"block must be a whole number of at least 0, got {block!r}."
+            )
+        if seed is None:
+            raise ValueError(
+                "A block needs the draw's seed: the blocks of a draw share it."
+            )
+        # The block-th of the seeds random spawns in turn (see block_seed).
+        seeds = np.random.SeedSequence(seed, spawn_key=(int(block),))
+        block_seed = int(seeds.generate_state(1, dtype=np.uint32)[0])
+        return _random_block((self, RANDOM_BLOCK, block_seed, antithetic))
+
     def _draw(self, size, antithetic: bool = False) -> np.ndarray:
         """``size`` lifetimes from numpy's global RNG as it stands."""
         if antithetic:
@@ -3713,10 +3798,11 @@ class NonRepairableRBD(RBD):
                 "replayable from uniforms (surpyval parametric distributions "
                 "and the composite nodes built from them)."
             )
-        u = np.random.random_sample((size // 2, sampler.width))
         out = np.empty(size)
-        out[0::2] = sampler.draw(u)
-        out[1::2] = sampler.draw(1.0 - u)
+        for first, rows in _row_blocks(size // 2, sampler.width):
+            u = np.random.random_sample((rows, sampler.width))
+            out[2 * first : 2 * (first + rows) : 2] = sampler.draw(u)
+            out[2 * first + 1 : 2 * (first + rows) : 2] = sampler.draw(1.0 - u)
         _check_lifetimes(out)
         return out
 
@@ -3775,7 +3861,11 @@ class NonRepairableRBD(RBD):
         if sampler is None:
             return None
         state = np.random.get_state()
-        out = sampler.draw(np.random.random_sample((size, sampler.width)))
+        out = np.empty(size)
+        for first, rows in _row_blocks(size, sampler.width):
+            out[first : first + rows] = sampler.draw(
+                np.random.random_sample((rows, sampler.width))
+            )
         if np.isnan(out).any():
             # The event loop's ordering of NaN times is not reproducible
             # here; rewind and let it run.

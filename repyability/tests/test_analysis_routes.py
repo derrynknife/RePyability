@@ -285,6 +285,7 @@ NONREPAIRABLE_CALLS = {
     ),
     "structural_importance": lambda rbd: rbd.structural_importance(),
     "random": lambda rbd: rbd.random(200, seed=1),
+    "random_block": lambda rbd: rbd.random_block(1, seed=1),
     "mean": lambda rbd: rbd.mean(),
     "mean_time_to_failure": lambda rbd: rbd.mean_time_to_failure(),
     "mean_time_to_failure_interval": (
@@ -330,6 +331,10 @@ REPAIRABLE_CALLS = {
     "point_availability": lambda rbd: rbd.point_availability([10.0, 200.0]),
     "mission_availability": lambda rbd: rbd.mission_availability(200.0),
     "availability": lambda rbd: rbd.availability(200.0, mc_samples=20, seed=1),
+    "simulate_chunk": lambda rbd: rbd.simulate_chunk(200.0, 10, 30, seed=1),
+    "availability_from_chunks": lambda rbd: rbd.availability_from_chunks(
+        rbd.simulate_chunk(200.0, 10, 30, seed=1)
+    ),
     "cost": lambda rbd: rbd.cost(200.0, mc_samples=20, seed=1),
     "compare": lambda rbd: rbd.compare(rbd, 200.0, mc_samples=20, seed=1),
 }

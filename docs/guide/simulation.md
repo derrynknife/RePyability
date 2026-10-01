@@ -219,6 +219,50 @@ affinity, where the platform reports one). A container limited by a CPU
 quota rather than by affinity can report more CPUs than it may use: set
 `n_jobs` explicitly there.
 
+## Splitting a run across machines
+
+A run's simulations are numbered, and simulation `i` draws from streams
+seeded by the run's seed and `i` alone, so it comes out the same wherever it
+runs. `simulate_chunk(t_simulation, start, stop, seed=...)` runs
+simulations `start` to `stop - 1` of a run and returns a
+[`SimulationChunk`][repyability.SimulationChunk]: their totals, which save to
+JSON. `availability_from_chunks` merges chunks into the run's result, so a
+large run can be spread over machines or preemptible workers, each running
+its chunk and sending it back:
+
+```python
+from repyability import SimulationChunk
+
+first = plant.simulate_chunk(100.0, 0, 1_200, seed=0)       # on one machine
+rest = plant.simulate_chunk(100.0, 1_200, 2_000, seed=0)    # on another
+sent = [SimulationChunk.from_json(c.to_json()) for c in (rest, first)]
+merged = plant.availability_from_chunks(sent)
+whole = plant.availability(t_simulation=100.0, mc_samples=2_000, seed=0)
+bool((merged.uptimes == whole.uptimes).all())        # True: the same simulations
+bool((merged.availability == whole.availability).all())   # True
+```
+
+- **The same run.** Chunks of simulations `0` to `N - 1` give the result of
+  `availability(..., mc_samples=N)`: the same per-simulation values
+  (`uptimes`, the cost `samples`) and timeline, and the same totals to the
+  last digits or so (the run adds them simulation by simulation, the merge
+  chunk by chunk). With costs, the result's `cost` is the cost
+  distribution. Chunks may leave gaps; the result is then that of the
+  simulations they hold.
+- **Checked.** Chunks merge only with chunks of the same run: the same
+  system (a hash of it saved as JSON, which a chunk carries, so a worker
+  can rebuild the system with `RepairableRBD.from_json`), window, seed,
+  nodes held working or broken, `method`, `antithetic` and `demand`, and
+  different simulations, in order. `SimulationChunk.merge` merges chunks
+  into one, to merge in stages.
+- **Any engine.** A chunk is the same from the Python engine or the
+  compiled one, and with any `n_jobs`. With `antithetic`, a chunk's ends
+  are even, so that it holds whole pairs.
+
+A `NonRepairableRBD`'s lifetimes split the same way:
+`random_block(block, seed)` draws block `block` of the 10 000-lifetime
+blocks that `random(size, seed=seed, n_jobs=...)` draws.
+
 ## Comparing two designs
 
 Two designs are best compared with **common random numbers**: simulate both
@@ -303,14 +347,28 @@ maintenance, inspections, repair crews, nested RBDs, capacities and other
 models run in Python, which `"auto"` chooses by itself. With `n_jobs` it runs on that many
 threads, which start at once.
 
-On one test machine, the plant above, over 1 000 hours, ran at about a
-million events (failures and repairs) a second in Python, 12 million
-compiled on one core and 24 million on four; a system of 12 components with
-a bridge and a vote, over 5 000 hours, at 0.8, 8.5 and 23 million; and 70
-components, 35 redundant pairs in series, over 2 000 hours, at 0.6, 4.4 and
-12.6 million. Above 20 components, the compiled loop works out whether the
-system is up after each event that could change it, rather than looking it
-up in a table of every state, so those events cost more.
+On a four-core 2.8 GHz Xeon, in millions of events (failures and repairs)
+a second:
+
+| System | Window | Python | Compiled, one thread | Compiled, four threads |
+|---|---|---|---|---|
+| The plant above, 3 components | 1 000 h | 0.75 | 8.3 | 16.3 |
+| A bridge feeding a 2-out-of-3 vote, 12 components | 5 000 h | 0.63 | 10.0 | 25.0 |
+| 35 redundant pairs in series, 105 components | 2 000 h | 0.25 | 2.1 | 2.9 |
+
+Above 20 components, the compiled loop works out whether the system is up
+after each event that could change it, rather than looking it up in a
+table of every state, so those events cost more.
+
+A `NonRepairableRBD`'s lifetimes are drawn vectorised, a block of samples
+at once through the diagram's modules; on the same machine, a million of
+them:
+
+| Diagram | Lifetimes a second | With `n_jobs=4` |
+|---|---|---|
+| 2 units in parallel | 12.6 million | 11.6 million |
+| 10 bridges in series, 60 components | 0.51 million | 1.6 million |
+| 35 redundant pairs in series, 105 components | 0.34 million | 1.1 million |
 
 ## Which to use
 

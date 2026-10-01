@@ -21,6 +21,7 @@ from repyability.maintenance import FailureLimitPolicy, MaintenancePolicy
 from repyability.network import Network
 from repyability.non_repairable import NonRepairable
 from repyability.rbd.ccf import MGL, BetaFactor, CCFGroup
+from repyability.rbd.chunks import SimulationChunk
 from repyability.rbd.degrading_node import DegradingNode
 from repyability.rbd.helper_classes import (
     PerfectReliability,
@@ -116,4 +117,5 @@ __all__ = [
     "AvailabilityAllocation",
     "SparesDemand",
     "SparesStock",
+    "SimulationChunk",
 ]

@@ -117,6 +117,8 @@ models provided here (see [Building an RBD](guide/building.md) and
 
 ::: repyability.SparesStock
 
+::: repyability.SimulationChunk
+
 ::: repyability.MaintenancePolicy
 
 ::: repyability.FailureLimitPolicy

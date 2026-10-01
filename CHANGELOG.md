@@ -28,7 +28,8 @@ the spares each component uses and the stock to hold for a lead time (#95);
 a component can be replaced on condition at periodic inspections (#96),
 or early at a stop of its maintenance group, sharing its set-up
 (opportunistic maintenance, #108), and repaired imperfectly, by Kijima's
-virtual age, or replaced at the N-th failure (#109);
+virtual age, or replaced at the N-th failure (#109); and a simulation run
+can be split across machines and merged (#114);
 phased missions are new, exact and simulated (#100, #101), as are the
 two-terminal reliability of undirected networks (#104) and demonstration
 test planning (#129). Meshed diagrams are decided by a
@@ -252,6 +253,21 @@ required.
   inspection cost are saved with the RBD. Checked against a timeline
   worked by hand, block replacement and run to failure (identical results),
   constant failure rates, and a direct simulation of the policy.
+- **Runs split across machines** (#114). `RepairableRBD.simulate_chunk(
+  t_simulation, start, stop, seed=...)` runs simulations `start` to
+  `stop - 1` of the run `availability(t_simulation, mc_samples=N,
+  seed=...)` makes (each simulation draws from streams seeded by the seed
+  and its position alone, so it is the same wherever it runs) and returns
+  a `SimulationChunk`: their totals, which save to JSON
+  (`to_json`/`from_json`, `to_dict`/`from_dict`) and merge
+  (`SimulationChunk.merge`). `availability_from_chunks` turns chunks into
+  the run's `AvailabilityResult`: chunks of simulations `0` to `N - 1` give
+  the same per-simulation values and timeline as the run, and its totals
+  to the last digits. Chunks carry their run's settings and a hash of the
+  system, and only chunks of one run merge. `NonRepairableRBD.
+  random_block(block, seed)` draws one 10 000-lifetime block of the
+  lifetimes `random(size, seed=seed, n_jobs=...)` draws. The simulation
+  guide gives the engines' throughput on one machine, in a table.
 - **Imperfect repair** (#109). A component spec's `"repair": {"model":
   "kijima1" | "kijima2", "q": q}` makes its repairs imperfect: a repair
   after the unit has operated `x` since the last takes its virtual age from
@@ -451,6 +467,10 @@ required.
   - Each simulation adds up its components' up times, and their overlaps
     with the system's, as it goes, instead of working them out from their
     timelines at the end.
+- **Faster large lifetime draws** (#114). `NonRepairableRBD.random` takes
+  a large vectorised draw's uniforms about a million at a time, from the
+  same stream, so its arrays stay in cache: the same lifetimes, up to
+  about three times as fast on a wide diagram.
 - **Faster start-up** (#121). `import repyability` no longer loads
   scipy.signal, tqdm or the process-pool machinery until a call needs them
   (about 0.2 s less here; surpyval's share is
