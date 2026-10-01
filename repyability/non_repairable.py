@@ -12,6 +12,7 @@ from repyability.rbd._model_utils import (
     never_fails,
 )
 from repyability.rbd.standby_node import StandbyModel
+from repyability.utils.deprecation import REMOVAL
 
 FAILURE = 1
 REPLACE = 0
@@ -495,7 +496,7 @@ class NonRepairable:
         Parameters
         ----------
         options : object, optional
-            Deprecated and ignored; it will be removed in a future release.
+            Deprecated and ignored; it will be removed in 0.12.
 
         Returns
         -------
@@ -512,7 +513,7 @@ class NonRepairable:
 
         Warns
         -----
-        DeprecationWarning
+        FutureWarning
             If ``options`` is given.
 
         Examples
@@ -534,8 +535,8 @@ class NonRepairable:
         if options is not None:
             warnings.warn(
                 "find_optimal_replacement()'s options argument is ignored "
-                "and deprecated; it will be removed in a future release.",
-                DeprecationWarning,
+                f"and deprecated; it will be removed in {REMOVAL}.",
+                FutureWarning,
                 stacklevel=2,
             )
         if self.model_parameterization == "parametric":

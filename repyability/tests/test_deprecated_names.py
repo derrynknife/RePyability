@@ -1,6 +1,6 @@
-"""The old argument names (#105) keep working until 1.0, with a
-DeprecationWarning: the number of simulations is ``mc_samples`` everywhere,
-and its cap ``max_samples``."""
+"""The old argument names (#105) keep working until 0.12 removes them,
+with a FutureWarning: the number of simulations is ``mc_samples``
+everywhere, and its cap ``max_samples``."""
 
 import warnings
 
@@ -39,17 +39,17 @@ def unit_aft():
 
 def test_the_old_simulation_counts_still_run_and_warn():
     new = plant().availability(50.0, mc_samples=40, seed=1)
-    with pytest.warns(DeprecationWarning, match="N is deprecated"):
+    with pytest.warns(FutureWarning, match="N is deprecated"):
         old = plant().availability(50.0, N=40, seed=1)
     assert (
         old.mean_availability_interval().estimate
         == new.mean_availability_interval().estimate
     )
-    with pytest.warns(DeprecationWarning, match="max_N is deprecated"):
+    with pytest.warns(FutureWarning, match="max_N is deprecated"):
         plant().availability(
             50.0, mc_samples=20, seed=1, tolerance=0.5, max_N=40
         )
-    with pytest.warns(DeprecationWarning, match="N is deprecated"):
+    with pytest.warns(FutureWarning, match="N is deprecated"):
         plant().compare(plant(20.0), 50.0, N=20, seed=1)
     with pytest.raises(TypeError, match="not both"):
         plant().availability(50.0, mc_samples=10, N=10)
@@ -57,22 +57,24 @@ def test_the_old_simulation_counts_still_run_and_warn():
 
 def test_the_old_node_model_names_still_work_and_warn(unit_aft):
     w = W([100, 2])
-    with pytest.warns(DeprecationWarning, match="n_sims is deprecated"):
+    with pytest.warns(FutureWarning, match="n_sims is deprecated"):
         old = StandbyModel([w] * 3, k=2, n_sims=500, seed=1)
     new = StandbyModel([w] * 3, k=2, mc_samples=500, seed=1)
     assert old.mean() == new.mean() and new.mc_samples == 500
-    with pytest.warns(DeprecationWarning, match="n_sims is deprecated"):
+    with pytest.warns(FutureWarning, match="n_sims is deprecated"):
         assert new.n_sims == 500
-    with pytest.warns(DeprecationWarning, match="N is deprecated"):
+    with pytest.warns(FutureWarning, match="N is deprecated"):
         assert new.mean(N=200, seed=2) == new.mean(mc_samples=200, seed=2)
-    with pytest.warns(DeprecationWarning, match="n_sims is deprecated"):
+    with pytest.warns(FutureWarning, match="n_sims is deprecated"):
         LoadSharingModel([unit_aft] * 2, load=2.0, n_sims=200, seed=1)
-    with pytest.warns(DeprecationWarning, match="ignores N"):
+    with pytest.warns(FutureWarning, match="ignores N"):
         RepeatedStandbyNode(w, 2, N=1000)
     with warnings.catch_warnings():
         # The new names don't warn. (A simulated StandbyModel's fit does,
-        # with a FutureWarning: see test_deprecated_models.py.)
-        warnings.simplefilter("error", DeprecationWarning)
+        # about the fit: see test_deprecated_models.py.)
+        warnings.filterwarnings(
+            "error", ".*(is deprecated: use|ignores)", FutureWarning
+        )
         RepeatedStandbyNode(w, 2)
         StandbyModel([w] * 3, k=2, mc_samples=100, seed=1).mean()
 
@@ -102,6 +104,6 @@ def test_repairables_old_name_still_works_and_warns():
     unit = Repairable(model)
     unit.set_repair_and_overhaul_costs(1.0, 10.0)
     new = unit.cost(50.0, seed=1, mc_samples=50)
-    with pytest.warns(DeprecationWarning, match="n_simulations is deprecated"):
+    with pytest.warns(FutureWarning, match="n_simulations is deprecated"):
         old = unit.cost(50.0, seed=1, n_simulations=50)
     assert old == new

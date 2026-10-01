@@ -38,8 +38,8 @@ two-terminal reliability of undirected networks (#104) and demonstration
 test planning (#129). Meshed diagrams are decided by a
 binary decision diagram, in milliseconds where their path sets took
 minutes (#102, #103). Non-parametric nodes, and the fits to simulated
-lifetimes behind some standby and load-sharing models, are deprecated and
-go in 0.12.
+lifetimes behind some standby and load-sharing models, are deprecated;
+everything deprecated goes in 0.12, and warns with a `FutureWarning`.
 
 Behaviour changes: seeded repairable simulations give different numbers,
 once, as each random quantity now has a stream of its own (#119);
@@ -554,12 +554,19 @@ required.
 - `N` and `max_N` (`RepairableRBD.availability()`, `cost()`, `compare()`),
   `n_sims` (`StandbyModel`, `LoadSharingModel`), `N` (the node models'
   `mean()`) and `n_simulations` (`Repairable`): use `mc_samples` and
-  `max_samples` (#105).
+  `max_samples` (#105). They go in 0.12.
 - Simulation options passed to `NonRepairableRBD.mean()` or
   `mean_time_to_failure()` without `method="simulate"`, and `node_mttf()`'s
   `mc_samples` and `seed`: they are ignored (#122).
 - `RepeatedStandbyNode`'s `N` and `lower`, which it has ignored since its
   reliability became a numerical convolution: passing them now warns.
+- The `fussel_vesely()` alias and `NonRepairable.find_optimal_replacement()`'s
+  `options`, deprecated earlier, go in 0.12 too, with the ignored arguments
+  above (#149).
+- **Every deprecation now warns with a `FutureWarning`**, which Python
+  always shows, rather than a `DeprecationWarning`, which it hides outside
+  scripts and notebooks: each gives one minor release's notice and goes in
+  the next.
 - **Non-parametric nodes** (a surpyval `KaplanMeier`, `NelsonAalen` or
   other non-parametric fit as a node's life or repair time, directly or
   inside a standby, repeated or degrading node or a `NonRepairable`): an

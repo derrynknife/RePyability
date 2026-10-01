@@ -406,5 +406,5 @@ def test_options_argument_is_deprecated():
     with warnings.catch_warnings():
         warnings.simplefilter("error")  # no warning without it
         expected = unit.find_optimal_replacement()
-    with pytest.warns(DeprecationWarning, match="options"):
+    with pytest.warns(FutureWarning, match="options"):
         assert unit.find_optimal_replacement(options={}) == expected

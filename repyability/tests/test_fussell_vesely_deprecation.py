@@ -14,7 +14,7 @@ from repyability.rbd.repairable_rbd import RepairableRBD
 
 
 def test_nonrepairable_alias_warns_and_matches(rbd1: NonRepairableRBD):
-    with pytest.warns(DeprecationWarning):
+    with pytest.warns(FutureWarning):
         deprecated = rbd1.fussel_vesely(2, fv_type="c")
     with warnings.catch_warnings():
         warnings.simplefilter("error")  # the current name must NOT warn
@@ -34,7 +34,7 @@ def test_repairable_alias_warns_and_matches():
             }
         },
     )
-    with pytest.warns(DeprecationWarning):
+    with pytest.warns(FutureWarning):
         deprecated = rbd.fussel_vesely()
     with warnings.catch_warnings():
         warnings.simplefilter("error")

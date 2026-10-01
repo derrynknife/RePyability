@@ -4,7 +4,11 @@ from queue import PriorityQueue
 import numpy as np
 from surpyval import Hypoexponential, KaplanMeier
 
-from repyability.utils.deprecation import renamed, warn_simulated_fit
+from repyability.utils.deprecation import (
+    REMOVAL,
+    renamed,
+    warn_simulated_fit,
+)
 from repyability.utils.wrappers import numpy_seed
 
 from ._model_utils import is_exponential
@@ -702,8 +706,8 @@ class StandbyModel:
         """Deprecated: the old name of ``mc_samples``."""
         warnings.warn(
             "n_sims is deprecated: use mc_samples. n_sims will be removed "
-            "in 1.0.",
-            DeprecationWarning,
+            f"in {REMOVAL}.",
+            FutureWarning,
             stacklevel=2,
         )
         return self.mc_samples

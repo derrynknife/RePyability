@@ -36,6 +36,7 @@ from scipy.optimize import brentq
 from surpyval import NonParametric
 
 from repyability.utils.deprecation import (
+    REMOVAL,
     ignored,
     nonparametric_nodes,
     warn_nonparametric,
@@ -4065,7 +4066,7 @@ class NonRepairableRBD(RBD):
 
         Warns
         -----
-        DeprecationWarning
+        FutureWarning
             If a simulation option is given without ``method="simulate"``:
             it is ignored.
 
@@ -4214,7 +4215,7 @@ class NonRepairableRBD(RBD):
 
         Warns
         -----
-        DeprecationWarning
+        FutureWarning
             As for ``mean``.
         """
         if method == "exact":
@@ -5244,7 +5245,7 @@ class NonRepairableRBD(RBD):
 
         Warns
         -----
-        DeprecationWarning
+        FutureWarning
             If ``mc_samples`` or ``seed`` is given.
 
         Examples
@@ -5761,7 +5762,7 @@ class NonRepairableRBD(RBD):
 
         Deprecated: use
         [`fussell_vesely`][repyability.NonRepairableRBD.fussell_vesely]
-        instead; this alias will be removed in a future release. It returns
+        instead; this alias will be removed in 0.12. It returns
         ``fussell_vesely(x, fv_type)`` and, unlike it, takes no
         ``working_nodes``/``broken_nodes``.
 
@@ -5781,7 +5782,7 @@ class NonRepairableRBD(RBD):
 
         Warns
         -----
-        DeprecationWarning
+        FutureWarning
             On every call.
 
         Raises
@@ -5793,9 +5794,8 @@ class NonRepairableRBD(RBD):
         """
         warnings.warn(
             "fussel_vesely() is deprecated; use fussell_vesely() "
-            "(Fussell-Vesely). This alias will be removed in a future "
-            "release.",
-            DeprecationWarning,
+            f"(Fussell-Vesely). This alias will be removed in {REMOVAL}.",
+            FutureWarning,
             stacklevel=2,
         )
         return self.fussell_vesely(x, fv_type)

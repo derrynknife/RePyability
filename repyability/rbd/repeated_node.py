@@ -150,7 +150,7 @@ class RepeatedNode:
 
         Warns
         -----
-        DeprecationWarning
+        FutureWarning
             If ``N`` is given, or a simulation option without
             ``method="simulate"`` (it is ignored).
 

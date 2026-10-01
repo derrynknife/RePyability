@@ -160,9 +160,9 @@ def test_the_exact_mttf_does_not_touch_the_global_rng():
 
 def test_simulation_options_without_simulate_warn_and_are_ignored():
     rbd = series(E([0.01]))
-    with pytest.warns(DeprecationWarning, match="mc_samples, seed"):
+    with pytest.warns(FutureWarning, match="mc_samples, seed"):
         assert rbd.mean(1000, seed=1) == rbd.mean()
-    with pytest.warns(DeprecationWarning, match="tolerance"):
+    with pytest.warns(FutureWarning, match="tolerance"):
         rbd.mean_time_to_failure(tolerance=0.1)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
@@ -212,7 +212,7 @@ def test_node_mttf_is_exact_and_warns_about_simulation_options():
     mttf = rbd.node_mttf()
     assert mttf["r"] == pytest.approx(100 * math.gamma(1.5) / 3**0.5)
     assert mttf["g"] == rbd.reliabilities["g"].mean()
-    with pytest.warns(DeprecationWarning, match="node_mttf"):
+    with pytest.warns(FutureWarning, match="node_mttf"):
         assert rbd.node_mttf(mc_samples=100, seed=1) == mttf
 
 
@@ -222,7 +222,7 @@ def test_the_repeated_node_mean_is_exact_and_can_still_be_simulated():
     simulated = node.mean(method="simulate", mc_samples=20_000, seed=2)
     assert simulated == node.mean(method="simulate", mc_samples=20_000, seed=2)
     assert simulated == pytest.approx(node.mean(), rel=0.02)
-    with pytest.warns(DeprecationWarning, match="N is deprecated"):
+    with pytest.warns(FutureWarning, match="N is deprecated"):
         old = node.mean(N=20_000, seed=2, method="simulate")
     assert old == simulated
 

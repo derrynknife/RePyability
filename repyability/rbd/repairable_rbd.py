@@ -94,6 +94,7 @@ if TYPE_CHECKING:
 
 from repyability.rbd.routes import AnalysisRoute
 from repyability.utils.deprecation import (
+    REMOVAL,
     nonparametric_nodes,
     renamed,
     warn_nonparametric,
@@ -10696,7 +10697,7 @@ class RepairableRBD(RBD):
         """Deprecated alias for ``fussell_vesely`` (corrected spelling).
 
         Deprecated: use ``fussell_vesely`` instead; this alias will be
-        removed in a future release. It returns ``fussell_vesely(fv_type)``
+        removed in 0.12. It returns ``fussell_vesely(fv_type)``
         and, unlike it, takes no ``working_nodes`` or ``broken_nodes``.
 
         Parameters
@@ -10717,14 +10718,13 @@ class RepairableRBD(RBD):
 
         Warns
         -----
-        DeprecationWarning
+        FutureWarning
             On every call.
         """
         warnings.warn(
             "fussel_vesely() is deprecated; use fussell_vesely() "
-            "(Fussell-Vesely). This alias will be removed in a future "
-            "release.",
-            DeprecationWarning,
+            f"(Fussell-Vesely). This alias will be removed in {REMOVAL}.",
+            FutureWarning,
             stacklevel=2,
         )
         return self.fussell_vesely(fv_type)

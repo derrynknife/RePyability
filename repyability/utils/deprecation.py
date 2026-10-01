@@ -1,12 +1,13 @@
 """Deprecated names, arguments and models.
 
-Old argument names and ignored arguments keep working until 1.0 (#105),
-each with a ``DeprecationWarning`` pointing at the caller's line.
+Everything deprecated here goes in 0.12 (``REMOVAL``): a deprecation
+gives one minor release's notice. Each warns with a ``FutureWarning``, which
+Python always shows, as the notice is short:
 
-Non-parametric RBD nodes, and the fits to simulated lifetimes that stand in
-for some standby and load-sharing models' reliability, are deprecated in
-0.11 and go in 0.12 (``REMOVAL``): one minor release's notice. They warn
-with a ``FutureWarning``, which Python always shows, as the notice is short.
+- old argument names (``N``, ``max_N``, ``n_sims``, ``n_simulations``:
+  ``mc_samples`` and ``max_samples`` now, #105) and ignored arguments;
+- non-parametric RBD nodes, and the fits to simulated lifetimes that stand
+  in for some standby and load-sharing models' reliability (#149).
 """
 
 import warnings
@@ -22,7 +23,7 @@ def renamed(
     """The value of an argument renamed from ``old`` to ``new``.
 
     ``value`` if the new name was used, else ``old_value`` with a
-    ``DeprecationWarning``. Both default to None in the signature, so an
+    ``FutureWarning``. Both default to None in the signature, so an
     unused name is None.
 
     Parameters
@@ -50,8 +51,9 @@ def renamed(
     if value is not None:
         raise TypeError(f"Give {new} or its old name {old}, not both.")
     warnings.warn(
-        f"{old} is deprecated: use {new}. {old} will be removed in 1.0.",
-        DeprecationWarning,
+        f"{old} is deprecated: use {new}. {old} will be removed in "
+        f"{REMOVAL}.",
+        FutureWarning,
         stacklevel=stacklevel,
     )
     return old_value
@@ -68,8 +70,9 @@ def ignored(method: str, why: str, given: Dict[str, Any]) -> None:
     if passed:
         warnings.warn(
             f"{method} ignores {', '.join(passed)}: {why} Passing "
-            f"{'it' if len(passed) == 1 else 'them'} is deprecated.",
-            DeprecationWarning,
+            f"{'it' if len(passed) == 1 else 'them'} is deprecated, and "
+            f"{REMOVAL} will refuse {'it' if len(passed) == 1 else 'them'}.",
+            FutureWarning,
             stacklevel=3,
         )
 
