@@ -754,3 +754,64 @@ def test_auto_compiles_long_runs(monkeypatch):
     monkeypatch.setattr(_compiled, "AUTO_DRAWS", 1)
     rbd.availability(100.0, N=10, seed=1)
     assert chosen
+
+
+def random_repairable(seed):
+    """A random diagram (bridges, shared nodes, votes, the odd direct edge
+    from the input to the output) of plain repairable components."""
+    from repyability.tests.test_rbd_modular import random_diagram
+
+    rng = np.random.default_rng(seed)
+    edges, k = random_diagram(rng, int(rng.integers(3, 14)))
+    nodes = sorted({v for e in edges for v in e} - {"s", "t"})
+    return RepairableRBD(
+        edges,
+        {
+            v: {
+                "reliability": W([30 + 5 * i, 1.2 + 0.1 * (i % 4)]),
+                "repairability": L([0.2, 0.5]),
+            }
+            for i, v in enumerate(nodes)
+        },
+        k=k,
+    )
+
+
+@needs_numba
+@pytest.mark.parametrize("seed", range(12))
+def test_the_engines_agree_keeping_the_structure_up_to_date(seed, monkeypatch):
+    # Without a table of every state (forced here on small diagrams), the
+    # compiled loop keeps whether the system works up to date as components
+    # change, through modules and a core of path sets alike.
+    monkeypatch.setattr(_compiled, "MAX_TABLED", 0)
+    rbd = random_repairable(seed)
+    for extra in ({}, {"broken_nodes": [rbd.nodes[0]]}, {"n_jobs": 2}):
+        options = dict(t_simulation=150.0, N=40, seed=seed, **extra)
+        identical(
+            rbd.availability(engine="python", **options),
+            rbd.availability(engine="numba", **options),
+        )
+
+
+@pytest.mark.parametrize("seed", range(8))
+def test_the_kept_structure_starts_as_the_structure_function(seed):
+    rbd = random_repairable(seed)
+    nodes = list(rbd.components)
+    structure = _compiled._structure(
+        rbd, {node: c for c, node in enumerate(nodes)}
+    )
+    root, always = structure[6], structure[7]
+    rng = np.random.default_rng(seed)
+    for _ in range(10):
+        start = (rng.random(len(nodes)) < 0.6).astype(np.int8)
+        kept = _compiled._kept(structure, start)
+        value, working_paths = kept[9], kept[12]
+        if always:
+            works = True
+        elif root >= 0:
+            works = bool(value[root])
+        else:
+            works = working_paths > 0
+        assert works == rbd.is_system_working(
+            {node: bool(start[c]) for c, node in enumerate(nodes)}, "p"
+        )

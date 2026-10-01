@@ -307,9 +307,11 @@ million events (failures and repairs) a second in Python, 12 million
 compiled on one core and 24 million on four; a system of 12 components with
 a bridge and a vote, over 5 000 hours, at 0.8, 8.5 and 23 million; and 70
 components, 35 redundant pairs in series, over 2 000 hours, at 0.6, 4.4 and
-12.6 million. Above 20 components, the compiled loop works out whether the
-system is up after each event that could change it, rather than looking it
-up in a table of every state, so those events cost more.
+12.6 million. Above 20 components, the compiled loop keeps whether the
+system is up up to date as components fail and are repaired, following each
+change up the structure only as far as it matters, rather than looking it up
+in a table of every state; on the 70 components that made it 1.5 times as
+fast on one core, and 1.2 times on four, as the figures above.
 
 ## Which to use
 

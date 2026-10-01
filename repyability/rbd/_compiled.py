@@ -26,6 +26,9 @@ import numpy as np
 
 from repyability.rbd import _streams
 
+# The kinds of term of the structure (see ``modular``).
+NODE_TERM, SERIES_TERM, PARALLEL_TERM = 0, 1, 2
+
 #: The draws a run is expected to take (a little more than its events)
 #: before ``engine="auto"`` runs it compiled, when the compiled loop is not
 #: loaded in the process yet: about half a second of the Python loop, as
@@ -189,11 +192,14 @@ class _System:
             {node: bool(start[c]) for c, node in enumerate(nodes)}, method
         )
         self.structure = _structure(rbd, index)
+        tabled = n <= MAX_TABLED
         table = (
             kernel.truth_table(n, self.structure)
-            if n <= MAX_TABLED
+            if tabled
             else np.zeros(0, np.int8)
         )
+        #: The structure laid out to be kept up to date, without a table.
+        self.kept = _kept(self.structure, None if tabled else start)
         self.system = (
             start,
             active,
@@ -256,6 +262,82 @@ def _structure(rbd, index: dict) -> tuple:
         core_start,
         core_end,
         core_members,
+    )
+
+
+def _kept(structure: tuple, start: Optional[np.ndarray]) -> tuple:
+    """The structure laid out for the compiled loop to keep whether the
+    system works up to date as components change, rather than work it out
+    at each event: each term's kind, what it needs of its members (all of
+    them in series, ``k`` in a vote) and its parent; the terms each
+    component stands for (a repeated node, more than one); the core's path
+    sets each top term is in; and, with the components as they ``start``,
+    each term's state, how many of its members work, how many members of
+    each path set are down, and how many path sets work. Without ``start``
+    (when the loop looks states up in a table), empty."""
+    (
+        kind,
+        k,
+        node,
+        child_start,
+        child_end,
+        children,
+        _,
+        _,
+        core_start,
+        core_end,
+        core_members,
+    ) = structure
+    terms = kind.size if start is not None else 0
+    n = 0 if start is None else start.size
+    paths = core_start.size if start is not None else 0
+    parent = np.full(terms, -1, np.int32)
+    need = np.zeros(terms, np.int32)
+    value = np.zeros(terms, np.int8)
+    count = np.zeros(terms, np.int32)
+    owners: list = [[] for _ in range(n)]
+    for i in range(terms):
+        members = children[child_start[i] : child_end[i]]
+        parent[members] = i
+        if kind[i] == NODE_TERM:
+            owners[node[i]].append(i)
+            value[i] = start[node[i]]  # type: ignore[index]
+            continue
+        need[i] = members.size if kind[i] == SERIES_TERM else k[i]
+        count[i] = int(np.count_nonzero(value[members]))
+        if kind[i] == PARALLEL_TERM:
+            value[i] = count[i] > 0
+        else:
+            value[i] = count[i] >= need[i]
+    belongs: list = [[] for _ in range(terms)]
+    for p in range(paths):
+        for j in range(core_start[p], core_end[p]):
+            belongs[core_members[j]].append(p)
+    down = np.array(
+        [
+            np.count_nonzero(
+                value[core_members[core_start[p] : core_end[p]]] == 0
+            )
+            for p in range(paths)
+        ],
+        np.int32,
+    )
+    node_term_start, node_term_end, node_terms = _csr(owners)
+    term_path_start, term_path_end, term_paths = _csr(belongs)
+    return (
+        kind[:terms].astype(np.int8),
+        need,
+        parent,
+        node_term_start.astype(np.int32),
+        node_term_end.astype(np.int32),
+        node_terms.astype(np.int32),
+        term_path_start.astype(np.int32),
+        term_path_end.astype(np.int32),
+        term_paths.astype(np.int32),
+        value,
+        count,
+        down,
+        int(np.count_nonzero(down == 0)),
     )
 
 
@@ -440,6 +522,7 @@ class Runner:
                     self._t,
                     self._model.system,
                     self._model.structure,
+                    self._model.kept,
                     draws,
                     out,
                     min(todo.size, 4 * self._threads),
@@ -451,6 +534,7 @@ class Runner:
                     self._t,
                     self._model.system,
                     self._model.structure,
+                    self._model.kept,
                     draws,
                     out,
                 )

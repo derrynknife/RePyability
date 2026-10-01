@@ -132,6 +132,63 @@ def _works(status, structure, value):
     return 0
 
 
+@njit(cache=True, inline="always")
+def _keep(kept, value, count, down, c, state, working_paths):
+    """Bring the structure up to date with component ``c`` now ``state``
+    (see ``_compiled._kept``): each term it stands for, and up the tree as
+    far as the change goes, then the core's path sets of a top term that
+    changed. The number of the core's path sets that work, after."""
+    (
+        kind,
+        need,
+        parent,
+        node_term_start,
+        node_term_end,
+        node_terms,
+        term_path_start,
+        term_path_end,
+        term_paths,
+        _,
+        _,
+        _,
+        _,
+    ) = kept
+    for e in range(node_term_start[c], node_term_end[c]):
+        term = node_terms[e]
+        value[term] = state
+        works = state
+        while True:
+            above = parent[term]
+            if above < 0:
+                break
+            members = count[above] + (1 if works else -1)
+            count[above] = members
+            if kind[above] == _PARALLEL:
+                now = 1 if members > 0 else 0
+            else:
+                # A series term needs all its members, a vote k of them.
+                now = 1 if members >= need[above] else 0
+            if now == value[above]:
+                term = -1
+                break
+            value[above] = now
+            works = now
+            term = above
+        if term >= 0:
+            # A top term changed: the core's path sets it is in.
+            for q in range(term_path_start[term], term_path_end[term]):
+                p = term_paths[q]
+                if works:
+                    down[p] -= 1
+                    if down[p] == 0:
+                        working_paths += 1
+                else:
+                    if down[p] == 0:
+                        working_paths -= 1
+                    down[p] += 1
+    return working_paths
+
+
 @njit(cache=True)
 def truth_table(n, structure):
     """``_works`` for every state of ``n`` components: entry ``mask`` is
@@ -148,8 +205,11 @@ def truth_table(n, structure):
 
 
 @njit(cache=True)
-def _simulate(todo, lo, hi, first, t_end, system, structure, draws, out):
-    """Simulations ``todo[lo:hi]`` (each into row ``r - first``)."""
+def _simulate(todo, lo, hi, first, t_end, system, structure, kept, draws, out):
+    """Simulations ``todo[lo:hi]`` (each into row ``r - first``). Whether
+    the system works is looked up in the table of every state, or, without
+    one, kept up to date as components change (``kept``, see
+    ``_compiled._kept``)."""
     (
         start,
         active,
@@ -198,7 +258,11 @@ def _simulate(todo, lo, hi, first, t_end, system, structure, draws, out):
     last = np.empty(n)
     up_at = np.empty(n)
     down_at = np.empty(n)
-    value = np.empty(structure[0].size, np.int8)
+    value0, count0, down0, working_paths0 = kept[9:]
+    root, always = structure[6], structure[7]
+    value = np.empty(value0.size, np.int8)
+    count = np.empty(count0.size, np.int32)
+    down = np.empty(down0.size, np.int32)
     for i in range(lo, hi):
         r = todo[i]
         row = r - first
@@ -220,6 +284,11 @@ def _simulate(todo, lo, hi, first, t_end, system, structure, draws, out):
             for c in range(n):
                 if start[c]:
                     mask |= 1 << c
+        else:
+            value[:] = value0
+            count[:] = count0
+            down[:] = down0
+        working_paths = working_paths0
         lives[:] = 0
         repairs[:] = 0
         charged[:] = 0
@@ -272,6 +341,10 @@ def _simulate(todo, lo, hi, first, t_end, system, structure, draws, out):
                     mask |= 1 << c
                 else:
                     mask &= ~(1 << c)
+            else:
+                working_paths = _keep(
+                    kept, value, count, down, c, state, working_paths
+                )
             if state:
                 counts_out[row, 2, c] += 1
             else:
@@ -292,13 +365,15 @@ def _simulate(todo, lo, hi, first, t_end, system, structure, draws, out):
                     node_cost_out[row, cost_index[c]] += charge
                 if code != 0:
                     break
-            if (
-                state != up
-                and (
-                    table[mask] if tabled else _works(status, structure, value)
-                )
-                != up
-            ):
+            if tabled:
+                works = table[mask]
+            elif always:
+                works = 1
+            elif root >= 0:
+                works = value[root]
+            else:
+                works = 1 if working_paths > 0 else 0
+            if state != up and works != up:
                 system_up = system_up_t
                 system_down = system_down_t
                 since = t
@@ -374,13 +449,17 @@ def _simulate(todo, lo, hi, first, t_end, system, structure, draws, out):
 
 
 @njit(cache=True)
-def run_serial(todo, first, t_end, system, structure, draws, out):
+def run_serial(todo, first, t_end, system, structure, kept, draws, out):
     """Simulations ``todo``, one after another."""
-    _simulate(todo, 0, todo.size, first, t_end, system, structure, draws, out)
+    _simulate(
+        todo, 0, todo.size, first, t_end, system, structure, kept, draws, out
+    )
 
 
 @njit(cache=True, parallel=True)
-def run_parallel(todo, first, t_end, system, structure, draws, out, chunks):
+def run_parallel(
+    todo, first, t_end, system, structure, kept, draws, out, chunks
+):
     """Simulations ``todo``, ``chunks`` of them at a time on numba's
     threads."""
     m = todo.size
@@ -393,6 +472,7 @@ def run_parallel(todo, first, t_end, system, structure, draws, out, chunks):
             t_end,
             system,
             structure,
+            kept,
             draws,
             out,
         )
