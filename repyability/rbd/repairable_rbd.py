@@ -142,10 +142,10 @@ class _EventQueue:
     def __init__(self):
         self._heap: list = []
 
-    def put(self, event) -> None:
+    def put(self, event: "Event") -> None:
         heapq.heappush(self._heap, (event.time, event))
 
-    def get(self):
+    def get(self) -> "Event":
         return heapq.heappop(self._heap)[1]
 
     def empty(self) -> bool:
