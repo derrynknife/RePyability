@@ -810,6 +810,7 @@ class UnitEvents:
         """When the units that each reach their age are maintained, and
         the probabilities, for a maintenance of a fixed time (or none):
         ``n = 0..count``, within the grid."""
+        assert self.age is not None and self.fixed is not None
         n = np.arange(self.count + 1, dtype=float)
         dues = (n + 1.0) * self.age + n * self.fixed
         weights = self.survive ** (n + 1.0)
@@ -819,6 +820,7 @@ class UnitEvents:
     def _maintained(self, x: np.ndarray, inside: np.ndarray) -> np.ndarray:
         """The expected preventive maintenance before each ``x`` (``inside``
         it, held at the grid's end)."""
+        assert self.others is not None, "the unit is not maintained"
         out = np.interp(inside, self.times, self.others)
         if self.fixed is not None:
             dues, weights = self._chain_dues()
@@ -846,11 +848,15 @@ class UnitEvents:
         past = np.maximum(x - end, 0.0)
         if self.failure_rate is not None:
             failures = failures + self.failure_rate * past
+        # Nothing happens before 0 (the lattice's rounding aside).
+        started = x > 0.0
+        failures = np.where(started, failures, 0.0)
         if self.age is None:
             return _events(failures)
         preventive = self._maintained(x, inside)
         if self.preventive_rate is not None:
             preventive = preventive + self.preventive_rate * past
+        preventive = np.where(started, preventive, 0.0)
         planned = preventive if self.takedown else None
         return _events(failures, planned, preventive=preventive)
 

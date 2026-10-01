@@ -7322,7 +7322,9 @@ class RepairableRBD(RBD):
                         + node_events[node]["preventive"]
                     )
             categories["setup"] = categories["setup"] + spec.setup_cost * stops
-        mean = sum(categories.values())
+        mean = np.zeros(len(ends))
+        for values in categories.values():
+            mean = mean + values
         return ExpectedCost(
             window=_shaped(ends, t, windows),
             mean=_shaped(mean, t, windows),
@@ -7522,16 +7524,20 @@ class RepairableRBD(RBD):
             a, b = edges[start:stop], edges[start + 1 : stop + 1]  # noqa: E203
             middle, half = 0.5 * (a + b), 0.5 * (b - a)
             points = (middle[:, None] + half[:, None] * gauss).ravel()
-            values = {node: curve.at(points) for node, curve in curves.items()}
+            at_points = {
+                node: curve.at(points) for node, curve in curves.items()
+            }
             # The system's availability and every node's importance at each
             # point, in one pass.
             importance, works, fails, _, _ = self._importances(
-                self._filled(values, len(points), working_nodes, broken_nodes)
+                self._filled(
+                    at_points, len(points), working_nodes, broken_nodes
+                )
             )
             up = works if method == "p" else 1.0 - fails
             uptime[start:stop] = (up.reshape(-1, 4) @ weights) * half
             for node in downtime:
-                down = 1.0 - values[node]
+                down = 1.0 - at_points[node]
                 downtime[node][start:stop] = (
                     down.reshape(-1, 4) @ weights
                 ) * half
