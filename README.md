@@ -33,7 +33,7 @@ taking already-fitted lifetime models (from
   probability of meeting a demand, and the production availability.
 - **Simulation**: seeded Monte-Carlo run to a tolerance, antithetic pairs,
   parallel runs, and comparisons of designs with common random numbers;
-  repairable systems simulated compiled, with numba installed.
+  repairable systems simulated compiled, with Mojo or numba installed.
 - **Cost, design and maintenance**: exact and simulated running costs,
   including scheduled (age or block) preventive replacement at system level,
   with its intervals chosen for a cost or availability target, hidden
@@ -73,12 +73,15 @@ RePyability can be installed via pip using the PyPI [repository](https://pypi.or
 pip install repyability
 ```
 
-Repairable systems simulate about ten times as fast with the optional
-compiled engine, which needs [numba](https://numba.pydata.org) (available for
-64-bit Linux, macOS on Apple silicon and Windows):
+Repairable systems simulate many times as fast with the optional compiled
+engine. The fastest needs [Mojo](https://www.modular.com/mojo) (available for
+64-bit Linux and macOS on Apple silicon); the other needs
+[numba](https://numba.pydata.org) (also on Windows). They give the same
+results:
 
 ```bash
-pip install "repyability[fast]"
+pip install "repyability[mojo]"
+pip install "repyability[fast]"   # numba
 ```
 
 ## Documentation

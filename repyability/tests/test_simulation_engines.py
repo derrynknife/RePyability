@@ -11,8 +11,9 @@ Every draw of a simulation comes from a stream of its own (see
   for the up and down times) gives the same results;
 - each simulation is the same however the run is cut up: in one process or
   several, in a run to a tolerance or of a fixed size;
-- the compiled engine (numba, when installed) gives the same results as the
-  Python one, to the last bit, and ``engine="auto"`` chooses between them.
+- the compiled engines (Mojo and numba, when installed) give the same
+  results as the Python one, to the last bit, and ``engine="auto"`` chooses
+  between them.
 """
 
 import dataclasses
@@ -26,7 +27,7 @@ import surpyval as surv
 
 from repyability import RepairableRBD
 from repyability.non_repairable import NonRepairable
-from repyability.rbd import _compiled, _streams, repairable_rbd
+from repyability.rbd import _compiled, _mojo, _streams, repairable_rbd
 from repyability.rbd.repairable_rbd import Event
 from repyability.tests.keyed_draws import KeyedDraws, reference_draw
 from repyability.tests.test_performance_equivalence import (
@@ -56,6 +57,14 @@ BRIDGE = [
 needs_numba = pytest.mark.skipif(
     not _compiled.available(), reason="numba is not installed"
 )
+needs_mojo = pytest.mark.skipif(
+    not _mojo.available(), reason="Mojo is not installed"
+)
+#: The compiled engines, each tested when installed.
+COMPILED = [
+    pytest.param("numba", marks=needs_numba),
+    pytest.param("mojo", marks=needs_mojo),
+]
 
 
 def identical(a, b, path="result"):
@@ -564,11 +573,11 @@ def test_a_subclassed_component_runs_in_python(monkeypatch):
     rbd.availability(100.0, N=5, seed=2)
 
 
-@needs_numba
-def test_the_compiled_engine_refuses_what_it_cannot_run():
+@pytest.mark.parametrize("engine", COMPILED)
+def test_the_compiled_engine_refuses_what_it_cannot_run(engine):
     rbd = repairable_rbds()["maintained"]
     with pytest.raises(NotImplementedError, match="preventive maintenance"):
-        rbd.availability(100.0, N=5, seed=2, engine="numba")
+        rbd.availability(100.0, N=5, seed=2, engine=engine)
 
 
 def test_without_numba_the_compiled_engine_cannot_be_asked_for(monkeypatch):
@@ -580,7 +589,7 @@ def test_without_numba_the_compiled_engine_cannot_be_asked_for(monkeypatch):
     rbd.availability(10.0, N=2, seed=1)
 
 
-@needs_numba
+@pytest.mark.parametrize("engine", COMPILED)
 @pytest.mark.parametrize(
     "options",
     [
@@ -593,28 +602,25 @@ def test_without_numba_the_compiled_engine_cannot_be_asked_for(monkeypatch):
     ids=["plain", "cut sets", "antithetic", "threads", "tolerance"],
 )
 @pytest.mark.parametrize("name", sorted(plain_rbds()))
-def test_the_engines_give_the_same_results(name, options):
+def test_the_engines_give_the_same_results(name, options, engine):
     rbd = plain_rbds()[name]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
         python = rbd.availability(engine="python", **options)
-        compiled = rbd.availability(engine="numba", **options)
+        compiled = rbd.availability(engine=engine, **options)
     identical(python, compiled)
 
 
-@needs_numba
+@pytest.mark.parametrize("engine", COMPILED)
 @pytest.mark.parametrize("forced", ["working_nodes", "broken_nodes"])
-def test_the_engines_agree_with_forced_nodes(forced):
+def test_the_engines_agree_with_forced_nodes(forced, engine):
     for rbd in plain_rbds().values():
         first = rbd.nodes[0]
-        for engine in ("python", "numba"):
-            options = dict(
-                t_simulation=200.0, N=30, seed=24, **{forced: [first]}
-            )
-            if engine == "python":
-                python = rbd.availability(engine=engine, **options)
-            else:
-                identical(python, rbd.availability(engine=engine, **options))
+        options = dict(t_simulation=200.0, N=30, seed=24, **{forced: [first]})
+        identical(
+            rbd.availability(engine="python", **options),
+            rbd.availability(engine=engine, **options),
+        )
 
 
 def pairs_in_series(pairs):
@@ -633,10 +639,10 @@ def pairs_in_series(pairs):
     return RepairableRBD(edges, components)
 
 
-@needs_numba
+@pytest.mark.parametrize("engine", COMPILED)
 @pytest.mark.parametrize("pairs", [12, 35])
-def test_the_engines_agree_on_large_systems(pairs):
-    # More components than the compiled loop tabulates the system's states
+def test_the_engines_agree_on_large_systems(pairs, engine):
+    # More components than the numba loop tabulates the system's states
     # for, and more than bits in a 64-bit mask: it works the structure
     # function out at each event instead.
     rbd = pairs_in_series(pairs)
@@ -644,8 +650,47 @@ def test_the_engines_agree_on_large_systems(pairs):
     for options in ({}, {"antithetic": True}, {"n_jobs": 2}):
         identical(
             rbd.availability(200.0, N=40, seed=3, engine="python", **options),
-            rbd.availability(200.0, N=40, seed=3, engine="numba", **options),
+            rbd.availability(200.0, N=40, seed=3, engine=engine, **options),
         )
+
+
+def random_repairable(seed):
+    """A random diagram (bridges, shared nodes, votes, the odd direct edge
+    from the input to the output) of plain repairable components."""
+    from repyability.tests.test_rbd_modular import random_diagram
+
+    rng = np.random.default_rng(seed)
+    edges, k = random_diagram(rng, int(rng.integers(3, 14)))
+    nodes = sorted({v for e in edges for v in e} - {"s", "t"})
+    return RepairableRBD(
+        edges,
+        {
+            v: {
+                "reliability": W([30 + 5 * i, 1.2 + 0.1 * (i % 4)]),
+                "repairability": L([0.2, 0.5]),
+            }
+            for i, v in enumerate(nodes)
+        },
+        k=k,
+    )
+
+
+@pytest.mark.parametrize("engine", COMPILED)
+@pytest.mark.parametrize("seed", range(12))
+def test_the_engines_agree_on_random_structures(seed, engine):
+    # The Mojo loop keeps whether the system works up to date as components
+    # change, through modules and a core of path sets alike.
+    rbd = random_repairable(seed)
+    options = dict(t_simulation=150.0, N=40, seed=seed)
+    identical(
+        rbd.availability(engine="python", **options),
+        rbd.availability(engine=engine, **options),
+    )
+    held = dict(options, broken_nodes=[rbd.nodes[0]])
+    identical(
+        rbd.availability(engine="python", **held),
+        rbd.availability(engine=engine, **held),
+    )
 
 
 @needs_numba
@@ -659,12 +704,12 @@ def test_a_run_on_threads_leaves_numbas_thread_count_alone():
     assert numba.get_num_threads() == before
 
 
-@needs_numba
-def test_the_engines_agree_on_costs_and_comparisons():
+@pytest.mark.parametrize("engine", COMPILED)
+def test_the_engines_agree_on_costs_and_comparisons(engine):
     rbd = plain_rbds()["costed"]
     identical(
         rbd.cost(200.0, N=50, seed=5, engine="python"),
-        rbd.cost(200.0, N=50, seed=5, engine="numba"),
+        rbd.cost(200.0, N=50, seed=5, engine=engine),
     )
     faster = RepairableRBD(
         [("s", "x"), ("x", "y"), ("s", "z"), ("y", "t"), ("z", "t")],
@@ -692,13 +737,13 @@ def test_the_engines_agree_on_costs_and_comparisons():
                 engine="python",
             ),
             rbd.compare(
-                faster, 100.0, N=300, seed=6, quantity=quantity, engine="numba"
+                faster, 100.0, N=300, seed=6, quantity=quantity, engine=engine
             ),
         )
 
 
-@needs_numba
-def test_the_compiled_engine_runs_out_and_carries_on(monkeypatch):
+@pytest.mark.parametrize("engine", COMPILED)
+def test_the_compiled_engine_runs_out_and_carries_on(monkeypatch, engine):
     # Streams that start with a single row, and little room for the
     # system's changes: the compiled loop keeps running simulations again
     # with more, and ends with the same results.
@@ -706,7 +751,7 @@ def test_the_compiled_engine_runs_out_and_carries_on(monkeypatch):
     monkeypatch.setattr(_streams, "first_rows", lambda expected: 1)
     expected = rbd.availability(300.0, N=200, seed=8, engine="python")
     monkeypatch.setattr(_compiled, "BATCH_BYTES", 2**12)
-    short = rbd.availability(300.0, N=200, seed=8, engine="numba")
+    short = rbd.availability(300.0, N=200, seed=8, engine=engine)
     identical(expected, short)
     assert short.system_failures > 0
 
@@ -737,14 +782,16 @@ def test_the_compiled_heap_releases_ties_as_heapq_does():
             assert (t, node) == (expected.time, expected.component)
 
 
-@needs_numba
+@pytest.mark.skipif(
+    _compiled.preferred() is None, reason="no compiled engine is installed"
+)
 def test_auto_compiles_long_runs(monkeypatch):
     rbd = plain_rbds()["bridge"]
     chosen = []
     runner = _compiled.Runner
 
     def spy(*args, **kwargs):
-        chosen.append(True)
+        chosen.append(args[-1])
         return runner(*args, **kwargs)
 
     monkeypatch.setattr(_compiled, "Runner", spy)
@@ -752,5 +799,95 @@ def test_auto_compiles_long_runs(monkeypatch):
     rbd.availability(100.0, N=10, seed=1)
     assert not chosen
     monkeypatch.setattr(_compiled, "AUTO_DRAWS", 1)
+    monkeypatch.setattr(_compiled, "MOJO_AUTO_DRAWS", 1)
     rbd.availability(100.0, N=10, seed=1)
-    assert chosen
+    assert chosen == [_compiled.preferred()]
+
+
+@needs_mojo
+def test_auto_prefers_mojo():
+    assert _compiled.preferred() == "mojo"
+    route = plain_rbds()["bridge"].analysis_routes()["availability"]
+    assert route.engine == "mojo"
+
+
+def test_without_mojo_the_mojo_engine_cannot_be_asked_for(monkeypatch):
+    monkeypatch.setattr(_mojo, "available", lambda: False)
+    rbd = plain_rbds()["bridge"]
+    with pytest.raises(ImportError, match="repyability\\[mojo\\]"):
+        rbd.availability(10.0, N=2, seed=1, engine="mojo")
+    assert _compiled.preferred() != "mojo"
+    # "auto" runs on numba or in Python.
+    rbd.availability(10.0, N=2, seed=1)
+
+
+def test_a_mojo_kernel_that_will_not_compile_falls_back(monkeypatch):
+    # "auto" warns and runs on numba or in Python, with the same results;
+    # asked for outright, Mojo raises the compiler's error.
+    def broken():
+        raise ImportError("Could not compile the Mojo simulation kernel")
+
+    monkeypatch.setattr(_mojo, "available", lambda: True)
+    monkeypatch.setattr(_mojo, "_kernel", None)
+    monkeypatch.setattr(_mojo, "_failure", None)
+    monkeypatch.setattr(_mojo, "_load", broken)
+    monkeypatch.setattr(_compiled, "worthwhile", lambda plan, N: True)
+    rbd = plain_rbds()["bridge"]
+    with pytest.warns(RuntimeWarning, match="could not be loaded"):
+        fallen = rbd.availability(100.0, N=20, seed=4)
+    identical(fallen, rbd.availability(100.0, N=20, seed=4, engine="python"))
+    with pytest.raises(ImportError, match="compile"):
+        rbd.availability(100.0, N=20, seed=4, engine="mojo")
+    # It is not tried again, and "auto" no longer prefers it.
+    assert _mojo.failed()
+    assert _compiled.preferred() != "mojo"
+
+
+def test_the_mojo_kernel_reads_the_tables_it_is_given():
+    # The kernel's positions in its tables of addresses and sizes are the
+    # ones _mojo lays them out in.
+    import re
+
+    source = _mojo._SOURCE.read_text()
+    for prefix, names in (("A", _mojo.ADDRESSES), ("S", _mojo.SIZES)):
+        positions = {
+            name.lower(): int(at)
+            for name, at in re.findall(
+                rf"^comptime {prefix}_(\w+) = (\d+)$", source, re.M
+            )
+        }
+        assert positions == {name: i for i, name in enumerate(names)}
+
+
+def test_the_mojo_kernel_is_kept_where_it_can_be_written(
+    monkeypatch, tmp_path
+):
+    assert _mojo._cache_dir().parent == _mojo._SOURCE_DIR
+    monkeypatch.setattr(_mojo.os, "access", lambda path, mode: False)
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    assert _mojo._cache_dir() == tmp_path / "repyability" / "mojo"
+
+
+@pytest.mark.parametrize("seed", range(8))
+def test_the_mojo_structure_starts_as_the_structure_function(seed):
+    # The Mojo loop keeps each term's state up to date from these; with
+    # any components up, the system works exactly when the RBD's structure
+    # function says so (this needs no Mojo).
+    rbd = random_repairable(seed)
+    nodes = list(rbd.components)
+    structure = _compiled._structure(
+        rbd, {node: c for c, node in enumerate(nodes)}
+    )
+    rng = np.random.default_rng(seed)
+    for _ in range(10):
+        start = (rng.random(len(nodes)) < 0.6).astype(np.int8)
+        prepared = _mojo.Structure(structure, start)
+        if prepared.always:
+            works = True
+        elif prepared.root >= 0:
+            works = bool(prepared.value0[prepared.root])
+        else:
+            works = prepared.working_paths0 > 0
+        assert works == rbd.is_system_working(
+            {node: bool(start[c]) for c, node in enumerate(nodes)}, "p"
+        )

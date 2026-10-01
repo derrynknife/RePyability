@@ -5,6 +5,11 @@ name: upstream
 # install at once; a surpyval change that breaks RePyability should show here
 # first, before surpyval releases it.
 #
+# It also compiles the Mojo kernel with the newest Mojo: the `mojo` extra has
+# no upper bound either, and Mojo's syntax still changes from release to
+# release, so a release that no longer compiles the kernel should show here
+# (engine="auto" falls back to numba or Python with a warning meanwhile).
+#
 # Kept apart from actions.yml, whose result the release workflow checks: a
 # failure here is a warning about surpyval's next release, not about the
 # commit under test.
@@ -42,3 +47,27 @@ jobs:
 
       - name: pytest
         run: python -m pytest -q
+
+  mojo:
+    name: test (newest Mojo)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set-up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Install the package with the newest Mojo
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev]
+          pip install --upgrade mojo
+          mojo --version
+
+      - name: Compile the Mojo kernel
+        run: python -c "from repyability.rbd import _mojo; _mojo.load()"
+
+      - name: pytest (the engines)
+        run: python -m pytest -q repyability/tests/test_simulation_engines.py

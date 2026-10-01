@@ -357,10 +357,11 @@ def test_a_simulated_life_makes_the_exact_values_simulated():
 
 
 def test_the_engine_is_the_one_auto_would_run(monkeypatch):
-    from repyability.rbd import _compiled
+    from repyability.rbd import _compiled, _mojo
 
     plain = repairable_rbds()["koon"]
     monkeypatch.setattr(_compiled, "available", lambda: False)
+    monkeypatch.setattr(_mojo, "available", lambda: False)
     route = plain.analysis_routes()["availability"]
     assert route.engine == "python"
     assert "not installed" in route.engine_reason
@@ -369,6 +370,9 @@ def test_the_engine_is_the_one_auto_would_run(monkeypatch):
     capacities = repairable_rbds()["capacities"].analysis_routes()
     assert capacities["availability"].engine == "python"
     assert capacities["cost"].engine == "numba"
+    # Mojo first, when it is installed.
+    monkeypatch.setattr(_mojo, "available", lambda: True)
+    assert plain.analysis_routes()["availability"].engine == "mojo"
 
 
 def test_a_load_sharing_group_is_simulated_only_without_a_closed_form():

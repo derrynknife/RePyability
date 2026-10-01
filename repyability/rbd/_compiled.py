@@ -1,5 +1,6 @@
-"""The compiled engine of ``RepairableRBD`` simulations: numba, an optional
-dependency (``pip install "repyability[fast]"``).
+"""The compiled engines of ``RepairableRBD`` simulations: Mojo
+(``pip install "repyability[mojo]"``) or numba (``pip install
+"repyability[fast]"``), both optional dependencies.
 
 It runs the simulations of a system whose components are plain
 ``NonRepairable`` units -- every model a surpyval parametric one, so that
@@ -9,17 +10,20 @@ numbers and costs. Anything else (preventive maintenance, inspections,
 nested RBDs, capacities, models whose draws cannot be streamed) runs in
 Python, which ``engine="auto"`` chooses by itself.
 
-The two engines give the same results to the last bit: the compiled loop
-(``_kernel``) is the Python one over arrays, reading the same draws, and
-this module adds its simulations to the tally one after another in the same
-order, with the same arithmetic (see ``_Tally``).
+The engines give the same results to the last bit: each compiled loop
+(``_kernel`` for numba, ``_mojo`` for Mojo) is the Python one over arrays,
+reading the same draws, and this module adds its simulations to the tally
+one after another in the same order, with the same arithmetic (see
+``_Tally``). ``engine="auto"`` prefers Mojo, then numba.
 
-Only ``_kernel`` imports numba, so checking what the engine can run costs
-nothing when numba is not installed.
+Only ``_kernel`` imports numba, and only ``_mojo.load`` compiles or loads the
+Mojo kernel, so checking what the engines can run costs nothing when neither
+is installed.
 """
 
 import importlib.util
 import sys
+import warnings
 from typing import Any, Optional
 
 import numpy as np
@@ -32,6 +36,10 @@ from repyability.rbd import _streams
 #: loading the compiled loop from numba's cache takes about a third of a
 #: second (compiling it, the first time ever, some seconds).
 AUTO_DRAWS = 1_000_000
+#: The same for the Mojo kernel once compiled (it is then loaded in some
+#: hundredths of a second); compiling it, the first time, takes some
+#: seconds, and is worth it for runs of ``AUTO_DRAWS``.
+MOJO_AUTO_DRAWS = 100_000
 #: About the most memory a batch of simulations takes: its draws, and room
 #: for its systems' changes of state.
 BATCH_BYTES = 64 * 2**20
@@ -55,6 +63,24 @@ def require() -> None:
             "engine='numba' needs numba, an optional dependency: install it "
             "with pip install 'repyability[fast]'."
         )
+
+
+def mojo_available() -> bool:
+    """Whether Mojo is installed and its kernel has not failed to compile
+    in this process (without compiling it)."""
+    from repyability.rbd import _mojo
+
+    return _mojo.available() and not _mojo.failed()
+
+
+def preferred() -> Optional[str]:
+    """The compiled engine ``engine="auto"`` runs: ``"mojo"`` when Mojo is
+    installed, else ``"numba"`` when numba is, else None."""
+    if mojo_available():
+        return "mojo"
+    if available():
+        return "numba"
+    return None
 
 
 def unsupported(rbd, plan: _streams.Plan, capacity) -> Optional[str]:
@@ -83,16 +109,21 @@ def unsupported(rbd, plan: _streams.Plan, capacity) -> Optional[str]:
 
 
 def compiled() -> bool:
-    """Whether the compiled loop is ready in this process."""
+    """Whether the preferred compiled loop is ready in this process."""
+    if preferred() == "mojo":
+        from repyability.rbd import _mojo
+
+        return _mojo.used()
     kernel = sys.modules.get("repyability.rbd._kernel")
     return kernel is not None and kernel.used()
 
 
 def worthwhile(plan: _streams.Plan, N: int) -> bool:
     """Whether ``engine="auto"`` runs ``N`` simulations of ``plan``
-    compiled: when numba is installed and the loop is ready, or the run is
-    long enough to pay for loading it."""
-    if not available():
+    compiled: when Mojo or numba is installed and the loop is ready, or the
+    run is long enough to pay for loading it."""
+    engine = preferred()
+    if engine is None:
         return False
     if compiled():
         return True
@@ -101,7 +132,37 @@ def worthwhile(plan: _streams.Plan, N: int) -> bool:
         for spec in plan.specs.values()
         if spec.kind in (_streams.FAILURE, _streams.REPAIR)
     )
+    if engine == "mojo":
+        from repyability.rbd import _mojo
+
+        if _mojo.cached():
+            return N * draws >= MOJO_AUTO_DRAWS
     return N * draws >= AUTO_DRAWS
+
+
+def ready(engine: str, auto: bool) -> str:
+    """The engine to run, once loaded: ``engine`` itself, or, when
+    ``engine="auto"`` chose Mojo and its kernel fails to compile, numba or
+    Python (with a warning). ``engine="mojo"`` asked for outright raises
+    the compiler's error."""
+    if engine != "mojo":
+        return engine
+    from repyability.rbd import _mojo
+
+    try:
+        _mojo.load()
+    except ImportError as error:
+        if not auto:
+            raise
+        fallback = "numba" if available() else "python"
+        warnings.warn(
+            f"The Mojo kernel could not be loaded, so the simulations run "
+            f"on {fallback}:\n{error}",
+            RuntimeWarning,
+            stacklevel=4,
+        )
+        return fallback
+    return engine
 
 
 def _continued(total: float, values: np.ndarray) -> float:
@@ -119,7 +180,9 @@ def _continued_rows(totals: list, values: np.ndarray) -> list:
 
 class _System:
     """A run's system as arrays for the compiled loop: the components'
-    streams and initial states, the charges, and the structure function."""
+    streams and initial states, the charges, and the structure function
+    (with numba, as ``kernel``, its table of every state, for up to
+    ``MAX_TABLED`` components; the Mojo loop keeps it up to date instead)."""
 
     def __init__(self, rbd, plan, working, broken, method: str, kernel):
         from repyability.rbd.repairable_rbd import _CATEGORIES
@@ -191,7 +254,7 @@ class _System:
         self.structure = _structure(rbd, index)
         table = (
             kernel.truth_table(n, self.structure)
-            if n <= MAX_TABLED
+            if kernel is not None and n <= MAX_TABLED
             else np.zeros(0, np.int8)
         )
         self.system = (
@@ -282,11 +345,13 @@ class _Store:
         # order they are made in does not matter.
         self._pool = pool
 
-    def arrays(self, first: int, stop: int) -> tuple:
+    def arrays(self, first: int, stop: int, copy: bool = True) -> tuple:
         """Every stream's draws for simulations ``first`` to ``stop``: the
         blocks' values (to be laid one after another), each block's start
         among them and its rows, each stream's first block, and its
-        blocks' columns."""
+        blocks' columns. Without ``copy``, the blocks' addresses in memory
+        stand for the values and the starts (for the Mojo loop, which reads
+        the draws where they are; the blocks are kept until ``drop``)."""
         if not self._specs:
             return (
                 [],
@@ -318,10 +383,13 @@ class _Store:
                 range(int(first_block[s]), int(last_block[s]) + 1)
             ):
                 block = self._blocks[(s, index)]
-                offsets[s, j] = position
                 rows[s, j] = block.values.shape[1]
-                parts.append(block.values.ravel())
-                position += block.values.size
+                if copy:
+                    offsets[s, j] = position
+                    parts.append(block.values.ravel())
+                    position += block.values.size
+                else:
+                    offsets[s, j] = block.values.ctypes.data
         return (
             parts,
             offsets,
@@ -349,29 +417,54 @@ class _Store:
 
 
 class Runner:
-    """Runs a run's simulations compiled, a batch at a time, and adds them
-    to the tally in order (see ``RepairableRBD._run``)."""
+    """Runs a run's simulations compiled (``engine`` ``"mojo"`` or
+    ``"numba"``), a batch at a time, and adds them to the tally in order
+    (see ``RepairableRBD._run``)."""
 
     def __init__(
-        self, rbd, plan, tally, progress, working, broken, method, jobs
+        self,
+        rbd,
+        plan,
+        tally,
+        progress,
+        working,
+        broken,
+        method,
+        jobs,
+        engine: str = "numba",
     ):
-        from repyability.rbd import _kernel
-
-        self._kernel = _kernel
         self._tally = tally
         self._progress = progress
         self._t = float(tally.t_simulation)
-        self._model = _System(rbd, plan, working, broken, method, _kernel)
-        self._threads = _kernel.threads(jobs)
+        self._kernel: Any = None
+        self._mojo: Any = None
+        self._prepared: Any = None
         self._pool: Any = None
         # numba's thread count is the calling thread's, and stays set: it is
         # put back once the run is over.
         self._restore: Optional[int] = None
+        if engine == "mojo":
+            from repyability.rbd import _mojo
+
+            self._mojo = _mojo
+            self._model = _System(rbd, plan, working, broken, method, None)
+            self._prepared = _mojo.prepare(
+                self._model.system, self._model.structure
+            )
+            # The Mojo loop runs without the GIL, on the pool's threads.
+            self._threads = 1 if jobs is None or jobs <= 1 else int(jobs)
+        else:
+            from repyability.rbd import _kernel
+
+            self._kernel = _kernel
+            self._model = _System(rbd, plan, working, broken, method, _kernel)
+            self._threads = _kernel.threads(jobs)
         if self._threads > 1:
             from concurrent.futures import ThreadPoolExecutor
 
             self._pool = ThreadPoolExecutor(self._threads)
-            self._restore = _kernel.get_threads()
+            if self._kernel is not None:
+                self._restore = self._kernel.get_threads()
         self._store = _Store(plan, self._model.specs, self._pool)
         rows = sum(spec.rows for spec in self._model.specs)
         size = BATCH_BYTES // (8 * rows + 9 * self._model.room)
@@ -432,7 +525,18 @@ class Runner:
         status = out[-1]
         while todo.size:
             draws = self._draws(first, stop)
-            if self._threads > 1:
+            if self._mojo is not None:
+                self._mojo.run(
+                    self._prepared,
+                    todo,
+                    first,
+                    self._t,
+                    draws,
+                    out,
+                    self._pool,
+                    self._threads,
+                )
+            elif self._threads > 1:
                 kernel.set_threads(self._threads)
                 kernel.run_parallel(
                     todo,
@@ -469,7 +573,13 @@ class Runner:
 
     def _draws(self, first: int, stop: int) -> tuple:
         """The store's arrays for simulations ``first`` to ``stop``, the
-        draws in a buffer kept from batch to batch."""
+        draws in a buffer kept from batch to batch (for Mojo, the blocks'
+        addresses instead)."""
+        if self._mojo is not None:
+            _, at, rows, first_block, columns = self._store.arrays(
+                first, stop, copy=False
+            )
+            return at, rows, first_block, columns
         parts, offsets, rows, first_block, columns = self._store.arrays(
             first, stop
         )

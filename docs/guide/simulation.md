@@ -24,7 +24,7 @@ simulations compiled.
 | `antithetic=True` | the same, and `NonRepairableRBD.random` | Simulate in antithetic pairs. |
 | `n_jobs` | the same, and `RepairableRBD.compare` | Run the simulations on several CPUs. |
 | `compare(other, ...)` | `RepairableRBD`, `NonRepairableRBD` | The difference between two designs, simulated with common random numbers. |
-| `engine` | `RepairableRBD`'s `availability`, `cost` and `compare` | Run the simulations compiled, with numba. |
+| `engine` | `RepairableRBD`'s `availability`, `cost` and `compare` | Run the simulations compiled, with Mojo or numba. |
 
 The examples use two units in parallel and the plant of
 [Repairable systems](repairable.md):
@@ -270,47 +270,67 @@ systems would not share, so it raises `NotImplementedError`.
 ## The compiled engine
 
 A `RepairableRBD`'s simulations run in Python. With
-[numba](https://numba.pydata.org), an optional dependency, installed, they
-can run compiled instead, about ten times as fast on one core, and faster
-still on several:
+[Mojo](https://www.modular.com/mojo) or [numba](https://numba.pydata.org),
+both optional dependencies, installed, they can run compiled instead, many
+times as fast on one core, and faster still on several:
 
 ```bash
-pip install "repyability[fast]"
+pip install "repyability[mojo]"   # Linux, macOS on Apple silicon
+pip install "repyability[fast]"   # numba: Linux, macOS, Windows
 ```
 
 `engine="auto"`, the default of `availability`, `cost` and `compare`, then
 compiles a run when the compiled engine simulates the system and the run is
-long enough to repay loading it: about a third of a second from numba's
-cache (some seconds the first time ever, while numba compiles it).
-`engine="numba"` asks for it outright, and raises an error if numba is not
+long enough to repay loading it, with Mojo if it is installed, else with
+numba. The Mojo kernel is compiled from source the first time it is used
+(about two seconds) and kept, so later runs load it in a few hundredths of a
+second; numba loads its loop from its cache in about a third of a second
+(some seconds the first time ever, while it compiles it). `engine="mojo"`
+or `engine="numba"` asks for one outright, and raises an error if it is not
 installed or the system is one it does not simulate; `engine="python"` keeps
-to Python. The two engines give the same results, to the last bit: the
-compiled loop is the Python one over arrays, reading the same
+to Python. All three give the same results, to the last bit: each compiled
+loop is the Python one over arrays, reading the same
 [streams](#random-streams).
 
 ```python
 fast = plant.availability(t_simulation=100.0, N=2_000, seed=0)
 slow = plant.availability(t_simulation=100.0, N=2_000, seed=0, engine="python")
-bool((fast.uptimes == slow.uptimes).all())   # True, with numba or without
+bool((fast.uptimes == slow.uptimes).all())   # True, compiled or not
 ```
 
-The compiled engine simulates plain components (`reliability` and
+The compiled engines simulate plain components (`reliability` and
 `repairability` specs, or `NonRepairable` objects, with surpyval parametric
 models) in any structure, with nodes held working or broken, costs,
 antithetic pairs, tolerances and common random numbers. Preventive
 maintenance, inspections, nested RBDs, capacities and other models run in
-Python, which `"auto"` chooses by itself. With `n_jobs` it runs on that many
-threads, which start at once.
+Python, which `"auto"` chooses by itself. With `n_jobs` they run on that
+many threads, which start at once.
 
-On one test machine, the plant above, over 1 000 hours, ran at about a
-million events (failures and repairs) a second in Python, 12 million
-compiled on one core and 24 million on four; a system of 12 components with
-a bridge and a vote, over 5 000 hours, at 0.8, 8.5 and 23 million; and 70
-components, 35 redundant pairs in series, over 2 000 hours, at 0.6, 4.4 and
-12.6 million. Above 20 components, the compiled loop works out whether the
-system is up after each event that could change it, rather than looking it
-up in a table of every state, so those events cost more.
+The Mojo kernel keeps whether the system works up to date as components
+fail and are repaired, following each change up the structure only as far
+as it matters, rather than working the structure out afresh, and reads the
+random numbers where the streams keep them rather than copying them
+together. Its cost per event hardly grows with the size of the system. If
+a Mojo release cannot compile the kernel, `"auto"` warns and runs on numba
+or in Python.
 
+On one test machine (four cores), in millions of events (failures and
+repairs) a second, best of five:
+
+| System | Python | numba | Mojo | numba, 4 threads | Mojo, 4 threads |
+|---|---|---|---|---|---|
+| The plant above, over 1 000 hours | 1.1 | 11.9 | 19.9 | 21.3 | 29.0 |
+| 12 components with a bridge and a vote, over 5 000 hours | 0.8 | 8.1 | 10.8 | 16.5 | 19.3 |
+| 70 components, 35 redundant pairs in series, over 2 000 hours | 0.5 | 4.0 | 10.1 | 10.6 | 21.9 |
+
+These are whole runs of `availability`: the simulations, and drawing their
+random numbers and building the result, which take the same time whichever
+engine runs them, and more of it the faster the simulations themselves. Above
+20 components numba works out whether the system is up after each event that
+could change it, rather than looking it up in a table of every state, so its
+events cost more; Mojo's cost about the same at any size.
+
+## Which to use
 ## Which to use
 
 - **A precision to meet:** give a `tolerance`, rather than guessing `N`.
@@ -318,5 +338,6 @@ up in a table of every state, so those events cost more.
   separate estimates, whose errors add up.
 - **A quantity that rises with the components' lifetimes:** try
   `antithetic=True`, and check that the standard error falls.
-- **Long simulations:** install numba (`pip install "repyability[fast]"`)
-  for the compiled engine, and spread them over the cores with `n_jobs`.
+- **Long simulations:** install Mojo (`pip install "repyability[mojo]"`)
+  or numba (`pip install "repyability[fast]"`) for the compiled engine, and
+  spread them over the cores with `n_jobs`.

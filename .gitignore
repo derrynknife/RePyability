@@ -1,5 +1,7 @@
 # Byte-compiled / optimized files
 __pycache__/
+# The Mojo kernel, compiled on first use
+__mojocache__/
 *.py[cod]
 *$py.class
 

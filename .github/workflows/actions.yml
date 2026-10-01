@@ -97,6 +97,36 @@ jobs:
       - name: pytest
         run: python -m pytest -q
 
+  test-mojo:
+    # Mojo is optional too: this job installs it (and not numba), so the
+    # Mojo kernel compiles, "auto" prefers it, and its results are checked
+    # against Python's.
+    name: test (with Mojo, Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.11', '3.14']
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set-up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install the package with the Mojo engine
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .[dev,mojo]
+          mojo --version
+
+      - name: Compile the Mojo kernel
+        run: python -c "from repyability.rbd import _mojo; _mojo.load()"
+
+      - name: pytest
+        run: python -m pytest -q
+
   test-minimum:
     # CI otherwise installs the newest surpyval, so once surpyval releases,
     # nothing would test the oldest one pyproject.toml still allows.

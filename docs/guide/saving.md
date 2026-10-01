@@ -196,9 +196,9 @@ routes["availability"].engine      # 'python': no compiled engine for tests
   system of parametric components draws 100 000 lifetimes in well under a
   second. Availability simulations step through events, so their cost grows
   with `N` times the number of failures and repairs in the window; with
-  numba installed (`pip install "repyability[fast]"`) they run compiled,
-  about ten times as fast (see [The compiled
-  engine](simulation.md#the-compiled-engine)).
+  Mojo (`pip install "repyability[mojo]"`) or numba (`pip install
+  "repyability[fast]"`) installed they run compiled, many times as fast
+  (see [The compiled engine](simulation.md#the-compiled-engine)).
 - **Monte-Carlo error** shrinks like `1/√N`: use the confidence intervals
   (`mean_time_to_failure_interval`, `mean_availability_interval`,
   `availability_interval`, `CostResult.mean_interval`) to judge `N`, or pass

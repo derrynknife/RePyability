@@ -52,6 +52,13 @@ dependencies = [
 # The compiled engine of RepairableRBD simulations (engine="numba", and
 # engine="auto" when it pays). 0.60 is the first numba for numpy 2.
 fast = ["numba>=0.60"]
+# The faster compiled engine (engine="mojo", and engine="auto" first): its
+# kernel is compiled from source on first use. Mojo is built for Linux and
+# Apple-silicon macOS; elsewhere the extra installs nothing and "auto" runs
+# on numba or in Python.
+mojo = [
+    "mojo>=1.1; sys_platform == 'linux' or (sys_platform == 'darwin' and platform_machine == 'arm64')",
+]
 dev = [
     "black==26.3.1",
     "isort>=5.12",
@@ -92,6 +99,10 @@ version = { attr = "repyability._version.__version__" }
 [tool.setuptools.packages.find]
 include = ["repyability*"]
 
+[tool.setuptools.package-data]
+# The Mojo engine's kernel, compiled from source on first use.
+"repyability.rbd" = ["_mojo_kernel/*.mojo"]
+
 # For Black pre-commit hook
 [tool.black]
 line-length = 79
@@ -118,6 +129,8 @@ module = [
     'numpy.*',
     'numba',
     'numba.*',
+    'mojo',
+    'mojo.*',
 ]
 ignore_missing_imports = true
 

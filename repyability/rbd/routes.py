@@ -44,8 +44,8 @@ class AnalysisRoute:
         numerical or simulated, or that the method refuses.
     engine : str or None
         For a ``RepairableRBD`` simulation, the engine ``engine="auto"``
-        runs a long simulation on: ``"numba"`` or ``"python"`` (see
-        ``engine_reason``). None otherwise.
+        runs a long simulation on: ``"mojo"``, ``"numba"`` or ``"python"``
+        (see ``engine_reason``). None otherwise.
     engine_reason : str
         Why that engine.
     """

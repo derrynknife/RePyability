@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **A Mojo simulation engine**, the fastest way to run a `RepairableRBD`'s
+  simulations: `pip install "repyability[mojo]"` (Linux, and macOS on Apple
+  silicon). `availability`, `cost` and `compare` take `engine="mojo"`, and
+  `engine="auto"` (the default) now prefers it to numba when it is
+  installed. The results are the same to the last bit as the Python and
+  numba engines', for every option the compiled engine takes (forced nodes,
+  costs, antithetic pairs, tolerances, common random numbers, `n_jobs`). The
+  kernel is compiled from source on first use (about two seconds) and
+  cached; it keeps whether the system works up to date as components change,
+  rather than working the structure out at every event, reads the draws
+  where the streams keep them rather than copying them, and runs on `n_jobs`
+  threads without the GIL. Whole runs of `availability` measured 1.2 to 1.7
+  times as fast as numba's on a 3- and a 12-component system, and 2.1 to 2.5
+  times on 70 components, on one core and on four (see the simulation
+  guide). If a Mojo release cannot compile the kernel, `"auto"` warns and
+  runs on numba or in Python; `analysis_routes()` reports `"mojo"` as the
+  engine `"auto"` runs.
 - **System capacity** (#97): how much a system can deliver, not just
   whether it works. Every RBD class takes `capacity={node: throughput}`,
   each node's throughput while it works. The system's capacity is the

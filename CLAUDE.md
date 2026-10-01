@@ -30,14 +30,31 @@
 
 ## Simulation engines and seeded results
 
-- **A `RepairableRBD` simulation has two engines that must agree to the last
-  bit**: the Python event loop (`RepairableRBD._replicate`) and the compiled
-  one (`repyability/rbd/_kernel.py`, numba, the optional `fast` extra). A
-  change to the loop's events, arithmetic or order goes into both;
-  `test_simulation_engines.py` checks them against each other (run by CI's
-  `test (with numba, ...)` jobs) and the Python loop against a reference
-  written from the streams' definition. What the compiled engine does not
-  simulate, `_compiled.unsupported` sends to Python.
+- **A `RepairableRBD` simulation has three engines that must agree to the
+  last bit**: the Python event loop (`RepairableRBD._replicate`) and two
+  compiled ones, numba (`repyability/rbd/_kernel.py`, the optional `fast`
+  extra) and Mojo (`repyability/rbd/_mojo_kernel/kernel.mojo`, driven by
+  `_mojo.py`, the optional `mojo` extra; `engine="auto"` prefers it). A
+  change to the loop's events, arithmetic or order goes into all three;
+  `test_simulation_engines.py` checks the compiled ones against Python (run
+  by CI's `test (with numba, ...)` and `test (with Mojo, ...)` jobs) and the
+  Python loop against a reference written from the streams' definition.
+  What the compiled engines do not simulate, `_compiled.unsupported` sends
+  to Python.
+- **The Mojo kernel reads its arrays through two tables of addresses and
+  sizes**, laid out by `_mojo.ADDRESSES` and `_mojo.SIZES`; the kernel's
+  `A_`/`S_` constants must match them (a test checks). It keeps whether the
+  system works up to date as components change (per-term counts of working
+  members, and per-path-set counts of members down for a core) rather than
+  evaluating the structure at each event, and reads draws in place from the
+  streams' blocks. It is compiled from source on first use and cached by a
+  hash of the source.
+- **Mojo releases reach users at once, like surpyval's**: the `mojo` extra
+  has no upper bound and Mojo's syntax still changes between releases.
+  `upstream.yml` compiles the kernel with the newest Mojo daily; when it
+  fails, make the kernel compile with both the minimum and the newest Mojo,
+  or raise the minimum in `pyproject.toml`. Meanwhile `engine="auto"` falls
+  back to numba or Python with a warning.
 - **The random streams (`repyability/rbd/_streams.py`) define every seeded
   result.** Changing how a stream is named, seeded or laid out (its width,
   `BLOCK_DRAWS`, `MAX_WIDTH`, `first_rows`, the expected draws in

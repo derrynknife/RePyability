@@ -4203,9 +4203,9 @@ class RepairableRBD(RBD):
         component under age replacement, say.
 
         For a simulation, ``engine`` is the engine ``engine="auto"`` runs a
-        long simulation on: ``"numba"`` when numba is installed and the
-        compiled engine simulates the system, else ``"python"``, with the
-        reason in ``engine_reason``.
+        long simulation on: ``"mojo"`` when Mojo is installed and the
+        compiled engine simulates the system, else ``"numba"`` when numba
+        is, else ``"python"``, with the reason in ``engine_reason``.
 
         Returns
         -------
@@ -4586,12 +4586,19 @@ class RepairableRBD(RBD):
         )
         if reason is not None:
             return "python", f"the compiled engine does not simulate {reason}"
-        if not _compiled.available():
+        engine = _compiled.preferred()
+        if engine is None:
             return (
                 "python",
-                "numba is not installed; pip install 'repyability[fast]' "
-                "for the compiled engine",
+                "Mojo and numba are not installed; pip install "
+                "'repyability[mojo]' or 'repyability[fast]' for the compiled "
+                "engine",
             )
+        return (
+            engine,
+            "compiled for a run long enough to repay loading it; a short "
+            "one runs in Python",
+        )
         return (
             "numba",
             "compiled for a run long enough to repay loading it; a short "
@@ -5612,13 +5619,16 @@ class RepairableRBD(RBD):
             the RBD, which pays off for long simulations. The result is the
             same to the last bit for any ``n_jobs``, and without it.
         engine : str, optional
-            What runs the simulations: ``"python"``, ``"numba"`` (compiled,
-            with numba, an optional dependency: ``pip install
-            "repyability[fast]"``) or ``"auto"`` (the default), which
-            compiles when numba is installed, the system is one the
-            compiled engine simulates, and the run is long enough to pay
-            for loading it (about a third of a second from numba's cache;
-            several seconds the first time ever). The engines give the same
+            What runs the simulations: ``"python"``, ``"mojo"`` (compiled,
+            with Mojo, an optional dependency: ``pip install
+            "repyability[mojo]"``), ``"numba"`` (compiled, with numba,
+            another: ``pip install "repyability[fast]"``) or ``"auto"`` (the
+            default), which compiles, with Mojo if it is installed and else
+            with numba, when the system is one the compiled engine
+            simulates and the run is long enough to pay for loading it (a
+            few hundredths of a second for Mojo's compiled kernel, a third
+            of a second from numba's cache; some seconds the first time
+            ever, while either compiles it). The engines give the same
             results to the last bit. The compiled engine simulates plain
             components (surpyval parametric models) in any structure, with
             nodes held working or broken, costs, antithetic pairs and
@@ -5655,10 +5665,12 @@ class RepairableRBD(RBD):
         NotImplementedError
             With ``antithetic``, if a component's draws cannot be replayed;
             with capacities, if a node takes its capacity from its model;
-            with ``engine="numba"``, if the compiled engine does not
-            simulate the system.
+            with ``engine="mojo"`` or ``"numba"``, if the compiled engine
+            does not simulate the system.
         ImportError
-            With ``engine="numba"``, if numba is not installed.
+            With ``engine="mojo"``, if Mojo is not installed or the kernel
+            does not compile; with ``engine="numba"``, if numba is not
+            installed.
 
         Examples
         --------
@@ -5763,8 +5775,9 @@ class RepairableRBD(RBD):
             Run the simulations in parallel on ``n_jobs`` CPUs (see
             ``availability``), by default None: one.
         engine : str, optional
-            What runs the simulations: ``"python"``, ``"numba"`` or
-            ``"auto"`` (the default), as in ``availability``.
+            What runs the simulations: ``"python"``, ``"mojo"``,
+            ``"numba"`` or ``"auto"`` (the default), as in
+            ``availability``.
 
         Returns
         -------
@@ -5782,10 +5795,12 @@ class RepairableRBD(RBD):
         NotImplementedError
             If a component's draws cannot be replayed from a stream of its
             own (a non-parametric model, for example), or, with
-            ``engine="numba"``, the compiled engine does not simulate a
-            system.
+            ``engine="mojo"`` or ``"numba"``, the compiled engine does not
+            simulate a system.
         ImportError
-            With ``engine="numba"``, if numba is not installed.
+            With ``engine="mojo"``, if Mojo is not installed or the kernel
+            does not compile; with ``engine="numba"``, if numba is not
+            installed.
 
         Examples
         --------
@@ -5990,7 +6005,7 @@ class RepairableRBD(RBD):
             progress = tqdm(
                 total=N, disable=not verbose, desc="Running simulations"
             )
-            if engine == "numba":
+            if engine in ("mojo", "numba"):
                 from repyability.rbd import _compiled
 
                 runner = _compiled.Runner(
@@ -6002,6 +6017,7 @@ class RepairableRBD(RBD):
                     broken_nodes,
                     method,
                     jobs,
+                    engine,
                 )
             else:
                 runner = _PythonRunner(
@@ -6053,29 +6069,32 @@ class RepairableRBD(RBD):
         capacity: Optional[_CapacityRecorder],
         N: int,
     ) -> str:
-        """The engine that runs a simulation: ``"python"`` or ``"numba"``
-        (see ``availability``'s ``engine``)."""
-        if engine not in ("auto", "python", "numba"):
+        """The engine that runs a simulation: ``"python"``, ``"mojo"`` or
+        ``"numba"`` (see ``availability``'s ``engine``)."""
+        if engine not in ("auto", "python", "mojo", "numba"):
             raise ValueError(
-                "engine must be 'auto', 'python' or 'numba', got "
+                "engine must be 'auto', 'python', 'mojo' or 'numba', got "
                 f"{engine!r}."
             )
         if engine == "python":
             return engine
-        from repyability.rbd import _compiled
+        from repyability.rbd import _compiled, _mojo
 
         reason = _compiled.unsupported(self, plan, capacity)
-        if engine == "numba":
-            _compiled.require()
+        if engine in ("mojo", "numba"):
+            if engine == "mojo":
+                _mojo.require()
+            else:
+                _compiled.require()
             if reason is not None:
                 raise NotImplementedError(
                     f"The compiled engine does not simulate {reason}: use "
                     "engine='python', or 'auto', which chooses the engine "
                     "that can."
                 )
-            return engine
+            return _compiled.ready(engine, auto=False)
         if reason is None and _compiled.worthwhile(plan, N):
-            return "numba"
+            return _compiled.ready(str(_compiled.preferred()), auto=True)
         return "python"
 
     def _replicate(self, ctx: "_Context", replication: int) -> _Replication:
@@ -6491,8 +6510,9 @@ class RepairableRBD(RBD):
             Run the simulations in parallel on ``n_jobs`` CPUs (see
             ``availability``), by default None.
         engine : str, optional
-            What runs the simulations: ``"python"``, ``"numba"`` or
-            ``"auto"`` (the default), as in ``availability``.
+            What runs the simulations: ``"python"``, ``"mojo"``,
+            ``"numba"`` or ``"auto"`` (the default), as in
+            ``availability``.
 
         Returns
         -------
