@@ -8,8 +8,9 @@
 A [`RepairableRBD`][repyability.RepairableRBD] models a system whose
 components are repaired when they fail. The question changes from "has it
 failed yet?" to "is it up?": **availability**. Long-run quantities have exact
-closed forms, and the availability over time from new is exact too, and so
-are the expected failures, downtime and cost over a window; the histories
+closed forms, and the availability over time is exact too, from new or from
+the components' [current states](#from-the-plant-as-it-is-now), and so are
+the expected failures, downtime and cost over a window; the histories
 behind them (how much those counts and costs vary) and a family of
 criticality measures come from a discrete-event simulation.
 Theory: [Concepts](../concepts.md#availability).
@@ -185,10 +186,85 @@ preventive replacements, tests and downtime.
 `expected_cost` prices the same events (see
 [Costs](costs.md#the-expected-cost-of-a-window-exact)).
 
+## From the plant as it is now
+
+The analyses over time above start with every component new. Given the
+components' current states instead, the same methods answer the
+condition-based question: *given the plant as it is today, what are its
+availability, failures, cost and capacity over the next month?* Pass
+`state={node: NodeState(...)}` (see [`NodeState`][repyability.NodeState]):
+
+- **up, at an age:** `NodeState(age=420.0)`, the time since the unit was
+  put into service as new. What is left of its life has the survival
+  function `R(a + s) / R(a)`, and under age replacement it is replaced when
+  it reaches the age, `T - a` from now (at once if it already has);
+- **down:** `NodeState(alive=False, down_for=6.0)`, how long it has been
+  down so far, in a repair or (`maintenance=True`) in its preventive
+  maintenance. What is left of that has the survival function
+  `G(r + s) / G(r)`, and the unit is then new;
+- **on a calendar:** `phase`, the time since its last block replacement or
+  test, so that the next falls `interval - phase` from now. A unit with
+  hidden failures is known to have been up only at its last test (or when
+  put into service, if that was since): it may have failed since, unseen,
+  and the next test finds it;
+- **a nested RBD:** a dict of its own components' states;
+- **long in service, state unknown:** `state="stationary"` puts every
+  component in its long-run state (one on a calendar at its phase; for one
+  component, `NodeState(stationary=True, phase=...)`).
+
+A component left out starts new, and every component's later units are new,
+as from new.
+
+```python
+from repyability import NodeState
+
+pump = {
+    "reliability": surv.Weibull.from_params([1000.0, 2.5]),
+    "repairability": surv.LogNormal.from_params([3.0, 0.5]),
+    "preventive": {"interval": 500.0, "duration": surv.Weibull.from_params([8.0, 3.0])},
+}
+pumps = RepairableRBD([("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")], {"a": pump, "b": pump})
+now = {"a": NodeState(age=420.0), "b": NodeState(alive=False, down_for=6.0)}
+
+pumps.point_availability([0.0, 12.0, 24.0], state=now)  # array([1.    , 0.9952, 0.9972])
+month = pumps.expected_events(720.0, state=now)
+month.system_failures                 # -> 0.0195   a failing while b is repaired
+month.system_planned_outages          # -> 0.0188
+month.node_preventive                 # {'a': 1.781, 'b': 0.8497}   a's due in 80 h
+pumps.mission_availability(720.0, state=now)           # -> 0.9996
+pumps.mission_availability(720.0)                      # -> 0.9942   from new
+pumps.expected_events(720.0).system_planned_outages    # -> 0.7304   both reach 500 h together
+pumps.mission_availability(720.0, state="stationary")  # -> 0.9996   = mean_availability()
+```
+
+From new, both pumps reach their replacement age at once, and most of
+those months' outages are the two being maintained together; as the plant
+is, they are out of step, and the month's risk is the old pump failing
+before the other is back.
+
+- **The exact methods** (`point_availability`, `mission_availability`,
+  `expected_failures`, `expected_events`, `expected_cost`,
+  `point_capacity` and `mission_capacity`) take `state=` wherever they work
+  from new. Under block replacement, the unit's own curve runs to its first
+  block time, and the interval-by-interval solution from there. A unit
+  whose hidden failures are repaired at once cannot be down in them.
+- **The simulation** (`availability`, `cost`, `compare`, `simulate_chunk`
+  and `initialize_event_queue`) takes the same states. A component started
+  from one draws what is left of its life, repair or maintenance from one
+  uniform of a stream of its own, by the inverse transform of its
+  conditional distribution, so a seeded run is reproducible and a run from
+  new is unchanged; it is simulated in Python. A simulation does not take
+  the long-run start: give each component's state. With repair crews, a
+  component down at the start holds a crew, so no more can be down than
+  there are crews.
+- **Not taken:** the state of a standby group, and the virtual age of an
+  imperfectly repaired component; leave them out (new).
+
 ## Availability over time (simulated)
 
 `availability(t_simulation, ...)` runs `mc_samples` independent simulations of the
-system from time 0 (everything new, except any `broken_nodes`) to
+system from time 0 (everything new, except any `broken_nodes`, or from the
+components' [current states](#from-the-plant-as-it-is-now) with `state=`) to
 `t_simulation`, and averages them: the same curve as `point_availability`,
 with the histories behind it, which also give the failure counts, downtime,
 costs and criticality measures over the window:
@@ -548,6 +624,10 @@ while events[-1][0] < 100.0:
     events.append(plant.next_event())
 events[0]   # (15.06..., False): the plant first went down at t = 15.06
 ```
+
+`initialize_event_queue(t_simulation, state=...)` starts the history from
+the components' [current states](#from-the-plant-as-it-is-now), as
+`availability(state=...)` does.
 
 This is the interface a nested RBD presents to its parent; `availability()`
 drives the same machinery, with each component drawing from its own random

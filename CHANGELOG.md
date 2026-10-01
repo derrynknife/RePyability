@@ -19,7 +19,8 @@ window: the production availability (#99), which is exact over time from new
 too (#124). A repairable system's availability over time and over a mission
 is exact from new (#117), and so are its expected failures, outages,
 downtime and cost over a window (#123), and a system's mean time to failure
-(#122). `analysis_routes()` says, without running anything, how each
+(#122); all of them, and the simulation, can start from the components'
+current states rather than new (#125). `analysis_routes()` says, without running anything, how each
 analysis will be computed: exactly, numerically, by simulation or not at all
 (#127). Availability simulations run faster, and about ten times as fast
 again when compiled with numba (#119, #120), and `import repyability` is
@@ -172,6 +173,36 @@ required.
   binomial pumps at their availabilities, a degrading pump's Markov chain,
   the long run, a nested skid drawn flat, and the simulation's delivered
   fraction.
+- **Repairable analyses from the plant as it is now** (#125). The exact
+  analyses over time (`point_availability`, `mission_availability`,
+  `expected_failures`, `expected_events`, `expected_cost`,
+  `point_capacity`, `mission_capacity`) and the simulation
+  (`availability`, `cost`, `compare`, `simulate_chunk`,
+  `initialize_event_queue`) take `state={node: NodeState(...)}`: a
+  component up at an age, down part way through a repair or its
+  maintenance, or, on a calendar (block replacement, tests), at a phase,
+  and a nested RBD a dict of its components' states; a component left out
+  starts new. `NodeState` gains `down_for`, `maintenance`, `phase` and
+  `stationary`, and the exact methods take `state="stationary"`, every
+  component in its long-run state, for a plant long in service whose
+  state is not known. Exactly, only each component's first period
+  changes: a first life with survival `R(a + s) / R(a)` and a replacement
+  due when it reaches its age (at once if it has), or what is left of a
+  repair, `G(r + s) / G(r)`, after which its units are new; under block
+  replacement its own curve to the first block time, which starts the
+  intervals' recursion; a unit with hidden failures last known up at its
+  last test. In the simulation, the component draws what is left from one
+  uniform of a stream of its own (the inverse transform of the
+  conditional distribution, through the cumulative hazard), so seeded
+  runs stay reproducible and runs from new are unchanged; a run from a
+  state is simulated in Python, a component down at the start holds a
+  repair crew, and a system that starts down shows so in the
+  availability over time. Standby groups and imperfectly repaired
+  components take no state, and the simulation no long-run start: both
+  refuse with the reason. Checked against the memoryless exponential
+  unit, one down recovering as its two-state chain, the remaining life of
+  a Weibull unit, timelines worked by hand, the long run a stationary
+  start stays in, and the simulation from the same states.
 - **A compiled simulation engine** (#119). With numba installed, an
   optional dependency (`pip install "repyability[fast]"`),
   `RepairableRBD.availability()`, `cost()` and `compare()` can run their

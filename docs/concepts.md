@@ -230,7 +230,9 @@ availabilities in place of reliabilities.
 ## Condition-based evaluation
 
 The measures above assume every component is new. The condition-based methods
-instead take each component's *current life* `Xᵢ` and condition on it:
+instead take each component's *current life* `Xᵢ` and condition on it (a
+repairable system's analyses over time take its components' states too:
+see [From the present](#availability)):
 
 ```
 Rᵢ(x | Xᵢ) = Rᵢ(Xᵢ + x) / Rᵢ(Xᵢ)
@@ -501,6 +503,24 @@ planned outages counted the same way and the expected downtimes as
 integrals of the unavailabilities; their long-run rates are `ω` and the
 like. Events at exact times (replacements due at the same age or block
 time) are taken together: they take the system down at most once.
+
+**From the present.** Given each component's current state, only its first
+period changes. A unit up at age `a` has a first life with survival
+`R(a + s) / R(a)` (its replacement due at `T − a` under age replacement);
+one down for `r` has a first down time with survival `G(r + s) / G(r)`, and
+starts new after it. The later units are new: their renewals are the
+first period's end convolved with the renewal measure from new, so
+`A_i(t)`, `M_i(t)`, and everything built on them above, follow as before.
+Under block replacement the unit's own curve runs to the first block time,
+which hands the block intervals' recursion the probability that it is up
+there (and replaced) and the repairs going on; a calendar is shifted by the
+phase. A component long in service whose state is not known starts in its
+long-run (stationary) state: off a calendar it stays at `A_i` throughout,
+with its events at their long-run rates; on one, it follows its settled
+cycle from its phase. In the simulation, the first draw is the inverse
+transform of the conditional distribution, `qf(F(a) + u (1 − F(a))) − a`,
+worked through the cumulative hazard so that it keeps its precision at
+great ages: still one uniform per draw.
 
 `availability()` simulates `mc_samples` independent histories instead (each
 component's alternating failures and repairs, merged in time order, with the

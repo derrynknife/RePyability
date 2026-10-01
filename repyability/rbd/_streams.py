@@ -49,6 +49,9 @@ SWITCH = 7
 #: The uniforms an imperfectly repaired unit's lives are drawn from, given
 #: its virtual age (a unit as new draws from its ``FAILURE`` stream).
 AGED = 8
+#: The uniform a component started from a state (not new) draws what is
+#: left of its life, repair or maintenance from: one per simulation.
+START = 9
 #: The kind of each cost that can be a distribution, by its cost key.
 COST_KINDS = {
     "repair_cost": 3,

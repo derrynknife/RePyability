@@ -64,6 +64,8 @@ def unsupported(rbd, plan: _streams.Plan, capacity) -> Optional[str]:
 
     if capacity is not None:
         return "capacities"
+    if any(kind == _streams.START for _, kind in plan.specs):
+        return "components started from a state"
     if rbd._crews_limited():
         return "repair crews"
     if rbd._standby:

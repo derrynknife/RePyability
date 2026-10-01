@@ -28,7 +28,7 @@ masses on the grid points, each spread over the two nearest so that its
 mean is kept. The error falls as ``h ** 2``.
 """
 
-from typing import NamedTuple
+from typing import Callable, NamedTuple, Optional
 
 import numpy as np
 
@@ -440,10 +440,68 @@ class BlockAvailability(NamedTuple):
     replace: _Duration
     settled: bool
     failures: np.ndarray
+    #: Whether the first interval starts with the unit new (from new), or
+    #: with a replacement due, ``replaced[0]``, as the later ones do (after
+    #: a ``BlockHead``).
+    fresh: bool = True
+
+
+class BlockHead(NamedTuple):
+    """How a unit started from a state reaches its first block time,
+    ``length`` after the start (see ``block_availability``): up there with
+    probability ``up``; ``failures(u)``, its expected failures before each
+    ``u`` up to it; and ``down_sf``, the survival function of what is left
+    of the repair or replacement it was in at the start (None if it was
+    up), which may carry on past the block time."""
+
+    length: float
+    up: float
+    failures: Callable[[np.ndarray], np.ndarray]
+    down_sf: Optional[Callable[[np.ndarray], np.ndarray]] = None
+
+
+def _head_start(head: BlockHead, g: _Grid):
+    """The first interval's input after ``head`` (see ``block_availability``):
+    the CDF of when the unit is put into service after the block time, and
+    its integral, on ``g.rho``; what of that is not the block
+    replacement's; and the probability that it is replaced there.
+
+    The repairs going on at the block time are those of the failures before
+    it, in cells of the grid's step back from it (each taken at a constant
+    density, the repair integrated exactly over the cell, as ``_carry``
+    takes them), and the first unit's, if it started down and is still."""
+    from scipy.signal import fftconvolve
+
+    h, length, rho = g.h, g.length, g.rho
+    cells = max(1, int(np.ceil(head.length / h - 1e-9)))
+    edges = np.maximum(head.length - h * np.arange(cells + 1), 0.0)
+    counts = np.asarray(head.failures(edges), dtype=float)
+    late = np.maximum(counts[:-1] - counts[1:], 0.0) / h
+    carried = np.zeros(length + 1)
+    if g.fix.fixed != 0.0:
+        down = float(late @ g.in_repair[:cells])
+        ongoing = fftconvolve(
+            g.in_repair[: cells + length], late[::-1], mode="valid"
+        )[: length + 1]
+        carried = down - ongoing
+    if head.down_sf is not None:
+        left = np.asarray(head.down_sf(head.length + rho), dtype=float)
+        carried = carried + (left[0] - left)
+    carried = np.clip(carried, 0.0, 1.0)
+    C = np.concatenate(
+        [[0.0], np.cumsum(0.5 * h * (carried[1:] + carried[:-1]))]
+    )
+    return carried, C, float(head.up)
 
 
 def block_availability(
-    life, repair, duration, interval: float, horizon: float, node=None
+    life,
+    repair,
+    duration,
+    interval: float,
+    horizon: float,
+    node=None,
+    head: Optional[BlockHead] = None,
 ) -> BlockAvailability:
     """The point availability of a component new at 0 under block
     replacement, over ``[0, horizon]``, or until it repeats from one
@@ -460,12 +518,22 @@ def block_availability(
     interval's start is kept out of the grid: it starts at the block time
     exactly, so its end's CDF is exact at any time however short it is.
 
+    Started from a state rather than new, the unit reaches its first block
+    time as ``head`` says, and the intervals are followed from there: the
+    first starts with the replacement of the unit if it is up, and the
+    repairs going on (see ``_head_start``).
+
     Parameters
     ----------
     life, repair, duration, interval, node
         As for ``block_cycle``.
     horizon : float
-        The last time the availability is needed at.
+        The last time the availability is needed at (from the first block
+        time, after a ``head``); ``inf`` to follow it until it settles (into
+        its long-run cycle).
+    head : BlockHead, optional
+        How the unit reaches its first block time, started from a state;
+        by default None: new at 0, a block time.
 
     Returns
     -------
@@ -481,18 +549,28 @@ def block_availability(
 
     g = _grid(life, repair, duration, interval, node)
     steps, h = g.steps, g.h
-    count = int(np.floor(horizon / g.interval)) + 1
     most = max(3, _MAX_VALUES // (steps + 1))
+    # An infinite horizon: until it settles, for its long-run cycle.
+    count = (
+        int(np.floor(horizon / g.interval)) + 1
+        if np.isfinite(horizon)
+        else most + 1
+    )
     # A replacement that starts at the interval's start: the CDF of when
     # the unit is back in service, and its integral.
     start_P = g.replace.cdf(g.rho)
     start_C = g.rho - g.replace.in_progress(g.rho)
     down = 1.0 - g.A
-    # The first interval: put into service new at 0.
-    P = np.ones(g.length + 1)
-    C = g.rho.copy()
-    other = np.zeros(g.length + 1)
-    replaced = 1.0
+    if head is None:
+        # The first interval: put into service new at 0.
+        P = np.ones(g.length + 1)
+        C = g.rho.copy()
+        other = np.zeros(g.length + 1)
+        replaced = 1.0
+    else:
+        other, C, replaced = _head_start(head, g)
+        P = other + replaced * start_P
+        C = C + replaced * start_C
     rows: list = []
     probabilities: list = []
     failing: list = []
@@ -536,4 +614,5 @@ def block_availability(
         g.replace,
         settled,
         np.array(failing),
+        head is None,
     )

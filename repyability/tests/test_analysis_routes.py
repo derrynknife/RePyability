@@ -587,8 +587,6 @@ def test_the_readme_says_what_is_simulated():
             (nonrepairable["simulated standby"], "ff", "simulated"),
             (plain, "ff", "exact"),
         ],
-        "Repairable analyses from the components' current state, "
-        "not new": [],
         "Warm or hot standby of non-exponential units": [
             (
                 alone(

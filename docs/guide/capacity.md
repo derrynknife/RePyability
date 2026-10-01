@@ -220,7 +220,9 @@ year.delivered_fraction(100)         # -> 0.99782   the long run: 0.99781
 pumps.mission_capacity([24.0, 168.0, 720.0]).delivered_fraction(100)   # array([0.9995, 0.9982, 0.9979])
 ```
 
-Both are exact, with no simulation: each component is up at `t` with its
+Both are exact, with no simulation, and take `state=` to start from the
+components' [current states](repairable.md#from-the-plant-as-it-is-now)
+rather than new: each component is up at `t` with its
 point availability (see [Availability over
 time](repairable.md#availability-over-time-exact)), and the system's
 distribution is the same computation at those as in the long run, so the

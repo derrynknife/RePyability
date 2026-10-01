@@ -129,8 +129,11 @@ and is not attributed to components).
 
 The long-run rate times a window is the window's expected cost only once the
 components have settled: from new, the first stretch costs less (or more).
-`expected_cost(t)` gives the expected cost of `[0, t)` from new exactly, by
-the same categories as the simulation:
+`expected_cost(t)` gives the expected cost of `[0, t)` from new exactly (or,
+with `state=`, from the components' [current
+states](repairable.md#from-the-plant-as-it-is-now): a repair or maintenance
+going on at 0 was charged when it began, before the window), by the same
+categories as the simulation:
 
 ```python
 window = plant.expected_cost(1000.0)

@@ -19,6 +19,7 @@ import math
 import pprint
 import warnings
 from collections import Counter, defaultdict, deque
+from collections.abc import Mapping
 from copy import copy
 from dataclasses import dataclass, field
 from fractions import Fraction
@@ -51,6 +52,7 @@ from repyability.rbd import _spares, _standby_chain, _streams
 from repyability.rbd import capacity as _capacity
 from repyability.rbd._block_replacement import (
     BlockCycle,
+    BlockHead,
     block_availability,
     block_cycle,
 )
@@ -62,13 +64,18 @@ from repyability.rbd._model_utils import (
 from repyability.rbd._point_availability import (
     Atoms,
     BlockCurve,
+    First,
     InspectionCurve,
+    ShiftedCurve,
+    StartedBlockCurve,
+    SteadyCurve,
     SystemCurve,
 )
 from repyability.rbd._point_availability import knots as point_knots
 from repyability.rbd._point_availability import unit_curve
 from repyability.rbd._sampling import inverse_sampler
 from repyability.rbd.degrading_node import DegradingNode
+from repyability.rbd.node_state import NodeState
 from repyability.rbd.rbd import RBD, _check_on_infeasible_rbd
 from repyability.rbd.redundancy_allocation import (
     lowest_total_cost,
@@ -114,11 +121,19 @@ class _StreamedRBD:
         self._rbd = rbd
         self._sources = sources
 
-    def initialize_event_queue(self, t_simulation):
-        self._rbd.initialize_event_queue(t_simulation, sources=self._sources)
+    def initialize_event_queue(self, t_simulation, state=None):
+        """Start the nested RBD's simulation, its components from
+        ``state`` (checked; see ``RepairableRBD._simulation_states``)."""
+        self._rbd._start_queue(
+            t_simulation, set(), set(), "p", self._sources, state or {}
+        )
 
     def next_event(self):
         return self._rbd.next_event(sources=self._sources)
+
+    @property
+    def system_state(self) -> bool:
+        return self._rbd.system_state
 
     @property
     def last_change_planned(self) -> bool:
@@ -171,14 +186,22 @@ class _StreamedComponent:
     draws its maintenance or test times from a stream of its own too, or,
     when they cannot be streamed, from ``model.random``."""
 
-    __slots__ = ("_failure", "_repair", "_fails_next", "_duration", "_model")
+    __slots__ = (
+        "_failure",
+        "_repair",
+        "_fails_next",
+        "_duration",
+        "_model",
+        "_start",
+    )
 
-    def __init__(self, failure, repair, duration=None, model=None):
+    def __init__(self, failure, repair, duration=None, model=None, start=None):
         self._failure = failure
         self._repair = repair
         self._fails_next = True
         self._duration = duration
         self._model = model
+        self._start = start
 
     def reset(self):
         self._fails_next = True
@@ -188,12 +211,40 @@ class _StreamedComponent:
             return self._duration.draw()
         return self._model.random(1).item()
 
+    def start_uniform(self) -> float:
+        """The uniform a start from a state draws what is left of the
+        unit's life, repair or maintenance from (see
+        ``RepairableRBD._started``): from its ``START`` stream, or numpy's
+        global RNG."""
+        if self._start is not None:
+            return self._start.draw()
+        return float(np.random.random())
+
+    def life_drawn(self) -> None:
+        """The unit's life has been drawn (given its age, at a start from a
+        state): its next draw is its repair."""
+        self._fails_next = False
+
     def next_event(self):
         if self._fails_next:
             self._fails_next = False
             return self._failure.draw(), False
         self._fails_next = True
         return self._repair.draw(), True
+
+
+class _ModelDraws:
+    """A model's draws, one at a time, from numpy's global RNG: as a
+    stream gives them, and as ``NonRepairable.next_event`` draws them (one
+    ``random(1)`` call each)."""
+
+    __slots__ = ("_model",)
+
+    def __init__(self, model):
+        self._model = model
+
+    def draw(self) -> float:
+        return self._model.random(1).item()
 
 
 def _aged_life(model, age: float, u: float) -> float:
@@ -355,7 +406,11 @@ def _stand_in(
     if failure is None or repair is None:
         return component
     return _StreamedComponent(
-        failure, repair, run.stream(path, _streams.DURATION), duration
+        failure,
+        repair,
+        run.stream(path, _streams.DURATION),
+        duration,
+        run.stream(path, _streams.START),
     )
 
 
@@ -401,6 +456,38 @@ class _StandbyDraws:
 def _uniforms(u: np.ndarray) -> np.ndarray:
     """The draws of a stream of uniforms: the uniforms themselves."""
     return u
+
+
+def _state_key(states: dict) -> Optional[str]:
+    """The components' ``states`` at the start of a run (checked; see
+    ``RepairableRBD._simulation_states``) as JSON, the same in every
+    process, for a chunk's settings (see ``simulate_chunk``); None for
+    every component new."""
+
+    def plain(states: dict) -> list:
+        out = []
+        for node, start in states.items():
+            if isinstance(start, NodeState):
+                if start.new:
+                    continue
+                value: Any = dataclasses.asdict(start)
+            else:
+                value = plain(start)
+                if not value:
+                    continue
+            out.append([repr(node), value])
+        return sorted(out, key=lambda item: item[0])
+
+    entries = plain(states)
+    return json.dumps(entries, sort_keys=True) if entries else None
+
+
+def _draws_start(start) -> bool:
+    """Whether a component started from ``start`` (a ``NodeState``, or
+    None for new) draws what is left of its life, repair or maintenance:
+    when it is down, or up at an age. Up at age 0, it is new, whatever its
+    phase."""
+    return isinstance(start, NodeState) and (not start.alive or start.age > 0)
 
 
 def _standby_draws(component, run, path: tuple, arrangement: "_Standby"):
@@ -1211,6 +1298,11 @@ class _Context(NamedTuple):
     position: dict
     plain: set
     works: Callable
+    #: The components' states at the start (see ``_simulation_states``),
+    #: and whether the system is up at the start with every component up
+    #: but those held broken.
+    states: dict
+    initial_up: bool
 
 
 class _PythonRunner:
@@ -1267,6 +1359,15 @@ class _PythonRunner:
 
 #: The per-action costs: charged at each preventive action or inspection.
 _ACTION_COST_KEYS = ("preventive_cost", "inspection_cost")
+
+#: Why a simulation does not start in the long-run state.
+_STATIONARY_SIMULATION = (
+    "A simulation starts from given states, not from the long-run one: give "
+    "each component's NodeState (its age, or how long it has been down). "
+    "The exact methods (point_availability, mission_availability, "
+    "expected_failures, expected_events, expected_cost, point_capacity and "
+    "mission_capacity) take state='stationary'."
+)
 
 
 def _validate_crews(crews) -> Optional[int]:
@@ -3425,6 +3526,7 @@ class RepairableRBD(RBD):
         t_simulation: float,
         prefix: tuple = (),
         specs: Optional[dict] = None,
+        states: Optional[dict] = None,
     ) -> Tuple[dict, bool]:
         """The streams this RBD's simulations draw from (see ``_streams``),
         by name, nested RBDs' included; and whether every draw comes from
@@ -3432,8 +3534,11 @@ class RepairableRBD(RBD):
         a surpyval parametric one, or a subclass of the component classes)
         has none, nor has a maintenance or test time that cannot: they draw
         from numpy's global RNG. ``prefix`` is this RBD's place in the RBD
-        simulated: only that RBD's own costs are drawn."""
+        simulated: only that RBD's own costs are drawn. A component started
+        from a state in ``states`` (see ``_simulation_states``) that draws
+        what is left of its life or repair has a stream for that too."""
         specs = {} if specs is None else specs
+        states = {} if states is None else states
         complete = True
 
         def add(path: tuple, kind: int, sampler, expected: float) -> None:
@@ -3445,7 +3550,9 @@ class RepairableRBD(RBD):
         for name, component in self.components.items():
             path = prefix + (name,)
             if type(component) is RepairableRBD:
-                nested = component._stream_specs(t_simulation, path, specs)
+                nested = component._stream_specs(
+                    t_simulation, path, specs, states.get(name)
+                )
                 complete = complete and nested[1]
                 continue
             failure = repair = None
@@ -3468,6 +3575,8 @@ class RepairableRBD(RBD):
             expected = self._expected_draws(name, t_simulation)
             add(path, _streams.FAILURE, failure, expected["failure"])
             add(path, _streams.REPAIR, repair, expected["repair"])
+            if _draws_start(states.get(name)):
+                add(path, _streams.START, _uniforms, 1.0)
             if name in self._imperfect:
                 # A life after each repair, given the unit's virtual age.
                 add(path, _streams.AGED, _uniforms, expected["repair"])
@@ -3562,11 +3671,12 @@ class RepairableRBD(RBD):
         entropy,
         antithetic: bool,
         widths: Optional[dict] = None,
+        states: Optional[dict] = None,
     ) -> Tuple[_streams.Plan, bool]:
         """A run's streams (``widths`` overriding some of their widths, as
         ``compare`` does to line up two systems' streams), and whether every
-        draw comes from one."""
-        specs, complete = self._stream_specs(t_simulation)
+        draw comes from one; the components start from ``states``."""
+        specs, complete = self._stream_specs(t_simulation, states=states)
         if widths:
             specs = {
                 name: (
@@ -3667,11 +3777,15 @@ class RepairableRBD(RBD):
         entropy,
         antithetic: bool,
         widths: Optional[dict] = None,
+        states: Optional[dict] = None,
     ) -> "_Context":
         """Everything a run's simulations share: the streams, what each
-        component draws from, the charges, and the structure function."""
+        component draws from, the charges, the structure function, and the
+        components' ``states`` at the start (checked, as
+        ``_simulation_states`` gives them; None for new)."""
+        states = {} if states is None else states
         plan, complete = self._stream_plan(
-            t_simulation, entropy, antithetic, widths
+            t_simulation, entropy, antithetic, widths, states
         )
         run = _streams.Run(plan, reseed=not complete)
         has_costs = self.has_costs
@@ -3703,6 +3817,12 @@ class RepairableRBD(RBD):
                 and not isinstance(component, RepairableRBD)
             },
             works=self._decomposition().structure_function(method),
+            states=states,
+            initial_up=bool(
+                self.is_system_working(
+                    {c: c not in broken_nodes for c in self.components}, method
+                )
+            ),
         )
 
     def expected_cost_rate(
@@ -5785,19 +5905,21 @@ class RepairableRBD(RBD):
         broken_nodes: Optional[Collection[Hashable]] = None,
         method: str = "p",
         sources: Optional[dict] = None,
+        state=None,
     ):
         """Start one simulation of the system over ``[0, t_simulation)``.
 
         Advanced, event-stepping API: ``availability`` runs its simulations
         through it, and a parent RBD uses it to drive a nested
         ``RepairableRBD``, which therefore has the same event API as a
-        ``NonRepairable`` component. Every component starts working except
-        the ``broken_nodes``, which stay down for the whole window; the
-        ``working_nodes`` never fail. The first failure of each other
-        component is queued (a nested RBD starts its own simulation and
-        queues its first state change), and events at or after
-        ``t_simulation`` are dropped. Then call ``next_event`` repeatedly to
-        step through the system's state changes; see it for an example.
+        ``NonRepairable`` component. Every component starts working and new
+        (or from its ``state``) except the ``broken_nodes``, which stay down
+        for the whole window; the ``working_nodes`` never fail. The first
+        failure of each other component is queued (a nested RBD starts its
+        own simulation and queues its first state change), and events at or
+        after ``t_simulation`` are dropped. Then call ``next_event``
+        repeatedly to step through the system's state changes; see it for
+        an example.
 
         Unlike ``availability``, this takes no seed and does not check the
         working/broken nodes: the draws come from numpy's global RNG, so
@@ -5823,26 +5945,59 @@ class RepairableRBD(RBD):
             drawn from, which ``availability`` passes so that the
             components draw from random streams of their own (see
             ``_streams``). By default None: the components themselves.
+        state : dict, optional
+            Start the components it names from their states rather than new,
+            as for ``availability``: ``{node: NodeState}``, and a nested
+            RBD's own such dict for a nested RBD. By default None: every
+            component new.
 
         Raises
         ------
         ValueError
-            If ``method`` is not ``"p"`` or ``"c"``.
+            If ``method`` is not ``"p"`` or ``"c"``, or ``state`` is not
+            one the components can be in.
+        NotImplementedError
+            If ``state`` is ``"stationary"``, or gives a state to a
+            component whose state is not taken (see ``availability``).
         """
         working_nodes = set() if working_nodes is None else set(working_nodes)
         broken_nodes = set() if broken_nodes is None else set(broken_nodes)
+        states = self._simulation_states(state, working_nodes | broken_nodes)
+        self._start_queue(
+            t_simulation, working_nodes, broken_nodes, method, sources, states
+        )
+
+    def _start_queue(
+        self,
+        t_simulation,
+        working_nodes: set,
+        broken_nodes: set,
+        method: str,
+        sources: Optional[dict],
+        states: dict,
+    ) -> None:
+        """``initialize_event_queue``, with ``states`` checked (see
+        ``_simulation_states``)."""
         # What the components draw their events from: themselves (an
         # imperfectly repaired one through a stand-in keeping its virtual
-        # age, kept for next_event), or stand-ins drawing from their own
+        # age, and one started from a state through one whose next draw can
+        # be set; kept for next_event), or stand-ins drawing from their own
         # streams (see _streamed_components), which the caller passes to
         # next_event too.
         if sources is None:
-            sources = self._step_sources = self._own_sources()
+            sources = self._step_sources = self._own_sources(states)
         else:
             self.__dict__.pop("_step_sources", None)
         # The window's end, which the first events already look to (see
         # _replaced_at).
         self.t_simulation = t_simulation
+        # Each calendar a state's phase shifts: by node, the time since its
+        # last scheduled replacement or test (see _due).
+        self._phases: dict = {
+            node: start.phase
+            for node, start in states.items()
+            if isinstance(start, NodeState) and start.phase
+        }
 
         # Keep record of component status', initially they're all working
         component_status: dict[Any, bool] = {
@@ -5869,6 +6024,9 @@ class RepairableRBD(RBD):
         self._cancelled: dict[int, Event] = {}
         self._early: dict[int, Event] = {}
         self._renewing: set = set()
+        # The components down at the start in a repair or maintenance going
+        # on, which holds a repair crew.
+        in_hand: list = []
 
         # For each component add in the initial failure
         for component_id in self.components.keys():
@@ -5880,12 +6038,19 @@ class RepairableRBD(RBD):
             elif component_id in self._standby:
                 continue  # started below, once the queue and crews exist
             source = sources[component_id]
+            start = states.get(component_id)
             if isinstance(component, RepairableRBD):
-                source.initialize_event_queue(t_simulation)
+                source.initialize_event_queue(t_simulation, state=start)
+                component_status[component_id] = source.system_state
                 t_event, event = source.next_event()
                 first = Event(
                     t_event, component_id, event, _planned(source, event)
                 )
+            elif start is not None and not start.new:
+                up, first = self._started(component_id, source, start)
+                component_status[component_id] = up
+                if not up and first.status:
+                    in_hand.append(component_id)
             elif component_id in self._preventive:
                 # Put into service as new at 0: it fails, or is maintained.
                 source.reset()
@@ -5915,6 +6080,13 @@ class RepairableRBD(RBD):
             if crews is not None and self._crews_limited()
             else None
         )
+        if self._crews is not None:
+            # A repair or maintenance going on at the start holds a crew
+            # (_simulation_states has checked that there are enough).
+            for node in in_hand:
+                if node in self._crews.served:
+                    self._crews.free -= 1
+                    self._crews.holding.add(node)
         # Each standby group's units, which queue the group's first event.
         self._groups: dict[Any, _StandbyGroup] = {
             node: _StandbyGroup(
@@ -5925,10 +6097,103 @@ class RepairableRBD(RBD):
         }
         self.last_change_planned = False
         # The initial system state must reflect any forced-broken components
-        # (e.g. a broken component in series starts the system down), rather
-        # than assuming everything is up.
+        # (e.g. a broken component in series starts the system down), and
+        # any component that starts down, rather than assuming everything is
+        # up.
         self.system_state = self.is_system_working(component_status, method)
         self.component_status = component_status
+
+    def _started(self, node, source, start: NodeState) -> Tuple[bool, Event]:
+        """Whether component ``node`` is up at 0, started from ``start``
+        (not new), and its first event.
+
+        One uniform, from the component's own stream (see
+        ``_streamed_components``), draws what is left of its repair or
+        maintenance given how long it has taken so far, or of its life
+        given its age (``_aged_life``: ``S(a + x) / S(a)`` is the chance
+        of more than ``x`` left). Up at age 0 it is new, and draws its life
+        as a new unit does. Its calendar is shifted by the state's phase
+        (see ``_due``); under age replacement, its replacement is due when
+        it reaches the age, at once if it has. A unit with hidden failures
+        is known to have been up only at its last test (or when put into
+        service, if since): its life left is drawn from then, and if it
+        has run out it failed unseen, and the next test finds it. After
+        the first, its units are new, as from new.
+        """
+        component = self.components[node]
+        schedule = self._preventive.get(node)
+        inspection = self._inspection.get(node)
+        source.reset()
+        if not start.alive:
+            # Down: up again, as new, once its repair or maintenance is
+            # done.
+            model = (
+                schedule.duration  # type: ignore[union-attr]
+                if start.maintenance
+                else component.time_to_replace
+            )
+            left = _aged_life(model, start.down_for, source.start_uniform())
+            if inspection is not None:
+                self._pending_failure[node] = None
+            return False, Event(left, node, True, start.maintenance)
+        if not start.age:
+            # New at 0, on a calendar at its phase.
+            if schedule is not None:
+                return True, self._renewal(node, 0.0, source, schedule)
+            if inspection is not None:
+                return True, self._inspected_renewal(
+                    node, 0.0, source, inspection
+                )
+            delay, status = source.next_event()
+            return True, Event(delay, node, status)
+        since = 0.0
+        if inspection is not None:
+            # Last known up at its last test, or when put into service.
+            since = min(start.age, start.phase or 0.0)
+        life = (
+            _aged_life(
+                component.reliability,
+                start.age - since,
+                source.start_uniform(),
+            )
+            - since
+        )
+        source.life_drawn()
+        if inspection is not None:
+            if life < 0.0:
+                # Failed, unseen, since it was last known up.
+                self._pending_failure[node] = None
+                found = self._finds(node, inspection, life)
+                return False, Event(found, node, False, inspection=True)
+            self._pending_failure[node] = life
+            return True, self._inspected_next(node, 0.0, inspection)
+        if schedule is None:
+            return True, Event(life, node, False)
+        return True, self._renewal(
+            node, 0.0, source, schedule, life=life, start=-start.age
+        )
+
+    def _due(self, node, schedule, t: float) -> float:
+        """The next scheduled action of ``schedule`` (a ``_Preventive`` or
+        ``_Inspection``) after ``t``, on ``node``'s calendar: shifted, from
+        a state, by its phase, so that the last action fell that long
+        before 0."""
+        phase = self._phases.get(node) if self._phases else None
+        if not phase:
+            return schedule.due(t)
+        due = schedule.due(t + phase) - phase
+        return due if due > t else due + schedule.interval
+
+    def _finds(self, node, inspection: _Inspection, t: float) -> float:
+        """The test that finds a failure at ``t``, on ``node``'s calendar
+        (see ``_due``): the first at or after it, and not before 0."""
+        phase = self._phases.get(node) if self._phases else None
+        if not phase:
+            return inspection.finds(t)
+        found = inspection.finds(t + phase) - phase
+        if found < t or found < 0.0:
+            found += inspection.interval
+        return found
 
     def mean_unavailability(
         self,
@@ -6695,6 +6960,7 @@ class RepairableRBD(RBD):
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
         method: str = "p",
+        state=None,
     ):
         """The probability that the system is up at each time ``x``, with
         every component new at 0: exact, with no simulation.
@@ -6741,6 +7007,13 @@ class RepairableRBD(RBD):
             Evaluate the structure function from the minimal path sets
             (``"p"``, the default) or the cut sets (``"c"``); both give the
             same result.
+        state : dict or str, optional
+            Start from the components' current states rather than new:
+            ``{node: NodeState}`` (see
+            [`NodeState`][repyability.NodeState]), a nested RBD's own such
+            dict for a nested RBD, or ``"stationary"`` for every component
+            in its long-run state. A component left out starts new. By
+            default None: every component new at 0.
 
         Returns
         -------
@@ -6786,8 +7059,9 @@ class RepairableRBD(RBD):
         broken_nodes = set() if broken_nodes is None else set(broken_nodes)
         self._validate_node_overrides(working_nodes, broken_nodes)
         horizon = float(times.max()) if times.size else 0.0
+        forced = working_nodes | broken_nodes
         curves = self._availability_curves(
-            horizon, working_nodes | broken_nodes
+            horizon, forced, state=self._states(state, forced)
         )
         values = self._curves_at(
             curves, times.ravel(), working_nodes, broken_nodes, method
@@ -6802,6 +7076,7 @@ class RepairableRBD(RBD):
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
         method: str = "p",
+        state=None,
     ):
         """The expected fraction of ``[0, t]`` the system is up, with every
         component new at 0: exact, with no simulation.
@@ -6835,6 +7110,13 @@ class RepairableRBD(RBD):
             Evaluate the structure function from the minimal path sets
             (``"p"``, the default) or the cut sets (``"c"``); both give the
             same result.
+        state : dict or str, optional
+            Start from the components' current states rather than new:
+            ``{node: NodeState}`` (see
+            [`NodeState`][repyability.NodeState]), a nested RBD's own such
+            dict for a nested RBD, or ``"stationary"`` for every component
+            in its long-run state. A component left out starts new. By
+            default None: every component new at 0.
 
         Returns
         -------
@@ -6872,8 +7154,9 @@ class RepairableRBD(RBD):
         self._validate_node_overrides(working_nodes, broken_nodes)
         ends = windows.ravel()
         horizon = float(ends.max()) if ends.size else 0.0
+        forced = working_nodes | broken_nodes
         curves = self._availability_curves(
-            horizon, working_nodes | broken_nodes
+            horizon, forced, state=self._states(state, forced)
         )
         # After ``settle`` the system's availability is constant, or repeats
         # with ``period``: it is integrated up to ``reach``, and extended.
@@ -6941,6 +7224,7 @@ class RepairableRBD(RBD):
         method: str,
         nodes: bool = False,
         setups: bool = False,
+        state=None,
     ):
         """The windows ``t`` checked, flat, and the nodes' curves and the
         system's expected events over them (see ``_window_counts``): the
@@ -6955,7 +7239,9 @@ class RepairableRBD(RBD):
         forced = working | broken
         ends = windows.ravel()
         horizon = float(ends.max()) if ends.size else 0.0
-        curves = self._availability_curves(horizon, forced, counts=True)
+        curves = self._availability_curves(
+            horizon, forced, counts=True, state=self._states(state, forced)
+        )
         groups = None
         if setups:
             groups = {
@@ -6974,6 +7260,7 @@ class RepairableRBD(RBD):
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
         method: str = "p",
+        state=None,
     ):
         """The expected number of system failures in ``[0, t)``, with every
         component new at 0: exact, with no simulation.
@@ -7014,6 +7301,13 @@ class RepairableRBD(RBD):
             Evaluate the structure function from the minimal path sets
             (``"p"``, the default) or the cut sets (``"c"``); both give the
             same result.
+        state : dict or str, optional
+            Start from the components' current states rather than new:
+            ``{node: NodeState}`` (see
+            [`NodeState`][repyability.NodeState]), a nested RBD's own such
+            dict for a nested RBD, or ``"stationary"`` for every component
+            in its long-run state. A component left out starts new. By
+            default None: every component new at 0.
 
         Returns
         -------
@@ -7047,7 +7341,7 @@ class RepairableRBD(RBD):
         0.9174
         """
         windows, _, _, counts, _, _ = self._window(
-            t, working_nodes, broken_nodes, method
+            t, working_nodes, broken_nodes, method, state=state
         )
         return _shaped(counts["failures"], t, windows)
 
@@ -7057,6 +7351,7 @@ class RepairableRBD(RBD):
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
         method: str = "p",
+        state=None,
     ) -> ExpectedEvents:
         """What the system and each component are expected to do in
         ``[0, t)``, with every component new at 0: exact, with no
@@ -7095,6 +7390,13 @@ class RepairableRBD(RBD):
             Evaluate the structure function from the minimal path sets
             (``"p"``, the default) or the cut sets (``"c"``); both give the
             same result.
+        state : dict or str, optional
+            Start from the components' current states rather than new:
+            ``{node: NodeState}`` (see
+            [`NodeState`][repyability.NodeState]), a nested RBD's own such
+            dict for a nested RBD, or ``"stationary"`` for every component
+            in its long-run state. A component left out starts new. By
+            default None: every component new at 0.
 
         Returns
         -------
@@ -7136,7 +7438,7 @@ class RepairableRBD(RBD):
         11.275
         """
         windows, ends, curves, counts, working, broken = self._window(
-            t, working_nodes, broken_nodes, method, nodes=True
+            t, working_nodes, broken_nodes, method, nodes=True, state=state
         )
         node_events = {
             node: curve.events(ends) for node, curve in curves.items()
@@ -7180,6 +7482,7 @@ class RepairableRBD(RBD):
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
         method: str = "p",
+        state=None,
     ) -> ExpectedCost:
         """The expected cost of running the system for ``t``, from new:
         exact, with no simulation.
@@ -7217,6 +7520,13 @@ class RepairableRBD(RBD):
             Evaluate the structure function from the minimal path sets
             (``"p"``, the default) or the cut sets (``"c"``); both give the
             same result.
+        state : dict or str, optional
+            Start from the components' current states rather than new:
+            ``{node: NodeState}`` (see
+            [`NodeState`][repyability.NodeState]), a nested RBD's own such
+            dict for a nested RBD, or ``"stationary"`` for every component
+            in its long-run state. A component left out starts new. By
+            default None: every component new at 0.
 
         Returns
         -------
@@ -7266,7 +7576,13 @@ class RepairableRBD(RBD):
                 acquisition_cost=self.acquisition_cost,
             )
         windows, ends, curves, counts, working, broken = self._window(
-            t, working_nodes, broken_nodes, method, nodes=True, setups=True
+            t,
+            working_nodes,
+            broken_nodes,
+            method,
+            nodes=True,
+            setups=True,
+            state=state,
         )
         node_events = {
             node: curve.events(ends) for node, curve in curves.items()
@@ -7657,22 +7973,27 @@ class RepairableRBD(RBD):
         skip,
         counts: bool = False,
         stages: bool = False,
+        state: Optional[dict] = None,
     ) -> dict:
         """Each node's point availability over ``[0, horizon]``, from new,
         as a curve (see ``_point_availability``), except the nodes in
         ``skip`` (held working or failed). With ``counts``, the curves
         count the nodes' expected events too, and follow them until they
         have settled as well; with ``stages``, a degrading component's
-        curve follows its stages (see ``_capacity_models``)."""
+        curve follows its stages (see ``_capacity_models``). ``state``
+        (checked by ``_states``) starts the nodes it names from their
+        states rather than new."""
         self._require_unlimited_crews(*_OVER_TIME_CREWS)
+        state = state or {}
         curves: dict = {}
         degrading = self._capacity_models() if stages else {}
         for node, component in self.components.items():
             if node in skip:
                 continue
+            start = state.get(node)
             if isinstance(component, RepairableRBD):
                 inner = component._availability_curves(
-                    horizon, set(), counts, stages
+                    horizon, set(), counts, stages, start
                 )
                 curves[node] = SystemCurve(
                     component, inner, *_settling(inner.values())
@@ -7680,12 +8001,226 @@ class RepairableRBD(RBD):
             elif node in self._standby:
                 self._no_standby_curve(node)
             elif node in self._inspection:
-                curves[node] = InspectionCurve(*self._inspected_rate(node))
+                rate, interval = self._inspected_rate(node)
+                if start is not None and not start.alive:
+                    raise NotImplementedError(
+                        f"Component {node!r} has hidden failures, repaired "
+                        "at once when a test finds them, as the exact values "
+                        "need: it cannot be down. Give the time since its "
+                        "last test as its phase (it was found working), or "
+                        "simulate it: availability(state=...)."
+                    )
+                phase = 0.0 if start is None else start.phase or 0.0
+                # Last known up at its last test, or, put into service
+                # since, when it was.
+                since = (
+                    phase
+                    if start is None or start.stationary
+                    else min(start.age, phase)
+                )
+                curves[node] = InspectionCurve(rate, interval, phase, since)
             else:
                 curves[node] = self._unit_curve(
-                    node, horizon, counts, node in degrading
+                    node, horizon, counts, node in degrading, start
                 )
         return curves
+
+    def _states(self, state, forced=frozenset()) -> dict:
+        """``state`` checked (see ``point_availability``): each component it
+        names, its ``NodeState``, and each nested RBD, its components'
+        states, in the same form; for ``"stationary"``, every component in
+        its long-run state. Nodes in ``forced`` (held working or broken)
+        take none."""
+        if state is None:
+            return {}
+        if isinstance(state, str):
+            if state != "stationary":
+                raise ValueError(
+                    "state must be a dict of NodeStates by node, or "
+                    f"'stationary', got {state!r}."
+                )
+            return {
+                node: (
+                    component._states("stationary")
+                    if isinstance(component, RepairableRBD)
+                    else NodeState(stationary=True)
+                )
+                for node, component in self.components.items()
+                if node not in forced
+            }
+        if not isinstance(state, Mapping):
+            raise TypeError(
+                "state must be a dict of NodeStates by node, or "
+                f"'stationary', got {state!r}."
+            )
+        out: dict = {}
+        for node, value in state.items():
+            if node not in self.components:
+                raise ValueError(
+                    f"state names {node!r}, which is not a component of "
+                    "this RBD."
+                )
+            if node in forced:
+                raise ValueError(
+                    f"Node {node!r} is held working or broken: give it no "
+                    "state."
+                )
+            component = self.components[node]
+            if isinstance(component, RepairableRBD):
+                if isinstance(value, NodeState):
+                    if not value.stationary:
+                        raise ValueError(
+                            f"Node {node!r} is a nested RBD: give its "
+                            "components' states, as a dict of NodeStates "
+                            "(or 'stationary')."
+                        )
+                    value = "stationary"
+                out[node] = component._states(value)
+                continue
+            if value == "stationary":
+                value = NodeState(stationary=True)
+            if not isinstance(value, NodeState):
+                raise TypeError(
+                    f"The state of component {node!r} must be a NodeState, "
+                    f"got {value!r}."
+                )
+            self._check_state(node, value)
+            out[node] = value
+        return out
+
+    def _check_state(self, node, state: NodeState) -> None:
+        """Raise if a component cannot be in ``state``: a phase off a
+        calendar or past its interval, maintenance it does not have, an age
+        it cannot be up at or a repair or maintenance that is always over
+        sooner, or a state of a kind of component whose state is not
+        taken."""
+        schedule = self._preventive.get(node)
+        inspection = self._inspection.get(node)
+        interval = None
+        if inspection is not None:
+            interval = inspection.interval
+        elif schedule is not None and schedule.policy != "age":
+            interval = schedule.interval
+        if state.phase is not None:
+            if interval is None:
+                raise ValueError(
+                    f"Component {node!r} is not on a calendar (block "
+                    "replacement, replacement on condition, or tests): give "
+                    "it no phase."
+                )
+            if state.phase >= interval:
+                raise ValueError(
+                    f"Component {node!r}: the phase, {state.phase:g}, is "
+                    "the time since its last scheduled replacement or test, "
+                    f"less than its interval, {interval:g}."
+                )
+        if state.maintenance and (
+            schedule is None or schedule.duration is None
+        ):
+            raise ValueError(
+                f"Component {node!r} has no preventive maintenance that "
+                "takes time: it cannot be down for one."
+            )
+        if state.new:
+            return
+        for kinds, what in (
+            (self._standby, "a standby group, whose units' states"),
+            (self._imperfect, "repaired imperfectly: its virtual age"),
+        ):
+            if node in kinds:
+                raise NotImplementedError(
+                    f"Component {node!r} is {what} are not taken as a "
+                    "state: leave it out (new)."
+                )
+        if state.stationary or (state.alive and not state.age):
+            return
+        component = self.components[node]
+        for what, model in [
+            ("reliability", component.reliability),
+            ("repairability", component.time_to_replace),
+        ]:
+            if is_fixed_probability(model):
+                raise NotImplementedError(
+                    f"Component {node!r}: its {what} model is a probability, "
+                    "not a distribution of times, so it cannot start part "
+                    "way through a life or repair: leave it out (new)."
+                )
+        if state.alive:
+            # A unit with hidden failures was known to be up only at its
+            # last test, or when put into service since.
+            since = 0.0
+            if inspection is not None:
+                since = min(state.age, state.phase or 0.0)
+            age = state.age - since
+            survive = _sf_values(component.reliability.sf, np.array([age]))
+            if not survive[0] > 0.0:
+                raise ValueError(
+                    f"Component {node!r} cannot be up at age {age:g}: its "
+                    "reliability there is 0."
+                )
+            return
+        model = (
+            schedule.duration  # type: ignore[union-attr]
+            if state.maintenance
+            else component.time_to_replace
+        )
+        left = _sf_values(model.sf, np.array([state.down_for]))
+        if not left[0] > 0.0:
+            raise ValueError(
+                f"Component {node!r} cannot have been down for "
+                f"{state.down_for:g}: its "
+                f"{'maintenance' if state.maintenance else 'repair'} is "
+                "always over by then."
+            )
+
+    def _simulation_states(self, state, forced=frozenset()) -> dict:
+        """``state`` checked for a simulation (see ``availability``): as
+        ``_states`` checks it, none stationary (a simulation starts from
+        given states), and see ``_check_simulated``."""
+        if state is None:
+            return {}
+        states = self._states(state, forced)
+        self._check_simulated(states)
+        return states
+
+    def _check_simulated(self, states: dict) -> None:
+        """Raise if a simulation cannot start from ``states`` (checked by
+        ``_states``): a component in its long-run state, which only the
+        exact methods take; one started from a state whose draws are not
+        streamed, being its own subclass or having a model other than a
+        surpyval parametric one; or more components down in a repair or
+        maintenance going on than repair crews to work on them."""
+        in_hand = 0
+        served = set(self._crew_served()) if self._crews_limited() else set()
+        for node, start in states.items():
+            component = self.components[node]
+            if isinstance(component, RepairableRBD):
+                component._check_simulated(start)
+                continue
+            if start.stationary:
+                raise NotImplementedError(_STATIONARY_SIMULATION)
+            if start.new:
+                continue
+            if (
+                type(component) is not NonRepairable
+                or inverse_sampler(component.reliability) is None
+                or inverse_sampler(component.time_to_replace) is None
+            ):
+                raise NotImplementedError(
+                    f"Component {node!r} draws its events its own way (it is "
+                    f"a {type(component).__name__}, or its models are not "
+                    "surpyval parametric ones), so it cannot start part way "
+                    "through a life or repair: leave it out (new)."
+                )
+            if not start.alive and node in served:
+                in_hand += 1
+        if served and in_hand > self.repair_crews:  # type: ignore[operator]
+            raise ValueError(
+                f"{in_hand} components are down at the start, in repairs "
+                "or maintenance going on, which takes more than the "
+                f"{self.repair_crews} repair crew(s): a state does not say "
+                "which jobs wait."
+            )
 
     def _curves_at(
         self, curves: dict, x: np.ndarray, working_nodes, broken_nodes, method
@@ -7721,6 +8256,8 @@ class RepairableRBD(RBD):
         horizon: float,
         counts: bool = False,
         stages: bool = False,
+        start: Optional[NodeState] = None,
+        unscheduled: bool = False,
     ):
         """A component's point availability from new over ``[0, horizon]``
         (see ``_point_availability.unit_curve``): on a grid of
@@ -7732,15 +8269,18 @@ class RepairableRBD(RBD):
         at those rates after. With ``stages``, a degrading component's
         curve follows its stages too, until they have settled at their
         long-run shares of its up time (to 1e-8). Under block replacement,
-        see ``_block_curve``."""
+        see ``_block_curve``. ``start`` starts it from a state rather than
+        new (see ``point_availability``). ``unscheduled`` leaves out its
+        preventive maintenance, and follows it to the horizon: the head of a
+        block-replacement curve, up to its first block time."""
         self._require_time_models(node)
         self._require_no_condition(node)
         self._require_no_opportunities(node)
         self._require_perfect_repair(node)
         component = self.components[node]
-        schedule = self._preventive.get(node)
+        schedule = None if unscheduled else self._preventive.get(node)
         if schedule is not None and schedule.policy == "block":
-            return self._block_curve(node, horizon)
+            return self._block_curve(node, horizon, start)
         age = None if schedule is None else float(schedule.interval)
         duration = None if schedule is None else schedule.duration
         life = component.reliability
@@ -7763,6 +8303,8 @@ class RepairableRBD(RBD):
 
         maintenance_sf = None if duration is None else duration_sf
         try:
+            if unscheduled:
+                raise ValueError("followed to the horizon")
             long_run: Optional[float] = self._node_availability(node)
             rates: Optional[Tuple[float, float, float]] = (
                 self._node_frequencies(node) if counts else None
@@ -7773,6 +8315,32 @@ class RepairableRBD(RBD):
         if stages:
             self._require_unscheduled_stages(node)
             stage_model = life
+        if start is not None and start.stationary:
+            # Long in service: in its long-run state throughout.
+            if long_run is None:
+                self._node_availability(node)  # raises why it has none
+            failures, maintained, _ = self._node_frequencies(node)
+            return SteadyCurve(
+                float(long_run),  # type: ignore[arg-type]
+                failures,
+                maintained,
+                takedown=duration is not None,
+                fractions=(
+                    None
+                    if stage_model is None
+                    else stage_model.stage_fractions()
+                ),
+            )
+        first = None
+        if _draws_start(start):
+            first = self._first_unit(
+                node,
+                start,  # type: ignore[arg-type]
+                up_sf,
+                up_splits,
+                age,
+                stage_model,
+            )
         scale = _up_scale(life, age)
         if schedule is not None:
             up, cycle, _, _ = self._maintenance_cycle(node, schedule)
@@ -7836,6 +8404,7 @@ class RepairableRBD(RBD):
                             if stage_model is None
                             else stage_model.stage_probabilities
                         ),
+                        first=first,
                     )
             except NotImplementedError as error:
                 raise NotImplementedError(
@@ -7870,24 +8439,104 @@ class RepairableRBD(RBD):
             curve.unit_events.preventive_rate = None
         return curve
 
-    def _block_curve(self, node, horizon: float) -> BlockCurve:
+    def _block_curve(
+        self, node, horizon: float, start: Optional[NodeState] = None
+    ):
         """A component's point availability from new under block
         replacement, over ``[0, horizon]`` (see
-        ``_block_replacement.block_availability``)."""
+        ``_block_replacement.block_availability``); in its long-run state
+        (a stationary ``start``), its settled cycle from its phase on; from
+        another state, its own curve up to its first block time, and the
+        block replacement's from there (see ``StartedBlockCurve``)."""
         component = self.components[node]
         schedule = self._preventive[node]
         duration = schedule.duration
+        stationary = start is not None and start.stationary
+        knots = np.empty(0) if duration is None else point_knots(duration)
+        if start is not None and not start.new and not stationary:
+            length = schedule.interval - (start.phase or 0.0)
+            head = self._unit_curve(
+                node, length, counts=True, start=start, unscheduled=True
+            )
+            down_sf = None
+            if not start.alive:
+                down_sf = self._first_unit(
+                    node, start, None, (), None, None
+                ).down_sf
+
+            def failures(u):
+                return head.events(np.asarray(u, dtype=float))["failures"]
+
+            result = block_availability(
+                component.reliability,
+                component.time_to_replace,
+                duration,
+                schedule.interval,
+                max(horizon - length, 0.0),
+                node,
+                BlockHead(
+                    length,
+                    float(head.at(np.array([length]))[0]),
+                    failures,
+                    down_sf,
+                ),
+            )
+            return StartedBlockCurve(head, BlockCurve(result, knots), length)
         result = block_availability(
             component.reliability,
             component.time_to_replace,
             duration,
             schedule.interval,
-            max(horizon, 0.0),
+            np.inf if stationary else max(horizon, 0.0),
             node,
         )
-        return BlockCurve(
-            result, np.empty(0) if duration is None else point_knots(duration)
-        )
+        curve = BlockCurve(result, knots)
+        if not stationary:
+            return curve
+        assert start is not None
+        return ShiftedCurve(curve, curve.settle + (start.phase or 0.0))
+
+    def _first_unit(
+        self, node, start: NodeState, up_sf, up_splits, age, stage_model
+    ) -> First:
+        """A component's unit at 0 in state ``start`` (see
+        ``_point_availability.First``): up at its age, with what is left of
+        its life (the survival function ``R(a + s) / R(a)``) and its
+        replacement due ``age - a`` from now; or down, with what is left of
+        its repair or maintenance (``G(r + s) / G(r)``, after ``r`` so
+        far). ``_check_state`` has checked that it can be in the state."""
+        if start.alive:
+            a = float(start.age)
+            survive = float(_sf_values(up_sf, np.array([a]))[0])
+
+            def cdf(s):
+                return np.clip(
+                    1.0 - _sf_values(up_sf, a + s) / survive, 0.0, 1.0
+                )
+
+            splits = np.asarray(up_splits, dtype=float) - a
+
+            def stages(s):
+                return stage_model.stage_probabilities(a + s) / survive
+
+            return First(
+                cdf,
+                splits[splits > 0.0],
+                None if age is None else age - a,
+                stages=None if stage_model is None else stages,
+            )
+        if start.maintenance:
+            model = self._preventive[node].duration
+        else:
+            model = self.components[node].time_to_replace
+        r = float(start.down_for)
+        left = float(_sf_values(model.sf, np.array([r]))[0])
+
+        def down_sf(s):
+            return _sf_values(model.sf, r + s) / left
+
+        splits = point_knots(model) - r
+        return First(down_sf=down_sf, down_splits=splits[splits > 0.0])
 
     def capacity_distribution(
         self,
@@ -8001,7 +8650,7 @@ class RepairableRBD(RBD):
         self._require_capacity()
 
     def _capacity_curves(
-        self, horizon: float, working_nodes, broken_nodes
+        self, horizon: float, working_nodes, broken_nodes, state=None
     ) -> dict:
         """The nodes' curves for the capacity over time (see
         ``point_capacity``): a degrading component's following its stages,
@@ -8009,7 +8658,10 @@ class RepairableRBD(RBD):
         held working (its levels are then those it is up at)."""
         held = set(working_nodes) - set(self._capacity_models())
         return self._availability_curves(
-            horizon, held | set(broken_nodes), stages=True
+            horizon,
+            held | set(broken_nodes),
+            stages=True,
+            state=self._states(state, set(working_nodes) | set(broken_nodes)),
         )
 
     def _capacity_rows(
@@ -8052,6 +8704,7 @@ class RepairableRBD(RBD):
         x,
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
+        state=None,
     ) -> CapacityDistribution:
         """The distribution of the system's capacity at each time ``x``,
         with every component new at 0: exact, with no simulation.
@@ -8082,6 +8735,13 @@ class RepairableRBD(RBD):
             is at the levels it is up at, in proportion.
         broken_nodes : Collection[Hashable], optional
             Nodes that are always down, by default None.
+        state : dict or str, optional
+            Start from the components' current states rather than new:
+            ``{node: NodeState}`` (see
+            [`NodeState`][repyability.NodeState]), a nested RBD's own such
+            dict for a nested RBD, or ``"stationary"`` for every component
+            in its long-run state. A component left out starts new. By
+            default None: every component new at 0.
 
         Returns
         -------
@@ -8132,7 +8792,9 @@ class RepairableRBD(RBD):
         self._require_capacity_models()
         ends = times.ravel()
         horizon = float(ends.max()) if ends.size else 0.0
-        curves = self._capacity_curves(horizon, working_nodes, broken_nodes)
+        curves = self._capacity_curves(
+            horizon, working_nodes, broken_nodes, state
+        )
         levels, rows = self._capacity_rows(
             curves, ends, working_nodes, broken_nodes
         )
@@ -8145,6 +8807,7 @@ class RepairableRBD(RBD):
         t,
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
+        state=None,
     ) -> CapacityDistribution:
         """The distribution of the system's capacity over ``[0, t]``, with
         every component new at 0: the expected fraction of the window it
@@ -8171,6 +8834,13 @@ class RepairableRBD(RBD):
             ``point_capacity``).
         broken_nodes : Collection[Hashable], optional
             Nodes that are always down, by default None.
+        state : dict or str, optional
+            Start from the components' current states rather than new:
+            ``{node: NodeState}`` (see
+            [`NodeState`][repyability.NodeState]), a nested RBD's own such
+            dict for a nested RBD, or ``"stationary"`` for every component
+            in its long-run state. A component left out starts new. By
+            default None: every component new at 0.
 
         Returns
         -------
@@ -8214,7 +8884,9 @@ class RepairableRBD(RBD):
         self._require_capacity_models()
         ends = windows.ravel()
         horizon = float(ends.max()) if ends.size else 0.0
-        curves = self._capacity_curves(horizon, working_nodes, broken_nodes)
+        curves = self._capacity_curves(
+            horizon, working_nodes, broken_nodes, state
+        )
         settle, period = _settling(curves.values())
         reach = min(horizon, settle if period is None else settle + period)
         beyond = ends > reach
@@ -8649,23 +9321,42 @@ class RepairableRBD(RBD):
         # Working, as new, from t.
         return self._renewal(node, t, source, schedule)
 
-    def _renewal(self, node, t: float, source, schedule: _Preventive) -> Event:
+    def _renewal(
+        self,
+        node,
+        t: float,
+        source,
+        schedule: _Preventive,
+        life: Optional[float] = None,
+        start: Optional[float] = None,
+    ) -> Event:
         """The first event of a unit put into service as new at ``t``: its
         failure, or its preventive replacement if that is due first (a
         failure at the same time comes first); replaced on condition, its
-        failure or its first inspection (see ``_condition_next``)."""
-        life, _ = source.next_event()
+        failure or its first inspection (see ``_condition_next``). Started
+        from a state (see ``_started``), the unit was put into service at
+        ``start``, before ``t``, and has ``life`` left."""
+        if life is None:
+            life, _ = source.next_event()
         if schedule.policy == "condition":
             failure = t + life
             self._in_service[node] = (
                 failure,
-                self._replaced_at(node, t, failure, schedule),
+                self._replaced_at(
+                    node, t if start is None else start, failure, schedule, t
+                ),
             )
             return self._condition_next(node, t, schedule)
-        # Back from an imperfect repair, the unit is as old as its operating
-        # time since it was renewed, which age replacement counts.
-        start = t - source.operated if node in self._imperfect else t
-        due = schedule.due(start if schedule.policy == "age" else t)
+        if start is None:
+            # Back from an imperfect repair, the unit is as old as its
+            # operating time since it was renewed, which age replacement
+            # counts.
+            start = t - source.operated if node in self._imperfect else t
+        due = self._due(
+            node, schedule, start if schedule.policy == "age" else t
+        )
+        if due < t:
+            due = t  # past its age at the start: replaced at once
         if t + life <= due:
             event = Event(t + life, node, False)
         else:
@@ -8678,18 +9369,33 @@ class RepairableRBD(RBD):
             self._pending_event[node] = event
         return event
 
-    def _own_sources(self) -> dict:
+    def _own_sources(self, states: Optional[dict] = None) -> dict:
         """What the components draw their events from when no streams are
         given: themselves, but for an imperfectly repaired one, a stand-in
-        keeping its virtual age (see ``_ImperfectComponent``), drawing from
-        its models and numpy's global RNG."""
-        if not self._imperfect:
+        keeping its virtual age (see ``_ImperfectComponent``), and for one
+        started from a state in ``states`` that draws what is left of its
+        life or repair, a stand-in whose next draw can be set (see
+        ``_started``): drawing from their models and numpy's global
+        RNG."""
+        starting = [
+            node
+            for node, start in (states or {}).items()
+            if _draws_start(start)
+        ]
+        if not self._imperfect and not starting:
             return self.components
         sources = dict(self.components)
         for node, imperfect in self._imperfect.items():
             sources[node] = _ImperfectComponent(
                 self.components[node],
                 imperfect,
+                model=self._duration_model(node),
+            )
+        for node in starting:
+            component = self.components[node]
+            sources[node] = _StreamedComponent(
+                _ModelDraws(component.reliability),
+                _ModelDraws(component.time_to_replace),
                 model=self._duration_model(node),
             )
         return sources
@@ -8729,19 +9435,25 @@ class RepairableRBD(RBD):
         return out
 
     def _replaced_at(
-        self, node, renewed: float, failure: float, schedule: _Preventive
+        self,
+        node,
+        renewed: float,
+        failure: float,
+        schedule: _Preventive,
+        after: Optional[float] = None,
     ) -> float:
         """When a unit put into service as new at ``renewed``, and due to
         fail at ``failure``, is replaced on condition: at the first
-        inspection before its failure (and the window's end) at which it is
-        more likely than the threshold to fail before the next, given its
-        age (the time since ``renewed``); ``inf`` if at none."""
+        inspection before its failure (and the window's end), and after
+        ``after`` (by default ``renewed``), at which it is more likely than
+        the threshold to fail before the next, given its age (the time
+        since ``renewed``); ``inf`` if at none."""
         end = min(failure, self.t_simulation)
         dues = []
-        due = schedule.due(renewed)
+        due = self._due(node, schedule, renewed if after is None else after)
         while due < end:
             dues.append(due)
-            due = schedule.due(due)
+            due = self._due(node, schedule, due)
         if not dues:
             return math.inf
         # Its ages at those inspections, and at the one after the last.
@@ -8756,7 +9468,7 @@ class RepairableRBD(RBD):
         unit (see ``_replaced_at``) or only checks it. A failure at an
         inspection's time comes first."""
         failure, replaced = self._in_service[node]
-        due = schedule.due(t)
+        due = self._due(node, schedule, t)
         if failure <= due:
             return Event(failure, node, False)
         if due >= replaced:
@@ -8775,7 +9487,8 @@ class RepairableRBD(RBD):
                 return self._inspected_renewal(node, t, source, inspection)
             # Failed, unseen: found by the first inspection at or after t.
             self._pending_failure[node] = None
-            return Event(inspection.finds(t), node, False, inspection=True)
+            found = self._finds(node, inspection, t)
+            return Event(found, node, False, inspection=True)
         if event.status:
             # Tested in zero time, or back from a test: working, with its
             # failure still ahead of it.
@@ -8812,7 +9525,7 @@ class RepairableRBD(RBD):
         at the same time comes first, and is found by it). A test that takes
         time takes the unit off-line; one in zero time leaves it up."""
         failure = self._pending_failure[node]
-        due = inspection.due(t)
+        due = self._due(node, inspection, t)
         if failure <= due:  # type: ignore[operator]
             return Event(failure, node, False)  # type: ignore[arg-type]
         return Event(due, node, inspection.duration is None, inspection=True)
@@ -8989,6 +9702,7 @@ class RepairableRBD(RBD):
         n_jobs: Optional[int] = None,
         demand: Optional[float] = None,
         engine: str = "auto",
+        state=None,
         N: Optional[int] = None,
         max_N: Optional[int] = None,
     ) -> AvailabilityResult:
@@ -8996,8 +9710,8 @@ class RepairableRBD(RBD):
 
         Runs ``mc_samples`` independent Monte-Carlo (discrete-event)
         simulations of the system from time 0, each starting with every
-        component working
-        (except ``broken_nodes``). Each component alternates failure and
+        component working and new (except ``broken_nodes``), or from the
+        components' current ``state``. Each component alternates failure and
         repair independently of the others and of the system state: it
         fails after a time drawn from its reliability model and is
         restored, as good as new, after a time drawn from its repairability
@@ -9121,14 +9835,25 @@ class RepairableRBD(RBD):
             components (surpyval parametric models) in any structure, with
             nodes held working or broken, costs, antithetic pairs and
             tolerances; preventive maintenance, inspections, nested RBDs,
-            capacities and other models run in Python. By default
-            ``"auto"``.
+            capacities, other models and runs from a ``state`` run in
+            Python. By default ``"auto"``.
         demand : float, optional
             The demand the delivered fraction is measured against, in the
             capacities' units, when nodes have capacities. By default the
             system's capacity with every component up (at its highest
             level): its design capacity. If that is unlimited, no delivered
             fraction is worked out unless a demand is given.
+        state : dict, optional
+            Start each simulation from the components' current states
+            rather than new: ``{node: NodeState}`` (see
+            [`NodeState`][repyability.NodeState]), and a nested RBD's own
+            such dict for a nested RBD. A component up at an age draws what
+            is left of its life given the age, one down draws what is left
+            of its repair (or maintenance) given how long it has taken so
+            far, from a stream of its own, and its calendar (block
+            replacement, inspections) is shifted by its phase; a component
+            left out starts new. Such a run is simulated in Python. By
+            default None: every component new at 0.
 
         N : int, optional
             Deprecated: the old name of ``mc_samples``.
@@ -9218,6 +9943,7 @@ class RepairableRBD(RBD):
             target="availability",
             demand=demand,
             engine=engine,
+            state=state,
         )
 
     def simulate_chunk(
@@ -9235,6 +9961,7 @@ class RepairableRBD(RBD):
         engine: str = "auto",
         n_jobs: Optional[int] = None,
         verbose: bool = False,
+        state=None,
     ) -> "SimulationChunk":
         """Run simulations ``start`` to ``stop - 1`` of the run
         ``availability(t_simulation, mc_samples=N, seed=seed, ...)`` makes,
@@ -9285,6 +10012,9 @@ class RepairableRBD(RBD):
             Run the chunk on several CPUs, as for ``availability``.
         verbose : bool, optional
             Show a progress bar, by default False.
+        state : dict, optional
+            The components' states at the start, as for ``availability``
+            (the chunks of a run share it); by default None: new.
 
         Returns
         -------
@@ -9344,6 +10074,7 @@ class RepairableRBD(RBD):
         working = set() if working_nodes is None else set(working_nodes)
         broken = set() if broken_nodes is None else set(broken_nodes)
         self._validate_node_overrides(working, broken)
+        states = self._simulation_states(state, working | broken)
         self.is_system_working(
             {c: c not in broken for c in self.components}, method
         )
@@ -9370,6 +10101,7 @@ class RepairableRBD(RBD):
             engine=engine,
             entropy=entropy,
             first=int(start),
+            states=states,
         )
         settings = {
             "t_simulation": float(t_simulation),
@@ -9380,6 +10112,7 @@ class RepairableRBD(RBD):
             "antithetic": bool(antithetic),
             "demand": None if demand is None else float(demand),
             "fingerprint": self._fingerprint(),
+            "state": _state_key(states),
         }
         return SimulationChunk([(int(start), int(stop))], settings, tally)
 
@@ -9484,14 +10217,15 @@ class RepairableRBD(RBD):
         confidence: float = 0.95,
         n_jobs: Optional[int] = None,
         engine: str = "auto",
+        state=None,
         N: Optional[int] = None,
     ) -> ConfidenceInterval:
         """How much better (or worse) this system is than ``other``, by
         simulation with common random numbers.
 
         Both systems are simulated ``mc_samples`` times over
-        ``[0, t_simulation]`` (every component working at the start), and in
-        each simulation a
+        ``[0, t_simulation]`` (every component working and new at the start,
+        or from ``state``), and in each simulation a
         component in the same place in both (the same node name, and the
         same names down through nested RBDs) draws the same random numbers
         in both: the same failures and repairs where it is modelled the
@@ -9527,6 +10261,10 @@ class RepairableRBD(RBD):
         engine : str, optional
             What runs the simulations: ``"python"``, ``"numba"`` or
             ``"auto"`` (the default), as in ``availability``.
+        state : dict, optional
+            The components' states at the start, as for ``availability``,
+            in both systems: each must have the components it names. By
+            default None: new.
 
         N : int, optional
             Deprecated: the old name of ``mc_samples``.
@@ -9598,10 +10336,11 @@ class RepairableRBD(RBD):
                         "Both systems must be priced to compare their costs."
                     )
         jobs = None if n_jobs is None else montecarlo.jobs(n_jobs)
+        states = [rbd._simulation_states(state) for rbd in (self, other)]
         entropy = _streams.entropy_of(seed)
-        widths = self._common_widths(other, t_simulation)
+        widths = self._common_widths(other, t_simulation, *states)
         values = []
-        for rbd in (self, other):
+        for rbd, start in zip((self, other), states):
             tally = rbd._run(
                 t_simulation,
                 set(),
@@ -9615,6 +10354,7 @@ class RepairableRBD(RBD):
                 entropy=entropy,
                 widths=widths,
                 common=True,
+                states=start,
             )
             if quantity == "cost":
                 values.append(np.asarray(tally.cost_samples, dtype=float))
@@ -9634,13 +10374,18 @@ class RepairableRBD(RBD):
         )
 
     def _common_widths(
-        self, other: "RepairableRBD", t_simulation: float
+        self,
+        other: "RepairableRBD",
+        t_simulation: float,
+        states: Optional[dict] = None,
+        other_states: Optional[dict] = None,
     ) -> dict:
         """The block widths two systems' streams take in ``compare``: for
         each stream both have, the narrower of the two, so that each
-        simulation of either draws the same uniforms from it."""
-        mine, _ = self._stream_specs(t_simulation)
-        theirs, _ = other._stream_specs(t_simulation)
+        simulation of either draws the same uniforms from it. The systems
+        start from ``states`` and ``other_states``."""
+        mine, _ = self._stream_specs(t_simulation, states=states)
+        theirs, _ = other._stream_specs(t_simulation, states=other_states)
         return {
             name: min(spec.width, theirs[name].width)
             for name, spec in mine.items()
@@ -9665,6 +10410,7 @@ class RepairableRBD(RBD):
         target: str,
         demand: Optional[float] = None,
         engine: str = "auto",
+        state=None,
     ) -> AvailabilityResult:
         """``availability`` (and ``cost``): validate, run the replications
         (serially or in parallel, until converged if asked) and build the
@@ -9672,9 +10418,11 @@ class RepairableRBD(RBD):
         working_nodes = set() if working_nodes is None else set(working_nodes)
         broken_nodes = set() if broken_nodes is None else set(broken_nodes)
         self._validate_node_overrides(working_nodes, broken_nodes)
-        # The initial system state is the same for every simulation (the
-        # forced working/broken sets are fixed): all components start working
-        # except those forced broken, which can make the system start down.
+        states = self._simulation_states(state, working_nodes | broken_nodes)
+        # The initial system state with every component up but those forced
+        # broken, which can make the system start down; a simulation that
+        # starts down from the components' states records the change at 0
+        # (see _replicate).
         initial_status = {c: c not in broken_nodes for c in self.components}
         initial_up = bool(self.is_system_working(initial_status, method))
         montecarlo.check_count(N, antithetic, "mc_samples")
@@ -9702,6 +10450,7 @@ class RepairableRBD(RBD):
             capacity=capacity,
             jobs=None if n_jobs is None else montecarlo.jobs(n_jobs),
             engine=engine,
+            states=states,
         )
         return self._availability_result(
             tally, t_simulation, initial_up, antithetic, capacity
@@ -9726,9 +10475,12 @@ class RepairableRBD(RBD):
         common: bool = False,
         replacements: bool = False,
         first: int = 0,
+        states: Optional[dict] = None,
     ) -> "_Tally":
         """Run ``N`` simulations, from simulation ``first`` (then more,
-        while ``stop`` asks for them), and return their totals.
+        while ``stop`` asks for them), and return their totals: each from
+        the components' ``states`` (checked; see ``_simulation_states``),
+        new by default.
 
         Every draw comes from a stream of its own (see ``_streams``), seeded
         from the run's ``entropy``: the ``seed``, or without one a number
@@ -9761,7 +10513,7 @@ class RepairableRBD(RBD):
                 if seed is None:
                     after = np.random.get_state()
             plan, complete = self._stream_plan(
-                t_simulation, entropy, antithetic, widths
+                t_simulation, entropy, antithetic, widths, states
             )
             if (antithetic or common) and not complete:
                 raise NotImplementedError(_UNSTREAMED)
@@ -9796,6 +10548,7 @@ class RepairableRBD(RBD):
                         entropy,
                         antithetic,
                         widths,
+                        states,
                     ),
                     jobs,
                 )
@@ -9830,6 +10583,7 @@ class RepairableRBD(RBD):
                 "_crews",
                 "_groups",
                 "_step_sources",
+                "_phases",
             ):
                 self.__dict__.pop(name, None)
         return tally
@@ -9880,8 +10634,13 @@ class RepairableRBD(RBD):
         t_simulation = ctx.t_simulation
         sources = ctx.sources
         failure_charges, preventive_charges, inspection_charges = ctx.charges
-        self.initialize_event_queue(
-            t_simulation, ctx.working, ctx.broken, ctx.method, sources
+        self._start_queue(
+            t_simulation,
+            ctx.working,
+            ctx.broken,
+            ctx.method,
+            sources,
+            ctx.states,
         )
         status = self.component_status
         index, plain, works = ctx.position, ctx.plain, ctx.works
@@ -9905,6 +10664,11 @@ class RepairableRBD(RBD):
         failures = restorations = planned = 0
         changes: list = []
         deltas: list = []
+        if ctx.initial_up and not self.system_state:
+            # Down at the start, from the components' states: the curve of
+            # the availability over time counts it as a change at 0.
+            changes.append(0.0)
+            deltas.append(-1)
         by_category = [0.0] * len(_CATEGORIES)
         by_node = dict.fromkeys(self.costs, 0.0)
         rep_cost = 0.0
@@ -10315,6 +11079,7 @@ class RepairableRBD(RBD):
         antithetic: bool = False,
         n_jobs: Optional[int] = None,
         engine: str = "auto",
+        state=None,
         N: Optional[int] = None,
         max_N: Optional[int] = None,
     ) -> Optional[CostResult]:
@@ -10388,6 +11153,12 @@ class RepairableRBD(RBD):
         engine : str, optional
             What runs the simulations: ``"python"``, ``"numba"`` or
             ``"auto"`` (the default), as in ``availability``.
+        state : dict, optional
+            Start each simulation from the components' current states
+            rather than new, as for ``availability``: ``{node:
+            NodeState}``. Costs incurred before 0 (a repair or maintenance
+            going on at 0 was charged when it started) are not counted. By
+            default None: every component new at 0.
 
         N : int, optional
             Deprecated: the old name of ``mc_samples``.
@@ -10455,6 +11226,7 @@ class RepairableRBD(RBD):
             n_jobs=n_jobs,
             target="cost",
             engine=engine,
+            state=state,
         ).cost
 
     def node_availability(self) -> dict[Hashable, float]:

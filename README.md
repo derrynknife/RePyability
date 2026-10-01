@@ -113,21 +113,22 @@ places, nested diagrams):
 - **repairable questions,** for independent components repaired when they
   fail and replaced on age or block schedules: the long-run availability,
   failure frequency, MUT/MDT/MTBF and cost rate; the availability over time
-  and over a mission from new, and the expected failures, outages, downtime
-  and cost over a window from new; the capacity distribution in the long
-  run and over time from new, with the production availability of a
-  window; and, without block replacement, the spares used over a horizon.
+  and over a mission, and the expected failures, outages, downtime and cost
+  over a window, from new or from the components' current states (their
+  ages, the repairs going on, where they are in their calendars, or the
+  long run); the capacity distribution in the long run and over time, with
+  the production availability of a window; and, without block replacement,
+  the spares used over a horizon.
 
 **Simulated**, or refused with the simulation to run instead:
 
 | Situation | Today | Must it be simulated? |
 |---|---|---|
 | **What you ask** | | |
-| Sampled lifetimes or histories, and distributions or percentiles of an outcome over a window | Simulated | Yes: the answer is a sample. Its mean over a window from new (failures, outages, downtime, cost, the capacity delivered) is exact: `expected_events`, `expected_cost`, `mission_capacity`. |
+| Sampled lifetimes or histories, and distributions or percentiles of an outcome over a window | Simulated (from new, or from the components' current states) | Yes: the answer is a sample. Its mean over a window (failures, outages, downtime, cost, the capacity delivered) is exact, from new or from a state: `expected_events`, `expected_cost`, `mission_capacity`. |
 | Comparing two designs (`compare`) | Simulated, with common random numbers | No, where both are exact: compare their exact values. |
 | The uncertainty from fitted component parameters (`sf_uncertainty`) | Sampled over the parameters | Sampling is the method. Intervals on the MTTF and B*X* life are missing (#133). |
 | Small failure probabilities, with a simulated node | Rare-event simulation (`unreliability_interval`) | Only while the node is simulated: an exact diagram gives `ff` directly, to full precision however small (a numerical node, such as a cold-standby group of non-exponential units, to its own accuracy, about 1e-6). |
-| Repairable analyses from the components' current state, not new | Not available | Could be exact for independent components (#125). |
 | **Components** | | |
 | Warm or hot standby of non-exponential units | Simulated: a fit to simulated lifetimes, deprecated (from 0.12, simulated only in the system's simulations: #149) | No: could be exact (#135). Hot standby is *k*-out-of-*n*: draw the units as parallel nodes for an exact answer now. |
 | Cold standby with two or more units operating, and load sharing, of non-exponential units | Simulated: a fit to simulated lifetimes, deprecated (from 0.12, simulated only in the system's simulations: #149) | No: could be numerical (#138 for two units operating, #139 for load sharing). |

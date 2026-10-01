@@ -63,7 +63,10 @@ plant = RepairableRBD(
 
 A `RepairableRBD` simulation draws each random quantity from a stream of its
 own: each component's times to failure, its repair times, its maintenance or
-test times, and each cost given as a distribution. A stream is named by the
+test times, each cost given as a distribution, and, for a component started
+from a [state](repairable.md#from-the-plant-as-it-is-now), what is left of
+its life or repair (one draw a simulation, so a run from new draws what it
+always did). A stream is named by the
 component's place (its node name, and the names down through nested RBDs)
 and the quantity, and seeded from the run's `seed`, and simulation `r` takes
 the same numbers from it whatever the rest of the run does. So:

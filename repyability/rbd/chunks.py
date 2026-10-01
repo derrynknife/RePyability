@@ -55,8 +55,10 @@ class SimulationChunk:
         The run they belong to: ``"t_simulation"``, ``"entropy"`` (the
         number the seed gives the streams), ``"method"``,
         ``"working_nodes"`` and ``"broken_nodes"``, ``"antithetic"``,
-        ``"demand"``, and ``"fingerprint"``, a hash of the system saved as
-        JSON (with the RePyability version), or None if it cannot be saved.
+        ``"demand"``, ``"fingerprint"``, a hash of the system saved as
+        JSON (with the RePyability version), or None if it cannot be saved,
+        and ``"state"``, the components' states at the start as JSON, or
+        None for new.
     """
 
     def __init__(self, ranges, settings: Dict[str, Any], tally) -> None:
@@ -239,4 +241,5 @@ def _run_key(settings: Dict[str, Any]) -> tuple:
         bool(settings["antithetic"]),
         None if settings["demand"] is None else float(settings["demand"]),
         settings["fingerprint"],
+        settings.get("state"),
     )
