@@ -263,6 +263,87 @@ A `NonRepairableRBD`'s lifetimes split the same way:
 `random_block(block, seed)` draws block `block` of the 10 000-lifetime
 blocks that `random(size, seed=seed, n_jobs=...)` draws.
 
+## Small failure probabilities
+
+A highly reliable system rarely fails, so plain sampling sees few
+failures: estimating a probability `p` to ±10 % takes about `384 / p`
+lifetimes, some 4e10 for `p = 1e-8`. Where the unreliability is exact,
+`ff(x)` gives it at once. Where a node is simulated, as a warm-standby
+group of Weibull pumps is (its reliability is fitted to 20 000 simulated
+lifetimes, none of which ends in the first 50 hours), the far tail has no
+exact value, and `unreliability_interval(x)` estimates `P(T <= x)` by
+simulation, to a relative precision, with methods that find rare failures:
+
+```python
+from repyability import StandbyModel
+
+pump = surv.Weibull.from_params([1000, 1.5])
+pumps = StandbyModel([pump, pump, pump], dormancy_factor=0.3, mc_samples=20_000, seed=1)
+station = NonRepairableRBD([("s", "pumps"), ("pumps", "t")], {"pumps": pumps})
+station.ff(50.0)                         # -> 0.0   from the fitted reliability
+tail = station.unreliability_interval(50.0, seed=1)
+tail.estimate                            # ~> 2.06e-07
+tail.method, tail.n_samples              # ('subset', 852000)
+```
+
+Each draws the system's lifetime from a row of uniforms, as `random` does
+(the standby group by its own logic), and runs until the interval's
+half-width is `relative_tolerance` (by default 0.1) of the estimate, or
+`max_samples` lifetimes are spent:
+
+- **`"plain"`**: independent samples.
+- **`"latin_hypercube"`, `"sobol"`**: Latin hypercube samples, and scrambled
+  Sobol points (randomised quasi-Monte Carlo), in replicates whose spread
+  gives the error.
+- **`"cross_entropy"`**: importance sampling. The uniforms are mapped to
+  standard normal variables, and drawn from a mixture of up to eight
+  Gaussians shifted towards failure, fitted level by level by the
+  cross-entropy method to the samples that fail soonest; each sample is
+  weighted by its likelihood ratio.
+- **`"subset"`**: subset simulation. `p` is a product of conditional
+  probabilities of failing by ever earlier times, each about 0.1, the
+  samples at each level drawn by Markov chains (adaptive conditional
+  sampling) from those that failed by the level before. Independent runs
+  give the error.
+- **`"auto"`** (the default): plain sampling if a pilot of 20 000
+  lifetimes sees at least 50 failures; else the cross-entropy method if
+  the system fails in at most eight ways (minimal cut sets), each of
+  components that are distributions; else subset simulation.
+
+Measured on systems of Weibull units whose exact unreliability is known
+(a cold-standby group's by convolution), as how many plain lifetimes one
+lifetime of each method is worth at the same precision:
+
+| System (uniforms) | `p` | Sobol | Cross-entropy | Subset |
+|---|---|---|---|---|
+| 2-out-of-3 (3) | 1e-2 | 51 | 8 | 3 |
+| | 1e-4 | 1 | 370 | 19 |
+| | 1e-8 | — | 1 900 000 | 29 000 |
+| Bridge (5) | 1e-2 | 11 | 6 | 2 |
+| | 1e-4 | 1 | 350 | 13 |
+| | 1e-8 | — | 1 750 000 | 29 000 |
+| Cold-standby group of 3, in series with a pair (5) | 1e-2 | 51 | 9 | 3 |
+| | 1e-4 | 2 | 390 | 22 |
+| | 1e-8 | — | 1 860 000 | 23 000 |
+| 10 pairs in series (20) | 1e-2 | 36 | wrong | 1.5 |
+| | 1e-4 | 1 | wrong | 22 |
+| | 1e-8 | — | wrong | 40 000 |
+| 35 pairs in series (70) | 1e-2 | 1 | wrong | 1.4 |
+| | 1e-4 | 1 | wrong | 17 |
+| | 1e-8 | — | wrong | 26 000 |
+
+At `p = 1e-8` subset simulation took 1.4 to 2.4 million lifetimes (one to
+twelve seconds) and the cross-entropy method about 20 000, against 4e10
+for plain sampling. Latin hypercube samples gained nothing on these
+indicators of failure (a factor of about 1), and Sobol points gained only
+while `p` was not small and the uniforms few. Every estimate was within
+2.8 standard errors of the exact value, but for the cross-entropy method
+on the pairs in series: they fail in ten and 35 ways, more than its
+mixture follows, and it estimated a fifth of the probability, or almost
+none, with intervals that did not show it. `"auto"` chose plain sampling,
+the cross-entropy method or subset simulation as above, and was within 9 %
+of the exact value in every case.
+
 ## Comparing two designs
 
 Two designs are best compared with **common random numbers**: simulate both

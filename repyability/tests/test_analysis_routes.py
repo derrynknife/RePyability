@@ -286,6 +286,9 @@ NONREPAIRABLE_CALLS = {
     "structural_importance": lambda rbd: rbd.structural_importance(),
     "random": lambda rbd: rbd.random(200, seed=1),
     "random_block": lambda rbd: rbd.random_block(1, seed=1),
+    "unreliability_interval": lambda rbd: rbd.unreliability_interval(
+        X, relative_tolerance=0.5, max_samples=40_000, seed=1
+    ),
     "mean": lambda rbd: rbd.mean(),
     "mean_time_to_failure": lambda rbd: rbd.mean_time_to_failure(),
     "mean_time_to_failure_interval": (

@@ -46,9 +46,10 @@ taking already-fitted lifetime models (from
   system or a fleet, and the stock that meets a fill rate or a stock-out
   target for a replenishment lead time.
 - **Simulation**: seeded Monte-Carlo run to a tolerance, antithetic pairs,
-  parallel runs, runs split across machines and merged, and comparisons of
-  designs with common random numbers; repairable systems simulated
-  compiled, with numba installed.
+  parallel runs, runs split across machines and merged, comparisons of
+  designs with common random numbers, and small failure probabilities by
+  rare-event simulation (subset simulation, cross-entropy importance
+  sampling); repairable systems simulated compiled, with numba installed.
 - **Cost, design and maintenance**: exact and simulated running costs,
   including scheduled (age or block) preventive replacement at system level,
   replacement on condition at periodic inspections and opportunistic

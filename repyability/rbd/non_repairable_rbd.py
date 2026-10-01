@@ -43,7 +43,7 @@ from . import capacity as _capacity
 from . import redundancy_allocation
 from ._mean_lifetime import mean_lifetime, model_knots
 from ._model_utils import is_fixed_probability, model_mean, parametric_spec
-from ._sampling import RowSampler, row_sampler
+from ._sampling import RowSampler, inverse_sampler, row_sampler
 from .ccf import CCFGroup
 from .degrading_node import DegradingNode
 from .helper_classes import PerfectReliability, PerfectUnreliability
@@ -3547,6 +3547,17 @@ class NonRepairableRBD(RBD):
                 )
             ),
         )
+        message = r.refusal(self._rare_event_sampler)
+        out["unreliability_interval"] = (
+            r.refused(message)
+            if message
+            else r.AnalysisRoute(
+                r.SIMULATED,
+                "Simulated lifetimes, by the method chosen: plain sampling "
+                "for a probability that is not small, subset simulation "
+                "otherwise.",
+            )
+        )
         out["random_block"] = r.AnalysisRoute(
             r.SIMULATED,
             "A block of the Monte-Carlo lifetimes random draws with n_jobs."
@@ -4220,6 +4231,209 @@ class NonRepairableRBD(RBD):
             antithetic=antithetic,
             n_jobs=n_jobs,
         )
+
+    def unreliability_interval(
+        self,
+        x: float,
+        *,
+        method: str = "auto",
+        relative_tolerance: float = 0.1,
+        confidence: float = 0.95,
+        max_samples: int = 10_000_000,
+        seed=None,
+    ) -> ConfidenceInterval:
+        """The probability that the system has failed by ``x``, ``P(T <=
+        x)``, estimated by simulation to a relative precision: for small
+        probabilities, which plain sampling estimates slowly.
+
+        The system's lifetime is drawn from a row of uniforms, as ``random``
+        draws it (a standby or load-sharing node by its own logic), so the
+        probability is an integral over the unit cube of uniforms, which
+        these methods sample:
+
+        - ``"plain"``: independent samples. For a probability ``p`` it
+          takes about ``z**2 * (1 - p) / (p * relative_tolerance**2)``
+          lifetimes: some 4e10 for ``p = 1e-8`` and 10 %.
+        - ``"latin_hypercube"`` and ``"sobol"``: Latin hypercube samples,
+          and scrambled Sobol points (randomised quasi-Monte Carlo), in
+          independent replicates, the error from their spread.
+        - ``"cross_entropy"``: importance sampling from a Gaussian, in the
+          standard normal space of the uniforms, shifted towards failure by
+          the cross-entropy method, the samples weighted by the likelihood
+          ratio.
+        - ``"subset"``: subset simulation: ``p`` as a product of
+          conditional probabilities of failing by ever earlier times, each
+          about 0.1, sampled by Markov chains, in independent runs.
+        - ``"auto"`` (the default): plain sampling when a pilot of 20 000
+          lifetimes sees at least 50 failures; else the cross-entropy
+          method when the system fails in at most 8 ways (minimal cut
+          sets), each of components that are distributions; else subset
+          simulation (see the guide's measurements). The cross-entropy
+          method's mixture follows each way of failing it is fitted to,
+          and misses the others: asked for directly on a system with more,
+          it underestimates, with an interval that does not show it.
+
+        Each runs until the half-width of the interval is at most
+        ``relative_tolerance`` times the estimate, or ``max_samples``
+        lifetimes are spent (with a ``RuntimeWarning``). Where the exact
+        unreliability is known, ``ff(x)`` gives it at once; this method is
+        for diagrams whose nodes are simulated (a standby or load-sharing
+        node without a closed form), and for checking.
+
+        Parameters
+        ----------
+        x : float
+            The time, at least 0.
+        method : str, optional
+            ``"auto"``, ``"plain"``, ``"latin_hypercube"``, ``"sobol"``,
+            ``"cross_entropy"`` or ``"subset"``, by default ``"auto"``.
+        relative_tolerance : float, optional
+            The half-width of the interval to reach, relative to the
+            estimate, by default 0.1.
+        confidence : float, optional
+            The interval's confidence level, by default 0.95.
+        max_samples : int, optional
+            The most lifetimes to draw, by default 10 000 000.
+        seed : int, optional
+            Seeds the simulation, by default None (not reproducible).
+
+        Returns
+        -------
+        ConfidenceInterval
+            The estimate, its interval (within [0, 1]) and standard error,
+            the lifetimes drawn (``n_samples``), and the method used
+            (``method``).
+
+        Raises
+        ------
+        ValueError
+            If ``x`` is not a number of at least 0, ``method`` is unknown,
+            or ``relative_tolerance``, ``confidence`` or ``max_samples`` is
+            out of range.
+        NotImplementedError
+            If a node's draws cannot be replayed from uniforms (a model that
+            draws its own random numbers), or the diagram has common-cause
+            groups, which the simulation leaves out.
+
+        Examples
+        --------
+        Three units, any two of which keep the system up, fail by 10 with
+        probability about 3e-6:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD, PerfectReliability
+        >>> unit = surv.Weibull.from_params([1000.0, 1.5])
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", n) for n in "abc"] + [(n, "v") for n in "abc"]
+        ...     + [("v", "t")],
+        ...     {"a": unit, "b": unit, "c": unit, "v": PerfectReliability},
+        ...     k={"v": 2},
+        ... )
+        >>> estimate = rbd.unreliability_interval(10.0, seed=1)
+        >>> estimate.method
+        'cross_entropy'
+        >>> bool(abs(estimate.estimate / rbd.ff(10.0) - 1) < 0.2)
+        True
+        """
+        from repyability.rbd import rare_event
+
+        if (
+            isinstance(x, bool)
+            or not isinstance(x, (int, float, np.number))
+            or not 0.0 <= float(x) < math.inf
+        ):
+            raise ValueError(f"x must be a time of at least 0, got {x!r}.")
+        if method not in ("auto",) + rare_event.METHODS:
+            raise ValueError(
+                "method must be 'auto', "
+                + ", ".join(repr(m) for m in rare_event.METHODS)
+                + f", got {method!r}."
+            )
+        if not 0.0 < relative_tolerance < 1.0:
+            raise ValueError(
+                "relative_tolerance must be in (0, 1), got "
+                f"{relative_tolerance!r}."
+            )
+        if not 0.0 < confidence < 1.0:
+            raise ValueError(
+                f"confidence must be in (0, 1), got {confidence!r}."
+            )
+        montecarlo.check_count(max_samples, False, "max_samples")
+        sampler = self._rare_event_sampler()
+        result, used = rare_event.estimate(
+            sampler.draw,
+            sampler.width,
+            float(x),
+            method,
+            float(relative_tolerance),
+            float(confidence),
+            int(max_samples),
+            seed,
+            self._few_failure_modes,
+        )
+        z = float(montecarlo.z_value(confidence))
+        half = z * result.standard_error
+        return ConfidenceInterval(
+            estimate=result.p,
+            lower=max(0.0, result.p - half),
+            upper=min(1.0, result.p + half),
+            confidence=confidence,
+            standard_error=result.standard_error,
+            n_samples=result.lifetimes,
+            method=used,
+        )
+
+    def _few_failure_modes(self) -> bool:
+        """Whether the system fails in few enough ways for the
+        cross-entropy method (see ``rare_event.choose``): at most
+        ``rare_event.MIXTURE`` minimal cut sets, of components that are
+        each a distribution (or never or always fail), counted for a
+        diagram of at most 40 components."""
+        from repyability.rbd import rare_event
+
+        components = [n for n in self._components() if n not in self.in_or_out]
+        if len(components) > 40:
+            return False
+        for node in components:
+            model = self.reliabilities[node]
+            if model in (PerfectReliability, PerfectUnreliability):
+                continue
+            if inverse_sampler(model) is None:
+                return False
+        return len(self.get_min_cut_sets()) <= rare_event.MIXTURE
+
+    def _rare_event_sampler(self) -> RowSampler:
+        """The lifetimes as a function of rows of uniforms, for
+        ``unreliability_interval``: raise if there are common-cause groups
+        (which the simulation leaves out), or if a node's draws do not
+        follow the uniforms (a model drawing its own random numbers)."""
+        if self._grouped():
+            raise NotImplementedError(
+                "The simulated lifetimes leave common-cause groups out, so "
+                "they do not estimate this diagram's unreliability; ff(x) "
+                "includes the groups exactly."
+            )
+        sampler = self._row_sampler()
+        replayable = False
+        if sampler is not None:
+            # The same uniforms must give the same lifetimes: a model that
+            # draws its own random numbers does not.
+            u = np.random.default_rng(0).random((16, sampler.width))
+            state = np.random.get_state()
+            try:
+                replayable = np.array_equal(
+                    sampler.draw(u), sampler.draw(u), equal_nan=True
+                )
+            finally:
+                np.random.set_state(state)
+        if sampler is None or not replayable:
+            raise NotImplementedError(
+                "Estimating a small unreliability needs every node's "
+                "lifetime drawn from uniforms (surpyval parametric "
+                "distributions, and the composite nodes built from them); "
+                "a node here draws its own random numbers."
+            )
+        return sampler
 
     def mean_time_to_failure_interval(
         self,

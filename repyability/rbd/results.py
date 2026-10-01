@@ -76,6 +76,9 @@ class ConfidenceInterval(_ResultMapping):
         The standard error of the estimate.
     n_samples : int
         The number of Monte-Carlo samples the estimate was computed from.
+    method : str, optional
+        How the estimate was simulated, where the method chooses
+        (``NonRepairableRBD.unreliability_interval``); None otherwise.
 
     Examples
     --------
@@ -103,6 +106,7 @@ class ConfidenceInterval(_ResultMapping):
     confidence: float
     standard_error: float
     n_samples: int
+    method: Optional[str] = None
 
 
 @dataclass

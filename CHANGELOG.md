@@ -28,8 +28,9 @@ the spares each component uses and the stock to hold for a lead time (#95);
 a component can be replaced on condition at periodic inspections (#96),
 or early at a stop of its maintenance group, sharing its set-up
 (opportunistic maintenance, #108), and repaired imperfectly, by Kijima's
-virtual age, or replaced at the N-th failure (#109); and a simulation run
-can be split across machines and merged (#114);
+virtual age, or replaced at the N-th failure (#109); a simulation run can
+be split across machines and merged (#114); and small failure
+probabilities are estimated by rare-event simulation (#115);
 phased missions are new, exact and simulated (#100, #101), as are the
 two-terminal reliability of undirected networks (#104) and demonstration
 test planning (#129). Meshed diagrams are decided by a
@@ -253,6 +254,28 @@ required.
   inspection cost are saved with the RBD. Checked against a timeline
   worked by hand, block replacement and run to failure (identical results),
   constant failure rates, and a direct simulation of the policy.
+- **Small failure probabilities** (#115).
+  `NonRepairableRBD.unreliability_interval(x)` estimates `P(T <= x)` by
+  simulation to a relative precision (`relative_tolerance`, by default
+  0.1), for the diagrams whose far tail has no exact value (a simulated
+  standby or load-sharing node), drawing each lifetime from a row of
+  uniforms as `random` does. Its methods: plain sampling, Latin hypercube
+  samples and scrambled Sobol points (randomised quasi-Monte Carlo) in
+  replicates, importance sampling from a mixture of Gaussians fitted by the
+  cross-entropy method, and subset simulation with adaptive conditional
+  sampling (`repyability/rbd/rare_event.py`). `method="auto"` chooses by
+  rules: plain sampling if a pilot sees enough failures, the cross-entropy
+  method if the system fails in at most eight ways of plain components,
+  subset simulation otherwise. The sample sizes of subset simulation and
+  the cross-entropy method are planned from pilots, not stopped as soon as
+  a skewed estimate looks precise. On a benchmark suite (to 1e-8, against
+  exact values) subset simulation was worth 20 000 to 40 000 plain
+  lifetimes each at 1e-8, the cross-entropy method nearly two million
+  where it applies (and wrong where a system fails in more ways than its
+  mixture follows, which "auto" avoids), and "auto" was within 9 % of
+  every exact value; the simulation guide gives the table.
+  `ConfidenceInterval` gains a `method` field, set where the method
+  chooses.
 - **Runs split across machines** (#114). `RepairableRBD.simulate_chunk(
   t_simulation, start, stop, seed=...)` runs simulations `start` to
   `stop - 1` of the run `availability(t_simulation, mc_samples=N,
