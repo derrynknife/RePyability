@@ -4203,9 +4203,10 @@ class RepairableRBD(RBD):
         component under age replacement, say.
 
         For a simulation, ``engine`` is the engine ``engine="auto"`` runs a
-        long simulation on: ``"numba"`` when numba is installed and the
-        compiled engine simulates the system, else ``"python"``, with the
-        reason in ``engine_reason``.
+        long simulation on: when the compiled engine simulates the system,
+        ``"numba"`` if numba is installed (or the name of an engine another
+        package adds, see ``repyability.rbd.engines``), else ``"python"``,
+        with the reason in ``engine_reason``.
 
         Returns
         -------
@@ -4586,14 +4587,15 @@ class RepairableRBD(RBD):
         )
         if reason is not None:
             return "python", f"the compiled engine does not simulate {reason}"
-        if not _compiled.available():
+        engine = _compiled.preferred()
+        if engine is None:
             return (
                 "python",
                 "numba is not installed; pip install 'repyability[fast]' "
                 "for the compiled engine",
             )
         return (
-            "numba",
+            engine,
             "compiled for a run long enough to repay loading it; a short "
             "one runs in Python",
         )
@@ -5623,8 +5625,10 @@ class RepairableRBD(RBD):
             components (surpyval parametric models) in any structure, with
             nodes held working or broken, costs, antithetic pairs and
             tolerances; preventive maintenance, inspections, nested RBDs,
-            capacities and other models run in Python. By default
-            ``"auto"``.
+            capacities and other models run in Python. Another package
+            can add a compiled engine of its own, which ``engine`` then
+            takes by name and ``"auto"`` may prefer (see
+            ``repyability.rbd.engines``). By default ``"auto"``.
         demand : float, optional
             The demand the delivered fraction is measured against, in the
             capacities' units, when nodes have capacities. By default the
@@ -6003,6 +6007,19 @@ class RepairableRBD(RBD):
                     method,
                     jobs,
                 )
+            elif engine != "python":
+                from repyability.rbd import engines
+
+                runner = engines.registered()[engine].runner(
+                    self,
+                    plan,
+                    tally,
+                    progress,
+                    working_nodes,
+                    broken_nodes,
+                    method,
+                    jobs,
+                )
             else:
                 runner = _PythonRunner(
                     self,
@@ -6053,29 +6070,35 @@ class RepairableRBD(RBD):
         capacity: Optional[_CapacityRecorder],
         N: int,
     ) -> str:
-        """The engine that runs a simulation: ``"python"`` or ``"numba"``
-        (see ``availability``'s ``engine``)."""
-        if engine not in ("auto", "python", "numba"):
-            raise ValueError(
-                "engine must be 'auto', 'python' or 'numba', got "
-                f"{engine!r}."
+        """The engine that runs a simulation: ``"python"``, ``"numba"`` or
+        one another package adds (see ``availability``'s ``engine``)."""
+        from repyability.rbd import _compiled, engines
+
+        added = engines.registered()
+        if engine not in ("auto", "python", "numba") and engine not in added:
+            names = ", ".join(
+                repr(name) for name in ["auto", "python", "numba", *added]
             )
+            raise ValueError(f"engine must be one of {names}, got {engine!r}.")
         if engine == "python":
             return engine
-        from repyability.rbd import _compiled
-
         reason = _compiled.unsupported(self, plan, capacity)
-        if engine == "numba":
-            _compiled.require()
+        if engine != "auto":
+            if engine == "numba":
+                _compiled.require()
+            elif not added[engine].available():
+                raise ImportError(
+                    f"The {engine!r} simulation engine cannot run here."
+                )
             if reason is not None:
                 raise NotImplementedError(
                     f"The compiled engine does not simulate {reason}: use "
                     "engine='python', or 'auto', which chooses the engine "
                     "that can."
                 )
-            return engine
+            return _compiled.ready(engine, auto=False)
         if reason is None and _compiled.worthwhile(plan, N):
-            return "numba"
+            return _compiled.ready(str(_compiled.preferred()), auto=True)
         return "python"
 
     def _replicate(self, ctx: "_Context", replication: int) -> _Replication:
