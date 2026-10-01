@@ -7,8 +7,18 @@ import pytest
 import surpyval as surv
 from surpyval import FixedEventProbability
 
+from repyability.rbd import engines
 from repyability.rbd.non_repairable_rbd import NonRepairableRBD
 from repyability.rbd.standby_node import StandbyModel
+
+
+@pytest.fixture(autouse=True)
+def only_repyabilitys_engines(monkeypatch):
+    """The tests run RePyability's own simulation engines, whatever engines
+    other packages installed alongside add (``test_engine_plugins``
+    registers its own)."""
+    monkeypatch.setattr(engines, "_engines", {})
+    monkeypatch.setattr(engines, "_failed", {})
 
 
 @pytest.fixture

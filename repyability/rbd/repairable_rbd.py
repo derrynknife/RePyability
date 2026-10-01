@@ -277,6 +277,52 @@ class _Replication:
     delivered: Optional[float]
 
 
+def _working_over_time(
+    changed_at: np.ndarray, deltas: np.ndarray, t_end: float, start: int
+) -> Tuple[np.ndarray, np.ndarray]:
+    """How many simulated systems work after each time at which one changed
+    state (and at 0 and ``t_end`` whether or not any did): the times, in
+    order, and the counts, ``start`` working at 0. Changes given in order of
+    time (as an engine may keep them) are added up as they come; otherwise
+    they are sorted first. Either way the counts are whole numbers added
+    exactly, so the order cannot change them."""
+    in_order = changed_at.size == 0 or (
+        changed_at[0] >= 0.0
+        and changed_at[-1] < t_end
+        and bool(np.all(changed_at[1:] >= changed_at[:-1]))
+    )
+    if not in_order:
+        time, inverse = np.unique(
+            np.concatenate(([0.0, t_end], changed_at)), return_inverse=True
+        )
+        working = np.bincount(
+            inverse.ravel(),
+            weights=np.concatenate(([start, 0], deltas)),
+            minlength=time.size,
+        )
+        return time, working.cumsum()
+    new = np.empty(changed_at.size, bool)
+    if changed_at.size:
+        new[0] = True
+        np.not_equal(changed_at[1:], changed_at[:-1], out=new[1:])
+    firsts = np.flatnonzero(new)
+    times = changed_at[firsts]
+    sums = (
+        np.add.reduceat(deltas, firsts).astype(float)
+        if changed_at.size
+        else np.zeros(0)
+    )
+    at_zero = bool(times.size) and times[0] == 0.0
+    if at_zero:
+        sums[0] += start
+        time = np.concatenate((times, [t_end]))
+        weights = np.concatenate((sums, [0.0]))
+    else:
+        time = np.concatenate(([0.0], times, [t_end]))
+        weights = np.concatenate(([float(start)], sums, [0.0]))
+    return time, weights.cumsum()
+
+
 class _Tally:
     """The running totals of an availability simulation, added to one
     simulation at a time, in order.
@@ -6350,16 +6396,10 @@ class RepairableRBD(RBD):
         # simulated systems work after each time at which one changed state
         # (and at 0 and t_simulation whether or not any did), over N.
         changed_at, deltas = tally.state_changes()
-        time, inverse = np.unique(
-            np.concatenate(([0.0, t_simulation], changed_at)),
-            return_inverse=True,
+        time, working = _working_over_time(
+            changed_at, deltas, t_simulation, N if initial_up else 0
         )
-        working = np.bincount(
-            inverse.ravel(),
-            weights=np.concatenate(([N if initial_up else 0, 0], deltas)),
-            minlength=time.size,
-        )
-        system_availability = working.cumsum() / N
+        system_availability = working / N
 
         cost_result = None
         if self.has_costs:
