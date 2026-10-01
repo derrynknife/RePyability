@@ -96,7 +96,7 @@ costs.mean              # mean total cost of a window
 costs.cost_rate         # mean / t_simulation: converges to expected_cost_rate()
 costs.percentile(90)    # a planning budget: 9 windows in 10 cost less
 costs.std               # how much a window's cost varies
-costs.by_category       # mean repair, replace, preventive, inspection, component_downtime, system_downtime
+costs.by_category       # mean repair, replace, preventive, inspection, component_downtime, system_downtime, setup
 costs.by_component      # mean cost attributable to each costed component
 ```
 
@@ -368,6 +368,89 @@ calendar. A low threshold replaces it too young; a high one lets it fail.
 - **Simulated.** The exact long-run values and the availability over time
   refuse a component replaced on condition, with the reason; `availability`,
   `cost` and `compare` simulate it, in Python.
+
+### Opportunistic maintenance
+
+Plants group their work: once a unit is down, for a failure or its planned
+replacement, the crew services its neighbours too, as the line is stopped
+anyway. Components that share such stops form a *maintenance group*, named
+by their `"group"` key. Each failure of a member, and each scheduled
+replacement, opens a *stop* of its group, at which every other member that
+is working and at least its `"opportunity"` age is replaced as well, as
+its own scheduled replacement would replace it:
+
+| Key | Meaning |
+|---|---|
+| `"group"` (component) | The component's maintenance group: any hashable name. |
+| `opportunity` (`"preventive"`, age policy) | The age, from 0 to `interval`, from which the unit is replaced early at a stop of its group. Left out, it never is. |
+| `setup_cost` (`maintenance_groups`) | Charged once per stop, however many members it renews. |
+| `system_down` (`maintenance_groups`) | `True`: every outage of the system is a stop of the group as well. |
+
+A compressor and its motor in series wear out, and each stop of the train
+costs 3,000 to set up (isolation, permits, scaffolding) besides the units'
+own costs. Replaced separately at 600 h, each failure or replacement is a
+stop of its own; from age 300 h, a unit is replaced at the other's stop:
+
+```python
+def unit(scale, opportunity=None):
+    preventive = {"interval": 600.0,
+                  "duration": surv.Weibull.from_params([8, 3]),   # 7 h
+                  "cost": 1000.0}
+    if opportunity is not None:
+        preventive["opportunity"] = opportunity
+    return {
+        "reliability": surv.Weibull.from_params([scale, 2.5]),
+        "repairability": surv.LogNormal.from_params([3.0, 0.5]),  # 23 h
+        "replace_cost": 5000.0,
+        "preventive": preventive,
+        "group": "train",
+    }
+
+def train(opportunity=None):
+    return RepairableRBD(
+        [("s", "compressor"), ("compressor", "motor"), ("motor", "t")],
+        {"compressor": unit(1000, opportunity),
+         "motor": unit(1500, opportunity)},
+        downtime_cost_rate=500.0,
+        maintenance_groups={"train": {"setup_cost": 3000.0}},
+    )
+
+train().expected_cost_rate()          # -> 33.00   separate stops, exact
+run = train(300).availability(200_000.0, mc_samples=20, seed=1)
+run.cost.cost_rate                    # -> 23.45   grouped, simulated
+run.opportunistic_renewals            # -> {'compressor': 3355, 'motor': 3481}
+```
+
+| Opportunity age (h) | none | 500 | 400 | 300 | 200 | 100 |
+|---|---|---|---|---|---|---|
+| Cost per hour (± 0.15) | 33.00 | 29.98 | 26.76 | 23.45 | 23.17 | 23.16 |
+
+Grouping pays twice: the stops, and their set-ups, are fewer (5.63 an hour
+of set-ups against 10.33), and the units' outages overlap, so the train is
+down less (12.0 an hour of lost production against 16.7).
+
+- **A stop is an instant.** Work started at one instant shares one set-up,
+  and a member whose own failure or replacement falls due then keeps it, as
+  part of the stop: two units on the same schedule are replaced together,
+  on schedule, at one set-up.
+- **Durations overlap.** Each member renewed at a stop takes its own
+  maintenance time, from the stop, so the set-up time each one's
+  maintenance includes is spent once in a series train.
+- **Results.** `opportunistic_renewals` counts each component's early
+  renewals, summed over the simulations; the set-ups are under
+  `by_category["setup"]`, and each early renewal is charged the member's
+  preventive cost and uses a spare.
+- **Exact or simulated.** A component that can be renewed early depends on
+  the others, so the exact long-run values, the availability over time and
+  the spares counts refuse it; `availability`, `cost` and `compare`
+  simulate it, in Python. With no `opportunity` below an interval, the
+  set-up cost is exact: `expected_cost_rate` charges a set-up at each
+  failure and each preventive replacement of a member (so `opportunity`
+  equal to the interval is plain age replacement, plus set-ups). It
+  refuses two members replaced on a clock (block replacement, or never
+  failing before an instant age replacement), whose replacements share
+  stops.
+- Members cannot have hidden failures or be standby groups.
 
 ## Hidden failures and inspection
 

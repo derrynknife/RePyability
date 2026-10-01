@@ -31,7 +31,8 @@ What is saved:
   repeated components and nested RBDs (of either kind);
 - common-cause groups, and for a `RepairableRBD` every cost, including cost
   distributions and acquisition costs, preventive and inspection schedules,
-  `"instant"` repairs and `NonRepairable` components;
+  maintenance groups and their set-up costs, `"instant"` repairs and
+  `NonRepairable` components;
 - the node models: surpyval models, parametric (including
   `FixedEventProbability`) and non-parametric (Kaplan–Meier and friends), in
   surpyval's own format (`model.to_dict()`, loaded with `surpyval.from_dict`),
@@ -148,7 +149,12 @@ The nodes can change a route:
   analyses built on such a node are then simulated too.
 - **Maintenance.** Preventive maintenance makes the long-run values numerical;
   replacement on condition (`"policy": "condition"`) is simulated, and the
-  exact values refuse it.
+  exact values refuse it, as they refuse a component renewed early at its
+  maintenance group's stops (an `"opportunity"`). A group's set-up cost is
+  exact when no member is renewed early, unless two members are replaced on
+  a clock (block replacement, or never failing before an instant age
+  replacement): their replacements can share a stop, and `cost()` counts
+  that.
 - **Hidden failures.** Their exact values need a constant failure rate, with
   instant tests and repairs; otherwise the exact methods refuse.
 - **Standby groups.** A group's long-run values are exact from its own
@@ -161,8 +167,9 @@ The nodes can change a route:
   measures, the availability over time and the allocations refuse, and the
   simulations follow the queue, in Python.
 - **Spares.** The spares counts need each component's replacements to be a
-  renewal process: block replacement, hidden failures, standby groups and
-  waiting for repair crews make them refuse, and
+  renewal process: block replacement, hidden failures, standby groups,
+  renewals at a maintenance group's stops and waiting for repair crews make
+  them refuse, and
   `spares_demand(method="simulate")` counts them instead.
 - **Imperfect repair.** `Repairable` policies are analytic for a power-law
   process and simulated for imperfect repair.

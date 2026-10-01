@@ -25,7 +25,9 @@ exact long-run values from a Markov chain when their lives and repairs are
 exponential (#90); a duty unit and its spares can be a standby group,
 repaired one unit at a time (#91); `spares_demand` and `spares_stock` count
 the spares each component uses and the stock to hold for a lead time (#95);
-a component can be replaced on condition at periodic inspections (#96);
+a component can be replaced on condition at periodic inspections (#96),
+or early at a stop of its maintenance group, sharing its set-up
+(opportunistic maintenance, #108);
 phased missions are new, exact and simulated (#100, #101), as are the
 two-terminal reliability of undirected networks (#104) and demonstration
 test planning (#129). Meshed diagrams are decided by a
@@ -39,8 +41,9 @@ behind `method="simulate"`, and the exact MTTF refuses common-cause groups
 (#122); the number of simulations is `mc_samples` everywhere, and its cap
 `max_samples`, with the old names deprecated until 1.0 (#105);
 `is_analytically_solvable()` flags only simulated nodes (#127); cold-standby
-reliabilities are more accurate, so they move slightly (#128); and
-surpyval 0.21 is required.
+reliabilities are more accurate, so they move slightly (#128); a cost
+breakdown has a seventh category, `"setup"` (#108); and surpyval 0.21 is
+required.
 
 ### Added
 
@@ -248,6 +251,29 @@ surpyval 0.21 is required.
   inspection cost are saved with the RBD. Checked against a timeline
   worked by hand, block replacement and run to failure (identical results),
   constant failure rates, and a direct simulation of the policy.
+- **Opportunistic maintenance** (#108). Components with the same `"group"`
+  form a maintenance group: each failure of a member, and each scheduled
+  replacement, opens a *stop* of the group, at which every other member
+  that is working and at least its `"opportunity"` age (a new key of an
+  age-replacement `"preventive"` schedule) is replaced too, taking its own
+  maintenance time and cost. `RepairableRBD(...,
+  maintenance_groups={group: {"setup_cost": c, "system_down": b}})` prices
+  each stop's set-up, charged once per stop (all the work started at one
+  instant), and with `system_down` makes every system outage a stop as
+  well. A member due at the stop's instant keeps its own replacement, so
+  units on one schedule are replaced together, on schedule. The
+  simulations (`availability`, `cost`, `compare`, the event-stepping API,
+  nested diagrams, repair crews) follow it, in Python; the results count
+  each component's early renewals (`opportunistic_renewals`) and the costs
+  have a `"setup"` category. A component that can be renewed early is
+  refused by the exact long-run values, the availability over time and
+  the spares counts; with none, `expected_cost_rate` charges a set-up at
+  each failure and preventive replacement of a member (refusing two
+  members replaced on a clock, which share stops). Groups and
+  opportunities are saved with the RBD. Checked against timelines worked
+  by hand, plain age replacement (an opportunity at the interval gives the
+  same draws), the exact cost rate, and a two-unit train with a large
+  set-up cost, whose cost rate grouping lowers.
 - **Phased missions** (#100, #101). `PhasedMission([(name, duration, rbd),
   ...])` is a mission through phases (take-off, cruise, landing), each with
   its own duration and `NonRepairableRBD` over the same components: a node
@@ -324,6 +350,10 @@ surpyval 0.21 is required.
 
 ### Changed
 
+- **Cost breakdowns have a seventh category** (#108):
+  `CostResult.by_category` (and so `cost()` and `availability().cost`)
+  gains `"setup"`, a maintenance group's set-up costs, 0.0 without groups.
+  Code that compares the whole dict needs the new key.
 - **`mean()` is exact** (#122). `NonRepairableRBD.mean()` and
   `mean_time_to_failure()` return the exact MTTF (see Added), so they give
   different numbers than in 0.10, within the old estimate's sampling error.

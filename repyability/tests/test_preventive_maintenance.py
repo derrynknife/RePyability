@@ -144,6 +144,7 @@ def test_maintenance_that_takes_time_is_a_planned_outage():
         "inspection": 0.0,
         "component_downtime": 60.0,
         "system_downtime": 140.0,
+        "setup": 0.0,
     }
     assert result.cost.by_component == {"c": 110.0}
     fci = result.criticalities.failure_criticality_index

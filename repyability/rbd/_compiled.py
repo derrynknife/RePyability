@@ -68,6 +68,8 @@ def unsupported(rbd, plan: _streams.Plan, capacity) -> Optional[str]:
         return "repair crews"
     if rbd._standby:
         return "standby groups"
+    if rbd._maintenance:
+        return "maintenance groups"
     if rbd._preventive:
         return "scheduled preventive maintenance"
     if rbd._inspection:
@@ -395,6 +397,8 @@ class Runner:
     def _outputs(self, size: int) -> tuple:
         """The output arrays of a batch of ``size`` simulations (each
         simulation's row is written whole by the loop)."""
+        from repyability.rbd.repairable_rbd import _CATEGORIES
+
         model = self._model
         out = self._out
         if out is None or out[5].shape[1] != model.room:
@@ -408,7 +412,7 @@ class Runner:
                 np.empty((batch, room)),
                 np.empty((batch, room), np.int8),
                 np.empty(batch),
-                np.empty((batch, 6)),
+                np.empty((batch, len(_CATEGORIES))),
                 np.empty((batch, max(len(model.costed), 1))),
                 np.empty(batch, np.int64),
             )

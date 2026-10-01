@@ -254,6 +254,7 @@ def test_cost_breakdowns_are_internally_consistent():
         "inspection",
         "component_downtime",
         "system_downtime",
+        "setup",
     }
     assert result.by_category["preventive"] == 0.0  # nothing is maintained
     assert result.by_category["inspection"] == 0.0  # nor inspected

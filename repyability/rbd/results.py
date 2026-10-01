@@ -476,8 +476,9 @@ class CostResult(_ResultMapping):
         Mean per-replication cost split into ``"repair"`` and ``"replace"``
         (both charged per failure; for a hidden failure, when an inspection
         finds it), ``"preventive"`` (charged per preventive replacement),
-        ``"inspection"`` (charged per inspection), ``"component_downtime"``
-        and ``"system_downtime"``. The six sum to ``mean``.
+        ``"inspection"`` (charged per inspection), ``"component_downtime"``,
+        ``"system_downtime"`` and ``"setup"`` (a maintenance group's set-up
+        cost, charged once per stop). The seven sum to ``mean``.
     by_component : dict
         Mean per-replication cost attributable to each costed component (its
         repair, replace, preventive, inspection and own downtime cost; the
@@ -1158,6 +1159,10 @@ class AvailabilityResult(_ResultMapping):
         Each simulation's delivered fraction, in order: the integral of
         ``min(capacity, demand)`` over the window, over ``demand`` times
         its length. None without a demand.
+    opportunistic_renewals : dict, optional
+        With maintenance groups (see ``RepairableRBD``): each component's
+        early renewals at another's stop, summed over the simulations.
+        None without groups.
 
     Examples
     --------
@@ -1206,6 +1211,7 @@ class AvailabilityResult(_ResultMapping):
     capacity_time: Optional[Dict[float, float]] = None
     demand: Optional[float] = None
     delivered: Optional[np.ndarray] = None
+    opportunistic_renewals: Optional[Dict[Hashable, int]] = None
 
     @property
     def mean_capacity(self) -> Optional[float]:

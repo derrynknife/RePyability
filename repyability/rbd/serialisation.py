@@ -232,6 +232,9 @@ def _serialise_component(value) -> dict:
             out["acquisition_cost"] = float(value["acquisition_cost"])
         if value.get("priority"):
             out["priority"] = float(value["priority"])
+        if value.get("group") is not None:
+            # A maintenance group's name, as a node's is.
+            out["group"] = value["group"]
         for key in ("preventive", "inspection"):
             if value.get(key) is not None:
                 out[key] = _serialise_schedule(value[key])
@@ -255,6 +258,8 @@ def _serialise_schedule(spec: dict) -> dict:
         out["policy"] = spec["policy"]
     if spec.get("threshold") is not None:
         out["threshold"] = float(spec["threshold"])
+    if spec.get("opportunity") is not None:
+        out["opportunity"] = float(spec["opportunity"])
     duration = spec.get("duration", "instant")
     out["duration"] = (
         "instant" if isinstance(duration, str) else serialise_model(duration)
@@ -300,6 +305,8 @@ def _deserialise_component(d: dict) -> Any:
             out["acquisition_cost"] = d["acquisition_cost"]
         if "priority" in d:
             out["priority"] = d["priority"]
+        if "group" in d:
+            out["group"] = _node_name(d["group"])
         for key in ("preventive", "inspection"):
             if key in d:
                 out[key] = _deserialise_schedule(d[key])
@@ -317,6 +324,18 @@ def _k_from_list(k_list):
     if not k_list:
         return None
     return {_node_name(e["node"]): e["k"] for e in k_list}
+
+
+def _group_options(options) -> dict:
+    # A maintenance group's options: its set-up cost and whether a system
+    # outage is a stop (numbers and booleans only).
+    out: dict[str, Any] = {}
+    options = options or {}
+    if options.get("setup_cost"):
+        out["setup_cost"] = float(options["setup_cost"])
+    if options.get("system_down"):
+        out["system_down"] = True
+    return out
 
 
 def _capacity_to_list(capacity):
@@ -408,6 +427,12 @@ def rbd_to_dict(rbd: RBD) -> dict:
         out["downtime_cost_rate"] = args.get("downtime_cost_rate", 0.0)
         if args.get("repair_crews") is not None:
             out["repair_crews"] = int(args["repair_crews"])
+        if args.get("maintenance_groups"):
+            # Each group's options, by name (a name may not be a JSON key).
+            out["maintenance_groups"] = [
+                {"group": name, **_group_options(options)}
+                for name, options in args["maintenance_groups"].items()
+            ]
     else:
         nodes = set(args["reliabilities"].keys())
         out["reliabilities"] = [
@@ -441,11 +466,18 @@ def rbd_from_dict(d: dict) -> RBD:
             _node_name(e["node"]): _deserialise_component(e["component"])
             for e in d["components"]
         }
+        groups = {
+            _node_name(e["group"]): {
+                key: value for key, value in e.items() if key != "group"
+            }
+            for e in d.get("maintenance_groups") or ()
+        }
         return RepairableRBD(
             edges,
             components,
             downtime_cost_rate=d.get("downtime_cost_rate", 0.0),
             repair_crews=d.get("repair_crews"),
+            maintenance_groups=groups or None,
             **common,
         )
     if rbd_type == "NonRepairableRBD":

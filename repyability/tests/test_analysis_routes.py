@@ -126,6 +126,41 @@ def repairable_rbds():
                     replace_cost=10.0,
                 )
             ),
+            "opportunistic maintenance": RepairableRBD(
+                EDGES,
+                {
+                    node: unit(
+                        preventive={"interval": 300.0, "opportunity": 200.0},
+                        group="train",
+                        replace_cost=10.0,
+                    )
+                    for node in "abc"
+                },
+                maintenance_groups={
+                    "train": {"setup_cost": 50.0, "system_down": True}
+                },
+            ),
+            "grouped, no opportunities": RepairableRBD(
+                EDGES,
+                {
+                    "a": unit(preventive={"interval": 300.0}, group="train"),
+                    "b": unit(group="train"),
+                    "c": unit(),
+                },
+                maintenance_groups={"train": {"setup_cost": 50.0}},
+            ),
+            "grouped block replacements": RepairableRBD(
+                EDGES,
+                {
+                    node: unit(
+                        preventive={"interval": 300.0, "policy": "block"},
+                        group="train",
+                    )
+                    for node in "ab"
+                }
+                | {"c": unit()},
+                maintenance_groups={"train": {"setup_cost": 50.0}},
+            ),
             "tested, constant rate": system(
                 {
                     "reliability": E([0.002]),

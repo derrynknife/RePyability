@@ -530,6 +530,7 @@ _CATEGORIES = (
     "inspection",
     "component_downtime",
     "system_downtime",
+    "setup",
 )
 
 
@@ -569,6 +570,7 @@ class _Replication:
         "capacity_time",
         "delivered",
         "replacements",
+        "opportunistic",
     )
     uptime: float
     node_up: List[float]
@@ -587,6 +589,7 @@ class _Replication:
     capacity_time: Optional[list]
     delivered: Optional[float]
     replacements: List[int]
+    opportunistic: List[int]
 
 
 class _Tally:
@@ -642,6 +645,8 @@ class _Tally:
         # Each replication's replacements of each node, when asked for
         # (see RepairableRBD.spares_demand).
         self.replacements: Optional[List[List[int]]] = None
+        # Per node: its early renewals at stops of its maintenance group.
+        self.opportunistic = [0] * n
 
     def add(self, rec: _Replication) -> None:
         """Add the next simulation's results."""
@@ -696,6 +701,9 @@ class _Tally:
                 self.delivered.append(rec.delivered)
         if self.replacements is not None:
             self.replacements.append(rec.replacements)
+        for c, count in enumerate(rec.opportunistic):
+            if count:
+                self.opportunistic[c] += count
 
     def state_changes(self) -> Tuple[np.ndarray, np.ndarray]:
         """Every time a simulated system changed state (``-0.0`` made
@@ -1080,6 +1088,9 @@ class _Preventive(NamedTuple):
     policy: str
     duration: Any
     threshold: float = 0.0
+    #: Under ``"age"``, the age from which the unit is renewed early at a
+    #: stop of its maintenance group (#108); ``inf`` for never.
+    opportunity: float = math.inf
 
     def due(self, renewed: float) -> float:
         """When the next preventive action (under ``"condition"``, the next
@@ -1092,6 +1103,16 @@ class _Preventive(NamedTuple):
         # there).
         due = float(np.floor(renewed / self.interval) + 1.0) * self.interval
         return due if due > renewed else due + self.interval
+
+
+class _MaintenanceGroup(NamedTuple):
+    """A maintenance group (#108): its members, the set-up cost charged
+    once at each of its stops, and whether every system outage is a stop
+    too."""
+
+    members: Tuple[Hashable, ...]
+    setup_cost: float
+    system_down: bool
 
 
 def _failures_between(model, ages: np.ndarray) -> np.ndarray:
@@ -2043,7 +2064,10 @@ class RepairableRBD(RBD):
           unit in place. Each replacement is charged ``"cost"``, a number
           or a distribution drawn afresh each time. The unit comes back as
           new: a failure it had yet to reach never happens. An
-          ``interval`` of ``inf`` never maintains.
+          ``interval`` of ``inf`` never maintains. Under ``"age"``, an
+          ``"opportunity"`` (an age from 0 to ``interval``) renews the
+          unit early, from that age, at a stop of its maintenance group
+          (see ``"group"``), as its scheduled replacement would.
           ``"inspection"`` makes the component's failures *hidden*: a
           failure takes it down, but nobody knows until an inspection (a
           proof test) finds it, and only then does its repair start. It
@@ -2065,6 +2089,8 @@ class RepairableRBD(RBD):
           ``total_cost`` and ``allocate_redundancy``. ``"priority"`` is the
           component's place in the queue for a repair crew (see
           ``repair_crews``): a number, higher first, by default 0.
+          ``"group"`` names the component's maintenance group (see
+          ``maintenance_groups``), any hashable value.
           ``"standby"`` makes the node a standby group of identical units,
           each failing and repaired as ``"reliability"`` and
           ``"repairability"`` say: a dict of ``"units"`` (by default 2),
@@ -2148,6 +2174,25 @@ class RepairableRBD(RBD):
         (see ``mean_availability``); the other exact methods, which assume
         independent components, raise ``NotImplementedError``. With at
         least as many, no job waits, and every result is as without crews.
+    maintenance_groups : dict, optional
+        Options for the maintenance groups the components' ``"group"``
+        keys form, by group name, by default None: for each, a dict of
+        ``"setup_cost"`` (a number, by default 0) and ``"system_down"``
+        (by default False). A member's failure, or its scheduled
+        replacement, opens a *stop* of its group, at which every other
+        member that is working, has an ``"opportunity"`` and is at least
+        that old, is renewed too (opportunistic maintenance), taking its
+        own maintenance time; a member whose own failure or replacement is
+        due at that instant keeps it. With ``"system_down"``, any outage
+        of the system is a stop of the group as well. The set-up cost is
+        charged once per stop: once for all that starts at one instant.
+        The simulations count each component's early renewals
+        (``AvailabilityResult.opportunistic_renewals``) and charge the
+        set-ups under ``"setup"``. Group members cannot have hidden
+        failures or be standby groups. The exact methods refuse a
+        component that can be renewed early; with none, a group's set-up
+        is charged at each failure and each preventive replacement of a
+        member in ``expected_cost_rate``. Simulated in Python.
 
     Attributes
     ----------
@@ -2190,8 +2235,12 @@ class RepairableRBD(RBD):
         Every key a spec dict may carry.
     PREVENTIVE_KEYS : tuple[str, ...]
         The keys of a ``"preventive"`` spec: ``"interval"``, ``"policy"``,
-        ``"duration"`` and ``"cost"``, and a ``"condition"`` policy's
-        ``"threshold"`` and ``"inspection_cost"``.
+        ``"duration"`` and ``"cost"``, a ``"condition"`` policy's
+        ``"threshold"`` and ``"inspection_cost"``, and an ``"age"``
+        policy's ``"opportunity"``.
+    GROUP_KEYS : tuple[str, ...]
+        The keys of a maintenance group's options: ``"setup_cost"`` and
+        ``"system_down"``.
     INSPECTION_KEYS : tuple[str, ...]
         The keys of an ``"inspection"`` spec: ``"interval"``, ``"duration"``
         and ``"cost"``.
@@ -2208,24 +2257,29 @@ class RepairableRBD(RBD):
         distribution, or a cost distribution has no finite mean or puts
         appreciable probability on a negative cost (its 1e-12 quantile is
         below 0); if a ``"preventive"`` spec is not a dict of its keys with
-        a positive ``interval``, a ``policy`` of ``"age"`` or ``"block"``
-        and a ``duration`` that is a model or ``"instant"``; if an
-        ``"inspection"`` spec is not a dict of its keys with a positive,
-        finite ``interval`` and a ``duration`` that is a model or
-        ``"instant"``, or a component has both; if a ``"standby"`` spec
-        is not a dict of its keys with whole numbers ``units`` above ``k``
-        of at least 1, and a ``dormancy_factor`` and
+        a positive ``interval``, a ``policy`` of ``"age"``, ``"block"`` or
+        ``"condition"`` and a ``duration`` that is a model or
+        ``"instant"``; if an ``"inspection"`` spec is not a dict of its
+        keys with a positive, finite ``interval`` and a ``duration`` that
+        is a model or ``"instant"``, or a component has both; if a
+        ``"standby"`` spec is not a dict of its keys with whole numbers
+        ``units`` above ``k`` of at least 1, and a ``dormancy_factor`` and
         ``switching_probability`` in [0, 1], or its component has a
-        schedule or instant repair; if a
-        reliability model is not a surpyval parametric or
-        non-parametric model or a ``StandbyModel``; if ``input_node`` or
-        ``output_node`` is not in the diagram, or is not its source or sink;
+        schedule or instant repair; if a reliability model is not a
+        surpyval parametric or non-parametric model or a ``StandbyModel``;
+        if ``input_node`` or ``output_node`` is not in the diagram, or is
+        not its source or sink;
         if ``on_infeasible_rbd`` is not ``"raise"``, ``"warn"`` or
         ``"ignore"``; if the diagram is invalid and ``on_infeasible_rbd``
         is ``"raise"``; if a capacity is not a positive number or is for
-        the input or output node or a node not in the diagram; or if
+        the input or output node or a node not in the diagram; if
         ``repair_crews`` is not a whole number of at least 1, or a
-        ``"priority"`` is not a finite number.
+        ``"priority"`` is not a finite number; or if an ``"opportunity"``
+        is not an age from 0 to an age policy's interval, is given to a
+        component in no group, or a group's member has hidden failures or
+        is a standby group, or ``maintenance_groups`` names a group no
+        component is in, or has options other than a non-negative
+        ``"setup_cost"`` and a boolean ``"system_down"``.
     TypeError
         If a component is not a spec dict, a ``NonRepairable`` or a
         ``RepairableRBD`` (a ``Repairable``, which models imperfect repair,
@@ -2309,6 +2363,7 @@ class RepairableRBD(RBD):
             "acquisition_cost",
             "priority",
             "standby",
+            "group",
         )
     )
     #: The keys of a component's ``"preventive"`` spec.
@@ -2319,7 +2374,10 @@ class RepairableRBD(RBD):
         "cost",
         "threshold",
         "inspection_cost",
+        "opportunity",
     )
+    #: The keys of a maintenance group's options.
+    GROUP_KEYS = ("setup_cost", "system_down")
     #: The keys of a component's ``"inspection"`` spec.
     INSPECTION_KEYS = ("interval", "duration", "cost")
     #: The keys of a component's ``"standby"`` spec.
@@ -2342,6 +2400,7 @@ class RepairableRBD(RBD):
         downtime_cost_rate: float = 0.0,
         capacity: Optional[dict[Any, float]] = None,
         repair_crews: Optional[int] = None,
+        maintenance_groups: Optional[dict[Any, dict]] = None,
     ):
         _check_on_infeasible_rbd(on_infeasible_rbd)
         # Capture the constructor inputs verbatim (before any mutation) so the
@@ -2357,6 +2416,9 @@ class RepairableRBD(RBD):
             "downtime_cost_rate": downtime_cost_rate,
             "capacity": dict(capacity) if capacity else None,
             "repair_crews": repair_crews,
+            "maintenance_groups": (
+                dict(maintenance_groups) if maintenance_groups else None
+            ),
         }
         self.repair_crews = _validate_crews(repair_crews)
         # Each component's place in the queue for a crew (higher first).
@@ -2377,6 +2439,8 @@ class RepairableRBD(RBD):
         self._standby: dict[Any, _Standby] = {}
         # One-off purchase costs, by node (only non-zero ones).
         self.acquisition_costs: dict[Any, float] = {}
+        # Each component's maintenance group, by node (see _maintenance).
+        self._member_group: dict[Any, Hashable] = {}
         components = copy(components)
         reliability = {}
         repairability = {}
@@ -2424,6 +2488,8 @@ class RepairableRBD(RBD):
                     self._standby[name] = self._validate_standby(
                         name, component
                     )
+                if component.get("group") is not None:
+                    self._member_group[name] = component["group"]
                 if component.get("acquisition_cost") is not None:
                     acquisition = self._validate_cost(
                         name, "acquisition_cost", component["acquisition_cost"]
@@ -2504,6 +2570,75 @@ class RepairableRBD(RBD):
 
         self.components = components
         self.repairability = copy(repairability)
+        self._maintenance = self._validate_groups(maintenance_groups)
+
+    def _validate_groups(
+        self, options: Optional[dict]
+    ) -> Dict[Hashable, _MaintenanceGroup]:
+        """The maintenance groups (#108), from the components' ``"group"``
+        and the options given for each, checked; and the members that can
+        be renewed early (``_early_members``)."""
+        members: Dict[Hashable, list] = {}
+        for node, group in self._member_group.items():
+            try:
+                hash(group)
+            except TypeError:
+                raise ValueError(
+                    f"Component {node!r}: a group is named by a hashable "
+                    f"value, got {group!r}."
+                ) from None
+            for spec_key, what in (
+                ("_inspection", "hidden failures"),
+                ("_standby", "a standby group"),
+            ):
+                if node in getattr(self, spec_key):
+                    raise ValueError(
+                        f"Component {node!r} has {what}, so it cannot be in "
+                        "a maintenance group."
+                    )
+            members.setdefault(group, []).append(node)
+        self._early_members = {
+            node
+            for node, schedule in self._preventive.items()
+            if schedule.opportunity < schedule.interval
+        }
+        for node in self._early_members:
+            if node not in self._member_group:
+                raise ValueError(
+                    f"Component {node!r} has an opportunity, but no "
+                    "maintenance group to give it one: add a 'group'."
+                )
+        options = dict(options or {})
+        unknown = set(options) - set(members)
+        if unknown:
+            raise ValueError(
+                f"maintenance_groups names group(s) "
+                f"{sorted(map(str, unknown))} that no component is in."
+            )
+        out: Dict[Hashable, _MaintenanceGroup] = {}
+        for group, nodes in members.items():
+            given = options.get(group) or {}
+            if not isinstance(given, dict) or set(given) - set(
+                self.GROUP_KEYS
+            ):
+                raise ValueError(
+                    f"Maintenance group {group!r}: its options must be a "
+                    f"dict of {', '.join(self.GROUP_KEYS)}, got {given!r}."
+                )
+            setup = given.get("setup_cost")
+            setup = (
+                0.0
+                if setup is None
+                else self._validate_cost(group, "setup_cost", setup)
+            )
+            system_down = given.get("system_down", False)
+            if not isinstance(system_down, bool):
+                raise ValueError(
+                    f"Maintenance group {group!r}: system_down must be True "
+                    f"or False, got {system_down!r}."
+                )
+            out[group] = _MaintenanceGroup(tuple(nodes), setup, system_down)
+        return out
 
     @staticmethod
     def _unknown_component(node, component) -> str:
@@ -2601,6 +2736,26 @@ class RepairableRBD(RBD):
                         f"Component {node!r}: {key} applies only to the "
                         "'condition' policy, which inspects the unit."
                     )
+        opportunity = math.inf
+        if spec.get("opportunity") is not None:
+            if policy != "age":
+                raise ValueError(
+                    f"Component {node!r}: an opportunity applies only to "
+                    "the 'age' policy (a unit renewed early at a stop of "
+                    "its maintenance group)."
+                )
+            opportunity = spec["opportunity"]
+            if (
+                isinstance(opportunity, bool)
+                or not isinstance(opportunity, (int, float, np.number))
+                or not 0.0 <= float(opportunity) <= interval
+            ):
+                raise ValueError(
+                    f"Component {node!r}: the opportunity must be an age "
+                    f"from 0 to the interval ({interval:g}), got "
+                    f"{opportunity!r}."
+                )
+            opportunity = float(opportunity)
         duration = spec.get("duration", "instant")
         if isinstance(duration, str) and duration == "instant":
             duration = None
@@ -2621,7 +2776,9 @@ class RepairableRBD(RBD):
                 if isinstance(cost, float) and cost == 0.0:
                     cost = None
             costs.append(cost)
-        schedule = _Preventive(interval, policy, duration, threshold)
+        schedule = _Preventive(
+            interval, policy, duration, threshold, opportunity
+        )
         return schedule, costs[0], costs[1]
 
     @classmethod
@@ -2793,10 +2950,11 @@ class RepairableRBD(RBD):
 
         True if some component declares a non-zero ``"repair_cost"``,
         ``"replace_cost"``, ``"downtime_cost"``, or preventive-maintenance
-        or inspection ``"cost"`` (a cost distribution always counts), or
-        ``downtime_cost_rate`` is non-zero: whether running the system costs
-        anything. Costs of 0 price nothing, costs declared inside a nested
-        ``RepairableRBD`` do not count, and neither does an
+        or inspection ``"cost"`` (a cost distribution always counts), a
+        maintenance group has a set-up cost, or ``downtime_cost_rate`` is
+        non-zero: whether running the system costs anything. Costs of 0
+        price nothing, costs declared inside a nested ``RepairableRBD`` do
+        not count, and neither does an
         ``"acquisition_cost"`` (a one-off cost, see ``total_cost``). When
         nothing is priced there is no cost model to evaluate, so the cost
         methods short-circuit rather than doing the work:
@@ -2809,7 +2967,14 @@ class RepairableRBD(RBD):
         bool
             True if anything is priced.
         """
-        return bool(self.costs) or bool(self.downtime_cost_rate)
+        return (
+            bool(self.costs)
+            or bool(self.downtime_cost_rate)
+            or any(
+                group.setup_cost
+                for group in getattr(self, "_maintenance", {}).values()
+            )
+        )
 
     def _stream_specs(
         self,
@@ -2924,6 +3089,9 @@ class RepairableRBD(RBD):
             failures = t_simulation / (life + repair)
         else:
             failures = float("nan")
+        # A member renewed early at its group's stops (#108) has more lives
+        # and actions than these: its streams then take more chunks, which
+        # changes only how its draws are computed.
         lives, actions = failures + 1.0, 0.0
         schedule = self._preventive.get(node)
         inspection = self._inspection.get(node)
@@ -3212,6 +3380,11 @@ class RepairableRBD(RBD):
         broken_nodes = set() if broken_nodes is None else set(broken_nodes)
         self._validate_node_overrides(working_nodes, broken_nodes)
         forced = working_nodes | broken_nodes
+        setups = [
+            group for group in self._maintenance.values() if group.setup_cost
+        ]
+        if setups:
+            self._require_separate_setups()
 
         rate = 0.0
 
@@ -3222,7 +3395,7 @@ class RepairableRBD(RBD):
             )
             rate += self.downtime_cost_rate * unavailability
 
-        if not self.costs:
+        if not self.costs and not setups:
             return rate
 
         if self._crews_couple():
@@ -3245,6 +3418,15 @@ class RepairableRBD(RBD):
             rate += self._node_cost_rate(
                 node, node_availability[node], node in forced
             )
+        # A maintenance group's set-up, at each failure and each preventive
+        # replacement of a member (none is renewed early: that would have
+        # been refused), a forced member making none.
+        for group in setups:
+            rate += group.setup_cost * sum(
+                sum(self._node_actions(node, node_availability[node]))
+                for node in group.members
+                if node not in forced
+            )
         return rate
 
     def _node_cost_rate(
@@ -3264,17 +3446,7 @@ class RepairableRBD(RBD):
         )
         preventive = node_costs.get("preventive_cost")
         if (per_action or preventive is not None) and not forced:
-            if self._crews_couple():
-                # Waiting for a crew, as while repaired, it cannot fail: it
-                # fails at its constant rate while it is up.
-                life = self._crew_chain_rates()[node][0]
-                failures, maintained = life * availability, 0.0
-            elif node in self._standby:
-                # Each of its units' failures is a repair.
-                failures = self._standby_long_run(node).unit_failure_frequency
-                maintained = 0.0
-            else:
-                failures, maintained, _ = self._node_frequencies(node)
+            failures, maintained = self._node_actions(node, availability)
             rate += per_action * failures
             if preventive is not None:
                 rate += _mean_cost(preventive) * maintained
@@ -3291,6 +3463,20 @@ class RepairableRBD(RBD):
         if downtime_cost:
             rate += downtime_cost * (1.0 - availability)
         return rate
+
+    def _node_actions(self, node, availability: float) -> Tuple[float, float]:
+        """A component's corrective and preventive actions per unit time,
+        in the long run (``availability`` its long-run availability)."""
+        if self._crews_couple():
+            # Waiting for a crew, as while repaired, it cannot fail: it
+            # fails at its constant rate while it is up.
+            life = self._crew_chain_rates()[node][0]
+            return life * availability, 0.0
+        if node in self._standby:
+            # Each of its units' failures is a repair.
+            return self._standby_long_run(node).unit_failure_frequency, 0.0
+        failures, maintained, _ = self._node_frequencies(node)
+        return failures, maintained
 
     @property
     def acquisition_cost(self) -> float:
@@ -3425,6 +3611,12 @@ class RepairableRBD(RBD):
             raise NotImplementedError(
                 f"Component {node!r} is replaced on condition, at "
                 f"inspections on a calendar that do not renew it: {simulate}"
+            )
+        if node in self._early_members:
+            raise NotImplementedError(
+                f"Component {node!r} is renewed early at the stops of its "
+                f"maintenance group, which depend on the other members: "
+                f"{simulate}"
             )
         component = self.components[node]
         life, repair = component.reliability, component.time_to_replace
@@ -5203,6 +5395,15 @@ class RepairableRBD(RBD):
         # When each working node replaced on condition is due to fail, and
         # to be replaced (see _replaced_at).
         self._in_service: dict[Any, Tuple[float, float]] = {}
+        # Opportunistic maintenance (#108): when each member that can be
+        # renewed early was put into service as new, and its pending event;
+        # the pending events early renewals have cancelled, and the early
+        # renewals queued, by identity, and their members (see _stop).
+        self._renewed_at: dict[Any, float] = {}
+        self._pending_event: dict[Any, Event] = {}
+        self._cancelled: dict[int, Event] = {}
+        self._early: dict[int, Event] = {}
+        self._renewing: set = set()
 
         # For each component add in the initial failure
         for component_id in self.components.keys():
@@ -5405,12 +5606,17 @@ class RepairableRBD(RBD):
             r.refused(importance) if importance else long_run,
         )
         if self.has_costs:
+            setups = r.refusal(self._require_separate_setups)
             give(
                 ("expected_cost_rate", "total_cost"),
-                from_long_run(
-                    r.EXACT,
-                    "The long-run cost rate, from the exact long-run values "
-                    "(total_cost multiplies it by the time).",
+                (
+                    r.refused(setups)
+                    if setups
+                    else from_long_run(
+                        r.EXACT,
+                        "The long-run cost rate, from the exact long-run "
+                        "values (total_cost multiplies it by the time).",
+                    )
                 ),
             )
         else:
@@ -5661,7 +5867,9 @@ class RepairableRBD(RBD):
             if life == r.EXACT:
                 return r.EXACT, "its mean life and mean repair time"
             return life, f"its mean life, {how}"
-        message = r.refusal(partial(self._require_no_condition, node))
+        message = r.refusal(
+            partial(self._require_no_condition, node)
+        ) or r.refusal(partial(self._require_no_opportunities, node))
         if message:
             return r.REFUSED, message
         life, how = r.model_route(component.reliability)
@@ -5748,6 +5956,8 @@ class RepairableRBD(RBD):
         message = r.refusal(partial(self._require_time_models, node))
         if not message:
             message = r.refusal(partial(self._require_no_condition, node))
+        if not message:
+            message = r.refusal(partial(self._require_no_opportunities, node))
         if not message and node in self._inspection:
             message = r.refusal(partial(self._inspected_rate, node))
         schedule = self._preventive.get(node)
@@ -6249,6 +6459,7 @@ class RepairableRBD(RBD):
         that value. Under block replacement, see ``_block_curve``."""
         self._require_time_models(node)
         self._require_no_condition(node)
+        self._require_no_opportunities(node)
         component = self.components[node]
         schedule = self._preventive.get(node)
         if schedule is not None and schedule.policy == "block":
@@ -6818,10 +7029,50 @@ class RepairableRBD(RBD):
             return self._condition_next(node, t, schedule)
         due = schedule.due(t)
         if t + life <= due:
-            return Event(t + life, node, False)
-        # Maintenance that takes time is a planned outage; in zero time
-        # the unit is renewed in place, and stays up.
-        return Event(due, node, schedule.duration is None, True)
+            event = Event(t + life, node, False)
+        else:
+            # Maintenance that takes time is a planned outage; in zero time
+            # the unit is renewed in place, and stays up.
+            event = Event(due, node, schedule.duration is None, True)
+        if node in self._early_members:
+            # Kept, should a stop of its group renew it early (see _stop).
+            self._renewed_at[node] = t
+            self._pending_event[node] = event
+        return event
+
+    def _stop(self, group, t: float, trigger=None) -> List[Event]:
+        """A stop of maintenance ``group`` at ``t``, opened by ``trigger``
+        (a member taken down for a failure or its scheduled replacement) or
+        by the system going down: each other member that is working, and at
+        least its opportunity age, is renewed now, as its scheduled
+        replacement would renew it, and the failure or replacement it had
+        ahead of it is cancelled. A member whose own failure or replacement
+        is due at ``t`` keeps it: that joins the stop. Returns the renewals
+        to queue."""
+        out: List[Event] = []
+        for member in self._maintenance[group].members:
+            if (
+                member == trigger
+                or member not in self._early_members
+                or member not in self._renewed_at
+                or member in self._renewing
+                or not self.component_status[member]
+            ):
+                continue
+            schedule = self._preventive[member]
+            if t - self._renewed_at[member] < schedule.opportunity:
+                continue
+            pending = self._pending_event.get(member)
+            if pending is not None and pending.time <= t:
+                continue  # due now, as part of this stop
+            self._pending_event.pop(member, None)
+            if pending is not None and pending.time < self.t_simulation:
+                self._cancelled[id(pending)] = pending
+            renewal = Event(t, member, schedule.duration is None, True)
+            self._early[id(renewal)] = renewal
+            self._renewing.add(member)
+            out.append(renewal)
+        return out
 
     def _replaced_at(
         self, node, renewed: float, failure: float, schedule: _Preventive
@@ -7000,6 +7251,14 @@ class RepairableRBD(RBD):
                 return self.t_simulation, self.system_state
 
             event = self._event_queue.get()
+            if self._cancelled and self._cancelled.get(id(event)) is event:
+                del self._cancelled[id(event)]
+                continue  # superseded by an early renewal (see _stop)
+            renewing_early = False
+            if self._early and self._early.get(id(event)) is event:
+                del self._early[id(event)]
+                self._renewing.discard(event.component)
+                renewing_early = True
             group = self._groups.get(event.component)
             if group is not None:
                 # A standby group's own event (see _StandbyGroup).
@@ -7014,13 +7273,30 @@ class RepairableRBD(RBD):
                         self.component_status, method
                     )
                 continue  # the group has queued its next event
+            was = self.component_status[event.component]
             self.component_status[event.component] = event.status
+            node = event.component
+            if node in self._member_group and not renewing_early:
+                # A failure, or a scheduled replacement starting (or done in
+                # place), opens a stop of its maintenance group.
+                if (not event.status and not event.inspection) or (
+                    event.preventive and event.status and was
+                ):
+                    for renewal in self._stop(
+                        self._member_group[node], event.time, node
+                    ):
+                        self._event_queue.put(renewal)
             # Only a change against the system's state can change it (the
             # structure is coherent; see _replicate).
             if event.status != self.system_state:
                 new_system_state = self.is_system_working(
                     self.component_status, method
                 )
+                if self.system_state and not new_system_state:
+                    for name, spec in self._maintenance.items():
+                        if spec.system_down:
+                            for renewal in self._stop(name, event.time):
+                                self._event_queue.put(renewal)
 
             follow = self._follow_up(event, sources[event.component])
             next_event: Optional[Event] = (
@@ -7637,6 +7913,11 @@ class RepairableRBD(RBD):
                 "last_change_planned",
                 "_pending_failure",
                 "_in_service",
+                "_renewed_at",
+                "_pending_event",
+                "_cancelled",
+                "_early",
+                "_renewing",
                 "_crews",
                 "_groups",
             ):
@@ -7704,6 +7985,10 @@ class RepairableRBD(RBD):
         restored, caused_up = [0] * n, [0] * n
         # Each component's replacements: the spares it used.
         replaced = [0] * n
+        # Opportunistic maintenance (#108): each member's early renewals.
+        maintenance, member_group = self._maintenance, self._member_group
+        cancelled, early = self._cancelled, self._early
+        opportunistic = [0] * n
         failures = restorations = planned = 0
         changes: list = []
         deltas: list = []
@@ -7733,11 +8018,39 @@ class RepairableRBD(RBD):
         heap = self._event_queue._heap
         push, pop = heapq.heappush, heapq.heappop
 
+        # When each group last stopped: the work started at one instant is
+        # one stop, with one set-up.
+        stopped: Dict[Hashable, float] = {}
+
+        def stop(group, t: float, trigger=None) -> float:
+            """Open a stop of maintenance ``group`` (see ``_stop``): queue
+            its early renewals, and return its set-up cost, charged once
+            per stop, if a member opened it or it renews any."""
+            renewals = self._stop(group, t, trigger)
+            for renewal in renewals:
+                push(heap, (renewal.time, renewal))
+            if (trigger is None and not renewals) or stopped.get(group) == t:
+                return 0.0
+            stopped[group] = t
+            setup = maintenance[group].setup_cost
+            if setup:
+                by_category[6] += setup
+            return setup
+
         # No event at or after the end of the window is queued, so the
         # simulation runs until the queue is empty.
         while heap:
             event = pop(heap)[1]
+            if cancelled and cancelled.get(id(event)) is event:
+                del cancelled[id(event)]
+                continue  # superseded by an early renewal
             node = event.component
+            renewing_early = False
+            if early and early.get(id(event)) is event:
+                del early[id(event)]
+                self._renewing.discard(node)
+                opportunistic[index[node]] += 1
+                renewing_early = True
             grouped = False
             if groups and node in groups:
                 # A standby group's own event (see _StandbyGroup): a unit
@@ -7764,6 +8077,9 @@ class RepairableRBD(RBD):
                     rep_cost += pay(node, 2, preventive_charges.get(node))
                     # Replaced on condition: at an inspection, charged too.
                     rep_cost += pay(node, 3, inspection_charges.get(node))
+                    if node in member_group and not renewing_early:
+                        # Renewed in place on schedule: a stop of its group.
+                        rep_cost += stop(member_group[node], event.time, node)
                 else:
                     rep_cost += pay(node, 3, inspection_charges.get(node))
                     if not event.status:
@@ -7808,6 +8124,8 @@ class RepairableRBD(RBD):
                 replaced[c] += 1
                 rep_cost += pay(node, 2, preventive_charges.get(node))
                 rep_cost += pay(node, 3, inspection_charges.get(node))
+                if node in member_group and not renewing_early:
+                    rep_cost += stop(member_group[node], t, node)
             elif event.inspection:
                 # A test that takes a working unit off-line.
                 rep_cost += pay(node, 3, inspection_charges.get(node))
@@ -7820,6 +8138,8 @@ class RepairableRBD(RBD):
                     replaced[c] += 1
                     for category, charges in failure_charges.get(node, ()):
                         rep_cost += pay(node, category, charges)
+                if node in member_group:
+                    rep_cost += stop(member_group[node], t, node)
 
             # The structure is coherent: a restoration can't take the
             # system down, nor a failure bring it up, so only a change
@@ -7839,6 +8159,10 @@ class RepairableRBD(RBD):
                     else:
                         failures += 1
                         caused_down[c] += 1
+                    for name, spec in maintenance.items():
+                        if spec.system_down:
+                            # Any system outage is a stop of this group.
+                            rep_cost += stop(name, t)
 
             if grouped:
                 continue  # the group has queued its next event
@@ -7895,6 +8219,7 @@ class RepairableRBD(RBD):
         rec.by_category, rec.by_node = by_category, by_node
         rec.capacity_changes = rec.capacity_time = rec.delivered = None
         rec.replacements = replaced
+        rec.opportunistic = opportunistic
         if trace is not None:
             trace.finish(t_simulation, rec)
         return rec
@@ -8038,6 +8363,11 @@ class RepairableRBD(RBD):
             system_planned_outages=tally.system_planned_outages,
             uptimes=np.asarray(tally.uptimes, dtype=float),
             antithetic=antithetic,
+            opportunistic_renewals=(
+                dict(zip(nodes, tally.opportunistic))
+                if self._maintenance
+                else None
+            ),
             **capacity_fields,
         )
 
@@ -8374,6 +8704,57 @@ class RepairableRBD(RBD):
                 "time have no exact value here. Estimate them by simulation, "
                 "with availability() or cost()."
             )
+
+    def _require_no_opportunities(self, node) -> None:
+        """Raise if a component can be renewed early at the stops of its
+        maintenance group (an ``"opportunity"`` below its interval): when
+        depends on the other members, so its long-run values and its
+        availability over time are known only by simulation."""
+        if node in self._early_members:
+            raise NotImplementedError(
+                f"Component {node!r} is renewed early at the stops of its "
+                f"maintenance group {self._member_group[node]!r}, which "
+                "depend on the other members, so its long-run values and "
+                "its availability over time have no exact value here. "
+                "Estimate them by simulation, with availability() or cost()."
+            )
+
+    def _require_separate_setups(self) -> None:
+        """Raise if two members of a maintenance group with a set-up cost
+        can be replaced at the same instants, again and again: on block
+        schedules, or never failing before an age replacement in zero time.
+        Such replacements share one stop, and its set-up, which the exact
+        cost rate, charging a set-up for each member's failures and
+        replacements, does not count."""
+        for group, spec in self._maintenance.items():
+            if not spec.setup_cost:
+                continue
+            clocked = [node for node in spec.members if self._on_a_clock(node)]
+            if len(clocked) > 1:
+                raise NotImplementedError(
+                    f"Components {clocked} of maintenance group {group!r} "
+                    "are replaced on a clock (on block schedules, or never "
+                    "failing before an age replacement in zero time), so "
+                    "their replacements can fall at the same instants and "
+                    "share a set-up, which the exact cost rate does not "
+                    "count: estimate it by simulation, with cost()."
+                )
+
+    def _on_a_clock(self, node) -> bool:
+        """Whether a component's replacements fall on a fixed lattice of
+        times: under block replacement, or under age replacement in zero
+        time without a failure before it."""
+        schedule = self._preventive.get(node)
+        if schedule is None or not math.isfinite(schedule.interval):
+            return False
+        if schedule.policy == "block":
+            return True
+        if schedule.policy != "age" or schedule.duration is not None:
+            return False
+        survives = self.components[node].reliability_function(
+            schedule.interval
+        )
+        return bool(np.ravel(survives)[0] >= 1.0)
 
     def _require_block_models(self, node) -> None:
         """Raise unless the exact block-replacement values cover the
@@ -8761,6 +9142,7 @@ class RepairableRBD(RBD):
         next, with any failures and repairs in between (see
         ``_block_replacement``); it is computed once and kept."""
         self._require_no_condition(node)
+        self._require_no_opportunities(node)
         component = self.components[node]
         if schedule.policy == "block":
             block = self._block_cycle(node)
