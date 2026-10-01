@@ -18,6 +18,8 @@ taking already-fitted lifetime models (from
 - **Reliability**: exact system reliability, hazard and conditional survival;
   the exact MTTF (or simulated, with confidence intervals); B*X* life;
   uncertainty intervals from uncertain (fitted) component models.
+- **Networks**: undirected networks whose links fail: the exact
+  reliability of the connection between two terminals.
 - **Phased missions**: missions through phases (take-off, cruise,
   landing), each with its own diagram over the same components: the exact
   mission reliability and the chance of failing in each phase.

@@ -34,8 +34,7 @@ from typing import (
 import numpy as np
 
 from repyability.rbd import _montecarlo as montecarlo
-from repyability.rbd._model_utils import is_fixed_probability
-from repyability.rbd._sampling import RowSampler, row_sampler
+from repyability.rbd._sampling import lifetime_sampler
 from repyability.rbd.results import ConfidenceInterval
 from repyability.rbd.shannon import _shannon_value_and_gradient
 from repyability.utils.wrappers import numpy_seed
@@ -143,17 +142,6 @@ def _mission_plan(families: Sequence[Sequence[frozenset]]) -> tuple:
             root = slots[state]
     assert root is not None
     return steps, root
-
-
-def _lifetime_sampler(model) -> Optional[RowSampler]:
-    """A component's lives as a ``RowSampler``, or None if they cannot be
-    drawn in a block. A fixed probability fails at the start or never."""
-    if is_fixed_probability(model):
-        failure = float(np.ravel(model.ff(1.0))[0])
-        return RowSampler(
-            1, lambda u: np.where(u[:, 0] < failure, 0.0, np.inf)
-        )
-    return row_sampler(model)
 
 
 class PhasedMission:
@@ -359,7 +347,7 @@ class PhasedMission:
         (its number, ``len(phases)`` for none), each component's life drawn
         once per mission from numpy's global RNG as it stands."""
         samplers = {
-            node: _lifetime_sampler(model)
+            node: lifetime_sampler(model)
             for node, model in self.components.items()
         }
         if antithetic and any(s is None for s in samplers.values()):

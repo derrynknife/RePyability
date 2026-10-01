@@ -18,6 +18,7 @@ from repyability.demonstration import (
 )
 from repyability.fault_tree import FaultTree
 from repyability.maintenance import FailureLimitPolicy, MaintenancePolicy
+from repyability.network import Network
 from repyability.non_repairable import NonRepairable
 from repyability.rbd.ccf import MGL, BetaFactor, CCFGroup
 from repyability.rbd.degrading_node import DegradingNode
@@ -68,6 +69,7 @@ __all__ = [
     "RepairableRBD",
     "FaultTree",
     "PhasedMission",
+    "Network",
     # Component models
     "NonRepairable",
     "Repairable",

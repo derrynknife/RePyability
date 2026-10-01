@@ -26,8 +26,9 @@ exponential (#90); a duty unit and its spares can be a standby group,
 repaired one unit at a time (#91); `spares_demand` and `spares_stock` count
 the spares each component uses and the stock to hold for a lead time (#95);
 a component can be replaced on condition at periodic inspections (#96);
-phased missions are new, exact and simulated (#100, #101), and so is
-demonstration test planning (#129). Meshed diagrams are decided by a
+phased missions are new, exact and simulated (#100, #101), as are the
+two-terminal reliability of undirected networks (#104) and demonstration
+test planning (#129). Meshed diagrams are decided by a
 binary decision diagram, in milliseconds where their path sets took
 minutes (#102, #103).
 
@@ -293,6 +294,21 @@ surpyval 0.21 is required.
   lifetimes), through the public methods, against the closed form of forty
   bridges in series, and by the whole test suite run with each route
   forced.
+- **Networks** (#104). `Network(links, source, target, nodes=None)` is
+  an undirected network whose links (each a name mapped to its two nodes
+  and a lifetime model or probability), and optionally nodes, fail. `sf`,
+  `ff` (to its own precision) and `mean` give the reliability of the
+  connection between the two terminals, exactly from the network's minimal
+  paths (each simple path between them, as its links and failing nodes)
+  by the exact engine's Shannon decomposition, up to 100,000 paths;
+  `path_sets`, `cut_sets` and `birnbaum_importance` come from the same
+  decomposition. `method="simulate"` and `random(size)` draw each
+  element's lifetime and find each sample's longest-lasting path, adding
+  links longest-lived first until the terminals join. Checked against the
+  bridge network's closed form, enumeration of link and node states on
+  random small networks, series and parallel networks against their
+  diagrams, means in closed form, and the simulation. A new guide page,
+  Networks.
 - **Demonstration test planning** (#129): how many units, or how long a
   test, demonstrates a reliability at a confidence level, and what a
   finished test demonstrated. `demonstration_sample_size` (the success run,

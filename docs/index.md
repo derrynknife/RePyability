@@ -106,6 +106,7 @@ result.criticalities.iou.up  # intersection-over-union importance (system up)
 | Fault trees | OR, AND and VOTE gates with repeated events; exact top event probability, minimal cut sets ranked by probability, importance measures; conversion to and from block diagrams | [Fault trees](guide/fault-trees.md) |
 | Reliability | Exact `sf`/`ff`, density, hazard, conditional survival, the exact MTTF (or simulated, with confidence intervals), B*X* life; uncertainty intervals from uncertain component models | [Reliability of a system](guide/reliability.md) |
 | Phased missions | Missions through phases with their own durations and diagrams over the same components: the exact mission reliability and the chance of failing in each phase, or simulated | [Phased missions](guide/phased-missions.md) |
+| Networks | Undirected networks with failing links and nodes: the exact two-terminal reliability, minimal paths and cuts, link importance and mean time to disconnection, or simulated | [Networks](guide/networks.md) |
 | Importance | Birnbaum, improvement potential, RAW, RRW, criticality, Fussell–Vesely, structural importance, parameter sensitivity | [Importance measures](guide/importance.md) |
 | Live state | Reliability, remaining life and importance given each component's age; covariate-dependent components and load schedules | [Condition-based evaluation](guide/condition-based.md) |
 | Redundancy | Cold, warm and hot standby, imperfect switching, repeated nodes, load sharing | [Redundancy models](guide/redundancy-models.md) |

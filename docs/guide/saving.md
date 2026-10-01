@@ -70,6 +70,7 @@ Every Monte-Carlo method takes a `seed`:
 | `RepairableRBD` | `availability`, `cost`, `compare`, `spares_demand` with `method="simulate"` |
 | Node models | `StandbyModel(seed=...)`, `LoadSharingModel(seed=...)`, `RepeatedNode.random`, `RepeatedNode.mean` with `method="simulate"`, `RepeatedStandbyNode.random`, `StandbyModel.random`, `LoadSharingModel.random` |
 | `PhasedMission` | `reliability`, `unreliability` and `phase_failure_probabilities` with `method="simulate"`, `reliability_interval` |
+| `Network` | `sf`, `ff` and `mean` with `method="simulate"`, `random` |
 | `Repairable` | every simulation-backed method |
 
 surpyval samples from numpy's **global** random number generator, so a seed
