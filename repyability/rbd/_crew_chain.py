@@ -56,12 +56,6 @@ class CrewChain(NamedTuple):
         column = self.up[:, self.nodes.index(node)]
         return float(self.probabilities @ column)
 
-    def unavailability(self, node) -> float:
-        """The long-run probability that ``node`` is down, summed over the
-        states it is down in, so that a small one keeps its precision."""
-        column = self.up[:, self.nodes.index(node)]
-        return float(self.probabilities @ (1 - column))
-
 
 def _queues(r: int) -> int:
     """How many queues ``r`` components can form: the ordered selections of

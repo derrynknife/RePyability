@@ -21,7 +21,6 @@ from repyability import (
     RepairableRBD,
     RepeatedNode,
 )
-from repyability.rbd.repairable_rbd import _inspected_unavailability
 
 #: Relative error allowed against an exact value: a few roundings.
 RTOL = 1e-14
@@ -295,14 +294,6 @@ def test_the_unit_unavailability_itself():
     # A unit some of whose units never fail ends up for good.
     cured = NonRepairable(E([0.01], p=0.9), E([0.5]))
     assert cured.mean_unavailability() == 0.0
-
-
-@pytest.mark.parametrize("x", np.logspace(-12, 1.5, 28))
-def test_the_unavailability_between_tests(x):
-    getcontext().prec = 60
-    X = Decimal(float(x))
-    want = 1 - (1 - (-X).exp()) / X
-    assert _inspected_unavailability(float(x)) == approx(float(want), 2e-15)
 
 
 @pytest.mark.parametrize("rate", [1e-5, 1e-8, 1e-11])

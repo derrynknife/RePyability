@@ -1788,21 +1788,6 @@ _UNSTREAMED = (
 )
 
 
-def _inspected_unavailability(x: float) -> float:
-    """The long-run unavailability ``1 - (1 - exp(-x)) / x`` of a unit with
-    a constant failure rate, found failed only by tests (instant, with an
-    instant repair), ``x`` the rate times the test interval: about
-    ``x / 2``. Worked out so that a small one keeps its precision, by its
-    series ``x / 2! - x**2 / 3! + x**3 / 4! - ...`` below 1/2, where the
-    subtraction would cancel."""
-    if x >= 0.5:
-        return float((x + np.expm1(-x)) / x)
-    total = 0.0
-    for k in range(16, 0, -1):
-        total = 1.0 / math.factorial(k + 1) - x * total
-    return float(x * total)
-
-
 def _common_period(intervals: Iterable[float]) -> float:
     """The least common multiple of the inspection intervals: the period
     after which the schedules repeat together."""
@@ -9432,21 +9417,15 @@ class RepairableRBD(RBD):
         return min(1.0, up / cycle)
 
     def _node_unavailability(self, node) -> float:
-        """A component's long-run unavailability: as ``_node_availability``
-        gives its availability, but worked out in its own right (from the
-        down states, or the mean down time over the cycle), so that a small
-        one keeps its precision."""
+        """A component's long-run unavailability, as ``_node_availability``
+        gives its availability, but worked out in its own right (from a
+        standby group's down states, or the mean down time over a cycle),
+        so that a small one keeps its precision. For a component whose
+        value is constant over the long-run grid, and while the crews do
+        not couple the components (see ``_long_run_unavailabilities``)."""
         self._require_perfect_repair(node)
-        if self._crews_couple():
-            chain = self._crew_chain()
-            if node in chain.nodes:
-                return chain.unavailability(node)
-            return float(self.components[node].mean_unavailability())
         if node in self._standby:
             return self._standby_long_run(node).unavailability
-        if node in self._inspection:
-            rate, interval = self._inspected_rate(node)
-            return _inspected_unavailability(rate * interval)
         component = self.components[node]
         schedule = self._preventive.get(node)
         if schedule is None:
@@ -9901,8 +9880,9 @@ class RepairableRBD(RBD):
         """Every node's unavailability at each of ``times``, as
         ``_availabilities_at`` gives their availabilities, each worked out
         in its own right so that a small one keeps its precision:
-        ``1 - exp(-lambda * u)`` by ``expm1`` for a component with hidden
-        failures, ``_node_unavailability`` for one whose value is constant.
+        ``1 - exp(-lambda * u)`` by ``expm1`` at a time ``u`` since a test,
+        for a component with hidden failures, and ``_node_unavailability``
+        for one whose value is constant.
         (A block-replaced component's profile is numerical, to about 1e-7,
         so one less it loses nothing.)"""
         out: dict = {}
