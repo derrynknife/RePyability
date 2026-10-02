@@ -7,10 +7,11 @@ its draws come from its own streams (see ``_streams``) -- in any structure,
 with components held working or broken, antithetic pairs, common random
 numbers and costs, under age and block replacement, with hidden failures
 found by periodic tests, with fewer repair crews than components, with
-standby groups, and with nested RBDs of up to ``MAX_TABLED`` components
+standby groups, with nested RBDs of up to ``MAX_TABLED`` components, and
+following the capacity of a system of up to ``MAX_TRACED`` components
 (#155). Anything else (replacement on condition, maintenance groups,
-imperfect repair, capacities, models whose draws cannot be streamed) runs
-in Python, which ``engine="auto"`` chooses by itself.
+imperfect repair, models whose draws cannot be streamed) runs in Python,
+which ``engine="auto"`` chooses by itself.
 
 The two engines give the same results to the last bit: the compiled loop
 (``_kernel``) is the Python one over arrays, reading the same draws, and
@@ -24,9 +25,10 @@ nothing when numba is not installed.
 Other packages can add compiled engines of their own (see ``engines``):
 ``engine="auto"`` runs the one of highest priority, numba's being 0, on
 what ``unsupported`` allows: plain components. Age and block
-replacement, inspections, repair crews, standby groups and nested RBDs are
-numba's own loop's (``unsupported(..., numba=True)``), so a system with
-them runs on numba, not on an engine of the interface's version.
+replacement, inspections, repair crews, standby groups, nested RBDs and
+capacities are numba's own loop's (``unsupported(..., numba=True)``), so a
+system with them runs on numba, not on an engine of the interface's
+version.
 """
 
 import importlib.util
@@ -50,6 +52,9 @@ AUTO_DRAWS = 1_000_000
 #: About the most memory a batch of simulations takes: its draws, and room
 #: for its systems' changes of state.
 BATCH_BYTES = 64 * 2**20
+#: The most components whose capacity numba's own loop follows (the
+#: components up after each change, as the bits of an integer).
+MAX_TRACED = 63
 #: The most simulations in a batch.
 MAX_BATCH = 65536
 #: The most components for which the compiled loop looks the system's state
@@ -83,11 +88,18 @@ def unsupported(
     of the interface's version (see engines) simulates plain
     components; with numba, numba's own loop also simulates age and
     block replacement, inspections of hidden failures, repair crews,
-    standby groups and nested RBDs of up to MAX_TABLED components
-    (#155), from new for maintenance, inspections and nested RBDs (a run
-    from the components' states shifts their calendars)."""
+    standby groups, nested RBDs of up to MAX_TABLED components and the
+    capacity of a system of up to MAX_TRACED components (#155), from new
+    for maintenance, inspections and nested RBDs (a run from the
+    components' states shifts their calendars)."""
     if capacity is not None:
-        return "capacities"
+        if not numba:
+            return "capacities"
+        if len(rbd.components) > MAX_TRACED:
+            return (
+                f"capacities of more than {MAX_TRACED} components (the "
+                "states it follows are bits of 64)"
+            )
     if any(kind == _streams.START for _, kind in plan.specs):
         return "components started from a state"
     if (
@@ -860,14 +872,35 @@ class _Store:
 
 class Runner:
     """Runs a run's simulations compiled, a batch at a time, and adds them
-    to the tally in order (see ``RepairableRBD._run``)."""
+    to the tally in order (see ``RepairableRBD._run``). With ``capacity``
+    (the run's ``_CapacityRecorder``; numba's own loop only), it follows
+    the system's capacity too (see ``_capacity_into``)."""
 
     def __init__(
-        self, rbd, plan, tally, progress, working, broken, method, jobs
+        self,
+        rbd,
+        plan,
+        tally,
+        progress,
+        working,
+        broken,
+        method,
+        jobs,
+        capacity=None,
     ):
         from repyability.rbd import _kernel
 
         self._kernel = _kernel
+        self._capacity = capacity
+        self._nodes = list(rbd.components)
+        #: The capacity states met so far, by the components up in them as
+        #: bits: their indices into ``_table`` (see ``_kernel.
+        #: trace_capacity``), and the table's columns; and the capacity
+        #: levels met, by their indices in the table.
+        self._states: dict = {}
+        self._columns: list = [[], [], [], [], [], [], []]
+        self._table: Optional[tuple] = None
+        self._levels: dict = {}
         self._tally = tally
         self._progress = progress
         self._t = float(tally.t_simulation)
@@ -882,7 +915,10 @@ class Runner:
             self._pool = ThreadPoolExecutor(self._threads)
         self._store = _Store(plan, self._model.specs, self._pool)
         rows = sum(spec.rows for spec in self._model.specs)
-        size = BATCH_BYTES // (8 * rows + 9 * self._model.room)
+        # The draws, the system's changes and, following the capacity, each
+        # component's change.
+        room = (9 + (16 if capacity is not None else 0)) * self._model.room
+        size = BATCH_BYTES // (8 * rows + room)
         widest = int(np.max(self._store.columns, initial=1))
         if size >= widest:
             size -= size % widest
@@ -905,6 +941,7 @@ class Runner:
         out = self._out
         if out is None or out[5].shape[1] != model.room:
             batch, n, room = self._batch, model.n, model.room
+            traced = room if self._capacity is not None else 0
             out = self._out = (
                 np.empty(batch),
                 np.empty((batch, n, 3)),
@@ -917,6 +954,10 @@ class Runner:
                 np.empty((batch, len(_CATEGORIES))),
                 np.empty((batch, max(len(model.costed), 1))),
                 np.empty(batch, np.int64),
+                np.empty(batch, np.int64),
+                np.empty(batch, np.int64),
+                np.empty((batch, traced)),
+                np.empty((batch, traced), np.int64),
             )
         return tuple(array[:size] for array in out)
 
@@ -939,7 +980,7 @@ class Runner:
         simulation has its draws; ``"room"`` if one ran out of room for its
         changes of state, else None."""
         kernel = self._kernel
-        status = out[-1]
+        status = out[10]
         while todo.size:
             draws = self._draws(first, stop)
             if self._threads > 1:
@@ -1010,6 +1051,10 @@ class Runner:
             by_category,
             by_node,
             _,
+            cap_start,
+            cap_count,
+            cap_times,
+            cap_masks,
         ) = out
         tally = self._tally
         tally.n += size
@@ -1029,6 +1074,91 @@ class Runner:
             tally.cost_samples.extend(cost.tolist())
             costed = len(self._model.costed)
             tally.fold_costs(np.hstack([by_category, by_node[:, :costed]]))
+        if self._capacity is not None:
+            self._capacity_into(
+                tally, cap_start, cap_count, cap_times, cap_masks
+            )
+
+    def _states_of(self, masks: np.ndarray) -> np.ndarray:
+        """The indices of the capacity states with the components up that
+        ``masks``' bits say (``_CapacityRecorder``'s, each worked out once,
+        those not met yet together)."""
+        known = self._states
+        new = [mask for mask in masks.tolist() if mask not in known]
+        if new:
+            bits = np.arange(len(self._nodes))
+            up = (np.array(new, dtype=np.int64)[:, None] >> bits) & 1
+            columns, levels = self._columns, self._levels
+            for mask, state in zip(
+                new, self._capacity.evaluate(self._nodes, up)
+            ):
+                known[mask] = len(columns[0])
+                columns[0].append(state.finite_mean)
+                columns[1].append(state.unlimited)
+                columns[2].append(state.delivered)
+                columns[3].append(len(columns[5]))
+                columns[4].append(len(state.levels))
+                columns[5].extend(
+                    levels.setdefault(level, len(levels))
+                    for level in state.levels
+                )
+                columns[6].extend(state.probabilities)
+            self._table = None
+        return np.array([known[mask] for mask in masks.tolist()], np.int64)
+
+    def _capacity_into(self, tally, starts, counts, times, masks) -> None:
+        """Follow the capacity of a batch's simulations from what the loop
+        recorded (see ``_kernel.trace_capacity``), and add it to the tally
+        as ``_Tally.add`` adds each simulation's: its exact totals the
+        same in any order."""
+        from repyability.rbd._exact import ExactSum
+        from repyability.rbd.repairable_rbd import _add_at
+
+        kept = np.arange(times.shape[1]) < counts[:, None]
+        visited = np.unique(np.concatenate([starts, masks[kept]]))
+        indices = self._states_of(visited)
+        if self._table is None:
+            columns = self._columns
+            self._table = (
+                np.array(columns[0], float),
+                np.array(columns[1], np.int64),
+                np.array(columns[2], float),
+                np.array(columns[3], np.int64),
+                np.array(columns[4], np.int64),
+                np.array(columns[5], np.int64),
+                np.array(columns[6], float),
+            )
+        (
+            change_times,
+            change_steps,
+            free_times,
+            free_steps,
+            spent,
+            offsets,
+            share,
+        ) = self._kernel.trace_capacity(
+            starts,
+            counts,
+            times,
+            masks,
+            visited,
+            indices,
+            self._t,
+            self._table,
+        )
+        tally.capacity_arrays.append(
+            (change_times, change_steps, free_times, free_steps)
+        )
+        levels = list(self._levels)
+        for k in np.flatnonzero(np.diff(offsets)).tolist():
+            a, b = offsets[k], offsets[k + 1]
+            _add_at(
+                tally.capacity_time,
+                levels[k],
+                float(spent[a]) if b - a == 1 else ExactSum(spent[a:b]),
+            )
+        if self._capacity.demand is not None:
+            tally.delivered.extend(share.tolist())
 
     def close(self) -> None:
         if self._pool is not None:

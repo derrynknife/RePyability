@@ -284,7 +284,12 @@ year.capacity_time[100.0] / (500 * 8760)   # -> 0.10638   the time at 100
 The simulation draws only when components fail and are repaired, exactly
 as without capacities, so the availability results are unchanged. A node
 working at several levels counts at each in proportion to its
-probability. Nodes that take their capacity from their models (a
+probability. The capacity of each set of components down that the
+simulations meet is worked out once, and those a simulation meets first
+(a batch of simulations, compiled) together, when every node works at one
+level. A large system can meet many: 62 components in redundant pairs met
+90 000 in 500 simulations of 1 000 hours, which took 16 seconds in Python
+and under 3 compiled. Nodes that take their capacity from their models (a
 `DegradingNode`'s stages, or a nested RBD's capacities) are not followed:
 give them a capacity, or use the exact `point_capacity` and
 `mission_capacity`, or the long-run `capacity_distribution()`.

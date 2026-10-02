@@ -13,6 +13,7 @@ import surpyval as surv
 
 from repyability import NonRepairableRBD, RepairableRBD, SimulationChunk
 from repyability.rbd._exact import ExactSum, expansion
+from repyability.rbd.repairable_rbd import _group_totals, _Tally
 
 E, W = surv.Exponential.from_params, surv.Weibull.from_params
 
@@ -196,6 +197,65 @@ def test_chunks_follow_the_capacity():
     assert np.array_equal(merged.delivered, whole.delivered)
     assert np.array_equal(merged.capacity_timeline, whole.capacity_timeline)
     assert identical(merged, whole)
+
+
+@pytest.mark.parametrize("engine", ["python", "numba"])
+def test_a_capacity_chunk_is_saved_alike_by_either_engine(engine):
+    # Each time's change of the capacity curve is saved as its exact total
+    # (#155): the same chunk from either engine, and through JSON.
+    if engine == "numba":
+        pytest.importorskip("numba")
+    rbd = RepairableRBD(
+        EDGES,
+        {
+            node: {"reliability": E([0.1]), "repairability": E([1.0])}
+            for node in "ABC"
+        },
+        capacity={"A": {60.0: 0.5, 30.0: 0.5}},
+    )
+    run = dict(seed=2, demand=100.0)
+    python = rbd.simulate_chunk(50.0, 0, 200, engine="python", **run)
+    chunk = rbd.simulate_chunk(50.0, 0, 200, engine=engine, **run)
+    saved = python.to_dict()["totals"]
+    assert saved["unlimited_changes"]  # unlimited while B and C work
+    assert chunk.to_dict()["totals"] == saved
+    back = SimulationChunk.from_json(chunk.to_json())
+    assert back.to_dict()["totals"] == saved
+
+
+def test_capacity_changes_at_one_time_add_up_exactly():
+    tally = _Tally(["a"], {}, 10.0)
+    for time, step in [
+        (1.0, 1e100),
+        (2.0, 5.0),
+        (1.0, 1.0),
+        (3.0, 2.0),
+        (1.0, -1e100),
+        (3.0, -2.0),
+    ]:
+        tally.capacity_times.append(time)
+        tally.capacity_steps.append(step)
+    for time, step in [(3.0, 1), (4.0, -1), (4.0, 1)]:
+        tally.unlimited_times.append(time)
+        tally.unlimited_steps.append(step)
+    at, steps, starts, free_at, counts = tally.capacity_changes()
+    assert at.tolist() == [1.0, 2.0, 3.0]
+    assert _group_totals(steps, starts).tolist() == [1.0, 5.0, 0.0]
+    assert (free_at.tolist(), counts.tolist()) == ([3.0, 4.0], [1, 0])
+    # A time whose changes cancel out is kept, as no change.
+    saved = tally.to_dict()
+    assert saved["capacity_changes"] == [(1.0, [1.0]), (2.0, [5.0]), (3.0, [])]
+    assert saved["unlimited_changes"] == [(3.0, 1), (4.0, 0)]
+    back = _Tally.from_dict(saved)
+    assert back.to_dict() == saved
+    back.merge(_Tally.from_dict(saved))
+    merged = back.to_dict()
+    assert merged["capacity_changes"] == [
+        (1.0, [2.0]),
+        (2.0, [10.0]),
+        (3.0, []),
+    ]
+    assert merged["unlimited_changes"] == [(3.0, 2), (4.0, 0)]
 
 
 @pytest.mark.parametrize(

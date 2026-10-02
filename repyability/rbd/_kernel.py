@@ -1,17 +1,19 @@
 """The compiled event loop of ``RepairableRBD`` simulations (numba).
 
 ``_simulate`` is ``RepairableRBD._replicate`` for components that are
-plain ``NonRepairable`` units or standby groups of them, under age or
-block replacement, inspected for hidden failures or neither, and with as
-many repair crews as needed or fewer (#155), operation for operation, over
-arrays: the same heap
-(``heapq``'s algorithm, so equal times come out in the same order), the
-same arithmetic in the same order, and the draws read from the same keyed
-streams (see ``_streams``). Each simulation's results go to its own row
-of the output arrays, so the rows can be worked out in any order, on any
-number of threads, and a simulation that runs out of draws (or of room for
-its system's changes) is simply run again once there is more.
-``_compiled`` prepares the arrays and adds the rows to the tally in order.
+plain ``NonRepairable`` units, standby groups of them or nested RBDs,
+under age or block replacement, inspected for hidden failures or neither,
+and with as many repair crews as needed or fewer (#155), operation for
+operation, over arrays: the same heap (``heapq``'s algorithm, so equal
+times come out in the same order), the same arithmetic in the same order,
+and the draws read from the same keyed streams (see ``_streams``). Each
+simulation's results go to its own row of the output arrays, so the rows
+can be worked out in any order, on any number of threads, and a
+simulation that runs out of draws (or of room for its system's changes)
+is simply run again once there is more. ``_compiled`` prepares the arrays
+and adds the rows to the tally in order. Following the system's capacity,
+the loop records each change of a component's state, which
+``trace_capacity`` turns into ``_CapacityTrace``'s records.
 
 Importing this module imports numba, which compiles the loop on first use
 (or loads it from numba's cache).
@@ -1192,7 +1194,16 @@ def _simulate(
         category_out,
         node_cost_out,
         status_out,
+        cap_start,
+        cap_count,
+        cap_times,
+        cap_masks,
     ) = out
+    # Whether the run follows the system's capacity (#155): the components
+    # up at the start, as bits, and each change of a component's state, its
+    # time and the components up after it (see ``trace_capacity``).
+    tracing = cap_times.shape[1] > 0
+    traced_room = cap_times.shape[1]
     # The system's own components, and every level's.
     n = node_out.shape[1]
     n_all = start.size
@@ -1536,6 +1547,13 @@ def _simulate(
             if size < 0:
                 code = -1
                 break
+        traced = 0
+        traced_n = 0
+        if tracing:
+            for c in range(n):
+                if status[c]:
+                    traced |= 1 << c
+            cap_start[row] = traced
         up = initial_up
         system_up = 0.0
         system_down = 0.0
@@ -1773,6 +1791,18 @@ def _simulate(
                     working_paths = _keep(
                         kept, value, count, down, c, state, working_paths
                     )
+                if tracing:
+                    # The capacity trace's record (_CapacityTrace.change).
+                    if state:
+                        traced |= 1 << c
+                    else:
+                        traced &= ~(1 << c)
+                    if traced_n == traced_room:
+                        code = -1
+                        break
+                    cap_times[row, traced_n] = t
+                    cap_masks[row, traced_n] = traced
+                    traced_n += 1
                 if state:
                     counts_out[row, 2, c] += 1
                 elif kind_now == _PM_START:
@@ -2066,6 +2096,116 @@ def _simulate(
         system_out[row, 1] = restorations
         system_out[row, 2] = planned
         change_count[row] = changes
+        cap_count[row] = traced_n
+
+
+@njit(cache=True)
+def trace_capacity(
+    starts, counts, times, masks, visited, indices, t_end, table
+):
+    """``_CapacityTrace`` for each simulation of a batch, from its record:
+    the components up at its start (``starts``, as bits), and the time of
+    each change of a component's state and the components up after it
+    (``masks``). Each set of components up is one of ``visited``, in the
+    state of ``table`` that ``indices`` gives: each state's expected finite
+    capacity, whether it can be unlimited, the fraction of the demand it
+    delivers, and its levels (as indices into the run's) and their
+    chances, from the first of each in ``levels`` and ``chances``.
+
+    With ``_CapacityTrace``'s arithmetic, in its order: the changes of the
+    expected capacity (times and changes, the start's included, none of
+    them 0), the changes of whether it can be unlimited (likewise), the
+    time spent at each level, grouped by level (from ``offsets[k]`` to
+    ``offsets[k + 1]`` for level ``k``), and each simulation's fraction of
+    the demand delivered. ``starts`` and ``masks`` are overwritten with the
+    states."""
+    mean, unlimited, delivered, first, length, levels, chances = table
+    # The states, and how many times are spent at each level (a first pass,
+    # so that each level's times can be put together).
+    distinct = 0
+    for q in range(levels.size):
+        distinct = max(distinct, levels[q] + 1)
+    met = np.zeros(distinct, np.int64)
+    records = 0
+    for i in range(starts.size):
+        state = indices[np.searchsorted(visited, starts[i])]
+        starts[i] = state
+        since = 0.0
+        for j in range(counts[i] + 1):
+            if j < counts[i]:
+                time = times[i, j]
+                new = indices[np.searchsorted(visited, masks[i, j])]
+                masks[i, j] = new
+            else:
+                time = t_end
+                new = state
+            if time - since > 0.0:
+                for q in range(first[state], first[state] + length[state]):
+                    met[levels[q]] += 1
+            since = time
+            state = new
+        records += counts[i] + 1
+    offsets = np.zeros(met.size + 1, np.int64)
+    for k in range(met.size):
+        offsets[k + 1] = offsets[k] + met[k]
+    spent = np.empty(offsets[-1])
+    filled = offsets[:-1].copy()
+    change_times = np.empty(records)
+    change_steps = np.empty(records)
+    free_times = np.empty(records)
+    free_steps = np.empty(records, np.int64)
+    share = np.empty(starts.size)
+    made = 0
+    freed = 0
+    for i in range(starts.size):
+        state = starts[i]
+        since = 0.0
+        total = 0.0
+        if mean[state] != 0.0:
+            change_times[made] = 0.0
+            change_steps[made] = mean[state]
+            made += 1
+        if unlimited[state] != 0:
+            free_times[freed] = 0.0
+            free_steps[freed] = unlimited[state]
+            freed += 1
+        for j in range(counts[i] + 1):
+            if j < counts[i]:
+                time = times[i, j]
+                new = masks[i, j]
+            else:
+                time = t_end
+                new = -1
+            span = time - since
+            if span > 0.0:
+                for q in range(first[state], first[state] + length[state]):
+                    k = levels[q]
+                    spent[filled[k]] = chances[q] * span
+                    filled[k] += 1
+                total += delivered[state] * span
+            since = time
+            if new >= 0:
+                step = mean[new] - mean[state]
+                limitless = unlimited[new] - unlimited[state]
+                if step != 0.0:
+                    change_times[made] = time
+                    change_steps[made] = step
+                    made += 1
+                if limitless != 0:
+                    free_times[freed] = time
+                    free_steps[freed] = limitless
+                    freed += 1
+                state = new
+        share[i] = total / t_end
+    return (
+        change_times[:made],
+        change_steps[:made],
+        free_times[:freed],
+        free_steps[:freed],
+        spent,
+        offsets,
+        share,
+    )
 
 
 @njit(cache=True, nogil=True)

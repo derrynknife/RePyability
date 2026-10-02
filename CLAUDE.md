@@ -39,11 +39,18 @@
   written from the streams' definition. What the compiled engine does not
   simulate, `_compiled.unsupported` sends to Python: numba's own loop takes
   `numba=True`, as it also runs maintenance, inspections, repair crews,
-  standby groups and nested RBDs (#155), while engines from other packages
-  keep the plain-components contract. Inside `_kernel`, the system's own
-  events (`_simulate`) and a nested RBD's (`_advance`, which copies
-  `RepairableRBD.next_event`) are written out separately, for speed: a
-  change to one goes into the other too.
+  standby groups, nested RBDs and capacities (#155), while engines from
+  other packages keep the plain-components contract. Inside `_kernel`, the
+  system's own events (`_simulate`) and a nested RBD's (`_advance`, which
+  copies `RepairableRBD.next_event`) are written out separately, for speed:
+  a change to one goes into the other too.
+- **Capacity states are worked out in batches**
+  (`_CapacityRecorder.evaluate`): a simulation's in Python, a batch's
+  compiled, so a state's capacity must not depend on what is worked out
+  with it. It does not while every node works at one level (each
+  probability is then 0 or 1, and every sum exact); with several levels
+  each state is worked out on its own. Keep to that if the batching
+  changes: `test_states_worked_out_together_are_each_on_its_own` checks it.
 - **Engines from other packages** (`repyability/rbd/engines.py`) run what
   `_compiled.unsupported` allows and are handed the run's own objects (the
   `_compiled.Runner` arguments), so they may build on `_compiled`'s

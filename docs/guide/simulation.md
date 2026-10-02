@@ -607,11 +607,12 @@ replacement, in zero time or taking time; hidden failures found by
 periodic tests, in zero time or taking time, staggered, and with a coverage
 below 1 (a failure a test misses waits for a full test); fewer repair
 crews than components, the jobs waiting by priority; standby groups,
-cold, warm or hot, with switches that can fail; and nested RBDs of up to 20
-components, each stepped to its next change as in Python. Replacement on
-condition, maintenance groups, imperfect repair, capacities, a run from the
-components' states with maintenance, tests or nested RBDs, and other
-models run in Python, which `"auto"` chooses by itself. With `n_jobs` it
+cold, warm or hot, with switches that can fail; nested RBDs of up to 20
+components, each stepped to its next change as in Python; and the system's
+capacity over time, on systems of up to 63 components. Replacement on
+condition, maintenance groups, imperfect repair, a run from the components'
+states with maintenance, tests or nested RBDs, and other models run in
+Python, which `"auto"` chooses by itself. With `n_jobs` it
 runs on that many threads, which start at once. Under age replacement (half
 the units maintained in zero time, half taking time), the compiled engine
 ran 9 to 12 times as fast as Python on one thread, and 18 to 29 times on
@@ -621,8 +622,11 @@ in ten), 17 to 27 times on one thread, and 32 to 63 on four; with one,
 two and four crews, 13, 9 and 5 times on one thread, and 19, 25 and 8 on
 four (on the 70 components, drawing the numbers and adding up the results
 take most of the time); with half the nodes standby groups of three
-units, 6 to 8 times on one thread, and 7 to 19 on four; and with every
-node a nested pair, 6 times on one thread and 17 to 18 on four.
+units, 6 to 8 times on one thread, and 7 to 19 on four; with every node a
+nested pair, 6 times on one thread and 17 to 18 on four; and following
+capacities, 10, 13 and 6 times on one thread, and 11, 16 and 6 on four, on
+3, 12 and 62 components (on 62, working out the capacity of each set of
+components down that the simulations meet takes most of the time).
 
 On a four-core 2.8 GHz Xeon, in millions of events (failures and repairs)
 a second:

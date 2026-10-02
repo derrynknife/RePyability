@@ -237,6 +237,31 @@ is required.
   A run from the components' states keeps a system with nested RBDs in
   Python, as do a nested RBD of more than 20 components and what Python
   alone simulates anywhere inside one.
+- **Capacities compiled** (#155). The compiled engine follows a system's
+  capacity over time too, on systems of up to 63 components: the loop
+  records each change of a component's state and the components up after
+  it (as the bits of an integer), and a second compiled pass turns the
+  records into the Python trace's changes of the expected capacity, time at
+  each level and fraction of the demand delivered, with its arithmetic in
+  its order. The engines agree to the last bit on capacities of one level
+  and of several, unlimited nodes, a demand given and the design
+  capacity's, maintenance, tests, crews and standby groups, a nested RBD's
+  capacity, and a system too large for the table of states. It ran 10, 13
+  and 6 times as fast as Python on one thread, and 11, 16 and 6 times on
+  four, on 3, 12 and 62 components (on 62, working out the capacity of the
+  90 000 sets of components down that 500 simulations met takes most of
+  the time).
+- **Faster capacity simulations** (#155). The capacity of each set of
+  components down that a run meets is worked out once, and now those a
+  simulation meets first (a batch of simulations, compiled) are worked out
+  together when every node works at one level: each probability is then 0
+  or 1, so each comes out exactly as on its own (with a node of several
+  levels, each is still worked out on its own). On those 62 components the
+  Python engine took 16 s rather than 11 minutes. Both engines also keep a
+  run's changes of capacity in arrays rather than one entry per time: on a
+  million changes, a fifth of the memory, and the result built four times
+  as fast. The results are the same, to the last bit, and saved chunks are
+  unchanged.
 - **The compiled engine's threads are Python's** (#155). With ``n_jobs``
   the compiled loop runs on a pool of threads, releasing the GIL, rather
   than on numba's ``prange``, which compiled the whole loop a second time:

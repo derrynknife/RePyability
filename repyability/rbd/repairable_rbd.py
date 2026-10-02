@@ -992,6 +992,55 @@ def _partials(value) -> list:
     return value.partials if isinstance(value, ExactSum) else [value]
 
 
+def _by_time(
+    times: np.ndarray, values: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``values`` grouped by their ``times``: the distinct times, in order;
+    the values, in the order of their times; and where each time's values
+    start."""
+    order = np.argsort(times, kind="stable")
+    times, values = times[order], values[order]
+    new = np.ones(times.size, dtype=bool)
+    new[1:] = times[1:] != times[:-1]
+    starts = np.flatnonzero(new)
+    return times[starts], values, starts
+
+
+def _group_stops(values: np.ndarray, starts: np.ndarray) -> np.ndarray:
+    """Where each group of ``values`` that starts at one of ``starts``
+    stops."""
+    stops = np.empty_like(starts)
+    stops[:-1] = starts[1:]
+    stops[-1:] = values.size
+    return stops
+
+
+def _group_totals(values: np.ndarray, starts: np.ndarray) -> np.ndarray:
+    """The exact sum of each group of ``values`` (from each of ``starts``
+    to the next), rounded once: a group of one value, the value."""
+    totals = values[starts]
+    stops = _group_stops(values, starts)
+    for i in np.flatnonzero(stops - starts > 1).tolist():
+        totals[i] = float(ExactSum(values[starts[i] : stops[i]]))  # noqa: E203
+    return totals
+
+
+def _group_partials(values: np.ndarray, starts: np.ndarray) -> list:
+    """For each group of ``values`` (from each of ``starts`` to the next),
+    the floats whose exact sum is the group's (``ExactSum.partials``: none
+    for a sum of 0)."""
+    stops = _group_stops(values, starts)
+    out = []
+    for a, b, first in zip(
+        starts.tolist(), stops.tolist(), values[starts].tolist()
+    ):
+        if b - a == 1:
+            out.append([first] if first else [])
+        else:
+            out.append(ExactSum(values[a:b]).partials)
+    return out
+
+
 def _exact_total(data) -> ExactSum:
     """An exact total from ``_Tally.to_dict``'s data: the floats whose
     exact sum it is (or a number)."""
@@ -1068,13 +1117,18 @@ class _Tally:
         self.cost_samples: List[float] = []
         self.cost_by_category = {key: ExactSum() for key in _CATEGORIES}
         self.cost_by_component = {node: ExactSum() for node in costs}
-        # With capacities (see _CapacityRecorder): time -> net change in the
-        # simulated systems' total expected capacity (exactly, see
-        # _add_at), and in how many of them can carry an unlimited amount;
-        # the time spent at each capacity; and each replication's delivered
-        # fraction of the demand, in order.
-        self.capacity_changes: dict = {}
-        self.unlimited_changes: dict = defaultdict(int)
+        # With capacities (see _CapacityRecorder): the times a simulated
+        # system's expected capacity changed and by how much, and the times
+        # whether it can carry an unlimited amount did (+1 or -1), as lists
+        # from the Python engine and arrays from the compiled one (see
+        # capacity_records); the time spent at each capacity (exactly, see
+        # _add_at); and each replication's delivered fraction of the
+        # demand, in order.
+        self.capacity_times: list = []
+        self.capacity_steps: list = []
+        self.unlimited_times: list = []
+        self.unlimited_steps: list = []
+        self.capacity_arrays: list = []
         self.capacity_time: dict = {}
         self.delivered: List[float] = []
         # Each replication's replacements of each node, when asked for
@@ -1105,12 +1159,13 @@ class _Tally:
         if len(self._rows) >= self._ROWS:
             self._fold()
         if rec.capacity_changes is not None:
-            capacity, unlimited = self.capacity_changes, self.unlimited_changes
             for time, mean, limitless in rec.capacity_changes:
                 if mean:
-                    _add_at(capacity, time, mean)
+                    self.capacity_times.append(time)
+                    self.capacity_steps.append(mean)
                 if limitless:
-                    unlimited[time] += limitless
+                    self.unlimited_times.append(time)
+                    self.unlimited_steps.append(limitless)
             spent = self.capacity_time
             for level, time in rec.capacity_time or ():
                 _add_at(spent, level, time)
@@ -1163,11 +1218,22 @@ class _Tally:
         if self._cost_rows:
             self.fold_costs(np.asarray(self._cost_rows, dtype=float))
             self._cost_rows = []
+        if self.capacity_times or self.unlimited_times:
+            self.capacity_arrays.append(
+                (
+                    np.asarray(self.capacity_times, dtype=float),
+                    np.asarray(self.capacity_steps, dtype=float),
+                    np.asarray(self.unlimited_times, dtype=float),
+                    np.asarray(self.unlimited_steps, dtype=np.int64),
+                )
+            )
+            self.capacity_times, self.capacity_steps = [], []
+            self.unlimited_times, self.unlimited_steps = [], []
 
     def compact(self) -> "_Tally":
         """This tally with its simulations' values folded into the totals
-        and its changes of state in arrays: small to send from a worker
-        process to the parent (see ``_simulate_block``)."""
+        and its changes of state (and of capacity) in arrays: small to send
+        from a worker process to the parent (see ``_simulate_block``)."""
         self._fold()
         if self.changes:
             times, deltas = self.state_changes()
@@ -1230,6 +1296,45 @@ class _Tally:
             deltas.append(chunk_deltas)
         return np.concatenate(times) + 0.0, np.concatenate(deltas)
 
+    def capacity_records(self) -> Tuple[np.ndarray, ...]:
+        """Every change of a simulated system's expected capacity, as
+        times (``-0.0`` made ``0.0``) and changes, whose exact sum at a
+        time is the total change then; and every change of whether it can
+        carry an unlimited amount, as times and +1 or -1 (see
+        ``capacity_changes``)."""
+        times = [np.asarray(self.capacity_times, dtype=float)]
+        steps = [np.asarray(self.capacity_steps, dtype=float)]
+        free_times = [np.asarray(self.unlimited_times, dtype=float)]
+        free_steps = [np.asarray(self.unlimited_steps, dtype=np.int64)]
+        for arrays in self.capacity_arrays:
+            for kept, array in zip(
+                (times, steps, free_times, free_steps), arrays
+            ):
+                kept.append(array)
+        return (
+            np.concatenate(times) + 0.0,
+            np.concatenate(steps),
+            np.concatenate(free_times) + 0.0,
+            np.concatenate(free_steps),
+        )
+
+    def capacity_changes(self) -> Tuple[np.ndarray, ...]:
+        """The times a simulated system's expected capacity changed, in
+        order, the changes then, in the order of their times, and where
+        each time's changes start (their exact sum is the total change
+        then, see ``_group_totals``); and the times whether it can carry an
+        unlimited amount changed, in order, and the net change then in how
+        many can."""
+        times, steps, free_times, free_steps = self.capacity_records()
+        at, steps, starts = _by_time(times, steps)
+        free_at, free_steps, free_starts = _by_time(free_times, free_steps)
+        counts = (
+            np.add.reduceat(free_steps, free_starts)
+            if free_steps.size
+            else free_steps
+        )
+        return at, steps, starts, free_at, counts
+
     # The totals that are lists of floats, one per node, and the counts.
     _NODE_SUMS = (
         "node_uptime",
@@ -1277,10 +1382,7 @@ class _Tally:
             self.cost_by_category[key].add(amount)
         for node, amount in other.cost_by_component.items():
             self.cost_by_component[node].add(amount)
-        for time, change in other.capacity_changes.items():
-            _add_at(self.capacity_changes, time, change)
-        for time, change in other.unlimited_changes.items():
-            self.unlimited_changes[time] += change
+        self.capacity_arrays.append(other.capacity_records())
         for level, time in other.capacity_time.items():
             _add_at(self.capacity_time, level, time)
         self.delivered.extend(other.delivered)
@@ -1293,6 +1395,7 @@ class _Tally:
         exact total as the floats whose exact sum it is."""
         self._fold()
         times, deltas = self.state_changes()
+        at, steps, starts, free_at, counts = self.capacity_changes()
         return {
             "nodes": list(self.nodes),
             "t_simulation": self.t_simulation,
@@ -1319,11 +1422,10 @@ class _Tally:
                 [node, amount.partials]
                 for node, amount in self.cost_by_component.items()
             ],
-            "capacity_changes": sorted(
-                (time, _partials(change))
-                for time, change in self.capacity_changes.items()
+            "capacity_changes": list(
+                zip(at.tolist(), _group_partials(steps, starts))
             ),
-            "unlimited_changes": sorted(self.unlimited_changes.items()),
+            "unlimited_changes": list(zip(free_at.tolist(), counts.tolist())),
             "capacity_time": sorted(
                 (level, _partials(time))
                 for level, time in self.capacity_time.items()
@@ -1372,12 +1474,16 @@ class _Tally:
             _node_name(node): _exact_total(amount)
             for node, amount in data["cost_by_component"]
         }
-        for name in ("capacity_changes", "capacity_time"):
-            totals = getattr(tally, name)
-            for key, value in data[name]:
-                totals[float(key)] = _exact_total(value)
+        for level, value in data["capacity_time"]:
+            tally.capacity_time[float(level)] = _exact_total(value)
+        for time, value in data["capacity_changes"]:
+            # A total change of 0 still marks its time (as one 0.0).
+            for part in _exact_total(value).partials or [0.0]:
+                tally.capacity_times.append(float(time))
+                tally.capacity_steps.append(part)
         for time, change in data["unlimited_changes"]:
-            tally.unlimited_changes[float(time)] = int(change)
+            tally.unlimited_times.append(float(time))
+            tally.unlimited_steps.append(int(change))
         tally.delivered = [float(v) for v in data["delivered"]]
         tally.opportunistic = [int(c) for c in data["opportunistic"]]
         return tally
@@ -1433,6 +1539,12 @@ class _CapacityRecorder:
         self._rbd = rbd
         self._nodes = list(rbd.nodes)
         self._states: Dict[frozenset, _CapacityState] = {}
+        # Whether each node works at one level: a state's capacity is then
+        # one level for sure (see evaluate).
+        self._single = all(
+            not isinstance(levels, dict) or len(levels) == 1
+            for levels in rbd.capacity.values()
+        )
         if demand is None:
             # Everything up at its highest level: the design capacity.
             top = float(self._distribution(frozenset())[0][-1])
@@ -1457,27 +1569,86 @@ class _CapacityRecorder:
     def __call__(self, down: frozenset) -> _CapacityState:
         state = self._states.get(down)
         if state is None:
-            levels, probabilities = self._distribution(down)
-            finite = np.isfinite(levels)
-            unlimited = int(np.any(probabilities[~finite] > 0.0))
-            delivered = 0.0
-            if self.demand is not None:
-                delivered = (
-                    float(np.minimum(levels, self.demand) @ probabilities)
-                    / self.demand
-                )
-            state = self._states[down] = _CapacityState(
-                tuple(levels.tolist()),
-                tuple(probabilities.tolist()),
-                (
-                    0.0
-                    if unlimited
-                    else float(levels[finite] @ probabilities[finite])
-                ),
-                unlimited,
-                delivered,
-            )
+            state = self._states[down] = self._state(*self._distribution(down))
         return state
+
+    def _state(
+        self, levels: np.ndarray, probabilities: np.ndarray
+    ) -> _CapacityState:
+        """The state whose capacity has ``levels`` with ``probabilities``
+        (those that can be reached)."""
+        finite = np.isfinite(levels)
+        unlimited = int(np.any(probabilities[~finite] > 0.0))
+        delivered = 0.0
+        if self.demand is not None:
+            delivered = (
+                float(np.minimum(levels, self.demand) @ probabilities)
+                / self.demand
+            )
+        return _CapacityState(
+            tuple(levels.tolist()),
+            tuple(probabilities.tolist()),
+            (
+                0.0
+                if unlimited
+                else float(levels[finite] @ probabilities[finite])
+            ),
+            unlimited,
+            delivered,
+        )
+
+    def evaluate(self, components: list, up: np.ndarray) -> list:
+        """The states with ``components`` up as each row of ``up`` (1 or 0
+        for each) says, the others up. When each node works at one level,
+        they are worked out together, one column of probabilities each:
+        each probability of each is then a product of 0s and 1s, or a sum
+        with one 1 at most, so exact, and the same as in the state's own
+        distribution (``__call__``), whatever else is worked out with it. A
+        state that does not come out as one level for sure is worked out
+        on its own all the same."""
+        states: list = [None] * len(up)
+        if self._single and len(up) > 1:
+            ones = np.ones(len(up))
+            given = dict(zip(components, np.asarray(up, dtype=float).T))
+            levels, rows = self._rbd._capacity_arrays(
+                {node: given.get(node, ones) for node in self._nodes},
+                len(up),
+            )
+            top = rows.argmax(axis=0)
+            sure = (np.count_nonzero(rows, axis=0) == 1) & (
+                rows[top, np.arange(len(up))] == 1.0
+            )
+            # A state of one level for sure is its level's.
+            alone: dict = {}
+            for i in np.flatnonzero(sure).tolist():
+                level = int(top[i])
+                state = alone.get(level)
+                if state is None:
+                    state = alone[level] = self._state(
+                        levels[level : level + 1], np.ones(1)  # noqa: E203
+                    )
+                states[i] = state
+        for i, state in enumerate(states):
+            if state is None:
+                states[i] = self(
+                    frozenset(
+                        c for c, works in zip(components, up[i]) if not works
+                    )
+                )
+        return states
+
+    def states(self, downs: list) -> list:
+        """The state of each of ``downs`` (the components down), those not
+        met yet worked out together (see ``evaluate``)."""
+        known = self._states
+        new = [down for down in dict.fromkeys(downs) if down not in known]
+        if len(new) > 1 and self._single:
+            up = [[node not in down for node in self._nodes] for down in new]
+            for down, state in zip(
+                new, self.evaluate(self._nodes, np.array(up))
+            ):
+                known[down] = state
+        return [self(down) for down in downs]
 
     def trace(self, status: dict) -> "_CapacityTrace":
         """The capacity of one simulation, which starts with ``status``."""
@@ -1485,23 +1656,19 @@ class _CapacityRecorder:
 
 
 class _CapacityTrace:
-    """One simulation's capacity over time, recorded as it goes (for the
-    tally to add up in order): each change of the expected capacity, and
-    at the end the time spent at each level and the fraction of the demand
-    delivered."""
+    """One simulation's capacity over time (for the tally to add up in
+    order): each change of the expected capacity, and the time spent at
+    each level and the fraction of the demand delivered. The components
+    down after each change are recorded as it goes, and the states they
+    are in worked out at the end, those met first together (see
+    ``_CapacityRecorder.states``)."""
 
     def __init__(self, recorder: _CapacityRecorder, status):
         self.recorder = recorder
         self.down = {node for node, up in status.items() if not up}
-        self.state = recorder(frozenset(self.down))
-        self.since = 0.0
-        self.delivered = 0.0
-        # (time, change of the expected capacity, change of whether it can
-        # be unlimited), and (level, time spent at it), in order.
-        self.changes: list = [
-            (0.0, self.state.finite_mean, self.state.unlimited)
-        ]
-        self.spent: list = []
+        # The time of each change and the components down after it, from
+        # the start.
+        self.records: list = [(0.0, frozenset(self.down))]
 
     def change(self, time: float, node, up: bool) -> None:
         """Component ``node`` went up (or down) at ``time``."""
@@ -1509,32 +1676,36 @@ class _CapacityTrace:
             self.down.discard(node)
         else:
             self.down.add(node)
-        new = self.recorder(frozenset(self.down))
-        self._close(time)
-        mean = new.finite_mean - self.state.finite_mean
-        unlimited = new.unlimited - self.state.unlimited
-        if mean or unlimited:
-            self.changes.append((time, mean, unlimited))
-        self.state = new
-
-    def _close(self, time: float) -> None:
-        span = time - self.since
-        if span > 0.0:
-            state = self.state
-            for level, p in zip(state.levels, state.probabilities):
-                self.spent.append((level, p * span))
-            self.delivered += state.delivered * span
-        self.since = time
+        self.records.append((time, frozenset(self.down)))
 
     def finish(self, t_simulation: float, rec: _Replication) -> None:
-        """Close the trace at the end of the window, into ``rec``."""
-        self._close(t_simulation)
-        rec.capacity_changes = self.changes
-        rec.capacity_time = self.spent
+        """The trace, closed at the end of the window, into ``rec``: (time,
+        change of the expected capacity, change of whether it can be
+        unlimited), from the start's, and (level, time spent at it), in
+        order."""
+        records = self.records + [(t_simulation, None)]
+        states = self.recorder.states([down for _, down in self.records])
+        state = states[0]
+        since = delivered = 0.0
+        changes = [(0.0, state.finite_mean, state.unlimited)]
+        spent = []
+        for (time, _), new in zip(records[1:], states[1:] + [None]):
+            span = time - since
+            if span > 0.0:
+                for level, p in zip(state.levels, state.probabilities):
+                    spent.append((level, p * span))
+                delivered += state.delivered * span
+            since = time
+            if new is not None:
+                mean = new.finite_mean - state.finite_mean
+                unlimited = new.unlimited - state.unlimited
+                if mean or unlimited:
+                    changes.append((time, mean, unlimited))
+                state = new
+        rec.capacity_changes = changes
+        rec.capacity_time = spent
         rec.delivered = (
-            None
-            if self.recorder.demand is None
-            else self.delivered / t_simulation
+            None if self.recorder.demand is None else delivered / t_simulation
         )
 
 
@@ -11513,13 +11684,13 @@ class RepairableRBD(RBD):
             nodes held working or broken, costs, antithetic pairs and
             tolerances, under age and block replacement, with hidden
             failures found by inspections, with repair crews, with standby
-            groups and with nested RBDs of up to 20 components;
-            replacement on condition, maintenance groups, imperfect repair,
-            capacities, other models and runs from a ``state`` run in
-            Python. Another package can add a
-            compiled engine of its own, which ``engine`` then takes by name
-            and ``"auto"`` may prefer (see ``repyability.rbd.engines``). By
-            default ``"auto"``.
+            groups, with nested RBDs of up to 20 components, and with
+            capacities on systems of up to 63 components; replacement on
+            condition, maintenance groups, imperfect repair, other models
+            and runs from a ``state`` run in Python. Another package can
+            add a compiled engine of its own, which ``engine`` then takes
+            by name and ``"auto"`` may prefer (see
+            ``repyability.rbd.engines``). By default ``"auto"``.
         demand : float, optional
             The demand the delivered fraction is measured against, in the
             capacities' units, when nodes have capacities. By default the
@@ -12919,6 +13090,7 @@ class RepairableRBD(RBD):
                     broken_nodes,
                     method,
                     jobs,
+                    capacity=capacity,
                 )
             elif engine != "python":
                 from repyability.rbd import engines
@@ -13455,20 +13627,18 @@ class RepairableRBD(RBD):
             # The mean capacity from t=0..t_simulation: the simulated
             # systems' total expected capacity after each time at which one
             # changed (unlimited while one can carry an unlimited amount).
-            times = sorted(
-                set(tally.capacity_changes)
-                | set(tally.unlimited_changes)
-                | {0.0, t_simulation}
-            )
-            totals = np.cumsum(
-                [float(tally.capacity_changes.get(t, 0.0)) for t in times]
-            )
-            unlimited = np.cumsum([tally.unlimited_changes[t] for t in times])
+            at, steps, starts, free_at, counts = tally.capacity_changes()
+            times = np.unique(np.r_[at, free_at, 0.0, t_simulation])
+            change = np.zeros(times.size)
+            change[np.searchsorted(times, at)] = _group_totals(steps, starts)
+            freed = np.zeros(times.size, dtype=np.int64)
+            freed[np.searchsorted(times, free_at)] = counts
+            totals, unlimited = np.cumsum(change), np.cumsum(freed)
             curve = np.where(
                 unlimited > 0, np.inf, np.maximum(totals / N, 0.0)
             )
             capacity_fields = dict(
-                capacity_timeline=np.array(times),
+                capacity_timeline=times,
                 capacity=curve,
                 capacity_time={
                     level: float(tally.capacity_time[level])

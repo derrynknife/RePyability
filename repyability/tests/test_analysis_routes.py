@@ -602,7 +602,8 @@ def test_the_engine_is_the_one_auto_would_run(monkeypatch):
     monkeypatch.setattr(_compiled, "available", lambda: True)
     assert plain.analysis_routes()["availability"].engine == "numba"
     capacities = repairable_rbds()["capacities"].analysis_routes()
-    assert capacities["availability"].engine == "python"
+    # numba's own loop follows capacities (#155).
+    assert capacities["availability"].engine == "numba"
     assert capacities["cost"].engine == "numba"
 
 

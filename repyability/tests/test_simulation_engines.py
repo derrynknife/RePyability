@@ -548,6 +548,8 @@ def test_what_the_compiled_engine_can_run():
     )
     plan, _ = capacity._stream_plan(100.0, 1, False)
     assert _compiled.unsupported(capacity, plan, object()) == "capacities"
+    # numba's own loop follows them (#155).
+    assert _compiled.unsupported(capacity, plan, object(), numba=True) is None
 
 
 def test_a_subclassed_component_runs_in_python(monkeypatch):
@@ -1521,6 +1523,125 @@ def test_what_numba_does_not_run_inside_a_nested_rbd():
     state = {"c": NodeState(age=0.0, phase=1.0)}
     assert "started from a state" in _compiled.unsupported(
         rbd, plan, None, numba=True, states=state
+    )
+
+
+def capacity_rbds():
+    """Systems with capacities, which numba's own loop follows (#155), and
+    the demand each run is measured against: capacities of one level and
+    of several (a node working at several levels), a node without one
+    (unlimited), a demand given and the design capacity's, with
+    maintenance, tests, crews and standby groups, a nested RBD's capacity,
+    and more components than the loop tabulates."""
+
+    def unit(scale, shape, repair=None, **extra):
+        return {
+            "reliability": W([scale, shape]),
+            "repairability": L([1.0, 0.5]) if repair is None else repair,
+            **extra,
+        }
+
+    three = [("s", "a"), ("s", "b"), ("s", "c")]
+    three += [("a", "t"), ("b", "t"), ("c", "t")]
+    slow = L([2.0, 0.5])
+    big = pairs_in_series(12)
+    return {
+        "pumps": (pumps_with_capacities(), {}),
+        "levels, a demand": (
+            RepairableRBD(
+                three,
+                {node: unit(50, 2.0) for node in "abc"},
+                capacity={
+                    "a": {100: 0.75, 40: 0.25},
+                    "b": 50.0,
+                    "c": {60: 0.5, 30: 0.5},
+                },
+            ),
+            {"demand": 150.0},
+        ),
+        "unlimited": (
+            RepairableRBD(
+                [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+                {"a": unit(50, 2.0), "b": unit(60, 2.0)},
+                capacity={"a": 10.0},
+            ),
+            {},
+        ),
+        "maintained, tested, crews and a group": (
+            RepairableRBD(
+                three,
+                {
+                    "a": unit(
+                        50,
+                        2.0,
+                        preventive={"interval": 20.0, "duration": E([1.0])},
+                    ),
+                    "b": unit(55, 2.0, slow, standby={"units": 2}),
+                    "c": unit(
+                        60,
+                        2.0,
+                        slow,
+                        inspection={"interval": 15.0, "duration": X(0.5)},
+                    ),
+                },
+                capacity={"a": 30.0, "b": 40.0, "c": 50.0},
+                repair_crews=1,
+                downtime_cost_rate=1.0,
+            ),
+            {"demand": 90.0},
+        ),
+        "nested": (
+            RepairableRBD(
+                [("s", "m"), ("s", "c"), ("m", "t"), ("c", "t")],
+                {
+                    "m": RepairableRBD(
+                        [("s", "x"), ("s", "y"), ("x", "t"), ("y", "t")],
+                        {"x": unit(40, 2.0), "y": unit(45, 2.0)},
+                    ),
+                    "c": unit(60, 1.5),
+                },
+                capacity={"m": 20.0, "c": 30.0},
+            ),
+            {},
+        ),
+        "large": (
+            RepairableRBD(
+                [tuple(e) for e in big._init_args["edges"]],
+                big._init_args["components"],
+                capacity={
+                    node: 10.0 + i
+                    for i, node in enumerate(big._init_args["components"])
+                },
+            ),
+            {},
+        ),
+    }
+
+
+@needs_numba
+@UPKEEP_RUNS
+@pytest.mark.parametrize("name", sorted(capacity_rbds()))
+def test_the_engines_agree_on_capacities(name, options):
+    rbd, extra = capacity_rbds()[name]
+    if "broken_nodes" in options and "b" not in rbd.components:
+        options = {**options, "broken_nodes": [list(rbd.components)[0]]}
+    plan, _ = rbd._stream_plan(100.0, 1, False)
+    # An engine of the interface's version is given no capacities.
+    assert _compiled.unsupported(rbd, plan, object()) is not None
+    assert _compiled.unsupported(rbd, plan, object(), numba=True) is None
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        python = rbd.availability(engine="python", **extra, **options)
+        compiled = rbd.availability(engine="numba", **extra, **options)
+    identical(python, compiled)
+    assert compiled.capacity_time
+
+
+def test_capacities_numba_does_not_follow():
+    wide = pairs_in_series(32)
+    plan, _ = wide._stream_plan(100.0, 1, False)
+    assert "more than 63" in _compiled.unsupported(
+        wide, plan, object(), numba=True
     )
 
 

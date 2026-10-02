@@ -6,6 +6,7 @@ averages approach the exact long-run values of ``capacity_distribution``.
 A deterministic trace checks every recorded change and total.
 """
 
+import itertools
 import math
 
 import numpy as np
@@ -13,6 +14,7 @@ import pytest
 import surpyval as surv
 
 from repyability import DegradingNode, RepairableRBD
+from repyability.rbd.repairable_rbd import _CapacityRecorder
 
 E = surv.Exponential.from_params
 X = surv.ExactEventTime.from_params
@@ -213,3 +215,67 @@ def test_capacities_from_models_are_not_simulated():
     assert result.demand == 80.0
     # The cost simulation does not follow the capacity.
     assert staged.cost(10, mc_samples=2, seed=0) is None
+
+
+BRIDGE = [
+    ("s", "a"),
+    ("s", "b"),
+    ("a", "c"),
+    ("b", "c"),
+    ("a", "d"),
+    ("c", "e"),
+    ("b", "e"),
+    ("d", "t"),
+    ("e", "t"),
+]
+
+
+@pytest.mark.parametrize(
+    "edges, capacity, k",
+    [
+        # A bridge (worked out by conditioning), with capacities whose
+        # totals round, and with some nodes unlimited.
+        (BRIDGE, {"a": 0.1, "b": 0.2, "c": 0.3, "d": 0.7, "e": 1.1}, None),
+        (BRIDGE, {"a": 10.0, "c": 0.1, "d": {0.2: 1.0}}, None),
+        # A 2-out-of-3 vote after a pair.
+        (
+            [("s", "a"), ("s", "b"), ("a", "j"), ("b", "j")]
+            + [("j", u) for u in "xyz"]
+            + [(u, "t") for u in "xyz"],
+            {"a": 0.3, "b": 0.6, "j": 1.0, "x": 0.1, "y": 0.2, "z": 0.4},
+            {"t": 2},
+        ),
+    ],
+)
+def test_states_worked_out_together_are_each_on_its_own(edges, capacity, k):
+    # The compiled engine works out the capacity states a batch meets
+    # together (#155): with one level per node, exactly as on its own.
+    nodes = sorted({u for edge in edges for u in edge} - {"s", "t"})
+    rbd = RepairableRBD(
+        edges, {u: UNIT for u in nodes}, capacity=capacity, k=k
+    )
+    ups = np.array(list(itertools.product((1, 0), repeat=len(nodes))))
+    for demand in (None, 0.5):
+        together = _CapacityRecorder(rbd, demand)
+        together._distribution = None  # none of them on its own
+        states = together.evaluate(nodes, ups)
+        alone = _CapacityRecorder(rbd, demand)
+        for up, state in zip(ups, states):
+            down = frozenset(u for u, works in zip(nodes, up) if not works)
+            assert repr(state) == repr(alone(down))
+
+
+def test_states_with_levels_are_worked_out_one_at_a_time():
+    # A node with several levels: a state's probabilities are then not
+    # all 0 or 1, and each is worked out on its own.
+    rbd = RepairableRBD(
+        [("s", u) for u in "abc"] + [(u, "t") for u in "abc"],
+        {u: UNIT for u in "abc"},
+        capacity={"a": {100: 0.75, 40: 0.25}, "b": 50, "c": 50},
+    )
+    ups = np.array([[1, 1, 1], [1, 0, 1], [0, 0, 1]])
+    states = _CapacityRecorder(rbd, None).evaluate(list("abc"), ups)
+    alone = _CapacityRecorder(rbd, None)
+    for down, state in zip(["", "b", "ab"], states):
+        assert repr(state) == repr(alone(frozenset(down)))
+    assert states[1].levels == (90.0, 150.0)
