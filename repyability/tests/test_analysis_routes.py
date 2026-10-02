@@ -557,13 +557,19 @@ def test_common_cause_groups_refuse_what_does_not_model_them():
     )
 
 
-def test_the_repairable_report_names_the_refusing_component():
+def test_the_repairable_report_names_the_refusing_component(monkeypatch):
+    from repyability.rbd import _compiled
+
+    monkeypatch.setattr(_compiled, "available", lambda: True)
     report = repairable_rbds()["tested, taking time"].analysis_routes()
     assert report["mean_availability"].route == routes.REFUSED
     assert report["mean_availability"].nodes == ("a",)
     assert report["availability"].route == routes.SIMULATED
-    assert report["availability"].engine == "python"
-    assert "inspections" in report["availability"].engine_reason
+    # numba's own loop simulates tests (#155), not imperfect repair.
+    assert report["availability"].engine == "numba"
+    imperfect = repairable_rbds()["imperfect repair"].analysis_routes()
+    assert imperfect["availability"].engine == "python"
+    assert "imperfect repair" in imperfect["availability"].engine_reason
 
 
 def test_maintenance_makes_the_long_run_numerical():

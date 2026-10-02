@@ -5,10 +5,11 @@ It runs the simulations of a system whose components are plain
 ``NonRepairable`` units -- every model a surpyval parametric one, so that
 its draws come from its own streams (see ``_streams``) -- in any structure,
 with components held working or broken, antithetic pairs, common random
-numbers and costs, and under age and block replacement (#155). Anything
-else (replacement on condition, inspections, repair crews, standby groups,
-nested RBDs, capacities, models whose draws cannot be streamed) runs in
-Python, which ``engine="auto"`` chooses by itself.
+numbers and costs, under age and block replacement and with hidden
+failures found by periodic tests (#155). Anything else (replacement on
+condition, repair crews, standby groups, maintenance groups, imperfect
+repair, nested RBDs, capacities, models whose draws cannot be streamed)
+runs in Python, which ``engine="auto"`` chooses by itself.
 
 The two engines give the same results to the last bit: the compiled loop
 (``_kernel``) is the Python one over arrays, reading the same draws, and
@@ -22,8 +23,9 @@ nothing when numba is not installed.
 Other packages can add compiled engines of their own (see ``engines``):
 ``engine="auto"`` runs the one of highest priority, numba's being 0, on
 what ``unsupported`` allows: plain components. Age and block replacement
-are numba's own loop's (``unsupported(..., numba=True)``), so a system
-under them runs on numba, not on an engine of the interface's version.
+and inspections are numba's own loop's (``unsupported(..., numba=True)``),
+so a system under them runs on numba, not on an engine of the interface's
+version.
 """
 
 import importlib.util
@@ -79,8 +81,8 @@ def unsupported(
     """What in a run a compiled engine cannot simulate, or None: an engine
     of the interface's version (see ``engines``) simulates plain
     components; with ``numba``, numba's own loop also simulates age and
-    block replacement (#155), from new (a run from the components'
-    ``states`` shifts their calendars)."""
+    block replacement and inspections of hidden failures (#155), from new
+    (a run from the components' ``states`` shifts their calendars)."""
     from repyability.non_repairable import NonRepairable
     from repyability.rbd.repairable_rbd import RepairableRBD
 
@@ -88,7 +90,7 @@ def unsupported(
         return "capacities"
     if any(kind == _streams.START for _, kind in plan.specs):
         return "components started from a state"
-    if numba and states and rbd._preventive:
+    if numba and states and (rbd._preventive or rbd._inspection):
         return "components started from a state"
     if rbd._crews_limited():
         return "repair crews"
@@ -105,48 +107,60 @@ def unsupported(
         if reason is not None:
             return reason
     if rbd._inspection:
-        return "inspections"
+        if not numba:
+            return "inspections"
+        reason = _unsupported_inspections(rbd, plan)
+        if reason is not None:
+            return reason
     for name, component in rbd.components.items():
         if isinstance(component, RepairableRBD):
             return "nested RBDs"
         if type(component) is not NonRepairable:
             return f"node {name!r}'s {type(component).__name__}"
-        for kind in (_streams.FAILURE, _streams.REPAIR):
-            if ((name,), kind) not in plan.specs:
-                return (
-                    f"node {name!r}'s models (their draws cannot be "
-                    "streamed)"
-                )
+        if not _streamed(name, plan):
+            return f"node {name!r}'s models (their draws cannot be streamed)"
     return None
 
 
 def _unsupported_maintenance(rbd, plan: _streams.Plan) -> Optional[str]:
     """What in a run's preventive maintenance numba's loop cannot simulate:
-    replacement on condition, and a maintenance time or preventive cost
-    whose draws cannot be streamed."""
+    replacement on condition, and a maintenance time whose draws cannot be
+    streamed. (A component whose own draws cannot be is refused for that,
+    and every drawn cost is streamed.)"""
     for node, schedule in rbd._preventive.items():
         if schedule.policy == "condition":
             return "replacement on condition"
         if (
             schedule.duration is not None
+            and _streamed(node, plan)
             and ((node,), _streams.DURATION) not in plan.specs
         ):
             return (
                 f"node {node!r}'s maintenance time (its draws cannot be "
                 "streamed)"
             )
-        cost = rbd.costs.get(node, {}).get("preventive_cost")
-        kind = _streams.COST_KINDS["preventive_cost"]
-        if (
-            cost is not None
-            and not isinstance(cost, float)
-            and ((node,), kind) not in plan.specs
-        ):
-            return (
-                f"node {node!r}'s preventive cost (its draws cannot be "
-                "streamed)"
-            )
     return None
+
+
+def _unsupported_inspections(rbd, plan: _streams.Plan) -> Optional[str]:
+    """What in a run's inspections numba's loop cannot simulate: a test
+    time whose draws cannot be streamed."""
+    for node, inspection in rbd._inspection.items():
+        if (
+            inspection.duration is not None
+            and _streamed(node, plan)
+            and ((node,), _streams.DURATION) not in plan.specs
+        ):
+            return f"node {node!r}'s test time (its draws cannot be streamed)"
+    return None
+
+
+def _streamed(node, plan: _streams.Plan) -> bool:
+    """Whether a component's lives and repairs are streamed."""
+    return all(
+        ((node,), kind) in plan.specs
+        for kind in (_streams.FAILURE, _streams.REPAIR)
+    )
 
 
 def compiled() -> bool:
@@ -352,7 +366,58 @@ class _System:
                 charge[c] = stream(
                     ((node,), _streams.COST_KINDS["preventive_cost"])
                 )
-        self.maintenance = (policy, interval, duration, charge, amount)
+        #: Each component's inspections of its hidden failures (#155):
+        #: their interval (0 for none), offset, coverage, whether a test can
+        #: miss a failure and the tests from one full test to the next, the
+        #: streams of the test times (-1 for tests in zero time) and of the
+        #: uniforms that decide whether a test finds a failure, and the
+        #: inspection charge (as the preventive one).
+        tested = np.zeros(n)
+        offset = np.zeros(n)
+        coverage = np.ones(n)
+        partial = np.zeros(n, np.int8)
+        per_full = np.ones(n, np.int64)
+        test_time = np.full(n, -1, np.int64)
+        test_draw = np.full(n, -1, np.int64)
+        test_charge = np.full(n, -2, np.int64)
+        test_amount = np.zeros(n)
+        for c, node in enumerate(nodes):
+            inspection = rbd._inspection.get(node)
+            if inspection is None or not active[c]:
+                continue
+            tested[c] = float(inspection.interval)
+            offset[c] = float(inspection.offset)
+            coverage[c] = float(inspection.coverage)
+            partial[c] = int(inspection.partial)
+            per_full[c] = inspection.per_full_test
+            if inspection.duration is not None:
+                test_time[c] = stream(((node,), _streams.DURATION))
+            if inspection.partial:
+                test_draw[c] = stream(((node,), _streams.TEST))
+            cost = rbd.costs.get(node, {}).get("inspection_cost")
+            if isinstance(cost, float):
+                test_charge[c] = -1
+                test_amount[c] = cost
+            elif cost is not None:
+                test_charge[c] = stream(
+                    ((node,), _streams.COST_KINDS["inspection_cost"])
+                )
+        self.maintenance = (
+            policy,
+            interval,
+            duration,
+            charge,
+            amount,
+            tested,
+            offset,
+            coverage,
+            partial,
+            per_full,
+            test_time,
+            test_draw,
+            test_charge,
+            test_amount,
+        )
         initial_up = rbd.is_system_working(
             {node: bool(start[c]) for c, node in enumerate(nodes)}, method
         )
@@ -386,14 +451,14 @@ class _System:
         self.n = n
         # Room for a simulation's system changes: two for each failure it
         # is expected to have (a failure and the restoration after it), and
-        # for each maintenance that takes time.
+        # for each maintenance or test that takes time.
         self.room = (
             2
             * sum(
                 int(plan.specs[((node,), _streams.FAILURE)].rows)
                 + (
                     int(plan.specs[((node,), _streams.DURATION)].rows)
-                    if duration[c] >= 0
+                    if duration[c] >= 0 or test_time[c] >= 0
                     else 0
                 )
                 for c, node in enumerate(nodes)

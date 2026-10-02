@@ -1,15 +1,16 @@
 """The compiled event loop of ``RepairableRBD`` simulations (numba).
 
 ``_simulate`` is ``RepairableRBD._replicate`` for components that are
-plain ``NonRepairable`` units, under age or block replacement or none
-(#155), operation for operation, over arrays: the
-same heap (``heapq``'s algorithm, so equal times come out in the same
-order), the same arithmetic in the same order, and the draws read from the
-same keyed streams (see ``_streams``). Each simulation's results go to its
-own row of the output arrays, so the rows can be worked out in any order,
-on any number of threads, and a simulation that runs out of draws (or of
-room for its system's changes) is simply run again once there is more.
-``_compiled`` prepares the arrays and adds the rows to the tally in order.
+plain ``NonRepairable`` units, under age or block replacement, inspected
+for hidden failures or neither (#155), operation for operation, over
+arrays: the same heap (``heapq``'s algorithm, so equal times come out in
+the same order), the same arithmetic in the same order, and the draws read
+from the same keyed streams (see ``_streams``). Each simulation's results
+go to its own row of the output arrays, so the rows can be worked out in
+any order, on any number of threads, and a simulation that runs out of
+draws (or of room for its system's changes) is simply run again once there
+is more. ``_compiled`` prepares the arrays and adds the rows to the tally
+in order.
 
 Importing this module imports numba, which compiles the loop on first use
 (or loads it from numba's cache).
@@ -22,10 +23,14 @@ from numba import njit, prange
 # The kinds of term of the structure (see ``modular``).
 _NODE, _SERIES, _PARALLEL = 0, 1, 2
 
-# The kinds of event: a failure, a restoration, and preventive maintenance
+# The kinds of event: a failure, a restoration, preventive maintenance
 # (#155): an outage starting and ending, and a renewal in place (in zero
-# time, of a working unit). An event's kind is its state code in the heap.
+# time, of a working unit); and a test of a unit with hidden failures: one
+# that leaves it up (in zero time, or ending), one that takes it down (off
+# line, or finding its failure), and one that misses its failure. An
+# event's kind is its state code in the heap.
 _FAIL, _RESTORE, _PM_START, _PM_END, _PM_IN_PLACE = 0, 1, 2, 3, 4
+_TEST_UP, _TEST_DOWN, _TEST_MISSED = 5, 6, 7
 
 
 @njit(cache=True, inline="always")
@@ -225,6 +230,63 @@ def _renewal(c, t, maintenance, fail, lives, limit, flat, base):
     return 0, due, _PM_START
 
 
+@njit(cache=True, inline="always")
+def _test_due(t, interval, offset):
+    """``_Inspection.due``: the first test after ``t``."""
+    if offset == 0.0:
+        k = np.floor(t / interval) + 1.0
+        due = k * interval
+        if due > t:
+            return due
+        return (k + 1.0) * interval
+    k = np.floor((t - offset) / interval) + 1.0
+    due = offset + k * interval
+    if due > t:
+        return due
+    return offset + (k + 1.0) * interval
+
+
+@njit(cache=True, inline="always")
+def _test_finding(t, interval, offset):
+    """``_Inspection.finds``: the first test at or after ``t``."""
+    if offset == 0.0:
+        k = np.ceil(t / interval)
+        due = k * interval
+        if due >= t:
+            return due
+        return (k + 1.0) * interval
+    k = np.ceil((t - offset) / interval)
+    due = offset + k * interval
+    if due >= t:
+        return due
+    return offset + (k + 1.0) * interval
+
+
+@njit(cache=True, inline="always")
+def _full_test(t, partial, interval, offset, per_full):
+    """``_Inspection.is_full``: whether the test at ``t`` finds every
+    failure (``round`` rounds half to even, as ``np.rint`` does)."""
+    if not partial:
+        return True
+    k = int(np.rint((t - offset) / interval))
+    return k % per_full == 0
+
+
+@njit(cache=True, inline="always")
+def _tested_next(c, t, upkeep, pending):
+    """``RepairableRBD._inspected_next``: a working unit's next event, its
+    hidden failure or its next test, whichever comes first (a failure at
+    the same time first)."""
+    interval, offset, test_time = upkeep[5], upkeep[6], upkeep[10]
+    failure = pending[c]
+    due = _test_due(t, interval[c], offset[c])
+    if failure <= due:
+        return failure, _FAIL
+    if test_time[c] < 0:
+        return due, _TEST_UP
+    return due, _TEST_DOWN
+
+
 @njit(cache=True)
 def truth_table(n, structure):
     """``_works`` for every state of ``n`` components: entry ``mask`` is
@@ -248,7 +310,7 @@ def _simulate(
     the system works is looked up in the table of every state, or, without
     one, kept up to date as components change (``kept``, see
     ``_compiled._kept``). ``upkeep`` is the components' preventive
-    maintenance (see ``_compiled._System.maintenance``)."""
+    maintenance and inspections (see ``_compiled._System.maintenance``)."""
     (
         start,
         active,
@@ -294,9 +356,27 @@ def _simulate(
     lives = np.empty(n, np.int64)
     repairs = np.empty(n, np.int64)
     charged = np.empty(slot_category.size, np.int64)
-    policy, _, duration, pm_charge, pm_amount = upkeep
+    policy, _, duration, pm_charge, pm_amount = upkeep[:5]
+    (
+        tested,
+        test_offset,
+        coverage,
+        partial,
+        per_full,
+        test_time,
+        test_draw,
+        test_charge,
+        test_amount,
+    ) = upkeep[5:]
     maintained = np.empty(n, np.int64)
     pm_charged = np.empty(n, np.int64)
+    # Each unit with hidden failures: when it is due to fail (NaN once it
+    # has failed), and its draws of test times, of tests' finding and of
+    # inspection charges.
+    pending = np.empty(n)
+    timed = np.empty(n, np.int64)
+    finding = np.empty(n, np.int64)
+    test_charged = np.empty(n, np.int64)
     last = np.empty(n)
     up_at = np.empty(n)
     down_at = np.empty(n)
@@ -336,6 +416,10 @@ def _simulate(
         charged[:] = 0
         maintained[:] = 0
         pm_charged[:] = 0
+        pending[:] = np.nan
+        timed[:] = 0
+        finding[:] = 0
+        test_charged[:] = 0
         last[:] = 0.0
         up_at[:] = 0.0
         down_at[:] = 0.0
@@ -346,7 +430,7 @@ def _simulate(
         rep_cost = 0.0
         code = 0
         size = 0
-        # Each component's first failure (or maintenance), in the
+        # Each component's first failure (or maintenance, or test), in the
         # components' order.
         for c in range(n):
             if active[c]:
@@ -357,6 +441,15 @@ def _simulate(
                     )
                     if code != 0:
                         break
+                elif tested[c] > 0.0:
+                    s = fail[c]
+                    k = lives[c]
+                    if k >= limit[s]:
+                        code = s + 1
+                        break
+                    lives[c] = k + 1
+                    pending[c] = 0.0 + flat[base[s] + k]
+                    t, kind_next = _tested_next(c, 0.0, upkeep, pending)
                 else:
                     s = fail[c]
                     k = lives[c]
@@ -383,134 +476,253 @@ def _simulate(
             t, c, kind_now, size = _pop(
                 heap_times, heap_nodes, heap_states, size
             )
-            if kind_now == _PM_IN_PLACE:
-                # Maintenance in zero time of a working unit: renewed in
-                # place and charged, with no change of state.
-                q = pm_charge[c]
-                if q > -2:
-                    if q == -1:
-                        charge = pm_amount[c]
-                    else:
-                        k = pm_charged[c]
-                        if k >= limit[q]:
-                            code = q + 1
-                            break
-                        pm_charged[c] = k + 1
-                        charge = flat[base[q] + k]
-                    rep_cost += charge
-                    category_out[row, 2] += charge
-                    node_cost_out[row, cost_index[c]] += charge
-                code, t_next, kind_next = _renewal(
-                    c, t, upkeep, fail, lives, limit, flat, base
-                )
-                if code != 0:
-                    break
-                if t_next < t_end:
-                    size = _push(
-                        heap_times,
-                        heap_nodes,
-                        heap_states,
-                        size,
-                        t_next,
-                        c,
-                        kind_next,
-                    )
-                continue
-            state = 1 if kind_now == _RESTORE or kind_now == _PM_END else 0
-            if up:
-                system_up_t = system_up + (t - since)
-                system_down_t = system_down
-            else:
-                system_up_t = system_up
-                system_down_t = system_down + (t - since)
-            if status[c]:
-                node_out[row, c, 0] += t - last[c]
-                node_out[row, c, 1] += system_up_t - up_at[c]
-            else:
-                node_out[row, c, 2] += system_down_t - down_at[c]
-            last[c] = t
-            up_at[c] = system_up_t
-            down_at[c] = system_down_t
-            status[c] = state
-            if tabled:
-                if state:
-                    mask |= 1 << c
+            up_now = (
+                kind_now == _RESTORE
+                or kind_now == _PM_END
+                or kind_now == _PM_IN_PLACE
+                or kind_now == _TEST_UP
+            )
+            if kind_now >= _PM_START and up_now == status[c]:
+                # No change of state: maintenance in zero time of a working
+                # unit (renewed in place), a test in zero time of a working
+                # unit, or a test of a failed one, which finds its failure
+                # (charged its repair now) or misses it.
+                if kind_now <= _PM_IN_PLACE:
+                    q = pm_charge[c]
+                    if q > -2:
+                        if q == -1:
+                            charge = pm_amount[c]
+                        else:
+                            k = pm_charged[c]
+                            if k >= limit[q]:
+                                code = q + 1
+                                break
+                            pm_charged[c] = k + 1
+                            charge = flat[base[q] + k]
+                        rep_cost += charge
+                        category_out[row, 2] += charge
+                        node_cost_out[row, cost_index[c]] += charge
                 else:
-                    mask &= ~(1 << c)
-            else:
-                working_paths = _keep(
-                    kept, value, count, down, c, state, working_paths
-                )
-            if state:
-                counts_out[row, 2, c] += 1
-            elif kind_now == _PM_START:
-                # A planned outage: charged the preventive cost.
-                q = pm_charge[c]
-                if q > -2:
-                    if q == -1:
-                        charge = pm_amount[c]
-                    else:
-                        k = pm_charged[c]
-                        if k >= limit[q]:
-                            code = q + 1
+                    q = test_charge[c]
+                    if q > -2:
+                        if q == -1:
+                            charge = test_amount[c]
+                        else:
+                            k = test_charged[c]
+                            if k >= limit[q]:
+                                code = q + 1
+                                break
+                            test_charged[c] = k + 1
+                            charge = flat[base[q] + k]
+                        rep_cost += charge
+                        category_out[row, 3] += charge
+                        node_cost_out[row, cost_index[c]] += charge
+                    if not up_now and kind_now != _TEST_MISSED:
+                        # The failure found: its corrective charges, summed
+                        # and then added, as the Python loop adds them.
+                        found_cost = 0.0
+                        for q in range(slot_start[c], slot_end[c]):
+                            s = slot_stream[q]
+                            if s >= 0:
+                                k = charged[q]
+                                if k >= limit[s]:
+                                    code = s + 1
+                                    break
+                                charged[q] = k + 1
+                                charge = flat[base[s] + k]
+                            else:
+                                charge = slot_value[q]
+                            category_out[row, slot_category[q]] += charge
+                            node_cost_out[row, cost_index[c]] += charge
+                            found_cost += charge
+                        if code != 0:
                             break
-                        pm_charged[c] = k + 1
-                        charge = flat[base[q] + k]
-                    rep_cost += charge
-                    category_out[row, 2] += charge
-                    node_cost_out[row, cost_index[c]] += charge
+                        rep_cost += found_cost
             else:
-                counts_out[row, 0, c] += 1
-                for q in range(slot_start[c], slot_end[c]):
-                    s = slot_stream[q]
-                    if s >= 0:
-                        k = charged[q]
+                state = 1 if up_now else 0
+                if up:
+                    system_up_t = system_up + (t - since)
+                    system_down_t = system_down
+                else:
+                    system_up_t = system_up
+                    system_down_t = system_down + (t - since)
+                if status[c]:
+                    node_out[row, c, 0] += t - last[c]
+                    node_out[row, c, 1] += system_up_t - up_at[c]
+                else:
+                    node_out[row, c, 2] += system_down_t - down_at[c]
+                last[c] = t
+                up_at[c] = system_up_t
+                down_at[c] = system_down_t
+                status[c] = state
+                if tabled:
+                    if state:
+                        mask |= 1 << c
+                    else:
+                        mask &= ~(1 << c)
+                else:
+                    working_paths = _keep(
+                        kept, value, count, down, c, state, working_paths
+                    )
+                if state:
+                    counts_out[row, 2, c] += 1
+                elif kind_now == _PM_START:
+                    # A planned outage: charged the preventive cost.
+                    q = pm_charge[c]
+                    if q > -2:
+                        if q == -1:
+                            charge = pm_amount[c]
+                        else:
+                            k = pm_charged[c]
+                            if k >= limit[q]:
+                                code = q + 1
+                                break
+                            pm_charged[c] = k + 1
+                            charge = flat[base[q] + k]
+                        rep_cost += charge
+                        category_out[row, 2] += charge
+                        node_cost_out[row, cost_index[c]] += charge
+                elif kind_now == _TEST_DOWN:
+                    # A test that takes a working unit off line.
+                    q = test_charge[c]
+                    if q > -2:
+                        if q == -1:
+                            charge = test_amount[c]
+                        else:
+                            k = test_charged[c]
+                            if k >= limit[q]:
+                                code = q + 1
+                                break
+                            test_charged[c] = k + 1
+                            charge = flat[base[q] + k]
+                        rep_cost += charge
+                        category_out[row, 3] += charge
+                        node_cost_out[row, cost_index[c]] += charge
+                else:
+                    counts_out[row, 0, c] += 1
+                    # A hidden failure is charged when a test finds it.
+                    if tested[c] == 0.0:
+                        for q in range(slot_start[c], slot_end[c]):
+                            s = slot_stream[q]
+                            if s >= 0:
+                                k = charged[q]
+                                if k >= limit[s]:
+                                    code = s + 1
+                                    break
+                                charged[q] = k + 1
+                                charge = flat[base[s] + k]
+                            else:
+                                charge = slot_value[q]
+                            rep_cost += charge
+                            category_out[row, slot_category[q]] += charge
+                            node_cost_out[row, cost_index[c]] += charge
+                        if code != 0:
+                            break
+                if tabled:
+                    works = table[mask]
+                elif always:
+                    works = 1
+                elif root >= 0:
+                    works = value[root]
+                else:
+                    works = 1 if working_paths > 0 else 0
+                if state != up and works != up:
+                    system_up = system_up_t
+                    system_down = system_down_t
+                    since = t
+                    up = 1 - up
+                    if changes == room:
+                        code = -1
+                        break
+                    change_times[row, changes] = t
+                    if up:
+                        change_deltas[row, changes] = 1
+                        restorations += 1
+                        counts_out[row, 3, c] += 1
+                    else:
+                        change_deltas[row, changes] = -1
+                        if kind_now >= _PM_START:
+                            planned += 1
+                        else:
+                            failures += 1
+                            counts_out[row, 1, c] += 1
+                    changes += 1
+            # The next event.
+            if tested[c] > 0.0:
+                # A unit with hidden failures (RepairableRBD.
+                # _inspected_follow_up).
+                if kind_now == _FAIL:
+                    # Failed, unseen: found by the first test at or after
+                    # its failure, unless that one can miss it and does.
+                    pending[c] = np.nan
+                    t_next = _test_finding(t, tested[c], test_offset[c])
+                    kind_next = _TEST_DOWN
+                    if not _full_test(
+                        t_next,
+                        partial[c],
+                        tested[c],
+                        test_offset[c],
+                        per_full[c],
+                    ):
+                        s = test_draw[c]
+                        k = finding[c]
                         if k >= limit[s]:
                             code = s + 1
                             break
-                        charged[q] = k + 1
-                        charge = flat[base[s] + k]
+                        finding[c] = k + 1
+                        if not flat[base[s] + k] < coverage[c]:
+                            kind_next = _TEST_MISSED
+                elif kind_now == _TEST_MISSED:
+                    # Missed: so is the next test, unless it is a full one.
+                    t_next = _test_due(t, tested[c], test_offset[c])
+                    kind_next = _TEST_MISSED
+                    if _full_test(
+                        t_next,
+                        partial[c],
+                        tested[c],
+                        test_offset[c],
+                        per_full[c],
+                    ):
+                        kind_next = _TEST_DOWN
+                elif kind_now == _TEST_UP:
+                    t_next, kind_next = _tested_next(c, t, upkeep, pending)
+                elif kind_now == _TEST_DOWN:
+                    # A test that takes time: of a failed unit, repaired
+                    # once it is done; of a working one, off line (and not
+                    # ageing) until then.
+                    span = 0.0
+                    if test_time[c] >= 0:
+                        s = test_time[c]
+                        k = timed[c]
+                        if k >= limit[s]:
+                            code = s + 1
+                            break
+                        timed[c] = k + 1
+                        span = flat[base[s] + k]
+                    if np.isnan(pending[c]):
+                        s = repair[c]
+                        k = repairs[c]
+                        if k >= limit[s]:
+                            code = s + 1
+                            break
+                        repairs[c] = k + 1
+                        t_next = t + span + flat[base[s] + k]
+                        kind_next = _RESTORE
                     else:
-                        charge = slot_value[q]
-                    rep_cost += charge
-                    category_out[row, slot_category[q]] += charge
-                    node_cost_out[row, cost_index[c]] += charge
-                if code != 0:
-                    break
-            if tabled:
-                works = table[mask]
-            elif always:
-                works = 1
-            elif root >= 0:
-                works = value[root]
-            else:
-                works = 1 if working_paths > 0 else 0
-            if state != up and works != up:
-                system_up = system_up_t
-                system_down = system_down_t
-                since = t
-                up = 1 - up
-                if changes == room:
-                    code = -1
-                    break
-                change_times[row, changes] = t
-                if up:
-                    change_deltas[row, changes] = 1
-                    restorations += 1
-                    counts_out[row, 3, c] += 1
+                        pending[c] = pending[c] + span
+                        t_next = t + span
+                        kind_next = _TEST_UP
                 else:
-                    change_deltas[row, changes] = -1
-                    if kind_now == _PM_START:
-                        planned += 1
-                    else:
-                        failures += 1
-                        counts_out[row, 1, c] += 1
-                changes += 1
-            # The next event: a restoration after a failure, the end of an
-            # outage for maintenance after its start; after a restoration,
-            # a failure, or for a maintained unit, renewed, its failure or
-            # its maintenance.
-            if kind_now == _FAIL:
+                    # Repaired: as new, from t.
+                    s = fail[c]
+                    k = lives[c]
+                    if k >= limit[s]:
+                        code = s + 1
+                        break
+                    lives[c] = k + 1
+                    pending[c] = t + flat[base[s] + k]
+                    t_next, kind_next = _tested_next(c, t, upkeep, pending)
+            elif kind_now == _FAIL:
                 s = repair[c]
                 k = repairs[c]
                 if k >= limit[s]:

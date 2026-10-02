@@ -178,10 +178,26 @@ is required.
   one too large for the table of states). It ran 9 to 12 times as fast as
   Python on one thread, and 18 to 29 times on four, on 3, 12 and 70
   components. Replacement on condition, opportunistic groups and a
-  maintenance time or preventive cost that cannot be streamed stay in
-  Python. An engine another package adds is still given only plain
+  maintenance time that cannot be streamed stay in Python. An engine another package adds is still given only plain
   components (its interface, ``engines.API``, is unchanged): a maintained
   system runs on numba's own loop, which ``engine="auto"`` chooses.
+- **Inspections compiled** (#155). The compiled engine also simulates
+  hidden failures found by periodic tests: tests in zero time (the unit
+  found working, or its failure found and its repair started) or taking
+  time (a planned outage, from the test time's stream), staggered by an
+  offset, and with a coverage below 1 (a test that misses a failure, from
+  the detection stream, leaves it to the next full test), with fixed or
+  drawn inspection costs, and repair and replace costs charged when a test
+  finds the failure. The engines agree to the last bit (checked on
+  inspected systems of every kind, with costs, ties from fixed lives that
+  fail on a test, inspections beside age and block replacement, held
+  nodes, antithetic pairs, threads and tolerances, and on one too large for
+  the table of states). With every unit tested, it ran 17 to 27 times as
+  fast as Python on one thread, and 32 to 63 times on four, on 3, 12 and 70
+  components. A run from the components' states keeps a maintained or
+  inspected system in Python (a state's phase shifts its calendar), as
+  does a test time that cannot be streamed; and, as for maintenance, an
+  engine another package adds is not given inspected systems.
 - **Faster compiled simulations of large systems** (#150). Above 20
   components (where the compiled loop has no table of every state), the
   compiled engine keeps whether the system works up to date as components

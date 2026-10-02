@@ -576,9 +576,25 @@ def test_a_subclassed_component_runs_in_python(monkeypatch):
 
 @needs_numba
 def test_the_compiled_engine_refuses_what_it_cannot_run():
-    rbd = repairable_rbds()["inspected"]
-    with pytest.raises(NotImplementedError, match="inspections"):
-        rbd.availability(100.0, mc_samples=5, seed=2, engine="numba")
+    grouped = RepairableRBD(
+        [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        {
+            node: {
+                **unit_spec(70, 2.0),
+                "preventive": {"interval": 30.0},
+                "group": "g",
+            }
+            for node in "ab"
+        },
+        maintenance_groups={"g": {}},
+    )
+    with pytest.raises(NotImplementedError, match="maintenance groups"):
+        grouped.availability(100.0, mc_samples=5, seed=2, engine="numba")
+    timed = inspected_unit(
+        {"interval": 30.0, "duration": binomial_first([2, 1])}
+    )
+    with pytest.raises(NotImplementedError, match="test time"):
+        timed.availability(100.0, mc_samples=5, seed=2, engine="numba")
     with pytest.raises(NotImplementedError, match="on condition"):
         on_condition().availability(
             100.0, mc_samples=5, seed=2, engine="numba"
@@ -751,8 +767,9 @@ def unit_spec(scale, shape):
     }
 
 
-@needs_numba
-@pytest.mark.parametrize(
+#: The runs on which the engines are compared under maintenance and
+#: inspections.
+UPKEEP_RUNS = pytest.mark.parametrize(
     "options",
     [
         dict(t_simulation=300.0, mc_samples=60, seed=41),
@@ -770,9 +787,12 @@ def unit_spec(scale, shape):
     ],
     ids=["plain", "cut sets", "antithetic", "threads", "held", "tolerance"],
 )
-@pytest.mark.parametrize("name", sorted(maintained_rbds()))
-def test_the_engines_agree_on_maintenance(name, options):
-    rbd = maintained_rbds()[name]
+
+
+def engines_agree(rbd, options):
+    """Whether the Python loop and numba's give the same results, of
+    ``availability`` and (with costs) ``cost``, on a system numba's own
+    loop runs but an engine of the interface's version is not given."""
     if "broken_nodes" in options and "b" not in rbd.components:
         options = {**options, "broken_nodes": [rbd.nodes[1]]}
     plan, _ = rbd._stream_plan(100.0, 1, False)
@@ -791,6 +811,13 @@ def test_the_engines_agree_on_maintenance(name, options):
 
 
 @needs_numba
+@UPKEEP_RUNS
+@pytest.mark.parametrize("name", sorted(maintained_rbds()))
+def test_the_engines_agree_on_maintenance(name, options):
+    engines_agree(maintained_rbds()[name], options)
+
+
+@needs_numba
 def test_planned_outages_are_counted_as_the_python_loop_counts_them():
     rbd = maintained_rbds()["age, instant and timed"]
     run = dict(t_simulation=400.0, mc_samples=200, seed=7)
@@ -802,10 +829,14 @@ def test_planned_outages_are_counted_as_the_python_loop_counts_them():
 
 
 @needs_numba
-def test_a_maintained_run_from_a_state_stays_in_python(monkeypatch):
+@pytest.mark.parametrize("upkeep", ["maintained", "inspected"])
+def test_a_maintained_run_from_a_state_stays_in_python(upkeep, monkeypatch):
     # A unit new at its age 0 draws nothing at the start, but its phase
-    # shifts its block calendar, which numba's loop does not follow.
-    rbd = maintained_rbds()["block, priced"]
+    # shifts its block or test calendar, which numba's loop does not follow.
+    if upkeep == "maintained":
+        rbd = maintained_rbds()["block, priced"]
+    else:
+        rbd = inspected_rbds()["staggered, priced"]
     state = {"a": NodeState(age=0.0, phase=10.0)}
     with pytest.raises(NotImplementedError, match="started from a state"):
         rbd.availability(
@@ -838,20 +869,203 @@ def on_condition():
 
 
 def test_what_numbas_loop_runs_besides_plain_components():
-    for rbd in [repairable_rbds()["maintained"], *maintained_rbds().values()]:
+    routes = repairable_rbds()
+    for rbd in [
+        routes["maintained"],
+        routes["inspected"],
+        *maintained_rbds().values(),
+        *inspected_rbds().values(),
+    ]:
         plan, _ = rbd._stream_plan(100.0, 1, False)
         # Not given to an engine of the interface's version.
-        assert "preventive maintenance" in _compiled.unsupported(
-            rbd, plan, None
-        )
+        reason = "preventive maintenance" if rbd._preventive else "inspections"
+        assert reason in _compiled.unsupported(rbd, plan, None)
         assert _compiled.unsupported(rbd, plan, None, numba=True) is None
+    timed = {"interval": 30.0, "duration": binomial_first([2, 1.5])}
+    unstreamed = RepairableRBD(
+        [("s", "a"), ("a", "t")],
+        {
+            "a": {
+                "reliability": binomial_first([80, 2.5]),
+                "repairability": E([1.0]),
+                "inspection": {**timed, "duration": E([1.0])},
+            }
+        },
+    )
     for rbd, reason in [
         (on_condition(), "replacement on condition"),
         (systems_of_every_kind()["unstreamable maintenance"], "maintenance"),
-        (repairable_rbds()["inspected"], "inspections"),
+        (inspected_unit(timed), "node 'a''s test time"),
+        # Its test time could be streamed, its life cannot.
+        (unstreamed, "node 'a''s models"),
     ]:
         plan, _ = rbd._stream_plan(100.0, 1, False)
         assert reason in _compiled.unsupported(rbd, plan, None, numba=True)
+
+
+def inspected_unit(inspection):
+    """A unit whose failures are hidden until ``inspection`` finds them."""
+    return RepairableRBD(
+        [("s", "a"), ("a", "t")],
+        {"a": {**unit_spec(80, 2.5), "inspection": inspection}},
+    )
+
+
+def inspected_rbds():
+    """Systems whose failures are hidden until a test finds them, which
+    numba's own loop simulates (#155): tests in zero time and taking time,
+    staggered, and partial (which can miss a failure, found by a full
+    test); inspection and corrective costs fixed and drawn (charged when a
+    test finds the failure); fixed lives that fail on a test (found by it);
+    inspections beside age and block replacement; and more components than
+    the loop tabulates."""
+    instant = {"interval": 30.0, "cost": 2.0}
+    staggered = {"interval": 30.0, "offset": 15.0, "cost": G([2.0, 1.5])}
+    timed = {"interval": 40.0, "offset": 10.0, "duration": L([0.2, 0.4])}
+    partial = {
+        "interval": 20.0,
+        "coverage": 0.6,
+        "full_test": 80.0,
+        "cost": 1.0,
+    }
+    partial_timed = {
+        "interval": 25.0,
+        "offset": 5.0,
+        "coverage": 0.8,
+        "full_test": 100.0,
+        "duration": E([2.0]),
+        "cost": G([1.0, 2.0]),
+    }
+    big = pairs_in_series(12)
+    big_components = {
+        node: (
+            {**spec, "inspection": dict(partial_timed if i % 4 else instant)}
+            if i % 2
+            else spec
+        )
+        for i, (node, spec) in enumerate(big._init_args["components"].items())
+    }
+    return {
+        "staggered, priced": RepairableRBD(
+            BRIDGE,
+            {
+                "a": {
+                    **unit_spec(70, 2.5),
+                    "inspection": instant,
+                    "repair_cost": 4.0,
+                },
+                "b": {
+                    **unit_spec(80, 2.0),
+                    "inspection": staggered,
+                    "replace_cost": G([5.0, 2.0]),
+                },
+                "c": {**unit_spec(90, 1.5), "repair_cost": 1.0},
+                "d": {
+                    **unit_spec(60, 3.0),
+                    "inspection": timed,
+                    "repair_cost": L([1.0, 0.5]),
+                    "replace_cost": 3.0,
+                },
+                "e": {**unit_spec(75, 1.2), "inspection": instant},
+            },
+            downtime_cost_rate=4.0,
+        ),
+        "partial tests": RepairableRBD(
+            [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")],
+            {
+                "a": {
+                    **unit_spec(50, 2.0),
+                    "inspection": partial,
+                    "repair_cost": G([2.0, 1.0]),
+                },
+                "b": {
+                    **unit_spec(55, 2.0),
+                    "inspection": partial_timed,
+                    "replace_cost": 6.0,
+                },
+                "c": {
+                    **unit_spec(200, 1.5),
+                    "inspection": {**partial, "offset": 10.0},
+                },
+            },
+        ),
+        "fixed lives on the tests": RepairableRBD(
+            [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+            {
+                "a": {
+                    "reliability": X(30.0),
+                    "repairability": X(2.0),
+                    "inspection": {"interval": 30.0, "cost": 1.0},
+                    "repair_cost": 3.0,
+                },
+                "b": {
+                    "reliability": X(20.0),
+                    "repairability": "instant",
+                    "inspection": {
+                        "interval": 10.0,
+                        "offset": 5.0,
+                        "coverage": 0.5,
+                        "full_test": 40.0,
+                        "duration": X(1.0),
+                    },
+                    "replace_cost": 1.0,
+                },
+            },
+        ),
+        "beside maintenance": RepairableRBD(
+            BRIDGE,
+            {
+                "a": {**unit_spec(70, 2.5), "preventive": {"interval": 30.0}},
+                "b": {
+                    **unit_spec(80, 2.0),
+                    "preventive": {
+                        "interval": 25.0,
+                        "policy": "block",
+                        "duration": E([1.5]),
+                        "cost": 2.0,
+                    },
+                },
+                "c": {**unit_spec(90, 1.5), "inspection": partial_timed},
+                "d": {
+                    **unit_spec(60, 3.0),
+                    "inspection": instant,
+                    "repair_cost": 5.0,
+                },
+                "e": unit_spec(75, 1.2),
+            },
+            downtime_cost_rate=2.0,
+        ),
+        "large": RepairableRBD(
+            [tuple(e) for e in big._init_args["edges"]], big_components
+        ),
+    }
+
+
+@needs_numba
+@UPKEEP_RUNS
+@pytest.mark.parametrize("name", sorted(inspected_rbds()))
+def test_the_engines_agree_on_inspections(name, options):
+    engines_agree(inspected_rbds()[name], options)
+
+
+@needs_numba
+def test_found_failures_are_charged_as_the_python_loop_charges_them():
+    rbd = inspected_rbds()["staggered, priced"]
+    run = dict(t_simulation=400.0, mc_samples=200, seed=7)
+    python = rbd.cost(engine="python", **run)
+    compiled = rbd.cost(engine="numba", **run)
+    identical(python, compiled)
+    for category in ("repair", "replace", "inspection", "system_downtime"):
+        assert compiled.by_category[category] > 0.0
+    # Tests that take time are planned outages.
+    timed = rbd.availability(engine="numba", **run)
+    assert timed.system_planned_outages > 0
+    partial = inspected_rbds()["partial tests"]
+    run = dict(t_simulation=1000.0, mc_samples=50, seed=8)
+    identical(
+        partial.availability(engine="python", **run),
+        partial.availability(engine="numba", **run),
+    )
 
 
 @needs_numba

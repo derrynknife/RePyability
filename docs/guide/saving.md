@@ -227,7 +227,7 @@ routes = tested.analysis_routes()
 routes["mean_availability"].route  # 'refused': a Weibull life, found by tests
 routes["mean_availability"].nodes  # ('pump',)
 routes["availability"].route       # 'simulated'
-routes["availability"].engine      # 'python': no compiled engine for tests
+routes["availability"].engine      # 'numba' with numba installed, else 'python'
 ```
 
 ## Performance

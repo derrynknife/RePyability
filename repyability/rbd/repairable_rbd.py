@@ -11510,12 +11510,14 @@ class RepairableRBD(RBD):
             results to the last bit. The compiled engine simulates plain
             components (surpyval parametric models) in any structure, with
             nodes held working or broken, costs, antithetic pairs and
-            tolerances, and age and block replacement; replacement on
-            condition, inspections, repair crews, standby groups, nested
-            RBDs, capacities, other models and runs from a ``state`` run in
-            Python. Another package can add a compiled engine of its own,
-            which ``engine`` then takes by name and ``"auto"`` may prefer
-            (see ``repyability.rbd.engines``). By default ``"auto"``.
+            tolerances, under age and block replacement and with hidden
+            failures found by inspections; replacement on condition, repair
+            crews, standby groups, maintenance groups, imperfect repair,
+            nested RBDs, capacities, other models and runs from a ``state``
+            run in Python. Another package can add a compiled engine of its
+            own, which ``engine`` then takes by name and ``"auto"`` may
+            prefer (see ``repyability.rbd.engines``). By default
+            ``"auto"``.
         demand : float, optional
             The demand the delivered fraction is measured against, in the
             capacities' units, when nodes have capacities. By default the
