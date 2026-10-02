@@ -286,16 +286,20 @@ def test_a_group_inside_a_nested_rbd():
     assert interval.lower <= exact <= interval.upper
 
 
-def test_runs_with_groups_are_reproducible_and_python_only():
+def test_runs_with_groups_are_reproducible_and_compiled(monkeypatch):
     rbd = group(0.02, 0.25, 1, units=3, switching_probability=0.8)
     run = dict(t_simulation=2_000.0, mc_samples=200, seed=9)
     serial = rbd.availability(**run)
     assert rbd.availability(**run).node_uptime == serial.node_uptime
     assert rbd.availability(**run, n_jobs=2).node_uptime == serial.node_uptime
+    # numba's own loop runs them (#155), not an engine of the interface's
+    # version.
     alone = group(0.02, 0.25, units=3)
     plan = alone._stream_plan(1.0, 0, False)[0]
     assert _compiled.unsupported(alone, plan, None) == "standby groups"
-    assert alone.analysis_routes()["availability"].engine == "python"
+    assert _compiled.unsupported(alone, plan, None, numba=True) is None
+    monkeypatch.setattr(_compiled, "available", lambda: True)
+    assert alone.analysis_routes()["availability"].engine == "numba"
     gain = group(0.02, 0.25, 2, units=3).compare(
         rbd, 2_000.0, mc_samples=200, seed=9
     )

@@ -1,9 +1,10 @@
 """The compiled event loop of ``RepairableRBD`` simulations (numba).
 
 ``_simulate`` is ``RepairableRBD._replicate`` for components that are
-plain ``NonRepairable`` units, under age or block replacement, inspected
-for hidden failures or neither, and with as many repair crews as needed or
-fewer (#155), operation for operation, over arrays: the same heap
+plain ``NonRepairable`` units or standby groups of them, under age or
+block replacement, inspected for hidden failures or neither, and with as
+many repair crews as needed or fewer (#155), operation for operation, over
+arrays: the same heap
 (``heapq``'s algorithm, so equal times come out in the same order), the
 same arithmetic in the same order, and the draws read from the same keyed
 streams (see ``_streams``). Each simulation's results go to its own row
@@ -31,11 +32,20 @@ _NODE, _SERIES, _PARALLEL = 0, 1, 2
 # event's kind is its state code in the heap.
 _FAIL, _RESTORE, _PM_START, _PM_END, _PM_IN_PLACE = 0, 1, 2, 3, 4
 _TEST_UP, _TEST_DOWN, _TEST_MISSED = 5, 6, 7
+# A standby group's next event, as its entry in the heap (an entry an
+# earlier one has superseded is skipped: its tag is not the group's); and a
+# unit's repair waiting for a repair crew.
+_GROUP, _UNIT_JOB = 8, 9
+# A standby group's units' own events (``_StandbyGroup``): a unit failing
+# in operation, a spare failing in standby, a repair done.
+_UNIT_FAILS, _SPARE_FAILS, _UNIT_REPAIRED = 0, 1, 2
 
 
 @njit(cache=True, inline="always")
-def _push(times, nodes, states, size, t, c, state):
-    """``heapq.heappush`` of ``(t, c, state)``, ordered by ``t`` alone."""
+def _push(heap, size, t, c, state, tag):
+    """``heapq.heappush`` of ``(t, c, state, tag)``, ordered by ``t``
+    alone; ``heap`` is the arrays of the four."""
+    times, nodes, states, tags = heap
     pos = size
     while pos > 0:
         parent = (pos - 1) >> 1
@@ -43,22 +53,25 @@ def _push(times, nodes, states, size, t, c, state):
             times[pos] = times[parent]
             nodes[pos] = nodes[parent]
             states[pos] = states[parent]
+            tags[pos] = tags[parent]
             pos = parent
         else:
             break
     times[pos] = t
     nodes[pos] = c
     states[pos] = state
+    tags[pos] = tag
     return size + 1
 
 
 @njit(cache=True, inline="always")
-def _pop(times, nodes, states, size):
+def _pop(heap, size):
     """``heapq.heappop``: the first item, and the heap's new size."""
-    t0, c0, state0 = times[0], nodes[0], states[0]
+    times, nodes, states, tags = heap
+    t0, c0, state0, tag0 = times[0], nodes[0], states[0], tags[0]
     size -= 1
     if size > 0:
-        t, c, state = times[size], nodes[size], states[size]
+        t, c, state, tag = times[size], nodes[size], states[size], tags[size]
         # Move the smaller child up until reaching a leaf, then the last
         # item up from there (heapq's _siftup and _siftdown).
         pos = 0
@@ -70,6 +83,7 @@ def _pop(times, nodes, states, size):
             times[pos] = times[child]
             nodes[pos] = nodes[child]
             states[pos] = states[child]
+            tags[pos] = tags[child]
             pos = child
             child = 2 * pos + 1
         while pos > 0:
@@ -78,13 +92,15 @@ def _pop(times, nodes, states, size):
                 times[pos] = times[parent]
                 nodes[pos] = nodes[parent]
                 states[pos] = states[parent]
+                tags[pos] = tags[parent]
                 pos = parent
             else:
                 break
         times[pos] = t
         nodes[pos] = c
         states[pos] = state
-    return t0, c0, state0, size
+        tags[pos] = tag
+    return t0, c0, state0, tag0, size
 
 
 @njit(cache=True, inline="always")
@@ -373,6 +389,139 @@ def _start_waiting(queue, size):
     return c0, due0, done0, kind0, size
 
 
+@njit(cache=True, inline="always")
+def _release(
+    key, t, t_end, n, crew, holding, queue, pending, plan, heap, size
+):
+    """``_Crews.release`` and ``RepairableRBD._crew_started``: job ``key``
+    (a component's, or ``n`` plus a standby unit's) is done at ``t``, and
+    its crew starts the next waiting job, if any, which ends as late as it
+    waited: a component's end is queued (a unit off line for a test not
+    ageing meanwhile), a unit's repair queued by its group. The heap's new
+    size, or -1 if it has no room."""
+    holding[key] = 0
+    if crew[1] == 0:
+        crew[0] += 1
+        return size
+    w, due, done, kind, waiting = _start_waiting(queue, crew[1])
+    crew[1] = waiting
+    holding[w] = 1
+    wait = t - due
+    ends = done + wait
+    if w < n:
+        if not np.isnan(pending[w]):
+            pending[w] = pending[w] + wait
+        if ends < t_end:
+            if size == heap[0].size:
+                return -1
+            size = _push(heap, size, ends, w, kind, 0)
+        return size
+    group_node, group_first, group_count, unit_group, units, groups, tags = (
+        plan
+    )
+    u = w - n
+    g = unit_group[u]
+    _unit_event(u, g, ends, _UNIT_REPAIRED, units, groups)
+    if groups[4][g] < 0 or ends < groups[5][g]:
+        return _arm(
+            g,
+            group_node[g],
+            t_end,
+            group_first,
+            group_count,
+            units,
+            groups,
+            heap,
+            size,
+            tags,
+        )
+    return size
+
+
+@njit(cache=True, inline="always")
+def _draw(s, counter, i, limit, flat, base):
+    """The next draw of stream ``s``, the ``counter[i]``-th: 0 and the
+    draw, or the stream's code (``s + 1``) if the simulation has none
+    left."""
+    k = counter[i]
+    if k >= limit[s]:
+        return s + 1, 0.0
+    counter[i] = k + 1
+    return 0, flat[base[s] + k]
+
+
+@njit(cache=True, inline="always")
+def _unit_event(u, g, time, kind, units, groups):
+    """``_StandbyGroup._queue``: unit ``u``'s next event (a unit has one at
+    a time; a new one supersedes it), ordered after those of its group
+    queued before."""
+    times, orders, kinds, valid = units[2], units[3], units[4], units[5]
+    order = groups[0]
+    times[u] = time
+    orders[u] = order[g]
+    kinds[u] = kind
+    valid[u] = 1
+    order[g] += 1
+
+
+@njit(cache=True, inline="always")
+def _operate(u, g, t, units, groups):
+    """``_StandbyGroup._operate``: unit ``u`` operates from ``t``."""
+    life, since, operating = units[0], units[1], units[6]
+    operating[u] = 1
+    groups[1][g] += 1
+    since[u] = t
+    _unit_event(u, g, t + life[u], _UNIT_FAILS, units, groups)
+
+
+@njit(cache=True, inline="always")
+def _stand_by(u, g, t, dormancy, first, units, groups):
+    """``_StandbyGroup._wait``: unit ``u`` joins the spares at ``t``."""
+    spares_n, spares = groups[2], groups[3]
+    spares[first[g] + spares_n[g]] = u
+    spares_n[g] += 1
+    units[1][u] = t
+    if dormancy[g] > 0.0:
+        _unit_event(
+            u, g, t + units[0][u] / dormancy[g], _SPARE_FAILS, units, groups
+        )
+
+
+@njit(cache=True, inline="always")
+def _group_next(g, first, count, units):
+    """The unit of group ``g`` whose event is next (its earliest, of those
+    the first queued), or -1 if none has one."""
+    times, orders, valid = units[2], units[3], units[5]
+    best = -1
+    for u in range(first[g], first[g] + count[g]):
+        if valid[u] and (
+            best < 0
+            or times[u] < times[best]
+            or (times[u] == times[best] and orders[u] < orders[best])
+        ):
+            best = u
+    return best
+
+
+@njit(cache=True, inline="always")
+def _arm(g, c, t_end, first, count, units, groups, heap, size, tags):
+    """``_StandbyGroup._arm``: queue group ``g``'s next event in the heap,
+    as node ``c``'s, under a new tag (an earlier entry there is left, and
+    skipped); none if it falls at or after the end. The heap's new size,
+    or -1 if it has no room."""
+    best = _group_next(g, first, count, units)
+    entry_tag, entry_time = groups[4], groups[5]
+    if best < 0 or units[2][best] >= t_end:
+        entry_tag[g] = -1
+        return size
+    if size == heap[0].size:
+        return -1
+    tags[0] += 1
+    entry_tag[g] = tags[0]
+    entry_time[g] = units[2][best]
+    return _push(heap, size, units[2][best], c, _GROUP, tags[0])
+
+
 @njit(cache=True)
 def truth_table(n, structure):
     """``_works`` for every state of ``n`` components: entry ``mask`` is
@@ -437,9 +586,15 @@ def _simulate(
     base = np.empty(streams, np.int64)
     limit = np.empty(streams, np.int64)
     status = np.empty(n, np.int8)
-    heap_times = np.empty(n + 1)
-    heap_nodes = np.empty(n + 1, np.int64)
-    heap_states = np.empty(n + 1, np.int8)
+    # One event a component, and room for standby groups' superseded
+    # entries (with the room for the system's changes, which grows when
+    # either runs out).
+    heap = (
+        np.empty(n + 1 + room),
+        np.empty(n + 1 + room, np.int64),
+        np.empty(n + 1 + room, np.int8),
+        np.empty(n + 1 + room, np.int64),
+    )
     lives = np.empty(n, np.int64)
     repairs = np.empty(n, np.int64)
     charged = np.empty(slot_category.size, np.int64)
@@ -459,14 +614,71 @@ def _simulate(
     # in their queue, and which components hold one, the jobs waiting for
     # one (see ``_wait``) and how many were ever queued.
     crews, rank = upkeep[14], upkeep[15]
-    holding = np.empty(n, np.int8)
+    # The standby groups (#155; see ``_compiled._System.upkeep``).
+    (
+        group_of,
+        group_node,
+        group_first,
+        group_count,
+        group_k,
+        dormancy,
+        switching,
+        switch,
+        unit_fail,
+        unit_repair,
+        unit_group,
+    ) = upkeep[16:]
+    m = unit_fail.size
+    # Each unit's life left (as of when it last started operating or
+    # waiting), that time, its next event's time, order and kind and
+    # whether it has one, whether it operates, and its draws of lives and
+    # of repairs.
+    units = (
+        np.empty(m),
+        np.empty(m),
+        np.empty(m),
+        np.empty(m, np.int64),
+        np.empty(m, np.int8),
+        np.empty(m, np.int8),
+        np.empty(m, np.int8),
+        np.empty(m, np.int64),
+        np.empty(m, np.int64),
+    )
+    # Each group's events queued so far, units operating, spares (in the
+    # order they joined, from the group's first unit's place), entry in
+    # the heap (its tag, -1 for none, and time) and draws of switches; and
+    # the last tag given.
+    g_count = group_count.size
+    groups = (
+        np.empty(g_count, np.int64),
+        np.empty(g_count, np.int64),
+        np.empty(g_count, np.int64),
+        np.empty(m, np.int64),
+        np.empty(g_count, np.int64),
+        np.empty(g_count),
+        np.empty(g_count, np.int64),
+    )
+    tags = np.zeros(1, np.int64)
+    plan = (
+        group_node,
+        group_first,
+        group_count,
+        unit_group,
+        units,
+        groups,
+        tags,
+    )
+    # The free crews, the jobs waiting and the jobs ever queued; which
+    # components (and units) hold a crew.
+    crew = np.empty(3, np.int64)
+    holding = np.empty(n + m, np.int8)
     queue = (
-        np.empty(n),
-        np.empty(n),
-        np.empty(n, np.int64),
-        np.empty(n, np.int64),
-        np.empty(n),
-        np.empty(n, np.int8),
+        np.empty(n + m),
+        np.empty(n + m),
+        np.empty(n + m, np.int64),
+        np.empty(n + m, np.int64),
+        np.empty(n + m),
+        np.empty(n + m, np.int8),
     )
     maintained = np.empty(n, np.int64)
     pm_charged = np.empty(n, np.int64)
@@ -520,10 +732,20 @@ def _simulate(
         timed[:] = 0
         finding[:] = 0
         test_charged[:] = 0
-        free = crews
+        crew[0] = crews
+        crew[1] = 0
+        crew[2] = 0
         holding[:] = 0
-        waiting = 0
-        queued = 0
+        units[5][:] = 0
+        units[6][:] = 0
+        units[7][:] = 0
+        units[8][:] = 0
+        groups[0][:] = 0
+        groups[1][:] = 0
+        groups[2][:] = 0
+        groups[4][:] = -1
+        groups[6][:] = 0
+        tags[0] = 0
         last[:] = 0.0
         up_at[:] = 0.0
         down_at[:] = 0.0
@@ -537,7 +759,7 @@ def _simulate(
         # Each component's first failure (or maintenance, or test), in the
         # components' order.
         for c in range(n):
-            if active[c]:
+            if active[c] and group_of[c] < 0:
                 kind_next = _FAIL
                 if policy[c]:
                     code, t, kind_next = _renewal(
@@ -563,30 +785,199 @@ def _simulate(
                     lives[c] = k + 1
                     t = flat[base[s] + k]
                 if t < t_end:
-                    size = _push(
-                        heap_times,
-                        heap_nodes,
-                        heap_states,
-                        size,
-                        t,
-                        c,
-                        kind_next,
-                    )
+                    size = _push(heap, size, t, c, kind_next, 0)
+        # Each standby group's units, new, the first k operating, and the
+        # group's first event (``_StandbyGroup.__init__``).
+        for c in range(n):
+            if code != 0:
+                break
+            g = group_of[c]
+            if not active[c] or g < 0:
+                continue
+            for u in range(group_first[g], group_first[g] + group_count[g]):
+                code, life = _draw(
+                    unit_fail[u], units[7], u, limit, flat, base
+                )
+                if code != 0:
+                    break
+                units[0][u] = life
+                if u - group_first[g] < group_k[g]:
+                    _operate(u, g, 0.0, units, groups)
+                else:
+                    _stand_by(u, g, 0.0, dormancy, group_first, units, groups)
+            if code != 0:
+                break
+            size = _arm(
+                g,
+                c,
+                t_end,
+                group_first,
+                group_count,
+                units,
+                groups,
+                heap,
+                size,
+                tags,
+            )
+            if size < 0:
+                code = -1
+                break
         up = initial_up
         system_up = 0.0
         system_down = 0.0
         since = 0.0
         while code == 0 and size > 0:
-            t, c, kind_now, size = _pop(
-                heap_times, heap_nodes, heap_states, size
-            )
-            up_now = (
-                kind_now == _RESTORE
-                or kind_now == _PM_END
-                or kind_now == _PM_IN_PLACE
-                or kind_now == _TEST_UP
-            )
-            if kind_now >= _PM_START and up_now == status[c]:
+            t, c, kind_now, tag_now, size = _pop(heap, size)
+            grouped = False
+            if kind_now == _GROUP:
+                # A standby group's own event (RepairableRBD._StandbyGroup.
+                # advance): a unit failure, charged as a repair, or a
+                # repair's end.
+                g = group_of[c]
+                if tag_now != groups[4][g]:
+                    continue  # superseded by an earlier one
+                groups[4][g] = -1
+                u = _group_next(g, group_first, group_count, units)
+                units[5][u] = 0
+                unit_kind = units[4][u]
+                broken = False
+                if unit_kind == _UNIT_REPAIRED:
+                    if crews >= 0:
+                        size = _release(
+                            n + u,
+                            t,
+                            t_end,
+                            n,
+                            crew,
+                            holding,
+                            queue,
+                            pending,
+                            plan,
+                            heap,
+                            size,
+                        )
+                        if size < 0:
+                            code = -1
+                            break
+                    code, life = _draw(
+                        unit_fail[u], units[7], u, limit, flat, base
+                    )
+                    if code != 0:
+                        break
+                    units[0][u] = life
+                    if groups[1][g] < group_k[g]:
+                        _operate(u, g, t, units, groups)
+                    else:
+                        _stand_by(
+                            u, g, t, dormancy, group_first, units, groups
+                        )
+                else:
+                    if unit_kind == _SPARE_FAILS:
+                        # Out of the spares.
+                        j = group_first[g]
+                        while groups[3][j] != u:
+                            j += 1
+                        end = group_first[g] + groups[2][g] - 1
+                        while j < end:
+                            groups[3][j] = groups[3][j + 1]
+                            j += 1
+                        groups[2][g] -= 1
+                    else:
+                        units[6][u] = 0
+                        groups[1][g] -= 1
+                    broken = True
+                    # Its repair, drawn now: a job for a crew.
+                    code, span = _draw(
+                        unit_repair[u], units[8], u, limit, flat, base
+                    )
+                    if code != 0:
+                        break
+                    if crews < 0 or crew[0] > 0:
+                        if crews >= 0:
+                            crew[0] -= 1
+                            holding[n + u] = 1
+                        _unit_event(
+                            u, g, t + span, _UNIT_REPAIRED, units, groups
+                        )
+                    else:
+                        crew[1] = _wait(
+                            queue,
+                            crew[1],
+                            rank[n + u],
+                            t,
+                            crew[2],
+                            n + u,
+                            t + span,
+                            _UNIT_JOB,
+                        )
+                        crew[2] += 1
+                    if unit_kind == _UNIT_FAILS and groups[2][g] > 0:
+                        # The spare that has waited longest is switched in,
+                        # if the switch works.
+                        spare = groups[3][group_first[g]]
+                        switched = switching[g] >= 1.0
+                        if not switched and switching[g] > 0.0:
+                            code, uniform = _draw(
+                                switch[g], groups[6], g, limit, flat, base
+                            )
+                            if code != 0:
+                                break
+                            switched = uniform < switching[g]
+                        if switched:
+                            end = group_first[g] + groups[2][g] - 1
+                            for j in range(group_first[g], end):
+                                groups[3][j] = groups[3][j + 1]
+                            groups[2][g] -= 1
+                            # It has used up its life at the dormant rate so
+                            # far (all of it, at most).
+                            units[5][spare] = 0
+                            used = dormancy[g] * (t - units[1][spare])
+                            units[0][spare] = max(units[0][spare] - used, 0.0)
+                            _operate(spare, g, t, units, groups)
+                size = _arm(
+                    g,
+                    c,
+                    t_end,
+                    group_first,
+                    group_count,
+                    units,
+                    groups,
+                    heap,
+                    size,
+                    tags,
+                )
+                if size < 0:
+                    code = -1
+                    break
+                if broken:
+                    for q in range(slot_start[c], slot_end[c]):
+                        s = slot_stream[q]
+                        if s >= 0:
+                            k = charged[q]
+                            if k >= limit[s]:
+                                code = s + 1
+                                break
+                            charged[q] = k + 1
+                            charge = flat[base[s] + k]
+                        else:
+                            charge = slot_value[q]
+                        rep_cost += charge
+                        category_out[row, slot_category[q]] += charge
+                        node_cost_out[row, cost_index[c]] += charge
+                    if code != 0:
+                        break
+                up_now = groups[1][g] == group_k[g]
+                if up_now == status[c]:
+                    continue
+                grouped = True
+            else:
+                up_now = (
+                    kind_now == _RESTORE
+                    or kind_now == _PM_END
+                    or kind_now == _PM_IN_PLACE
+                    or kind_now == _TEST_UP
+                )
+            if not grouped and kind_now >= _PM_START and up_now == status[c]:
                 # No change of state: maintenance in zero time of a working
                 # unit (renewed in place), a test in zero time of a working
                 # unit, or a test of a failed one, which finds its failure
@@ -704,8 +1095,9 @@ def _simulate(
                         node_cost_out[row, cost_index[c]] += charge
                 else:
                     counts_out[row, 0, c] += 1
-                    # A hidden failure is charged when a test finds it.
-                    if tested[c] == 0.0:
+                    # A hidden failure is charged when a test finds it, a
+                    # standby group's at each unit's.
+                    if tested[c] == 0.0 and not grouped:
                         for q in range(slot_start[c], slot_end[c]):
                             s = slot_stream[q]
                             if s >= 0:
@@ -745,12 +1137,14 @@ def _simulate(
                         counts_out[row, 3, c] += 1
                     else:
                         change_deltas[row, changes] = -1
-                        if kind_now >= _PM_START:
+                        if _PM_START <= kind_now <= _TEST_MISSED:
                             planned += 1
                         else:
                             failures += 1
                             counts_out[row, 1, c] += 1
                     changes += 1
+                if grouped:
+                    continue  # the group has queued its next event
             # The next event.
             if tested[c] > 0.0:
                 # A unit with hidden failures (RepairableRBD.
@@ -864,31 +1258,23 @@ def _simulate(
                 if up_now:
                     if holding[c]:
                         # Its job done, its crew starts the next waiting
-                        # one, if any, ending as late as it waited.
-                        holding[c] = 0
-                        if waiting == 0:
-                            free += 1
-                        else:
-                            w, due, done, kind_done, waiting = _start_waiting(
-                                queue, waiting
-                            )
-                            holding[w] = 1
-                            wait = t - due
-                            ends = done + wait
-                            # Off line for a test, a unit does not age while
-                            # it waits.
-                            if not np.isnan(pending[w]):
-                                pending[w] = pending[w] + wait
-                            if ends < t_end:
-                                size = _push(
-                                    heap_times,
-                                    heap_nodes,
-                                    heap_states,
-                                    size,
-                                    ends,
-                                    w,
-                                    kind_done,
-                                )
+                        # one, if any.
+                        size = _release(
+                            c,
+                            t,
+                            t_end,
+                            n,
+                            crew,
+                            holding,
+                            queue,
+                            pending,
+                            plan,
+                            heap,
+                            size,
+                        )
+                        if size < 0:
+                            code = -1
+                            break
                 elif (
                     kind_next == _RESTORE
                     or kind_next == _PM_END
@@ -896,32 +1282,27 @@ def _simulate(
                     or kind_next == _TEST_UP
                 ):
                     # A job falls due: started by a free crew, or waiting.
-                    if free > 0:
-                        free -= 1
+                    if crew[0] > 0:
+                        crew[0] -= 1
                         holding[c] = 1
                     else:
-                        waiting = _wait(
+                        crew[1] = _wait(
                             queue,
-                            waiting,
+                            crew[1],
                             rank[c],
                             t,
-                            queued,
+                            crew[2],
                             c,
                             t_next,
                             kind_next,
                         )
-                        queued += 1
+                        crew[2] += 1
                         continue
             if t_next < t_end:
-                size = _push(
-                    heap_times,
-                    heap_nodes,
-                    heap_states,
-                    size,
-                    t_next,
-                    c,
-                    kind_next,
-                )
+                if size == heap[0].size:
+                    code = -1
+                    break
+                size = _push(heap, size, t_next, c, kind_next, 0)
         status_out[row] = code
         if code != 0:
             continue

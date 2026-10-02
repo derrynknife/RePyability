@@ -6,8 +6,8 @@ It runs the simulations of a system whose components are plain
 its draws come from its own streams (see ``_streams``) -- in any structure,
 with components held working or broken, antithetic pairs, common random
 numbers and costs, under age and block replacement, with hidden failures
-found by periodic tests, and with fewer repair crews than components
-(#155). Anything else (replacement on condition, standby groups,
+found by periodic tests, with fewer repair crews than components and with
+standby groups (#155). Anything else (replacement on condition,
 maintenance groups, imperfect repair, nested RBDs, capacities, models whose
 draws cannot be streamed) runs in Python, which ``engine="auto"`` chooses
 by itself.
@@ -24,9 +24,9 @@ nothing when numba is not installed.
 Other packages can add compiled engines of their own (see ``engines``):
 ``engine="auto"`` runs the one of highest priority, numba's being 0, on
 what ``unsupported`` allows: plain components. Age and block
-replacement, inspections and repair crews are numba's own loop's
-(``unsupported(..., numba=True)``), so a system with them runs on numba,
-not on an engine of the interface's version.
+replacement, inspections, repair crews and standby groups are numba's own
+loop's (``unsupported(..., numba=True)``), so a system with them runs on
+numba, not on an engine of the interface's version.
 """
 
 import importlib.util
@@ -82,9 +82,9 @@ def unsupported(
     """What in a run a compiled engine cannot simulate, or None: an engine
     of the interface's version (see ``engines``) simulates plain
     components; with ``numba``, numba's own loop also simulates age and
-    block replacement, inspections of hidden failures and repair crews
-    (#155), from new for the first two (a run from the components'
-    ``states`` shifts their calendars)."""
+    block replacement, inspections of hidden failures, repair crews and
+    standby groups (#155), from new for the first two (a run from the
+    components' ``states`` shifts their calendars)."""
     from repyability.non_repairable import NonRepairable
     from repyability.rbd.repairable_rbd import RepairableRBD
 
@@ -96,7 +96,7 @@ def unsupported(
         return "components started from a state"
     if rbd._crews_limited() and not numba:
         return "repair crews"
-    if rbd._standby:
+    if rbd._standby and not numba:
         return "standby groups"
     if rbd._maintenance:
         return "maintenance groups"
@@ -119,7 +119,7 @@ def unsupported(
             return "nested RBDs"
         if type(component) is not NonRepairable:
             return f"node {name!r}'s {type(component).__name__}"
-        if not _streamed(name, plan):
+        if not _streamed(name, plan, rbd._standby.get(name)):
             return f"node {name!r}'s models (their draws cannot be streamed)"
     return None
 
@@ -157,10 +157,17 @@ def _unsupported_inspections(rbd, plan: _streams.Plan) -> Optional[str]:
     return None
 
 
-def _streamed(node, plan: _streams.Plan) -> bool:
-    """Whether a component's lives and repairs are streamed."""
+def _streamed(node, plan: _streams.Plan, standby=None) -> bool:
+    """Whether a component's lives and repairs are streamed: a standby
+    group's, its units' (``standby``, its arrangement)."""
+    paths: list = (
+        [(node,)]
+        if standby is None
+        else [(node, unit) for unit in range(standby.units)]
+    )
     return all(
-        ((node,), kind) in plan.specs
+        (path, kind) in plan.specs
+        for path in paths
         for kind in (_streams.FAILURE, _streams.REPAIR)
     )
 
@@ -302,8 +309,56 @@ class _System:
                 start[c] = 0
             elif node not in working:
                 active[c] = 1
-                fail[c] = stream(((node,), _streams.FAILURE))
-                repair[c] = stream(((node,), _streams.REPAIR))
+                if node not in rbd._standby:
+                    fail[c] = stream(((node,), _streams.FAILURE))
+                    repair[c] = stream(((node,), _streams.REPAIR))
+        #: Each standby group (#155): its node, its units (from the first's
+        #: number, in all the groups' units), how many operate, the dormant
+        #: rate and the switches' chance and stream (-1 for none drawn);
+        #: and each unit's streams of lives and repairs, and its group.
+        group_of = np.full(n, -1, np.int64)
+        groups: list = []
+        units: list = []
+        for c, node in enumerate(nodes):
+            arrangement = rbd._standby.get(node)
+            if arrangement is None or not active[c]:
+                continue
+            group_of[c] = len(groups)
+            p = float(arrangement.switching_probability)
+            groups.append(
+                (
+                    c,
+                    len(units),
+                    arrangement.units,
+                    arrangement.k,
+                    float(arrangement.dormancy_factor),
+                    p,
+                    (
+                        stream(((node,), _streams.SWITCH))
+                        if 0.0 < p < 1.0
+                        else -1
+                    ),
+                )
+            )
+            for unit in range(arrangement.units):
+                units.append(
+                    (
+                        stream(((node, unit), _streams.FAILURE)),
+                        stream(((node, unit), _streams.REPAIR)),
+                        len(groups) - 1,
+                    )
+                )
+        group_node, group_first, group_count, group_k = (
+            np.array([group[i] for group in groups], np.int64)
+            for i in range(4)
+        )
+        group_dormancy, group_switching = (
+            np.array([group[i] for group in groups], float) for i in (4, 5)
+        )
+        group_switch = np.array([group[6] for group in groups], np.int64)
+        unit_fail, unit_repair, unit_group = (
+            np.array([unit[i] for unit in units], np.int64) for i in range(3)
+        )
 
         # What each failure charges: a node's charge slots, in the order the
         # Python loop pays them.
@@ -408,7 +463,13 @@ class _System:
         #: otherwise: no job waits), and each component's rank in their
         #: queue (its priority, negated: the lowest rank first).
         crews = rbd.repair_crews if rbd._crews_limited() else -1
-        rank = np.array([-rbd._priority.get(node, 0.0) for node in nodes])
+        rank = np.array(
+            [-rbd._priority.get(node, 0.0) for node in nodes]
+            + [
+                -rbd._priority.get(nodes[group_node[g]], 0.0)
+                for g in unit_group
+            ]
+        )
         #: Everything numba's own loop simulates besides plain components
         #: (see ``_kernel._simulate``).
         self.upkeep = (
@@ -428,6 +489,17 @@ class _System:
             test_amount,
             int(crews),
             rank,
+            group_of,
+            group_node,
+            group_first,
+            group_count,
+            group_k,
+            group_dormancy,
+            group_switching,
+            group_switch,
+            unit_fail,
+            unit_repair,
+            unit_group,
         )
         initial_up = rbd.is_system_working(
             {node: bool(start[c]) for c, node in enumerate(nodes)}, method
@@ -466,7 +538,14 @@ class _System:
         self.room = (
             2
             * sum(
-                int(plan.specs[((node,), _streams.FAILURE)].rows)
+                (
+                    int(plan.specs[((node,), _streams.FAILURE)].rows)
+                    if group_of[c] < 0
+                    else sum(
+                        int(plan.specs[((node, unit), _streams.FAILURE)].rows)
+                        for unit in range(rbd._standby[node].units)
+                    )
+                )
                 + (
                     int(plan.specs[((node,), _streams.DURATION)].rows)
                     if duration[c] >= 0 or test_time[c] >= 0

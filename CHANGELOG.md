@@ -211,6 +211,19 @@ is required.
   19, 25 and 8 times on four, on 3, 12 and 70 components (on 70, drawing
   the numbers and adding up the results take most of the time). An engine
   another package adds is still not given crewed systems.
+- **Standby groups compiled** (#155). The compiled engine simulates
+  standby groups as the Python loop does: each unit's life used up at the
+  dormant rate while it waits and at rate 1 while it operates, the spare
+  that has waited longest switched in (a switch that fails, from the
+  group's switch stream, leaving the position empty), failed units
+  repaired by the RBD's crews, and the group's next event in the heap,
+  superseded ones skipped as Python skips them. The engines agree to the
+  last bit on cold, warm and hot groups, switches that fail, groups sharing
+  crews with each other and with maintained and tested components, events
+  falling together, and a system too large for the table of states. With
+  half the nodes groups of three units, it ran 6 to 8 times as fast as
+  Python on one thread, and 7 to 19 times on four, on 1, 12 and 70 nodes.
+  An engine another package adds is still not given them.
 - **Faster compiled simulations of large systems** (#150). Above 20
   components (where the compiled loop has no table of every state), the
   compiled engine keeps whether the system works up to date as components

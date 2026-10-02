@@ -599,12 +599,17 @@ def test_the_compiled_engine_refuses_what_it_cannot_run():
         on_condition().availability(
             100.0, mc_samples=5, seed=2, engine="numba"
         )
-    standby = RepairableRBD(
-        [("s", "g"), ("g", "t")],
-        {"g": {**unit_spec(70, 2.0), "standby": {"units": 3, "k": 2}}},
+    imperfect = RepairableRBD(
+        [("s", "a"), ("a", "t")],
+        {
+            "a": {
+                **unit_spec(70, 2.0),
+                "repair": {"model": "kijima1", "q": 0.5},
+            }
+        },
     )
-    with pytest.raises(NotImplementedError, match="standby groups"):
-        standby.availability(100.0, mc_samples=5, seed=2, engine="numba")
+    with pytest.raises(NotImplementedError, match="imperfect repair"):
+        imperfect.availability(100.0, mc_samples=5, seed=2, engine="numba")
 
 
 def test_without_numba_the_compiled_engine_cannot_be_asked_for(monkeypatch):
@@ -874,11 +879,14 @@ def test_what_numbas_loop_runs_besides_plain_components():
         *maintained_rbds().values(),
         *inspected_rbds().values(),
         *crewed_rbds().values(),
+        *standby_rbds().values(),
     ]:
         plan, _ = rbd._stream_plan(100.0, 1, False)
         # Not given to an engine of the interface's version.
         if rbd._crews_limited():
             reason = "repair crews"
+        elif rbd._standby:
+            reason = "standby groups"
         elif rbd._preventive:
             reason = "preventive maintenance"
         else:
@@ -1191,6 +1199,117 @@ def test_jobs_wait_for_a_crew_in_the_compiled_loop():
     assert result.system_uptime == pytest.approx(17.0)
 
 
+def standby_rbds():
+    """Systems with standby groups, which numba's own loop simulates
+    (#155): cold, warm and hot spares, switches that fail, groups that
+    share repair crews with each other and with plain, maintained and
+    tested components, fixed lives whose events fall together, and more
+    components than the loop tabulates."""
+
+    def slow(scale, shape, **extra):
+        return {
+            "reliability": W([scale, shape]),
+            "repairability": L([2.0, 0.5]),
+            **extra,
+        }
+
+    big = pairs_in_series(12)
+    return {
+        "cold and warm, crews and the rest": RepairableRBD(
+            BRIDGE,
+            {
+                "a": slow(
+                    70,
+                    2.5,
+                    standby={"units": 3, "dormancy_factor": 0.2},
+                    priority=1.0,
+                    repair_cost=2.0,
+                ),
+                "b": slow(
+                    80,
+                    2.0,
+                    standby={"units": 2, "switching_probability": 0.7},
+                    replace_cost=G([2.0, 1.0]),
+                ),
+                "c": slow(90, 1.5),
+                "d": slow(
+                    60,
+                    3.0,
+                    preventive={"interval": 30.0, "duration": E([0.5])},
+                ),
+                "e": slow(
+                    75,
+                    1.2,
+                    inspection={
+                        "interval": 25.0,
+                        "duration": X(1.0),
+                        "coverage": 0.7,
+                        "full_test": 75.0,
+                    },
+                ),
+            },
+            repair_crews=2,
+            downtime_cost_rate=3.0,
+        ),
+        "hot and switching, crews enough": RepairableRBD(
+            BRIDGE,
+            {
+                "a": slow(
+                    70,
+                    2.5,
+                    standby={"units": 4, "k": 2, "dormancy_factor": 1.0},
+                ),
+                "b": slow(
+                    80,
+                    2.0,
+                    standby={"units": 2, "switching_probability": 0.0},
+                ),
+                "c": slow(90, 1.5),
+                "d": slow(60, 3.0),
+                "e": slow(75, 1.2),
+            },
+        ),
+        "fixed lives, falling together": RepairableRBD(
+            [("s", "g"), ("s", "h"), ("g", "t"), ("h", "t")],
+            {
+                "g": {
+                    "reliability": X(5.0),
+                    "repairability": X(3.0),
+                    "standby": {"units": 3},
+                },
+                "h": {
+                    "reliability": X(5.0),
+                    "repairability": X(2.0),
+                    "standby": {"units": 2},
+                    "priority": 1.0,
+                },
+            },
+            repair_crews=1,
+        ),
+        "large": RepairableRBD(
+            [tuple(e) for e in big._init_args["edges"]],
+            {
+                node: {
+                    **spec,
+                    "repairability": L([2.5, 0.5]),
+                    **({"standby": {"units": 2}} if i % 3 == 0 else {}),
+                }
+                for i, (node, spec) in enumerate(
+                    big._init_args["components"].items()
+                )
+            },
+            repair_crews=4,
+        ),
+    }
+
+
+@needs_numba
+@UPKEEP_RUNS
+@pytest.mark.parametrize("name", sorted(standby_rbds()))
+def test_the_engines_agree_on_standby_groups(name, options):
+    engines_agree(standby_rbds()[name], options)
+
+
 @needs_numba
 def test_found_failures_are_charged_as_the_python_loop_charges_them():
     rbd = inspected_rbds()["staggered, priced"]
@@ -1285,24 +1404,27 @@ def test_the_compiled_heap_releases_ties_as_heapq_does():
 
     rng = np.random.default_rng(5)
     size = 64
-    times = np.empty(size)
-    nodes = np.empty(size, np.int64)
-    states = np.empty(size, np.int8)
+    arrays = (
+        np.empty(size),
+        np.empty(size, np.int64),
+        np.empty(size, np.int8),
+        np.empty(size, np.int64),
+    )
     heap: list = []
     count = 0
     for step in range(5000):
         if rng.random() < 0.55 and count < size or count == 0:
             t = float(rng.integers(0, 12))
-            count = _kernel._push.py_func(
-                times, nodes, states, count, t, step, 1
-            )
+            count = _kernel._push.py_func(arrays, count, t, step, 1, -step)
             heapq.heappush(heap, (t, Event(t, step, True)))
         else:
-            t, node, _, count = _kernel._pop.py_func(
-                times, nodes, states, count
-            )
+            t, node, _, tag, count = _kernel._pop.py_func(arrays, count)
             expected = heapq.heappop(heap)[1]
-            assert (t, node) == (expected.time, expected.component)
+            assert (t, node, tag) == (
+                expected.time,
+                expected.component,
+                -expected.component,
+            )
 
 
 @needs_numba

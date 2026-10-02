@@ -11511,8 +11511,8 @@ class RepairableRBD(RBD):
             components (surpyval parametric models) in any structure, with
             nodes held working or broken, costs, antithetic pairs and
             tolerances, under age and block replacement, with hidden
-            failures found by inspections and with repair crews;
-            replacement on condition, standby groups, maintenance groups,
+            failures found by inspections, with repair crews and with
+            standby groups; replacement on condition, maintenance groups,
             imperfect repair, nested RBDs, capacities, other models and
             runs from a ``state`` run in Python. Another package can add a
             compiled engine of its own, which ``engine`` then takes by name
