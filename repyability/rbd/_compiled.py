@@ -874,7 +874,10 @@ class Runner:
     """Runs a run's simulations compiled, a batch at a time, and adds them
     to the tally in order (see ``RepairableRBD._run``). With ``capacity``
     (the run's ``_CapacityRecorder``; numba's own loop only), it follows
-    the system's capacity too (see ``_capacity_into``)."""
+    the system's capacity too (see ``_capacity_into``). For a tally that
+    keeps histories (numba's own loop only), the loop records each
+    simulation's, and the tally keeps them in place of the totals (see
+    ``_timeline_runs.Records``)."""
 
     def __init__(
         self,
@@ -905,6 +908,12 @@ class Runner:
         self._progress = progress
         self._t = float(tally.t_simulation)
         self._model = _System(rbd, plan, working, broken, method, _kernel)
+        #: Room for each simulation's components' changes, recording them
+        #: (see ``_kernel._simulate``): at first, as many as the system's
+        #: room expects (two for each failure), and twice as many each time
+        #: a simulation runs out.
+        self._recording = tally.histories is not None
+        self._records = self._model.room if self._recording else 0
         self._threads = _kernel.threads(jobs)
         # The threads that draw the numbers and run the simulations (the
         # compiled loop releases the GIL).
@@ -916,8 +925,12 @@ class Runner:
         self._store = _Store(plan, self._model.specs, self._pool)
         rows = sum(spec.rows for spec in self._model.specs)
         # The draws, the system's changes and, following the capacity, each
-        # component's change.
+        # component's change; recording, each component's change (its
+        # time, which and whether planned), the cause of each of the
+        # system's, and the components' states at 0.
         room = (9 + (16 if capacity is not None else 0)) * self._model.room
+        if self._recording:
+            room += 13 * (self._records + self._model.room) + self._model.n
         size = BATCH_BYTES // (8 * rows + room)
         widest = int(np.max(self._store.columns, initial=1))
         if size >= widest:
@@ -939,9 +952,15 @@ class Runner:
 
         model = self._model
         out = self._out
-        if out is None or out[5].shape[1] != model.room:
+        records = self._records
+        if (
+            out is None
+            or out[5].shape[1] != model.room
+            or out[17].shape[1] != records
+        ):
             batch, n, room = self._batch, model.n, model.room
             traced = room if self._capacity is not None else 0
+            caused = room if self._recording else 0
             out = self._out = (
                 np.empty(batch),
                 np.empty((batch, n, 3)),
@@ -958,6 +977,14 @@ class Runner:
                 np.empty(batch, np.int64),
                 np.empty((batch, traced)),
                 np.empty((batch, traced), np.int64),
+                np.empty((batch, n if self._recording else 0), np.int8),
+                np.empty(batch, np.int64),
+                np.empty((batch, records)),
+                np.empty((batch, records), np.int32),
+                np.empty((batch, records), np.int8),
+                np.empty((batch, caused), np.int32),
+                np.empty((batch, caused), np.int64),
+                np.empty((batch, caused), np.int8),
             )
         return tuple(array[:size] for array in out)
 
@@ -966,19 +993,25 @@ class Runner:
         todo = np.arange(first, stop, dtype=np.int64)
         while True:
             out = self._outputs(size)
-            if self._simulate(todo, first, stop, out) is None:
+            short = self._simulate(todo, first, stop, out)
+            if not short:
                 break
-            # A simulation outgrew its room for system changes: make more,
-            # and run the whole batch again (it is rare).
-            self._model.room *= 2
+            # A simulation outgrew its room for system changes (or, recording,
+            # for its components'): make more, and run the whole batch again
+            # (it is rare).
+            if "room" in short:
+                self._model.room *= 2
+            if "records" in short:
+                self._records *= 2
         self._add(out, size)
         self._store.drop(stop)
         self._progress.update(size)
 
-    def _simulate(self, todo, first: int, stop: int, out) -> Optional[str]:
+    def _simulate(self, todo, first: int, stop: int, out) -> set:
         """Run ``todo`` into ``out``, giving streams more rows until every
-        simulation has its draws; ``"room"`` if one ran out of room for its
-        changes of state, else None."""
+        simulation has its draws: what a simulation ran out of room for,
+        ``"room"`` for the system's changes of state and ``"records"`` for
+        the components' (recording), or nothing."""
         kernel = self._kernel
         status = out[10]
         while todo.size:
@@ -1011,7 +1044,12 @@ class Runner:
                 )
             codes = status[todo - first]
             if np.any(codes < 0):
-                return "room"
+                short = set()
+                if np.any(codes == -1):
+                    short.add("room")
+                if np.any(codes == -2):
+                    short.add("records")
+                return short
             short = todo[codes > 0]
             columns = self._store.columns
             for s, index in {
@@ -1020,7 +1058,7 @@ class Runner:
             }:
                 self._store.extend(s, index)
             todo = short
-        return None
+        return set()
 
     def _draws(self, first: int, stop: int) -> tuple:
         """The store's arrays for simulations ``first`` to ``stop``, the
@@ -1055,9 +1093,42 @@ class Runner:
             cap_count,
             cap_times,
             cap_masks,
+            rec_start,
+            rec_count,
+            rec_times,
+            rec_which,
+            rec_planned,
+            change_cause,
+            change_index,
+            change_planned,
         ) = out
         tally = self._tally
         tally.n += size
+        if self._recording:
+            from repyability.rbd._timeline_runs import Block
+
+            bounds, offsets, times, planned = self._kernel.group_records(
+                rec_count, rec_times, rec_which, rec_planned, self._model.n
+            )
+            changed = np.zeros(size + 1, np.int64)
+            np.cumsum(change_count, out=changed[1:])
+            made = np.arange(change_times.shape[1]) < change_count[:, None]
+            tally.histories.add_block(
+                Block(
+                    rec_start.copy(),
+                    bounds,
+                    offsets,
+                    times,
+                    planned,
+                    np.full(size, self._model.system[14], np.int8),
+                    changed,
+                    change_times[made],
+                    change_cause[made].astype(np.int64),
+                    change_index[made],
+                    change_planned[made].astype(bool),
+                )
+            )
+            return
         tally.uptimes.extend(uptime.tolist())
         failures, restorations, planned = system.sum(axis=0).tolist()
         tally.system_failures += failures

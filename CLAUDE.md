@@ -44,16 +44,20 @@
   system's own events (`_simulate`) and a nested RBD's (`_advance`, which
   copies `RepairableRBD.next_event`) are written out separately, for speed:
   a change to one goes into the other too.
-- **`simulate_timelines` draws plain units itself**
-  (`repyability/rbd/_timeline_runs.py`): their lives and repairs from
-  their streams, added up as the event loop adds them, so each
-  simulation's history has `availability`'s uptime to the last bit;
-  components that depend on each other (what `_timeline_runs.independent`
-  turns down) are recorded from the Python loop (`_Context.history`). A
-  change to how the loop draws or adds up a plain unit's lives and repairs
-  goes into `_timeline_runs._unit` too, and anything new that couples
-  components into `independent`: `test_timelines.py` checks the histories
-  against `availability`.
+- **`simulate_timelines`' histories are the event loop's, on every
+  engine.** Both loops record them as they run (`_replicate` with
+  `_Context.history`; `_kernel._simulate` when given room to record, the
+  system's own level only, so `_advance` records nothing): each top-level
+  component's changes, and each of the system's with the component that
+  made it. On the Python engine, plain units' histories are drawn from
+  their streams instead (`repyability/rbd/_timeline_runs.py`), added up
+  as the loop adds them, and a simulation with changes of different
+  components at one instant is run in the loop. A change to what the loops
+  record goes into both; one to how the loop draws or adds up a plain
+  unit's lives and repairs goes into `_timeline_runs._unit` too, and
+  anything new that couples components into `independent`:
+  `test_timelines.py` checks every engine's histories against each other
+  and against `availability`.
 - **Capacity states are worked out in batches**
   (`_CapacityRecorder.evaluate`): a simulation's in Python, a batch's
   compiled, so a state's capacity must not depend on what is worked out

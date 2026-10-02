@@ -1198,12 +1198,29 @@ def _simulate(
         cap_count,
         cap_times,
         cap_masks,
+        rec_start,
+        rec_count,
+        rec_times,
+        rec_which,
+        rec_planned,
+        change_cause,
+        change_index,
+        change_planned,
     ) = out
     # Whether the run follows the system's capacity (#155): the components
     # up at the start, as bits, and each change of a component's state, its
     # time and the components up after it (see ``trace_capacity``).
     tracing = cap_times.shape[1] > 0
     traced_room = cap_times.shape[1]
+    # Whether the run records its histories (#157; see
+    # ``RepairableRBD.simulate_timelines``): each component's state at the
+    # start, each change of one (its time, the component and whether it is
+    # a planned change down), and, for each change of the system's, the
+    # component whose change made it, which of that one's changes it was,
+    # and whether it was planned. A simulation that runs out of room for
+    # its components' changes ends with code -2, to be run again with more.
+    recording = rec_times.shape[1] > 0
+    recorded_room = rec_times.shape[1]
     # The system's own components, and every level's.
     n = node_out.shape[1]
     n_all = start.size
@@ -1379,6 +1396,7 @@ def _simulate(
     last = np.empty(n)
     up_at = np.empty(n)
     down_at = np.empty(n)
+    seen = np.zeros(n, np.int64)
     value0, count0, down0, working_paths0 = kept[9:]
     root, always = structure[6], structure[7]
     value = np.empty(value0.size, np.int8)
@@ -1554,6 +1572,11 @@ def _simulate(
                 if status[c]:
                     traced |= 1 << c
             cap_start[row] = traced
+        recorded_n = 0
+        if recording:
+            for c in range(n):
+                rec_start[row, c] = status[c]
+                seen[c] = 0
         up = initial_up
         system_up = 0.0
         system_down = 0.0
@@ -1803,6 +1826,21 @@ def _simulate(
                     cap_times[row, traced_n] = t
                     cap_masks[row, traced_n] = traced
                     traced_n += 1
+                if recording:
+                    if recorded_n == recorded_room:
+                        code = -2
+                        break
+                    rec_times[row, recorded_n] = t
+                    rec_which[row, recorded_n] = c
+                    # A planned change down: maintenance or a test off line.
+                    rec_planned[row, recorded_n] = (
+                        1
+                        if state == 0
+                        and (kind_now == _PM_START or kind_now == _TEST_DOWN)
+                        else 0
+                    )
+                    recorded_n += 1
+                    seen[c] += 1
                 if state:
                     counts_out[row, 2, c] += 1
                 elif kind_now == _PM_START:
@@ -1875,6 +1913,10 @@ def _simulate(
                         code = -1
                         break
                     change_times[row, changes] = t
+                    if recording:
+                        change_cause[row, changes] = c
+                        change_index[row, changes] = seen[c] - 1
+                        change_planned[row, changes] = 0
                     if up:
                         change_deltas[row, changes] = 1
                         restorations += 1
@@ -1883,6 +1925,8 @@ def _simulate(
                         change_deltas[row, changes] = -1
                         if _PM_START <= kind_now <= _TEST_MISSED:
                             planned += 1
+                            if recording:
+                                change_planned[row, changes] = 1
                         else:
                             failures += 1
                             counts_out[row, 1, c] += 1
@@ -2097,6 +2141,8 @@ def _simulate(
         system_out[row, 2] = planned
         change_count[row] = changes
         cap_count[row] = traced_n
+        if recording:
+            rec_count[row] = recorded_n
 
 
 @njit(cache=True)
@@ -2206,6 +2252,37 @@ def trace_capacity(
         offsets,
         share,
     )
+
+
+@njit(cache=True)
+def group_records(counts, times, which, planned, m):
+    """The changes of components that a batch's simulations recorded (row
+    ``row``'s first ``counts[row]`` of ``times``, ``which`` and
+    ``planned``, in the order they happened), by component: component
+    ``c``'s are ``bounds[c]`` to ``bounds[c + 1]`` of the times and
+    planned flags returned, simulation ``row``'s from ``offsets[c, row]``
+    to ``offsets[c, row + 1]`` of those, in the order they happened."""
+    rows = counts.size
+    per = np.zeros((m, rows + 1), np.int64)
+    for row in range(rows):
+        for k in range(counts[row]):
+            per[which[row, k], row + 1] += 1
+    bounds = np.zeros(m + 1, np.int64)
+    for c in range(m):
+        for row in range(rows):
+            per[c, row + 1] += per[c, row]
+        bounds[c + 1] = bounds[c] + per[c, rows]
+    out_times = np.empty(bounds[m])
+    out_planned = np.empty(bounds[m], np.bool_)
+    filled = per[:, :rows].copy()
+    for row in range(rows):
+        for k in range(counts[row]):
+            c = which[row, k]
+            at = bounds[c] + filled[c, row]
+            out_times[at] = times[row, k]
+            out_planned[at] = planned[row, k] != 0
+            filled[c, row] += 1
+    return bounds, per, out_times, out_planned
 
 
 @njit(cache=True, nogil=True)

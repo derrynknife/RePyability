@@ -2042,9 +2042,8 @@ class TimelineSimulation(_ResultMapping):
     Attributes
     ----------
     system : Timelines
-        The system's histories, merged from its components' with
-        [`RBD.system_timeline`][repyability.RBD.system_timeline]: each
-        change's cause is the component whose change made it.
+        The system's histories, as the event loop has them: each change's
+        cause is the component whose change made it.
     components : dict
         Node -> its [`Timelines`][repyability.Timelines]: each component's
         histories (a nested RBD's, its own system's; a standby group's, the
@@ -2055,13 +2054,17 @@ class TimelineSimulation(_ResultMapping):
         How many histories each holds.
     antithetic : bool
         Whether the simulations came in antithetic pairs.
+    engine : str
+        The engine that made them: ``"python"`` or ``"numba"``.
     method : str
-        How the components' histories were made: ``"streams"``, each drawn
-        straight from its streams (independent components), or ``"event
-        loop"``, recorded from the event loop's simulations (components
-        that depend on each other: crews, standby groups, maintenance,
-        tests, ...). Either way they are the simulations ``availability``
-        runs with the same seed.
+        How: ``"event loop"``, recorded by the event loop as it ran them,
+        or ``"streams"``, each component's history drawn straight from its
+        streams and the system's merged from theirs (independent
+        components, on the Python engine). Either way they are the
+        simulations ``availability`` runs with the same seed, with the same
+        histories.
+    start : int
+        The run's simulation the first history is (see ``join``).
 
     Examples
     --------
@@ -2075,11 +2078,22 @@ class TimelineSimulation(_ResultMapping):
     ...     [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
     ...     {"a": unit, "b": unit},
     ... )
-    >>> runs = rbd.simulate_timelines(1000.0, mc_samples=500, seed=1)
+    >>> runs = rbd.simulate_timelines(
+    ...     1000.0, mc_samples=500, seed=1, engine="python"
+    ... )
     >>> runs.method, len(runs.system)
     ('streams', 500)
     >>> pair, pump = runs.system.failures, runs.components["a"].failures
     >>> bool(pair.mean() < pump.mean())
+    True
+
+    Two halves of the run, made apart and joined, are the run:
+
+    >>> halves = [
+    ...     rbd.simulate_timelines(1000.0, mc_samples=250, seed=1, start=s)
+    ...     for s in (0, 250)
+    ... ]
+    >>> TimelineSimulation.join(halves).system == runs.system
     True
     """
 
@@ -2088,4 +2102,83 @@ class TimelineSimulation(_ResultMapping):
     time_simulated_to: float
     n_simulations: int
     antithetic: bool = False
+    engine: str = "python"
     method: str = "streams"
+    start: int = 0
+
+    @classmethod
+    def join(cls, parts) -> "TimelineSimulation":
+        """Consecutive ranges of one run's simulations, made apart (with
+        ``simulate_timelines``' ``start``, in other processes or on other
+        machines, say), as the one result of them all.
+
+        Parameters
+        ----------
+        parts : iterable of TimelineSimulation
+            The ranges, in any order: together, simulations ``start`` to
+            ``start + n - 1`` of one run, with no gap.
+
+        Returns
+        -------
+        TimelineSimulation
+            Their histories one after another, from the first range's
+            ``start``. Its ``engine`` and ``method`` are the parts', joined
+            by commas where they differ.
+
+        Raises
+        ------
+        ValueError
+            If there are no parts, or they are not consecutive ranges of a
+            run over one window, with the same components and pairing.
+        """
+        from repyability.timelines import Timelines, _stacked
+
+        ranges = sorted(parts, key=lambda part: part.start)
+        if not ranges:
+            raise ValueError("Give at least one TimelineSimulation to join.")
+        first = ranges[0]
+        nodes = list(first.components)
+        for before, after in zip(ranges, ranges[1:]):
+            if after.start != before.start + before.n_simulations:
+                raise ValueError(
+                    f"The parts are not consecutive: simulations "
+                    f"{before.start} to "
+                    f"{before.start + before.n_simulations - 1} are followed "
+                    f"by {after.start}."
+                )
+        for part in ranges:
+            if (
+                part.time_simulated_to != first.time_simulated_to
+                or part.antithetic != first.antithetic
+                or list(part.components) != nodes
+            ):
+                raise ValueError(
+                    "The parts are not of one run: they differ in their "
+                    "window, components or antithetic pairing."
+                )
+
+        def joined(timelines: list) -> Any:
+            data = [timeline._data for timeline in timelines]
+            return Timelines._from_data(
+                _stacked(data, data[0].leaves, first.time_simulated_to),
+                timelines[0].name,
+            )
+
+        def names(field: str) -> str:
+            return ", ".join(
+                dict.fromkeys(getattr(part, field) for part in ranges)
+            )
+
+        return cls(
+            system=joined([part.system for part in ranges]),
+            components={
+                node: joined([part.components[node] for part in ranges])
+                for node in nodes
+            },
+            time_simulated_to=first.time_simulated_to,
+            n_simulations=sum(part.n_simulations for part in ranges),
+            antithetic=first.antithetic,
+            engine=names("engine"),
+            method=names("method"),
+            start=first.start,
+        )

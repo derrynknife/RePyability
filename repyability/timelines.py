@@ -1031,8 +1031,9 @@ class Timelines:
 
     Parameters
     ----------
-    timelines : sequence of Timeline
-        The histories, all over one window.
+    timelines : sequence of Timeline or Timelines
+        The histories, all over one window: a Timelines among them gives
+        each of its own, in order (so Timelines of the same unit join).
     name : hashable, optional
         The name: the cause the unit's own changes have when it is merged.
         By default the histories' own name, if they share one.
@@ -1054,24 +1055,26 @@ class Timelines:
 
     def __init__(self, timelines, name: Optional[Hashable] = None):
         items = list(timelines)
-        if not items or not all(isinstance(t, Timeline) for t in items):
+        if not items or not all(
+            isinstance(t, (Timeline, Timelines)) for t in items
+        ):
             raise ValueError(
-                "Give a sequence of one or more Timeline objects."
+                "Give a sequence of one or more Timeline (or Timelines) "
+                "objects."
             )
-        _, end, _ = _shape(items)
+        ends = sorted({t.end for t in items})
+        if len(ends) > 1:
+            raise ValueError(
+                f"Timelines of one unit need one window: got ends {ends}."
+            )
         names = {t.name for t in items}
         if name is None and len(names) == 1:
             name = names.pop()
         if all(t._data.leaves is None for t in items):
-            data = _raw(
-                [t.up for t in items],
-                [t._data.times.tolist() for t in items],
-                [t._data.planned.tolist() for t in items],
-                end,
-            )
+            data = _stacked([t._data for t in items], None, ends[0])
         else:
             parts, leaves = _unified([(t._data, t.name, False) for t in items])
-            data = _stacked(parts, leaves)
+            data = _stacked(parts, leaves, ends[0])
         self._data = data
         self._name = name
 
@@ -1305,8 +1308,6 @@ def _labels(timeline) -> list:
 def _system_timeline(rbd, timelines: Mapping):
     """``RBD.system_timeline``: the system's timeline, merged up the
     diagram's decomposition (see ``modular``) from its components'."""
-    from repyability.rbd.modular import KOON, NODE, PARALLEL, SERIES
-
     if not isinstance(timelines, Mapping):
         raise TypeError(
             "Give the components' timelines as a mapping, {node: timeline}."
@@ -1343,13 +1344,38 @@ def _system_timeline(rbd, timelines: Mapping):
             "depends on needs one."
         )
     size, end, many = _shape(list(timelines.values()))
-    rank = {node: i for i, node in enumerate(nodes)}
     given = {
-        node: _leaf(_tiled(item._data, size), rank[node])
+        node: _tiled(item._data, size)
         for node, item in timelines.items()
         if node in relevant
     }
+    system, _ = _system_merge(rbd, given, size, end)
+    return _wrap(system, many)
+
+
+def _system_merge(
+    rbd, given: Mapping, size: int, end: float
+) -> Tuple[_Data, np.ndarray]:
+    """The system's histories, merged up the diagram's decomposition (see
+    ``modular``) from ``given``, ``{node: data}``, each component's that
+    the system depends on (all with ``size`` histories over ``[0, end]``;
+    a junction's may be left out), each change a cause of its own: their
+    causes the components' places in ``rbd.nodes``. And the histories in
+    which changes of different components fall at the same time, which
+    the merge takes in the order of the components."""
+    from repyability.rbd.modular import KOON, NODE, PARALLEL, SERIES
+
+    nodes = list(rbd.nodes)
+    decomposition = rbd._decomposition()
+    rank = {node: i for i, node in enumerate(nodes)}
+    given = {node: _leaf(data, rank[node]) for node, data in given.items()}
     table, runs = _table(list(given.values()))
+    same = (
+        (table.history[1:] == table.history[:-1])
+        & (table.times[1:] == table.times[:-1])
+        & (table.causes[1:] != table.causes[:-1])
+    )
+    tied = np.unique(table.history[1:][same])
     leaf = dict(zip(given, runs))
     up = _Run(np.ones(size, np.int8), np.zeros(0, np.int64))
     value: Dict[int, _Run] = {}
@@ -1372,7 +1398,7 @@ def _system_timeline(rbd, timelines: Mapping):
         system = value[decomposition.root]
     else:
         system = _core(decomposition, value, table, size)
-    return _wrap(_unrun(system, table, tuple(nodes), end), many)
+    return _unrun(system, table, tuple(nodes), end), tied
 
 
 def _core(decomposition, value: Dict[int, _Run], table: _Table, size: int):

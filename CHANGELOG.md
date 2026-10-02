@@ -769,17 +769,28 @@ is required.
     junctions: from outage logs, a what-if edit of one, or simulated
     histories.
   - `RepairableRBD.simulate_timelines(t_simulation, mc_samples, seed,
-    ...)` keeps each simulation's histories whole, every component's and
-    the system's, in a new `TimelineSimulation`: the simulations
-    `availability` runs with the same seed, each with the same uptime to
-    the last bit, so any measure of a history can be read off them (the
-    first system failure, the longest outage). Independent components'
-    histories are drawn straight from their streams, a batch at once, 3
-    to 8 times as fast as the Python event loop; components that depend on
-    each other (crews, standby groups, maintenance, tests, imperfect
-    repair) are recorded from the event loop; a nested RBD's history is its
+    ..., engine="auto", n_jobs=None, start=0)` keeps each simulation's
+    histories whole, every component's and the system's, in a new
+    `TimelineSimulation`: the simulations `availability` runs with the
+    same seed, and their histories the event loop's, every change with the
+    component it is credited to, whichever engine makes them (each
+    simulation's uptime is `availability`'s to the last bit). So any
+    measure of a history can be read off them: the first system failure,
+    the longest outage. Both event loops record them as they run, numba's
+    for every system it simulates (`engine` chooses as for
+    `availability`), at 3% to 32% more time than `availability`'s run of
+    the same simulations, 5 to 16 times as fast as the Python loop on
+    systems with repair crews, standby groups and maintenance. On the
+    Python engine, independent components' histories are drawn straight
+    from their streams instead, a batch at once, several times as fast as
+    its loop, with a simulation in which components change at the same
+    instant run in the loop. `n_jobs` runs on threads (numba, the streams)
+    or processes (the Python loop), with the same histories; `start` makes
+    a part of a run, and `TimelineSimulation.join` joins parts made apart
+    (as `Timelines([a, b])` joins a unit's). A nested RBD's history is its
     own system's. Refused, as the simulations are, with common-cause
-    groups. The timelines guide shows them all.
+    groups; `analysis_routes()` says which engine records a long run. The
+    timelines guide shows them all.
 - **Imperfect repair** (#109). A component spec's `"repair": {"model":
   "kijima1" | "kijima2", "q": q}` makes its repairs imperfect: a repair
   after the unit has operated `x` since the last takes its virtual age from

@@ -307,7 +307,7 @@ def test_workers_send_back_their_blocks_totals():
     rbd = plant()
     entropy = _streams.entropy_of(3)
     args = (100.0, set(), set(), "p", None, entropy, False, None, {})
-    _start_worker(pickle.dumps((rbd, args, None, False)))
+    _start_worker(pickle.dumps((rbd, args, None, False, False)))
     try:
         block = _simulate_block((40, 90))
     finally:

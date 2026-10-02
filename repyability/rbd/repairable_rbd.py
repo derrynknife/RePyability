@@ -1139,9 +1139,18 @@ class _Tally:
         self.replacements: Optional[List[List[int]]] = None
         # Per node: its early renewals at stops of its maintenance group.
         self.opportunistic = [0] * n
+        # The simulations' histories, when asked for (see
+        # RepairableRBD.simulate_timelines): kept, in order, in place of
+        # every total.
+        self.histories: Optional[_timeline_runs.Records] = None
 
     def add(self, rec: _Replication) -> None:
         """Add the next simulation's results."""
+        if self.histories is not None:
+            assert rec.history is not None  # recorded (see _replicate)
+            self.histories.add(rec.history)
+            self.n += 1
+            return
         self.n += 1
         self.uptimes.append(rec.uptime)
         self.system_failures += rec.failures
@@ -1237,6 +1246,9 @@ class _Tally:
         """This tally with its simulations' values folded into the totals
         and its changes of state (and of capacity) in arrays: small to send
         from a worker process to the parent (see ``_simulate_block``)."""
+        if self.histories is not None:
+            self.histories.compact()
+            return self
         self._fold()
         if self.changes:
             times, deltas = self.state_changes()
@@ -1358,6 +1370,11 @@ class _Tally:
         ``SimulationChunk``). The per-simulation values follow on in order,
         and the totals, kept exactly, are those of one run of them all, to
         the last bit."""
+        if self.histories is not None:
+            assert other.histories is not None  # blocks of one run
+            self.histories.merge(other.histories)
+            self.n += other.n
+            return
         self._fold()
         other._fold()
         self.n += other.n
@@ -1764,14 +1781,20 @@ def _start_worker(run: bytes) -> None:
     """Start a worker process of a parallel run (see ``_PythonRunner``):
     unpickle the run, the system and what its simulations share, once, for
     every block the worker runs."""
-    rbd, args, curve_points, replacements = pickle.loads(run)
-    _WORKER["run"] = (rbd, rbd._context(*args), curve_points, replacements)
+    rbd, args, curve_points, replacements, histories = pickle.loads(run)
+    _WORKER["run"] = (
+        rbd,
+        rbd._context(*args),
+        curve_points,
+        replacements,
+        histories,
+    )
 
 
 def _simulate_block(span: Tuple[int, int]) -> "_Tally":
     """Simulations ``start`` to ``stop - 1`` of a parallel run, in a worker
     process (see ``_start_worker``): their totals, compact."""
-    rbd, context, curve_points, replacements = _WORKER["run"]
+    rbd, context, curve_points, replacements, histories = _WORKER["run"]
     tally = _Tally(
         list(rbd.components),
         rbd.costs,
@@ -1780,6 +1803,8 @@ def _simulate_block(span: Tuple[int, int]) -> "_Tally":
     )
     if replacements:
         tally.replacements = []
+    if histories:
+        tally.histories = _timeline_runs.Records(len(rbd.components))
     for replication in range(*span):
         tally.add(rbd._replicate(context, replication))
     return tally.compact()
@@ -1833,6 +1858,7 @@ class _PythonRunner:
                     args,
                     tally.curve_points,
                     tally.replacements is not None,
+                    tally.histories is not None,
                 ),
                 protocol=pickle.HIGHEST_PROTOCOL,
             )
@@ -4878,11 +4904,14 @@ class RepairableRBD(RBD):
         antithetic: bool,
         widths: Optional[dict] = None,
         states: Optional[dict] = None,
+        history: bool = False,
     ) -> "_Context":
         """Everything a run's simulations share: the streams, what each
         component draws from, the charges, the structure function, and the
         components' ``states`` at the start (checked, as
-        ``_simulation_states`` gives them; None for new)."""
+        ``_simulation_states`` gives them; None for new). With
+        ``history``, each simulation records its histories (see
+        ``_replicate``)."""
         states = {} if states is None else states
         plan, complete = self._stream_plan(
             t_simulation, entropy, antithetic, widths, states
@@ -4923,6 +4952,7 @@ class RepairableRBD(RBD):
                     {c: c not in broken_nodes for c in self.components}, method
                 )
             ),
+            history=history,
         )
 
     def expected_cost_rate(
@@ -7837,21 +7867,24 @@ class RepairableRBD(RBD):
                 "its result.",
             )
         )
+        engine, why = _timeline_runs.engine_choice(self, plan)
         out["simulate_timelines"] = (
             r.refused(groups)
             if groups
             else r.AnalysisRoute(
                 r.SIMULATED,
-                "The simulations availability runs, kept as timelines: "
+                "The simulations availability runs, their histories kept "
+                "as timelines: recorded by the event loop as it runs"
                 + (
-                    "each component's history drawn straight from its "
-                    "streams"
+                    "; on the Python engine, each component's drawn "
+                    "straight from its streams, and the system's merged "
+                    "from theirs."
                     if _timeline_runs.independent(self, plan)
-                    else "the components' histories recorded from the "
-                    "Python event loop"
+                    else "."
                 )
-                + ", and the system's merged from them."
                 + paired,
+                engine=engine,
+                engine_reason=why,
             )
         )
         engine, why = self._engine_choice(capacity=False)
@@ -11896,6 +11929,9 @@ class RepairableRBD(RBD):
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
         antithetic: bool = False,
+        engine: str = "auto",
+        n_jobs: Optional[int] = None,
+        start: int = 0,
     ) -> "TimelineSimulation":
         """Simulate the system over ``[0, t_simulation]`` and keep each
         simulation's up/down histories as timelines: every component's and
@@ -11908,19 +11944,19 @@ class RepairableRBD(RBD):
         so any measure of a history can be read off them (the time to the
         first system failure, the longest outage, the outages per year),
         and they merge with other timelines (see
-        ``repyability.timelines``).
+        ``repyability.timelines``). Their histories are the event loop's,
+        whichever engine makes them: each simulation's system uptime is
+        ``availability``'s to the last bit.
 
-        Independent components (plain units with streamed models, and
-        nested RBDs of them) have their histories drawn straight from
-        their streams, a batch of simulations at once: the event loop's
-        draws, added up as it adds them. Components that depend on each
-        other or on a schedule (repair crews a job can wait for, standby
-        groups, maintenance, tests, imperfect repair, maintenance groups)
-        have theirs recorded from the event loop as it runs. Either way the
-        system's history is merged from the components' with
-        [`RBD.system_timeline`][repyability.RBD.system_timeline]; it is the
-        event loop's but for changes of different components at the same
-        time, which the merge takes in the order of the components.
+        The event loop records them as it runs, compiled with numba where
+        it can (``pip install "repyability[fast]"``), as ``availability``
+        runs. On the Python engine, independent components (plain units
+        with streamed models, and nested RBDs of them) have their histories
+        drawn straight from their streams instead, a batch of simulations
+        at once, and the system's merged from theirs (see
+        [`RBD.system_timeline`][repyability.RBD.system_timeline]): a
+        simulation in which components change at the same instant is run
+        in the event loop, which orders them as it does.
 
         Parameters
         ----------
@@ -11938,25 +11974,44 @@ class RepairableRBD(RBD):
         antithetic : bool, optional
             Simulate in antithetic pairs (``mc_samples`` even), as for
             ``availability``. By default False.
+        engine : str, optional
+            ``"auto"`` (the default), ``"python"`` or ``"numba"``, as for
+            ``availability``; ``"auto"`` compiles a run long enough to
+            repay loading numba, when it is installed and simulates the
+            system. Another package's engine records no histories.
+        n_jobs : int, optional
+            Run on this many processes (the Python event loop) or threads
+            (numba, and the streams), ``-1`` for one per CPU. The histories
+            are the same however many. By default one.
+        start : int, optional
+            The run's first simulation to make: simulations ``start`` to
+            ``start + mc_samples - 1`` of the run ``seed`` seeds (so parts
+            of one run, made apart, join with ``TimelineSimulation.join``).
+            Even with ``antithetic``. By default 0.
 
         Returns
         -------
         TimelineSimulation
             ``system`` and ``components`` as
             [`Timelines`][repyability.Timelines], one history per
-            simulation, and how they were made (``method``).
+            simulation, and how they were made (``engine``, ``method``).
 
         Raises
         ------
         ValueError
             If ``t_simulation`` is not a positive, finite time,
             ``mc_samples`` is not a positive integer (even with
-            ``antithetic``), or a working or broken node is unknown, the
-            input or output node, or in both.
+            ``antithetic``), a working or broken node is unknown, the input
+            or output node, or in both, ``engine`` is not one of those,
+            ``start`` is negative (or odd with ``antithetic``), or ``start``
+            is given without a ``seed``.
         NotImplementedError
             If the RBD has common-cause groups, which the simulation does
-            not take in, as yet; or, with ``antithetic``, if a component's
-            draws cannot be replayed.
+            not take in, as yet; with ``antithetic``, if a component's draws
+            cannot be replayed; or, with ``engine="numba"``, if the compiled
+            engine does not simulate the system.
+        ImportError
+            With ``engine="numba"``, if numba is not installed.
 
         Examples
         --------
@@ -11982,7 +12037,7 @@ class RepairableRBD(RBD):
         The same simulations ``availability`` runs:
 
         >>> result = rbd.availability(1000.0, mc_samples=2000, seed=1)
-        >>> bool(np.allclose(runs.system.uptime, result.uptimes))
+        >>> bool(np.array_equal(runs.system.uptime, result.uptimes))
         True
         """
         return _timeline_runs.simulate(
@@ -11993,6 +12048,9 @@ class RepairableRBD(RBD):
             working_nodes,
             broken_nodes,
             antithetic,
+            engine,
+            n_jobs,
+            start,
         )
 
     def simulate_chunk(
@@ -13153,6 +13211,7 @@ class RepairableRBD(RBD):
         states: Optional[dict] = None,
         curve_points: Optional[int] = None,
         sharded: Optional[tuple] = None,
+        histories: bool = False,
     ) -> "_Tally":
         """Run ``N`` simulations, from simulation ``first`` (then more,
         while ``stop`` asks for them), and return their totals: each from
@@ -13175,7 +13234,10 @@ class RepairableRBD(RBD):
         counts; with ``curve_points``, it counts the changes of state on a
         grid (see ``availability``). With ``sharded``, ``(shard_map,
         template, step)``, the simulations run as shards (see
-        ``_ShardRunner``), on the engine each shard's worker chooses.
+        ``_ShardRunner``), on the engine each shard's worker chooses. With
+        ``histories``, the tally keeps each simulation's histories in place
+        of every total (see ``simulate_timelines``), on the Python engine
+        or numba's.
         """
         self._require_no_ccf("the simulation", nested=True)
         from tqdm import tqdm
@@ -13189,6 +13251,8 @@ class RepairableRBD(RBD):
             # Only the Python engine counts them.
             tally.replacements = []
             engine = "python"
+        if histories:
+            tally.histories = _timeline_runs.Records(len(self.components))
         runner: Any = None
         try:
             if entropy is None:
@@ -13250,6 +13314,7 @@ class RepairableRBD(RBD):
                         antithetic,
                         widths,
                         states,
+                        histories,
                     ),
                     jobs,
                 )
@@ -13413,14 +13478,20 @@ class RepairableRBD(RBD):
             return charge
 
         trace = None if ctx.capacity is None else ctx.capacity.trace(status)
-        # With ctx.history, each component's state at 0 and its changes
-        # (see simulate_timelines).
+        # With ctx.history (see simulate_timelines): each component's state
+        # at 0 and its changes (the component, the time, and whether it is
+        # a planned change down), how many it has had, and each change of
+        # the system's (the time, the component whose change made it, which
+        # of that one's changes it was, and whether it was planned).
         record: Optional[list] = [] if ctx.history else None
+        system_record: Optional[list] = [] if ctx.history else None
+        seen = [0] * n
         at_start = [status[node] for node in index] if ctx.history else None
         # The system's state, and its up and down time until ``since``, its
         # last change; each component's last change, and the system's up and
         # down time until then.
         up = self.system_state
+        started_up = up
         system_up = system_down = since = 0.0
         last, up_at, down_at = [0.0] * n, [0.0] * n, [0.0] * n
         node_up, both_up, both_down = [0.0] * n, [0.0] * n, [0.0] * n
@@ -13548,6 +13619,7 @@ class RepairableRBD(RBD):
                         and bool(event.preventive or event.inspection),
                     )
                 )
+                seen[c] += 1
             if event.status:
                 restored[c] += 1
             elif event.preventive:
@@ -13584,6 +13656,16 @@ class RepairableRBD(RBD):
                 system_up, system_down, since = system_up_t, system_down_t, t
                 up = not up
                 changes.append(t)
+                if system_record is not None:
+                    system_record.append(
+                        (
+                            t,
+                            c,
+                            seen[c] - 1,
+                            not up
+                            and bool(event.preventive or event.inspection),
+                        )
+                    )
                 if up:
                     deltas.append(1)
                     restorations += 1
@@ -13656,7 +13738,11 @@ class RepairableRBD(RBD):
         rec.capacity_changes = rec.capacity_time = rec.delivered = None
         rec.replacements = replaced
         rec.opportunistic = opportunistic
-        rec.history = None if record is None else (at_start, record)
+        rec.history = (
+            None
+            if record is None
+            else (at_start, record, started_up, system_record)
+        )
         if trace is not None:
             trace.finish(t_simulation, rec)
         return rec

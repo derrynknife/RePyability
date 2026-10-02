@@ -146,35 +146,71 @@ np.percentile(longest, 95)      # -> 15.04
 ```
 
 The result is a [`TimelineSimulation`][repyability.TimelineSimulation]:
-`system`, `components` (by node), and how they were made (`method`):
-
-- **Independent components** (plain units whose models can be streamed, and
-  nested RBDs of them) have their histories drawn straight from their
-  random streams, a batch of simulations at once, and added up as the event
-  loop adds them: `method == "streams"`. This is several times faster than
-  the Python event loop.
-- **Components that depend on each other or on a schedule** (repair crews
-  a job can wait for, standby groups, maintenance, tests, imperfect repair,
-  maintenance groups) have theirs recorded from the Python event loop as it
-  runs: `method == "event loop"`.
-
-Either way the simulations are `availability`'s with the same seed (and
-`working_nodes`, `broken_nodes` and `antithetic`): each one's time up is
-the same, to the last bit.
+`system`, `components` (by node), and how they were made (`engine` and
+`method`). They are `availability`'s simulations with the same seed (and
+`working_nodes`, `broken_nodes` and `antithetic`), and their histories are
+the event loop's, whichever engine makes them: each one's time up is the
+same, to the last bit, and so is every change, with the component it is
+credited to.
 
 ```python
 result = plant.availability(8760.0, mc_samples=2000, seed=1)
 bool(np.array_equal(year.uptime, result.uptimes))   # True
 ```
 
-The system's history is merged from its components' with
-`system_timeline`, so the simulation's own order of changes at the same
-time (from different components) may differ from the merge's, which can
-only change which component a failure at such an instant is credited to.
+### Engines and speed
+
+`engine` takes the values `availability`'s does, and makes the histories
+in one of these ways:
+
+- **Recorded by the compiled event loop** (`engine="numba"`, with
+  `pip install "repyability[fast]"`): the fastest, for any system the
+  compiled engine simulates (plain components, maintenance, tests, repair
+  crews, standby groups, nested RBDs). `engine="auto"`, the default, runs
+  a long run on it, as `availability` does.
+- **Drawn from the streams** (`engine="python"`, for independent
+  components: plain units whose models can be streamed, and nested RBDs
+  of them): each component's history is its lives and repairs, the draws
+  the event loop reads, added up as it adds them, a batch of simulations
+  at once; the system's is merged from theirs. Several times faster than
+  the Python event loop. A simulation in which two components change at
+  the same instant is run in the loop, which takes them in its own order.
+- **Recorded by the Python event loop** (`engine="python"`, for the rest:
+  replacement on condition, maintenance groups, imperfect repair, models
+  whose draws cannot be streamed).
+
+`n_jobs` runs on that many threads (numba, and the streams) or processes
+(the Python loop), and the histories are the same however many. On systems
+of 3 to 70 components, with and without repair crews, standby groups and
+maintenance, numba recorded the histories in 3% to 32% more time than
+`availability`'s run of the same simulations took on it, and 5 to 16
+times as fast as the Python loop for the systems it alone could record
+before.
+
+### Parts of a run
+
+`start` makes simulations `start` to `start + mc_samples - 1` of the run
+the `seed` seeds, so parts of one run can be made apart (in other
+processes, or on other machines, pickling the results), and
+[`TimelineSimulation.join`][repyability.TimelineSimulation.join] joins
+them into the run:
+
+```python
+from repyability import TimelineSimulation
+
+halves = [
+    plant.simulate_timelines(8760.0, mc_samples=1000, seed=1, start=s)
+    for s in (0, 1000)
+]
+bool(TimelineSimulation.join(halves).system == year)   # True
+```
+
+`Timelines` of one unit join the same way: `Timelines([first, second])`.
+
 Each history keeps every change, about 25 bytes of memory each: for a
-summary of a long run, `availability` (with numba's compiled engine,
-faster still) keeps less. A diagram with common-cause groups is refused, as
-the simulations refuse it, and the components start new.
+summary of a long run, `availability` keeps less. A diagram with
+common-cause groups is refused, as the simulations refuse it, and the
+components start new.
 
 ## Many histories at once
 
