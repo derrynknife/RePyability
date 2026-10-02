@@ -77,12 +77,17 @@ alone = (
 exact by default. Each component's life through the mission is a chain of
 independent segments, one per phase, the `k`-th survived with probability
 `R(T_k) / R(T_{k-1})` (Esary and Ziehms, 1975): a component works at the end
-of phase `j` if it survives its first `j` segments. Phase `j` works if some
-minimal path set of its diagram has every such segment survived, and the
-phases' path sets over the segments are decomposed together, each distinct
-sub-problem solved once. The decomposition refuses beyond 200,000
-sub-problems, which a mission of a few dozen components in several phases
-stays well within, and says to simulate.
+of phase `j` if it survives its first `j` segments. Each phase's structure
+over the segments is a binary decision diagram, built from its diagram's
+modules and core as the exact engine reduces it (after Zang, Sun and
+Trivedi, 1999), with each component's segments decided together, in phase
+order; the mission is the phases' diagrams combined by conjunction. No path
+set is listed, so a meshed phase, such as a chain of bridges with tens of
+thousands of path sets, is exact in a fraction of a second. A diagram of more
+than a million nodes refuses the exact values, and says to simulate.
+Setting `repyability.rbd.phased_mission.METHOD = "paths"` decomposes the
+phases' minimal path sets over the segments instead, as before: slower
+beyond the smallest missions.
 
 `method="simulate"` draws each component's life once per mission instead:
 `mc_samples` missions (by default 10,000), seeded with `seed`.

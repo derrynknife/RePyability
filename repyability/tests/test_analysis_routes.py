@@ -770,8 +770,8 @@ def test_the_readme_says_what_is_simulated():
                 "numerical",
             ),
         ],
-        "Phased missions over 200,000 states, and networks over 100,000 "
-        "paths": [],
+        "Phased missions and networks whose decision diagrams pass a "
+        "million nodes": [],
         "Hidden failures found by tests (a constant failure rate with "
         "instant tests and repairs is exact, staggered or with tests that "
         "miss failures too)": [

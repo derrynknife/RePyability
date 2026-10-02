@@ -6,16 +6,28 @@ connected: some path of working links (through working nodes, where nodes
 can fail too) joins them. A reliability block diagram is directed, with
 failing nodes, so a network has a model of its own.
 
-The exact values come from the network's minimal paths: each simple path
-between the terminals, as the set of its links and of the nodes on it that
-can fail. No such set holds another (two simple paths with the same links
-are the same path), so these are the minimal path sets, and the Shannon
-decomposition of ``shannon.py`` works out the probability that one of them
-works. The simulation draws each element's lifetime and finds, in each
-sample, the path that lasts longest: its lifetime is the network's.
+The exact values come from a binary decision diagram built from the
+network itself (#143), after Hardy, Lucet & Limnios (2007): the links are
+decided in an order, and after each, what is left to decide depends only on
+how the *frontier* (the nodes with links decided and links to come) is
+joined up by the working links so far, and on which parts hold the
+terminals. Equal states are solved once, so the diagram grows with the
+frontier's width, not with the number of paths, which multiply in a meshed
+network: a grid of 64 nodes, with billions of paths, takes about a second.
+A node that can fail is decided as its first link is, and a failed one
+takes its links out. The diagram has the format of ``shannon.py``'s plans,
+so the probability, its complement, the gradient and the cut sets replay
+it. ``METHOD = "paths"`` decides the network from its minimal paths
+instead, as before: each simple path between the terminals, as the set of
+its links and of the nodes on it that can fail, by the Shannon
+decomposition of ``shannon.py``.
+
+The simulation draws each element's lifetime and finds, in each sample,
+the path that lasts longest: its lifetime is the network's.
 """
 
-from typing import Any, Dict, Hashable, List, Optional, Set, Tuple
+from collections import deque
+from typing import Any, Dict, Hashable, List, Optional, Sequence, Set, Tuple
 
 import numpy as np
 
@@ -23,12 +35,31 @@ from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd._model_utils import is_fixed_probability
 from repyability.rbd._sampling import lifetime_sampler
 from repyability.rbd.non_repairable_rbd import check_x
-from repyability.rbd.shannon import _minimal_cut_sets, _shannon_plan
+from repyability.rbd.shannon import (
+    _minimal_cut_sets,
+    _shannon_plan,
+    _shannon_value_and_gradient,
+)
 from repyability.utils.wrappers import numpy_seed
 
-#: The most simple paths the exact values are worked out from; beyond, they
-#: refuse, pointing to the simulation.
+#: How the exact values are worked out: ``"bdd"`` (the default), by the
+#: decision diagram built from the network, or ``"paths"``, by the Shannon
+#: decomposition of its simple paths between the terminals (listed; slower
+#: but for the smallest networks). Read when a network's values are first
+#: worked out.
+METHOD = "bdd"
+
+#: The most simple paths listed (by ``path_sets`` and ``METHOD = "paths"``).
 MAX_PATHS = 100_000
+
+#: The most states the decision diagram is built from (each a way the
+#: frontier can be joined up): beyond, the exact values refuse, pointing to
+#: the simulation. A square grid of 81 nodes has about 400,000; one of 100,
+#: 1.7 million.
+MAX_STATES = 1_000_000
+
+# Value slots 0 and 1 of a plan: the terminals are parted, joined.
+_FAIL, _WORK = 0, 1
 
 
 class Network:
@@ -39,6 +70,12 @@ class Network:
     nodes, joins ``source`` to ``target``. A link works both ways. Nodes
     work for ever unless given a model in ``nodes``; the terminals can be
     given one too. Every element fails independently of the others.
+
+    The exact values come from a binary decision diagram built from the
+    network, link by link, whose size grows with the network's width
+    rather than with its number of paths (see the module docstring): a
+    grid of 64 nodes takes about a second. One of more than
+    ``MAX_STATES`` states refuses, pointing to the simulation.
 
     Parameters
     ----------
@@ -203,8 +240,10 @@ class Network:
                 if len(paths) > MAX_PATHS:
                     raise NotImplementedError(
                         f"The network has more than {MAX_PATHS:,} paths "
-                        "between its terminals, too many to work out "
-                        "exactly. Simulate it: method='simulate'."
+                        "between its terminals, too many to list. Its exact "
+                        "values come from its decision diagram (network."
+                        "METHOD = 'bdd', the default), or simulate it: "
+                        "method='simulate'."
                     )
                 continue
             stack.append((other, step, visited | {other}, 0))
@@ -239,24 +278,55 @@ class Network:
         Raises
         ------
         NotImplementedError
-            If there are more than ``MAX_PATHS`` paths.
+            If the network's decision diagram would have more than
+            ``MAX_STATES`` states (with ``METHOD = "paths"``, if there are
+            more than ``MAX_PATHS`` paths).
         """
         return set(_minimal_cut_sets(self._decomposition()))
 
     def _decomposition(self) -> tuple:
-        """The Shannon decomposition of the probability that some minimal
-        path set works (see ``shannon.py``)."""
+        """The plan of the probability that the terminals are joined (see
+        ``shannon.py``): the decision diagram built from the network, or
+        with ``METHOD = "paths"`` the Shannon decomposition of its simple
+        paths."""
         if self._plan is None:
-            paths = self._simple_paths()
-            if not paths:
-                self._plan = ([], 0)  # nothing joins the terminals
+            if METHOD not in ("bdd", "paths"):
+                raise ValueError(
+                    f"network.METHOD must be 'bdd' or 'paths', got "
+                    f"{METHOD!r}."
+                )
+            if METHOD == "paths":
+                paths = self._simple_paths()
+                # Nothing joins the terminals: they are always parted.
+                self._plan = _shannon_plan(paths) if paths else ([], _FAIL)
             else:
-                self._plan = _shannon_plan(paths)
+                order = _link_order(
+                    self.links, self._adjacent, self.source, self.target
+                )
+                self._plan = _frontier_plan(
+                    order,
+                    self.links,
+                    set(self.nodes),
+                    self.source,
+                    self.target,
+                )
         return self._plan
 
     # ------------------------------------------------------------------
     # Exact
     # ------------------------------------------------------------------
+
+    def _probabilities(self, x: np.ndarray, names) -> Tuple[dict, dict]:
+        """Each named element's probabilities of working and of failing at
+        times ``x``, from its model's ``sf`` and ``ff``."""
+        p: Dict[Hashable, np.ndarray] = {}
+        q: Dict[Hashable, np.ndarray] = {}
+        for name in names:
+            model = self.models[name]
+            with np.errstate(all="ignore"):
+                p[name] = np.asarray(model.sf(x), dtype=float).reshape(x.shape)
+                q[name] = np.asarray(model.ff(x), dtype=float).reshape(x.shape)
+        return p, q
 
     def _values(self, x: np.ndarray, forced: Optional[tuple] = None):
         """The probabilities that the terminals are connected and that they
@@ -264,13 +334,7 @@ class Network:
         its precision); ``forced`` holds one element as working (True) or
         failed (False)."""
         steps, root = self._decomposition()
-        p: Dict[Hashable, np.ndarray] = {}
-        q: Dict[Hashable, np.ndarray] = {}
-        for name in {pivot for pivot, _, _ in steps}:
-            model = self.models[name]
-            with np.errstate(all="ignore"):
-                p[name] = np.asarray(model.sf(x), dtype=float).reshape(x.shape)
-                q[name] = np.asarray(model.ff(x), dtype=float).reshape(x.shape)
+        p, q = self._probabilities(x, {pivot for pivot, _, _ in steps})
         if forced is not None:
             name, works = forced
             if name in p:
@@ -335,8 +399,10 @@ class Network:
             If ``x`` is left out of a network whose models depend on time,
             or ``method`` or ``mc_samples`` is invalid.
         NotImplementedError
-            With ``method="exact"``, if there are more than ``MAX_PATHS``
-            paths between the terminals.
+            With ``method="exact"``, if the network's decision diagram would
+            have more than ``MAX_STATES`` states (with ``METHOD = "paths"``,
+            if there are more than ``MAX_PATHS`` paths between the
+            terminals).
         """
         if self._method(method, mc_samples) == "simulate":
             lives = self.random(
@@ -386,6 +452,11 @@ class Network:
         """Each element's Birnbaum importance at time/s ``x``: the
         reliability with it working less that with it failed.
 
+        Every element's at once, as the derivative of the reliability, by
+        one pass forward through the plan and one back, from whichever of
+        the reliability and the unreliability is the smaller, so that a
+        small importance keeps its precision.
+
         Parameters
         ----------
         x : float or array_like, optional
@@ -397,11 +468,18 @@ class Network:
             Per link and failing node, by name, its importance (0 for one
             that is in no path).
         """
+        plan = self._decomposition()
+        p, q = self._probabilities(x, {pivot for pivot, _, _ in plan[0]})
+        works, up = _shannon_value_and_gradient(plan, p, q)
+        fails, down = _shannon_value_and_gradient(plan, p, q, (1.0, 0.0))
+        zero = np.zeros(x.shape)
         out: Dict[Hashable, Any] = {}
         for name in self.models:
-            works, _ = self._values(x, (name, True))
-            fails, _ = self._values(x, (name, False))
-            out[name] = works - fails
+            out[name] = np.where(
+                np.asarray(fails) <= np.asarray(works),
+                -np.asarray(down.get(name, zero)),
+                np.asarray(up.get(name, zero)),
+            ) * np.ones(x.shape)
         return out
 
     def mean(
@@ -546,3 +624,264 @@ class Network:
             f"Network({len(self.links)} links, {len(self.nodes)} failing "
             f"nodes, {self.source!r} to {self.target!r})"
         )
+
+
+def _link_order(
+    links: Dict[Hashable, Tuple[Hashable, Hashable]],
+    adjacent: Dict[Hashable, List[Tuple[Hashable, Hashable]]],
+    source: Hashable,
+    target: Hashable,
+) -> List[Hashable]:
+    """The order the links of the terminals' part of the network are
+    decided in: by the breadth-first order of their later end, from either
+    terminal, whichever keeps the frontiers narrower (the smaller sum over
+    the links of two to the frontier's size). A link out of the
+    terminals' part cannot join them, and is left out."""
+    candidates = []
+    for root in (source, target):
+        position = {root: 0}
+        queue = deque([root])
+        while queue:
+            u = queue.popleft()
+            for _, v in adjacent[u]:
+                if v not in position:
+                    position[v] = len(position)
+                    queue.append(v)
+        names = [
+            name
+            for name, (u, v) in links.items()
+            if u in position and v in position
+        ]
+        names.sort(
+            key=lambda n: (
+                max(position[links[n][0]], position[links[n][1]]),
+                min(position[links[n][0]], position[links[n][1]]),
+            )
+        )
+        candidates.append(names)
+    return min(candidates, key=lambda order: _order_cost(order, links))
+
+
+def _order_cost(order: Sequence[Hashable], links) -> float:
+    """The sum over ``order``'s links of two to the frontier's size after
+    each: a measure of the decision diagram's size."""
+    first: Dict[Hashable, int] = {}
+    last: Dict[Hashable, int] = {}
+    for i, name in enumerate(order):
+        for w in links[name]:
+            first.setdefault(w, i)
+            last[w] = i
+    opens = [0] * (len(order) + 1)
+    for w in first:
+        opens[first[w]] += 1
+        opens[last[w]] -= 1
+    cost, size = 0.0, 0
+    for i in range(len(order)):
+        size += opens[i]
+        cost += 2.0 ** min(size, 1000)
+    return cost
+
+
+def _frontier_plan(
+    order: Sequence[Hashable],
+    links: Dict[Hashable, Tuple[Hashable, Hashable]],
+    failing: Set[Hashable],
+    source: Hashable,
+    target: Hashable,
+) -> tuple:
+    """The decision diagram of whether ``source`` and ``target`` are
+    joined, its links decided in ``order`` (see the module docstring), as
+    a plan: ``(steps, root)``, step ``i`` filling value slot ``i + 2`` from
+    its pivot's active and inactive slots, slots 0 and 1 being the
+    terminals parted and joined.
+
+    A state is the decision to make next, the frontier's parts (a label
+    for each frontier node, in the order they entered: the same label for
+    nodes joined by working links, -1 for a failed node) and the parts
+    that hold the source and the target (None for a terminal yet to
+    enter). A node that can fail is decided before its first link.
+
+    Raises
+    ------
+    NotImplementedError
+        If the diagram would have more than ``MAX_STATES`` states.
+    """
+    first: Dict[Hashable, int] = {}
+    last: Dict[Hashable, int] = {}
+    for i, name in enumerate(order):
+        for w in links[name]:
+            first.setdefault(w, i)
+            last[w] = i
+    if source not in first or target not in first:
+        return [], _FAIL  # no link joins the terminals' parts
+    # The decisions: (variable, entering nodes, link ends, leaving nodes),
+    # the ends None for a node's decision.
+    decisions: List[tuple] = []
+    for i, name in enumerate(order):
+        u, v = links[name]
+        ends = list(dict.fromkeys((u, v)))
+        for w in ends:
+            if first[w] == i and w in failing:
+                decisions.append((w, (), None, ()))
+        entering = tuple(w for w in ends if first[w] == i and w not in failing)
+        leaving = tuple(w for w in ends if last[w] == i)
+        decisions.append((name, entering, (u, v), leaving))
+    # Each link's ends' positions once its entering nodes join the
+    # frontier, and the positions that stay after its leaving ones go.
+    shapes: List[Optional[tuple]] = []
+    front: List[Hashable] = []
+    for name, entering, ends, leaving in decisions:
+        if ends is None:
+            shapes.append(None)
+            front.append(name)
+            continue
+        grown = front + list(entering)
+        keep = tuple(j for j, w in enumerate(grown) if w not in leaving)
+        shapes.append(
+            (entering, grown.index(ends[0]), grown.index(ends[1]), keep)
+        )
+        front = [w for w in grown if w not in leaving]
+    count = len(decisions)
+
+    def canonical(labels, s, t) -> tuple:
+        # The labels renumbered in order of first appearance.
+        relabel: Dict[int, int] = {}
+        out = []
+        for label in labels:
+            if label >= 0:
+                label = relabel.setdefault(label, len(relabel))
+            out.append(label)
+        return (
+            tuple(out),
+            None if s is None else relabel[s],
+            None if t is None else relabel[t],
+        )
+
+    def after_link(k: int, labels, s, t, works: bool):
+        """The frontier after link decision ``k``'s outcome: as
+        ``(labels, s, t)``, or ``_WORK`` or ``_FAIL`` once decided."""
+        entering, iu, iv, keep = shapes[k]  # type: ignore[misc]
+        labels = list(labels)
+        new = max(labels, default=-1) + 1
+        for w in entering:
+            labels.append(new)
+            if w == source:
+                s = new
+            if w == target:
+                t = new
+            new += 1
+        a, b = labels[iu], labels[iv]
+        if works and a >= 0 and b >= 0 and a != b:
+            labels = [a if label == b else label for label in labels]
+            s = a if s == b else s
+            t = a if t == b else t
+            if s is not None and s == t:
+                return _WORK
+        kept = [labels[j] for j in keep]
+        # A terminal's part with no node left on the frontier is closed.
+        if (s is not None and s not in kept) or (
+            t is not None and t not in kept
+        ):
+            return _FAIL
+        return canonical(kept, s, t)
+
+    def settle(k: int, labels, s, t):
+        """Decide from the ``k``-th decision on while no branch is needed:
+        an outcome, or the state at which one is."""
+        while True:
+            if k == count:
+                return _FAIL
+            if shapes[k] is None:
+                return (k, labels, s, t)
+            entering, iu, iv, keep = shapes[k]  # type: ignore[misc]
+            m = len(labels)
+            a = labels[iu] if iu < m else None
+            b = labels[iv] if iv < m else None
+            dead = (a is not None and a < 0) or (b is not None and b < 0)
+            joined = a is not None and a == b
+            if not (dead or joined):
+                return (k, labels, s, t)
+            # The link cannot change anything: an end has failed, or its
+            # ends are joined already.
+            after = after_link(k, labels, s, t, False)
+            if after == _FAIL or after == _WORK:
+                return after
+            labels, s, t = after
+            k += 1
+
+    def branches(state) -> list:
+        k, labels, s, t = state
+        name = decisions[k][0]
+        out = []
+        if shapes[k] is None:
+            # A node that can fail, entering the frontier.
+            label = max(labels, default=-1) + 1
+            out.append(
+                settle(
+                    k + 1,
+                    labels + (label,),
+                    label if name == source else s,
+                    label if name == target else t,
+                )
+            )
+            if name == source or name == target:
+                out.append(_FAIL)
+            else:
+                out.append(settle(k + 1, labels + (-1,), s, t))
+            return out
+        for works in (True, False):
+            after = after_link(k, labels, s, t, works)
+            if after == _FAIL or after == _WORK:
+                out.append(after)
+            else:
+                out.append(settle(k + 1, *after))
+        return out
+
+    slots: Dict[tuple, int] = {}
+    unique: Dict[tuple, int] = {}
+    steps: List[tuple] = []
+    start = settle(0, (), None, None)
+    if start == _FAIL or start == _WORK:
+        return steps, start
+    stack: list = [[start, branches(start), []]]
+    states = 1
+    root = _FAIL
+    while stack:
+        top = stack[-1]
+        solved = top[2]
+        if len(solved) < 2:
+            child = top[1][len(solved)]
+            if child == _FAIL or child == _WORK:
+                solved.append(child)
+                continue
+            slot = slots.get(child)
+            if slot is None:
+                states += 1
+                if states > MAX_STATES:
+                    raise NotImplementedError(
+                        "The network's decision diagram has more than "
+                        f"{MAX_STATES:,} states (ways its frontier can be "
+                        "joined up), too many to work out exactly. Simulate "
+                        "it: method='simulate'."
+                    )
+                stack.append([child, branches(child), []])
+            else:
+                solved.append(slot)
+            continue
+        stack.pop()
+        state = top[0]
+        active, inactive = solved
+        if active == inactive:
+            slot = active  # the variable cannot change the outcome here
+        else:
+            key = (decisions[state[0]][0], active, inactive)
+            slot = unique.get(key)
+            if slot is None:
+                steps.append(key)
+                slot = unique[key] = len(steps) + 1
+        slots[state] = slot
+        if stack:
+            stack[-1][2].append(slot)
+        else:
+            root = slot
+    return steps, root

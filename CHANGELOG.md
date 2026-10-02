@@ -36,7 +36,8 @@ replaced at the N-th failure (#109); a simulation run can be split across
 machines and merged (#114); and small failure probabilities are estimated by
 rare-event simulation (#115), and keep their full precision where they are
 exact (#148); phased missions are new, exact and simulated (#100, #101), as
-are the two-terminal reliability of undirected networks (#104) and
+are the two-terminal reliability of undirected networks (#104), both
+decided by decision diagrams that keep meshed ones exact (#142, #143), and
 demonstration test planning (#129). A safety function's PFDavg takes in
 the terms SIL verification asks for: common-cause groups in repairable
 diagrams, staggered tests, and proof tests that miss failures (#136).
@@ -526,8 +527,16 @@ is required.
   `phase_failure_probabilities()` (the chance of getting through the
   earlier phases and failing in each) are exact: each component's life is a
   chain of independent segments, one per phase (Esary and Ziehms), and the
-  phases' minimal path sets over the segments are decomposed together, each
-  distinct sub-problem once, up to 200,000 of them.
+  phases' structures over the segments are combined in one binary decision
+  diagram (#142, after Zang, Sun and Trivedi), each phase's built from its
+  diagram's modules and core with no path set listed, and a component's
+  segments decided together, in phase order (`_ordered_bdd.py`, a reduced
+  ordered decision diagram with a unique and a computed table). Eight
+  bridges in a chain, 65,536 path sets a phase, take a fraction of a
+  second, where the decomposition of the path sets (still there, as
+  `phased_mission.METHOD = "paths"`) took 1.5 seconds at four and minutes
+  beyond; a diagram of more than a million nodes refuses, pointing to the
+  simulation.
   `method="simulate"` draws each component's life once per mission, and
   `reliability_interval` gives the simulated reliability with a confidence
   interval, to a `tolerance`, with antithetic pairs if asked. Checked
@@ -567,17 +576,28 @@ is required.
   an undirected network whose links (each a name mapped to its two nodes
   and a lifetime model or probability), and optionally nodes, fail. `sf`,
   `ff` (to its own precision) and `mean` give the reliability of the
-  connection between the two terminals, exactly from the network's minimal
-  paths (each simple path between them, as its links and failing nodes)
-  by the exact engine's Shannon decomposition, up to 100,000 paths;
-  `path_sets`, `cut_sets` and `birnbaum_importance` come from the same
-  decomposition. `method="simulate"` and `random(size)` draw each
+  connection between the two terminals, exactly, by a binary decision
+  diagram built from the network link by link (#143, after Hardy, Lucet and
+  Limnios): after each link, what is left depends only on how the nodes
+  with links still to come are joined up, and which groups hold the
+  terminals, so equal states are solved once and the diagram grows with the
+  network's width rather than its paths. A 6 × 6 grid (over a million
+  paths) takes a tenth of a second and an 8 × 8 one about a second, where
+  the paths' decomposition (still there, as `network.METHOD = "paths"`)
+  did not finish a 5 × 5 one; a diagram of more than a million states
+  refuses, pointing to the simulation. `cut_sets` comes from the same
+  diagram, `birnbaum_importance` gives every element's at once from its
+  gradient (from whichever of the reliability and unreliability is the
+  smaller, so a small one keeps its precision), and `path_sets` lists the
+  simple paths, up to 100,000. `method="simulate"` and `random(size)` draw each
   element's lifetime and find each sample's longest-lasting path, adding
   links longest-lived first until the terminals join. Checked against the
   bridge network's closed form, enumeration of link and node states on
   random small networks, series and parallel networks against their
-  diagrams, means in closed form, and the simulation. A new guide page,
-  Networks.
+  diagrams, means in closed form, and the simulation; the decision diagram
+  against enumeration and the paths' decomposition on ladders, grids,
+  failing nodes and terminals and parallel links, and a 7 × 7 grid against
+  the simulation. A new guide page, Networks.
 - **Demonstration test planning** (#129): how many units, or how long a
   test, demonstrates a reliability at a confidence level, and what a
   finished test demonstrated. `demonstration_sample_size` (the success run,

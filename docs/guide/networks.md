@@ -55,13 +55,41 @@ Network(links, "G", "L", nodes={"B": substation}).sf(1.0)   # -> 0.98100
 
 ## How it is computed
 
-The exact values come from the minimal paths: each simple path between the
-terminals is a minimal path set (two simple paths with the same links are
-the same path), and the probability that one of them works is the Shannon
-decomposition the exact engine uses for a diagram's core. `ff` is worked
-out in its own right, so a small one keeps its precision, and `mean`
-integrates the exact reliability. A network with more than 100,000 paths
-between its terminals refuses the exact values, and says to simulate.
+The exact values come from a binary decision diagram built from the network
+itself (after Hardy, Lucet & Limnios, 2007). The links are decided one at a
+time; after each, what is left to decide depends only on how the nodes with
+links still to come are joined up by the working links so far, and which of
+those groups hold the terminals. Equal states are solved once, so the
+diagram grows with the network's width rather than with its number of
+paths, which multiply in a mesh. A 6-by-6 grid of cables, corner to corner,
+has over a million simple paths, and is exact in a tenth of a second:
+
+```python
+cable = surv.Exponential.from_params([0.05])
+mesh_links = {}
+for i in range(6):
+    for j in range(6):
+        if j + 1 < 6:
+            mesh_links[f"h{i}{j}"] = ((i, j), (i, j + 1), cable)
+        if i + 1 < 6:
+            mesh_links[f"v{i}{j}"] = ((i, j), (i + 1, j), cable)
+mesh = Network(mesh_links, source=(0, 0), target=(5, 5))
+mesh.sf(1.0)     # -> 0.994761
+mesh.ff(1.0)     # -> 0.0052394
+mesh.mean()      # -> 9.1502   years
+```
+
+A node that can fail is decided as its first link is, and a failed one takes
+its links out. `ff` is worked out in its own right, so a small one keeps its
+precision, `birnbaum_importance` gives every element's at once (as the
+derivative of the reliability, from whichever of it and the unreliability
+is the smaller), and `mean` integrates the exact reliability. The width
+limits it: a diagram of more than a million states (a square grid of about
+100 nodes) refuses the exact values, and says to simulate. `path_sets()`
+lists the simple paths, up to 100,000 of them. Setting
+`repyability.network.METHOD = "paths"` decides the network from those
+paths instead, as the exact engine decides a diagram's core from its
+minimal path sets: slower beyond the smallest networks.
 
 `method="simulate"` (for `sf`, `ff` and `mean`) draws each link's and
 node's lifetime, `mc_samples` times (by default 10,000), seeded with

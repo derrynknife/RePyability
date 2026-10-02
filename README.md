@@ -20,7 +20,8 @@ taking already-fitted lifetime models (from
   uncertainty intervals on the reliability, MTTF, B*X* life and time to a
   reliability from uncertain (fitted) component models.
 - **Networks**: undirected networks whose links fail: the exact
-  reliability of the connection between two terminals.
+  reliability of the connection between two terminals, by a decision
+  diagram that keeps meshed networks fast.
 - **Phased missions**: missions through phases (take-off, cruise,
   landing), each with its own diagram over the same components: the exact
   mission reliability and the chance of failing in each phase.
@@ -140,7 +141,7 @@ places, nested diagrams):
 | Common-cause groups: analyses given ages, and the MTTF of a group splitting a failure probability | Refused (a simulated MTTF leaves a probability split out) | No: the analyses given ages need a model of members of different ages. A group splitting the failure rate (`basis="rate"`) has an exact MTTF, and the simulations draw its shared shocks. Importance, parameter sensitivity and redundancy allocation are exact with groups (a beta-factor member's copies join its group), and parameter uncertainty is sampled with them. |
 | Kaplan–Meier lives in a repairable system | Long run refused; over time numerical | Non-parametric nodes are deprecated and go in 0.12 (#149): fit a parametric distribution in surpyval. |
 | **Architecture and maintenance** | | |
-| Phased missions over 200,000 states, and networks over 100,000 paths | Refused, pointing to `method="simulate"` | No: decision diagrams could keep them exact (#142, #143). |
+| Phased missions and networks whose decision diagrams pass a million nodes | Refused, pointing to `method="simulate"` | Only in practice: the diagrams grow with the phases' and the network's width rather than their paths, so meshed missions and networks are exact (a grid of 64 nodes in about a second); a square grid of about 100 nodes passes the limit. |
 | Hidden failures found by tests (a constant failure rate with instant tests and repairs is exact, staggered or with tests that miss failures too) | Simulated | No: could be numerical (#144). |
 | Common-cause groups in a repairable diagram | Long run and importance exact, for exponential lives, tested or repaired; over time, allocation and the simulations refused | No: over time could be exact from the same Markov chain, the simulations could draw the shared causes, and an allocation could build each design's chain (#158). |
 | Replacement on condition at periodic inspections | Simulated | No: could be numerical (#145). |

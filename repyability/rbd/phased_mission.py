@@ -12,12 +12,17 @@ The exact values use the classic transformation of Esary and Ziehms (1975):
 a component's life through the mission is a chain of independent segments,
 one per phase, the ``k``-th survived with probability ``R(T_k) /
 R(T_{k-1})``, and the component works at ``T_j`` if it survives its first
-``j`` segments. Phase ``j`` then works if some minimal path set of its
-diagram has every segment up to ``j`` of each of its components survived:
-the mission succeeds when every phase has such a set, a condition on
-independent segments that a Shannon decomposition (as in ``shannon.py``,
-but over the phases' families of sets at once) works out exactly. The
-simulation draws each component's life once per mission instead.
+``j`` segments. The mission succeeds when every phase's diagram works with
+its components so, a condition on independent segments that a binary
+decision diagram works out exactly (#142), after Zang, Sun and Trivedi
+(1999): each phase's structure is built from its diagram's modules and
+core (see ``modular.py``) as an ordered decision diagram over the
+segments, a component's segments next to each other in phase order, and
+the phases are combined by conjunction (see ``_ordered_bdd.py``). No path
+set is listed, so a meshed phase stays as cheap as its diagram.
+``METHOD = "paths"`` decomposes the phases' minimal path sets over the
+segments instead, as before (``_mission_plan``). The simulation draws each
+component's life once per mission instead.
 """
 
 from typing import (
@@ -34,13 +39,26 @@ from typing import (
 import numpy as np
 
 from repyability.rbd import _montecarlo as montecarlo
+from repyability.rbd import bdd, modular
+from repyability.rbd._ordered_bdd import FALSE, TRUE, OrderedBDD
 from repyability.rbd._sampling import lifetime_sampler
 from repyability.rbd.results import ConfidenceInterval
 from repyability.rbd.shannon import _shannon_value_and_gradient
 from repyability.utils.wrappers import numpy_seed
 
-#: The most distinct sub-problems the exact decomposition solves before it
-#: refuses, pointing to the simulation.
+#: How the exact values are worked out: ``"bdd"`` (the default), by the
+#: phases' decision diagrams over the segments, or ``"paths"``, by the
+#: Shannon decomposition of the phases' minimal path sets over them
+#: (slower, but for the smallest missions). Read when a mission's values
+#: are first worked out.
+METHOD = "bdd"
+
+#: The most nodes of the missions's decision diagram before the exact values
+#: refuse, pointing to the simulation.
+MAX_NODES = 1_000_000
+
+#: The most distinct sub-problems the decomposition of the path sets
+#: (``METHOD = "paths"``) solves before it refuses.
 MAX_STATES = 200_000
 
 # Value slots 0 and 1 of a plan hold the mission failing and succeeding.
@@ -144,6 +162,43 @@ def _mission_plan(families: Sequence[Sequence[frozenset]]) -> tuple:
     return steps, root
 
 
+def _phase_diagram(
+    manager: OrderedBDD, rbd, j: int, rank: Dict[Hashable, int], count: int
+) -> int:
+    """Phase ``j``'s structure as a decision diagram over the segments:
+    built from its diagram's modules and core (see ``modular.py``), each
+    component working when its first ``j + 1`` segments are survived.
+    Component ``c``'s ``k``-th segment is variable ``rank[c] * count + k``,
+    so a component's segments are decided together, in phase order."""
+    try:
+        decomposition = rbd._decomposition()
+    except ValueError:
+        return FALSE  # no set of working nodes makes the phase work
+    if decomposition.always_works:
+        return TRUE
+    made: List[int] = []
+    for term in decomposition.terms:
+        kind = term[0]
+        if kind == modular.NODE:
+            chain = TRUE
+            for k in range(j, -1, -1):
+                chain = manager.node(rank[term[1]] * count + k, FALSE, chain)
+            made.append(chain)
+        elif kind == modular.SERIES:
+            made.append(manager.conjunction([made[c] for c in term[1]]))
+        elif kind == modular.PARALLEL:
+            made.append(manager.disjunction([made[c] for c in term[1]]))
+        else:
+            made.append(manager.at_least([made[c] for c in term[1]], term[2]))
+    if decomposition.root is not None:
+        return made[decomposition.root]
+    steps, root = decomposition.core_plan()
+    slots = [FALSE, TRUE]
+    for pivot, active, inactive in steps:
+        slots.append(manager.ite(made[pivot], slots[active], slots[inactive]))
+    return slots[root]
+
+
 class PhasedMission:
     """A mission through phases, each with its own duration and diagram over
     the same non-repairable components.
@@ -161,9 +216,11 @@ class PhasedMission:
     ``reliability`` and ``phase_failure_probabilities`` are exact by
     default: each component's life through the mission is a chain of
     independent segments, one per phase (Esary and Ziehms, 1975), and the
-    phases' minimal path sets over those segments are decomposed together
-    (see ``_mission_plan``), up to ``MAX_STATES`` sub-problems.
-    ``method="simulate"`` draws each component's life once per mission
+    phases' structures over those segments are combined in one binary
+    decision diagram, built from their diagrams' modules and cores
+    without listing path sets (see the module docstring), up to
+    ``MAX_NODES`` nodes. ``method="simulate"`` draws each component's life
+    once per mission
     instead, and ``reliability_interval`` gives the simulated reliability
     with a confidence interval, to a tolerance if asked.
 
@@ -325,14 +382,93 @@ class PhasedMission:
             )
         return families
 
+    def _order(self) -> List[Hashable]:
+        """The components in the order the decision diagram decides them:
+        as the phases' structures meet them, the first phase's first (its
+        core's terms in the order its own decision diagram decides them,
+        each term's components depth first), then any no phase needs."""
+        order: Dict[Hashable, None] = {}
+        for phase in self.phases:
+            try:
+                decomposition = phase.rbd._decomposition()
+            except ValueError:
+                continue  # the phase cannot work: it uses no component
+            terms = decomposition.terms
+            if decomposition.root is not None:
+                tops = [decomposition.root]
+            elif decomposition.always_works:
+                tops = []
+            else:
+                tops = bdd.pivots(decomposition.core_plan())
+            stack = list(reversed(tops))
+            while stack:
+                term = terms[stack.pop()]
+                if term[0] == modular.NODE:
+                    order.setdefault(term[1], None)
+                else:
+                    stack.extend(reversed(term[1]))
+        for component in self.components:
+            order.setdefault(component, None)
+        return list(order)
+
+    def _diagram_plans(self) -> List[tuple]:
+        """For each number of phases, the plan of the probability that the
+        mission gets through that many (see ``_mission_plan``), from the
+        decision diagram of the phases over the segments.
+
+        Raises
+        ------
+        NotImplementedError
+            If the diagram needs more than ``MAX_NODES`` nodes.
+        """
+        count = len(self.phases)
+        order = self._order()
+        rank = {component: i for i, component in enumerate(order)}
+        element = {component: i for i, component in enumerate(self.components)}
+        manager = OrderedBDD(
+            MAX_NODES,
+            "The mission is too large to solve exactly (more than "
+            f"{MAX_NODES:,} nodes of its decision diagram). Simulate it: "
+            "method='simulate'.",
+        )
+        mission, roots = TRUE, []
+        for j, phase in enumerate(self.phases):
+            mission = manager.ite(
+                mission,
+                _phase_diagram(manager, phase.rbd, j, rank, count),
+                FALSE,
+            )
+            roots.append(mission)
+
+        def pivot(variable: int) -> int:
+            # A segment's element number, as ``_segments`` numbers it.
+            component = order[variable // count]
+            return element[component] * count + variable % count
+
+        plans = []
+        for root in roots:
+            steps, (slot,) = manager.plan([root], pivot)
+            plans.append((steps, slot))
+        return plans
+
     def _exact(self, phases: int) -> Tuple[float, float]:
         """The probability that the mission gets through its first
         ``phases`` phases, and that it fails in them, each to its own
         relative precision."""
         plan = self._plans.get(phases)
         if plan is None:
-            plan = _mission_plan(self._families()[:phases])
-            self._plans[phases] = plan
+            if METHOD not in ("bdd", "paths"):
+                raise ValueError(
+                    f"phased_mission.METHOD must be 'bdd' or 'paths', got "
+                    f"{METHOD!r}."
+                )
+            if METHOD == "paths":
+                plan = _mission_plan(self._families()[:phases])
+                self._plans[phases] = plan
+            else:
+                for j, made in enumerate(self._diagram_plans()):
+                    self._plans[j + 1] = made
+                plan = self._plans[phases]
         p, q = self._segments()
         success, _ = _shannon_value_and_gradient(plan, p, q, (0.0, 1.0))
         failure, _ = _shannon_value_and_gradient(plan, p, q, (1.0, 0.0))
@@ -466,8 +602,10 @@ class PhasedMission:
             If ``method`` is unknown, or ``mc_samples`` is given with
             ``method="exact"`` or is not a positive integer.
         NotImplementedError
-            If the exact decomposition needs more than ``MAX_STATES``
-            sub-problems: simulate instead.
+            If the mission's decision diagram needs more than
+            ``MAX_NODES`` nodes (with ``METHOD = "paths"``, the
+            decomposition more than ``MAX_STATES`` sub-problems): simulate
+            instead.
 
         Examples
         --------

@@ -199,12 +199,244 @@ def test_the_simulation_agrees():
         assert life >= 0.0
 
 
-def test_too_many_paths_refuses(monkeypatch):
+def test_too_many_paths_refuses_to_list_them(monkeypatch):
     monkeypatch.setattr(network_module, "MAX_PATHS", 3)
+    net = bridge({n: E([0.01]) for n in "abcde"})
+    with pytest.raises(NotImplementedError, match="too many to list"):
+        net.path_sets()
+    # The exact values come from the decision diagram.
+    assert net.sf(10.0) == pytest.approx(
+        bridge({n: E([0.01]) for n in "abcde"}).sf(10.0)
+    )
+    monkeypatch.setattr(network_module, "METHOD", "paths")
+    listed = bridge({n: E([0.01]) for n in "abcde"})
+    with pytest.raises(NotImplementedError, match="method='simulate'"):
+        listed.sf(10.0)
+    assert 0.0 < listed.sf(10.0, method="simulate", seed=1) <= 1.0
+
+
+def test_too_many_states_refuses(monkeypatch):
+    monkeypatch.setattr(network_module, "MAX_STATES", 3)
     net = bridge({n: E([0.01]) for n in "abcde"})
     with pytest.raises(NotImplementedError, match="method='simulate'"):
         net.sf(10.0)
-    assert 0.0 < net.sf(10.0, method="simulate", seed=1) <= 1.0
+    monkeypatch.setattr(network_module, "METHOD", "neither")
+    with pytest.raises(ValueError, match="METHOD"):
+        bridge({n: E([0.01]) for n in "abcde"}).sf(10.0)
+
+
+# -- the decision diagram (#143) -------------------------------------------
+
+
+def ladder(rungs):
+    """Two rails joined by ``rungs`` rungs."""
+    links = {}
+    for i in range(rungs):
+        links[f"r{i}"] = (f"a{i}", f"b{i}")
+        if i + 1 < rungs:
+            links[f"u{i}"] = (f"a{i}", f"a{i + 1}")
+            links[f"l{i}"] = (f"b{i}", f"b{i + 1}")
+    return links, "a0", f"b{rungs - 1}"
+
+
+def lattice(rows, columns):
+    """A grid, corner to corner."""
+    links = {}
+    for i in range(rows):
+        for j in range(columns):
+            if j + 1 < columns:
+                links[f"h{i}.{j}"] = ((i, j), (i, j + 1))
+            if i + 1 < rows:
+                links[f"v{i}.{j}"] = ((i, j), (i + 1, j))
+    return links, (0, 0), (rows - 1, columns - 1)
+
+
+def built(shape, models, nodes=None):
+    links, source, target = shape
+    return Network(
+        {name: (u, v, models(name)) for name, (u, v) in links.items()},
+        source,
+        target,
+        nodes=nodes,
+    )
+
+
+def enumerated(net, p):
+    """The probability that the terminals are joined, and each element's
+    Birnbaum importance, by enumerating every element's state."""
+    names = list(net.models)
+    joined_with = {name: [0.0, 0.0] for name in names}
+    total = 0.0
+    for state in itertools.product([True, False], repeat=len(names)):
+        works = dict(zip(names, state))
+        weight = 1.0
+        for name in names:
+            weight *= p[name] if works[name] else 1.0 - p[name]
+        parent = {}
+
+        def find(a):
+            while parent.get(a, a) != a:
+                a = parent[a]
+            return a
+
+        for name, (u, v) in net.links.items():
+            up = works[name] and all(
+                works.get(w, True) for w in (u, v) if w in net.nodes
+            )
+            if up:
+                parent[find(u)] = find(v)
+        joined = all(
+            works.get(w, True)
+            for w in (net.source, net.target)
+            if w in net.nodes
+        ) and find(net.source) == find(net.target)
+        if joined:
+            total += weight
+            for name in names:
+                joined_with[name][0 if works[name] else 1] += weight / (
+                    p[name] if works[name] else 1.0 - p[name]
+                )
+    return total, {n: w - f for n, (w, f) in joined_with.items()}
+
+
+@pytest.mark.parametrize(
+    "shape, nodes",
+    [
+        (ladder(4), None),
+        (lattice(3, 3), None),
+        (lattice(3, 3), {(1, 1): 0.1, (0, 0): 0.05, (2, 2): 0.02}),
+        (
+            (
+                {
+                    "a": ("s", "t"),
+                    "b": ("s", "t"),
+                    "c": ("t", "z"),
+                    "d": ("q", "r"),
+                    "e": ("r", "s"),
+                },
+                "s",
+                "t",
+            ),
+            {"r": 0.3},
+        ),
+    ],
+    ids=["ladder", "grid", "grid with failing nodes", "multi-links"],
+)
+def test_the_diagram_is_the_enumeration(shape, nodes):
+    q = {name: 0.05 + 0.01 * i for i, name in enumerate(shape[0])}
+    net = built(
+        shape,
+        lambda name: F(q[name]),
+        nodes={n: F(v) for n, v in (nodes or {}).items()},
+    )
+    p = {
+        name: 1.0 - float(np.ravel(model.ff(1.0))[0])
+        for name, model in net.models.items()
+    }
+    joined, importance = enumerated(net, p)
+    assert net.sf() == pytest.approx(joined, rel=1e-12)
+    assert net.ff() == pytest.approx(1.0 - joined, rel=1e-10)
+    got = net.birnbaum_importance()
+    for name, value in importance.items():
+        assert got[name] == pytest.approx(value, rel=1e-10, abs=1e-15)
+
+
+@pytest.mark.parametrize(
+    "shape, nodes",
+    [
+        (ladder(6), None),
+        (lattice(3, 4), None),
+        (lattice(4, 4), {(1, 1): 0.1, (2, 3): 0.05}),
+        (
+            (
+                {
+                    "a": ("s", "x"),
+                    "b": ("s", "y"),
+                    "c": ("x", "y"),
+                    "d": ("x", "t"),
+                    "e": ("y", "t"),
+                },
+                "s",
+                "t",
+            ),
+            {"s": 0.01, "x": 0.1, "t": 0.02},
+        ),
+    ],
+    ids=[
+        "ladder",
+        "grid",
+        "grid with failing nodes",
+        "bridge, terminals fail",
+    ],
+)
+def test_the_diagram_is_the_paths_decomposition(shape, nodes, monkeypatch):
+    def make():
+        return built(
+            shape,
+            lambda name: W([100.0 + 5 * len(str(name)), 1.5]),
+            nodes={n: E([v / 100]) for n, v in (nodes or {}).items()},
+        )
+
+    t = np.array([5.0, 40.0, 120.0])
+    diagram = make()
+    monkeypatch.setattr(network_module, "METHOD", "paths")
+    paths = make()
+    np.testing.assert_allclose(diagram.sf(t), paths.sf(t), rtol=1e-12)
+    np.testing.assert_allclose(diagram.ff(t), paths.ff(t), rtol=1e-11)
+    assert diagram.cut_sets() == paths.cut_sets()
+    for name, value in paths.birnbaum_importance(t).items():
+        np.testing.assert_allclose(
+            diagram.birnbaum_importance(t)[name], value, rtol=1e-9, atol=1e-15
+        )
+    assert diagram.mean() == pytest.approx(paths.mean(), rel=1e-9)
+
+
+def test_a_small_probability_keeps_its_precision():
+    # Two parallel links in series with a third: ff = q^2 + q3 - q^2 q3.
+    net = Network(
+        {
+            "a": ("s", "m", F(1e-9)),
+            "b": ("s", "m", F(1e-9)),
+            "c": ("m", "t", F(1e-12)),
+        },
+        "s",
+        "t",
+    )
+    assert net.ff() == pytest.approx(1e-18 + 1e-12 - 1e-30, rel=1e-12)
+    importance = net.birnbaum_importance()
+    assert importance["a"] == pytest.approx(1e-9 * (1 - 1e-12), rel=1e-12)
+    assert importance["c"] == pytest.approx(1 - 1e-18, rel=1e-15)
+
+
+def test_a_grid_beyond_the_paths_is_exact():
+    # Corner to corner, a 7 by 7 grid has about 575 million simple paths.
+    net = built(lattice(7, 7), lambda name: E([0.01]))
+    assert net.sf(10.0) == pytest.approx(
+        net.sf(10.0, method="simulate", mc_samples=20_000, seed=3), abs=0.01
+    )
+    # Each link's importance, against its definition.
+    importance = net.birnbaum_importance(10.0)
+    plan = net._decomposition()
+    p, q = net._probabilities(np.array([10.0]), net.models)
+    for name in ("h0.0", "v3.3", "h6.5"):
+        works = network_module._shannon_value_and_gradient(
+            plan, {**p, name: 1.0}, {**q, name: 0.0}
+        )[0]
+        fails = network_module._shannon_value_and_gradient(
+            plan, {**p, name: 0.0}, {**q, name: 1.0}
+        )[0]
+        assert importance[name] == pytest.approx(
+            float(np.ravel(works - fails)[0]), rel=1e-9
+        )
+    with pytest.raises(NotImplementedError, match="too many to list"):
+        net.path_sets()
+
+
+def test_terminals_that_cannot_meet():
+    net = Network({"a": ("s", "x", F(0.1)), "b": ("y", "t", F(0.1))}, "s", "t")
+    assert net.sf() == 0.0
+    assert net.ff() == 1.0
+    assert net.cut_sets() == {frozenset()}
 
 
 @pytest.mark.parametrize(

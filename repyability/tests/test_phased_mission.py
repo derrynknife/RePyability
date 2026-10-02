@@ -279,11 +279,86 @@ def test_the_simulation_is_seeded_and_runs_to_a_tolerance():
 
 
 def test_too_large_a_decomposition_refuses(monkeypatch):
-    monkeypatch.setattr(phased_mission, "MAX_STATES", 3)
+    monkeypatch.setattr(phased_mission, "MAX_NODES", 5)
     mission = PhasedMission([("up", 30.0, BRIDGE), ("on", 30.0, VOTE)])
     with pytest.raises(NotImplementedError, match="method='simulate'"):
         mission.reliability()
     assert 0.0 < mission.reliability(method="simulate", seed=1) < 1.0
+    # The path sets' decomposition has its own limit.
+    monkeypatch.setattr(phased_mission, "METHOD", "paths")
+    monkeypatch.setattr(phased_mission, "MAX_STATES", 3)
+    listed = PhasedMission([("up", 30.0, BRIDGE), ("on", 30.0, VOTE)])
+    with pytest.raises(NotImplementedError, match="method='simulate'"):
+        listed.reliability()
+    monkeypatch.setattr(phased_mission, "METHOD", "neither")
+    with pytest.raises(ValueError, match="METHOD"):
+        PhasedMission([("up", 30.0, BRIDGE)]).reliability()
+
+
+# -- the decision diagram (#142) -------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "phases",
+    [
+        [("up", 30.0, BRIDGE), ("on", 30.0, VOTE)],
+        [("a", 10.0, SERIES), ("b", 20.0, BRIDGE), ("c", 5.0, PARALLEL)],
+        [("one", 15.0, VOTE), ("two", 0.0, SERIES), ("three", 40.0, BRIDGE)],
+    ],
+    ids=["bridge then vote", "series, bridge, parallel", "with an instant"],
+)
+def test_the_diagram_is_the_path_sets_decomposition(phases, monkeypatch):
+    diagram = PhasedMission(phases)
+    monkeypatch.setattr(phased_mission, "METHOD", "paths")
+    paths = PhasedMission(phases)
+    assert diagram.reliability() == pytest.approx(
+        paths.reliability(), rel=1e-12
+    )
+    assert diagram.unreliability() == pytest.approx(
+        paths.unreliability(), rel=1e-11
+    )
+    got = diagram.phase_failure_probabilities()
+    for name, value in paths.phase_failure_probabilities().items():
+        assert got[name] == pytest.approx(value, rel=1e-10, abs=1e-16)
+
+
+def bridges(count, prefix):
+    """``count`` bridges, each feeding the next: meshed, so its path sets
+    multiply (four to the ``count``)."""
+    edges, models = [], {}
+    before = ["s"]
+    for i in range(count):
+        a, b, c, d, e = (f"{prefix}{x}{i}" for x in "abcde")
+        for node in before:
+            edges += [(node, a), (node, b)]
+        edges += [(a, c), (b, c), (a, d), (c, d), (b, e), (c, e)]
+        before = [d, e]
+        for j, node in enumerate((a, b, c, d, e)):
+            models[node] = W([200.0 + 25.0 * j, 1.5])
+    edges += [(node, "t") for node in before]
+    return NonRepairableRBD(edges, models)
+
+
+def test_a_meshed_mission_beyond_the_path_sets():
+    # Eight bridges in a chain have 65,536 path sets; with a second phase
+    # over the same components, their decomposition over the segments
+    # takes minutes, where the decision diagram takes a fraction of a
+    # second.
+    chain = bridges(8, "x")
+    tail = NonRepairableRBD(
+        [("s", "xd7"), ("s", "xe7"), ("xd7", "t"), ("xe7", "t")],
+        {"xd7": chain.reliabilities["xd7"], "xe7": chain.reliabilities["xe7"]},
+    )
+    mission = PhasedMission([("climb", 20.0, chain), ("hold", 30.0, tail)])
+    success = mission.reliability()
+    assert success + mission.unreliability() == pytest.approx(1.0, abs=1e-15)
+    interval = mission.reliability_interval(50_000, seed=11)
+    assert interval.lower < success < interval.upper
+    # One phase is the diagram's own reliability at its end.
+    alone = PhasedMission([("climb", 20.0, chain)])
+    assert alone.reliability() == pytest.approx(
+        float(chain.sf(20.0)), rel=1e-12
+    )
 
 
 @pytest.mark.parametrize(
