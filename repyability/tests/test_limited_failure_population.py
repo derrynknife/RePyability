@@ -32,12 +32,13 @@ from repyability import (
 )
 from repyability.rbd._model_utils import (
     is_exponential,
-    model_extras,
     model_mean,
     never_fails,
 )
-from repyability.rbd._sampling import draw, inverse_sampler
-from repyability.rbd.numerical_convolution import _density_on_grid
+from repyability.rbd._sampling import inverse_sampler
+from repyability.rbd._streams import DURATION, FAILURE, REPAIR
+from repyability.rbd.numerical_convolution import ConvolvedSurvival
+from repyability.tests.keyed_draws import KeyedDraws
 
 W = surv.Weibull.from_params
 E = surv.Exponential.from_params
@@ -62,10 +63,10 @@ def erlang2_ff(rate, t):
 
 
 def test_model_helpers():
-    assert model_extras(W([100, 2])) == {}
-    assert model_extras(LFP) == {"p": 0.9}
-    assert model_extras(BOTH) == {"p": 0.9, "f0": 0.1}
-    assert model_extras(W([100, 2], gamma=5.0)) == {"gamma": 5.0}
+    assert W([100, 2]).extras == {}
+    assert LFP.extras == {"p": 0.9}
+    assert BOTH.extras == {"p": 0.9, "f0": 0.1}
+    assert W([100, 2], gamma=5.0).extras == {"gamma": 5.0}
     assert never_fails(LFP) == pytest.approx(0.1)
     assert never_fails(ZI) == 0.0 and never_fails(E([0.1])) == 0.0
     assert model_mean(LFP) == math.inf
@@ -81,7 +82,7 @@ def test_model_helpers():
 def test_draws_follow_the_model(name):
     model = MODELS[name]
     np.random.seed(1)
-    x = draw(model, 50_000)
+    x = model.random(50_000)
     p, f0 = float(model.p), float(model.f0)
     assert within(np.mean(np.isinf(x)), 1 - p, len(x))
     assert within(np.mean(x == 0.0), f0, len(x))
@@ -89,7 +90,7 @@ def test_draws_follow_the_model(name):
         assert within(np.mean(x > t), float(model.sf(t)), len(x))
     # One global uniform per draw, as the batched path takes them.
     np.random.seed(2)
-    draw(model, 7)
+    model.random(7)
     after = np.random.random_sample()
     np.random.seed(2)
     np.random.random_sample(7)
@@ -97,13 +98,13 @@ def test_draws_follow_the_model(name):
     np.random.seed(3)
     batched = inverse_sampler(model)(np.random.random_sample(7))
     np.random.seed(3)
-    np.testing.assert_array_equal(batched, draw(model, 7))
+    np.testing.assert_array_equal(batched, model.random(7))
 
 
 def test_a_plain_model_draws_as_surpyval_does():
     model = W([100, 2])
     np.random.seed(4)
-    ours = draw(model, 5)
+    ours = inverse_sampler(model)(np.random.random_sample(5))
     np.random.seed(4)
     np.testing.assert_array_equal(ours, model.random(5))
 
@@ -156,7 +157,11 @@ def test_mttf(name):
     # In parallel with units that may never fail, it may never fail: an
     # infinite MTTF, and a run to a tolerance stops at once.
     if model.p < 1:
-        assert parallel(model).mean(2_000, seed=8) == math.inf
+        assert parallel(model).mean() == math.inf
+        simulated = parallel(model).mean(
+            method="simulate", mc_samples=2_000, seed=8
+        )
+        assert simulated == math.inf
         stopped = parallel(model).mean_time_to_failure_interval(
             mc_samples=200, seed=8, tolerance=1.0
         )
@@ -207,24 +212,18 @@ def test_cold_standby_of_exponentials_with_extras(p, f0):
 
 
 def test_the_convolution_keeps_the_dead_on_arrival_apart():
-    # surpyval's density of a zero-inflated model gives f0 itself at
-    # exactly 0; the convolution takes the continuous part's instead.
+    # A unit dead on arrival adds nothing: the sum of two is the other's
+    # lifetime (or 0) as often as one of them is dead on arrival. The
+    # convolution takes them from the units' CDFs, which start at f0.
     unit = E([0.1], f0=0.2)
-    t = np.array([0.0, 1.0])
-    np.testing.assert_allclose(
-        _density_on_grid(unit, t), 0.8 * 0.1 * np.exp(-0.1 * t), rtol=1e-12
-    )
-    assert float(unit.df(0.0)) == pytest.approx(0.2)
-
-
-def test_nothing_left_but_units_dead_on_arrival_or_never_failing():
-    # Every unit that fails is dead on arrival (f0 == p). surpyval 0.20
-    # builds such a model; later versions refuse it.
-    try:
-        unit = E([0.1], p=0.5, f0=0.5)
-    except ValueError:
-        pytest.skip("this surpyval refuses f0 == p")
-    assert not _density_on_grid(unit, np.array([0.0, 1.0])).any()
+    assert float(unit.ff(0.0)) == pytest.approx(0.2)
+    pair = ConvolvedSurvival([unit, unit])
+    for t in (0.5, 5.0, 20.0, 60.0):
+        both = 1 - erlang2_ff(0.1, t)
+        one = math.exp(-0.1 * t)
+        assert float(pair.sf(t)) == pytest.approx(
+            0.8**2 * both + 2 * 0.2 * 0.8 * one, abs=1e-7
+        )
 
 
 def test_cold_standby_with_imperfect_switching():
@@ -261,7 +260,7 @@ def test_warm_standby_that_may_never_fail():
     # The rows with only finite budgets are played out all at once, as
     # before; the others one by one.
     np.random.seed(10)
-    budgets = np.column_stack([draw(unit, 300) for _ in range(3)])
+    budgets = np.column_stack([unit.random(300) for _ in range(3)])
     finite = np.all(np.isfinite(budgets), axis=1)
     assert 0 < finite.sum() < 300
     together = node._warm_from_budgets(budgets)
@@ -323,7 +322,7 @@ def test_a_unit_that_may_never_fail_ends_up_for_good():
     assert rbd.system_failure_frequency() == 0.0
     # Each replacement never fails with probability 0.1: the number of
     # failures is geometric, with mean 0.9 / 0.1.
-    result = rbd.availability(2_000.0, N=2_000, seed=13)
+    result = rbd.availability(2_000.0, mc_samples=2_000, seed=13)
     failures = result.system_failures / result.n_simulations
     se = math.sqrt(0.9 / 0.1**2 / result.n_simulations)
     assert abs(failures - 9.0) < 4 * se
@@ -343,24 +342,33 @@ def test_long_run_availability_with_absorbing_ends():
     assert rbd.mean_availability() == pytest.approx(exact, rel=1e-12)
     # Over a long window, the fraction of it up is close to that (the
     # time before the unit settles is short).
-    result = rbd.availability(5_000.0, N=2_000, seed=14)
+    result = rbd.availability(5_000.0, mc_samples=2_000, seed=14)
     window = result.mean_availability_interval()
     assert abs(window.estimate - exact) < 4 * window.standard_error + 0.01
 
 
-def test_repairable_draws_are_replayed_exactly():
+def test_repairable_draws_come_from_their_streams():
+    # A limited-failure-population or zero-inflated lifetime (infinite for
+    # a unit that never fails, 0 for one dead on arrival) comes from the
+    # component's own stream like any other draw: each simulation's up time
+    # is what its component's draws make it.
     rbd = repairable(W([10, 2], p=0.9, f0=0.05))
-    streamed = rbd.availability(200.0, N=200, seed=15).uptimes
-    original = RepairableRBD._streamed_components
-    try:
-        RepairableRBD._streamed_components = (
-            lambda self, stream, made=None, prefix=(): None
-        )
-        direct = rbd.availability(200.0, N=200, seed=15).uptimes
-    finally:
-        RepairableRBD._streamed_components = original
-    np.testing.assert_array_equal(streamed, direct)
-    # A maintenance time dead on arrival (done at once) replays alike too.
+    window = 200.0
+    result = rbd.availability(window, mc_samples=60, seed=15)
+    draws = KeyedDraws(rbd, window, 15)
+    never, dead = 0, 0
+    for r in range(60):
+        t, up, uptime = 0.0, True, 0.0
+        while t < window:
+            delay = draws.next(("c",), FAILURE if up else REPAIR, r)
+            if up:
+                uptime += min(t + delay, window) - t
+                never += delay == np.inf
+                dead += delay == 0.0
+            t, up = t + delay, not up
+        assert result.uptimes[r] == pytest.approx(uptime, rel=1e-12)
+    assert never and dead
+    # A maintenance time dead on arrival (done at once) has a stream too.
     maintained = RepairableRBD(
         [("s", "c"), ("c", "t")],
         {
@@ -374,18 +382,16 @@ def test_repairable_draws_are_replayed_exactly():
             }
         },
     )
-    streamed = maintained.availability(200.0, N=100, seed=17).uptimes
-    try:
-        RepairableRBD._streamed_components = (
-            lambda self, stream, made=None, prefix=(): None
-        )
-        direct = maintained.availability(200.0, N=100, seed=17).uptimes
-    finally:
-        RepairableRBD._streamed_components = original
-    np.testing.assert_array_equal(streamed, direct)
+    specs, complete = maintained._stream_specs(200.0)
+    assert complete and (("c",), DURATION) in specs
+    assert maintained.availability(
+        200.0, mc_samples=100, seed=17
+    ).n_simulations
     # So antithetic pairs and common random numbers work with them.
-    assert rbd.compare(rbd, 200.0, N=50, seed=1).estimate == 0.0
-    assert rbd.availability(200.0, N=20, seed=1, antithetic=True).antithetic
+    assert rbd.compare(rbd, 200.0, mc_samples=50, seed=1).estimate == 0.0
+    assert rbd.availability(
+        200.0, mc_samples=20, seed=1, antithetic=True
+    ).antithetic
 
 
 # -- saving and sensitivity ---------------------------------------------------
@@ -400,7 +406,7 @@ def test_saving_keeps_the_extras(model):
     back = RBD.from_json(rbd.to_json())
     t = np.array([0.0, 4.0, 50.0, 1e9])
     np.testing.assert_allclose(back.sf(t), rbd.sf(t), rtol=0, atol=1e-15)
-    assert model_extras(back.reliabilities["c"]) == model_extras(model)
+    assert back.reliabilities["c"].extras == model.extras
 
 
 def test_models_are_saved_in_surpyval_format():
@@ -445,11 +451,10 @@ def test_sensitivity_keeps_the_extras():
     assert sens["c"]["beta"] == pytest.approx(beta, rel=1e-5)
 
 
-# -- surpyval's next release: mean() is infinite when p < 1 (surpyval#404) --
+# -- mean() is infinite when p < 1 (surpyval#404) ----------------------------
 #
-# surpyval 0.20's mean() of a model with p < 1 is the defective mean; later
-# versions return inf. Nothing here may take a time scale from it: these
-# tests give the model an infinite mean() whatever surpyval is installed.
+# Nothing here may take a time scale from it: these tests give the model an
+# infinite mean() whatever surpyval does.
 
 
 def _infinite_mean(model, monkeypatch):

@@ -32,7 +32,14 @@ cooling = FaultTree(
 )
 cooling.top                        # 'no cooling'
 cooling.top_event_probability()    # -> 0.0595   1 − (1 − 0.1²)(1 − 0.05)
+cooling.ff()                       # -> 0.0595   the same, by an RBD's name
+cooling.sf()                       # -> 0.9405   worked out in its own right
 ```
+
+A tree answers to an RBD's names too, so the same code runs on either:
+`ff` and `sf`, and the cut and path sets as a list
+(`minimal_cut_sets()`, which an RBD has as well) or a set
+(`get_min_cut_sets()`, as an RBD gives them).
 
 | Gate | Written | Occurs when |
 |---|---|---|
@@ -124,7 +131,7 @@ array), with `Q` the top event probability and `q_e` the event's:
 |---|---|
 | `birnbaum_importance(t)` | `Q(e occurred) − Q(e did not)`: how much `Q` depends on the event. |
 | `criticality_importance(t)` | `I_B(e) · q_e / Q`: the share of the top event the event accounts for. |
-| `fussell_vesely(t)` | The probabilities of the minimal cut sets containing `e`, summed, over `Q`. |
+| `fussell_vesely(t)` | The probability that some minimal cut set containing `e` has occurred, over `Q` (`method="rare_event"`: their probabilities summed, which can pass 1). |
 | `risk_achievement_worth(t)` | `Q(e occurred) / Q`. |
 | `risk_reduction_worth(t)` | `Q / Q(e did not occur)`. |
 

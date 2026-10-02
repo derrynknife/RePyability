@@ -155,9 +155,9 @@ def test_importances_and_mttf_with_regression_node(rbd):
     imp = rbd.importances_given_state(30.0, {"a": NodeState(age=40.0)})
     assert set(imp) == {"birnbaum", "criticality"}
     assert "a" in imp["birnbaum"] and "b" in imp["birnbaum"]
-    mttf = rbd.node_mttf(mc_samples=1500, seed=1)
+    mttf = rbd.node_mttf()
     assert mttf["a"] > 0.0 and mttf["b"] > 0.0
-    assert rbd.mean(2000, seed=1) > 0.0
+    assert rbd.mean() > 0.0
 
 
 # -- serialisation --------------------------------------------------------
@@ -250,19 +250,12 @@ def test_schedule_more_load_lowers_reliability(models):
 
 @needs_tvc
 def test_po_schedule_follows_surpyval(models):
-    # Whether proportional odds has a survival along a covariate path is
-    # surpyval's to define. Where it does not (0.20), the node refuses the
-    # schedule clearly; where it does, the node gives exactly that survival.
+    # A proportional-odds node on a covariate path gives exactly surpyval's
+    # survival along it.
     schedule = StepSchedule.from_changepoints([0, 50], [[0.0], [0.8]])
     x = np.array([1.0, 30.0, 90.0])
-    try:
-        expected = np.asarray(models["po"].sf_tvc(x, schedule), dtype=float)
-    except Exception:
-        expected = None
-    if expected is None or not np.all(np.isfinite(expected)):
-        with pytest.raises(ValueError, match="proportional-odds|sf_tvc"):
-            RegressionNode(models["po"], schedule=schedule)
-        return
+    expected = np.asarray(models["po"].sf_tvc(x, schedule), dtype=float)
+    assert np.all(np.isfinite(expected))
     node = RegressionNode(models["po"], schedule=schedule)
     np.testing.assert_allclose(node.sf(x), expected)
 

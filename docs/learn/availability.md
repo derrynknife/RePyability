@@ -177,19 +177,22 @@ transient term is down to 0.003.
 
 ### Simulating the curve
 
-For most distributions there is no such formula, so RePyability estimates
-$A(t)$ by **Monte Carlo simulation**. `availability()` plays out `N`
-independent histories of the system from time 0, every component new. For
+For most distributions there is no such formula. RePyability can still
+compute the curve without simulation, by solving the renewal equation behind
+it numerically (`point_availability`, below), but a simulation shows where
+the curve comes from, and gives more besides. It estimates
+$A(t)$ by **Monte Carlo simulation**. `availability()` plays out
+`mc_samples` independent histories of the system from time 0, every component new. For
 each component it draws a time to failure, then a time to repair, then
 another time to failure, and so on; it merges the components' events in time
 order and checks the system after each one. The fraction of histories in
 which the system is up at time $t$ estimates $A(t)$.
 
 ```python
-result = one_pump.availability(t_simulation=5.0, N=10_000, seed=0)
+result = one_pump.availability(t_simulation=5.0, mc_samples=10_000, seed=0)
 result.availability[0]                                 # -> 1.0      every history starts up
-np.interp(1.0, result.timeline, result.availability)   # -> 0.9369   up at t = 1 h
-np.interp(5.0, result.timeline, result.availability)   # -> 0.9121   up at t = 5 h
+np.interp(1.0, result.timeline, result.availability)   # -> 0.939    up at t = 1 h
+np.interp(5.0, result.timeline, result.availability)   # -> 0.9123   up at t = 5 h
 ```
 
 `t_simulation` is the length of each history. `result.timeline` holds the
@@ -204,8 +207,8 @@ simulated = np.interp(hours, result.timeline, result.availability)
 lam, mu = 0.1, 1.0
 exact = mu / (lam + mu) + lam / (lam + mu) * np.exp(-(lam + mu) * hours)
 simulated.round(3)
-# array([1.   , 0.958, 0.937, 0.923, 0.917, 0.914, 0.916, 0.916, 0.912,
-#        0.912, 0.912])
+# array([1.   , 0.962, 0.939, 0.927, 0.918, 0.915, 0.915, 0.912, 0.915,
+#        0.909, 0.912])
 exact.round(3)
 # array([1.   , 0.962, 0.939, 0.927, 0.919, 0.915, 0.912, 0.911, 0.91 ,
 #        0.91 , 0.909])
@@ -216,12 +219,22 @@ xychart-beta
     title "Availability of a new pump (simulated)"
     x-axis "hours" ["0", "0.5", "1", "1.5", "2", "2.5", "3", "3.5", "4", "4.5", "5"]
     y-axis "A(t)" 0.9 --> 1
-    line [1, 0.958, 0.937, 0.923, 0.917, 0.914, 0.916, 0.916, 0.912, 0.912, 0.912]
+    line [1, 0.962, 0.939, 0.927, 0.918, 0.915, 0.915, 0.912, 0.915, 0.909, 0.912]
 ```
 
 The simulation follows the exact curve down from 1 and levels off near 0.91.
-It is not perfectly smooth, though: between 2.5 and 3.5 hours it even rises
-a little, which the exact curve never does.
+It is not perfectly smooth, though: between 3.5 and 4 hours it even rises a
+little, which the exact curve never does.
+
+`point_availability` computes the exact curve for any distributions, and
+`mission_availability` its mean over a window, with no simulation:
+
+```python
+one_pump.point_availability(hours).round(3)
+# array([1.   , 0.962, 0.939, 0.927, 0.919, 0.915, 0.912, 0.911, 0.91 ,
+#        0.91 , 0.909])
+one_pump.mission_availability(5.0)   # -> 0.92555  the mean over the first 5 hours
+```
 
 ### How much to trust a simulation
 
@@ -234,12 +247,12 @@ every point (by the Wilson method, which stays sensible near 0 and 1):
 ```python
 result.availability_se[-1]   # -> 0.0028   standard error at t = 5 h
 lower, upper = result.availability_interval(confidence=0.95)
-lower[-1]   # -> 0.9064
-upper[-1]   # -> 0.9175   the exact A(5) = 0.9095 lies inside
+lower[-1]   # -> 0.9066
+upper[-1]   # -> 0.9177   the exact A(5) = 0.9095 lies inside
 ```
 
-Two arguments govern the error. `N` sets its size: the error shrinks like
-$1/\sqrt{N}$, so halving it takes four times as many histories. The `seed`
+Two arguments govern the error. `mc_samples`, the number of histories $N$,
+sets its size: the error shrinks like $1/\sqrt{N}$, so halving it takes four times as many histories. The `seed`
 makes a run reproducible: the same seed gives the same numbers, and another
 seed gives different numbers that are equally valid, within the same error.
 
@@ -258,15 +271,15 @@ $$
 N \ge \left(\frac{1.96 \times 0.14}{0.001}\right)^2 \approx 75\,700.
 $$
 
-`tolerance` does this for you: it runs `N` histories, checks the interval,
-and runs another `N` until the interval is narrow enough:
+`tolerance` does this for you: it runs `mc_samples` histories, checks the
+interval, and runs another `mc_samples` until the interval is narrow enough:
 
 ```python
-precise = one_pump.availability(t_simulation=5.0, N=10_000, seed=0, tolerance=0.001)
+precise = one_pump.availability(t_simulation=5.0, mc_samples=10_000, seed=0, tolerance=0.001)
 precise.n_simulations            # -> 80000
 window = precise.mean_availability_interval()
-window.estimate                  # -> 0.926
-window.upper - window.estimate   # -> 0.00097
+window.estimate                  # -> 0.9267
+window.upper - window.estimate   # -> 0.00096
 ```
 
 The exact answer is the average of the formula for $A(t)$ over the window,
@@ -278,7 +291,9 @@ $$
 = 0.9091 + 0.0165 = 0.9256,
 $$
 
-inside the interval.
+just below the interval, which starts at 0.9258. A 95% interval misses the
+true value about one run in twenty, and this is one of them: the tolerance
+bounds the interval's width, not the error of every run.
 
 Two ideas get more precision out of each history, without changing what is
 estimated.
@@ -294,8 +309,8 @@ common to both designs and cancels in the difference. This is called
 
 ```python
 quick = RepairableRBD([("in", "pump"), ("pump", "out")], {"pump": unit(0.1, 2.0)})
-gain = quick.compare(one_pump, t_simulation=5.0, N=10_000, seed=0)
-gain.estimate         # -> 0.0315   exactly: 0.9569 - 0.9256 = 0.0314
+gain = quick.compare(one_pump, t_simulation=5.0, mc_samples=10_000, seed=0)
+gain.estimate         # -> 0.0314   exactly: 0.9569 - 0.9256 = 0.0314
 gain.standard_error   # -> 0.00063
 ```
 
@@ -311,7 +326,7 @@ genuine histories, but they tend to err in opposite directions, so a pair's
 average is closer to the truth than two unrelated histories' would be:
 
 ```python
-paired = one_pump.availability(t_simulation=5.0, N=10_000, seed=0, antithetic=True)
+paired = one_pump.availability(t_simulation=5.0, mc_samples=10_000, seed=0, antithetic=True)
 paired.mean_availability_interval().standard_error   # -> 0.0012   0.0014 without pairs
 ```
 
@@ -466,10 +481,10 @@ is the number of system failures divided by the total simulated time,
 `mean_down_time` the total down time divided by the number of restorations.
 
 ```python
-sim = plant.availability(t_simulation=100.0, N=2_000, seed=0)
-sim.failure_frequency   # -> 0.03496   exact: 0.03497
-sim.mean_up_time        # -> 27.29     exact: 27.27
-sim.mean_down_time      # -> 1.334     exact: 1.327
+sim = plant.availability(t_simulation=100.0, mc_samples=2_000, seed=0)
+sim.failure_frequency   # -> 0.035155  exact: 0.03497
+sim.mean_up_time        # -> 27.15     exact: 27.27
+sim.mean_down_time      # -> 1.309     exact: 1.327
 ```
 
 They agree to within sampling error. They also carry a small bias, because
@@ -486,14 +501,15 @@ they cannot give.
 the long run. Over its first 8-hour shift:
 
 ```python
-first_shift = plant.availability(t_simulation=8.0, N=10_000, seed=0)
-np.interp(1.0, first_shift.timeline, first_shift.availability)   # -> 0.9803   at 1 h
-np.interp(8.0, first_shift.timeline, first_shift.availability)   # -> 0.9544   at 8 h
+first_shift = plant.availability(t_simulation=8.0, mc_samples=10_000, seed=0)
+np.interp(1.0, first_shift.timeline, first_shift.availability)   # -> 0.9813   at 1 h
+np.interp(8.0, first_shift.timeline, first_shift.availability)   # -> 0.9565   at 8 h
 first_shift.system_uptime / (first_shift.n_simulations * 8.0)    # -> 0.964    over the shift
 ```
 
 A new plant is up 96.4% of its first shift, against 95.4% in the long run,
-and by the end of the shift it has settled. With slow repairs or wear-out
+and by the end of the shift it has settled; exactly,
+`plant.mission_availability(8.0)` is 0.9640. With slow repairs or wear-out
 lifetimes the transient lasts longer, and it can dip below the long-run
 value (Exercise 5).
 
@@ -502,7 +518,7 @@ value (Exercise 5).
     $A_{\text{sys}}(t) = h(A_1(t), \dots, A_n(t))$. With the exponential
     formula, at $t = 1$ hour each pump is at 0.9394 and the valve at
     $0.9615 + 0.0385\,e^{-0.52} = 0.9844$, so the plant is at
-    $(1 - 0.0606^2) \times 0.9844 = 0.9808$. The simulation's 0.9803 is
+    $(1 - 0.0606^2) \times 0.9844 = 0.9808$. The simulation's 0.9813 is
     within its error.
 
 **Criticality from the histories.** The simulation records which
@@ -511,8 +527,8 @@ the terms of the frequency formula, counted rather than computed:
 
 ```python
 fci = sim.criticalities.failure_criticality_index
-fci.per_system_failure      # {'pump1': 0.2217, 'pump2': 0.2191, 'valve': 0.5592}
-fci.per_component_failure   # {'pump1': 0.0848, 'pump2': 0.0841, 'valve': 0.9911}
+fci.per_system_failure      # {'pump1': 0.2189, 'pump2': 0.2243, 'valve': 0.5568}
+fci.per_component_failure   # {'pump1': 0.0851, 'pump2': 0.0853, 'valve': 0.9934}
 ```
 
 `per_system_failure` is each component's share of the plant's failures, an
@@ -576,20 +592,25 @@ maintenance](../guide/costs.md#preventive-maintenance).
     The point availability starts at 1, and the long-run value is a limit.
     Over a short window after start-up, or after an overhaul, the average
     availability can differ from it: the plant's first shift averaged 0.964,
-    not 0.9536. Simulate the window you care about.
+    not 0.9536. Compute the window you care about, with
+    `mission_availability`, or simulate it.
 
 !!! warning "Every component has its own repair crew"
     The model starts each repair the moment the component fails, and runs
     it independently of every other repair, as if each component had its
     own technician on site. With one shared crew, waiting for spares or
     travel time, outages last longer and overlap more, so the model is
-    optimistic. It also lets components keep running, and failing, while the
-    system is down; in a real plant a pump that stops with the plant may
-    not.
+    optimistic. `repair_crews` shares a number of crews (see [Repair
+    crews](../guide/repairable.md#repair-crews)): the simulation follows
+    the queue, and with exponential lives and repairs the long-run values
+    stay exact, and the values over time numerical, from a Markov chain of
+    the queue. The model also lets components keep running, and failing,
+    while the system is down; in a real plant a pump that stops with the
+    plant may not.
 
 !!! warning "Simulated numbers carry sampling error"
     Everything `availability()` returns is an estimate. Quote it with its
-    standard error or confidence band, increase `N` when the error matters,
+    standard error or confidence band, increase `mc_samples` when the error matters,
     and compare with the exact long-run methods where they exist.
 
 ## Summary
@@ -609,8 +630,8 @@ maintenance](../guide/costs.md#preventive-maintenance).
       $\text{MUT} = A/\omega$, $\text{MDT} = (1 - A)/\omega$ and
       $\text{MTBF} = 1/\omega$.
     - The point availability $A(t)$ starts at 1 and settles to the long-run
-      value; RePyability simulates it, with an error that shrinks like
-      $1/\sqrt{N}$.
+      value; `point_availability` computes it exactly, and a simulation
+      estimates it, with an error that shrinks like $1/\sqrt{N}$.
     - `tolerance` simulates until an answer is precise enough; `compare`
       simulates two designs with the same random numbers, so the chance in
       the histories cancels in their difference; antithetic pairs make each
@@ -688,25 +709,25 @@ availability more? Explain with Birnbaum importance.
     ```
 
 **4.** In the simulation `sim` above (100 hours, $N = 2000$), the curve ends
-at 0.957, above the exact long-run availability of 0.9536. Is the plant still
+at 0.9575, above the exact long-run availability of 0.9536. Is the plant still
 settling, is something wrong, or is it noise?
 
 ??? success "Answer"
     Noise. The transient decays at the rates $1.1$ per hour (pumps) and
     $0.52$ per hour (valve), so it has long gone by 100 hours, and the true
     $A(100)$ is 0.9536. With $N = 2000$ the standard error is
-    $\sqrt{0.954 \times 0.046/2000} = 0.0045$: the difference, 0.0034, is
+    $\sqrt{0.954 \times 0.046/2000} = 0.0045$: the difference, 0.0039, is
     less than one standard error, and the 95% band contains 0.9536. The
     fraction of the whole window the plant was up, which averages over time
-    as well as over histories, is closer still: 0.9539.
+    as well as over histories, is closer still: 0.9545.
 
     ```python
-    sim.availability[-1]      # -> 0.957
+    sim.availability[-1]      # -> 0.9575
     sim.availability_se[-1]   # -> 0.0045
     lower, upper = sim.availability_interval(confidence=0.95)
-    lower[-1]   # -> 0.9472
-    upper[-1]   # -> 0.965
-    sim.system_uptime / (sim.n_simulations * sim.time_simulated_to)   # -> 0.9539
+    lower[-1]   # -> 0.9477
+    upper[-1]   # -> 0.9655
+    sim.system_uptime / (sim.n_simulations * sim.time_simulated_to)   # -> 0.9545
     ```
 
 **5.** A pump that wears out has a Weibull lifetime with shape 3 and an MTTF
@@ -718,9 +739,9 @@ value around 12 hours?
     The long-run availability is still $10/11 = 0.9091$: only the means
     matter. The start-up is different. New pumps that wear out fail at
     similar ages, most of them between 5 and 15 hours, so around 12 hours an
-    unusually large share is under repair: $A(12) = 0.888$. The repaired
+    unusually large share is under repair: $A(12) = 0.889$. The repaired
     pumps are as good as new, and young pumps that wear out rarely fail, so
-    a few hours later the curve swings above the long-run value (0.918 at 18
+    a few hours later the curve swings above the long-run value (0.922 at 18
     hours). The swings fade as the pumps' cycles drift out of step. An
     exponential pump, whose failures do not depend on age, settles without
     swinging.
@@ -732,9 +753,9 @@ value around 12 hours?
                   "repairability": surv.Exponential.from_params([1.0])}},
     )
     worn.mean_availability()   # -> 0.9091
-    curve = worn.availability(t_simulation=40.0, N=10_000, seed=0)
-    np.interp(12.0, curve.timeline, curve.availability)   # -> 0.888
-    np.interp(18.0, curve.timeline, curve.availability)   # -> 0.918
+    curve = worn.availability(t_simulation=40.0, mc_samples=10_000, seed=0)
+    np.interp(12.0, curve.timeline, curve.availability)   # -> 0.889
+    np.interp(18.0, curve.timeline, curve.availability)   # -> 0.922
     ```
 
 **6.** (a) Compare the pump with itself, `one_pump.compare(one_pump, 5.0)`.
@@ -750,14 +771,14 @@ mean availability over its first 5 hours to within ±0.0005?
     standard error, $\sqrt{2} \times 0.0014 = 0.002$.
 
     ```python
-    same = one_pump.compare(one_pump, 5.0, N=1_000, seed=0)
+    same = one_pump.compare(one_pump, 5.0, mc_samples=1_000, seed=0)
     same.estimate          # -> 0.0
     same.standard_error    # -> 0.0
     ```
 
     (b) Halving the tolerance takes four times the histories:
     $(1.96 \times 0.14/0.0005)^2 \approx 4 \times 75\,700 \approx 303\,000$.
-    With `tolerance=0.0005` (and `N=10_000`) the simulation stops at its
+    With `tolerance=0.0005` (and `mc_samples=10_000`) the simulation stops at its
     first check past that, after 310 000 histories.
 
 ## Where next

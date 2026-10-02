@@ -15,7 +15,7 @@ import warnings
 from typing import List, Optional
 
 import numpy as np
-from scipy.stats import norm
+from scipy.special import ndtri
 
 
 def check_count(n, antithetic: bool, name: str) -> None:
@@ -57,7 +57,7 @@ def standard_error(values, antithetic: bool) -> float:
 
 def z_value(confidence: float) -> float:
     """The two-sided normal quantile for ``confidence``."""
-    return float(norm.ppf(0.5 + confidence / 2.0))
+    return float(ndtri(0.5 + confidence / 2.0))
 
 
 def half_width(values, confidence: float, antithetic: bool) -> float:
@@ -137,14 +137,57 @@ def more_samples(
 
 
 def jobs(n_jobs) -> int:
-    """The number of processes ``n_jobs`` asks for (-1: one per CPU)."""
+    """The number of processes ``n_jobs`` asks for (-1: one per CPU this
+    process may run on, which in a container can be fewer than the host
+    has)."""
     if n_jobs == -1:
-        return os.cpu_count() or 1
+        return available_cpus()
     if isinstance(n_jobs, bool) or not isinstance(n_jobs, (int, np.integer)):
         raise ValueError(f"n_jobs must be an integer, got {n_jobs!r}.")
     if n_jobs < 1:
         raise ValueError(f"n_jobs must be at least 1 (or -1), got {n_jobs}.")
     return int(n_jobs)
+
+
+def available_cpus() -> int:
+    """The CPUs this process may run on: its affinity where the platform
+    reports one, else all of them."""
+    if hasattr(os, "process_cpu_count"):  # Python 3.13+
+        return os.process_cpu_count() or 1
+    if hasattr(os, "sched_getaffinity"):
+        return len(os.sched_getaffinity(0)) or 1
+    return os.cpu_count() or 1
+
+
+def process_pool(jobs: int, initializer=None, initargs: tuple = ()):
+    """A pool of ``jobs`` worker processes for a parallel run, each
+    started by ``initializer(*initargs)`` if given.
+
+    Under the forkserver start method (Linux's default from Python 3.14)
+    the server, which every worker is forked from, first imports
+    repyability, so a worker starts with it loaded instead of spending a
+    second or more importing it (and scipy and surpyval) before its first
+    block. The server keeps that for later pools too. It only takes effect
+    before the server starts; the server's other preloaded modules are
+    kept.
+    """
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor
+
+    context = multiprocessing.get_context()
+    if context.get_start_method() == "forkserver":
+        from multiprocessing import forkserver
+
+        server = getattr(forkserver, "_forkserver", None)
+        preload = list(getattr(server, "_preload_modules", ["__main__"]))
+        if "repyability" not in preload:
+            context.set_forkserver_preload(preload + ["repyability"])
+    return ProcessPoolExecutor(
+        max_workers=jobs,
+        mp_context=context,
+        initializer=initializer,
+        initargs=initargs,
+    )
 
 
 def blocks(n: int, block: int) -> List[int]:

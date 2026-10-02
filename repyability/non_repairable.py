@@ -1,7 +1,6 @@
 import warnings
 
 import numpy as np
-from scipy.integrate import quad, trapezoid
 from scipy.optimize import minimize, minimize_scalar
 from surpyval import ExactEventTime, NonParametric, Parametric
 
@@ -12,8 +11,8 @@ from repyability.rbd._model_utils import (
     model_mean,
     never_fails,
 )
-from repyability.rbd._sampling import draw
 from repyability.rbd.standby_node import StandbyModel
+from repyability.utils.deprecation import REMOVAL
 
 FAILURE = 1
 REPLACE = 0
@@ -108,8 +107,8 @@ class NonRepairable:
           survival function ``sf``.
     time_to_replace : surpyval model, optional
         The distribution of the time taken to replace the unit after a
-        failure, used by the availability and event methods. Default
-        ``ExactEventTime.from_params(0)``: instantaneous replacement.
+        failure, used by the availability and event methods. By default
+        None: instantaneous replacement (``ExactEventTime.from_params(0)``).
 
     Attributes
     ----------
@@ -160,9 +159,10 @@ class NonRepairable:
     0.9804
     """
 
-    def __init__(
-        self, reliability, time_to_replace=ExactEventTime.from_params(0)
-    ):
+    def __init__(self, reliability, time_to_replace=None):
+        if time_to_replace is None:
+            # Replaced in no time.
+            time_to_replace = ExactEventTime.from_params(0)
         if isinstance(reliability, Parametric):
             self.model_parameterization = "parametric"
             self.reliability_function = reliability.sf
@@ -267,6 +267,8 @@ class NonRepairable:
         >>> round(unit.avg_replacement_time(100), 2)
         63.21
         """
+        from scipy.integrate import quad, trapezoid
+
         if self.model_parameterization == "parametric":
             # surpyval evaluates an offset model below its offset through a
             # fractional power of a negative number before masking it, which
@@ -312,6 +314,12 @@ class NonRepairable:
     def mean_unavailability(self) -> float:
         """Long-run unavailability, ``1 - mean_availability()``.
 
+        ``MTTR / (MTTF + MTTR)``, worked out in its own right (not as one
+        less the availability), so that a small one keeps its precision;
+        with units that never fail or replacements that never finish, the
+        probability that the unit ends down for good (see
+        ``mean_availability``).
+
         Returns
         -------
         float
@@ -334,7 +342,11 @@ class NonRepairable:
         >>> round(unit.mean_unavailability(), 4)
         0.0196
         """
-        return 1 - self.mean_availability()
+        if isinstance(self.reliability, NonParametric):
+            raise ValueError(
+                "Mean Availability requires a parametric reliability model"
+            )
+        return self._long_run_unavailability()
 
     def mean_availability(self) -> float:
         """Long-run availability, ``MTTF / (MTTF + MTTR)``.
@@ -343,9 +355,9 @@ class NonRepairable:
         failure and then replaced, so up and down times alternate (an
         alternating renewal process). ``MTTF`` is the mean of
         ``reliability`` and ``MTTR`` the mean of ``time_to_replace``.
-        For a simulated ``StandbyModel`` lifetime the MTTF is a Monte Carlo
-        estimate drawn from numpy's global RNG, so it varies slightly
-        between calls.
+        For a simulated ``StandbyModel`` lifetime the MTTF is the mean of
+        the lifetimes simulated when it was built (see its ``mean``), so it
+        is the same on every call.
 
         If some units never fail (a limited-failure-population model,
         ``p < 1``), sooner or later a replacement is one of them, and the
@@ -407,6 +419,18 @@ class NonRepairable:
         mttf = model_mean(self.reliability)
         mttr = model_mean(self.time_to_replace)
         return mttf / (mttr + mttf), 1.0 / (mttf + mttr)
+
+    def _long_run_unavailability(self) -> float:
+        """The long-run unavailability (see ``mean_unavailability``), as
+        ``_long_run`` gives the availability."""
+        up_for_good = never_fails(self.reliability)
+        down_for_good = never_fails(self.time_to_replace)
+        if up_for_good or down_for_good:
+            ends_down = (1.0 - up_for_good) * down_for_good
+            return ends_down / (up_for_good + ends_down)
+        mttf = model_mean(self.reliability)
+        mttr = model_mean(self.time_to_replace)
+        return mttr / (mttr + mttf)
 
     def failure_frequency(self) -> float:
         """Long-run failure frequency (failures per unit time).
@@ -495,7 +519,7 @@ class NonRepairable:
         Parameters
         ----------
         options : object, optional
-            Deprecated and ignored; it will be removed in a future release.
+            Deprecated and ignored; it will be removed in 0.12.
 
         Returns
         -------
@@ -512,7 +536,7 @@ class NonRepairable:
 
         Warns
         -----
-        DeprecationWarning
+        FutureWarning
             If ``options`` is given.
 
         Examples
@@ -534,8 +558,8 @@ class NonRepairable:
         if options is not None:
             warnings.warn(
                 "find_optimal_replacement()'s options argument is ignored "
-                "and deprecated; it will be removed in a future release.",
-                DeprecationWarning,
+                f"and deprecated; it will be removed in {REMOVAL}.",
+                FutureWarning,
                 stacklevel=2,
             )
         if self.model_parameterization == "parametric":
@@ -756,7 +780,7 @@ class NonRepairable:
         """
         if self.__next_event_type == FAILURE:
             self.__next_event_type = REPLACE
-            return draw(self.reliability, 1).item(), False
+            return self.reliability.random(1).item(), False
         elif self.__next_event_type == REPLACE:
             self.__next_event_type = FAILURE
-            return draw(self.time_to_replace, 1).item(), True
+            return self.time_to_replace.random(1).item(), True

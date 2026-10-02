@@ -45,7 +45,7 @@ A node model is anything that exposes `sf(t)` and `ff(t)`:
 | Model | Use it for |
 |---|---|
 | A surpyval parametric distribution (`Weibull`, `Exponential`, `LogNormal`, …) | An ordinary component with a fitted lifetime. |
-| A surpyval non-parametric fit (`KaplanMeier`, `NelsonAalen`, …) | A component described directly by its data. |
+| A surpyval non-parametric fit (`KaplanMeier`, `NelsonAalen`, …) | Deprecated, and refused from 0.12: its curve ends at the data. Fit a parametric distribution in surpyval instead. |
 | `surpyval.FixedEventProbability` | A component with a fixed probability of failure (a demand, a mission). |
 | [`PerfectReliability`][repyability.PerfectReliability] / [`PerfectUnreliability`][repyability.PerfectUnreliability] | A node that never fails / has always failed (a junction, a placeholder). |
 | [`StandbyModel`][repyability.StandbyModel], [`RepeatedStandbyNode`][repyability.RepeatedStandbyNode] | Standby redundancy (see [Redundancy models](redundancy-models.md)). |
@@ -164,7 +164,17 @@ is not a valid RBD. It checks for:
   successors;
 - a `k` of zero, or a `k` larger than the node's number of inputs, or a `k`
   given for a node that is not in the graph;
-- a node without a model.
+- a node in the edges without a model (but the input and output nodes,
+  which need none), and a model for a name in no edge.
+
+The error lists each problem on a line of its own, and suggests the node a
+mistyped model was meant for:
+
+```text
+ValueError: RBD not correctly structured:
+  - node 'pump' (in the edges) has no model
+  - model 'pmup' is not a node in the edges; did you mean 'pump'?
+```
 
 Pass `on_infeasible_rbd="warn"` to get a warning instead, or `"ignore"` to
 build it silently, and inspect the findings in `structure_check`:
@@ -181,7 +191,9 @@ broken.structure_check["nodes_with_no_predecessors"]   # ['s', 'b']
 
 `structure_check` is a dict of findings: `is_valid`, `has_cycles` and
 `cycles`, `nodes_with_no_predecessors` / `nodes_with_no_successors`,
-`koon_errors` and `koon_warnings`, `irrelevant_nodes`,
+`nodes_with_no_model` and `nodes_in_no_edge` (models for names in no edge,
+which are left out of the diagram), `koon_errors` and `koon_warnings`,
+`irrelevant_nodes`,
 `all_distributions_fixed`, and `is_analytically_solvable` with
 `non_analytic_nodes`. An RBD built with errors can give meaningless results;
 use `"warn"`/`"ignore"` to diagnose a diagram, not to analyse it.
@@ -226,23 +238,33 @@ Path and cut sets depend only on the structure and are computed once per RBD.
 - `is_fixed` is `True` when every node is a fixed probability. Then time plays
   no part: `sf()` can be called without a time, and methods that invert
   reliability to a time raise. `is_time_varying` is its complement.
-- `is_analytically_solvable()` is `False` when a node's reliability comes
-  from a simulation-backed model: a `StandbyModel`, `RepeatedStandbyNode` or
-  `LoadSharingModel` (always counted as non-analytic, even when that model
-  has a closed form), or a nested RBD containing one.
-  `get_non_analytic_nodes()` names them. The system value is still computed
-  exactly *from* the node reliabilities; it is only as good as those nodes'
-  own estimates.
+- `is_analytically_solvable()` is `False` when some node's reliability is
+  fitted to simulated lifetimes: a `StandbyModel` or `LoadSharingModel` with
+  no closed form or numerical convolution (see their `is_simulated`), or a
+  repeated node or nested RBD of one. `get_non_analytic_nodes()` names them.
+  The system value is still computed exactly *from* the node reliabilities;
+  it is only as good as those nodes' own estimates.
+- `analysis_routes()` says how each analysis of the RBD is computed:
+  exactly, numerically, by simulation, or not at all, with the reason and
+  the nodes that decide it (see [What is exact and what is
+  simulated](saving.md#what-is-exact-and-what-is-simulated)).
 
 ```python
 shared_supply.is_fixed                      # True
 plant.is_fixed                              # False
 from repyability import StandbyModel
-standby = NonRepairableRBD(
+spare = NonRepairableRBD(
     [("s", "sb"), ("sb", "t")], {"sb": StandbyModel([unit, unit])}
 )
-standby.is_analytically_solvable()          # False
-standby.get_non_analytic_nodes()            # {'sb': 'StandbyModel'}
+spare.is_analytically_solvable()            # True: a numerical convolution
+two_of_three = NonRepairableRBD(
+    [("s", "sb"), ("sb", "t")],
+    {"sb": StandbyModel([unit] * 3, k=2, mc_samples=2000, seed=1)},
+)
+two_of_three.is_analytically_solvable()     # False: simulated lifetimes
+two_of_three.get_non_analytic_nodes()       # {'sb': 'StandbyModel'}
+two_of_three.analysis_routes()["sf"].route  # 'simulated'
+two_of_three.analysis_routes()["mean"].route  # 'simulated': Monte Carlo
 ```
 
 ## Low-level building blocks

@@ -58,9 +58,9 @@ def test_q1_expected_failures_matches_cumulative_hazard():
 def test_cost_and_cost_rate_contract():
     rep = Repairable(_gr(0.5))
     rep.set_repair_and_overhaul_costs(1.0, 5.0)
-    assert isinstance(rep.cost(100.0, seed=1, n_simulations=300), float)
-    assert isinstance(rep.cost_rate(100.0, seed=1, n_simulations=300), float)
-    arr = rep.cost_rate(np.array([100.0, 200.0]), seed=1, n_simulations=300)
+    assert isinstance(rep.cost(100.0, seed=1, mc_samples=300), float)
+    assert isinstance(rep.cost_rate(100.0, seed=1, mc_samples=300), float)
+    arr = rep.cost_rate(np.array([100.0, 200.0]), seed=1, mc_samples=300)
     assert isinstance(arr, np.ndarray) and arr.shape == (2,)
 
 
@@ -73,7 +73,7 @@ def test_optimal_interval_matches_analytic_at_q1():
     rep = Repairable(_gr(1.0, alpha=alpha, beta=beta))
     rep.set_repair_and_overhaul_costs(cr, co)
     interval = rep.find_optimal_overhaul_interval(
-        seed=2, n_simulations=1200, max_interval=600.0
+        seed=2, mc_samples=1200, max_interval=600.0
     )
     assert interval == pytest.approx(analytic, rel=0.12)
 
@@ -91,7 +91,7 @@ def test_default_horizon_finds_the_minimal_repair_optimum():
         # Nothing may surface: neither surpyval's warnings about the stalled
         # attempts the search discarded, nor a "still falling" warning.
         warnings.simplefilter("error")
-        policy = rep.optimal_overhaul_policy(seed=0, n_simulations=400)
+        policy = rep.optimal_overhaul_policy(seed=0, mc_samples=400)
     assert policy.interval == pytest.approx(analytic, rel=0.12)
 
     def exact_rate(t):
@@ -113,7 +113,7 @@ class _CutShort:
         self.limit = limit
         self.message = message
 
-    def mcf(self, t, items=1000, seed=None):
+    def mcf(self, t, items=1000, random_state=None):
         t = np.asarray(t, dtype=float)
         if t.max() > self.limit:
             warnings.warn(self.message)
@@ -164,16 +164,14 @@ def test_an_optimum_beyond_the_horizon_warns():
     optimum (3162) lies beyond the default horizon (15 times the mean,
     1329.34). The search returns at most the horizon and warns, once, that
     the cost rate is still falling there, rather than returning a false
-    optimum. A simulator that cannot resolve failures that far (surpyval
-    0.20's) makes it shorten the horizon first, to where the baseline
-    survival is 1e-10, and say so."""
+    optimum. A simulator that cannot resolve failures that far makes it
+    shorten the horizon first, to where the baseline survival is 1e-10, and
+    say so."""
     rep = Repairable(_gr(1.0, kijima="i"))
     rep.set_repair_and_overhaul_costs(1.0, 1000.0)
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        interval = rep.find_optimal_overhaul_interval(
-            seed=0, n_simulations=200
-        )
+        interval = rep.find_optimal_overhaul_interval(seed=0, mc_samples=200)
     messages = [str(w.message) for w in caught]
     assert len(messages) == 1
     assert "still falling at the search horizon" in messages[0]
@@ -186,8 +184,8 @@ def test_an_optimum_beyond_the_horizon_warns():
 
 def test_stalls_the_search_cannot_avoid_are_reported():
     """When the simulation is cut short at every horizon the search tries
-    (as surpyval 0.20's was for q > 1, where the virtual age outruns the
-    real age), the simulator's warning must reach the caller, not be
+    (as it can be for q > 1, where the virtual age outruns the real age),
+    the simulator's warning must reach the caller, not be
     swallowed with those of the discarded attempts."""
     rep = Repairable(
         _CutShort(
@@ -211,10 +209,8 @@ def test_repairs_that_age_the_unit_bring_the_overhaul_forward():
     rep = Repairable(_gr(1.5, kijima="i"))
     rep.set_repair_and_overhaul_costs(10.0, 50.0)
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore")  # surpyval 0.20's simulator stalls
-        interval = rep.find_optimal_overhaul_interval(
-            seed=0, n_simulations=100
-        )
+        warnings.simplefilter("ignore")  # the simulator may report stalls
+        interval = rep.find_optimal_overhaul_interval(seed=0, mc_samples=100)
     assert 100.0 < interval < 100.0 * 5.0**0.5
 
 
@@ -223,10 +219,10 @@ def test_reproducible_with_seed():
     rep = Repairable(_gr(0.5, kijima="i"))
     rep.set_repair_and_overhaul_costs(1.0, 5.0)
     p1 = rep.optimal_overhaul_policy(
-        seed=7, n_simulations=400, max_interval=600.0
+        seed=7, mc_samples=400, max_interval=600.0
     )
     p2 = rep.optimal_overhaul_policy(
-        seed=7, n_simulations=400, max_interval=600.0
+        seed=7, mc_samples=400, max_interval=600.0
     )
     assert p1.interval == p2.interval
     assert p1.cost_rate == p2.cost_rate
@@ -235,7 +231,7 @@ def test_reproducible_with_seed():
 def test_costs_required_and_ordered():
     rep = Repairable(_gr(0.5))
     with pytest.raises(ValueError, match="costs not set"):
-        rep.find_optimal_overhaul_interval(seed=1, n_simulations=200)
+        rep.find_optimal_overhaul_interval(seed=1, mc_samples=200)
     with pytest.raises(ValueError, match="less than"):
         rep.set_repair_and_overhaul_costs(5.0, 1.0)
 
@@ -262,7 +258,7 @@ def test_minimal_repair_time_to_nth_failure_closed_form():
 def test_expected_time_to_nth_failure_matches_closed_form_at_q1():
     rep = Repairable(_gr(1.0, alpha=100.0, beta=2.0))
     for n in (3, 6):
-        sim = rep.expected_time_to_nth_failure(n, seed=1, n_simulations=5000)
+        sim = rep.expected_time_to_nth_failure(n, seed=1, mc_samples=5000)
         exact = minimal_repair_time_to_nth_failure(100.0, 2.0, n)
         assert sim == pytest.approx(exact, rel=0.05)
 
@@ -276,21 +272,21 @@ def test_expected_time_to_nth_failure_analytic_raises():
 def test_expected_time_to_nth_failure_validation():
     rep = Repairable(_gr(0.5))
     with pytest.raises(ValueError, match="positive"):
-        rep.expected_time_to_nth_failure(0, seed=1, n_simulations=200)
+        rep.expected_time_to_nth_failure(0, seed=1, mc_samples=200)
 
 
 def test_optimal_failure_limit_policy():
     rep = Repairable(_gr(0.4, kijima="i"))
     rep.set_repair_and_overhaul_costs(1.0, 5.0)
     policy = rep.optimal_failure_limit_policy(
-        seed=3, n_simulations=1200, max_failures=25
+        seed=3, mc_samples=1200, max_failures=25
     )
     assert isinstance(policy, FailureLimitPolicy)
     assert policy.failure_count >= 1
     assert policy.cost_rate > 0
     # Reproducible for a fixed seed.
     again = rep.optimal_failure_limit_policy(
-        seed=3, n_simulations=1200, max_failures=25
+        seed=3, mc_samples=1200, max_failures=25
     )
     assert policy == again
 
@@ -298,41 +294,41 @@ def test_optimal_failure_limit_policy():
 def test_failure_limit_costs_required():
     rep = Repairable(_gr(0.5))
     with pytest.raises(ValueError, match="costs not set"):
-        rep.find_optimal_replacement_failure_count(seed=1, n_simulations=200)
+        rep.find_optimal_replacement_failure_count(seed=1, mc_samples=200)
 
 
-def test_the_simulations_seed_goes_by_the_models_own_keyword():
+def test_the_simulations_seed_goes_by_random_state():
     """surpyval 0.21 renamed the simulations' ``seed`` to ``random_state``
-    (``seed`` warns until 0.22 removes it). The seed is passed by the name
-    the model's method takes, so neither surpyval version warns, and a
-    model taking ``seed`` (surpyval 0.20, or an equivalent) still gets it.
-    """
+    (``seed`` warns until 0.22 removes it): the seed goes by the new name,
+    so nothing warns, and it reaches the model."""
     rep = Repairable(_gr(0.5))
     rep.set_repair_and_overhaul_costs(1.0, 10.0)
     with warnings.catch_warnings():
         warnings.simplefilter("error", DeprecationWarning)
-        rep.cost([50.0, 150.0], seed=3, n_simulations=100)
-        rep.expected_time_to_nth_failure(2, seed=3, n_simulations=100)
+        rep.cost([50.0, 150.0], seed=3, mc_samples=100)
+        rep.expected_time_to_nth_failure(2, seed=3, mc_samples=100)
 
-    class SeedOnly:
-        """A model whose simulations take ``seed``, as surpyval 0.20's."""
+    class Recording:
+        """A model that records the random_state its simulations get."""
 
         def __init__(self):
             self.seen = []
 
-        def mcf(self, x, items=1000, seed=None):
-            self.seen.append(("mcf", seed))
+        def mcf(self, x, items=1000, random_state=None):
+            self.seen.append(("mcf", random_state))
             return np.asarray(x, dtype=float) / 100.0
 
-        def count_terminated_simulation(self, events, items=1000, seed=None):
-            self.seen.append(("count", seed))
+        def count_terminated_simulation(
+            self, events, items=1000, random_state=None
+        ):
+            self.seen.append(("count", random_state))
             return GeneralizedRenewal.fit_from_parameters(
                 [100.0, 2.0], 0.5, kijima="ii", dist=surv.Weibull
             ).count_terminated_simulation(events, items=items)
 
-    model = SeedOnly()
+    model = Recording()
     rep = Repairable(model)
     rep.set_repair_and_overhaul_costs(1.0, 10.0)
-    rep.cost([50.0], seed=7, n_simulations=50)
-    rep.expected_time_to_nth_failure(1, seed=7, n_simulations=50)
+    rep.cost([50.0], seed=7, mc_samples=50)
+    rep.expected_time_to_nth_failure(1, seed=7, mc_samples=50)
     assert ("mcf", 7) in model.seen and ("count", 7) in model.seen

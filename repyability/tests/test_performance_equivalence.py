@@ -13,15 +13,21 @@ these tests hold the fast path to that reference:
 - the per-sample loops of the warm-standby and load-sharing simulations run
   for every sample at once: same arithmetic, same tie-breaks;
 - the repairable simulation's event queue drops ``queue.PriorityQueue``'s
-  locking but keeps its heap, so events come out in the same order, and its
-  components (nested RBDs' included) draw from one stream of uniforms, in the
-  order they drew from the global RNG;
+  locking but keeps its heap, so events come out in the same order;
 - composite nodes (standby, repeated, load-sharing, regression, nested RBDs)
   replay their ``random(1)`` for a whole block of samples, so an RBD
   containing them is batched too;
 - minimal cut sets are read off the exact engine's decomposition instead of
   Berge's algorithm (the minimal cut sets are unique, so they must match
-  exactly), and that decomposition runs on an explicit stack.
+  exactly), and that decomposition runs on an explicit stack;
+- the repairable simulation's event loop queues ``(time, event)`` pairs,
+  skips the structure function where a coherent system cannot change, and
+  draws a plain component's next event directly. It has no slow path left
+  to compare with, so seeded results recorded when its draws last changed
+  (``seeded_event_loop.json``) must still come out (its draws, and a
+  reference simulation, are tested in ``test_simulation_engines``);
+- normal and lognormal quantiles skip scipy.stats' argument checks, and
+  must equal surpyval's to the last bit.
 
 Floating-point samples are compared to 1e-12 relative (the fast paths do the
 same operations, so they agree to the last bit here; the tolerance only
@@ -31,8 +37,10 @@ Counts and RNG states are compared exactly.
 """
 
 import dataclasses
+import json
 import queue
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, Dict
 
 import numpy as np
@@ -51,6 +59,7 @@ from repyability import (
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import (
     _sampling,
+    _streams,
     non_repairable_rbd,
     repairable_rbd,
     standby_node,
@@ -66,10 +75,12 @@ from repyability.rbd.rbd import (
 from repyability.rbd.regression_node import RegressionNode
 from repyability.rbd.repeated_node import RepeatedNode
 from repyability.rbd.repeated_standby_node import RepeatedStandbyNode
+from repyability.rbd.results import CostResult
 from repyability.utils.wrappers import numpy_seed
 
 W = surv.Weibull.from_params
 RTOL = 1e-12
+RECORDED_PATH = Path(__file__).with_name("seeded_event_loop.json")
 
 
 def rng_state():
@@ -317,18 +328,32 @@ def test_inverse_sampler_reproduces_surpyval(name):
 
 
 @pytest.mark.parametrize(
+    "dist", [surv.Normal, surv.LogNormal], ids=["normal", "lognormal"]
+)
+def test_direct_quantiles_are_surpyvals(dist):
+    # Not only for the uniforms a draw takes: at the ends and outside too.
+    u = np.r_[
+        np.random.default_rng(4).random(1000),
+        [0.0, 1.0, 1e-300, 1 - 1e-16, -0.5, 1.5, np.nan],
+    ]
+    direct = _sampling._DIRECT_QF[id(dist)]
+    for params in ([0.0, 1.0], [3.1781, 0.6], [-2.0, 3.0]):
+        expected = dist.qf(u, *params)
+        assert np.array_equal(direct(u, *params), expected, equal_nan=True)
+
+
+@pytest.mark.parametrize(
     "model",
     [W([100, 2], p=0.9), W([100, 2], f0=0.1), W([100, 2], p=0.9, f0=0.1)],
     ids=["lfp", "zi", "both"],
 )
 def test_inverse_sampler_draws_defective_models_by_their_quantiles(model):
-    # surpyval's own random returns survival data for these models, so
-    # every path draws their lifetimes by the quantile function instead,
+    # surpyval draws these models' lifetimes by their quantile function,
     # one global uniform each: the batched sampler and single draws agree.
     sampler = _sampling.inverse_sampler(model)
     assert sampler is not None
     np.random.seed(3)
-    expected = np.concatenate([_sampling.draw(model, 1) for _ in range(50)])
+    expected = np.concatenate([model.random(1) for _ in range(50)])
     after_single_draws = rng_state()
     np.random.seed(3)
     assert np.array_equal(sampler(np.random.random_sample(50)), expected)
@@ -347,22 +372,6 @@ def test_inverse_sampler_draws_defective_models_by_their_quantiles(model):
 )
 def test_inverse_sampler_declines_what_it_cannot_reproduce(model):
     assert _sampling.inverse_sampler(model) is None
-
-
-def test_uniform_stream_matches_single_draws_across_blocks():
-    models = [PLAIN_MODELS[k] for k in ("weibull", "lognormal", "exact")]
-    order = np.random.default_rng(4).integers(0, 3, size=100)
-    np.random.seed(5)
-    expected = [models[i].random(1).item() for i in order]
-    after_single_draws = rng_state()
-
-    np.random.seed(5)
-    stream = _sampling.UniformStream(block_size=7)  # force many refills
-    samplers = [_sampling.inverse_sampler(m) for m in models]
-    drawn = [stream.draw(samplers[i]) for i in order]
-    stream.close()
-    assert drawn == expected
-    assert_same_rng_state(rng_state(), after_single_draws)
 
 
 # -- NonRepairableRBD.random -------------------------------------------------
@@ -388,11 +397,12 @@ def test_random_is_identical_to_the_event_loop(name):
 
 def test_random_mean_and_interval_use_the_fast_path_unchanged(monkeypatch):
     rbd = rbds()["bridge"]
-    fast_mean = rbd.mean(3000, seed=8)
+    fast_mean = rbd.mean(method="simulate", mc_samples=3000, seed=8)
     fast_interval = rbd.mean_time_to_failure_interval(3000, seed=9)
     no_fast_path(monkeypatch)
     assert rbd._random_vectorised(1) is None
-    assert rbd.mean(3000, seed=8) == pytest.approx(fast_mean, rel=RTOL)
+    slow_mean = rbd.mean(method="simulate", mc_samples=3000, seed=8)
+    assert slow_mean == pytest.approx(fast_mean, rel=RTOL)
     assert_same(rbd.mean_time_to_failure_interval(3000, seed=9), fast_interval)
 
 
@@ -457,7 +467,7 @@ COLD_UNITS = [
 
 @pytest.mark.parametrize("k", [2, 3, 4])
 def test_cold_standby_k_is_identical_to_the_queue_loop(k, monkeypatch):
-    model = StandbyModel(COLD_UNITS, k=k, n_sims=50, seed=0)
+    model = StandbyModel(COLD_UNITS, k=k, mc_samples=50, seed=0)
     fast = model.random(3000, seed=13)
     np.random.seed(14)
     model.random(200)
@@ -474,9 +484,9 @@ def test_cold_standby_k_is_identical_to_the_queue_loop(k, monkeypatch):
 
 def test_cold_standby_fit_is_unchanged(monkeypatch):
     t = np.linspace(0, 500, 26)
-    fast = StandbyModel(COLD_UNITS, k=2, n_sims=2000, seed=15).sf(t)
+    fast = StandbyModel(COLD_UNITS, k=2, mc_samples=2000, seed=15).sf(t)
     no_fast_path(monkeypatch)
-    slow = StandbyModel(COLD_UNITS, k=2, n_sims=2000, seed=15).sf(t)
+    slow = StandbyModel(COLD_UNITS, k=2, mc_samples=2000, seed=15).sf(t)
     np.testing.assert_allclose(fast, slow, rtol=RTOL, atol=0)
 
 
@@ -491,7 +501,11 @@ def budgets_with_ties(size, n):
 @pytest.mark.parametrize("ties", [False, True])
 def test_warm_standby_is_identical_per_sample(k, dormancy, ties):
     model = StandbyModel(
-        [W([100, 2.0])] * 4, k=k, dormancy_factor=dormancy, n_sims=10, seed=0
+        [W([100, 2.0])] * 4,
+        k=k,
+        dormancy_factor=dormancy,
+        mc_samples=10,
+        seed=0,
     )
     budgets = (
         budgets_with_ties(3000, 4)
@@ -522,7 +536,7 @@ def test_warm_standby_plays_infinite_budgets_out_sample_by_sample(
     # A unit that never fails has an infinite budget: its samples go through
     # the per-sample loop, the rest all at once, with the same results.
     model = StandbyModel(
-        [W([100, 2.0])] * 3, k=1, dormancy_factor=0.3, n_sims=10, seed=0
+        [W([100, 2.0])] * 3, k=1, dormancy_factor=0.3, mc_samples=10, seed=0
     )
     budgets = budgets_with_ties(20, 3)
     budgets[3, 1] = np.inf
@@ -556,7 +570,7 @@ def weibull_aft():
 @pytest.mark.parametrize("ties", [False, True])
 def test_load_sharing_is_identical_per_sample(weibull_aft, k, ties):
     model = LoadSharingModel(
-        [weibull_aft] * 3, load=2.0, k=k, n_sims=10, seed=0
+        [weibull_aft] * 3, load=2.0, k=k, mc_samples=10, seed=0
     )
     tau = (
         budgets_with_ties(3000, 3).T
@@ -576,7 +590,9 @@ def test_load_sharing_is_identical_per_sample(weibull_aft, k, ties):
 def test_load_sharing_degenerate_inputs_use_the_per_sample_loop(
     weibull_aft, bad, monkeypatch
 ):
-    model = LoadSharingModel([weibull_aft] * 3, load=2.0, n_sims=10, seed=0)
+    model = LoadSharingModel(
+        [weibull_aft] * 3, load=2.0, mc_samples=10, seed=0
+    )
     tau = budgets_with_ties(20, 3).T
     if bad == "inf_threshold":
         tau[1, 5] = np.inf
@@ -596,13 +612,17 @@ def test_load_sharing_degenerate_inputs_use_the_per_sample_loop(
 
 def test_load_sharing_fit_is_unchanged(weibull_aft, monkeypatch):
     t = np.linspace(0, 200, 21)
-    fast = LoadSharingModel([weibull_aft] * 3, load=2.0, n_sims=2000, seed=20)
+    fast = LoadSharingModel(
+        [weibull_aft] * 3, load=2.0, mc_samples=2000, seed=20
+    )
     monkeypatch.setattr(
         LoadSharingModel,
         "_lifetimes",
         lambda self, tau: self._lifetimes_by_sample(tau),
     )
-    slow = LoadSharingModel([weibull_aft] * 3, load=2.0, n_sims=2000, seed=20)
+    slow = LoadSharingModel(
+        [weibull_aft] * 3, load=2.0, mc_samples=2000, seed=20
+    )
     np.testing.assert_allclose(fast.sf(t), slow.sf(t), rtol=RTOL, atol=0)
 
 
@@ -892,118 +912,6 @@ def repairable_rbds():
     }
 
 
-NESTED = [
-    "nested_koon",
-    "nested_one_level",
-    "nested_two_levels",
-    "nested_maintained",
-]
-
-
-def simulate_both(monkeypatch, rbd, **kwargs):
-    fast = rbd.availability(**kwargs)
-    with monkeypatch.context() as m:
-        m.setattr(repairable_rbd, "inverse_sampler", lambda model: None)
-        assert rbd._streamed_components(_sampling.UniformStream()) is None
-        reference = rbd.availability(**kwargs)
-    return fast, reference
-
-
-@pytest.mark.parametrize("name", sorted(repairable_rbds()))
-def test_repairable_simulation_is_identical(name, monkeypatch):
-    rbd = repairable_rbds()[name]
-    assert rbd._streamed_components(_sampling.UniformStream()) is not None
-    first = rbd.nodes[0]
-    for kwargs in (
-        dict(t_simulation=300.0, N=60, seed=21),
-        dict(t_simulation=200.0, N=30, seed=22, method="c"),
-        dict(t_simulation=200.0, N=30, seed=23, working_nodes=[first]),
-        dict(t_simulation=200.0, N=30, seed=24, broken_nodes=[first]),
-    ):
-        fast, reference = simulate_both(monkeypatch, rbd, **kwargs)
-        assert_same(fast, reference)
-
-
-@pytest.mark.parametrize("name", sorted(repairable_rbds()))
-def test_repairable_simulation_leaves_the_global_rng_unchanged(
-    name, monkeypatch
-):
-    rbd = repairable_rbds()[name]
-    np.random.seed(25)
-    fast = rbd.availability(150.0, N=25)
-    after_fast = rng_state()
-    with monkeypatch.context() as m:
-        m.setattr(repairable_rbd, "inverse_sampler", lambda model: None)
-        np.random.seed(25)
-        reference = rbd.availability(150.0, N=25)
-    assert_same(fast, reference)
-    assert_same_rng_state(rng_state(), after_fast)
-
-
-@pytest.mark.parametrize("forced", ["working_nodes", "broken_nodes"])
-@pytest.mark.parametrize("name", NESTED)
-def test_forcing_a_nested_rbd_is_identical(name, forced, monkeypatch):
-    rbd = repairable_rbds()[name]
-    for node, component in rbd.components.items():
-        if isinstance(component, RepairableRBD):
-            fast, reference = simulate_both(
-                monkeypatch,
-                rbd,
-                t_simulation=200.0,
-                N=30,
-                seed=26,
-                **{forced: [node]},
-            )
-            assert_same(fast, reference)
-
-
-def test_nested_rbd_that_cannot_be_streamed_falls_back_entirely(monkeypatch):
-    # A model that draws through np.random.binomial cannot be reproduced by
-    # the stream. Streaming the other components' draws would change their
-    # order, so nothing is streamed.
-    rbd = RepairableRBD(
-        [("s", "a"), ("a", "sub"), ("sub", "t")],
-        {
-            "a": {
-                "reliability": W([70, 1.5]),
-                "repairability": surv.Exponential.from_params([0.8]),
-            },
-            "sub": repairable_pair(40, binomial_first([40, 2])),
-        },
-    )
-    assert rbd._streamed_components(_sampling.UniformStream()) is None
-    fast, reference = simulate_both(
-        monkeypatch, rbd, t_simulation=200.0, N=30, seed=27
-    )
-    assert_same(fast, reference)
-
-
-def test_a_maintenance_time_that_cannot_be_streamed_falls_back(monkeypatch):
-    # A maintenance time drawn through np.random.binomial cannot be
-    # streamed, so nothing is; the one-draw simulation still runs.
-    rbd = RepairableRBD(
-        [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
-        {
-            name: {
-                "reliability": W([70, 2]),
-                "repairability": surv.Exponential.from_params([0.8]),
-                "preventive": {
-                    "interval": 30.0,
-                    "duration": binomial_first([2, 1.5]),
-                    "cost": 5.0,
-                },
-            }
-            for name in "ab"
-        },
-    )
-    assert rbd._streamed_components(_sampling.UniformStream()) is None
-    fast, reference = simulate_both(
-        monkeypatch, rbd, t_simulation=200.0, N=30, seed=31
-    )
-    assert_same(fast, reference)
-    assert fast.system_planned_outages > 0
-
-
 def test_subclassed_components_keep_their_own_event_methods():
     # A subclass may draw its events its own way, so the simulation calls
     # the component itself rather than streaming its draws.
@@ -1032,9 +940,12 @@ def test_subclassed_components_keep_their_own_event_methods():
                 "sub": component,
             },
         )
-        assert rbd._streamed_components(_sampling.UniformStream()) is None
+        plan, complete = rbd._stream_plan(200.0, 1, False)
+        assert not complete
+        sources = rbd._streamed_components(_streams.Run(plan, reseed=True))
+        assert sources["sub"] is rbd.components["sub"]
         calls.clear()
-        rbd.availability(200.0, N=5, seed=30)
+        rbd.availability(200.0, mc_samples=5, seed=30)
         assert kind in calls
 
 
@@ -1052,7 +963,7 @@ def test_nested_rbds_step_by_hand_as_before_after_a_simulation():
     # availability() hands nested RBDs their stand-ins only for the run:
     # afterwards they draw from their components again.
     used = repairable_rbds()["nested_two_levels"]
-    used.availability(300.0, N=10, seed=28)
+    used.availability(300.0, mc_samples=10, seed=28)
     fresh = repairable_rbds()["nested_two_levels"]
     np.random.seed(29)
     expected = step_by_hand(fresh, 2000.0)
@@ -1079,6 +990,221 @@ def test_event_queue_pops_in_priority_queue_order():
             assert ours.get() is theirs.get()
         assert ours.qsize() == theirs.qsize()
         assert ours.empty() == theirs.empty()
+
+
+# -- the event loop's speedups ------------------------------------------------
+
+
+def instrument_air():
+    """Reliafy's instrument-air sample: an intake filter, three identical
+    compressors (two needed), two identical dryers (one needed), a receiver
+    and a header, with lognormal repairs; the voting nodes never fail."""
+    L, E = surv.LogNormal.from_params, surv.Exponential.from_params
+
+    def gate():
+        return NonRepairable(W([1e12, 1.0]), L([0.1, 0.1]))
+
+    units = {
+        "filter": NonRepairable(W([30000, 2.0]), L([0.6931, 0.4])),
+        "receiver": NonRepairable(E([1e-6]), L([3.8712, 0.5])),
+        "header": NonRepairable(W([60000, 1.2]), L([2.0794, 0.5])),
+        "vote": gate(),
+        "dvote": gate(),
+    }
+    for c in "ABC":
+        units[c] = NonRepairable(W([12000, 1.6]), L([3.1781, 0.6]))
+    for d in "DE":
+        units[d] = NonRepairable(W([20000, 1.3]), L([2.4849, 0.5]))
+    edges = [("in", "filter")]
+    edges += [("filter", c) for c in "ABC"] + [(c, "vote") for c in "ABC"]
+    edges += [("vote", d) for d in "DE"] + [(d, "dvote") for d in "DE"]
+    edges += [("dvote", "receiver"), ("receiver", "header"), ("header", "out")]
+    return RepairableRBD(edges, units, k={"vote": 2, "dvote": 1})
+
+
+def pumps_with_capacities():
+    unit = {
+        "reliability": surv.Exponential.from_params([0.1]),
+        "repairability": surv.Exponential.from_params([1.0]),
+    }
+    return RepairableRBD(
+        [("s", u) for u in "abc"] + [(u, "t") for u in "abc"],
+        {u: unit for u in "abc"},
+        capacity={u: 50 for u in "abc"},
+    )
+
+
+def seeded_runs():
+    """Seeded simulations through every path of the event loop: maintenance,
+    inspections, nested RBDs, costs, forced nodes, antithetic pairs, cut
+    sets, capacities and parallel blocks. Name -> (rbd, method, kwargs)."""
+    runs = {}
+    for name, rbd in sorted(repairable_rbds().items()):
+        first = rbd.nodes[0]
+        runs[name] = (
+            rbd,
+            "availability",
+            dict(t_simulation=300.0, mc_samples=40, seed=21),
+        )
+        runs[f"{name}, cut sets"] = (
+            rbd,
+            "availability",
+            dict(t_simulation=200.0, mc_samples=20, seed=22, method="c"),
+        )
+        runs[f"{name}, antithetic"] = (
+            rbd,
+            "availability",
+            dict(t_simulation=200.0, mc_samples=20, seed=26, antithetic=True),
+        )
+        runs[f"{name}, first broken"] = (
+            rbd,
+            "availability",
+            dict(
+                t_simulation=200.0,
+                mc_samples=20,
+                seed=24,
+                broken_nodes=[first],
+            ),
+        )
+        if rbd.has_costs:
+            runs[f"{name}, cost"] = (
+                rbd,
+                "cost",
+                dict(t_simulation=200.0, mc_samples=20, seed=25),
+            )
+    air = instrument_air()
+    runs["instrument air"] = (
+        air,
+        "availability",
+        dict(t_simulation=600000.0, mc_samples=6, seed=1, method="c"),
+    )
+    runs["instrument air, n_jobs"] = (
+        air,
+        "availability",
+        dict(t_simulation=60000.0, mc_samples=300, seed=3, n_jobs=2),
+    )
+    runs["pumps with capacities"] = (
+        pumps_with_capacities(),
+        "availability",
+        dict(t_simulation=100.0, mc_samples=50, seed=5, demand=100),
+    )
+    return runs
+
+
+def digest(result) -> Dict[str, Any]:
+    """Counts, which must match exactly, and totals, which must match to
+    RTOL: any change of the draws, the event order or the bookkeeping shows
+    up in them."""
+    if isinstance(result, CostResult):
+        return {
+            "n": result.n_simulations,
+            "samples": float(np.sum(result.samples)),
+            "categories": float(sum(result.by_category.values())),
+        }
+    criticalities = result.criticalities
+    failures = criticalities.failure_criticality_index.per_component_failure
+    restorations = criticalities.restoration_criticality_index.by_component
+    out = {
+        "n": result.n_simulations,
+        "failures": result.system_failures,
+        "restorations": result.system_restorations,
+        "planned": result.system_planned_outages,
+        "points": len(result.timeline),
+        "uptime": float(result.system_uptime),
+        "curve": float(np.sum(result.availability)),
+        "uptimes": float(np.sum(result.uptimes)),
+        "node uptime": float(sum(result.node_uptime.values())),
+        "fci": float(sum(failures.values())),
+        "rci": float(sum(restorations.values())),
+        "oci": float(
+            sum(criticalities.operational_criticality_index.up.values())
+        ),
+    }
+    if result.cost is not None:
+        out["cost"] = float(np.sum(result.cost.samples))
+    if result.capacity is not None:
+        out["capacity"] = float(np.sum(result.capacity))
+        out["delivered"] = float(np.sum(result.delivered))
+    return out
+
+
+def record_seeded_runs():
+    """Re-record ``seeded_event_loop.json``: only after a deliberate change
+    of the simulation's results (run this module as a script)."""
+    recorded = {
+        name: digest(getattr(rbd, method)(**kwargs))
+        for name, (rbd, method, kwargs) in seeded_runs().items()
+    }
+    RECORDED_PATH.write_text(json.dumps(recorded, indent=1) + "\n")
+
+
+RECORDED = json.loads(RECORDED_PATH.read_text())
+
+
+@pytest.fixture(scope="module")
+def runs():
+    return seeded_runs()
+
+
+def test_every_seeded_run_is_recorded(runs):
+    assert sorted(runs) == sorted(RECORDED)
+
+
+@pytest.mark.parametrize("name", sorted(RECORDED))
+def test_event_loop_reproduces_the_recorded_results(runs, name):
+    rbd, method, kwargs = runs[name]
+    result = digest(getattr(rbd, method)(**kwargs))
+    expected = RECORDED[name]
+    assert set(result) == set(expected)
+    for key, value in expected.items():
+        if isinstance(value, float):
+            np.testing.assert_allclose(
+                result[key], value, rtol=RTOL, atol=0, err_msg=key
+            )
+        else:
+            assert result[key] == value, key
+
+
+@pytest.mark.parametrize("name", sorted(rbds()))
+def test_structure_functions_are_coherent(name):
+    # The event loop skips the structure function for a restoration while
+    # the system works, and for a failure while it doesn't: that relies on
+    # no restoration ever taking the system down.
+    rbd = rbds()[name]
+    nodes = sorted(rbd.nodes, key=str)
+    for method in ("p", "c"):
+        works = rbd._decomposition().structure_function(method)
+        for bits in range(2 ** len(nodes)):
+            status = {n: bool(bits >> i & 1) for i, n in enumerate(nodes)}
+            up = works(status)
+            for n in nodes:
+                changed = works({**status, n: not status[n]})
+                if status[n]:
+                    assert up or not changed  # a failure can't bring it up
+                else:
+                    assert changed or not up  # a repair can't take it down
+
+
+def overlaps_one_at_a_time(starts, events, system_timeline, t_end):
+    """The overlaps as the event loop used to work them out: each
+    component's timeline merged with the system's in turn."""
+    out = []
+    for c, start in enumerate(starts):
+        own = [(t, e) for t, node, e in events if node == c]
+        timeline = [(0.0, start)] + own + [(t_end, 0)]
+        joint_t, joint = repairable_rbd.combined_timeline(
+            timeline, system_timeline
+        )
+        out.append(
+            (
+                repairable_rbd.time_at_status(timeline, 1),
+                repairable_rbd.intersection(joint_t, joint),
+                repairable_rbd.intersection(joint_t, 2 - joint),
+                repairable_rbd.union(joint_t, joint),
+                repairable_rbd.union(joint_t, 2 - joint),
+            )
+        )
+    return out
 
 
 # -- composite nodes inside an RBD --------------------------------------------
@@ -1108,11 +1234,15 @@ def composite_nodes(aft):
             [W([300, 2.0]), W([280, 1.7]), L([5.5, 0.4])],
             k=1,
             dormancy_factor=0.3,
-            n_sims=50,
+            mc_samples=50,
             seed=1,
         ),
         "standby_warm_k2": StandbyModel(
-            [W([300, 2.0])] * 4, k=2, dormancy_factor=0.6, n_sims=50, seed=1
+            [W([300, 2.0])] * 4,
+            k=2,
+            dormancy_factor=0.6,
+            mc_samples=50,
+            seed=1,
         ),
         "standby_cold_k1": StandbyModel(
             [W([300, 2.0]), L([5.5, 0.4]), W([250, 1.2], gamma=5)], k=1
@@ -1123,7 +1253,9 @@ def composite_nodes(aft):
         "standby_cold_k1_switch_list": StandbyModel(
             [W([300, 2.0])] * 3, k=1, switching_probability=[0.95, 0.8]
         ),
-        "standby_cold_k2": StandbyModel(COLD_UNITS, k=2, n_sims=50, seed=1),
+        "standby_cold_k2": StandbyModel(
+            COLD_UNITS, k=2, mc_samples=50, seed=1
+        ),
         "repeated_parallel": RepeatedNode(W([500, 2.0]), 3, "parallel"),
         "repeated_series": RepeatedNode(L([6.0, 0.5]), 2, "series"),
         "repeated_standby": RepeatedStandbyNode(W([300, 2.0]), 3),
@@ -1131,11 +1263,11 @@ def composite_nodes(aft):
             W([300, 2.0]), 3, switching_probability=0.85
         ),
         "load_sharing": LoadSharingModel(
-            [aft] * 3, load=2.0, n_sims=50, seed=1
+            [aft] * 3, load=2.0, mc_samples=50, seed=1
         ),
         # Different units, so their order matters.
         "load_sharing_mixed": LoadSharingModel(
-            [aft, aft, other_aft()], load=2.0, n_sims=50, seed=1
+            [aft, aft, other_aft()], load=2.0, mc_samples=50, seed=1
         ),
         "regression": RegressionNode(aft, covariates=[1.2]),
         "nested_rbd": NonRepairableRBD(
@@ -1225,10 +1357,9 @@ def test_kaplan_meier_node_is_batched(monkeypatch):
         km = surv.KaplanMeier.fit(W([700, 2]).random(200))
     rbd = rbd_with(km)
     assert rbd._random_vectorised(1) is not None
-    # Where surpyval draws Kaplan-Meier samples from depends on its version
-    # (fresh OS entropy up to 0.20, a generator seeded from numpy's global
-    # stream since), but either way batching them uses the global stream
-    # deterministically: the same seed leaves it in the same state.
+    # surpyval draws Kaplan-Meier samples from a generator it seeds from
+    # numpy's global stream once per call, so batching them uses the global
+    # stream deterministically: the same seed leaves it in the same state.
     states = []
     for _ in range(2):
         np.random.seed(35)
@@ -1256,7 +1387,7 @@ def test_nan_inside_a_composite_node_falls_back(
 
     if where == "standby":
         monkeypatch.setattr(standby_node, "inverse_sampler", nan_sampler)
-        node = StandbyModel(COLD_UNITS, k=2, n_sims=5, seed=0)
+        node = StandbyModel(COLD_UNITS, k=2, mc_samples=5, seed=0)
     else:
         node = rbd_with(W([500, 2]))
         monkeypatch.setattr(_sampling, "inverse_sampler", nan_sampler)

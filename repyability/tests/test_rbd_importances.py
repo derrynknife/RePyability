@@ -405,7 +405,7 @@ def test_failure_criticality_over_time():
     np.testing.assert_allclose(ci["b"], q_b * (1 - q_a) / system_ff)
 
 
-# Test fussel_vesely() w/ cut-set method
+# Test fussel_vesely() w/ cut-set method: the rare-event sums
 
 
 def test_fussel_vesely_incorrect_fv_type(rbd1: NonRepairableRBD):
@@ -416,7 +416,7 @@ def test_fussel_vesely_incorrect_fv_type(rbd1: NonRepairableRBD):
 
 def test_fussel_vesely_c_rbd1(rbd1: NonRepairableRBD):
     t = 2
-    fv_importance = rbd1.fussell_vesely(t, fv_type="c")
+    fv_importance = rbd1.fussell_vesely(t, fv_type="c", method="rare_event")
     assert (
         pytest.approx(
             rbd1.reliabilities["pump1"].ff(t)
@@ -441,7 +441,9 @@ def test_fussel_vesely_c_rbd1(rbd1: NonRepairableRBD):
 
 def test_fussel_vesely_c_series(rbd_series: NonRepairableRBD):
     t = 2
-    fv_importance = rbd_series.fussell_vesely(t, fv_type="c")
+    fv_importance = rbd_series.fussell_vesely(
+        t, fv_type="c", method="rare_event"
+    )
     assert (
         pytest.approx(rbd_series.reliabilities[2].ff(t) / rbd_series.ff(t))
         == fv_importance[2]
@@ -457,7 +459,9 @@ def test_fussel_vesely_c_series(rbd_series: NonRepairableRBD):
 
 
 def test_fussel_vesely_c_parallel(rbd_parallel: NonRepairableRBD):
-    fv_importance = rbd_parallel.fussell_vesely(fv_type="c")
+    fv_importance = rbd_parallel.fussell_vesely(
+        fv_type="c", method="rare_event"
+    )
     # TODO: Remove need for value in FixedEventProbability
     fv_expected = (
         rbd_parallel.reliabilities[2].ff(1.0)
@@ -472,7 +476,7 @@ def test_fussel_vesely_c_parallel(rbd_parallel: NonRepairableRBD):
 
 def test_fussel_vesely_c_rbd2(rbd2: NonRepairableRBD):
     t = 2
-    fv_importance = rbd2.fussell_vesely(t, fv_type="c")
+    fv_importance = rbd2.fussell_vesely(t, fv_type="c", method="rare_event")
     assert (
         pytest.approx(rbd2.reliabilities[2].ff(t) / rbd2.ff(t))
         == fv_importance[2]
@@ -520,7 +524,7 @@ def test_fussel_vesely_c_rbd2(rbd2: NonRepairableRBD):
 
 def test_fussel_vesely_c_rbd3(rbd3: NonRepairableRBD):
     t = 2
-    fv_importance = rbd3.fussell_vesely(t, fv_type="c")
+    fv_importance = rbd3.fussell_vesely(t, fv_type="c", method="rare_event")
     assert (
         pytest.approx(
             (
@@ -590,7 +594,7 @@ def test_fussel_vesely_c_repeated_component_parallel(
 ):
     rbd = rbd_repeated_component_parallel
     t = 2
-    fv_importance = rbd.fussell_vesely(t, fv_type="c")
+    fv_importance = rbd.fussell_vesely(t, fv_type="c", method="rare_event")
     fv_expected = (
         rbd.reliabilities[2].ff(t)
         * rbd.reliabilities[3].ff(t)
@@ -602,12 +606,12 @@ def test_fussel_vesely_c_repeated_component_parallel(
     assert pytest.approx(fv_expected) == fv_importance[4]
 
 
-# Test fussel_vesely() w/ path-set method
+# Test fussel_vesely() w/ path-set method: the rare-event sums
 
 
 def test_fussel_vesely_p_rbd1(rbd1: NonRepairableRBD):
     t = 2
-    fv_importance = rbd1.fussell_vesely(t, fv_type="p")
+    fv_importance = rbd1.fussell_vesely(t, fv_type="p", method="rare_event")
     assert (
         pytest.approx(
             rbd1.reliabilities["pump1"].ff(t)
@@ -640,7 +644,9 @@ def test_fussel_vesely_p_rbd1(rbd1: NonRepairableRBD):
 
 def test_fussel_vesely_p_series(rbd_series: NonRepairableRBD):
     t = 2
-    fv_importance = rbd_series.fussell_vesely(t, fv_type="p")
+    fv_importance = rbd_series.fussell_vesely(
+        t, fv_type="p", method="rare_event"
+    )
     expected_fv_importance = (
         rbd_series.reliabilities[2].ff(t)
         * rbd_series.reliabilities[3].ff(t)
@@ -654,7 +660,9 @@ def test_fussel_vesely_p_series(rbd_series: NonRepairableRBD):
 
 def test_fussel_vesely_p_parallel(rbd_parallel: NonRepairableRBD):
     t = 2
-    fv_importance = rbd_parallel.fussell_vesely(t, fv_type="p")
+    fv_importance = rbd_parallel.fussell_vesely(
+        t, fv_type="p", method="rare_event"
+    )
     assert (
         pytest.approx(rbd_parallel.reliabilities[2].ff(t) / rbd_parallel.ff(t))
         == fv_importance[2]
@@ -671,7 +679,7 @@ def test_fussel_vesely_p_parallel(rbd_parallel: NonRepairableRBD):
 
 def test_fussel_vesely_p_rbd2(rbd2: NonRepairableRBD):
     t = 2
-    fv_importance = rbd2.fussell_vesely(t, fv_type="p")
+    fv_importance = rbd2.fussell_vesely(t, fv_type="p", method="rare_event")
     assert (
         pytest.approx(
             (
@@ -765,7 +773,7 @@ def test_fussel_vesely_p_rbd2(rbd2: NonRepairableRBD):
 
 def test_fussel_vesely_p_rbd3(rbd3: NonRepairableRBD):
     t = 2
-    fv_importance = rbd3.fussell_vesely(t, fv_type="p")
+    fv_importance = rbd3.fussell_vesely(t, fv_type="p", method="rare_event")
     assert (
         pytest.approx(
             (
@@ -841,7 +849,7 @@ def test_fussel_vesely_p_repeated_component_parallel(
 ):
     rbd = rbd_repeated_component_parallel
     t = 2
-    fv_importance = rbd.fussell_vesely(t, fv_type="p")
+    fv_importance = rbd.fussell_vesely(t, fv_type="p", method="rare_event")
     assert (
         pytest.approx(rbd.reliabilities[2].ff(t) / rbd.ff(t))
         == fv_importance[2]

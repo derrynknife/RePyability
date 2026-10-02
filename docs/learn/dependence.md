@@ -187,13 +187,13 @@ $(\lambda t)^2$ when $\lambda t$ is small.
     ```python
     switch90 = StandbyModel([unit, unit], switching_probability=0.9)
     switch90.sf(100)   # -> 0.699    the formula gives 0.6990
-    switch90.mean()    # -> 189.9    the formula gives 190
+    switch90.mean()    # -> 190.0    the formula gives 190
     ```
 
     With an imperfect switch the library cannot use the Erlang formula: it
     convolves the lifetimes numerically on a time grid. That works for any
-    lifetime model and is repeatable, but here it agrees with the formula
-    only to within about 0.0002.
+    lifetime model and is repeatable, and here it agrees with the formula to
+    within about 0.00000003.
 
 At 10 h the standby pair with a 90% switch fails more often than the active
 pair (0.0137 against 0.0091), although over 100 h it is clearly better.
@@ -297,10 +297,14 @@ How `StandbyModel` gets its answer depends on the case:
 | Arrangement | Method |
 |---|---|
 | Identical exponential units, perfect switch, any $\kappa$ | Exact formula |
+| Hot ($\kappa = 1$), any units | Exact: $k$-out-of-$n$ |
 | Cold, one unit working at a time (`k=1`): any lifetimes, any switch | Numerical convolution: repeatable, accurate to a few decimals |
-| Anything else, such as warm Weibull units, or `k=2` or more non-exponential units working together | Simulation: pass `seed=0` for repeatable results; `sf` then returns a one-element array |
+| Cold, `k=2` or more identical units working together | Numerical: renewal counts of the working positions |
+| Cold, `k=2`, any units | Numerical: a recursion over the switch-ins |
+| Warm, one unit working at a time: any lifetimes | Numerical: a recursion over the switch-ins |
+| Anything else: warm with `k=2` or more, or `k=3` or more different units working together, cold | Simulation: pass `seed=0` for repeatable results; `sf` then returns a one-element array |
 
-An imperfect switch is supported for cold standby with `k=1` only. The
+An imperfect switch is supported for cold standby. The
 [guide](../guide/redundancy-models.md#standby-cold-warm-and-hot) has every
 option.
 
@@ -377,7 +381,7 @@ independent 2-out-of-3 group at the initial load (Lesson 2) would have had
 $100.8/2 = 50.4$ h for the second stage:
 
 ```python
-p = at_1.sf(50)[0]                   # one unit at load 1.0 survives 50 h
+p = at_1.sf(50)                   # one unit at load 1.0 survives 50 h
 3 * p**2 - 2 * p**3                  # -> 0.6608   independent 2-out-of-3
 at_1.mean() / 3 + at_1.mean() / 2    # -> 84.0
 ```
@@ -538,12 +542,15 @@ the chance that a shared failure takes a third unit, and so on); see
     periodically, and model its dormant ageing with `dormancy_factor`
     instead of assuming it cold.
 
-!!! warning "Keep the common-cause model to small q"
-    The beta factor splits a probability, so use it over a mission or test
-    interval where each unit's $q$ stays small, not over a whole life.
-    RePyability's `sf` and `ff` include a group, but the Monte-Carlo
-    `mean()` and `random()` ignore it (see
-    [what honours a CCF group](../guide/common-cause.md#what-honours-a-ccf-group)).
+!!! warning "Split a probability only while q is small"
+    By default the beta factor splits a probability, so use it over a
+    mission or test interval where each unit's $q$ stays small; RePyability
+    warns once a unit's $q$ passes 0.1. Over a whole life, split the
+    failure rate, `BetaFactor(beta, basis="rate")`: the shared cause is a
+    shock with reliability $R(t)^\beta$ and each unit's own causes have
+    $R(t)^{1-\beta}$, so every unit keeps its own life, and the MTTF and
+    the simulations include the group (see
+    [Over a lifetime](../guide/common-cause.md#over-a-lifetime)).
 
 ## Summary
 
@@ -597,7 +604,7 @@ standby pair or the active pair?
 
     ```python
     switch95 = StandbyModel([unit500, unit500], switching_probability=0.95)
-    switch95.mean()     # -> 974.7    by hand: 975 (numerical convolution)
+    switch95.mean()     # -> 975.0    by hand: 975 (numerical convolution)
     switch95.sf(500)    # -> 0.717
     switch95.ff(25)     # -> 0.0036
     NonRepairableRBD(pair_edges, {"a": unit500, "b": unit500}).ff(25)   # -> 0.0024

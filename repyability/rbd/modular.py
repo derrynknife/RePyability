@@ -39,6 +39,13 @@ The children are the positions of other terms. Every probability is
 computed together with its complement, both as sums of products of the
 nodes' probabilities and complements, so neither loses precision however
 close to 0 or 1 it is.
+
+Each rule also keeps how much the diagram can carry, when its nodes have
+capacities (see ``capacity.py``): a series chain carries the least of its
+members' capacities, a parallel group the sum, and a bypassed node never
+adds to what its predecessor already sends on directly. So the capacity
+analysis works on the reduced diagram too, kept whole as a
+:class:`FlowGraph`.
 """
 
 from itertools import combinations, product
@@ -55,12 +62,14 @@ from typing import (
 
 import numpy as np
 
+from repyability.rbd import bdd
 from repyability.rbd.min_path_sets import min_path_sets as find_min_path_sets
 from repyability.rbd.rbd_graph import RBDGraph
 from repyability.rbd.shannon import (
     _minimal_cut_sets,
     _shannon_plan,
     _shannon_value_and_gradient,
+    _union_plan,
 )
 
 # The kinds of term.
@@ -76,6 +85,84 @@ NO_PATHS = "RBD has no paths through! Need to re-evaluate the KooN nodes."
 # when they hold at most this many nodes in all, and loops over them if not.
 _WRITTEN_OUT = 5000
 
+#: How the core is decided: ``"paths"``, by the Shannon decomposition of
+#: its minimal path sets, ``"bdd"``, by a binary decision diagram built
+#: from its graph without listing them (see ``bdd.py``; #102), or
+#: ``"auto"`` (the default, #103): the decision diagram for a core that may
+#: have more than ``AUTO_PATHS`` minimal path sets, which multiply in a
+#: meshed core while the diagram grows with the mesh's width, and the path
+#: sets for a smaller one. Read when a diagram is decomposed (on
+#: construction).
+CORE_METHOD = "auto"
+#: The most minimal path sets (as ``_path_count`` bounds them) for which
+#: ``"auto"`` lists them: beyond, the decision diagram is several times
+#: smaller and the listing slows (a hundred take about a tenth of a second
+#: to decompose, four thousand about nine).
+AUTO_PATHS = 100
+
+
+class FlowGraph:
+    """The reduced diagram, whole, for the capacity analysis.
+
+    The structure function needs only the minimal path sets of what the
+    reduction leaves, but the capacity needs the diagram itself: a
+    component that can never decide whether the system works can still add
+    to what it carries (through a k-out-of-n node that the system can also
+    bypass). ``terms`` is the reduction's list of terms, in which each
+    module comes after its members, with each node named by the component
+    it stands for; a group that a node needs all of stays a k-out-of-n
+    term here, with ``k`` its size, as it carries the sum of its members'
+    capacities (the tree makes it a series module). ``vertices`` are the
+    terms left, in topological order;
+    two of them can stand for one component (a repeated node, drawn in two
+    places). ``preds`` and ``k`` hold each vertex's predecessors
+    (``_SOURCE`` for the input) and k, and ``sink_preds`` and ``sink_k``
+    the output's.
+    """
+
+    def __init__(
+        self,
+        terms: Sequence[tuple],
+        vertices: Sequence[int],
+        preds: Sequence[tuple],
+        k: Sequence[int],
+        sink_preds: tuple,
+        sink_k: int,
+    ):
+        self.terms = tuple(terms)
+        self.vertices = tuple(vertices)
+        self.preds = tuple(preds)
+        self.k = tuple(k)
+        self.sink_preds = sink_preds
+        self.sink_k = sink_k
+        self._cuts: Optional[List[tuple]] = None
+
+    def cuts(self) -> List[tuple]:
+        """The minimal sets of vertices whose removal leaves no path from
+        the input to the output, taking every k as 1, each in topological
+        order; none if an edge joins the input to the output directly. By
+        the max-flow min-cut theorem the most the vertices can carry is the
+        least total capacity of one of these sets."""
+        if self._cuts is None:
+            # Each vertex's minimal paths from the input, as vertex sets: a
+            # path that holds another cannot be part of a minimal one.
+            paths: Dict[int, list] = {_SOURCE: [frozenset()]}
+            for v, preds in zip(self.vertices, self.preds):
+                paths[v] = _minimal_sets(
+                    p | {v} for u in preds for p in paths[u]
+                )
+            ends = _minimal_sets(p for u in self.sink_preds for p in paths[u])
+            order = {v: i for i, v in enumerate(self.vertices)}
+            self._cuts = (
+                []
+                if frozenset() in ends
+                else sorted(
+                    tuple(sorted(cut, key=order.__getitem__))
+                    for cut in _minimal_cut_sets(_shannon_plan(ends))
+                )
+            )
+        return self._cuts
+
 
 class Decomposition:
     """An RBD's structure function as a tree of modules over a core.
@@ -86,7 +173,8 @@ class Decomposition:
     positions of its terms; or neither, when the system always works (e.g.
     an edge joins the input to the output directly). ``nodes`` are the
     nodes in the tree: the relevant ones. Every other node is in no minimal
-    path set.
+    path set. ``flow`` is the reduced diagram whole, for the capacity
+    analysis (None for a structure that is not reduced).
     """
 
     def __init__(
@@ -94,17 +182,40 @@ class Decomposition:
         terms: Sequence[tuple],
         root: Optional[int] = None,
         core: Optional[Iterable[Iterable[int]]] = None,
+        flow: Optional[FlowGraph] = None,
+        plan: Optional[tuple] = None,
     ):
         self.terms = list(terms)
         self.root = root
-        self.core: Optional[List[tuple]] = (
+        self._core: Optional[List[tuple]] = (
             None if core is None else [tuple(ps) for ps in core]
         )
-        self.always_works = root is None and core is None
+        self.always_works = root is None and core is None and plan is None
         self.nodes = frozenset(t[1] for t in self.terms if t[0] == NODE)
-        self._core_plan: Optional[tuple] = None
+        self.flow = flow
+        # A core given as a decision diagram built from its graph (see
+        # bdd.py) rather than by its path sets, which are then found from
+        # it only when asked for.
+        self.from_graph = plan is not None
+        self._core_plan: Optional[tuple] = plan
         self._core_cut_sets: Optional[List[tuple]] = None
         self._functions: Dict[str, Callable] = {}
+        # The Shannon decomposition of each core term's cut sets less the
+        # term (see ``failed_cut_sets``), and the dual decomposition.
+        self._cut_plan: Optional[tuple] = None
+        self._dual: Optional["Decomposition"] = None
+
+    @property
+    def core(self) -> Optional[List[tuple]]:
+        """The core's minimal path sets, over term positions (None without
+        a core); for a core decided from its graph, found from its decision
+        diagram on first use."""
+        if self._core is None and self.from_graph:
+            assert self._core_plan is not None
+            self._core = sorted(
+                tuple(sorted(s)) for s in bdd.path_sets(self._core_plan)
+            )
+        return self._core
 
     def __getstate__(self) -> dict:
         # The compiled structure functions cannot be pickled; they are
@@ -216,17 +327,27 @@ class Decomposition:
         )
 
     def value_and_gradient(
-        self, p: Dict[Any, float], q: Dict[Any, float]
-    ) -> tuple[float, float, Dict[Any, float]]:
-        """For single probabilities ``p`` and their complements ``q``: the
+        self, p: Dict[Any, Any], q: Dict[Any, Any], shape=None
+    ) -> tuple[Any, Any, Dict[Any, Any]]:
+        """For the nodes' probabilities ``p`` and their complements ``q``
+        (single probabilities, or arrays of shape ``shape``): the
         probability that the system works, that it fails, and the
         derivative of the first with respect to each node's probability
         (its Birnbaum importance; nodes it does not depend on may be
-        missing). All three keep their full relative precision."""
+        missing). All three keep their full relative precision: through
+        the modules, the derivative is a product of the modules' own
+        derivatives, each a product or a sum of products of their members'
+        probabilities; in the core, it is taken from whichever of the
+        probabilities of working and of failing is the smaller (element by
+        element), so that it is a difference of small values, not of
+        values near 1."""
         if self.always_works:
-            return 1.0, 0.0, {}
+            if shape is None:
+                return 1.0, 0.0, {}
+            return np.ones(shape), np.zeros(shape), {}
         R, Q = self._forward(p, q)
-        adjoint = [0.0] * len(self.terms)
+        # None: a term the root does not reach.
+        adjoint: list = [None] * len(self.terms)
         if self.root is not None:
             works, fails = R[self.root], Q[self.root]
             adjoint[self.root] = 1.0
@@ -238,16 +359,21 @@ class Decomposition:
             )
             # From whichever end is accurate: a difference of two values
             # near 1 would cancel.
-            if works <= fails:
-                for c, d in d_works.items():
-                    adjoint[c] = d
+            if np.ndim(works) == 0 and np.ndim(fails) == 0:
+                if works <= fails:
+                    for c, d in d_works.items():
+                        adjoint[c] = d
+                else:
+                    for c, d in d_fails.items():
+                        adjoint[c] = -d
             else:
-                for c, d in d_fails.items():
-                    adjoint[c] = -d
-        gradient: Dict[Any, float] = {}
+                from_works = np.asarray(works) <= np.asarray(fails)
+                for c, d in d_works.items():
+                    adjoint[c] = np.where(from_works, d, -d_fails[c])
+        gradient: Dict[Any, Any] = {}
         for i in range(len(self.terms) - 1, -1, -1):
             a = adjoint[i]
-            if not a:
+            if a is None:
                 continue
             term = self.terms[i]
             kind = term[0]
@@ -267,18 +393,131 @@ class Decomposition:
                 adjoint[c] = a * d
         return works, fails, gradient
 
+    def failed_cut_sets(
+        self, p: Dict[Any, Any], q: Dict[Any, Any], shape=None
+    ) -> Dict[Any, Any]:
+        """For the nodes' probabilities of working ``p`` and of failing
+        ``q`` (as for ``value_and_gradient``): for each node, the
+        probability that some minimal cut set containing it has failed
+        (every node in it), the numerator of its exact Fussell-Vesely
+        importance. Nodes in no minimal cut set are missing.
+
+        A module's members share no node, so its minimal cut sets join
+        its members' (see ``_families``): a series module's are its
+        members', so one containing node ``i`` is one of the member's that
+        contains it; a parallel module's join one of each member's, so one
+        containing ``i`` has failed when the member's has and every other
+        member has failed; a k-out-of-n module's join those of
+        ``n - k + 1`` members, so when the member's has and at least
+        ``n - k`` of the others have failed. Down the tree, the probability
+        is the node's probability of failing times such factors, as its
+        Birnbaum importance is a product of the modules' derivatives. In a
+        core, a term's factor is the probability that, for some minimal
+        cut set of the core containing the term, every other term in it has
+        failed: a union, worked out by the Shannon decomposition of those
+        sets, failing for working. Every factor is a product or a sum of
+        products, so a small probability keeps its precision."""
+        if self.always_works:
+            return {}
+        R, Q = self._forward(p, q)
+        # None: a term in no minimal cut set.
+        factor: list = [None] * len(self.terms)
+        if self.root is not None:
+            factor[self.root] = 1.0
+        else:
+            terms, steps, roots = self._core_cut_plan()
+            values: list = [
+                0.0 if shape is None else np.zeros(shape),
+                1.0 if shape is None else np.ones(shape),
+            ]
+            for pivot, failed, works in steps:
+                values.append(
+                    Q[pivot] * values[failed] + R[pivot] * values[works]
+                )
+            for t, root in zip(terms, roots):
+                factor[t] = values[root]
+        out: Dict[Any, Any] = {}
+        for i in range(len(self.terms) - 1, -1, -1):
+            a = factor[i]
+            if a is None:
+                continue
+            term = self.terms[i]
+            if term[0] == NODE:
+                out[term[1]] = a * Q[i]
+                continue
+            children = term[1]
+            if term[0] == SERIES:
+                shares: list = [1.0] * len(children)
+            elif term[0] == PARALLEL:
+                shares = _products_of_others([Q[c] for c in children])
+            else:
+                shares = _koon_cut_shares(
+                    [R[c] for c in children], [Q[c] for c in children], term[2]
+                )
+            for c, d in zip(children, shares):
+                factor[c] = a * d
+        return out
+
+    def _core_cut_plan(self) -> tuple[list, list, list]:
+        """The core's terms in some minimal cut set, and one Shannon
+        decomposition of, for each, the probability that for some minimal
+        cut set of the core containing it every other term in it has
+        failed (a set's terms *satisfied* when failed): ``(terms, steps,
+        roots)``, as :func:`shannon._union_plan` gives them."""
+        if self._cut_plan is None:
+            cuts = [frozenset(cut) for cut in self.core_cut_sets()]
+            terms = sorted({c for cut in cuts for c in cut})
+            steps, roots = _union_plan(
+                [[cut - {t} for cut in cuts if t in cut] for t in terms]
+            )
+            self._cut_plan = (terms, steps, roots)
+        return self._cut_plan
+
+    def dual(self) -> "Decomposition":
+        """The decomposition of the dual structure, which works unless every
+        node of some minimal path set of this one has failed: series and
+        parallel modules swap, a k-out-of-n module needs ``n - k + 1``, and
+        the core's minimal path and cut sets swap. Its minimal cut sets are
+        this structure's minimal path sets. Not for a structure that always
+        works (whose dual never does)."""
+        if self.always_works:
+            raise ValueError("A structure that always works has no dual.")
+        if self._dual is None:
+            terms: list = []
+            for term in self.terms:
+                if term[0] == SERIES:
+                    terms.append((PARALLEL, term[1]))
+                elif term[0] == PARALLEL:
+                    terms.append((SERIES, term[1]))
+                elif term[0] == KOON:
+                    terms.append((KOON, term[1], len(term[1]) - term[2] + 1))
+                else:
+                    terms.append(term)
+            if self.root is not None:
+                self._dual = Decomposition(terms, root=self.root)
+            else:
+                self._dual = Decomposition(terms, core=self.core_cut_sets())
+                self._dual._core_cut_sets = list(self.core or [])
+        return self._dual
+
     # -- the structure function --------------------------------------------
 
     def works(self, status, method: str = "p") -> bool:
         """Whether the system works, given whether each node works (truthy)
         or has failed (falsy). ``method`` says whether the core is checked
         through its minimal path sets (``"p"``) or cut sets (``"c"``)."""
+        return self.structure_function(method)(status)
+
+    def structure_function(self, method: str = "p") -> Callable:
+        """The compiled structure function behind :meth:`works`, for callers
+        (the simulations) that evaluate it at every event: ``function(status)``
+        is ``works(status, method)``."""
         function = self._functions.get(method)
         if function is None:
             function = self._functions[method] = self._structure_function(
                 method
             )
-        return function(status)
+        return function
 
     def _structure_function(self, method: str) -> Callable:
         """The structure function compiled to a Python function: one line
@@ -312,6 +551,20 @@ class Decomposition:
             result = "True"
         elif self.root is not None:
             result = value[self.root]
+        elif self.from_graph:
+            # One decision per variable on the way from the root.
+            steps, root = self.core_plan()
+            used = sorted({pivot for pivot, _, _ in steps})
+            index = {c: j for j, c in enumerate(used)}
+            namespace["walk"] = bdd.walk
+            namespace["plan"] = (
+                [(index[p], a, i) for p, a, i in steps],
+                root,
+            )
+            lines.append(
+                "v = (" + "".join(value[c] + ", " for c in used) + ")"
+            )
+            result = "walk(plan, v)"
         else:
             sets = self.core if method == "p" else self.core_cut_sets()
             inner, outer = (
@@ -367,6 +620,8 @@ class Decomposition:
                 values[i] = np.sort(members, axis=0)[len(members) - term[2]]
         if self.root is not None:
             return np.asarray(values[self.root], dtype=float)
+        if self.from_graph:
+            return bdd.lifetime(self.core_plan(), values, size)
         out = np.full(size, -np.inf)
         for path_set in self.core or []:
             path_life = np.full(size, np.inf)
@@ -453,10 +708,13 @@ def _products_of_others(values: Sequence[Any]) -> list:
     return [b * a for b, a in zip(before, after)]
 
 
-def _koon_partials(R: Sequence[float], Q: Sequence[float], k: int) -> list:
-    """For each member of a k-out-of-n module, the derivative of the
-    module's probability of working with respect to the member's: the
-    probability that exactly ``k - 1`` of the others work."""
+def _others_working(
+    R: Sequence[Any], Q: Sequence[Any], counts: Iterable[int]
+) -> list:
+    """For each of ``n`` independent members working with probabilities
+    ``R`` (failing with ``Q``): the probabilities that exactly ``j`` of the
+    others work, for each ``j`` in ``counts``, each a sum of products."""
+    counts = list(counts)
     n = len(R)
 
     def distributions(order: Iterable[int]) -> list:
@@ -474,17 +732,34 @@ def _koon_partials(R: Sequence[float], Q: Sequence[float], k: int) -> list:
 
     before = distributions(range(n))
     after = distributions(range(n - 1, -1, -1))
-    partials = []
+    out = []
     for i in range(n):
         b, a = before[i], after[n - 1 - i]
-        partials.append(
-            sum(
-                b[j] * a[k - 1 - j]
-                for j in range(len(b))
-                if 0 <= k - 1 - j < len(a)
-            )
+        out.append(
+            [
+                sum(
+                    b[x] * a[j - x]
+                    for x in range(len(b))
+                    if 0 <= j - x < len(a)
+                )
+                for j in counts
+            ]
         )
-    return partials
+    return out
+
+
+def _koon_partials(R: Sequence[float], Q: Sequence[float], k: int) -> list:
+    """For each member of a k-out-of-n module, the derivative of the
+    module's probability of working with respect to the member's: the
+    probability that exactly ``k - 1`` of the others work."""
+    return [exactly[0] for exactly in _others_working(R, Q, [k - 1])]
+
+
+def _koon_cut_shares(R: Sequence[Any], Q: Sequence[Any], k: int) -> list:
+    """For each member of a k-out-of-n module, the probability that at most
+    ``k - 1`` of the others work (at least ``n - k`` have failed): with a
+    cut set of the member failed, one of the module's has then failed."""
+    return [sum(exactly) for exactly in _others_working(R, Q, range(k))]
 
 
 class _Reduction:
@@ -653,13 +928,42 @@ class _Reduction:
             for u in members
         ):
             return []
-        if k == len(members):
-            m = self._module(SERIES, members)
-        else:
-            m = self._module(KOON, members, k)
+        # Needing all of them works as a series chain would, but carries
+        # their sum, not the least of them (see FlowGraph): the tree makes
+        # it a series module (see _tree).
+        m = self._module(KOON, members, k)
         changed = self._replace(members, m, pred, {w}, member_k)
         self.k[w] = 1
         return changed
+
+    def flow_graph(self, aliases: Dict[Hashable, Hashable]) -> FlowGraph:
+        """The reduced diagram as the capacity analysis needs it (see
+        :class:`FlowGraph`), its vertices in topological order."""
+        terms = [
+            (NODE, aliases.get(t[1], t[1])) if t[0] == NODE else t
+            for t in self.terms
+        ]
+        waiting = {
+            v: sum(1 for u in self.pred[v] if u != _SOURCE) for v in self.alive
+        }
+        ready = sorted(v for v, count in waiting.items() if count == 0)
+        order: list = []
+        while ready:
+            v = ready.pop()
+            order.append(v)
+            for w in sorted(self.succ[v], reverse=True):
+                if w >= 0:
+                    waiting[w] -= 1
+                    if waiting[w] == 0:
+                        ready.append(w)
+        return FlowGraph(
+            terms,
+            order,
+            [tuple(sorted(self.pred[v])) for v in order],
+            [self.k[v] for v in order],
+            tuple(sorted(self.pred[_SINK])),
+            self.k[_SINK],
+        )
 
     def core_graph(self) -> RBDGraph:
         """The reduced diagram, with each vertex's k."""
@@ -689,7 +993,11 @@ def _tree(terms: list, roots: Iterable[int]) -> tuple[list, Dict[int, int]]:
         elif expanded:
             children = tuple(position[c] for c in term[1])
             position[v] = len(tree)
-            tree.append((term[0], children, *term[2:]))
+            if term[0] == KOON and term[2] == len(children):
+                # All k of them: whether it works is a series chain's.
+                tree.append((SERIES, children))
+            else:
+                tree.append((term[0], children, *term[2:]))
         else:
             stack.append((v, True))
             stack.extend((c, False) for c in reversed(term[1]))
@@ -747,6 +1055,7 @@ def decompose(
     output_node,
     reduce: bool = True,
     aliases: Optional[Dict[Hashable, Hashable]] = None,
+    core: Optional[str] = None,
 ) -> Decomposition:
     """The modular decomposition of the RBD diagram ``graph``.
 
@@ -754,6 +1063,9 @@ def decompose(
     diagram, with the minimal path sets found by the memoised search (for
     structures that are not valid RBDs, whose semantics are those of that
     search).
+
+    ``core`` is how what the reduction leaves is decided: ``"paths"``,
+    ``"bdd"`` or ``"auto"`` (see ``CORE_METHOD``, the default).
 
     ``aliases`` maps each node that stands for a component drawn in more
     than one place (a repeated node) to that component. Every appearance
@@ -763,8 +1075,14 @@ def decompose(
     Raises
     ------
     ValueError
-        If no set of working nodes can reach the output node.
+        If no set of working nodes can reach the output node, or ``core``
+        is unknown.
     """
+    method = CORE_METHOD if core is None else core
+    if method not in ("paths", "bdd", "auto"):
+        raise ValueError(
+            f"core must be 'paths', 'bdd' or 'auto', got {method!r}."
+        )
     if not reduce:
         terms = [(NODE, n) for n in graph.nodes]
         position = {n: i for i, (_, n) in enumerate(terms)}
@@ -782,10 +1100,11 @@ def decompose(
     shared = set(aliases) | set(aliases.values())
     reduction = _Reduction(graph, input_node, output_node, pinned=shared)
     reduction.run()
+    flow = reduction.flow_graph(aliases)
     alive = reduction.alive
     if not alive:
         # Only a direct edge from the input to the output is left.
-        return Decomposition([])
+        return Decomposition([], flow=flow)
     if len(alive) == 1:
         # One module is left, fed by the input alone. It feeds the output,
         # which may also have a direct edge from the input: then the output
@@ -796,10 +1115,93 @@ def decompose(
             # One appearance of a component is left: it is the system.
             terms[v] = (NODE, aliases.get(terms[v][1], terms[v][1]))
         tree, position = _tree(terms, [v])
-        return Decomposition(tree, root=position[v])
-    path_sets = find_min_path_sets(
-        rbd_graph=reduction.core_graph(), curr_node=_SINK, solns={}
+        return Decomposition(tree, root=position[v], flow=flow)
+    if method == "auto":
+        many = _path_count(reduction) > AUTO_PATHS
+        method = "bdd" if many else "paths"
+    if method == "bdd":
+        decomposition = _from_graph(reduction, aliases)
+    else:
+        path_sets = find_min_path_sets(
+            rbd_graph=reduction.core_graph(), curr_node=_SINK, solns={}
+        )
+        decomposition = _from_path_sets(
+            reduction.terms, path_sets, (_SOURCE, _SINK), aliases
+        )
+    decomposition.flow = flow
+    return decomposition
+
+
+def _path_count(reduction: "_Reduction", cap: int = 10**15) -> int:
+    """At least as many as the minimal path sets of what ``reduction``
+    leaves (capped at ``cap``): the ways of reaching each vertex, from its
+    predecessors' in topological order, a vertex that needs ``k`` of them
+    combining ``k`` of their ways (the elementary symmetric sum of degree
+    ``k``). Each path set is one of these ways; a way may hold another, or
+    a component twice, so there may be fewer."""
+    waiting = {
+        v: sum(1 for u in reduction.pred[v] if u != _SOURCE)
+        for v in reduction.alive
+    }
+    ready = [v for v, n in waiting.items() if n == 0]
+    ways: Dict[int, int] = {_SOURCE: 1}
+
+    def combined(v: int) -> int:
+        k = reduction.k[v]
+        sums = [1] + [0] * k
+        for u in reduction.pred[v]:
+            x = ways.get(u, 0)
+            for j in range(k, 0, -1):
+                sums[j] = min(sums[j] + sums[j - 1] * x, cap)
+        return sums[k]
+
+    while ready:
+        v = ready.pop()
+        ways[v] = combined(v)
+        for w in reduction.succ[v]:
+            if w in waiting:
+                waiting[w] -= 1
+                if waiting[w] == 0:
+                    ready.append(w)
+    return combined(_SINK)
+
+
+def _from_graph(
+    reduction: "_Reduction", aliases: Dict[Hashable, Hashable]
+) -> Decomposition:
+    """The decomposition whose core is the binary decision diagram of what
+    ``reduction`` leaves, built from its graph (see ``bdd.py``). Every
+    appearance of a component drawn in several places stands for one
+    variable, named after the component, as in ``_from_path_sets``."""
+    terms = list(reduction.terms)
+    alive = sorted(reduction.alive)
+    canonical: Dict[Hashable, int] = {}
+    variable: Dict[int, int] = {}
+    for v in alive:
+        if terms[v][0] != NODE:
+            variable[v] = v
+            continue
+        node = terms[v][1]
+        component = aliases.get(node, node)
+        if component not in canonical:
+            canonical[component] = v
+            terms[v] = (NODE, component)
+        variable[v] = canonical[component]
+    sequence = bdd.order(alive, reduction.pred, reduction.succ, _SOURCE, _SINK)
+    steps, root = bdd.build(
+        sequence,
+        reduction.pred,
+        reduction.succ,
+        reduction.k,
+        _SOURCE,
+        _SINK,
+        variable,
     )
-    return _from_path_sets(
-        reduction.terms, path_sets, (_SOURCE, _SINK), aliases
+    if root == bdd.FAIL:
+        raise ValueError(NO_PATHS)
+    if root == bdd.WORK:
+        return Decomposition([])
+    tree, position = _tree(terms, sorted({p for p, _, _ in steps}))
+    return Decomposition(
+        tree, plan=([(position[p], a, i) for p, a, i in steps], root)
     )

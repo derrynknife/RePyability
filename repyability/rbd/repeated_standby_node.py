@@ -1,8 +1,9 @@
 import numpy as np
 
+from repyability.utils.deprecation import ignored
 from repyability.utils.wrappers import numpy_seed
 
-from ._sampling import RowSampler, column, draw, inverse_sampler
+from ._sampling import RowSampler, column, inverse_sampler
 from .numerical_convolution import (
     ConvolvedSurvival,
     is_perfect_switching,
@@ -42,10 +43,10 @@ class RepeatedStandbyNode:
     repeats : int
         The number of copies, at least 1.
     N : int, optional
-        Unused; kept for backwards compatibility (a Kaplan-Meier fit to
-        ``N`` simulated lifetimes used to be made here). By default 10_000.
+        Ignored and deprecated: a Kaplan-Meier fit to ``N`` simulated
+        lifetimes used to be made here.
     lower : float, optional
-        Unused; kept for backwards compatibility. By default -inf.
+        Ignored and deprecated.
     switching_probability : float or sequence of float, optional
         The probability, in ``[0, 1]``, that switching onto the next copy
         succeeds: a scalar for every switch, or one value per switch
@@ -83,12 +84,18 @@ class RepeatedStandbyNode:
         self,
         model,
         repeats,
-        N=10_000,
-        lower=-np.inf,
+        N=None,
+        lower=None,
         switching_probability=1.0,
     ):
-        # N and lower are kept for backwards compatibility (a Kaplan-Meier fit
-        # was previously made here); they are no longer used.
+        # N and lower are kept so old calls still work (a Kaplan-Meier fit
+        # used to be made here); they are no longer used.
+        ignored(
+            "RepeatedStandbyNode()",
+            "its reliability is a numerical convolution, not a fit to "
+            "simulated lifetimes.",
+            {"N": N, "lower": lower},
+        )
         self.model = model
         self.repeats = repeats
         self.switching_probability = switching_probability
@@ -127,10 +134,10 @@ class RepeatedStandbyNode:
         # imperfect switching a spare only contributes if every switch up to
         # and including its own has succeeded.
         with numpy_seed(seed):
-            x_random = np.asarray(draw(self.model, size), dtype=float)
+            x_random = np.asarray(self.model.random(size), dtype=float)
             if is_perfect_switching(self.switching_probability):
                 for _ in range(self.repeats - 1):
-                    x_random = x_random + draw(self.model, size)
+                    x_random = x_random + self.model.random(size)
             else:
                 probs = switch_success_probs(
                     self.switching_probability, self.repeats
@@ -139,7 +146,7 @@ class RepeatedStandbyNode:
                 for p in probs:
                     running = running & (np.random.random(size) < p)
                     x_random = x_random + np.where(
-                        running, draw(self.model, size), 0.0
+                        running, self.model.random(size), 0.0
                     )
         return x_random
 

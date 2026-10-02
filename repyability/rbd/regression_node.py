@@ -10,8 +10,8 @@ exposes its survival as an ordinary univariate node. The covariates can be:
 * a **time-varying schedule** ``Z(t)`` (a surpyval ``StepSchedule``: the load
   the component runs under changes over its life) -- reliability is
   ``R(x) = model.sf_tvc(x, schedule)``, the exact survival along that
-  covariate path (accelerated-failure-time / proportional- / additive-hazards,
-  and proportional odds where surpyval defines it). This is the
+  covariate path (accelerated-failure-time, proportional- and
+  additive-hazards, and proportional-odds models). This is the
   load-dependent-aging / digital-twin node of issue #37: as-new survival
   integrates the whole load path, and conditioning on ``age`` gives the
   go-forward reliability from the component's current life, since
@@ -36,8 +36,7 @@ def _is_semiparametric(model) -> bool:
     """Whether ``model`` is a surpyval semiparametric regression model (a
     Cox model): its baseline is an estimate on the observed range only,
     with no tail beyond it. (Recognised by its type, not by its survival
-    curve: surpyval 0.20 happened to give such a baseline's last value
-    before its first event, which later versions fix.)"""
+    curve.)"""
     try:
         from surpyval.univariate.regression import (
             semi_parametric_regression_model as semiparametric,
@@ -58,8 +57,8 @@ class RegressionNode:
       ``R(x) = model.sf(x, Z)``, for any regression family; or
     - ``schedule``, a time-varying covariate path ``Z(t)``: the reliability
       is ``R(x) = model.sf_tvc(x, schedule)``, the survival along that
-      path (accelerated-failure-time and proportional- or additive-hazards
-      models, and proportional odds where surpyval defines it).
+      path (accelerated-failure-time, proportional- and additive-hazards,
+      and proportional-odds models).
 
     ``sf`` and ``ff`` evaluate that curve directly, so the node takes part
     in system reliability, importance measures and the condition-based
@@ -74,8 +73,7 @@ class RegressionNode:
     model : surpyval regression model
         A fitted regression model, e.g. ``surpyval.WeibullAFT.fit(...)`` or
         ``surpyval.CoxPH.fit(...)``. Fixed covariates use its ``sf(x, Z)``; a
-        schedule uses its ``sf_tvc(x, schedule)`` (needs a surpyval that
-        provides it for the model's family).
+        schedule uses its ``sf_tvc(x, schedule)``.
     covariates : array_like, optional
         The component's fixed covariate vector ``Z`` (its operating
         conditions), matching the covariates the model was fitted with.
@@ -91,8 +89,7 @@ class RegressionNode:
         if a trial evaluation of the survival at ``x = 1`` fails or is not
         finite: e.g. ``model`` is not a fitted regression model,
         ``covariates`` has the wrong width, or in schedule mode the model's
-        ``sf_tvc`` cannot evaluate it (e.g. proportional odds on surpyval
-        0.20).
+        ``sf_tvc`` cannot evaluate it.
 
     Examples
     --------
@@ -109,7 +106,7 @@ class RegressionNode:
     A component always run at load 1:
 
     >>> node = RegressionNode(model, covariates=[1.0])
-    >>> round(float(node.sf(100.0)[0]), 4)  # exp(-100 / 100)
+    >>> round(float(node.sf(100.0)), 4)  # exp(-100 / 100)
     0.3679
     >>> round(node.mean(), 1)
     100.0
@@ -120,7 +117,7 @@ class RegressionNode:
     ...     [0, 50], [[1.0], [2.0]]
     ... )
     >>> ramped = RegressionNode(model, schedule=schedule)
-    >>> round(float(ramped.sf(100.0)[0]), 4)  # exp(-50 / 100 - 50 / 25)
+    >>> round(float(ramped.sf(100.0)), 4)  # exp(-50 / 100 - 50 / 25)
     0.0821
     """
 
@@ -143,6 +140,15 @@ class RegressionNode:
             else np.atleast_1d(np.asarray(covariates, dtype=float))
         )
         self.schedule = schedule
+        # A covariate vector of another width than the model was fitted
+        # with: say so directly.
+        fitted = getattr(model, "phi_param_map", None)
+        if self.covariates is not None and isinstance(fitted, dict):
+            if len(self.covariates) != len(fitted):
+                raise ValueError(
+                    f"The model was fitted with {len(fitted)} covariate(s); "
+                    f"covariates has {len(self.covariates)}."
+                )
         # Probe the survival interface so a misuse fails clearly at
         # construction (wrong covariate width, or a surpyval whose sf_tvc
         # cannot evaluate the model's family in schedule mode).
@@ -155,9 +161,9 @@ class RegressionNode:
                 "RegressionNode requires a fitted surpyval regression model. "
                 "In fixed-covariate mode its sf(x, Z) must accept a covariate "
                 "matrix of the fitted width; in schedule mode the model must "
-                "support sf_tvc(x, schedule) (accelerated-failure-time / "
-                "proportional- or additive-hazards on a recent surpyval; "
-                "proportional-odds only where surpyval defines it). Probing "
+                "support sf_tvc(x, schedule) (accelerated-failure-time, "
+                "proportional- and additive-hazards, and proportional-odds "
+                "models). Probing "
                 f"survival failed: {type(e).__name__}: {e}."
             ) from e
         # Cached (t, sf(t)) grid for mean()/random() (built lazily).
@@ -190,14 +196,23 @@ class RegressionNode:
 
         Returns
         -------
-        numpy.ndarray
-            The probability of surviving beyond each ``x``. Always an
-            array: a scalar ``x`` gives a 1-element array.
+        float or numpy.ndarray
+            The probability of surviving beyond each ``x``: a float for a
+            scalar ``x``, as a surpyval model gives it, and an array for an
+            array.
         """
-        return self._sf_at(np.atleast_1d(np.asarray(x, dtype=float)))
+        out = self._sf_at(np.atleast_1d(np.asarray(x, dtype=float)))
+        return out[0] if np.ndim(x) == 0 else out
 
     def ff(self, x: ArrayLike) -> np.ndarray:
         """Unreliability: ``1 - sf(x)``.
+
+        ``model.ff(x, Z)`` at the fixed covariates, or
+        ``-expm1(-model.Hf_tvc(x, schedule))`` along the schedule: worked
+        out in its own right, so that a small one keeps its precision.
+        Along a schedule that is the precision of the model's ``Hf_tvc``,
+        which for a proportional-odds model loses it where the cumulative
+        hazard is small (surpyval #528).
 
         Parameters
         ----------
@@ -206,11 +221,18 @@ class RegressionNode:
 
         Returns
         -------
-        numpy.ndarray
-            The probability of failing by each ``x``; always an array, as
-            for ``sf``.
+        float or numpy.ndarray
+            The probability of failing by each ``x``: a float for a scalar
+            ``x``, as for ``sf``.
         """
-        return 1.0 - self.sf(x)
+        scalar = np.ndim(x) == 0
+        x = np.atleast_1d(np.asarray(x, dtype=float))
+        if self.schedule is not None:
+            H = np.asarray(self.model.Hf_tvc(x, self.schedule), dtype=float)
+            out = -np.expm1(-H)
+        else:
+            out = np.asarray(self.model.ff(x, self._Z(len(x))), dtype=float)
+        return out[0] if scalar else out
 
     def _survival_grid(self):
         """A cached ``(t, sf(t))`` grid spanning the bulk of the lifetime.
@@ -399,7 +421,7 @@ class RegressionNode:
         >>> node = RegressionNode(model, covariates=[1.0])
         >>> text = json.dumps(node.to_dict())
         >>> restored = RegressionNode.from_dict(json.loads(text))
-        >>> round(float(restored.sf(100.0)[0]), 4)
+        >>> round(float(restored.sf(100.0)), 4)
         0.3679
         """
         import surpyval

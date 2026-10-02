@@ -73,7 +73,7 @@ class FailureLimitPolicy:
     >>> unit = Repairable(grp)
     >>> unit.set_repair_and_overhaul_costs(cr=1.0, co=5.0)
     >>> policy = unit.optimal_failure_limit_policy(
-    ...     seed=1, n_simulations=200, max_failures=15
+    ...     seed=1, mc_samples=200, max_failures=15
     ... )
     >>> policy.failure_count, round(policy.cost_rate, 3)
     (7, 0.031)

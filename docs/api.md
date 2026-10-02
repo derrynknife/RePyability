@@ -15,6 +15,10 @@ explanations and runnable examples, see the [user guide](guide/index.md).
 
 ::: repyability.FaultTree
 
+::: repyability.PhasedMission
+
+::: repyability.Network
+
 ## Node models
 
 Anything exposing `sf`/`ff` can be a node; these are the composite and helper
@@ -22,6 +26,8 @@ models provided here (see [Building an RBD](guide/building.md) and
 [Redundancy models](guide/redundancy-models.md)).
 
 ::: repyability.StandbyModel
+
+::: repyability.DegradingNode
 
 ::: repyability.RepeatedNode
 
@@ -59,9 +65,45 @@ models provided here (see [Building an RBD](guide/building.md) and
 
 ::: repyability.minimal_repair_time_to_nth_failure
 
+## Demonstration test planning
+
+::: repyability.demonstration_sample_size
+
+::: repyability.demonstrated_reliability
+
+::: repyability.demonstration_test_multiple
+
+::: repyability.demonstration_pass_probability
+
+::: repyability.mtbf_test_time
+
+::: repyability.demonstrated_mtbf
+
+::: repyability.mtbf_pass_probability
+
+## Timelines
+
+Up/down histories over a window (see the
+[Timelines guide](guide/timelines.md)). The merge functions are in
+`repyability.timelines`.
+
+::: repyability.Timeline
+
+::: repyability.Timelines
+
+::: repyability.timelines.series
+
+::: repyability.timelines.parallel
+
+::: repyability.timelines.k_out_of_n
+
 ## Result types
 
+::: repyability.AnalysisRoute
+
 ::: repyability.AvailabilityResult
+
+::: repyability.CapacityDistribution
 
 ::: repyability.Criticalities
 
@@ -73,7 +115,13 @@ models provided here (see [Building an RBD](guide/building.md) and
 
 ::: repyability.CostResult
 
+::: repyability.ExpectedEvents
+
+::: repyability.ExpectedCost
+
 ::: repyability.ConfidenceInterval
+
+::: repyability.ControlVariate
 
 ::: repyability.UncertaintyResult
 
@@ -86,6 +134,16 @@ models provided here (see [Building an RBD](guide/building.md) and
 ::: repyability.MaintenancePlan
 
 ::: repyability.AvailabilityAllocation
+
+::: repyability.SparesDemand
+
+::: repyability.SparesStock
+
+::: repyability.SimulationChunk
+
+::: repyability.TimelineSimulation
+
+::: repyability.run_shard
 
 ::: repyability.MaintenancePolicy
 

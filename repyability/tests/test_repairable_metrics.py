@@ -91,7 +91,7 @@ def test_simulation_estimates_match_analytic():
         [("s", "A"), ("A", "B"), ("B", "t")],
         {"A": _comp(0.2, 1.0), "B": _comp(0.5, 1.0)},
     )
-    result = rbd.availability(t_simulation=100.0, N=150, seed=7)
+    result = rbd.availability(t_simulation=100.0, mc_samples=150, seed=7)
 
     # System uptime + downtime account for the full simulated window.
     total = result.n_simulations * result.time_simulated_to
@@ -117,7 +117,7 @@ def test_result_derived_properties_zero_guards():
         {"A": _comp(0.2, 1.0), "B": _comp(0.5, 1.0)},
     )
     result = rbd.availability(
-        t_simulation=20.0, N=100, working_nodes=["A"], seed=3
+        t_simulation=20.0, mc_samples=100, working_nodes=["A"], seed=3
     )
     assert result.system_failures == 0
     assert result.mean_up_time == float("inf")

@@ -461,19 +461,22 @@ $$
 = \frac{1.5}{\lambda} = 150 \text{ h for } \lambda = 0.01
 $$
 
-RePyability estimates the MTTF of an RBD by **simulation**:
-`mean_time_to_failure` draws a lifetime for every block, finds when the last
-path breaks, and averages 100 000 such system lifetimes. Pass a `seed` to
-make the result repeatable:
+RePyability computes the MTTF of an RBD the first way: `mean_time_to_failure`
+integrates the system's reliability curve numerically. It can also
+**simulate** it, the second way made random: `method="simulate"` draws a
+lifetime for every block, finds when the last path breaks, and averages
+100 000 such system lifetimes. Pass a `seed` to make the result repeatable:
 
 ```python
-pair.mean_time_to_failure(seed=0)   # -> 150.4   exact: 1.5 / 0.01 = 150
+pair.mean_time_to_failure()                            # -> 150.0   exact: 1.5 / 0.01
+pair.mean_time_to_failure(method="simulate", seed=0)   # -> 150.4
 ci = pair.mean_time_to_failure_interval(seed=0)
 ci.standard_error                   # -> 0.3544
 ci.lower, ci.upper                  # (149.70, 151.09)
 ```
 
-The 0.4 h gap from 150 is simulation error, of the size you should expect.
+The simulation's 0.4 h gap from 150 is simulation error, of the size you
+should expect.
 The two stages are independent exponentials with means 50 and 100 h, so the
 pair's lifetime has a standard deviation of $\sqrt{50^2 + 100^2} = 112$ h,
 and an average of 100 000 lifetimes is off by about
@@ -495,8 +498,8 @@ pair.bx_life(10)     # -> 38.01   h
 The cooling circuit's MTTF has no neat formula, but the same tools apply:
 
 ```python
-circuit.mean_time_to_failure(seed=0)   # -> 93.76   h, by simulation
-quad(circuit.sf, 0, np.inf)[0]         # -> 93.82   h, by integrating R_sys(t)
+circuit.mean_time_to_failure()         # -> 93.82   h, the area under R_sys(t)
+quad(circuit.sf, 0, np.inf)[0]         # -> 93.82   h, the same integral, by scipy
 circuit.time_to_reliability(0.9)       # -> 38.84   h until R_sys falls to 0.9
 circuit.bx_life(10)                    # -> 38.84   h, the same question
 ```
@@ -705,7 +708,7 @@ parallel. What is the MTTF of the pair? What would a third unit add?
         [("in", x) for x in "abc"] + [(x, "out") for x in "abc"],
         {x: u for x in "abc"},
     )
-    trio.mean_time_to_failure(seed=0)   # -> 1834   simulated (standard error about 4 h)
+    trio.mean_time_to_failure()   # -> 1833.3
     ```
 
 **6.** In the circuit, the valve's shape is also uncertain: anywhere between

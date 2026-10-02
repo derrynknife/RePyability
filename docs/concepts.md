@@ -76,7 +76,10 @@ R_sys = R_A · R_sys(A working) + (1 − R_A) · R_sys(A failed)
 The engine is exact *given the node reliabilities*. When a node's reliability
 is itself an estimate (a simulated standby or load-sharing arrangement, or a
 Kaplan–Meier fit), the system value inherits that estimate's error, and
-`is_analytically_solvable()` flags the simulation-backed nodes.
+`is_analytically_solvable()` flags the simulation-backed nodes. Both kinds
+of estimate are deprecated and go in 0.12: the analyses that need such a
+node's reliability will refuse, and the system's simulations simulate it.
+`analysis_routes()` says how each analysis is computed, and why.
 
 The other time functions follow from the reliability: `F = 1 − R`, the
 cumulative hazard `H = −ln R` (exact), the density `f = −dR/dt` (a numerical
@@ -132,14 +135,18 @@ same `N`, without biasing the estimate:
   removes most of the variance.
 
 In a `RepairableRBD` both work component by component: each component draws
-from a stream of its own, keyed by the seed, its place in the diagram and
-the simulation (or the pair), so its `k`-th draw is matched, or paired,
-however the components' events interleave.
+each quantity (its times to failure, its repairs, ...) from a stream of its
+own, keyed by the seed, its place in the diagram and the quantity, and laid
+out so that the stream's `k`-th draw in simulation `r` (or pair `r`) is
+fixed by those alone. Its `k`-th draw is then matched, or paired, however
+the components' events interleave, and every simulation is the same however
+the run is split up: over processes or threads, or in a run to a tolerance.
 
-A parallel run splits the simulations into blocks seeded in turn from one
-`numpy.random.SeedSequence`, whose spawned seeds give independent streams.
-The block, not the process that runs it, fixes the random numbers, so the
-results do not depend on the number of processes.
+A parallel run of a `NonRepairableRBD` splits the lifetimes into blocks
+seeded in turn from one `numpy.random.SeedSequence`, whose spawned seeds
+give independent streams. The block, not the process that runs it, fixes
+the random numbers, so the results do not depend on the number of
+processes.
 
 ### Fault trees
 
@@ -169,7 +176,11 @@ the log-likelihood, from surpyval) gives the draws on a transformed scale
 (log for a positive parameter, logit for one in (0, 1)), which is the delta
 method's normal approximation. Nodes of one population share their
 parameters and so their draws: drawing them independently averages part of
-the uncertainty away.
+the uncertainty away. The same draws give the MTTF's, a B*X* life's and the
+time to a reliability's uncertainty (`mean_uncertainty`,
+`bx_life_uncertainty`, `time_to_reliability_uncertainty`): each draw's value
+is the exact one for its models, the area under its reliability or the root
+of its reliability less the target.
 
 ## Reliability vs availability
 
@@ -197,7 +208,7 @@ forced working/failed.
 | **Risk achievement worth** `risk_achievement_worth` | How much more likely is system failure if this node fails? `Q(0_i) / Q` | Finding components you must *keep working*: surveillance and protection targets. |
 | **Risk reduction worth** `risk_reduction_worth` | By what factor would perfecting this node reduce system unreliability? `Q / Q(1_i)` | Prioritising which single fix removes the most risk. |
 | **Criticality** `criticality_importance` | Given that the system has failed, how likely is it that this node has failed and is critical? `I_B · (1 − R_i) / Q`, its share of the system failures (`kind="success"` gives `I_B · R_i / R`, which is 1 for every node in series) | Ranking the culprits, series nodes included, by how much each contributes to system failure; on a repairable system, its share of the downtime. |
-| **Fussell–Vesely** `fussell_vesely` | What fraction of system-failure probability involves this node? `Σ_{cut sets C ∋ i} Π_{j ∈ C} (1 − R_j) / Q` | A cut-set-based culprit ranking; standard in PRA/PSA. |
+| **Fussell–Vesely** `fussell_vesely` | What fraction of system-failure probability involves this node? `P(some cut set C ∋ i has failed) / Q`, exactly (`method="rare_event"` gives the usual approximation `Σ_{cut sets C ∋ i} Π_{j ∈ C} (1 − R_j) / Q`) | A cut-set-based culprit ranking; standard in PRA/PSA. |
 
 Two more answer *design-time* and *data-targeting* questions rather than
 ranking at an operating point:
@@ -223,7 +234,9 @@ availabilities in place of reliabilities.
 ## Condition-based evaluation
 
 The measures above assume every component is new. The condition-based methods
-instead take each component's *current life* `Xᵢ` and condition on it:
+instead take each component's *current life* `Xᵢ` and condition on it (a
+repairable system's analyses over time take its components' states too:
+see [From the present](#availability)):
 
 ```
 Rᵢ(x | Xᵢ) = Rᵢ(Xᵢ + x) / Rᵢ(Xᵢ)
@@ -282,10 +295,9 @@ the schedule: the load-dependent-ageing ("digital twin") node. Whether a
 family composes along a path is a property of the model: **AFT** (the path
 rescales the clock) and **proportional-/additive-hazards** (the path
 accumulates hazard) do; **proportional odds** has no single natural
-extension: surpyval 0.20 refuses it in schedule mode, and later versions
-switch to the new covariate's hazard at each step (the survival does not jump
-to the new covariate's curve). The fixed-covariate node is the special case of a constant
-path.
+extension: surpyval switches to the new covariate's hazard at each step (the
+survival does not jump to the new covariate's curve). The fixed-covariate
+node is the special case of a constant path.
 
 ## Standby and repeated nodes
 
@@ -315,13 +327,22 @@ its baseline failure age. It can therefore fail *latent*, before it is ever
 switched in. For identical Exponential units the memoryless property makes
 each stage (from `j` to `j − 1` surviving units) exponential with rate
 `λ (k + (j − k) κ)`, so the lifetime is **hypoexponential**; `κ = 0` gives
-the cold Erlang and `κ = 1` the parallel order statistic. Other units are
-simulated and fitted with Kaplan–Meier. Hot standby (`κ = 1`) is exactly
-*k*-out-of-*n* active parallel.
+the cold Erlang and `κ = 1` the parallel order statistic. Hot standby
+(`κ = 1`) is exactly *k*-out-of-*n* active parallel, and is worked out so
+for any units. With one unit operating and any units, a spare switched in at
+`τ` has aged `κτ` and runs until its failure age, so the lifetime follows a
+recursion over the switch-ins, which is computed on a time grid; with two
+units, `R(t) = S₁(t) + ∫₀ᵗ f₁(u) S₂(t − (1 − κ)u) du`.
 
-With `k ≥ 2` operating units and general lifetimes, which unit fails next
-depends on the order of failures, so the lifetime is not a simple sum and is
-simulated.
+With `k ≥ 2` operating units, cold, each operating position runs a renewal
+process of the lives of the units put into it; for identical units these are
+independent, so the number of failures by `t` is a sum of `k` renewal counts,
+whose distributions come from the convolution, and the arrangement fails at
+the `n − k + 1`-th. With different units, which unit goes where depends on
+the order of failures. With two operating, after each failure the state is
+its time and when the other operating unit started (the newcomer starts
+new), a recursion on a grid of the two; with three or more, and warm with
+`k ≥ 2` (the spares' ages too), they are simulated.
 
 ## Dependent failures: load sharing
 
@@ -402,30 +423,59 @@ evaluation) and blending the branches by their probabilities. Hence `β = 0`
 reproduces the independent result exactly, and `β = 1` makes a redundant
 group no better than a single unit.
 
-**The model assumes each member's `Q` is small.** "Exact" means the
-evaluation of the model is exact; the model itself is the PRA basic-event
-one, which splits each member's failure *probability* (`βQ` shared,
-`(1 − β)Q` independent) and is a rare-event model. Use it over periods in
-which each member's failure probability stays small, such as a mission or a
-proof-test interval. For a parallel pair with `β = 0.3`, the system
-unreliability is within 0.3% of a rate-based beta-factor treatment (which
-splits each member's failure *rate* instead, making the shared cause a shock
-with reliability `R(t)^β`) at `Q = 0.01`, 3.5% at `Q = 0.1` and about 10% at
-`Q = 0.3`. From about `Q = 0.5` the pair comes out *more* reliable than an
-independent pair. Over a whole life (`Q → 1`) the model stops describing a
-lifetime at all: under the beta factor, each member would only ever fail with
-probability `1 − β(1 − β)` (0.79 at `β = 0.3`).
+**By default the model assumes each member's `Q` is small.** "Exact" means
+the evaluation of the model is exact; the default model is the PRA
+basic-event one, which splits each member's failure *probability* (`βQ`
+shared, `(1 − β)Q` independent) and is a rare-event model. Use it over
+periods in which each member's failure probability stays small, such as a
+mission or a proof-test interval. For a parallel pair with `β = 0.3`, the
+system unreliability is within 0.3% of a rate-based beta-factor treatment at
+`Q = 0.01`, 3.5% at `Q = 0.1` and about 10% at `Q = 0.3`. From about
+`Q = 0.5` the pair comes out *more* reliable than an independent pair. Over
+a whole life (`Q → 1`) the model stops describing a lifetime at all: under
+the beta factor, each member would only ever fail with probability
+`1 − β(1 − β)` (0.79 at `β = 0.3`). So a diagram warns, once for each group,
+when a member's `Q` passes 0.1.
 
-Common cause is currently reflected in `sf()` / `ff()` (and quantities derived
-from them) and persists through serialisation. Groups must be symmetric
-(identical member models) and disjoint. The Monte-Carlo `random()`, `mean()`
-and MTTF interval sample the members independently and do not include CCF: an
-MTTF integrates over the whole life, where `Q` is no longer small, so it is
-outside this model. The probability-dependent importance/sensitivity and the
-condition-based methods do not yet account for it and raise a clear error on a
-CCF RBD; `structural_importance`, being probability-free, is unaffected.
+**Over a lifetime, split the rate.** With `basis="rate"` the model splits
+each member's failure *rate*: in the members' cumulative hazard
+`H(t) = −log R(t)`, the shared cause is a shock of hazard `β H(t)`, which has
+not struck by `t` with probability `R(t)^β`, and each member's own causes
+have hazard `(1 − β) H(t)`. A member fails at the first of its causes, so
+its reliability is `R(t)^β · R(t)^(1 − β) = R(t)`: every member keeps its own
+life distribution, whatever its shape, and the model holds over the whole
+life. To first order in `Q` the shock strikes with `βQ` and each member fails
+on its own with `(1 − β)Q`, as the probability split has it. Under MGL each
+specific set of `k` members has a cause of its own, of hazard
+`(Q_k / Q) H(t)`, striking independently of the others; several may strike,
+so the outcomes are the sets the struck causes fail between them.
+
+Common cause is reflected in `sf()` / `ff()` (and quantities derived from
+them) and persists through serialisation, basis included. Groups must be
+symmetric (identical member models) and disjoint. An MTTF integrates over the
+whole life: the exact `mean()` integrates a group that splits the rate, and
+refuses one that splits a probability, where `Q` is no longer small. The
+Monte-Carlo `random()`, `mean(method="simulate")` and MTTF interval draw a
+rate-split group's shocks (each cause strikes at an exponential time in
+`H`), and sample the members of a probability-split group independently,
+leaving the common cause out. The importance measures condition a member
+on its state through the shock outcomes (a node outside the groups is held
+working and failed, as without them); parameter sensitivity and parameter
+uncertainty take a group's members together, with its model's parameters;
+and a copy of a beta-factor group's member joins the group in a redundancy
+allocation. The condition-based methods would need members of different
+ages, and raise a clear error on a CCF RBD; `structural_importance`, being
+probability-free, is unaffected.
 **Alpha-factor**, a data-estimable reparameterisation of the same
 multiplicities, is a planned extension.
+
+A `RepairableRBD` takes `ccf_groups` too. There a member's failures are a
+rate, so the model splits the rate: each cause, a member's own or a shared
+one, strikes at its share of it and fails the members it names that are up.
+Each member alone fails as before; which are down together is a Markov chain
+of the group (its members repaired at exponential rates, or found by their
+tests), and the long-run values average the structure function over its
+states, exactly (see [Common-cause failures](guide/common-cause.md#repairable-systems)).
 
 ## Availability
 
@@ -465,14 +515,64 @@ contributes its own system frequency.
 
 **Availability over time.** Before the long run, availability depends on
 time: a new system starts up (`A(0) = 1`) and settles towards the long-run
-value, possibly overshooting. There is no general closed form, so
-`availability()` simulates `N` independent histories (each component's
-alternating failures and repairs, merged in time order, with the system's
-state re-evaluated at every event) and reports the fraction of histories up
-at each time. Each point is a proportion, so its standard error is
+value, possibly overshooting. A component alternates up periods `U` and down
+periods `D`, as good as new after each: an alternating renewal process, whose
+point availability `A_i(t)` solves the renewal equation. There is a closed
+form only for exponential times; `point_availability` solves the equation
+numerically, on a grid of 2,000 steps over the component's typical up time
+(an error of about `1e-7`). Components that fail and are repaired
+independently are up or down independently at every time, so the system's
+`A(t)` is its system probability at the `A_i(t)`, and
+`mission_availability` is its mean over `[0, T]`. For a long mission that
+mean is the long-run value plus about `b/T`: for one component
+`b = A (E[C²]/(2E[C]) − E[U²]/(2E[U]))`, `C = U + D`, positive for a life
+that wears out, and for a system `Σ_i I_B^i b_i` to first order.
+
+**Expected events over a window.** The frequency formula holds at every
+time, not only in the long run: a component failing at `t` fails the system
+if it is critical then, with probability `I_B^i(t)` at the availabilities
+`A_j(t)`. So the system's expected failures in `[0, T)` from new are
+
+```
+E[N(T)] = ∫₀ᵀ Σ_i I_B^i(t) dM_i(t)
+```
+
+with `M_i(t)` component `i`'s expected failures by `t`, its renewal
+function, which the renewal equation gives alongside `A_i(t)`.
+`expected_failures` and `expected_events` compute it, with the system's
+planned outages counted the same way and the expected downtimes as
+integrals of the unavailabilities; their long-run rates are `ω` and the
+like. Events at exact times (replacements due at the same age or block
+time) are taken together: they take the system down at most once.
+
+**From the present.** Given each component's current state, only its first
+period changes. A unit up at age `a` has a first life with survival
+`R(a + s) / R(a)` (its replacement due at `T − a` under age replacement);
+one down for `r` has a first down time with survival `G(r + s) / G(r)`, and
+starts new after it. The later units are new: their renewals are the
+first period's end convolved with the renewal measure from new, so
+`A_i(t)`, `M_i(t)`, and everything built on them above, follow as before.
+Under block replacement the unit's own curve runs to the first block time,
+which hands the block intervals' recursion the probability that it is up
+there (and replaced) and the repairs going on; a calendar is shifted by the
+phase. A component long in service whose state is not known starts in its
+long-run (stationary) state: off a calendar it stays at `A_i` throughout,
+with its events at their long-run rates; on one, it follows its settled
+cycle from its phase. In the simulation, the first draw is the inverse
+transform of the conditional distribution, `qf(F(a) + u (1 − F(a))) − a`,
+worked through the cumulative hazard so that it keeps its precision at
+great ages: still one uniform per draw.
+
+`availability()` simulates `mc_samples` independent histories instead (each
+component's alternating failures and repairs, merged in time order, with the
+system's state re-evaluated at every event) and reports the fraction of
+histories up at each time. The histories also give what the exact methods
+do not: how much the counts, downtimes and costs over the window vary, and
+the criticality measures below. Each point is a proportion, so its standard error is
 `√(A(1 − A)/N)`; the confidence band uses the Wilson score interval, which
 stays sensible at `A = 1`. For exponential components the simulation is held
-to the exact Markov solution in the test suite.
+to the exact Markov solution in the test suite, and on the benchmark
+diagrams to `point_availability`.
 
 A nested repairable RBD runs its own history on the same clock, and the outer
 system sees a state change when the nested system's state changes.
@@ -489,6 +589,75 @@ system sees a state change when the nested system's state changes.
 - The **restoration criticality index** does the same for repairs that
   restored the system.
 
+## Capacity
+
+A reliability block diagram answers a yes-or-no question: does the system
+work? A plant also asks how much it delivers. Give each node a capacity
+`c_i`, the throughput it passes while it works (0 once it has failed), and
+the system's capacity is the most that can flow from the input to the output
+through the working nodes, each passing at most its capacity: the diagram's
+**maximum flow**. The edges carry any amount, so
+
+```
+series:    C = min(c_1, c_2, ...)
+parallel:  C = c_1 + c_2 + ...
+```
+
+and in general, by the **max-flow min-cut theorem**, the capacity is the
+least total capacity of a cut, a set of nodes whose failure disconnects the
+output:
+
+```
+C = min over cuts K of  Σ_{i in K} c_i · [node i works]
+```
+
+A k-out-of-n node passes flow only while at least `k` of its inputs are
+reached, as in the reliability analysis, so the capacity is positive exactly
+when the system works: `P(C > 0)` is the reliability (or availability).
+
+**The distribution.** Over the components' states, `C` takes finitely many
+values. The probability of each follows as the system probability does. A
+module's distribution comes from its members' in closed form: the
+distribution of the least of independent capacities for a series chain, of
+their sum for a parallel group, and of their sum while at least `k` work for
+a k-out-of-n group. Combining distributions this way is the **universal
+generating function** of multi-state systems (Ushakov; Lisnianski and
+Levitin). What is left, such as a bridge, is conditioned on its parts'
+capacities one at a time, carrying only each cut's running total and the
+least complete total, and merging the states that agree on them.
+
+**What it gives.** From the distribution:
+
+- `P(C ≥ d)`, the probability of meeting a demand `d`: the system's
+  reliability for that demand (its availability, in the long run);
+- `E[C]`, the expected capacity;
+- `E[min(C, d)] / d`, the expected fraction of the demand delivered. In the
+  long run this is the fraction of the demand met over time: the
+  **production availability**, the figure plant owners contract on.
+
+In the long run the probability of each level is the fraction of time spent
+at it: the components' long-run availabilities stand in for their
+reliabilities, as for the long-run availability. Over time from new, their
+point availabilities `A_i(t)` do (`point_capacity`), and the fraction of the
+demand delivered over a window is the time average of `E[min(C, d)] / d`
+(`mission_capacity`). The availability simulation follows the capacity too:
+after every component event it works out the capacity the components that
+are up give, and the spread of the delivered fraction from window to window
+comes from it.
+
+**Multi-state components.** A component can itself have several levels: a
+pump at full, half or no output. The distribution of each node's capacity
+enters the calculation the same way, whether it has two levels or many, so
+binary components are the special case. A component's levels can be fixed
+(each with a probability while it works), come from a nested system, or come
+from a model of its states over time: a component that degrades through
+stages is in stage `j` at time `t` with probability
+`P(S_{j-1} ≤ t < S_j)`, where `S_j` is the sum of its first `j` stages'
+times. In the long run, renewed after each failure, it spends its up time in
+each stage in proportion to the stage's mean time (the renewal-reward
+theorem); from new, it is in stage `j` at `t` if its first unit is, or a
+unit put into service at `s` is at age `t − s`, summed over its renewals.
+
 ## Costs
 
 The long-run cost rate follows from the **renewal-reward theorem**: in the
@@ -503,9 +672,11 @@ cost rate = downtime_cost_rate · (1 − A_sys)
           + Σ (1 − A_i) · downtime_cost_i
 ```
 
-A cost distribution enters through its mean, by linearity of expectation. The
-cost over a finite window is random, and its distribution has no closed form,
-so `cost()` simulates it: each history accumulates the charges at its failures
+A cost distribution enters through its mean, by linearity of expectation. By
+the same linearity the expected cost of a finite window from new is exact:
+`expected_cost` sums each category's expected events over the window (see
+availability above) times its mean cost. The cost of a window is random,
+though, and its distribution has no closed form, so `cost()` simulates it: each history accumulates the charges at its failures
 and the downtime it incurs. Its **spread** (standard deviation, percentiles)
 is a property of the system; the **uncertainty of its mean** shrinks like
 `1/√N`. As the window grows, the simulated cost per unit time converges to the

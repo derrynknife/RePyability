@@ -12,7 +12,6 @@ probabilities (see ``_shannon_plan``). The same plan gives the derivative
 with respect to each element's probability, and the minimal cut sets.
 """
 
-from collections import defaultdict
 from typing import Any, Dict, Iterable, Optional, Sequence, Union
 
 import numpy as np
@@ -93,6 +92,82 @@ def _shannon_plan(sets: Iterable[frozenset]) -> tuple[list, int]:
     return steps, root
 
 
+def _union_plan(
+    families: Sequence[Iterable[frozenset]],
+) -> tuple[list, list]:
+    """One Shannon decomposition, in the format of :func:`_shannon_plan`'s,
+    of the probabilities that at least one set of each of ``families`` is
+    satisfied: ``(steps, roots)``, with ``roots[i]`` the slot holding the
+    ``i``-th family's.
+
+    The families share their sub-problems, which are solved once. Each
+    sub-problem is kept minimal (a set holding another adds nothing to the
+    union, so it is dropped), its sets as bitmasks, so that equal ones are
+    found however they arose. With many overlapping families (the cut sets
+    through each term of a meshed core, for its Fussell-Vesely importance)
+    this is many times faster than decomposing each on its own."""
+    elements = list(
+        dict.fromkeys(e for family in families for s in family for e in s)
+    )
+    bit = {e: 1 << i for i, e in enumerate(elements)}
+    slots: Dict[frozenset, int] = {}
+    steps: list[tuple[Any, int, int]] = []
+
+    def minimal(masks: Iterable[int]) -> frozenset:
+        kept: list = []
+        for m in sorted(set(masks), key=lambda m: bin(m).count("1")):
+            if not any(k & m == k for k in kept):
+                kept.append(m)
+        return frozenset(kept)
+
+    def known(state: frozenset) -> Optional[int]:
+        if not state:
+            return _ZERO
+        if 0 in state:
+            return _ONE
+        return slots.get(state)
+
+    def split(state: frozenset) -> list:
+        # Pivot on the element in the most sets, as _shannon_plan does.
+        counts: Dict[int, int] = {}
+        for m in state:
+            while m:
+                low = m & -m
+                counts[low] = counts.get(low, 0) + 1
+                m ^= low
+        pivot = max(counts, key=lambda b: (counts[b], -b))
+        active = minimal(m & ~pivot for m in state)
+        inactive = frozenset(m for m in state if not m & pivot)
+        return [state, pivot, [active, inactive], []]
+
+    roots: list = []
+    for family in families:
+        state = minimal(
+            sum(bit[e] for e in s) for s in (frozenset(x) for x in family)
+        )
+        root = known(state)
+        stack = [] if root is not None else [split(state)]
+        while stack:
+            current, pivot, branches, solved = stack[-1]
+            if len(solved) < 2:
+                branch = branches[len(solved)]
+                slot = known(branch)
+                if slot is None:
+                    stack.append(split(branch))
+                else:
+                    solved.append(slot)
+                continue
+            steps.append((elements[pivot.bit_length() - 1], *solved))
+            slots[current] = len(steps) + 1
+            stack.pop()
+            if stack:
+                stack[-1][3].append(slots[current])
+            else:
+                root = slots[current]
+        roots.append(root)
+    return steps, roots
+
+
 def _evaluate_shannon_plan(
     plan: tuple[list, int],
     element_probabilities: Dict[Any, np.ndarray],
@@ -109,15 +184,16 @@ def _evaluate_shannon_plan(
 
 def _shannon_value_and_gradient(
     plan: tuple[list, int],
-    probabilities: Union[Dict[Any, float], Sequence[float]],
-    complements: Union[Dict[Any, float], Sequence[float]],
+    probabilities: Union[Dict[Any, Any], Sequence[Any]],
+    complements: Union[Dict[Any, Any], Sequence[Any]],
     terminals: tuple[float, float] = (0.0, 1.0),
-) -> tuple[float, Dict[Any, float]]:
-    """A plan's value for scalar element probabilities, and its derivative
-    with respect to each element's probability (the element's Birnbaum
-    importance), by one forward and one reverse pass. ``complements`` holds
-    each element's ``1 - p``, computed without cancellation, so the value
-    keeps its full relative precision however small it is.
+) -> tuple[Any, Dict[Any, Any]]:
+    """A plan's value for the element probabilities (single values, or
+    arrays of one shape), and its derivative with respect to each element's
+    probability (the element's Birnbaum importance), by one forward and one
+    reverse pass. ``complements`` holds each element's ``1 - p``, computed
+    without cancellation, so the value keeps its full relative precision
+    however small it is.
 
     ``terminals`` are the values of the plan's two constant slots: with
     ``(1.0, 0.0)`` in place of the default ``(0.0, 1.0)`` the plan gives the
@@ -130,16 +206,28 @@ def _shannon_value_and_gradient(
             probabilities[pivot] * values[active]
             + complements[pivot] * values[inactive]
         )
-    adjoints = [0.0] * len(values)
+    # None: a slot the root does not reach (or a constant, which needs none).
+    adjoints: list = [None] * len(values)
     adjoints[root] = 1.0
-    gradient: Dict[Any, float] = defaultdict(float)
+    gradient: Dict[Any, Any] = {}
     for index in range(len(steps) - 1, -1, -1):
         adjoint = adjoints[index + 2]
-        if adjoint:
-            pivot, active, inactive = steps[index]
-            gradient[pivot] += adjoint * (values[active] - values[inactive])
-            adjoints[active] += adjoint * probabilities[pivot]
-            adjoints[inactive] += adjoint * complements[pivot]
+        if adjoint is None:
+            continue
+        pivot, active, inactive = steps[index]
+        change = adjoint * (values[active] - values[inactive])
+        gradient[pivot] = (
+            gradient[pivot] + change if pivot in gradient else change
+        )
+        for slot, weight in (
+            (active, probabilities[pivot]),
+            (inactive, complements[pivot]),
+        ):
+            if slot > _ONE:
+                share = adjoint * weight
+                adjoints[slot] = (
+                    share if adjoints[slot] is None else adjoints[slot] + share
+                )
     return values[root], gradient
 
 

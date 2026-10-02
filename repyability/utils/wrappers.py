@@ -1,5 +1,4 @@
 import functools
-import inspect
 from contextlib import contextmanager
 
 import numpy as np
@@ -10,9 +9,10 @@ def numpy_seed(seed):
     """Temporarily seed numpy's global RNG, restoring the previous state on
     exit.
 
-    surpyval's ``.random()`` draws from numpy's *global* RNG and exposes no
-    seed argument, so reproducible Monte-Carlo simulations are obtained by
-    seeding that global RNG. This context manager seeds it for the duration of
+    surpyval's ``.random()`` draws from numpy's *global* RNG unless given a
+    ``random_state``, and the simulations draw from that global stream (their
+    batched draws replay it), so reproducible Monte-Carlo simulations are
+    obtained by seeding it. This context manager seeds it for the duration of
     a simulation and restores the caller's RNG state afterwards, so calling a
     simulation with ``seed=...`` is reproducible *without* disturbing the
     surrounding program's random stream. ``seed=None`` is a no-op (i.e. the
@@ -32,41 +32,6 @@ def numpy_seed(seed):
         yield
     finally:
         np.random.set_state(state)
-
-
-def seed_keyword(method) -> str:
-    """The keyword a model's simulation method takes its seed by.
-
-    surpyval 0.21 renamed the simulations' ``seed`` to ``random_state``
-    (the old name warns until surpyval 0.22 removes it), so a seed goes
-    by ``random_state`` when the method takes it and by ``seed``
-    otherwise: surpyval 0.20, and any other model exposing the same
-    methods.
-
-    Parameters
-    ----------
-    method : callable
-        The bound method to be called, e.g. ``model.mcf``.
-
-    Returns
-    -------
-    str
-        ``"random_state"`` or ``"seed"``.
-
-    Examples
-    --------
-    >>> class Old:
-    ...     def mcf(self, x, items=100, seed=None): ...
-    >>> class New:
-    ...     def mcf(self, x, items=100, random_state=None): ...
-    >>> seed_keyword(Old().mcf), seed_keyword(New().mcf)
-    ('seed', 'random_state')
-    """
-    try:
-        parameters = inspect.signature(method).parameters
-    except (TypeError, ValueError):
-        return "seed"
-    return "random_state" if "random_state" in parameters else "seed"
 
 
 def check_probability(func):

@@ -45,7 +45,8 @@ shared cause (probability `β · Q = 0.001`) now fails both pumps at once.
 member's failure probability `Q` comes from a cause shared by the **whole**
 group; the rest, `(1 − beta) Q`, is independent. `beta` is in `[0, 1]`: `0`
 reproduces the independent result exactly and `1` makes the group no better
-than one unit.
+than one unit. Over a lifetime, split the failure rate instead,
+`BetaFactor(beta, basis="rate")` (see [Over a lifetime](#over-a-lifetime)).
 
 ```python
 NonRepairableRBD(edges, pumps, ccf_groups=[CCFGroup(["p1", "p2"], BetaFactor(0.0))]).ff()
@@ -133,29 +134,245 @@ pair.ff(100)       # -> 9.9e-05
 pair_ccf.ff(100)   # -> 0.001075
 ```
 
-**Keep each member's `Q` small.** The models are the probabilistic-risk
-assessment basic-event models: they split a failure *probability*, and they
-are rare-event models. Use them over a mission or a proof-test interval, where
-each member's `Q` stays small, not over a whole life. For a `β = 0.3` pair,
-the result is within 3.5% of a rate-based treatment at `Q = 0.1`, but from
-about `Q = 0.5` it comes out *more* reliable than an independent pair
-([Concepts](../concepts.md#common-cause-failures) has the numbers).
+**Keep each member's `Q` small.** By default the models split a failure
+*probability*: they are the probabilistic-risk assessment basic-event models,
+rare-event models for a mission or a proof-test interval, where each
+member's `Q` stays small, not for a whole life. For a `β = 0.3` pair, the
+result is within 3.5% of a rate-based treatment at `Q = 0.1`, but from about
+`Q = 0.5` it comes out *more* reliable than an independent pair
+([Concepts](../concepts.md#common-cause-failures) has the numbers). So the
+diagram warns, once for each group, when a member's `Q` passes 0.1:
+
+```python
+pair_ccf.sf(1000)   # -> 0.6336   more reliable than the independent pair's 0.6004
+# UserWarning: Common-cause group ['p1', 'p2'] (BetaFactor(beta=0.1)): its members'
+# probability of failing reaches Q = 0.632 at the times evaluated, beyond the 0.1
+# the probability split is meant for. [...] Over a lifetime, split the failure
+# rate: BetaFactor(beta=0.1, basis='rate').
+```
+
+## Over a lifetime
+
+`basis="rate"` splits each member's failure **rate** instead. The shared
+cause is a shock that has not struck by `t` with probability `R(t)^β`, and
+each member survives its own causes with `R(t)^(1 − β)`, `R` the members'
+reliability:
+
+- every member keeps its own life distribution, whatever it is: its
+  reliability is `R(t)^β · R(t)^(1 − β) = R(t)`;
+- the model holds over the whole life, so the system's reliability falls
+  to 0 as its members' do, and the exact MTTF and the simulations include
+  the group;
+- while `Q` is small it agrees with the probability split to first order,
+  so over a mission or a proof-test interval the two give about the same.
+
+```python
+pair_rate = NonRepairableRBD(
+    edges, {"p1": unit, "p2": unit},
+    ccf_groups=[CCFGroup(["p1", "p2"], BetaFactor(0.1, basis="rate"))],
+)
+pair_rate.ff(100)    # -> 0.00108   as the probability split's 0.001075
+pair_rate.sf(1000)   # -> 0.5862    below the independent pair's 0.6004
+pair_rate.sf(3000)   # -> 0.000247  where the probability split still gives 0.1712
+pair_rate.mean()     # -> 1129.5    exact; the independent pair's is 1145.8
+pair_rate.mean(method="simulate", seed=0)   # -> 1128.6   the shocks are drawn
+pair_rate.bx_life(10)   # -> 581.9
+```
+
+`MGL(..., basis="rate")` gives each specific set of members a cause of its
+own, which strikes independently of the others with the share of the
+members' hazard that the probability split gives its probability (`Q_k / Q`
+above). Several causes may have struck by a time, and a member has failed if
+any of its causes has, so `decompose` lists the distinct sets the struck
+causes fail between them, mutually exclusive as before:
+
+```python
+q_independent, shocks = MGL(0.1, 0.3, basis="rate").decompose(["a", "b", "c"], np.array([0.01]))
+q_independent[0]     # -> 0.0090045   1 − 0.99^0.9, against 0.009 by probability
+[(sorted(members), round(float(p[0]), 7)) for members, p in shocks]
+# [(['a', 'b'], 0.0003513), (['a', 'c'], 0.0003513), (['b', 'c'], 0.0003513),
+#  (['a', 'b', 'c'], 0.0003018)]
+```
+
+The simulations draw a rate-split group through its members' quantile
+function: in the members' cumulative hazard `H = −log R`, each cause strikes
+at an exponential time of rate its share, and a member fails at the first
+of its causes to strike. Members whose model has no quantile function (one
+that draws its own random numbers) cannot be drawn so, and the simulations
+refuse the group; its `sf`, `ff` and `mean` stay exact.
+
+## Importance, sensitivity, uncertainty and allocation
+
+A group's members fail together, so a member's state says something about
+the others'. The importance measures condition on it: `R(1_i)` and
+`R(0_i)`, the system's reliability given member `i` works and given it has
+failed, are summed over the groups' shock outcomes, each weighted by the
+member's chance of that state under it. A node outside the groups is held
+working and failed, as without them. Birnbaum, improvement potential, RAW,
+RRW and criticality follow from them as usual, and Fussell–Vesely sums,
+outcome by outcome, the probability that a minimal cut set containing the
+node has failed. Each is a sum of products, so a small probability keeps
+its precision, and `beta = 0` gives the measures without the group. With a
+valve in series with the pumps, the shared cause moves the importance from
+the valve to the pumps:
+
+```python
+valve_edges = [("s", "p1"), ("s", "p2"), ("p1", "v"), ("p2", "v"), ("v", "t")]
+valve_nodes = {
+    "p1": FixedEventProbability.from_params(0.01),
+    "p2": FixedEventProbability.from_params(0.01),
+    "v": FixedEventProbability.from_params(0.001),
+}
+group = CCFGroup(["p1", "p2"], BetaFactor(0.1))
+with_valve = NonRepairableRBD(valve_edges, valve_nodes, ccf_groups=[group])
+with_valve.fussell_vesely()["p1"]          # -> 0.5197   independent: 0.0909
+with_valve.fussell_vesely()["v"]           # -> 0.4808   independent: 0.9092
+with_valve.risk_achievement_worth()["p1"]  # -> 52.45    independent: 9.99
+```
+
+A member held working or broken (`working_nodes`, `broken_nodes`) is
+refused, as it is for `sf`.
+
+`parameter_sensitivity` reports a group's parameters once, under the tuple
+of its members. They carry one model, so each value is the derivative of
+the system reliability as the parameter moves for all of them at once. The
+parameters of the group's own model come with them, named `ccf_beta` (and,
+for an `MGL` model, `ccf_gamma`, `ccf_delta`, ...):
+
+```python
+sensitivity = with_valve.parameter_sensitivity()
+sensitivity[("p1", "p2")]["p"]          # -> -0.11606   the pumps' probability of failing
+sensitivity[("p1", "p2")]["ccf_beta"]   # -> -0.00981
+sensitivity["v"]["p"]                   # -> -0.99892
+```
+
+The parameter-uncertainty methods (`sf_uncertainty`, `mean_uncertainty`,
+`time_to_reliability_uncertainty`, `bx_life_uncertainty`) work out each
+draw with the groups. The members' uncertainty is given together, in one
+tuple, and the group's own model can be uncertain too: give the group as a
+key, with distributions over its parameters (or a list of models, drawn with
+replacement):
+
+```python
+import scipy.stats as st
+
+result = with_valve.sf_uncertainty(
+    uncertainty={
+        ("p1", "p2"): {"p": st.beta(2, 198)},   # about 0.01
+        group: {"beta": st.beta(2, 18)},        # about 0.1
+    },
+    n_draws=10_000,
+    seed=1,
+)
+result.interval(0.9)   # (0.99564, 0.9989); (0.99616, 0.99882) with beta known
+```
+
+`mean_uncertainty` refuses a group that splits a probability, as `mean`
+does.
+
+In `allocate_redundancy` and `redundancy_front` a copy of a member joins its
+group, as it would in the plant: the shared cause fails it too. A
+`BetaFactor` group's `beta` holds at any size, so its members can be copied:
+active copies of their own model, with any number of them required. An
+`MGL` model's letters are for its group's size, so copying its member is
+refused, as are options and cold spares for a member. The shared cause can
+change what is worth buying. With two pumps that fail with probability 0.05
+and a valve that fails with 0.002, a third pump is the better buy if the
+pumps are independent, and a second valve if a fifth of their failures are
+shared:
+
+```python
+weak = {
+    "p1": FixedEventProbability.from_params(0.05),
+    "p2": FixedEventProbability.from_params(0.05),
+    "v": FixedEventProbability.from_params(0.002),
+}
+costs = {"p1": 1.0, "p2": 1.0, "v": 1.0}
+NonRepairableRBD(valve_edges, weak).allocate_redundancy(costs, budget=4).units
+# {'p1': 1, 'p2': 2, 'v': 1}
+NonRepairableRBD(
+    valve_edges, weak, ccf_groups=[CCFGroup(["p1", "p2"], BetaFactor(0.2))]
+).allocate_redundancy(costs, budget=4).units
+# {'p1': 1, 'p2': 1, 'v': 2}
+```
+
+`allocate_reliability_redundancy` takes the groups in for the nodes outside
+them, and refuses to choose a member's component reliability, which is the
+group's.
 
 ## What honours a CCF group
 
 | Method | With CCF groups |
 |---|---|
-| `sf`, `ff`, `reliability`, `unreliability`, and what is derived from them (`df`, `hf`, `Hf`, `cs`, `time_to_reliability`, `bx_life`) | Include the common cause, exactly. |
+| `sf`, `ff`, `reliability`, `unreliability`, and what is derived from them (`df`, `hf`, `Hf`, `cs`, `time_to_reliability`, `bx_life`) | Include the common cause, exactly. A probability split warns once its members' `Q` passes 0.1. |
 | `structural_importance` | Unaffected (it does not use probabilities). |
-| `random`, `mean`, `mean_time_to_failure`, `mean_time_to_failure_interval` | Sample members **independently**: the common cause is not included, since a lifetime runs to `Q = 1`, outside the model. |
-| The probability-based importance measures, `parameter_sensitivity`, and the condition-based methods | Raise `NotImplementedError`. |
+| `mean`, `mean_time_to_failure` (exact by default) | Include a group splitting the rate. Raise `NotImplementedError` for a group splitting a probability: the exact MTTF integrates the reliability over whole lifetimes, where `Q` runs to 1. |
+| `random`, `mean(method="simulate")`, `mean_time_to_failure_interval`, `compare`, `unreliability_interval` | Draw a group splitting the rate with its shared shocks. Sample the members of a group splitting a probability **independently**, leaving the common cause out (`unreliability_interval` refuses such a group). |
+| The importance measures (Birnbaum, improvement potential, RAW, RRW, criticality, Fussell–Vesely) | Include the groups, exactly: a member conditioned on its state through the shock outcomes, a node outside them held. |
+| `parameter_sensitivity` | A group's parameters, and its model's (`ccf_beta`, ...), reported once, under the tuple of its members. |
+| `sf_uncertainty`, `time_to_reliability_uncertainty`, `bx_life_uncertainty`, `mean_uncertainty` | Each draw worked out with the groups; the members drawn together, and the group's model too if it is given. `mean_uncertainty` refuses a group splitting a probability, as `mean` does. |
+| `allocate_redundancy`, `redundancy_front` | A member's copies join its group: a `BetaFactor` group's, active copies of the member's own model. Copies of an `MGL` group's member, and options or cold spares for a member, raise `NotImplementedError`. |
+| `allocate_reliability_redundancy` | Includes the groups; a member in `uses` raises `NotImplementedError` (its reliability is the group's). |
+| The condition-based methods (`sf_given_state`, `remaining_life`, `importances_given_state`) | Raise `NotImplementedError`: they would need members of different ages. |
 | `working_nodes` / `broken_nodes` naming a group member | Raises `NotImplementedError`. |
-| `allocate_redundancy` | Not supported (duplicating a member would have to extend its group). |
 
 ```python
-pair_ccf.mean(seed=0)   # -> 1147.4   the same as without the group
-pair.mean(seed=0)       # -> 1147.4
+pair_ccf.mean(method="simulate", seed=0)   # -> 1147.4   the same as without the group
+pair.mean(method="simulate", seed=0)       # -> 1147.4
+pair.mean()                                # -> 1145.8   exact, without the group
 ```
 
-Groups are saved with the RBD. An *alpha-factor* model, a data-estimable
-reparameterisation of MGL, is a planned extension.
+Groups are saved with the RBD, their basis with them. An *alpha-factor*
+model, a data-estimable reparameterisation of MGL, is a planned extension.
+
+## Repairable systems
+
+A [`RepairableRBD`][repyability.RepairableRBD] takes `ccf_groups` too. A
+repairable component's failures are a rate, so a group's model always splits
+the rate (whatever its `basis`): each cause, a member's own or a shared one,
+strikes at its share of the failure rate and fails the members it names that
+are up, at once. Each member on its own still fails at its rate, so
+`node_availability` is as without the group; what changes is which members
+are down together. With two pumps, each down a tenth of the time, a fifth of
+their failures shared:
+
+```python
+from repyability import RepairableRBD
+
+pump = {
+    "reliability": surv.Exponential.from_params([0.01]),
+    "repairability": surv.Exponential.from_params([0.1]),
+}
+independent = RepairableRBD(edges, {"p1": pump, "p2": pump})
+shared = RepairableRBD(
+    edges,
+    {"p1": pump, "p2": pump},
+    ccf_groups=[CCFGroup(["p1", "p2"], BetaFactor(0.2))],
+)
+independent.mean_unavailability()   # -> 0.008264   (1/11)^2
+shared.mean_unavailability()        # -> 0.01585
+```
+
+The long-run values are exact: a group's members form a Markov chain of
+which of them are down, its long-run distribution found without
+subtraction, so a small probability keeps its precision. The members need
+exponential lives, and either revealed failures with exponential repairs, as
+here, or hidden failures found by tests (instant, as the long-run values of
+tests need, with one coverage for the group), at offsets of their own if
+they are staggered; see [the PFDavg of a safety
+function](costs.md#common-cause-staggered-tests-and-test-coverage).
+`mean_availability`, `mean_unavailability`, `system_failure_frequency`,
+MTBF, MUT and MDT, the cost rate, `capacity_distribution`, and the interval
+choices built on them take the groups in. So do the importance measures:
+each long-run time's points are split by the members' joint states, and a
+member's measures are conditioned on its state at each time, then averaged
+over the times as every node's are. With `beta = 0` they are the measures
+without the group:
+
+```python
+shared.birnbaum_importance()["p1"]       # -> 0.1743   P(p2 down | p1 down)
+independent.birnbaum_importance()["p1"]  # -> 0.0909
+```
+
+The allocations, the values over time from new and the simulations refuse a
+diagram with groups, as yet (#158; `analysis_routes()` says which).

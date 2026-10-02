@@ -104,25 +104,23 @@ class RBDGraph(DiGraph):
                 results["is_valid"] = False
                 results["has_koon_errors"] = True
                 koon_errors.append(
-                    "Node {} has k of zero. Must be positive integer".format(n)
+                    f"node {n!r} has k = 0: k is how many of its inputs must "
+                    "work, a whole number from 1"
                 )
             if k > 1:
                 in_degree = self.in_degree(n)
                 if in_degree == k:
                     results["has_koon_warnings"] = True
                     koon_warnings.append(
-                        (
-                            "Node {n} requires {k} working but has {k} inputs."
-                            + " Is k correct or should this be a series "
-                            + "strucuture instead?"
-                        ).format(n=n, k=k)
+                        f"node {n!r} needs all {k} of its inputs working "
+                        f"(k = {k}), as a series of them would: is k right?"
                     )
                 if in_degree < k:
                     results["is_valid"] = False
                     results["has_koon_errors"] = True
                     koon_errors.append(
-                        "node {n} requires {k} working but has only"
-                        + " {in_degree} paths to it."
+                        f"node {n!r} needs {k} of its inputs working (k = {k})"
+                        f" but has only {in_degree}"
                     )
 
         results["koon_errors"] = koon_errors

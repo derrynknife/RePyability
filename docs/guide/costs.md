@@ -19,7 +19,7 @@ Costs are optional keys of a component's dict, plus one system-level rate:
 | Where | Key | Charged |
 |---|---|---|
 | Component | `repair_cost` | Per failure (labour, a callout). A number or a distribution. |
-| Component | `replace_cost` | Per failure (the spare part). A number or a distribution. |
+| Component | `replace_cost` | Per failure (the spare part); for a component repaired imperfectly, only per replacement (see [Imperfect repair](repairable.md#imperfect-repair)). A number or a distribution. |
 | Component | `downtime_cost` | Per unit time *this component* is down, even if the system is up (a degraded-mode or per-leg penalty). A number. |
 | Component | `acquisition_cost` | Once, to buy the unit. A number. Not a running cost: see [the total cost of ownership](#the-total-cost-of-ownership). |
 | System | `downtime_cost_rate=` | Per unit time the *system* is down (lost production). A number. |
@@ -27,7 +27,7 @@ Costs are optional keys of a component's dict, plus one system-level rate:
 ```python
 import numpy as np
 import surpyval as surv
-from repyability import RepairableRBD
+from repyability import BetaFactor, CCFGroup, RepairableRBD
 
 def unit(failure_rate, repair_rate, **costs):
     return {
@@ -91,18 +91,18 @@ cost accumulation and returns a [`CostResult`][repyability.CostResult]: one
 total cost per simulated window.
 
 ```python
-costs = plant.cost(t_simulation=1000.0, N=500, seed=0)
+costs = plant.cost(t_simulation=1000.0, mc_samples=500, seed=0)
 costs.mean              # mean total cost of a window
 costs.cost_rate         # mean / t_simulation: converges to expected_cost_rate()
 costs.percentile(90)    # a planning budget: 9 windows in 10 cost less
 costs.std               # how much a window's cost varies
-costs.by_category       # mean repair, replace, preventive, inspection, component_downtime, system_downtime
+costs.by_category       # mean repair, replace, preventive, inspection, component_downtime, system_downtime, setup
 costs.by_component      # mean cost attributable to each costed component
 ```
 
 `cost()` takes the same arguments as `availability()` (`working_nodes`,
-`broken_nodes`, `method`, `N`, `verbose`, `seed`, and `tolerance`,
-`antithetic` and `n_jobs`: see
+`broken_nodes`, `method`, `mc_samples`, `verbose`, `seed`, and `tolerance`,
+`antithetic`, `n_jobs` and `engine`: see
 [Simulation precision and speed](simulation.md)). The same result comes with
 `availability(...)` as `result.cost`, so one simulation gives both answers.
 With nothing priced, `cost()` returns `None` and `result.cost` is `None`.
@@ -125,6 +125,37 @@ interval.lower < plant.expected_cost_rate() * 1000.0 < interval.upper   # True
 replace, preventive and own downtime cost (lost production is a system cost
 and is not attributed to components).
 
+## The expected cost of a window (exact)
+
+The long-run rate times a window is the window's expected cost only once the
+components have settled: from new, the first stretch costs less (or more).
+`expected_cost(t)` gives the expected cost of `[0, t)` from new exactly (or,
+with `state=`, from the components' [current
+states](repairable.md#from-the-plant-as-it-is-now): a repair or maintenance
+going on at 0 was charged when it began, before the window), by the same
+categories as the simulation:
+
+```python
+window = plant.expected_cost(1000.0)
+window.mean           # -> 121155   cost() above estimates 121703 ± 1666
+window.by_category    # repair 45983.07, replace 28848.37, system_downtime 46323.67, the rest 0
+window.by_component   # {'A': 18183.47, 'B': 18183.47, 'C': 38464.5}
+window.cost_rate      # -> 121.16   per unit time, against 121.23 in the long run
+plant.expected_cost([10.0, 100.0]).cost_rate   # array([113.45, 120.45])
+```
+
+Each category is its events' expected number over the window (see
+[Repairable systems](repairable.md#expected-events-over-a-window-exact))
+times its mean cost: the repair and replace costs at each corrective action,
+the preventive cost at each preventive replacement, the inspection cost at
+each test, the downtime rates over the expected downtimes, and a maintenance
+group's set-up once per stop (replacements due at one instant are one
+stop). It returns an [`ExpectedCost`][repyability.ExpectedCost], with
+`mean`, `by_category`, `by_component`, `acquisition_cost`, `total` (the two
+added) and `cost_rate`. It covers what the availability over time covers,
+and refuses the rest with the reason; with nothing priced, every category is
+0. For the spread of a window's cost, simulate it with `cost()`.
+
 ## Costs drawn from distributions
 
 `repair_cost` and `replace_cost` can be a distribution of the cost instead of
@@ -146,9 +177,9 @@ variable.expected_cost_rate()   # -> 30.58   = 2 × 168.17 / 11
 
 - The distribution must have a finite mean and no appreciable probability of
   a negative cost.
-- The cost draws come from their own random stream (seeded from the run's
-  seed), so pricing never changes the failure and repair histories: a seeded
-  `availability()` gives the same availability with or without costs.
+- The cost draws come from random streams of their own (seeded from the
+  run's seed), so pricing never changes the failure and repair histories: a
+  seeded `availability()` gives the same availability with or without costs.
 - The downtime costs must be numbers: they are rates, and the outage
   durations already make them random.
 
@@ -177,7 +208,7 @@ between preventive and corrective maintenance:
 | Key | Meaning |
 |---|---|
 | `interval` | Required: the replacement interval `T` (`inf`: never). |
-| `policy` | `"age"` (the default): `T` after the unit was last put into service as new, so a failure restarts the clock. `"block"`: at `T, 2T, 3T, …` whatever the unit's age, skipped while it is down. |
+| `policy` | `"age"` (the default): `T` after the unit was last put into service as new, so a failure restarts the clock. `"block"`: at `T, 2T, 3T, …` whatever the unit's age, skipped while it is down. `"condition"`: inspected at `T, 2T, 3T, …`, and replaced if likely to fail before the next inspection (see [below](#replacement-on-condition)). |
 | `duration` | `"instant"` (the default): renewed in place, never down. Or a time-to-maintain model: the unit is down meanwhile, a *planned outage*. |
 | `cost` | Charged at each preventive replacement: a number or a distribution. |
 
@@ -314,11 +345,155 @@ as a failure: `system_planned_outages` counts the times one took the system
 down.
 
 ```python
-year = alone(580).availability(t_simulation=8760.0, N=500, seed=0)
-year.system_failures / year.n_simulations          # -> 3.666
-year.system_planned_outages / year.n_simulations   # -> 11.82
-year.cost.by_category["preventive"]                # -> 11824.0   1000 each
+year = alone(580).availability(t_simulation=8760.0, mc_samples=500, seed=0)
+year.system_failures / year.n_simulations          # -> 3.518
+year.system_planned_outages / year.n_simulations   # -> 11.92
+year.cost.by_category["preventive"]                # -> 11918.0   1000 each
 ```
+
+### Replacement on condition
+
+`"policy": "condition"` inspects the unit at every multiple of `interval`,
+while it is up, and replaces it only if it is then more likely than
+`"threshold"` to fail before the next inspection, given its age `a`:
+`1 − R(a + T) / R(a)`, the conditional survival that `NodeState` and
+`sf_given_state` use. A unit renewed a while ago is left alone, and a worn
+one is replaced at the last inspection before it is likely to fail.
+
+| Key | Meaning |
+|---|---|
+| `threshold` | Required with `"condition"`: the probability, in `[0, 1]`, above which an inspection replaces the unit. |
+| `inspection_cost` | Charged at each inspection: a number or a distribution. |
+
+`duration` and `cost` are the replacement's, as under the other policies.
+An inspection takes no time, and one due while the unit is down is skipped.
+Inspected weekly and replaced when more than 20% likely to fail before the
+next inspection, the lone pump above costs about what the best age
+replacement does:
+
+```python
+weekly = {"interval": 168.0, "policy": "condition", "threshold": 0.2,
+          "duration": surv.Weibull.from_params([8, 3]), "cost": 1000.0,
+          "inspection_cost": 20.0}
+inspected = RepairableRBD([("s", "p"), ("p", "t")],
+                          {"p": dict(pump(580), preventive=weekly)},
+                          downtime_cost_rate=500.0)
+inspected.expected_cost_rate()              # -> 13.37   per hour
+run = inspected.cost(200_000.0, mc_samples=20, seed=1)
+run.mean_interval().estimate / 200_000.0    # -> 13.28   simulated, ± 0.2
+```
+
+| Threshold | 0.05 | 0.1 | 0.15 | 0.2 | 0.25 | 0.3 |
+|---|---|---|---|---|---|---|
+| Cost per hour | 22.10 | 15.98 | 13.47 | 13.37 | 14.02 | 14.34 |
+
+Judged on its age alone, a unit replaced on condition is replaced much as
+under age replacement (13.14 at the best age), but on the inspection
+calendar. A low threshold replaces it too young; a high one lets it fail.
+
+- **A threshold of 0** replaces the unit at every inspection: block
+  replacement at the interval. **A threshold of 1** never does: run to
+  failure, with inspections.
+- **A constant failure rate** gives the same probability at every age,
+  `1 − exp(−λT)`: the unit is replaced at every inspection or at none, and
+  it fails as often either way.
+- **Numerical in the long run** (#145). The inspections that replace the
+  unit are regeneration points, and a cycle between two is followed one
+  inspection interval at a time: the units put into service in an interval
+  as an alternating renewal process, as under block replacement, and the
+  units an inspection keeps on into the next interval by their ages. So the
+  long-run values, the cost rate (the inspections charged at the unit's
+  availability just before them) and the importance measures are
+  numerical, to about `1e-7`. A cycle in which the unit fails many times
+  before an inspection replaces it is summed to its end as a geometric
+  series once it falls at a steady rate.
+- **Simulated over time.** The availability over time and the expected
+  events of a window refuse a component replaced on condition, with the
+  reason (#161); `availability`, `cost` and `compare` simulate it, in
+  Python.
+
+### Opportunistic maintenance
+
+Plants group their work: once a unit is down, for a failure or its planned
+replacement, the crew services its neighbours too, as the line is stopped
+anyway. Components that share such stops form a *maintenance group*, named
+by their `"group"` key. Each failure of a member, and each scheduled
+replacement, opens a *stop* of its group, at which every other member that
+is working and at least its `"opportunity"` age is replaced as well, as
+its own scheduled replacement would replace it:
+
+| Key | Meaning |
+|---|---|
+| `"group"` (component) | The component's maintenance group: any hashable name. |
+| `opportunity` (`"preventive"`, age policy) | The age, from 0 to `interval`, from which the unit is replaced early at a stop of its group. Left out, it never is. |
+| `setup_cost` (`maintenance_groups`) | Charged once per stop, however many members it renews. |
+| `system_down` (`maintenance_groups`) | `True`: every outage of the system is a stop of the group as well. |
+
+A compressor and its motor in series wear out, and each stop of the train
+costs 3,000 to set up (isolation, permits, scaffolding) besides the units'
+own costs. Replaced separately at 600 h, each failure or replacement is a
+stop of its own; from age 300 h, a unit is replaced at the other's stop:
+
+```python
+def unit(scale, opportunity=None):
+    preventive = {"interval": 600.0,
+                  "duration": surv.Weibull.from_params([8, 3]),   # 7 h
+                  "cost": 1000.0}
+    if opportunity is not None:
+        preventive["opportunity"] = opportunity
+    return {
+        "reliability": surv.Weibull.from_params([scale, 2.5]),
+        "repairability": surv.LogNormal.from_params([3.0, 0.5]),  # 23 h
+        "replace_cost": 5000.0,
+        "preventive": preventive,
+        "group": "train",
+    }
+
+def train(opportunity=None):
+    return RepairableRBD(
+        [("s", "compressor"), ("compressor", "motor"), ("motor", "t")],
+        {"compressor": unit(1000, opportunity),
+         "motor": unit(1500, opportunity)},
+        downtime_cost_rate=500.0,
+        maintenance_groups={"train": {"setup_cost": 3000.0}},
+    )
+
+train().expected_cost_rate()          # -> 33.00   separate stops, exact
+run = train(300).availability(200_000.0, mc_samples=20, seed=1)
+run.cost.cost_rate                    # -> 23.45   grouped, simulated
+run.opportunistic_renewals            # -> {'compressor': 3355, 'motor': 3481}
+```
+
+| Opportunity age (h) | none | 500 | 400 | 300 | 200 | 100 |
+|---|---|---|---|---|---|---|
+| Cost per hour (± 0.15) | 33.00 | 29.98 | 26.76 | 23.45 | 23.17 | 23.16 |
+
+Grouping pays twice: the stops, and their set-ups, are fewer (5.63 an hour
+of set-ups against 10.33), and the units' outages overlap, so the train is
+down less (12.0 an hour of lost production against 16.7).
+
+- **A stop is an instant.** Work started at one instant shares one set-up,
+  and a member whose own failure or replacement falls due then keeps it, as
+  part of the stop: two units on the same schedule are replaced together,
+  on schedule, at one set-up.
+- **Durations overlap.** Each member renewed at a stop takes its own
+  maintenance time, from the stop, so the set-up time each one's
+  maintenance includes is spent once in a series train.
+- **Results.** `opportunistic_renewals` counts each component's early
+  renewals, summed over the simulations; the set-ups are under
+  `by_category["setup"]`, and each early renewal is charged the member's
+  preventive cost and uses a spare.
+- **Exact or simulated.** A component that can be renewed early depends on
+  the others, so the exact long-run values, the availability over time and
+  the spares counts refuse it; `availability`, `cost` and `compare`
+  simulate it, in Python. With no `opportunity` below an interval, the
+  set-up cost is exact: `expected_cost_rate` charges a set-up at each
+  failure and each preventive replacement of a member (so `opportunity`
+  equal to the interval is plain age replacement, plus set-ups). It
+  refuses two members replaced on a clock (block replacement, or never
+  failing before an instant age replacement), whose replacements share
+  stops.
+- Members cannot have hidden failures or be standby groups.
 
 ## Hidden failures and inspection
 
@@ -332,9 +507,12 @@ component's dict makes its failures hidden:
 
 | Key | Meaning |
 |---|---|
-| `interval` | Required: the time `τ` between inspections, positive and finite. The component is inspected at `τ, 2τ, 3τ, …`. |
+| `interval` | Required: the time `τ` between inspections, positive and finite. The component is inspected at `τ, 2τ, 3τ, …`, or from its `offset`. |
 | `duration` | `"instant"` (the default): the test takes no time. Or a time-to-test model: the component is off-line while it is tested (a planned outage), and does not age meanwhile. |
 | `cost` | Charged at each inspection: a number or a distribution. |
+| `offset` | The time of the first test, from 0 to less than `τ` (by default 0): tests at `offset, offset + τ, …`, so that redundant components can be tested apart (staggered). |
+| `coverage` | The chance that a test finds a failure, from 0 to 1 (by default 1): its *proof-test coverage*. A failure a test misses stays hidden until a full test. |
+| `full_test` | With a coverage below 1, required: the time between full tests, which find every failure, a whole multiple of `τ` (the tests at `offset` and every `full_test` after it). Often the mission time, after which the component is renewed. |
 
 A failure found by an inspection is repaired once the test is done (taking a
 time drawn from the component's `"repairability"`), and its repair and
@@ -390,10 +568,12 @@ down together, so `mean_availability` and the other long-run methods average
 the system's availability over one period of the inspection schedules (the
 least common multiple of the intervals: components on different intervals
 can be mixed), and the importance measures are ratios of those averages.
-They need a constant failure rate, instant tests and instant repair, and
-raise `NotImplementedError` otherwise: then simulate. Testing both valves at
-once, for example, takes the whole function off-line during the test, which
-here costs far more than the hidden failures:
+They need instant tests and instant repair (in closed form for a constant
+failure rate, and numerically for any other life: see [a life that wears
+out](#a-life-that-wears-out)), and raise `NotImplementedError` otherwise:
+then simulate. Testing both valves at once, for example, takes the whole
+function off-line during the test, which here costs far more than the
+hidden failures:
 
 ```python
 def tested(interval):
@@ -410,11 +590,116 @@ both = RepairableRBD(
     [("s", "v1"), ("s", "v2"), ("v1", "t"), ("v2", "t")],
     {"v1": tested(8760.0), "v2": tested(8760.0)},
 )
-decade = both.availability(t_simulation=10 * 8760.0, N=20000, seed=0)
+decade = both.availability(t_simulation=10 * 8760.0, mc_samples=20000, seed=0)
 1 - decade.system_uptime / (decade.n_simulations * decade.time_simulated_to)
 # -> 3.9e-4
 decade.system_planned_outages / decade.n_simulations   # -> 9.0   one per test
 ```
+
+### A life that wears out
+
+The closed forms above need a constant failure rate. With any other life,
+and instant tests and repairs, the values are numerical, exact to rounding.
+A failed unit is found and renewed at the next test, so every renewal falls
+on a test, and a unit renewed `m` intervals before a test is still up with
+probability `R(mτ)`. In the long run a cycle lasts `S = 1 + Σ R(mτ)`
+intervals (over `m ≥ 1`), and the unit is up a time `u` after a test with
+probability `(R(u) + Σ R(mτ + u)) / S`. From new, the chance of a renewal
+at each test follows a renewal equation over the tests, and settles to
+`1/S`. A valve that wears out, with a mean life of about 15 years:
+
+```python
+worn = surv.Weibull.from_params([150_000.0, 2.5])   # wears out; MTTF 133,090 h
+wearing = RepairableRBD(
+    [("s", "v"), ("v", "t")],
+    {"v": {
+        "reliability": worn,
+        "repairability": "instant",
+        "inspection": {"interval": 8760.0},
+    }},
+)
+wearing.mean_unavailability()               # -> 0.03186   about τ / (2 MTTF) = 0.0329
+1 - wearing.mission_availability(87600.0)   # -> 0.01126   its first ten years
+years = np.array([1, 5, 10, 20]) * 8760.0 - 1.0   # just before a test
+1 - wearing.point_availability(years)
+# -> [0.00082 0.01908 0.04983 0.06844]
+```
+
+For a short interval the long-run PFDavg is about `τ / (2 MTTF)`, whatever
+the life's shape. What the wear changes is the PFD over time. A new valve
+rarely fails in its first years, so its first ten years' PFD is a third of
+the long run's, and the PFD just before each test climbs with its age
+before it settles. The values over a window, from new or from the valve's
+current state (its age, and the time since its last test), are exact too:
+`expected_events`, `expected_cost` and the other [analyses over
+time](repairable.md#availability-over-time-exact).
+
+The sums run over the intervals a unit can last. Within an interval, every
+unit but the one renewed at the last test ages smoothly, so their sum is
+worked out once, at Chebyshev points across the interval, and interpolated
+between them, to rounding. A term that bends there (a life with a
+threshold, say) is summed directly instead. A life that lasts more than
+200,000 intervals (the most summed) refuses. Tests that take time, repairs
+that take time, and tests that can miss failures of a life that is not
+exponential are simulated (#159).
+
+### Common cause, staggered tests and test coverage
+
+Three more terms decide a real safety function's PFDavg, and each has its
+place in the diagram:
+
+- **Common cause.** Redundant valves of one design, in one service, fail
+  together more often than chance allows. Give the diagram `ccf_groups`, as
+  for a [non-repairable one](common-cause.md): a `BetaFactor(β)` makes a
+  share `β` of each valve's failures a shared cause that fails both at
+  once. For a redundant function the shared term usually dominates: about
+  `βλτ/2`, five times the pair's independent `(λτ)²/3` here.
+- **Staggered tests.** An `"offset"` tests one valve half an interval after
+  the other: a shared failure is then found by whichever test comes first,
+  and the independent term falls from `(λτ)²/3` to about `5(λτ)²/24`.
+- **Test coverage.** A proof test that finds only a share `c` of the
+  failures (a `"coverage"`) leaves the rest hidden until a full test
+  (`"full_test"`), say the ten-year overhaul: about `(1 − c)λT/2` more,
+  `T` the full test's interval.
+
+```python
+def proof_tested(**inspection):
+    return {
+        "reliability": surv.Exponential.from_params([2e-6]),
+        "repairability": "instant",
+        "inspection": {"interval": 8760.0, **inspection},
+    }
+
+redundant_edges = [("s", "v1"), ("s", "v2"), ("v1", "t"), ("v2", "t")]
+common = [CCFGroup(["v1", "v2"], BetaFactor(0.05))]
+shared = RepairableRBD(
+    redundant_edges,
+    {"v1": proof_tested(), "v2": proof_tested()},
+    ccf_groups=common,
+)
+shared.mean_unavailability()        # -> 5.290e-4   (λτ)²/3 + βλτ/2, about
+staggered = RepairableRBD(
+    redundant_edges,
+    {"v1": proof_tested(), "v2": proof_tested(offset=4380.0)},
+    ccf_groups=common,
+)
+staggered.mean_unavailability()     # -> 2.779e-4   the shared term halved
+partial = RepairableRBD(
+    [("s", "v"), ("v", "t")],
+    {"v": proof_tested(coverage=0.9, full_test=87600.0)},
+)
+partial.mean_unavailability()       # -> 0.01642    0.9λτ/2 + 0.1λT/2, about
+```
+
+All three are exact with constant failure rates and instant tests and
+repairs, and staggered tests with any life too: a group's members are a
+Markov chain of
+which of them are down, with each member found by its own tests, and a
+shared failure found alike by every test (the coverage is the group's).
+The importance measures take the groups in, a member's conditioned on its
+state at each time; the allocations, the values over time from new and the
+simulations do not take a common-cause group in yet, and refuse it (#158);
+see `analysis_routes()`.
 
 ### Choosing the interval
 
@@ -509,6 +794,15 @@ line = RepairableRBD([("s", "pump"), ("pump", "t")], {"pump": pump},
 line.acquisition_cost          # -> 20000.0
 line.expected_cost_rate()      # -> 1.4851   (500 + 100 × 10) / 1010 per hour
 line.total_cost(87600.0)       # -> 150099.0   ten years
+```
+
+`total_cost` runs the system at its long-run rate from the start. The
+exact expected cost of owning it from new is `expected_cost(H).total`: the
+pump is new at the start, so it is down a little less early on than in the
+long run.
+
+```python
+line.expected_cost(87600.0).total   # -> 150089
 ```
 
 ### Buying redundancy

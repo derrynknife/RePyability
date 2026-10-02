@@ -101,10 +101,11 @@ A scalar time returns a float; an array returns a numpy array. Reliability is
 computed **exactly** (not by simulation) from the diagram, so these calls are
 cheap and repeatable.
 
-Mean time to failure is a simulated quantity; seed it for reproducibility:
+The mean time to failure is exact too: the area under the reliability curve,
+integrated numerically.
 
 ```python
-rbd.mean_time_to_failure(seed=0)   # -> 8250.3   h (Monte-Carlo)
+rbd.mean_time_to_failure()   # -> 8246.6   h
 ```
 
 ## 4. When should we service it?
@@ -260,7 +261,7 @@ Modelled *independently*, the same two pumps each pinned at the half-load
 would read higher:
 
 ```python
-p = RegressionNode(pump, covariates=[1.0]).sf(4000)[0]
+p = RegressionNode(pump, covariates=[1.0]).sf(4000)
 1 - (1 - p) ** 2   # -> 0.9119
 ```
 
@@ -275,16 +276,19 @@ The two filters are the same part from the same shelf, so one bad batch, or
 one contamination event upstream, can blind both at once. That is a
 **common-cause failure**, and no amount of *structural* redundancy defends
 against it. Attach a beta-factor group (here 8% of a filter's failures are
-shared) to the otherwise unchanged skid:
+shared) to the otherwise unchanged skid. Over 4000 h a filter fails with
+probability 0.12, more than the small probabilities the textbook beta factor
+splits, so split the failure *rate* (`basis="rate"`): the shared cause is a
+shock, and each filter keeps its own life.
 
 ```python
 from repyability import BetaFactor, CCFGroup
 
 rbd_ccf = NonRepairableRBD(
     edges, reliabilities,
-    ccf_groups=[CCFGroup(["filterA", "filterB"], BetaFactor(0.08))],
+    ccf_groups=[CCFGroup(["filterA", "filterB"], BetaFactor(0.08, basis="rate"))],
 )
-rbd_ccf.sf(4000)   # -> 0.9023   against 0.9091 with independent filters
+rbd_ccf.sf(4000)   # -> 0.9016   against 0.9091 with independent filters
 ```
 
 Modest at the skid level *here*, because the filters are not the weak link,
@@ -313,8 +317,8 @@ duty_unit = surv.WeibullAFT.fit(run_hours, Z=duty_history.reshape(-1, 1))
 # benign until 3000 h, then a harsher duty for the rest of life
 duty = StepSchedule.from_changepoints([0, 3000], [[0.0], [1.0]])
 node = RegressionNode(duty_unit, schedule=duty)
-node.sf(4000)[0]   # -> 0.7024   just after the step up
-node.sf(6000)[0]   # -> 0.3799   the harsher duty has now done real damage
+node.sf(4000)   # -> 0.7024   just after the step up
+node.sf(6000)   # -> 0.3799   the harsher duty has now done real damage
 ```
 
 Held at the benign duty the same unit would read `0.762` and `0.554`.
@@ -358,10 +362,10 @@ availability, and which component causes the outages, come from a seeded
 discrete-event simulation:
 
 ```python
-result = rep.availability(t_simulation=20000, N=2000, seed=0)
-result.availability[-1]   # -> 0.9975   availability at 20 000 h
+result = rep.availability(t_simulation=20000, mc_samples=2000, seed=0)
+result.availability[-1]   # -> 0.999    availability at 20 000 h
 result.criticalities.failure_criticality_index.per_system_failure["ctrl"]
-# -> 0.918   the controller caused 92% of the outages
+# -> 0.922   the controller caused 92% of the outages
 ```
 
 The controller again: a second one (step 6) is the obvious investment. See

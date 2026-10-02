@@ -20,9 +20,8 @@ from scipy.stats import norm
 
 from repyability import NonRepairableRBD, RepairableRBD, StandbyModel
 from repyability.rbd import _montecarlo as montecarlo
-from repyability.rbd import non_repairable_rbd
+from repyability.rbd import _streams, non_repairable_rbd
 from repyability.rbd.non_repairable_rbd import _check_lifetimes
-from repyability.rbd.repairable_rbd import _KeyedStreams
 
 E = surv.Exponential.from_params
 W = surv.Weibull.from_params
@@ -112,14 +111,14 @@ class Drawn:
 
 def test_availability_to_a_tolerance_is_a_run_of_its_size():
     rbd = plant()
-    result = rbd.availability(T, N=200, seed=1, tolerance=0.004)
+    result = rbd.availability(T, mc_samples=200, seed=1, tolerance=0.004)
     n = result.n_simulations
     assert n > 200 and n % 200 == 0
     fractions = result.uptimes / T
     assert half_width(fractions) <= 0.004
     # It stopped at the first check that passed.
     assert half_width(fractions[: n - 200]) > 0.004
-    fixed = rbd.availability(T, N=n, seed=1)
+    fixed = rbd.availability(T, mc_samples=n, seed=1)
     np.testing.assert_array_equal(fixed.uptimes, result.uptimes)
     np.testing.assert_array_equal(fixed.timeline, result.timeline)
     np.testing.assert_array_equal(fixed.availability, result.availability)
@@ -134,12 +133,12 @@ def test_availability_to_a_tolerance_is_a_run_of_its_size():
 
 def test_cost_to_a_tolerance():
     rbd = plant(cost=100.0)
-    result = rbd.cost(T, N=100, seed=2, tolerance=15.0)
+    result = rbd.cost(T, mc_samples=100, seed=2, tolerance=15.0)
     n = result.n_simulations
     assert n > 100 and n % 100 == 0
     assert half_width(result.samples) <= 15.0
     assert half_width(result.samples[: n - 100]) > 15.0
-    fixed = rbd.cost(T, N=n, seed=2)
+    fixed = rbd.cost(T, mc_samples=n, seed=2)
     np.testing.assert_array_equal(fixed.samples, result.samples)
     interval = result.mean_interval()
     assert interval.upper - interval.estimate <= 15.0
@@ -148,31 +147,33 @@ def test_cost_to_a_tolerance():
 def test_a_run_that_does_not_converge_warns():
     rbd = plant()
     with pytest.warns(RuntimeWarning, match="did not converge"):
-        result = rbd.availability(T, N=100, seed=3, tolerance=1e-6, max_N=300)
+        result = rbd.availability(
+            T, mc_samples=100, seed=3, tolerance=1e-6, max_samples=300
+        )
     assert result.n_simulations == 300
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        rbd.availability(T, N=100, seed=3, tolerance=0.5)
+        rbd.availability(T, mc_samples=100, seed=3, tolerance=0.5)
 
 
 @pytest.mark.parametrize(
     "options",
     [
-        {"N": 0},
-        {"N": 2.0},
-        {"N": True},
+        {"mc_samples": 0},
+        {"mc_samples": 2.0},
+        {"mc_samples": True},
         {"tolerance": 0.0},
         {"tolerance": -1.0},
         {"tolerance": math.inf},
         {"tolerance": "0.1"},
         {"tolerance": True},
-        {"max_N": 100},
-        {"tolerance": 0.1, "max_N": 50},
-        {"tolerance": 0.1, "max_N": 150.0},
+        {"max_samples": 100},
+        {"tolerance": 0.1, "max_samples": 50},
+        {"tolerance": 0.1, "max_samples": 150.0},
         {"tolerance": 0.1, "confidence": 1.0},
         {"tolerance": 0.1, "confidence": 0.0},
-        {"antithetic": True, "N": 101},
-        {"antithetic": True, "tolerance": 0.1, "max_N": 201},
+        {"antithetic": True, "mc_samples": 101},
+        {"antithetic": True, "tolerance": 0.1, "max_samples": 201},
         {"n_jobs": 0},
         {"n_jobs": -2},
         {"n_jobs": 1.5},
@@ -180,7 +181,7 @@ def test_a_run_that_does_not_converge_warns():
     ],
 )
 def test_invalid_options(options):
-    options = {"N": 100, **options}
+    options = {"mc_samples": 100, **options}
     with pytest.raises(ValueError):
         plant().availability(T, seed=0, **options)
 
@@ -192,51 +193,66 @@ def identity(u):
     return u
 
 
+def uniform_streams(antithetic: bool) -> _streams.Run:
+    """Streams of plain uniforms for components "a" and "b", in blocks of
+    four simulations (or pairs) and chunks of eight rows."""
+    specs = {
+        ((node,), _streams.FAILURE): _streams.Spec(
+            (node,), _streams.FAILURE, identity, 8, 4
+        )
+        for node in "ab"
+    }
+    return _streams.Run(_streams.Plan(7, antithetic, specs), reseed=False)
+
+
 def test_each_component_pairs_its_own_draws():
-    streams = _KeyedStreams(7, antithetic=True)
-    a, b = streams.for_node(("a",)), streams.for_node(("b",))
-    streams.begin(0)
-    first_a = [a.draw(identity) for _ in range(70)]  # past a block of 64
-    first_b = [b.draw(identity) for _ in range(3)]
+    run = uniform_streams(antithetic=True)
+    a = run.stream(("a",), _streams.FAILURE)
+    b = run.stream(("b",), _streams.FAILURE)
+    run.begin(0)
+    first_a = [a.draw() for _ in range(70)]  # past several chunks
+    first_b = [b.draw() for _ in range(3)]
     # The second of the pair: in another order, and b draws more, but
     # each component's k-th draw is one minus its k-th in the first.
-    streams.begin(1)
-    second_b = [b.draw(identity) for _ in range(5)]
-    second_a = [a.draw(identity) for _ in range(70)]
+    run.begin(1)
+    second_b = [b.draw() for _ in range(5)]
+    second_a = [a.draw() for _ in range(70)]
     np.testing.assert_allclose(np.add(first_a, second_a), 1.0, atol=1e-15)
     np.testing.assert_allclose(np.add(first_b, second_b[:3]), 1.0, atol=1e-15)
     assert len(set(first_a)) == 70 and set(first_a).isdisjoint(first_b)
-    # The next pair draws afresh.
-    streams.begin(2)
-    fresh = a.draw(identity)
-    assert all(abs(fresh - u) > 1e-12 for u in first_a + second_a)
-    # Without pairs, every replication draws afresh.
-    plain = _KeyedStreams(7)
-    c = plain.for_node(("a",))
+    # The next pair draws afresh, in the same block and in the next.
+    for replication in (2, 8):
+        run.begin(replication)
+        fresh = a.draw()
+        assert all(abs(fresh - u) > 1e-12 for u in first_a + second_a)
+    # Without pairs, every replication draws afresh: the first one what
+    # the first pair did.
+    plain = uniform_streams(antithetic=False)
+    c = plain.stream(("a",), _streams.FAILURE)
     plain.begin(0)
-    assert c.draw(identity) == first_a[0]
+    assert [c.draw() for _ in range(70)] == first_a
     plain.begin(1)
-    assert abs(c.draw(identity) - (1 - first_a[0])) > 1e-12
+    assert abs(c.draw() - (1 - first_a[0])) > 1e-12
 
 
 def test_antithetic_runs_are_reproducible():
     rbd = plant()
-    seeded = rbd.availability(T, N=20, seed=5, antithetic=True)
-    again = rbd.availability(T, N=20, seed=5, antithetic=True)
+    seeded = rbd.availability(T, mc_samples=20, seed=5, antithetic=True)
+    again = rbd.availability(T, mc_samples=20, seed=5, antithetic=True)
     np.testing.assert_array_equal(seeded.uptimes, again.uptimes)
     # Without a seed, from the global RNG as it stands: seed=5 seeds it.
     np.random.seed(5)
-    unseeded = rbd.availability(T, N=20, antithetic=True)
+    unseeded = rbd.availability(T, mc_samples=20, antithetic=True)
     np.testing.assert_array_equal(unseeded.uptimes, seeded.uptimes)
     np.random.seed(6)
-    other = rbd.availability(T, N=20, antithetic=True)
+    other = rbd.availability(T, mc_samples=20, antithetic=True)
     assert not np.array_equal(other.uptimes, seeded.uptimes)
 
 
 def test_antithetic_availability_is_unbiased_and_tighter():
     rbd = plant()
     exact = window_mean(lambda t: plant_availability(1.0, t))
-    paired = rbd.availability(T, N=4000, seed=3, antithetic=True)
+    paired = rbd.availability(T, mc_samples=4000, seed=3, antithetic=True)
     interval = paired.mean_availability_interval()
     assert paired.antithetic
     assert abs(interval.estimate - exact) < 4 * interval.standard_error
@@ -246,7 +262,7 @@ def test_antithetic_availability_is_unbiased_and_tighter():
     assert interval.standard_error == pytest.approx(
         np.std(pairs, ddof=1) / np.sqrt(2000), rel=1e-12
     )
-    independent = rbd.availability(T, N=4000, seed=3)
+    independent = rbd.availability(T, mc_samples=4000, seed=3)
     assert not independent.antithetic
     assert (
         interval.standard_error
@@ -265,21 +281,21 @@ def test_antithetic_cost_is_unbiased_and_tighter():
             + 0.02 * window_mean(lambda t: marginal(0.02, 0.5, t))
         )
     )
-    paired = rbd.cost(T, N=4000, seed=4, antithetic=True)
+    paired = rbd.cost(T, mc_samples=4000, seed=4, antithetic=True)
     assert paired.antithetic
     assert abs(paired.mean - exact) < 4 * paired.mean_se
     pairs = (paired.samples[0::2] + paired.samples[1::2]) / 2
     assert paired.mean_se == pytest.approx(
         np.std(pairs, ddof=1) / np.sqrt(2000), rel=1e-12
     )
-    independent = rbd.cost(T, N=4000, seed=4)
+    independent = rbd.cost(T, mc_samples=4000, seed=4)
     assert paired.mean_se < 0.8 * independent.mean_se
 
 
 def test_antithetic_needs_replayable_draws():
     rbd = RepairableRBD([("s", "c"), ("c", "t")], {"c": standby_pair()})
     with pytest.raises(NotImplementedError):
-        rbd.availability(T, N=10, seed=0, antithetic=True)
+        rbd.availability(T, mc_samples=10, seed=0, antithetic=True)
 
 
 # -- parallel runs ----------------------------------------------------------
@@ -299,18 +315,22 @@ def assert_same_results(a, b):
 
 def test_parallel_results_do_not_depend_on_the_processes():
     rbd = plant(cost=100.0)
-    one = rbd.availability(T, N=600, seed=4, n_jobs=1)
+    one = rbd.availability(T, mc_samples=600, seed=4, n_jobs=1)
     assert one.n_simulations == 600
-    assert_same_results(one, rbd.availability(T, N=600, seed=4, n_jobs=2))
-    assert_same_results(one, rbd.availability(T, N=600, seed=4, n_jobs=-1))
+    assert_same_results(
+        one, rbd.availability(T, mc_samples=600, seed=4, n_jobs=2)
+    )
+    assert_same_results(
+        one, rbd.availability(T, mc_samples=600, seed=4, n_jobs=-1)
+    )
     exact = window_mean(lambda t: plant_availability(1.0, t))
     interval = one.mean_availability_interval()
     assert abs(interval.estimate - exact) < 4 * interval.standard_error
-    # A block is the same whether or not it runs in its own process.
-    block = rbd.availability(
-        T, N=250, seed=montecarlo.block_seed(np.random.SeedSequence(4))
-    )
-    np.testing.assert_array_equal(one.uptimes[:250], block.uptimes)
+    # Nor on whether it runs in processes at all: each simulation is the
+    # same however the run is cut up, so the first 250 are a run of 250.
+    assert_same_results(one, rbd.availability(T, mc_samples=600, seed=4))
+    first = rbd.availability(T, mc_samples=250, seed=4, n_jobs=2)
+    np.testing.assert_array_equal(one.uptimes[:250], first.uptimes)
     assert not np.array_equal(one.uptimes[:250], one.uptimes[250:500])
 
 
@@ -318,7 +338,12 @@ def test_parallel_runs_to_a_tolerance_and_in_pairs():
     rbd = plant()
     runs = [
         rbd.availability(
-            T, N=300, seed=5, tolerance=0.004, antithetic=True, n_jobs=jobs
+            T,
+            mc_samples=300,
+            seed=5,
+            tolerance=0.004,
+            antithetic=True,
+            n_jobs=jobs,
         )
         for jobs in (1, 3)
     ]
@@ -334,7 +359,7 @@ def test_parallel_runs_to_a_tolerance_and_in_pairs():
 def test_a_system_compared_with_itself():
     rbd = plant(cost=100.0)
     for quantity in ("availability", "cost"):
-        same = rbd.compare(rbd, T, N=200, seed=6, quantity=quantity)
+        same = rbd.compare(rbd, T, mc_samples=200, seed=6, quantity=quantity)
         assert same.estimate == 0.0 and same.standard_error == 0.0
 
 
@@ -342,13 +367,13 @@ def test_compare_against_the_exact_difference():
     exact = window_mean(
         lambda t: plant_availability(1.0, t) - plant_availability(2.0, t)
     )
-    gain = plant(1.0).compare(plant(2.0), T, N=2000, seed=5)
+    gain = plant(1.0).compare(plant(2.0), T, mc_samples=2000, seed=5)
     assert abs(gain.estimate - exact) < 4 * gain.standard_error
     assert gain.lower < gain.estimate < gain.upper
     assert gain.n_samples == 2000
     # Two independent runs of the same size are far less precise.
-    a = plant(1.0).availability(T, N=2000, seed=5)
-    b = plant(2.0).availability(T, N=2000, seed=6)
+    a = plant(1.0).availability(T, mc_samples=2000, seed=5)
+    b = plant(2.0).availability(T, mc_samples=2000, seed=6)
     independent = math.hypot(
         a.mean_availability_interval().standard_error,
         b.mean_availability_interval().standard_error,
@@ -368,16 +393,35 @@ def test_compare_costs_against_the_exact_difference():
 
     exact = expected(1.0) - expected(2.0)
     gain = plant(1.0, cost=100.0).compare(
-        plant(2.0, cost=100.0), T, N=2000, seed=7, quantity="cost"
+        plant(2.0, cost=100.0), T, mc_samples=2000, seed=7, quantity="cost"
     )
     assert abs(gain.estimate - exact) < 4 * gain.standard_error
 
 
-def keyed_uptimes(rbd, n, key):
+def keyed_uptimes(rbd, n, key, widths):
     tally = rbd._run(
-        T, set(), set(), "p", n, False, key, streams=_KeyedStreams(key)
+        T,
+        set(),
+        set(),
+        "p",
+        n,
+        False,
+        None,
+        entropy=key,
+        widths=widths,
+        common=True,
     )
     return np.asarray(tally.uptimes)
+
+
+def common_widths(*rbds):
+    """The narrowest width each stream has in any of ``rbds``, as
+    ``compare`` gives two systems."""
+    widths: dict = {}
+    for rbd in rbds:
+        for name, spec in rbd._stream_specs(T)[0].items():
+            widths[name] = min(widths.get(name, spec.width), spec.width)
+    return widths
 
 
 def test_the_same_component_fails_and_is_repaired_alike():
@@ -391,15 +435,20 @@ def test_the_same_component_fails_and_is_repaired_alike():
         {"p1": pump(1.0), "p2": pump(1.0)},
     )
     slow = RepairableRBD([("s", "p1"), ("p1", "t")], {"p1": pump(3.0)})
+    widths = common_widths(one, two, slow)
     for key in (1, 2, 3):
-        spare = keyed_uptimes(two, 300, key) - keyed_uptimes(one, 300, key)
+        up = {
+            name: keyed_uptimes(rbd, 300, key, widths)
+            for name, rbd in (("one", one), ("two", two), ("slow", slow))
+        }
+        spare = up["two"] - up["one"]
         assert spare.min() >= -1e-9 and spare.max() > 0
-        faster = keyed_uptimes(one, 300, key) - keyed_uptimes(slow, 300, key)
+        faster = up["one"] - up["slow"]
         assert faster.min() >= -1e-9 and faster.max() > 0
     # With independent draws some simulations would go the other way.
     np.random.seed(0)
-    two_alone = two.availability(T, N=300, seed=1).uptimes
-    one_alone = one.availability(T, N=300, seed=2).uptimes
+    two_alone = two.availability(T, mc_samples=300, seed=1).uptimes
+    one_alone = one.availability(T, mc_samples=300, seed=2).uptimes
     assert (two_alone - one_alone).min() < 0
 
 
@@ -407,10 +456,10 @@ def test_nested_components_are_matched_by_their_place():
     inner = RepairableRBD([("a", "x"), ("x", "b")], {"x": pump(1.0)})
     outer = RepairableRBD([("s", "n"), ("n", "t")], {"n": inner})
     flat = RepairableRBD([("s", "n"), ("n", "t")], {"n": pump(1.0)})
-    same = outer.compare(outer, T, N=100, seed=8)
+    same = outer.compare(outer, T, mc_samples=100, seed=8)
     assert same.estimate == 0.0
     # The nested component "x" is not the flat "n": they are not paired.
-    assert outer.compare(flat, T, N=100, seed=8).standard_error > 0
+    assert outer.compare(flat, T, mc_samples=100, seed=8).standard_error > 0
 
 
 @pytest.mark.parametrize(
@@ -418,12 +467,12 @@ def test_nested_components_are_matched_by_their_place():
     [
         {"quantity": "uptime"},
         {"confidence": 1.5},
-        {"N": 0},
+        {"mc_samples": 0},
         {"quantity": "cost"},  # neither system is priced
     ],
 )
 def test_invalid_comparisons(options):
-    options = {"N": 10, **options}
+    options = {"mc_samples": 10, **options}
     with pytest.raises(ValueError):
         plant().compare(plant(2.0), T, seed=0, **options)
 
@@ -431,7 +480,7 @@ def test_invalid_comparisons(options):
 def test_comparing_needs_replayable_draws():
     rbd = RepairableRBD([("s", "c"), ("c", "t")], {"c": standby_pair()})
     with pytest.raises(NotImplementedError):
-        rbd.compare(rbd, T, N=10, seed=0)
+        rbd.compare(rbd, T, mc_samples=10, seed=0)
 
 
 # -- NonRepairableRBD: MTTF ---------------------------------------------------
@@ -448,8 +497,9 @@ def test_mttf_to_a_tolerance_is_a_run_of_its_size():
     lifetimes = rbd.random(n, seed=1)
     assert half_width(lifetimes[: n - 1000]) > 1.0
     assert interval == rbd.mean_time_to_failure_interval(mc_samples=n, seed=1)
-    for method in (rbd.mean, rbd.mean_time_to_failure):
-        assert method(1000, seed=1, tolerance=1.0) == interval.estimate
+    for mean in (rbd.mean, rbd.mean_time_to_failure):
+        estimate = mean(1000, seed=1, method="simulate", tolerance=1.0)
+        assert estimate == interval.estimate
     assert abs(interval.estimate - mttf(rbd)) < 4 * interval.standard_error
 
 

@@ -1,12 +1,13 @@
 """Batched random draws that reproduce surpyval's own sampling exactly.
 
 surpyval draws a sample from a plain parametric model as ``qf(u) + gamma``,
-taking one uniform ``u`` from numpy's global RNG per sample. The simulations
-used to make those draws one call at a time, and each call costs tens of
-microseconds of scipy/surpyval overhead. Taking the *same* uniforms from the
-global RNG in one block, in the same order, and applying ``qf`` to the block
-yields the same numbers at a fraction of the cost, so seeded results do not
-change.
+taking one uniform ``u`` from numpy's global RNG per sample. Making those
+draws one call at a time costs tens of microseconds of scipy/surpyval
+overhead each. Taking the *same* uniforms from the global RNG in one block,
+in the same order, and applying ``qf`` to the block yields the same numbers
+at a fraction of the cost. (``RepairableRBD``'s simulations take their
+uniforms from streams of their own instead, see ``_streams``, and turn
+them into draws with the same samplers.)
 
 :func:`inverse_sampler` returns ``None`` for any model whose sampling it
 cannot reproduce exactly (nested RBDs, standby nodes, fixed-probability
@@ -15,19 +16,18 @@ path. :func:`row_sampler` extends the same idea to composite node models
 (standby, repeated, load-sharing, regression and nested-RBD nodes), which
 draw several uniforms per sample.
 
-A limited-failure-population or zero-inflated surpyval model is the
-exception: its own ``random`` returns survival data (failure times, with
-the units that never fail right-censored), not lifetimes. Its lifetimes are
-drawn by its quantile function instead, one global uniform each: infinite
-for a unit that never fails, 0 for one dead on arrival. Every simulation
-draws them that way, through :func:`inverse_sampler` and :func:`draw`.
+A limited-failure-population or zero-inflated surpyval model draws its
+lifetimes through its own quantile function, one global uniform each:
+infinite for a unit that never fails, 0 for one dead on arrival.
+:func:`inverse_sampler` replays that too.
 """
 
 from dataclasses import dataclass
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
 import numpy as np
-from surpyval import NonParametric, Parametric
+from scipy.special import ndtri
+from surpyval import LogNormal, NonParametric, Normal, Parametric
 
 from .helper_classes import PerfectReliability, PerfectUnreliability
 
@@ -71,9 +71,10 @@ def row_sampler(model) -> Optional[RowSampler]:
         isinstance(model, NonParametric)
         and type(model).random is NonParametric.random
     ):
-        # surpyval draws these from a fresh, OS-seeded generator on every
-        # call, never from numpy's global RNG: they take no global uniforms
-        # (and are not reproducible, batched or not).
+        # surpyval draws these from a generator it seeds from numpy's global
+        # RNG, once per call: not one global uniform per draw. A batch takes
+        # one seed for all its draws, so it uses the global stream
+        # reproducibly, but not as draws made one at a time would.
         return RowSampler(
             0, lambda u: np.asarray(model.random(len(u)), dtype=float)
         )
@@ -82,15 +83,42 @@ def row_sampler(model) -> Optional[RowSampler]:
     return own() if callable(own) else None
 
 
+def lifetime_sampler(model) -> Optional[RowSampler]:
+    """A component's lifetimes as a :class:`RowSampler` (see
+    :func:`row_sampler`), or None if they cannot be drawn in a block. A
+    fixed probability, which surpyval draws as an event indicator, is a
+    unit that fails at the start (a lifetime of 0) or never (``inf``)."""
+    from repyability.rbd._model_utils import is_fixed_probability
+
+    if is_fixed_probability(model):
+        failure = float(np.ravel(model.ff(1.0))[0])
+        return RowSampler(
+            1, lambda u: np.where(u[:, 0] < failure, 0.0, np.inf)
+        )
+    return row_sampler(model)
+
+
+#: The quantile functions of surpyval's Normal and LogNormal, computed as
+#: surpyval computes them but without the argument checks of scipy.stats'
+#: generic ppf, which cost four times the maths: ``norm.ppf(u, mu, sigma)``
+#: is ``ndtri(u) * sigma + mu``, value for value. A workaround for surpyval
+#: #469 (keyed by the distribution objects' identity).
+_DIRECT_QF: dict = {
+    id(Normal): lambda u, mu, sigma: ndtri(u) * sigma + mu,
+    id(LogNormal): lambda u, mu, sigma: np.exp(ndtri(u) * sigma + mu),
+}
+
+
 def inverse_sampler(model) -> Optional[Sampler]:
     """``u -> model.random(len(u))`` for the uniforms ``u`` that call would
     draw, when the model samples by inverse transform with exactly one global
     uniform per draw; otherwise ``None``.
 
     This mirrors the branch of surpyval's ``Parametric.random`` that such a
-    model takes, operation for operation, so the values are identical. For a
-    limited-failure-population or zero-inflated model it is the model's
-    quantile function (see the module docstring and :func:`draw`).
+    model takes, operation for operation, so the values are identical: the
+    distribution's quantile function plus the offset for a plain model, and
+    the model's own quantile function for a limited-failure-population or
+    zero-inflated one.
     """
     if (
         isinstance(model, Parametric)
@@ -99,43 +127,10 @@ def inverse_sampler(model) -> Optional[Sampler]:
     ):
         if model.p == 1 and model.f0 == 0:
             dist, params, gamma = model.dist, model.params, model.gamma
-            return lambda u: dist.qf(u, *params) + gamma
+            qf = _DIRECT_QF.get(id(dist), dist.qf)
+            return lambda u: qf(u, *params) + gamma
         return lambda u: np.asarray(model.qf(u), dtype=float)
     return None
-
-
-def _defective(model) -> bool:
-    """A limited-failure-population or zero-inflated surpyval model, whose
-    ``random`` returns survival data rather than lifetimes."""
-    return (
-        isinstance(model, Parametric)
-        and type(model).random is Parametric.random
-        and (model.p != 1 or model.f0 != 0)
-        and hasattr(model.dist, "qf")
-    )
-
-
-def draw(model, size):
-    """``size`` lifetimes (or durations) of ``model`` from numpy's global
-    RNG: ``model.random(size)``, except for a limited-failure-population or
-    zero-inflated surpyval model, whose own ``random`` returns survival
-    data. Its lifetimes are drawn by its quantile function, one uniform
-    each, as :func:`inverse_sampler` draws them in blocks: infinite for a
-    unit that never fails, 0 for one dead on arrival.
-
-    Examples
-    --------
-    >>> import numpy as np
-    >>> import surpyval as surv
-    >>> from repyability.rbd._sampling import draw
-    >>> cured = surv.Weibull.from_params([100, 2], p=0.6)  # 40% never fail
-    >>> np.random.seed(0)
-    >>> draw(cured, 4).round(2)
-    array([156.89,    inf,    inf, 154.51])
-    """
-    if _defective(model):
-        return np.asarray(model.qf(np.random.random_sample(size)), dtype=float)
-    return model.random(size)
 
 
 def draw_rows(samplers: list[Sampler], size: int) -> list[np.ndarray]:
@@ -148,46 +143,3 @@ def draw_rows(samplers: list[Sampler], size: int) -> list[np.ndarray]:
     """
     u = np.random.random_sample((size, len(samplers)))
     return [column(u, j, sampler) for j, sampler in enumerate(samplers)]
-
-
-class UniformStream:
-    """Single draws from many samplers, in any interleaving, from pre-drawn
-    blocks of the global RNG's uniforms.
-
-    Each call to :meth:`draw` takes the next uniform in the global stream,
-    exactly as a ``random(1)`` call would, but the uniforms are drawn a block
-    at a time and each sampler's ``qf`` is applied to the whole block at
-    once. :meth:`close` rewinds the global RNG to just after the last uniform
-    handed out, so it ends exactly where the single draws would have left it.
-    """
-
-    def __init__(self, block_size: int = 1024):
-        self.block_size = block_size
-        self._state: Any = None  # np.random.get_state() before the block
-        self._block = np.empty(0)
-        self._pos = 0
-        self._values: dict = {}
-
-    def draw(self, sampler: Sampler) -> float:
-        if self._pos == len(self._block):
-            self._state = np.random.get_state()
-            self._block = np.random.random_sample(self.block_size)
-            self._pos = 0
-            self._values = {}
-        values = self._values.get(sampler)
-        if values is None:
-            values = self._values[sampler] = np.asarray(
-                sampler(self._block), dtype=float
-            ).tolist()
-        value = values[self._pos]
-        self._pos += 1
-        return value
-
-    def close(self) -> None:
-        if self._state is not None:
-            np.random.set_state(self._state)
-            np.random.random_sample(self._pos)
-            self._state = None
-            self._block = np.empty(0)
-            self._pos = 0
-            self._values = {}

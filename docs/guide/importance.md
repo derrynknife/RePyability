@@ -53,12 +53,21 @@ With `R` the system reliability, `Q = 1 − R` its unreliability, `R_i` node
 | `risk_achievement_worth` | `Q(0_i) / Q`: how many times more likely the system is to fail if node *i* has failed. |
 | `risk_reduction_worth` | `Q / Q(1_i)`: by what factor perfecting node *i* would divide the system unreliability. |
 | `criticality_importance` | `birnbaum_i · (1 − R_i) / Q`: the probability that node *i* has failed and is critical, given that the system has failed (the failure-oriented form; see below). |
-| `fussell_vesely` | Sum over the minimal cut sets containing *i* of the probability that every member has failed, divided by `Q` (the usual rare-event form). |
+| `fussell_vesely` | The probability that some minimal cut set containing *i* has failed (every member), divided by `Q`: the share of the system's unreliability that involves node *i*, between 0 and 1. |
 
-`fussell_vesely(t, fv_type="p")` substitutes the minimal *path* sets into the
-same formula: the sum, over the path sets containing *i*, of the probability
-that all their members have failed, divided by `Q`. `fv_type="c"` (cut sets)
-is the default and the standard measure. `fussel_vesely` (misspelled) is a
+`fussell_vesely` is exact: the union of the cut sets' failures is worked out
+by the exact engine, not summed. Many PRA tools report the rare-event form,
+the sum over the cut sets containing *i* of their probabilities, divided by
+`Q`; `method="rare_event"` gives it, for comparison. The two agree while
+failures are rare, but the sum over-estimates the union, and once the system
+is likely to have failed it passes 1: on a bridge whose system is nearly
+certain to have failed, it nears 2 while the exact share stays at most 1.
+
+`fussell_vesely(t, fv_type="p")` substitutes the minimal *path* sets: the
+probability that all the members of some path set containing *i* have
+failed (or, with `method="rare_event"`, the sum over those path sets),
+divided by `Q`. It is not bounded by 1. `fv_type="c"` (cut sets) is the
+default and the standard measure. `fussel_vesely` (misspelled) is a
 deprecated alias that warns.
 
 ### Failure- or success-oriented criticality
@@ -179,7 +188,16 @@ see [Repairable systems](repairable.md#criticality-measures).
 
 ## Limits
 
-- The probability-based measures and `parameter_sensitivity` raise
-  `NotImplementedError` on an RBD with common-cause groups (structural
-  importance does not).
-- All measures assume the nodes fail independently, as the exact engine does.
+- A perfect junction node (`PerfectReliability`, such as the vote of a
+  k-out-of-n arrangement) is a drawing device that never fails and cannot
+  be improved: every importance measure leaves it out, the structural
+  importance takes it as always working, and the allocations hold it at 1
+  and leave it out of their results.
+- With common-cause groups, a member's measures are conditioned on its state
+  through the shared causes, and `parameter_sensitivity` reports a group's
+  parameters (and its model's `ccf_beta`, ...) once, under the tuple of its
+  members (see [Common-cause
+  failures](common-cause.md#importance-sensitivity-uncertainty-and-allocation)).
+  A member cannot be held working or broken.
+- Otherwise the measures assume the nodes fail independently, as the exact
+  engine does.

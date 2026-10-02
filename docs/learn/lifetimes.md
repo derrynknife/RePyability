@@ -333,13 +333,13 @@ single.sf(200)                     # -> 0.9823   the same as pump.sf(200)
 single.bx_life(10)                 # -> 406.51   B10
 single.time_to_reliability(0.9)    # -> 406.51   when R falls to 0.9
 single.sf_given_state(200, {"pump": NodeState(age=500)})   # -> 0.792   the spare
-single.mean_time_to_failure(seed=0)   # -> 886.7   by simulation (exact 887.26)
+single.mean_time_to_failure()   # -> 887.26   the pump's own mean life
 ```
 
 `sf_given_state` conditions on each part's current age: the spare's 79.2%,
-computed for you. The system's MTTF is estimated by Monte-Carlo simulation
-(100,000 simulated lifetimes by default), so it carries a small sampling
-error, here under 0.1%; the `seed` makes the number reproducible.
+computed for you. The system's MTTF is the area under its reliability curve,
+which RePyability integrates numerically; with one part it is that part's
+mean life.
 
 Where do the models come from? From failure data: the times at which units
 failed, and the ages of units still running (censored observations).

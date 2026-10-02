@@ -20,6 +20,7 @@ import pytest
 import surpyval as surv
 
 from repyability.non_repairable import NonRepairable
+from repyability.rbd import _streams
 from repyability.rbd.non_repairable_rbd import NonRepairableRBD
 from repyability.rbd.repairable_rbd import RepairableRBD
 
@@ -60,7 +61,9 @@ def single_component_result():
         [("s", "A"), ("A", "t")],
         {"A": _comp(_SINGLE["lam"], _SINGLE["mu"])},
     )
-    return rbd.availability(t_simulation=20.0, N=_SINGLE["n"], seed=42)
+    return rbd.availability(
+        t_simulation=20.0, mc_samples=_SINGLE["n"], seed=42
+    )
 
 
 def test_transient_availability_matches_markov_single_component(
@@ -78,7 +81,7 @@ def test_transient_availability_matches_markov_series():
         [("s", "A"), ("A", "B"), ("B", "t")],
         {"A": _comp(0.2, 1.0), "B": _comp(0.4, 0.8)},
     )
-    result = rbd.availability(t_simulation=20.0, N=n, seed=7)
+    result = rbd.availability(t_simulation=20.0, mc_samples=n, seed=7)
     exact = _exact_marginal(0.2, 1.0, T_CHECK) * _exact_marginal(
         0.4, 0.8, T_CHECK
     )
@@ -91,7 +94,7 @@ def test_transient_availability_matches_markov_parallel():
         [("s", "A"), ("s", "B"), ("A", "t"), ("B", "t")],
         {"A": _comp(0.5, 1.0), "B": _comp(0.8, 1.0)},
     )
-    result = rbd.availability(t_simulation=20.0, N=n, seed=11)
+    result = rbd.availability(t_simulation=20.0, mc_samples=n, seed=11)
     exact = 1.0 - (1.0 - _exact_marginal(0.5, 1.0, T_CHECK)) * (
         1.0 - _exact_marginal(0.8, 1.0, T_CHECK)
     )
@@ -122,15 +125,25 @@ def _nestable():
 
 
 @pytest.mark.parametrize("levels", [1, 2])
-def test_a_nested_rbd_simulates_exactly_as_it_does_alone(levels):
+def test_a_nested_rbd_simulates_exactly_as_it_does_alone(levels, monkeypatch):
     # A nested RBD runs its own simulation on the outer one's clock. As the
-    # outer's only node it draws the same numbers in the same order, so its
-    # state changes, and the outer system's, fall at exactly the same times.
-    alone = _nestable().availability(t_simulation=30.0, N=200, seed=13)
+    # outer's only node, with its components' streams named as they are
+    # alone (not under "sub", which gives them streams of their own), it
+    # draws the same numbers, so its state changes, and the outer system's,
+    # fall at exactly the same times.
+    alone = _nestable().availability(
+        t_simulation=30.0, mc_samples=200, seed=13
+    )
     nested = _nestable()
     for _ in range(levels):
         nested = _wrapped(nested)
-    result = nested.availability(t_simulation=30.0, N=200, seed=13)
+    path_key = _streams.path_key
+    monkeypatch.setattr(
+        _streams,
+        "path_key",
+        lambda path: path_key(tuple(n for n in path if n != "sub")),
+    )
+    result = nested.availability(t_simulation=30.0, mc_samples=200, seed=13)
     np.testing.assert_array_equal(result.timeline, alone.timeline)
     np.testing.assert_array_equal(result.availability, alone.availability)
 
@@ -146,7 +159,7 @@ def test_transient_availability_matches_markov_nested():
         [("s", "A"), ("A", "pair"), ("pair", "t")],
         {"A": _comp(0.2, 1.0), "pair": pair},
     )
-    result = rbd.availability(t_simulation=20.0, N=n, seed=17)
+    result = rbd.availability(t_simulation=20.0, mc_samples=n, seed=17)
     exact = _exact_marginal(0.2, 1.0, T_CHECK) * (
         1.0
         - (1.0 - _exact_marginal(0.5, 1.0, T_CHECK))
@@ -178,8 +191,8 @@ def test_one_model_object_for_several_nodes_acts_as_separate_parts(layout):
         )
 
     one = part()
-    shared = build(lambda: one).availability(30.0, N=200, seed=19)
-    separate = build(part).availability(30.0, N=200, seed=19)
+    shared = build(lambda: one).availability(30.0, mc_samples=200, seed=19)
+    separate = build(part).availability(30.0, mc_samples=200, seed=19)
     np.testing.assert_array_equal(shared.timeline, separate.timeline)
     np.testing.assert_array_equal(shared.availability, separate.availability)
 
@@ -212,7 +225,7 @@ def test_availability_se_and_interval_edge_cases():
     )
     # Forcing A working -> availability is exactly 1 everywhere.
     result = rbd.availability(
-        t_simulation=10.0, N=200, working_nodes=["A"], seed=3
+        t_simulation=10.0, mc_samples=200, working_nodes=["A"], seed=3
     )
     se = result.availability_se
     assert np.all(se == 0.0)  # p = 1 -> binomial SE is 0
@@ -244,7 +257,8 @@ def test_mttf_interval_contains_analytic_value():
     assert interval.n_samples == 20_000
     # Consistent with the plain point estimate under the same seed.
     assert interval.estimate == pytest.approx(
-        rbd.mean_time_to_failure(20_000, seed=5)
+        rbd.mean_time_to_failure(method="simulate", mc_samples=20_000, seed=5)
     )
+    assert rbd.mean_time_to_failure() == pytest.approx(analytic, rel=1e-12)
     with pytest.raises(ValueError, match="confidence"):
         rbd.mean_time_to_failure_interval(mc_samples=10, confidence=0.0)
