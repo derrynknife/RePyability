@@ -46,7 +46,9 @@ diagrams, staggered tests, and proof tests that miss failures (#136).
 Common-cause groups enter the importance measures, parameter sensitivity
 and uncertainty, and redundancy allocation (#140). Hidden failures are
 numerical for any life, not only a constant failure rate, when tests and
-repairs take no time (#144).
+repairs take no time (#144). With repair crews, and for standby groups, the
+values over time come from the same Markov chains, and the importance
+measures with crews from their definitions (#146).
 Meshed diagrams are decided by a binary
 decision diagram, in milliseconds where their path sets took minutes (#102,
 #103). Non-parametric nodes, and the fits to simulated lifetimes behind some
@@ -400,6 +402,27 @@ is required.
   Checked against the machine-repair model's closed forms (to 1e-12), a
   chain worked by hand (an instant repair), and the simulation of #89 on a
   bridge with priorities.
+  - **Over time and importance with crews** (#146). From new, or from the
+    components' states (each up, or down in a repair, no more than there
+    are crews; or all in the long run), the same chain is followed over
+    time by uniformization, to about 1e-13: `point_availability`,
+    `mission_availability`, `expected_failures`, `expected_events`,
+    `expected_cost`, `point_capacity` and `mission_capacity` are
+    numerical. A nested RBD, with crews of its own, enters the availability
+    over time through its own, the system worked out for each pattern of
+    the nested RBDs up and down; the expected events and the capacity over
+    time refuse a nested RBD, as yet (#162). The importance measures are
+    exact, from their definitions: Birnbaum's is the system's long-run
+    availability with the node held working less that with it held failed,
+    each from the chain solved without it, and the improvement potential,
+    RAW and RRW are built on the same values; the criticality and
+    Fussell-Vesely measures are probabilities over the chain's states.
+    Only the allocations still refuse while a job can wait. A chain whose
+    rates are too far apart to follow in reasonable time is refused, with
+    the simulation to run instead. Checked against the closed forms with a
+    crew for each component (to 1e-13), chains written out by hand and the
+    machine-repair model over time (against the matrix exponential), the
+    long-run values, and the simulation.
 - **Repairable standby groups** (#91). A component spec's `"standby"` makes
   the node a group of identical units, `"k"` operating and the rest waiting
   as spares, cold, warm or hot (`"dormancy_factor"`). When an operating
@@ -414,11 +437,18 @@ is required.
   frequency and costs are exact and enter the RBD's exact values and
   importance measures, also with a crew limit while the group's units are
   the crews' only jobs (the "one repairman" case); crews shared with other
-  components, and the availability over time, are simulated. The groups are
-  saved with the RBD. Checked against the textbook chains (two-unit cold
+  components are simulated. The groups are saved with the RBD. Checked against the textbook chains (two-unit cold
   and warm standby with one or two repairers, imperfect switching), a
   switch that always fails leaving a single unit, timelines worked by hand
   with a shared crew, and the simulation.
+  - **Over time** (#146). With exponential units, the group's chain is
+    followed over time by uniformization from every unit ready, or from its
+    long-run state (`NodeState(stationary=True)`): its availability over
+    time and over a mission, and its expected failures and repairs (and so
+    their costs) over a window, are numerical, to about 1e-13, and enter
+    the system's like any component's. Checked against the matrix
+    exponential of the group's chain, a cold pair written out by hand, and
+    the simulation.
 - **Spares demand and stock** (#95). `RepairableRBD.spares_demand(horizon)`
   gives the distribution of each component's replacements (its failures
   and preventive replacements) over a horizon from new, for a system or a

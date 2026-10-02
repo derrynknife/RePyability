@@ -36,9 +36,10 @@ taking already-fitted lifetime models (from
   load sharing; beta-factor and MGL common-cause groups.
 - **Repairable systems**: exact long-run availability, failure frequency and
   MUT/MDT/MTBF; exact availability over time and over a mission; simulated
-  histories with criticality measures; shared repair crews, exact in the
-  long run for exponential components; repairable standby groups (a duty
-  unit and its spares, repaired one at a time); and imperfect repair
+  histories with criticality measures; shared repair crews, exact for
+  exponential components in the long run and numerical over time, with
+  their importance; repairable standby groups (a duty unit and its spares,
+  repaired one at a time); and imperfect repair
   (Kijima's virtual age), with replacement at the N-th failure.
 - **Capacity**: how much a system delivers, from its components'
   capacities (with several levels, or degrading through stages): the exact
@@ -148,8 +149,8 @@ places, nested diagrams):
 | Hidden failures whose tests or repairs take time, or whose tests miss failures of a life that is not exponential | Simulated (with instant tests and repairs, any life is numerical, summed over the test intervals; a constant failure rate is exact, staggered or with tests that miss failures too) | No: could be numerical, the next unit starting at a random phase of the test calendar, or the renewals on the lattice of the full tests (#159). |
 | Common-cause groups in a repairable diagram | Long run and importance exact, for exponential lives, tested or repaired; over time, allocation and the simulations refused | No: over time could be exact from the same Markov chain, the simulations could draw the shared causes, and an allocation could build each design's chain (#158). |
 | Replacement on condition at periodic inspections, over time | Simulated (the long-run values are numerical: a renewal cycle from one inspection that replaces the unit to the next) | No: could be numerical on the same grid (#161). |
-| Shared repair crews | Long run exact for exponential lives and repairs; the rest simulated | Over time and importance, with exponential lives: could be exact from the same Markov chain (#146). Other lives: yes, in general. |
-| Standby groups (a duty unit and its spares, repaired) | Long run and importance exact for exponential units; the rest simulated | Over time, with exponential units: could be exact from the same Markov chain (#146). Other units: yes, in general. |
+| Shared repair crews | For exponential lives and repairs, the long run and importance exact, and the values over time numerical (the same Markov chain, followed by uniformization), but the allocations; other lives simulated | Other lives: yes, in general. Around a nested RBD the expected events and the capacity over time are refused, and could be numerical too (#162). |
+| Standby groups (a duty unit and its spares, repaired) | For exponential units, the long run and importance exact, and the values over time numerical (the units' Markov chain, followed by uniformization); other units simulated | Other units: yes, in general. |
 | Opportunistic maintenance (renewals at a group's stops) | Simulated | Yes: each member's renewals depend on the others' ages. |
 | Imperfect repair (Kijima), with or without replacement at the *N*-th failure | Simulated | Yes, in general: a repair does not renew the unit. |
 | Spares of tested components whose tests or repairs take time, and the stock of block-replaced ones | Simulated (`spares_demand(method="simulate")`); the stock refused (block-replaced components' demand, and tested ones', are numerical) | No: the tests' calendar phase (#159) and the stock over the block calendar (#160) could be numerical. With crews, standby groups, opportunistic maintenance or imperfect repair: yes. |

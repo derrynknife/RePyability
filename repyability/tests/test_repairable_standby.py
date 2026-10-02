@@ -241,8 +241,13 @@ def test_what_the_chains_do_not_cover_is_refused():
         shared.mean_availability()
     report = shared.analysis_routes()["mean_availability"]
     assert report.route == r.REFUSED and report.reason == str(error.value)
-    with pytest.raises(NotImplementedError, match="importance"):
+    with pytest.raises(NotImplementedError, match="standby group"):
         shared.birnbaum_importance()
+    with pytest.raises(NotImplementedError, match="standby group") as error:
+        shared.point_availability([1.0])
+    assert shared.analysis_routes()["point_availability"].reason == str(
+        error.value
+    )
 
 
 def test_the_group_s_values_enter_the_rbd_like_a_component():

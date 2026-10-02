@@ -341,6 +341,8 @@ def test_a_chain_too_large_to_solve_is_refused():
 
 
 def test_what_assumes_independent_components_is_refused():
+    # The allocations; the importance measures and the values over time
+    # come from the chain (#146: see test_chains_over_time.py).
     rbd = units(3, 0.1, 0.5, 1, acquisition_cost=1.0)
     report = rbd.analysis_routes()
     for name in (
@@ -351,15 +353,11 @@ def test_what_assumes_independent_components_is_refused():
         "criticality_importance",
         "fussell_vesely",
     ):
-        with pytest.raises(NotImplementedError, match="importance measures"):
-            getattr(rbd, name)()
-        assert report[name].route == r.REFUSED
-    for call in (
-        lambda: rbd.point_availability([1.0]),
-        lambda: rbd.mission_availability(1.0),
-    ):
-        with pytest.raises(NotImplementedError, match="over time"):
-            call()
+        assert report[name].route == r.EXACT
+        getattr(rbd, name)()
+    for name in ("point_availability", "mission_availability"):
+        assert report[name].route == r.NUMERICAL
+        getattr(rbd, name)(1.0)
     for name, call in {
         "availability_allocation": lambda: rbd.availability_allocation(0.99),
         "mttf_mttr_allocation": lambda: rbd.mttf_mttr_allocation(0.99),

@@ -28,7 +28,7 @@ repairs are 1e4 times as fast as its failures.
 """
 
 import math
-from typing import Dict, Hashable, List, NamedTuple, Sequence, Tuple
+from typing import Any, Dict, Hashable, List, NamedTuple, Sequence, Tuple
 
 import numpy as np
 
@@ -45,11 +45,17 @@ class CrewChain(NamedTuple):
 
     ``up[s, i]`` says whether ``nodes[i]`` is up in state ``s``, and
     ``probabilities[s]`` is the long-run fraction of time in state ``s``.
+    ``states`` are the states themselves (the first with every component
+    up), and ``generator`` the rates between them (a sparse matrix, ``[s,
+    t]`` the rate from ``s`` to ``t``), for the chain over time (see
+    ``_chain_transient``).
     """
 
     nodes: Tuple[Hashable, ...]
     up: np.ndarray
     probabilities: np.ndarray
+    states: Tuple[State, ...] = ()
+    generator: Any = None
 
     def availability(self, node) -> float:
         """The long-run probability that ``node`` is up."""
@@ -208,8 +214,16 @@ def solve(
     up = np.ones((size, len(nodes)), dtype=bool)
     for s, (serving, queue) in enumerate(states):
         up[s, list(serving + queue)] = False
+    generator = sparse.csr_matrix(
+        (np.array(rates, dtype=float), (sources, targets)), shape=(size, size)
+    )
+    generator = (
+        generator - sparse.diags(np.asarray(generator.sum(axis=1)).ravel())
+    ).tocsr()
     if size == 1:
-        return CrewChain(tuple(nodes), up, np.ones(1))
+        return CrewChain(
+            tuple(nodes), up, np.ones(1), tuple(states), generator
+        )
     # The most components down first; within a level, by the queue. The
     # state with every component up, the only one with none down, is last.
     order = sorted(
@@ -239,4 +253,4 @@ def solve(
     weights = np.append(np.maximum(relative, 0.0), 1.0)
     probabilities = np.empty(size)
     probabilities[order] = weights / weights.sum()
-    return CrewChain(tuple(nodes), up, probabilities)
+    return CrewChain(tuple(nodes), up, probabilities, tuple(states), generator)

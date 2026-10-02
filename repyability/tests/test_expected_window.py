@@ -453,12 +453,12 @@ def test_nothing_priced_costs_nothing_without_any_checks():
     assert cost.acquisition_cost == 100.0
     np.testing.assert_array_equal(cost.total, [100.0, 100.0])
     assert rbd.analysis_routes()["expected_cost"].route == routes.EXACT
-    # The counts themselves refuse a crew that couples the components.
+    # The counts themselves come from the crews' chain (#146; see
+    # test_chains_over_time.py).
     route = rbd.analysis_routes()["expected_events"]
-    assert route.route == routes.REFUSED
-    with pytest.raises(NotImplementedError) as error:
-        rbd.expected_events(10.0)
-    assert str(error.value) == route.reason
+    assert route.route == routes.NUMERICAL
+    events = rbd.expected_events(10.0)
+    assert 0.0 < events.system_failures < events.node_failures["a"]
 
 
 def test_the_window_and_method_are_checked():

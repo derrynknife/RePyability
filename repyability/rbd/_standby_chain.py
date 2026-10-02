@@ -14,7 +14,8 @@ repaired unit fills it.
 With exponential units the group is a Markov chain on how many units
 operate, how many are spares and how many are under repair. Its states are
 few (at most ``(k + 1) * (units + 1)``), and its balance equations are
-solved directly.
+solved directly. From new (every unit ready) it is followed over time by
+``_chain_transient`` (#146).
 """
 
 from typing import Dict, List, NamedTuple, Optional, Tuple
@@ -23,6 +24,22 @@ import numpy as np
 
 #: A state: the units operating, the spares, and the units under repair.
 State = Tuple[int, int, int]
+
+
+class StandbyChain(NamedTuple):
+    """A group's Markov chain: its states (see ``State``), the first with
+    every unit ready (``k`` operating, the rest spares); its generator, the
+    rate from each state (row) to each other (column); its long-run
+    distribution; and, in each state, whether the group is up, the rate of
+    its failures (up to down) and that of its units' failures (the repairs
+    it pays for)."""
+
+    states: List[State]
+    generator: np.ndarray
+    probabilities: np.ndarray
+    up: np.ndarray
+    failures: np.ndarray
+    unit_failures: np.ndarray
 
 
 class StandbyLongRun(NamedTuple):
@@ -98,6 +115,55 @@ def _transitions(
     return states, rates
 
 
+def chain(
+    units: int,
+    k: int,
+    lam: float,
+    mu: float,
+    dormancy: float = 0.0,
+    switching: float = 1.0,
+    crews: Optional[int] = None,
+) -> StandbyChain:
+    """The Markov chain of a group of ``units`` exponential units, ``k``
+    needed, and its long-run distribution (see ``long_run`` for the
+    parameters).
+
+    Returns
+    -------
+    StandbyChain
+        Its states, generator and long-run distribution, and in each state
+        whether the group is up, and the rates of its failures and its
+        units'.
+    """
+    states, rates = _transitions(units, k, lam, mu, dormancy, switching, crews)
+    index = {state: i for i, state in enumerate(states)}
+    size = len(states)
+    generator = np.zeros((size, size))
+    for (source, target), rate in rates.items():
+        generator[index[source], index[target]] += rate
+    generator -= np.diag(generator.sum(axis=1))
+    # The balance equations of the other states, for their probabilities
+    # relative to the first's (every unit ready), which keeps small ones
+    # precise (see _crew_chain).
+    balance = generator.T
+    relative = np.linalg.solve(balance[1:, 1:], -balance[1:, 0])
+    probabilities = np.append(1.0, np.maximum(relative, 0.0))
+    probabilities /= probabilities.sum()
+    up = np.zeros(size)
+    failures = np.zeros(size)
+    unit_failures = np.zeros(size)
+    for i, (operating, spares, _) in enumerate(states):
+        unit_failures[i] = (operating + spares * dormancy) * lam
+        if operating == k:
+            up[i] = 1.0
+            # An operating unit fails, and no spare takes over.
+            takeover = switching if spares else 0.0
+            failures[i] = k * lam * (1.0 - takeover)
+    return StandbyChain(
+        states, generator, probabilities, up, failures, unit_failures
+    )
+
+
 def long_run(
     units: int,
     k: int,
@@ -130,22 +196,9 @@ def long_run(
         The group's availability, failure frequency, unit failure frequency
         and unavailability.
     """
-    states, rates = _transitions(units, k, lam, mu, dormancy, switching, crews)
-    index = {state: i for i, state in enumerate(states)}
-    size = len(states)
-    generator = np.zeros((size, size))
-    for (source, target), rate in rates.items():
-        generator[index[source], index[target]] += rate
-    generator -= np.diag(generator.sum(axis=1))
-    # The balance equations of the other states, for their probabilities
-    # relative to the first's (every unit ready), which keeps small ones
-    # precise (see _crew_chain).
-    balance = generator.T
-    relative = np.linalg.solve(balance[1:, 1:], -balance[1:, 0])
-    probabilities = np.append(1.0, np.maximum(relative, 0.0))
-    probabilities /= probabilities.sum()
+    group = chain(units, k, lam, mu, dormancy, switching, crews)
     availability = unavailability = failures = unit_failures = 0.0
-    for state, p in zip(states, probabilities):
+    for state, p in zip(group.states, group.probabilities):
         operating, spares, _ = state
         unit_failures += p * (operating + spares * dormancy) * lam
         if operating == k:

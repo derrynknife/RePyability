@@ -849,14 +849,18 @@ def test_the_readme_says_what_is_simulated():
         ],
         "Shared repair crews": [
             (crew, "mean_availability", "exact"),
-            (crew, "point_availability", "refused"),
-            (crew, "birnbaum_importance", "refused"),
+            (crew, "birnbaum_importance", "exact"),
+            (crew, "point_availability", "numerical"),
+            (crew, "expected_cost", "numerical"),
+            (crew, "point_capacity", "numerical"),
+            (crew, "availability_allocation", "refused"),
             (repairable["one repair crew"], "mean_availability", "refused"),
         ],
         "Standby groups (a duty unit and its spares, repaired)": [
             (group, "mean_availability", "exact"),
             (group, "birnbaum_importance", "exact"),
-            (group, "point_availability", "refused"),
+            (group, "point_availability", "numerical"),
+            (group, "expected_cost", "numerical"),
             (
                 repairable["standby group, Weibull"],
                 "mean_availability",

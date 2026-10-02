@@ -155,7 +155,7 @@ maintenance or hidden failures):
 | `mean_availability`, `system_failure_frequency`, `mean_up_time`, `mean_down_time`, `mean_time_between_failures`, `expected_cost_rate`, `total_cost`, and the repairable importance measures | exact | From the long-run node availabilities. |
 | `capacity_distribution`, `system_capacity` | exact | From the node reliabilities (at a time) or long-run availabilities. |
 | `point_capacity`, `mission_capacity` | numerical | The capacity distribution at each component's availability over time from new or from its state (each solved on a grid, to about `1e-7`), and its mean over a window. |
-| `point_availability`, `mission_availability` | numerical | Each component's renewal equation, from new or from its state, solved numerically (to about `1e-7`), and the system at its components' availabilities at each time. |
+| `point_availability`, `mission_availability` | numerical | Each component's renewal equation, from new or from its state, solved numerically (to about `1e-7`), and the system at its components' availabilities at each time; with repair crews, and for a standby group, a Markov chain followed by uniformization (to about `1e-13`). |
 | `expected_failures`, `expected_events` | numerical | Each component's expected events from its renewal equation, on the grid of its availability (to about `1e-7`), and the system's failures by the time-dependent Birnbaum/Vesely formula; `expected_cost` prices them, numerically when anything is priced. |
 | `availability` (with the capacity over time and the delivered fraction), `cost`, `compare` | simulated | Discrete-event simulation. |
 | `spares_demand`, `spares_stock` | numerical | Each component's replacements, a renewal process, counted on a grid (to about `1e-6`); `spares_demand(method="simulate")` counts them in simulations instead. |
@@ -184,12 +184,15 @@ The nodes can change a route:
   exact methods refuse.
 - **Standby groups.** A group's long-run values are exact from its own
   Markov chain when its units' lives and repair times are exponential, and
-  refused otherwise; its availability over time is simulated.
+  refused otherwise; its values over time are numerical, from the same
+  chain followed by uniformization.
 - **Repair crews.** Fewer `repair_crews` than components make components wait
   for each other. With exponential lives and repairs, the long-run values
-  are then exact from a Markov chain of the components' states and the
-  repair queue (up to 15,000 states); otherwise they refuse. The importance
-  measures, the availability over time and the allocations refuse, and the
+  and the importance measures are then exact from a Markov chain of the
+  components' states and the repair queue (up to 15,000 states), and the
+  values over time numerical, the chain followed by uniformization (around
+  a nested RBD, the expected events and the capacity over time refuse, as
+  yet: #162); otherwise they refuse. The allocations refuse, and the
   simulations follow the queue, in Python.
 - **Spares.** The spares counts need each component's replacements to be a
   renewal process, or to fall on a calendar: under block replacement they

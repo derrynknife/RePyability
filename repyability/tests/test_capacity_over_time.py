@@ -274,12 +274,18 @@ def test_what_the_capacity_over_time_refuses():
     with pytest.raises(NotImplementedError) as error:
         scheduled.point_capacity(10.0)
     assert str(error.value) == route.reason
+    # With a shared crew it comes from the crews' chain (#146; see
+    # test_chains_over_time.py), settling at the long-run distribution.
     crews = exponential_pumps(repair_crews=1)
-    route = crews.analysis_routes()["mission_capacity"]
-    assert route.route == routes.REFUSED
-    with pytest.raises(NotImplementedError) as error:
-        crews.mission_capacity(10.0)
-    assert str(error.value) == route.reason
+    assert crews.analysis_routes()["mission_capacity"].route == (
+        routes.NUMERICAL
+    )
+    settled = crews.mission_capacity(1e8)
+    np.testing.assert_allclose(
+        settled.probabilities,
+        crews.capacity_distribution().probabilities,
+        rtol=1e-7,
+    )
     report = exponential_pumps().analysis_routes()
     assert report["point_capacity"].route == routes.NUMERICAL
     assert report["mission_capacity"].route == routes.NUMERICAL

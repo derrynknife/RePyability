@@ -258,8 +258,15 @@ before the other is back.
   the long-run start: give each component's state. With repair crews, a
   component down at the start holds a crew, so no more can be down than
   there are crews.
-- **Not taken:** the state of a standby group, and the virtual age of an
-  imperfectly repaired component; leave them out (new).
+- **With repair crews**, the exact methods start the crews' Markov chain
+  (see [below](#repair-crews)) from the components' states: each up, or
+  down in a repair (how old it is, and how long it has been down, do not
+  matter, as its life and repair are exponential), so no more can be down
+  than there are crews; or every component in its long-run state
+  (`state="stationary"`), not one alone, as the queue ties them together.
+- **Not taken:** the state of a standby group (but its long-run state,
+  `NodeState(stationary=True)`), and the virtual age of an imperfectly
+  repaired component; leave them out (new).
 
 ## Availability over time (simulated)
 
@@ -415,19 +422,42 @@ birth-death chain, and the system is down when all three are.)
   `capacity_distribution` solve it exactly, for up to 15,000 states. A
   component held working or broken (`working_nodes`, `broken_nodes`) needs
   no crew, and the others share them.
+- **Over time.** From new, or from the components' states, the same chain
+  is followed over time by uniformization: its state after a Poisson
+  number of steps of a discrete chain, taken until it has settled at its
+  long run, to about 1e-13. `point_availability`, `mission_availability`,
+  `expected_failures`, `expected_events`, `expected_cost`, `point_capacity`
+  and `mission_capacity` come from it. A nested RBD, with crews of its own,
+  is independent of the chain: the availability over time is worked out for
+  each pattern of the nested RBDs up and down, weighted by their own
+  availabilities, though the expected events and the capacity over time
+  refuse a nested RBD, as yet (#162).
+- **Importance.** Under dependence the textbook formulas, products of the
+  components' availabilities, no longer hold, so the measures are taken
+  from their definitions: Birnbaum's is the system's long-run availability
+  with the component held working less that with it held failed, each from
+  the chain solved without it (held, it needs no crew), and the improvement
+  potential, RAW and RRW are built on the same values; the criticality and
+  Fussell-Vesely measures are probabilities over the chain's states. Here a
+  pump held down leaves the other two to share the crew, so it matters
+  about twice as much as with a crew each. With a crew for each component
+  they are the independent ones.
 - **What is simulated.** Other lives or repair times, scheduled maintenance
   and inspections, and larger chains make the exact values refuse, with the
-  reason. The importance measures, the availability over time
-  (`point_availability`, `mission_availability`) and the allocations assume
-  independent components, so they refuse whenever a job can wait. The
-  simulations (`availability`, `cost`, `compare`) follow the queue whatever
-  the components, in Python. With at least as many crews as components,
-  nothing waits, and every result is as without crews.
+  reason. The allocations assume independent components, so they refuse
+  whenever a job can wait. The simulations (`availability`, `cost`,
+  `compare`) follow the queue whatever the components, in Python. With at
+  least as many crews as components, nothing waits, and every result is as
+  without crews.
 
 ```python
+one_crew.point_availability(5.0)       # -> 0.9865   five hours in
+one_crew.mission_availability(24.0)    # -> 0.9805   over the first day
+one_crew.birnbaum_importance()["x"]    # -> 0.0541   (0.0278 with a crew each)
 routes = one_crew.analysis_routes()
 routes["mean_availability"].route     # 'exact'
-routes["birnbaum_importance"].route   # 'refused'
+routes["point_availability"].route    # 'numerical'
+routes["birnbaum_importance"].route   # 'exact'
 ```
 
 The chain's size is set by the queue. First come, first served, every order
@@ -453,6 +483,7 @@ pumps = RepairableRBD([("s", "pumps"), ("pumps", "t")], {"pumps": pump},
                       repair_crews=1)
 pumps.mean_availability()    # -> 0.9894
 pumps.mean_down_time()       # -> 10.0   hours: until the first repair ends
+pumps.point_availability(10.0)    # -> 0.9963   ten hours from new
 result = pumps.availability(50_000.0, mc_samples=40, seed=1)
 result.mean_availability_interval().estimate    # -> 0.9893   simulated
 ```
@@ -485,8 +516,10 @@ the pair is up 0.9910.)
   measures, like any component's. They stay exact with limited crews while
   the group's units are the crews' only jobs (the textbook "one repairman"
   case, as here); crews shared with other components tie the group to them,
-  and the exact values refuse. The availability over time from new is
-  simulated.
+  and the exact values refuse. Over time, from new (every unit ready) or
+  from its long-run state, the same chain is followed by uniformization (see
+  [above](#repair-crews)): the availability over time and over a mission,
+  and the expected failures and repairs, are numerical.
 - **Simulation.** `availability`, `cost` and `compare` simulate groups
   whatever their units' models, in Python.
 
