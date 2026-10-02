@@ -437,6 +437,9 @@ REPAIRABLE_CALLS = {
     "availability_from_chunks": lambda rbd: rbd.availability_from_chunks(
         rbd.simulate_chunk(200.0, 10, 30, seed=1)
     ),
+    "simulate_timelines": lambda rbd: rbd.simulate_timelines(
+        200.0, mc_samples=20, seed=1
+    ),
     "cost": lambda rbd: rbd.cost(200.0, mc_samples=20, seed=1),
     "compare": lambda rbd: rbd.compare(rbd, 200.0, mc_samples=20, seed=1),
 }
@@ -488,6 +491,7 @@ def test_the_report_covers_every_public_analysis(cls):
         "is_analytically_solvable",
         "is_system_working",
         "node_names",
+        "system_timeline",
     }
     public = {
         name
@@ -694,6 +698,8 @@ def test_the_readme_says_what_is_simulated():
         "of an outcome over a window": [
             (plain, "random", "simulated"),
             (repairable["costed_pairs"], "availability", "simulated"),
+            (repairable["costed_pairs"], "simulate_timelines", "simulated"),
+            (repairable["maintained"], "simulate_timelines", "simulated"),
             (repairable["costed_pairs"], "expected_events", "numerical"),
             (repairable["costed_pairs"], "expected_cost", "numerical"),
             (repairable["capacities"], "mission_capacity", "numerical"),
@@ -826,6 +832,11 @@ def test_the_readme_says_what_is_simulated():
                 "exact",
             ),
             (repairable["common cause, tested"], "availability", "refused"),
+            (
+                repairable["common cause, tested"],
+                "simulate_timelines",
+                "refused",
+            ),
             (
                 repairable["common cause, revealed"],
                 "point_availability",

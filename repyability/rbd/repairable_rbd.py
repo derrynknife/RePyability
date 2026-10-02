@@ -50,7 +50,7 @@ from repyability._version import __version__
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import _ccf_chain, _chain_transient, _crew_chain
 from repyability.rbd import _montecarlo as montecarlo
-from repyability.rbd import _spares, _standby_chain, _streams
+from repyability.rbd import _spares, _standby_chain, _streams, _timeline_runs
 from repyability.rbd import capacity as _capacity
 from repyability.rbd._block_replacement import (
     BlockHead,
@@ -105,6 +105,7 @@ from repyability.rbd.results import (
     RestorationCriticalityIndex,
     SparesDemand,
     SparesStock,
+    TimelineSimulation,
     TotalCostAllocation,
     UpDownImportance,
 )
@@ -907,6 +908,7 @@ class _Replication:
         "delivered",
         "replacements",
         "opportunistic",
+        "history",
     )
     uptime: float
     node_up: List[float]
@@ -926,6 +928,7 @@ class _Replication:
     delivered: Optional[float]
     replacements: List[int]
     opportunistic: List[int]
+    history: Optional[tuple]
 
 
 def _working_over_time(
@@ -1803,6 +1806,9 @@ class _Context(NamedTuple):
     #: but those held broken.
     states: dict
     initial_up: bool
+    #: Whether each simulation records its components' changes (see
+    #: ``simulate_timelines``).
+    history: bool = False
 
 
 class _PythonRunner:
@@ -7779,7 +7785,7 @@ class RepairableRBD(RBD):
                     "hidden failures, exactly, on its tests.",
                 )
             )
-        streamed = self._stream_plan(1.0, 0, False)[1]
+        plan, streamed = self._stream_plan(1.0, 0, False)
         paired = (
             ""
             if streamed
@@ -7829,6 +7835,23 @@ class RepairableRBD(RBD):
                 r.SIMULATED,
                 "Simulated chunks of a run (see simulate_chunk), merged into "
                 "its result.",
+            )
+        )
+        out["simulate_timelines"] = (
+            r.refused(groups)
+            if groups
+            else r.AnalysisRoute(
+                r.SIMULATED,
+                "The simulations availability runs, kept as timelines: "
+                + (
+                    "each component's history drawn straight from its "
+                    "streams"
+                    if _timeline_runs.independent(self, plan)
+                    else "the components' histories recorded from the "
+                    "Python event loop"
+                )
+                + ", and the system's merged from them."
+                + paired,
             )
         )
         engine, why = self._engine_choice(capacity=False)
@@ -11865,6 +11888,113 @@ class RepairableRBD(RBD):
             control_variate=control_variate,
         )
 
+    def simulate_timelines(
+        self,
+        t_simulation: float,
+        mc_samples: Optional[int] = None,
+        seed: Optional[int] = None,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        antithetic: bool = False,
+    ) -> "TimelineSimulation":
+        """Simulate the system over ``[0, t_simulation]`` and keep each
+        simulation's up/down histories as timelines: every component's and
+        the system's, with the component that caused each of the system's
+        changes.
+
+        These are the simulations
+        [`availability`][repyability.RepairableRBD.availability] runs with
+        the same ``seed`` (and options), kept whole rather than added up:
+        so any measure of a history can be read off them (the time to the
+        first system failure, the longest outage, the outages per year),
+        and they merge with other timelines (see
+        ``repyability.timelines``).
+
+        Independent components (plain units with streamed models, and
+        nested RBDs of them) have their histories drawn straight from
+        their streams, a batch of simulations at once: the event loop's
+        draws, added up as it adds them. Components that depend on each
+        other or on a schedule (repair crews a job can wait for, standby
+        groups, maintenance, tests, imperfect repair, maintenance groups)
+        have theirs recorded from the event loop as it runs. Either way the
+        system's history is merged from the components' with
+        [`RBD.system_timeline`][repyability.RBD.system_timeline]; it is the
+        event loop's but for changes of different components at the same
+        time, which the merge takes in the order of the components.
+
+        Parameters
+        ----------
+        t_simulation : float
+            The window's end.
+        mc_samples : int, optional
+            The number of simulations. By default 1,000.
+        seed : int, optional
+            Seeds the simulations, as for ``availability``. By default
+            unseeded.
+        working_nodes : collection, optional
+            Nodes held working throughout.
+        broken_nodes : collection, optional
+            Nodes held broken throughout.
+        antithetic : bool, optional
+            Simulate in antithetic pairs (``mc_samples`` even), as for
+            ``availability``. By default False.
+
+        Returns
+        -------
+        TimelineSimulation
+            ``system`` and ``components`` as
+            [`Timelines`][repyability.Timelines], one history per
+            simulation, and how they were made (``method``).
+
+        Raises
+        ------
+        ValueError
+            If ``t_simulation`` is not a positive, finite time,
+            ``mc_samples`` is not a positive integer (even with
+            ``antithetic``), or a working or broken node is unknown, the
+            input or output node, or in both.
+        NotImplementedError
+            If the RBD has common-cause groups, which the simulation does
+            not take in, as yet; or, with ``antithetic``, if a component's
+            draws cannot be replayed.
+
+        Examples
+        --------
+        Two pumps in parallel: how long until the plant first fails, and
+        which pump's failure did it:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> unit = {
+        ...     "reliability": surv.Weibull.from_params([100, 1.5]),
+        ...     "repairability": surv.Exponential.from_params([0.5]),
+        ... }
+        >>> rbd = RepairableRBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        ...     {"a": unit, "b": unit},
+        ... )
+        >>> runs = rbd.simulate_timelines(1000.0, mc_samples=2000, seed=1)
+        >>> bool(runs.system.first_failure.min() > 0)
+        True
+        >>> sorted(runs.system.failures_by_cause())
+        ['a', 'b']
+
+        The same simulations ``availability`` runs:
+
+        >>> result = rbd.availability(1000.0, mc_samples=2000, seed=1)
+        >>> bool(np.allclose(runs.system.uptime, result.uptimes))
+        True
+        """
+        return _timeline_runs.simulate(
+            self,
+            t_simulation,
+            1000 if mc_samples is None else mc_samples,
+            seed,
+            working_nodes,
+            broken_nodes,
+            antithetic,
+        )
+
     def simulate_chunk(
         self,
         t_simulation: float,
@@ -13283,6 +13413,10 @@ class RepairableRBD(RBD):
             return charge
 
         trace = None if ctx.capacity is None else ctx.capacity.trace(status)
+        # With ctx.history, each component's state at 0 and its changes
+        # (see simulate_timelines).
+        record: Optional[list] = [] if ctx.history else None
+        at_start = [status[node] for node in index] if ctx.history else None
         # The system's state, and its up and down time until ``since``, its
         # last change; each component's last change, and the system's up and
         # down time until then.
@@ -13404,6 +13538,16 @@ class RepairableRBD(RBD):
             status[node] = event.status
             if trace is not None:
                 trace.change(t, node, event.status)
+            if record is not None:
+                # A planned change down: maintenance or a test off line.
+                record.append(
+                    (
+                        c,
+                        t,
+                        not event.status
+                        and bool(event.preventive or event.inspection),
+                    )
+                )
             if event.status:
                 restored[c] += 1
             elif event.preventive:
@@ -13512,6 +13656,7 @@ class RepairableRBD(RBD):
         rec.capacity_changes = rec.capacity_time = rec.delivered = None
         rec.replacements = replaced
         rec.opportunistic = opportunistic
+        rec.history = None if record is None else (at_start, record)
         if trace is not None:
             trace.finish(t_simulation, rec)
         return rec

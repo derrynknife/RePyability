@@ -54,7 +54,9 @@ values over time come from the same Markov chains, and the importance
 measures with crews from their definitions (#146).
 Meshed diagrams are decided by a binary
 decision diagram, in milliseconds where their path sets took minutes (#102,
-#103). Non-parametric nodes, and the fits to simulated lifetimes behind some
+#103). Timelines are new: up/down histories, from outage logs or kept
+whole from the simulations, merged as a diagram's structure into a
+system's, with the component behind each of its failures (#157). Non-parametric nodes, and the fits to simulated lifetimes behind some
 standby and load-sharing models, are deprecated; everything deprecated goes
 in 0.12, and warns with a `FutureWarning`.
 
@@ -741,6 +743,43 @@ is required.
   189 times. Each controlled estimate was within 1.8 standard errors of a
   plain run of 100 000 simulations. It is an option, as its gain depends on
   how close the twin is (the simulation guide gives the table).
+- **Timelines** (#157): up/down histories, and a system's from its
+  components'.
+  - `Timeline(changes, end, up=True, planned=None, name=None)` is a unit's
+    history over `[0, end]`: the times it changes state, each change down
+    a failure or, `planned`, maintenance. `Timeline.from_outages` takes an
+    outage log, `Timeline.from_durations` the durations up and down in
+    turn. Its measures: `uptime`, `downtime`, `availability`, `failures`,
+    `planned_outages`, `restorations`, `first_failure`, `up_intervals`,
+    `down_intervals` and `state(t)`. `Timelines` holds many histories of
+    one unit (one per simulation, say) and works out each measure for all
+    of them at once, with `availability_curve()` and
+    `point_availability(t)`.
+  - `repyability.timelines.series`, `parallel` and `k_out_of_n` (and `a &
+    b`, `a | b`, `~a`) merge timelines as a diagram's structure does, in
+    one sweep over their changes, every history at once. Each change of a
+    merged timeline keeps its cause, the input whose change made it, so
+    `failures_by_cause()` says which component took the system down each
+    time. Changes at the same time are taken one after another in the
+    order of the inputs, so an instant repair takes the system down and
+    back up at that instant.
+  - `RBD.system_timeline({node: timeline})` merges the components'
+    timelines up the diagram's modules and core (path set by path set, or
+    decided at each change for a large core), with repeated nodes and
+    junctions: from outage logs, a what-if edit of one, or simulated
+    histories.
+  - `RepairableRBD.simulate_timelines(t_simulation, mc_samples, seed,
+    ...)` keeps each simulation's histories whole, every component's and
+    the system's, in a new `TimelineSimulation`: the simulations
+    `availability` runs with the same seed, each with the same uptime to
+    the last bit, so any measure of a history can be read off them (the
+    first system failure, the longest outage). Independent components'
+    histories are drawn straight from their streams, a batch at once, 3
+    to 8 times as fast as the Python event loop; components that depend on
+    each other (crews, standby groups, maintenance, tests, imperfect
+    repair) are recorded from the event loop; a nested RBD's history is its
+    own system's. Refused, as the simulations are, with common-cause
+    groups. The timelines guide shows them all.
 - **Imperfect repair** (#109). A component spec's `"repair": {"model":
   "kijima1" | "kijima2", "q": q}` makes its repairs imperfect: a repair
   after the unit has operated `x` since the last takes its virtual age from

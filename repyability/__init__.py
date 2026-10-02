@@ -54,6 +54,7 @@ from repyability.rbd.results import (
     RestorationCriticalityIndex,
     SparesDemand,
     SparesStock,
+    TimelineSimulation,
     TotalCostAllocation,
     UncertaintyResult,
     UpDownImportance,
@@ -65,6 +66,7 @@ from repyability.repairable import (
     Repairable,
     minimal_repair_time_to_nth_failure,
 )
+from repyability.timelines import Timeline, Timelines
 
 __all__ = [
     "__version__",
@@ -101,6 +103,9 @@ __all__ = [
     "demonstrated_mtbf",
     "mtbf_pass_probability",
     "ComponentOption",
+    # Up/down histories
+    "Timeline",
+    "Timelines",
     # Result types
     "AnalysisRoute",
     "AvailabilityResult",
@@ -124,6 +129,7 @@ __all__ = [
     "AvailabilityAllocation",
     "SparesDemand",
     "SparesStock",
+    "TimelineSimulation",
     "SimulationChunk",
     "run_shard",
 ]

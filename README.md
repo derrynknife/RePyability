@@ -48,6 +48,10 @@ taking already-fitted lifetime models (from
 - **Spares**: how many spares each component uses over a horizon, for a
   system or a fleet, and the stock that meets a fill rate or a stock-out
   target for a replenishment lead time.
+- **Timelines**: up/down histories, from outage logs or simulated, with
+  their measures (time up, failures and who caused them, first failure);
+  merged as a diagram's structure, so a system's history follows from its
+  components', with the component behind each of its outages.
 - **Simulation**: seeded Monte-Carlo run to a tolerance, antithetic pairs,
   control variates from the system's exact twin, parallel runs, runs split
   across machines and merged, or sharded through any executor (Ray, Dask,
@@ -136,7 +140,7 @@ places, nested diagrams):
 | Situation | Today | Must it be simulated? |
 |---|---|---|
 | **What you ask** | | |
-| Sampled lifetimes or histories, and distributions or percentiles of an outcome over a window | Simulated (from new, or from the components' current states) | Yes: the answer is a sample. Its mean over a window (failures, outages, downtime, cost, the capacity delivered) is exact, from new or from a state: `expected_events`, `expected_cost`, `mission_capacity`. |
+| Sampled lifetimes or histories, and distributions or percentiles of an outcome over a window | Simulated (from new, or from the components' current states); each simulation's histories, the system's and its components', kept whole as timelines by `simulate_timelines` (from new) | Yes: the answer is a sample. Its mean over a window (failures, outages, downtime, cost, the capacity delivered) is exact, from new or from a state: `expected_events`, `expected_cost`, `mission_capacity`. |
 | Comparing two designs (`compare`) | Simulated, with common random numbers | No, where both are exact: compare their exact values. |
 | The uncertainty from fitted component parameters (`sf_uncertainty`, `mean_uncertainty`, `bx_life_uncertainty`, `time_to_reliability_uncertainty`) | Sampled over the parameters, each draw exact | Sampling is the method. |
 | Small failure probabilities, with a simulated node | Rare-event simulation (`unreliability_interval`) | Only while the node is simulated: an exact diagram gives `ff` directly, to full precision however small (a numerical node, such as a cold-standby group of non-exponential units, to its own accuracy, about 1e-6). |

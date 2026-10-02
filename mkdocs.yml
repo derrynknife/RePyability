@@ -107,6 +107,7 @@ nav:
       - Design and allocation: guide/design.md
       - Maintenance policies: guide/maintenance.md
       - Demonstration testing: guide/demonstration.md
+      - Timelines: guide/timelines.md
       - Simulation precision and speed: guide/simulation.md
       - Saving, reproducibility and performance: guide/saving.md
   - Concepts: concepts.md

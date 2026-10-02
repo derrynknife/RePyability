@@ -376,6 +376,10 @@ often as a pump, and 99% of its failures took the system down: the pumps are
 redundant and it is not. A node's failure "causes" a system failure when it
 is the event that takes the system from up to down.
 
+To keep each simulation's histories whole rather than these totals, every
+component's and the system's with the component behind each system
+failure, use `simulate_timelines` (see [Timelines](timelines.md)).
+
 ## Repair crews
 
 By default every failed component is repaired at once, as though each had a

@@ -2024,3 +2024,68 @@ class SparesStock(_ResultMapping):
         if stock <= 0:
             return 1.0
         return float(max(1.0 - self.on_order[: int(stock)].sum(), 0.0))
+
+
+@dataclass
+class TimelineSimulation(_ResultMapping):
+    """Simulated up/down histories of a repairable system and its
+    components, one per simulation, as timelines.
+
+    Returned by
+    [`RepairableRBD.simulate_timelines`][repyability.RepairableRBD.simulate_timelines].
+    Each [`Timelines`][repyability.Timelines] works out its measures for
+    every simulation at once (``uptime``, ``failures``, ``first_failure``,
+    ``availability_curve()``, ...), indexes to one simulation's
+    [`Timeline`][repyability.Timeline], and merges with others. Like the
+    other result types it is also a read-only mapping of its fields.
+
+    Attributes
+    ----------
+    system : Timelines
+        The system's histories, merged from its components' with
+        [`RBD.system_timeline`][repyability.RBD.system_timeline]: each
+        change's cause is the component whose change made it.
+    components : dict
+        Node -> its [`Timelines`][repyability.Timelines]: each component's
+        histories (a nested RBD's, its own system's; a standby group's, the
+        group's).
+    time_simulated_to : float
+        The window's end.
+    n_simulations : int
+        How many histories each holds.
+    antithetic : bool
+        Whether the simulations came in antithetic pairs.
+    method : str
+        How the components' histories were made: ``"streams"``, each drawn
+        straight from its streams (independent components), or ``"event
+        loop"``, recorded from the event loop's simulations (components
+        that depend on each other: crews, standby groups, maintenance,
+        tests, ...). Either way they are the simulations ``availability``
+        runs with the same seed.
+
+    Examples
+    --------
+    >>> import surpyval as surv
+    >>> from repyability import RepairableRBD
+    >>> unit = {
+    ...     "reliability": surv.Weibull.from_params([100, 1.5]),
+    ...     "repairability": surv.Exponential.from_params([0.5]),
+    ... }
+    >>> rbd = RepairableRBD(
+    ...     [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+    ...     {"a": unit, "b": unit},
+    ... )
+    >>> runs = rbd.simulate_timelines(1000.0, mc_samples=500, seed=1)
+    >>> runs.method, len(runs.system)
+    ('streams', 500)
+    >>> pair, pump = runs.system.failures, runs.components["a"].failures
+    >>> bool(pair.mean() < pump.mean())
+    True
+    """
+
+    system: Any
+    components: Dict[Hashable, Any]
+    time_simulated_to: float
+    n_simulations: int
+    antithetic: bool = False
+    method: str = "streams"

@@ -21,6 +21,7 @@ from typing import (
     Iterable,
     Iterator,
     List,
+    Mapping,
     Optional,
     Tuple,
 )
@@ -964,6 +965,76 @@ class RBD:
         if method not in ("p", "c"):
             raise ValueError("`method` must be either 'p' or 'c'")
         return self._decomposition().works(component_status, method)
+
+    def system_timeline(self, timelines: Mapping) -> Any:
+        """The system's up/down history from its components': the
+        structure function followed over time.
+
+        The components' timelines are merged up the diagram's modules (see
+        [`system_probability`][repyability.RBD.system_probability]): a
+        series module is up while all its members are, a parallel one while
+        any is, a k-out-of-n one while at least ``k`` are, and what is left
+        (e.g. a bridge) while one of its minimal path sets is all up. Each
+        change of the system's timeline keeps its cause, the component
+        whose change made it, and whether that change was planned; changes
+        at the same time are taken in the order of the diagram's
+        components, each one's in its own order (see
+        ``repyability.timelines``).
+
+        It takes any timelines: an outage log, a what-if edit of one, or
+        simulated histories (see
+        [`RepairableRBD.simulate_timelines`][repyability.RepairableRBD.simulate_timelines]).
+
+        Parameters
+        ----------
+        timelines : Mapping
+            ``{node: timeline}``: a [`Timeline`][repyability.Timeline] or
+            [`Timelines`][repyability.Timelines] for each component the
+            system depends on (all over one window; Timelines with as many
+            histories each, and a Timeline among them standing for each
+            history). A drawing junction (a perfectly reliable node) left
+            out is up throughout; a component no path set needs is
+            ignored.
+
+        Returns
+        -------
+        Timeline or Timelines
+            The system's: a Timelines if any component's is one, else a
+            Timeline. Its causes are node names.
+
+        Raises
+        ------
+        ValueError
+            If a component the system depends on has no timeline, a key is
+            not a component (the input or output node, a repeated node's
+            copy, or an unknown name), or the timelines do not share a
+            window or a number of histories.
+        TypeError
+            If ``timelines`` is not a mapping of Timeline or Timelines
+            objects.
+
+        Examples
+        --------
+        Two pumps in parallel feeding a valve, from their outage logs:
+
+        >>> from repyability import RBD, Timeline
+        >>> rbd = RBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "v"), ("b", "v"), ("v", "t")]
+        ... )
+        >>> logs = {
+        ...     "a": Timeline.from_outages([(10, 30)], end=100),
+        ...     "b": Timeline.from_outages([(20, 25), (60, 70)], end=100),
+        ...     "v": Timeline.from_outages([(80, 81)], end=100),
+        ... }
+        >>> plant = rbd.system_timeline(logs)
+        >>> plant.down_intervals.tolist()
+        [[20.0, 25.0], [80.0, 81.0]]
+        >>> plant.failures_by_cause()
+        {'a': 0, 'b': 1, 'v': 1}
+        """
+        from repyability.timelines import _system_timeline
+
+        return _system_timeline(self, timelines)
 
     def minimal_path_sets(self) -> List[frozenset]:
         """The minimal path sets of the components (no input or output

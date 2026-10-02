@@ -25,6 +25,7 @@ signature and docstring, see the [API reference](../api.md).
 | [Design and allocation](design.md) | How many redundant copies to fit (redundancy allocation), apportioning a reliability target among components (reliability allocation), and an availability target, as MTTF and MTTR targets (availability allocation). |
 | [Maintenance policies](maintenance.md) | Age replacement, overhaul under minimal or imperfect repair, failure-count replacement, and the expected time to the *n*-th failure. |
 | [Demonstration testing](demonstration.md) | How many units, or how long a test, demonstrates a reliability or an MTBF at a confidence level, what a finished test demonstrated, and the chance a design passes. |
+| [Timelines](timelines.md) | Up/down histories: a unit's from an outage log or its durations, their measures (time up, failures and planned outages, first failure, outages), merges as a diagram's structure with the component that caused each change, a system's from its components' through its diagram, and a repairable system's simulated histories, kept whole. |
 | [Simulation precision and speed](simulation.md) | Simulating until an estimate is precise enough, antithetic pairs, parallel runs, and comparing two designs with common random numbers. |
 | [Saving, reproducibility and performance](saving.md) | JSON round-trips, seeding, what is exact and what is simulated, and how the engine scales. |
 
