@@ -105,9 +105,9 @@ places, nested diagrams):
 
 - **components:** surpyval lifetime distributions and fixed
   probabilities (non-parametric fits, such as Kaplan–Meier, are
-  deprecated and go in 0.12); repeated nodes; cold standby with one unit
-  operating (any units) or several (identical units); warm standby with
-  one unit operating, and hot standby (any units); load sharing of
+  deprecated and go in 0.12); repeated nodes; cold standby with one or
+  two units operating (any units) or more (identical units); warm standby
+  with one unit operating, and hot standby (any units); load sharing of
   identical units; common-cause groups, for the system's reliability
   (and, splitting the failure rate, its MTTF);
 - **non-repairable questions:** reliability, hazard, MTTF, B*X* life and
@@ -134,7 +134,7 @@ places, nested diagrams):
 | Small failure probabilities, with a simulated node | Rare-event simulation (`unreliability_interval`) | Only while the node is simulated: an exact diagram gives `ff` directly, to full precision however small (a numerical node, such as a cold-standby group of non-exponential units, to its own accuracy, about 1e-6). |
 | **Components** | | |
 | Warm standby with two or more units operating, of non-exponential units | Simulated: a fit to simulated lifetimes, deprecated (from 0.12, simulated only in the system's simulations: #149) | Yes, in general: which spare is switched in where, and how much each has aged, branch with the order of the failures. With one unit operating it is numerical, and hot standby (k-out-of-*n*) exact. |
-| Cold standby with two or more different units operating, and load sharing of different units | Simulated: a fit to simulated lifetimes, deprecated (from 0.12, simulated only in the system's simulations: #149) | No, for two operating: could be numerical (#138). Load sharing of different units: yes, in general. Identical units are numerical in both. |
+| Cold standby with three or more different units operating, and load sharing of different units | Simulated: a fit to simulated lifetimes, deprecated (from 0.12, simulated only in the system's simulations: #149) | Yes, in general: which spare goes where, and how old the others are, branch with the order of the failures. Identical units are numerical in both, and so are two different units operating. |
 | Anything a simulated node is part of | Simulated through that node | Only while the node is simulated. |
 | Common-cause groups: importance, allocation and analyses given ages, and the MTTF of a group splitting a failure probability | Refused (a simulated MTTF leaves a probability split out) | No: importance and allocation could be exact (#140). A group splitting the failure rate (`basis="rate"`) has an exact MTTF, and the simulations draw its shared shocks; the analyses given ages need a model of members of different ages. |
 | Kaplan–Meier lives in a repairable system | Long run refused; over time numerical | Non-parametric nodes are deprecated and go in 0.12 (#149): fit a parametric distribution in surpyval. |

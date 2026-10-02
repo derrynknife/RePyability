@@ -644,18 +644,26 @@ def test_the_readme_says_what_is_simulated():
                 "exact",
             ),
         ],
-        "Cold standby with two or more different units operating, and "
+        "Cold standby with three or more different units operating, and "
         "load sharing of different units": [
             (
                 alone(
                     StandbyModel(
-                        [unit, W([80, 1.5]), unit], k=2, mc_samples=500, seed=1
+                        [unit, W([80, 1.5]), unit, W([90, 3])],
+                        k=3,
+                        mc_samples=500,
+                        seed=1,
                     )
                 ),
                 "sf",
                 "simulated",
             ),
             (alone(StandbyModel([unit] * 3, k=2)), "sf", "numerical"),
+            (
+                alone(StandbyModel([unit, W([80, 1.5]), unit], k=2)),
+                "sf",
+                "numerical",
+            ),
             (alone(sharing), "sf", "simulated"),
         ],
         "Anything a simulated node is part of": [

@@ -12,6 +12,7 @@ from repyability.utils.deprecation import (
 from repyability.utils.wrappers import numpy_seed
 
 from ._dependent_lifetimes import (
+    ColdPairSurvival,
     KOutOfNSurvival,
     RenewalStandbySurvival,
     WarmStandbySurvival,
@@ -138,11 +139,15 @@ class StandbyModel:
        - cold standby of identical units with ``k >= 2``: each operating
          position runs a renewal process of the units' lives, and the
          arrangement fails at the ``n - k + 1``-th failure in all;
+       - cold standby of different units with ``k = 2``: a recursion over
+         the switch-ins on the time and the other operating unit's start
+         (about ``1e-4``, ``1e-3`` for lives with a steep start, such as a
+         Weibull of shape below 1);
        - warm standby with ``k = 1``: a recursion over the spares'
          switch-ins on a time grid (a spare switched in at ``tau`` has
          aged ``dormancy_factor * tau``).
     4. **Simulation** otherwise (cold standby of different units with
-       ``k >= 2``, and warm standby with ``k >= 2``): ``mc_samples``
+       ``k >= 3``, and warm standby with ``k >= 2``): ``mc_samples``
        lifetimes are drawn with ``random`` and ``sf`` is a Kaplan-Meier
        fit to them, a step function that is reproducible only with
        ``seed``. The fit is kept in ``model``; it is deprecated and goes
@@ -365,11 +370,19 @@ class StandbyModel:
                 reliabilities[0], self.N, k, self._switch_probs()
             )
             self.model = None
+        elif k == 2:
+            # Two different units operating: a recursion over the switch-ins
+            # on the time and the other operating unit's start (see
+            # ColdPairSurvival).
+            self._sf_model = ColdPairSurvival(
+                reliabilities, self._switch_probs()
+            )
+            self.model = None
         else:
-            # For k >= 2 different units the lifetime is not a simple sum
+            # For k >= 3 different units the lifetime is not a simple sum
             # (which spare goes where depends on the order in which the
-            # operating units fail), so fall back to the Monte-Carlo +
-            # Kaplan-Meier approximation.
+            # operating units fail, with more ages to track), so fall back
+            # to the Monte-Carlo + Kaplan-Meier approximation.
             self._switch_probs()
             warn_simulated_fit(
                 "StandbyModel",

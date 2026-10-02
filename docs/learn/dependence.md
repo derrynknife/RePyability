@@ -300,8 +300,9 @@ How `StandbyModel` gets its answer depends on the case:
 | Hot ($\kappa = 1$), any units | Exact: $k$-out-of-$n$ |
 | Cold, one unit working at a time (`k=1`): any lifetimes, any switch | Numerical convolution: repeatable, accurate to a few decimals |
 | Cold, `k=2` or more identical units working together | Numerical: renewal counts of the working positions |
+| Cold, `k=2`, any units | Numerical: a recursion over the switch-ins |
 | Warm, one unit working at a time: any lifetimes | Numerical: a recursion over the switch-ins |
-| Anything else: warm with `k=2` or more, or different units with `k=2` or more working together, cold | Simulation: pass `seed=0` for repeatable results; `sf` then returns a one-element array |
+| Anything else: warm with `k=2` or more, or `k=3` or more different units working together, cold | Simulation: pass `seed=0` for repeatable results; `sf` then returns a one-element array |
 
 An imperfect switch is supported for cold standby. The
 [guide](../guide/redundancy-models.md#standby-cold-warm-and-hot) has every

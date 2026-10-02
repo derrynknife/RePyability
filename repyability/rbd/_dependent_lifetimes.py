@@ -438,3 +438,139 @@ class LoadSharingSurvival(_Gridded):
         self.never_fails = (
             float(self._sf[-1]) if never_fails(baseline) > 0.0 else 0.0
         )
+
+
+class ColdPairSurvival(_Gridded):
+    """Numerical lifetime distribution of cold standby with two units
+    operating, of any units, switched in in list order.
+
+    Units 1 and 2 start at 0; at the ``j``-th failure unit ``j + 2`` is
+    switched in (with probability ``p_j``; a failed switch, or the
+    ``n - 1``-th failure, ends the arrangement). After a failure the state
+    is its time, which unit is the other one operating, and when that one
+    started: the newcomer starts new. On a time grid of cells, each state's
+    probability is kept without the other unit's survival since it started
+    (so that the steps are convolutions), for each other unit:
+
+    - the newcomer fails first: the state's time moves on by its life (a
+      convolution along the time of the failure);
+    - the other fails first: the newcomer becomes the other, started at the
+      failure before, and the time moves on by the other's remaining life
+      (for each failure time, a convolution along the other's start).
+
+    The probability of each failure is the states' probability with the
+    other's survival put back; the arrangement has failed by ``t`` with
+    the ``n - 1``-th failure, or a failed switch, by then.
+    """
+
+    how = "a numerical recursion over its spares' switch-ins"
+
+    def __init__(
+        self,
+        models: Sequence,
+        switch_probs: Sequence[float] = (),
+        n_points: int = 1001,
+        eps: float = 1e-10,
+    ):
+        from scipy.signal import fftconvolve
+
+        models = list(models)
+        n = len(models)
+        probs = list(switch_probs) or [1.0] * (n - 2)
+        # The arrangement ends at the earlier of its two positions' ends, so
+        # by half the sum of the units' lives: half the time by which that
+        # sum has passed with probability ``1 - eps`` (from a coarse
+        # convolution), or of its upper bound if some never end.
+        total = ConvolvedSurvival(models, n_points=20_001, eps=eps)
+        ended = np.flatnonzero(total._sf <= eps)
+        upper = 0.5 * float(total._t[ended[0]] if ended.size else total._t[-1])
+        t = np.linspace(0.0, upper, n_points + 1)
+        dt = t[1] - t[0]
+        cells = n_points
+        offsets = np.arange(cells)
+        mid = (offsets + 0.5) * dt
+        cdf = [
+            lambda x, m=model: _cdf(m, np.asarray(x, float))
+            for model in models
+        ]
+        surv = [
+            lambda x, m=model: _sf(m, np.asarray(x, float)) for model in models
+        ]
+
+        # Each unit's chance of failing in each cell after starting at a
+        # cell's midpoint (offset m cells on), in the cell it starts in
+        # after it (from its midpoint), and from 0.
+        step = [
+            np.diff(np.concatenate(([0.0], F((offsets + 0.5) * dt))))
+            for F in cdf
+        ]
+        rest = [F((offsets + 0.5) * dt) - F(offsets * dt) for F in cdf]
+        from_zero = [np.diff(np.concatenate(([0.0], F(t[1:])))) for F in cdf]
+        rest_of_cell = [F(t[1:]) - F(mid) for F in cdf]
+        # Survival over m cells between midpoints, and from 0.
+        lasted = [S(offsets * dt) for S in surv]
+        lasted_from_zero = [S(mid) for S in surv]
+        gap = np.subtract.outer(offsets, offsets)  # failure cell - start cell
+        later = gap >= 0
+
+        def failures(zero, started):
+            """Each failure's probability by cell: the states' probability
+            with the other unit's survival put back."""
+            out = np.zeros(cells)
+            for u, mass in zero.items():
+                out += mass * lasted_from_zero[u]
+            for u, mass in started.items():
+                out += (
+                    mass * np.where(later, lasted[u][np.abs(gap)], 0.0)
+                ).sum(axis=1)
+            return out
+
+        # After the first failure: the other unit is 1 or 0, started at 0.
+        zero = {1: from_zero[0].copy(), 0: from_zero[1].copy()}
+        started: dict = {}
+        failed = np.zeros(cells)
+        for j in range(1, n - 1):
+            mass = failures(zero, started)
+            p = probs[j - 1]
+            failed += (1.0 - p) * mass
+            new = j + 1  # the spare switched in at the j-th failure
+            zero = {u: p * m for u, m in zero.items()}
+            started = {u: p * m for u, m in started.items()}
+            # The newcomer fails first: the time moves on by its life.
+            next_zero = {
+                u: fftconvolve(m, step[new])[:cells] for u, m in zero.items()
+            }
+            next_started = {
+                u: fftconvolve(m, step[new][:, None], axes=0)[:cells]
+                for u, m in started.items()
+            }
+            # The other fails first: the newcomer becomes the other, started
+            # at the j-th failure's cell (the column), and the failure comes
+            # in a later cell (the row), or later in the same one.
+            handed = np.zeros((cells, cells))
+            for u, m in zero.items():
+                handed += np.where(
+                    gap > 0, m[None, :] * from_zero[u][:, None], 0.0
+                )
+                handed[offsets, offsets] += m * rest_of_cell[u]
+            for u, m in started.items():
+                # For each j-th failure cell a (a row of m), over the start
+                # cells b: the chance of failing in cell a' is step[a' - b].
+                spread = fftconvolve(m, step[u][None, :], axes=1)[:, :cells]
+                handed += np.where(gap > 0, spread.T, 0.0)
+                same = (m * np.where(later, rest[u][np.abs(gap)], 0.0)).sum(
+                    axis=1
+                )
+                handed[offsets, offsets] += same
+            next_started[new] = next_started.get(new, 0.0) + handed
+            zero, started = next_zero, next_started
+        failed += failures(zero, started)
+        ff = np.concatenate(([0.0], np.cumsum(failed)))
+        self._t = t
+        self._ff = np.clip(ff, 0.0, 1.0)
+        self._sf = np.clip(1.0 - ff, 0.0, 1.0)
+        self.never_fails = (
+            float(self._sf[-1])
+            if any(never_fails(model) > 0.0 for model in models)
+            else 0.0
+        )

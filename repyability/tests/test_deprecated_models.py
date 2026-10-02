@@ -114,9 +114,11 @@ def test_parametric_diagrams_do_not_warn():
         ),
         (
             lambda: StandbyModel(
-                [W([100, 2]), W([80, 1.5]), W([100, 2])], k=2, mc_samples=200
+                [W([100, 2]), W([80, 1.5]), W([100, 2]), W([90, 3])],
+                k=3,
+                mc_samples=200,
             ),
-            "cold standby with 2 different units operating",
+            "cold standby with 3 different units operating",
         ),
         (
             lambda: LoadSharingModel(
@@ -128,7 +130,7 @@ def test_parametric_diagrams_do_not_warn():
             "units that are different",
         ),
     ],
-    ids=["warm, two operating", "cold, two different", "load sharing"],
+    ids=["warm, two operating", "cold, three different", "load sharing"],
 )
 def test_a_fit_to_simulated_lifetimes_warns(build, case):
     with pytest.warns(FutureWarning, match=rf"{case}.*removed in {REMOVAL}"):
@@ -144,6 +146,7 @@ def test_exact_and_numerical_models_do_not_warn():
         lambda: StandbyModel([W([100, 2])] * 2, dormancy_factor=0.5),
         lambda: StandbyModel([W([100, 2]), W([80, 1.5])], dormancy_factor=1),
         lambda: StandbyModel([W([100, 2])] * 3, k=2),
+        lambda: StandbyModel([W([100, 2]), W([80, 1.5]), E([0.01])], k=2),
         lambda: LoadSharingModel([aft("exponential")] * 2, load=2.0),
         lambda: LoadSharingModel([aft("weibull")] * 2, load=2.0),
     ):

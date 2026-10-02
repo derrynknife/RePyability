@@ -339,8 +339,10 @@ process of the lives of the units put into it; for identical units these are
 independent, so the number of failures by `t` is a sum of `k` renewal counts,
 whose distributions come from the convolution, and the arrangement fails at
 the `n − k + 1`-th. With different units, which unit goes where depends on
-the order of failures, and warm with `k ≥ 2` the spares' ages too: those are
-simulated.
+the order of failures. With two operating, after each failure the state is
+its time and when the other operating unit started (the newcomer starts
+new), a recursion on a grid of the two; with three or more, and warm with
+`k ≥ 2` (the spares' ages too), they are simulated.
 
 ## Dependent failures: load sharing
 

@@ -83,16 +83,16 @@ Warm or hot standby with imperfect switching raises `NotImplementedError`.
 | Hot, any units (any `k`) | Exact: `k`-out-of-`n` of the units, each working independently. |
 | Cold, `k = 1` (any units, including imperfect switching) | Numerical convolution of the units' lifetimes: deterministic, and accurate to about 1e-6 (1e-5 for the steepest early-life densities, a gamma with shape 0.5 or less). |
 | Cold, `k ≥ 2`, identical units (including imperfect switching) | Numerical: each operating position runs a renewal process of the units' lives, and the arrangement fails at the `n − k + 1`-th failure in all; the counts come from the same convolution. |
+| Cold, `k = 2`, different units (including imperfect switching) | Numerical: a recursion over the switch-ins on the time and the other operating unit's start (the newcomer starts new), accurate to about 1e-4 (1e-3 for lives with a steep start, such as a Weibull of shape below 1). |
 | Warm, `k = 1` (any units) | Numerical: a recursion over the spares' switch-ins on a time grid (a spare switched in at `τ` has aged `dormancy_factor · τ`), accurate to about 1e-5. |
-| Everything else (warm with `k ≥ 2`, cold `k ≥ 2` of different units) | Simulation: a Kaplan–Meier fit to `mc_samples` simulated lifetimes (default 10 000), seeded by `seed`, with `lower` passed as the fit's lower limit. |
+| Everything else (warm with `k ≥ 2`, cold `k ≥ 3` of different units) | Simulation: a Kaplan–Meier fit to `mc_samples` simulated lifetimes (default 10 000), seeded by `seed`, with `lower` passed as the fit's lower limit. |
 
 The simulated cases carry Monte-Carlo error, and their `sf` returns
 one-element arrays even for a scalar time. **The fit to simulated
 lifetimes is deprecated** (such a model warns when built): in 0.12 these
 arrangements will still draw lifetimes for simulations, but have no `sf`,
 so the analyses that need one will refuse and point to the system's
-simulations. A numerical method for cold standby of two different units
-operating is planned (#138).
+simulations.
 
 `mean()` and `random(size, seed=None)` give the arrangement's mean lifetime
 and draw lifetimes; `cs(x, X)` is its conditional survival. A standby node

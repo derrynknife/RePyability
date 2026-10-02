@@ -211,10 +211,53 @@ def test_the_two_samplers_draw_alike_under_imperfect_switching(monkeypatch):
     np.testing.assert_array_equal(batched, one_at_a_time)
 
 
-def test_different_cold_units_operating_together_are_still_simulated():
-    with pytest.warns(FutureWarning, match="2 different units"):
+@pytest.mark.parametrize(
+    "units, switching",
+    [
+        ([PUMP, LN([4.2, 0.6]), E([0.012]), PUMP], 1.0),
+        ([PUMP, LN([4.2, 0.6]), E([0.012]), PUMP], [0.9, 0.7]),
+        ([LN([4.2, 0.6]), PUMP, E([0.012])], 1.0),
+    ],
+    ids=["four", "four, switching", "three"],
+)
+def test_two_different_cold_units_operating(units, switching):
+    model = StandbyModel(units, k=2, switching_probability=switching)
+    assert not model.is_simulated
+    assert routes.model_route(model)[0] == routes.NUMERICAL
+    agrees_with_simulation(model)
+
+
+def test_two_operating_of_one_kind_by_the_pair_recursion_too():
+    # The recursion for different units, given identical ones, gives what
+    # the renewal counts do; and two units operating with no spare are a
+    # series pair.
+    from repyability.rbd._dependent_lifetimes import (
+        ColdPairSurvival,
+        RenewalStandbySurvival,
+    )
+
+    x = np.array([20.0, 50.0, 100.0, 150.0, 250.0])
+    pair = ColdPairSurvival([PUMP] * 4)
+    np.testing.assert_allclose(
+        pair.sf(x), RenewalStandbySurvival(PUMP, 4, 2).sf(x), atol=5e-5
+    )
+    exponential = ColdPairSurvival([E([0.01])] * 4)
+    np.testing.assert_allclose(
+        exponential.sf(x), stats.gamma.sf(x, a=3, scale=50.0), atol=2e-4
+    )
+    series = ColdPairSurvival([PUMP, E([0.01])])
+    np.testing.assert_allclose(
+        series.sf(x), PUMP.sf(x) * E([0.01]).sf(x), atol=2e-4
+    )
+
+
+def test_three_different_cold_units_operating_are_still_simulated():
+    with pytest.warns(FutureWarning, match="3 different units"):
         model = StandbyModel(
-            [PUMP, W([80.0, 1.5]), PUMP], k=2, mc_samples=500, seed=1
+            [PUMP, W([80.0, 1.5]), PUMP, W([90.0, 3.0])],
+            k=3,
+            mc_samples=500,
+            seed=1,
         )
     assert model.is_simulated
     assert routes.model_route(model)[0] == routes.SIMULATED
