@@ -9,7 +9,7 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
-## [0.11] - 2026-09-30
+## [0.11] - 2026-10-02
 
 How much a system can deliver, and exact answers where there were estimates.
 System capacity gives the exact distribution of what a diagram can deliver
