@@ -221,3 +221,45 @@ pair.mean()                                # -> 1145.8   exact, without the grou
 
 Groups are saved with the RBD, their basis with them. An *alpha-factor*
 model, a data-estimable reparameterisation of MGL, is a planned extension.
+
+## Repairable systems
+
+A [`RepairableRBD`][repyability.RepairableRBD] takes `ccf_groups` too. A
+repairable component's failures are a rate, so a group's model always splits
+the rate (whatever its `basis`): each cause, a member's own or a shared one,
+strikes at its share of the failure rate and fails the members it names that
+are up, at once. Each member on its own still fails at its rate, so
+`node_availability` is as without the group; what changes is which members
+are down together. With two pumps, each down a tenth of the time, a fifth of
+their failures shared:
+
+```python
+from repyability import RepairableRBD
+
+pump = {
+    "reliability": surv.Exponential.from_params([0.01]),
+    "repairability": surv.Exponential.from_params([0.1]),
+}
+independent = RepairableRBD(edges, {"p1": pump, "p2": pump})
+shared = RepairableRBD(
+    edges,
+    {"p1": pump, "p2": pump},
+    ccf_groups=[CCFGroup(["p1", "p2"], BetaFactor(0.2))],
+)
+independent.mean_unavailability()   # -> 0.008264   (1/11)^2
+shared.mean_unavailability()        # -> 0.01585
+```
+
+The long-run values are exact: a group's members form a Markov chain of
+which of them are down, its long-run distribution found without
+subtraction, so a small probability keeps its precision. The members need
+exponential lives, and either revealed failures with exponential repairs, as
+here, or hidden failures found by tests (instant, as the long-run values of
+tests need, with one coverage for the group), at offsets of their own if
+they are staggered; see [the PFDavg of a safety
+function](costs.md#common-cause-staggered-tests-and-test-coverage).
+`mean_availability`, `mean_unavailability`, `system_failure_frequency`,
+MTBF, MUT and MDT, the cost rate, `capacity_distribution`, and the interval
+choices built on them take the groups in; the importance measures, the
+allocations, the values over time from new and the simulations refuse a
+diagram with groups, as yet (`analysis_routes()` says which).

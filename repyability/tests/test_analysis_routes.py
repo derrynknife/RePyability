@@ -16,6 +16,7 @@ import pytest
 import surpyval as surv
 
 from repyability import (
+    MGL,
     AnalysisRoute,
     BetaFactor,
     CCFGroup,
@@ -250,6 +251,72 @@ def repairable_rbds():
             "standby group, Weibull": system(
                 unit(standby={"dormancy_factor": 0.5}, repair_cost=3.0),
                 downtime_cost_rate=5.0,
+            ),
+            "common cause, tested": RepairableRBD(
+                EDGES,
+                {
+                    "a": {
+                        "reliability": E([0.002]),
+                        "repairability": "instant",
+                        "inspection": {
+                            "interval": 100.0,
+                            "coverage": 0.8,
+                            "full_test": 300.0,
+                        },
+                    },
+                    "b": {
+                        "reliability": E([0.002]),
+                        "repairability": "instant",
+                        "inspection": {
+                            "interval": 100.0,
+                            "offset": 50.0,
+                            "coverage": 0.8,
+                            "full_test": 300.0,
+                        },
+                    },
+                    "c": unit(repair_cost=2.0),
+                },
+                ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
+                downtime_cost_rate=5.0,
+            ),
+            "common cause, revealed": RepairableRBD(
+                EDGES,
+                {
+                    node: {
+                        "reliability": E([0.002]),
+                        "repairability": E([0.5]),
+                    }
+                    for node in "ab"
+                }
+                | {
+                    "c": unit(
+                        preventive={"interval": 300.0, "policy": "block"}
+                    )
+                },
+                ccf_groups=[CCFGroup(["a", "b"], MGL(0.2))],
+            ),
+            "common cause, Weibull": system(
+                unit(), ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))]
+            ),
+            "common cause, timed block replacement": RepairableRBD(
+                EDGES,
+                {
+                    node: {
+                        "reliability": E([0.002]),
+                        "repairability": E([0.5]),
+                    }
+                    for node in "ab"
+                }
+                | {
+                    "c": unit(
+                        preventive={
+                            "interval": 300.0,
+                            "policy": "block",
+                            "duration": E([2.0]),
+                        }
+                    )
+                },
+                ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
             ),
             "one repair crew, exponential": RepairableRBD(
                 EDGES,
@@ -699,12 +766,36 @@ def test_the_readme_says_what_is_simulated():
         "Phased missions over 200,000 states, and networks over 100,000 "
         "paths": [],
         "Hidden failures found by tests (a constant failure rate with "
-        "instant tests and repairs is exact)": [
+        "instant tests and repairs is exact, staggered or with tests that "
+        "miss failures too)": [
             (repairable["tested, Weibull"], "mean_availability", "refused"),
             (
                 repairable["tested, constant rate"],
                 "mean_availability",
                 "exact",
+            ),
+        ],
+        "Common-cause groups in a repairable diagram": [
+            (
+                repairable["common cause, tested"],
+                "mean_availability",
+                "exact",
+            ),
+            (
+                repairable["common cause, tested"],
+                "system_failure_frequency",
+                "exact",
+            ),
+            (repairable["common cause, tested"], "availability", "refused"),
+            (
+                repairable["common cause, revealed"],
+                "point_availability",
+                "refused",
+            ),
+            (
+                repairable["common cause, revealed"],
+                "birnbaum_importance",
+                "refused",
             ),
         ],
         "Replacement on condition at periodic inspections": [

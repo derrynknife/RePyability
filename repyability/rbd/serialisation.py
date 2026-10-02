@@ -455,6 +455,8 @@ def rbd_to_dict(rbd: RBD) -> dict:
                 {"group": name, **_group_options(options)}
                 for name, options in args["maintenance_groups"].items()
             ]
+        if args.get("ccf_groups"):
+            out["ccf_groups"] = _ccf_to_list(args["ccf_groups"])
     else:
         nodes = set(args["reliabilities"].keys())
         out["reliabilities"] = [
@@ -500,6 +502,7 @@ def rbd_from_dict(d: dict) -> RBD:
             downtime_cost_rate=d.get("downtime_cost_rate", 0.0),
             repair_crews=d.get("repair_crews"),
             maintenance_groups=groups or None,
+            ccf_groups=_ccf_from_list(d.get("ccf_groups")),
             **common,
         )
     if rbd_type == "NonRepairableRBD":

@@ -465,6 +465,14 @@ probability-free, is unaffected.
 **Alpha-factor**, a data-estimable reparameterisation of the same
 multiplicities, is a planned extension.
 
+A `RepairableRBD` takes `ccf_groups` too. There a member's failures are a
+rate, so the model splits the rate: each cause, a member's own or a shared
+one, strikes at its share of it and fails the members it names that are up.
+Each member alone fails as before; which are down together is a Markov chain
+of the group (its members repaired at exponential rates, or found by their
+tests), and the long-run values average the structure function over its
+states, exactly (see [Common-cause failures](guide/common-cause.md#repairable-systems)).
+
 ## Availability
 
 A repairable component alternates between up periods (drawn from its

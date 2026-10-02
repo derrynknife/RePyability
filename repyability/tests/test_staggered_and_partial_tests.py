@@ -288,7 +288,7 @@ def test_a_state_places_a_staggered_calendar():
     )
 
 
-# -- choosing intervals, and saving ---------------------------------------------
+# -- choosing intervals, and saving -------------------------------------------
 
 
 def test_choosing_intervals_keeps_an_offsets_share():

@@ -140,7 +140,8 @@ places, nested diagrams):
 | Kaplan–Meier lives in a repairable system | Long run refused; over time numerical | Non-parametric nodes are deprecated and go in 0.12 (#149): fit a parametric distribution in surpyval. |
 | **Architecture and maintenance** | | |
 | Phased missions over 200,000 states, and networks over 100,000 paths | Refused, pointing to `method="simulate"` | No: decision diagrams could keep them exact (#142, #143). |
-| Hidden failures found by tests (a constant failure rate with instant tests and repairs is exact) | Simulated | No: could be numerical (#144; for SIL, #136). |
+| Hidden failures found by tests (a constant failure rate with instant tests and repairs is exact, staggered or with tests that miss failures too) | Simulated | No: could be numerical (#144). |
+| Common-cause groups in a repairable diagram | Long run exact, for exponential lives, tested or repaired; over time, importance, allocation and the simulations refused | No: over time could be exact from the same Markov chain, and the simulations could draw the shared causes (#158); importance and allocation, #140. |
 | Replacement on condition at periodic inspections | Simulated | No: could be numerical (#145). |
 | Shared repair crews | Long run exact for exponential lives and repairs; the rest simulated | Over time and importance, with exponential lives: could be exact from the same Markov chain (#146). Other lives: yes, in general. |
 | Standby groups (a duty unit and its spares, repaired) | Long run and importance exact for exponential units; the rest simulated | Over time, with exponential units: could be exact from the same Markov chain (#146). Other units: yes, in general. |

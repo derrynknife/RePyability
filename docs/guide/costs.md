@@ -27,7 +27,7 @@ Costs are optional keys of a component's dict, plus one system-level rate:
 ```python
 import numpy as np
 import surpyval as surv
-from repyability import RepairableRBD
+from repyability import BetaFactor, CCFGroup, RepairableRBD
 
 def unit(failure_rate, repair_rate, **costs):
     return {
@@ -495,9 +495,12 @@ component's dict makes its failures hidden:
 
 | Key | Meaning |
 |---|---|
-| `interval` | Required: the time `τ` between inspections, positive and finite. The component is inspected at `τ, 2τ, 3τ, …`. |
+| `interval` | Required: the time `τ` between inspections, positive and finite. The component is inspected at `τ, 2τ, 3τ, …`, or from its `offset`. |
 | `duration` | `"instant"` (the default): the test takes no time. Or a time-to-test model: the component is off-line while it is tested (a planned outage), and does not age meanwhile. |
 | `cost` | Charged at each inspection: a number or a distribution. |
+| `offset` | The time of the first test, from 0 to less than `τ` (by default 0): tests at `offset, offset + τ, …`, so that redundant components can be tested apart (staggered). |
+| `coverage` | The chance that a test finds a failure, from 0 to 1 (by default 1): its *proof-test coverage*. A failure a test misses stays hidden until a full test. |
+| `full_test` | With a coverage below 1, required: the time between full tests, which find every failure, a whole multiple of `τ` (the tests at `offset` and every `full_test` after it). Often the mission time, after which the component is renewed. |
 
 A failure found by an inspection is repaired once the test is done (taking a
 time drawn from the component's `"repairability"`), and its repair and
@@ -578,6 +581,62 @@ decade = both.availability(t_simulation=10 * 8760.0, mc_samples=20000, seed=0)
 # -> 3.9e-4
 decade.system_planned_outages / decade.n_simulations   # -> 9.0   one per test
 ```
+
+### Common cause, staggered tests and test coverage
+
+Three more terms decide a real safety function's PFDavg, and each has its
+place in the diagram:
+
+- **Common cause.** Redundant valves of one design, in one service, fail
+  together more often than chance allows. Give the diagram `ccf_groups`, as
+  for a [non-repairable one](common-cause.md): a `BetaFactor(β)` makes a
+  share `β` of each valve's failures a shared cause that fails both at
+  once. For a redundant function the shared term usually dominates: about
+  `βλτ/2`, five times the pair's independent `(λτ)²/3` here.
+- **Staggered tests.** An `"offset"` tests one valve half an interval after
+  the other: a shared failure is then found by whichever test comes first,
+  and the independent term falls from `(λτ)²/3` to about `5(λτ)²/24`.
+- **Test coverage.** A proof test that finds only a share `c` of the
+  failures (a `"coverage"`) leaves the rest hidden until a full test
+  (`"full_test"`), say the ten-year overhaul: about `(1 − c)λT/2` more,
+  `T` the full test's interval.
+
+```python
+def proof_tested(**inspection):
+    return {
+        "reliability": surv.Exponential.from_params([2e-6]),
+        "repairability": "instant",
+        "inspection": {"interval": 8760.0, **inspection},
+    }
+
+redundant_edges = [("s", "v1"), ("s", "v2"), ("v1", "t"), ("v2", "t")]
+common = [CCFGroup(["v1", "v2"], BetaFactor(0.05))]
+shared = RepairableRBD(
+    redundant_edges,
+    {"v1": proof_tested(), "v2": proof_tested()},
+    ccf_groups=common,
+)
+shared.mean_unavailability()        # -> 5.290e-4   (λτ)²/3 + βλτ/2, about
+staggered = RepairableRBD(
+    redundant_edges,
+    {"v1": proof_tested(), "v2": proof_tested(offset=4380.0)},
+    ccf_groups=common,
+)
+staggered.mean_unavailability()     # -> 2.779e-4   the shared term halved
+partial = RepairableRBD(
+    [("s", "v"), ("v", "t")],
+    {"v": proof_tested(coverage=0.9, full_test=87600.0)},
+)
+partial.mean_unavailability()       # -> 0.01642    0.9λτ/2 + 0.1λT/2, about
+```
+
+All three are exact, with the constant failure rates and instant tests and
+repairs the long-run values need: a group's members are a Markov chain of
+which of them are down, with each member found by its own tests, and a
+shared failure found alike by every test (the coverage is the group's).
+The importance measures, the allocations, the values over time from new
+and the simulations do not take a common-cause group in yet, and refuse
+it; see `analysis_routes()`.
 
 ### Choosing the interval
 

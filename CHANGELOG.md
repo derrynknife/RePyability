@@ -37,7 +37,10 @@ machines and merged (#114); and small failure probabilities are estimated by
 rare-event simulation (#115), and keep their full precision where they are
 exact (#148); phased missions are new, exact and simulated (#100, #101), as
 are the two-terminal reliability of undirected networks (#104) and
-demonstration test planning (#129). Meshed diagrams are decided by a binary
+demonstration test planning (#129). A safety function's PFDavg takes in
+the terms SIL verification asks for: common-cause groups in repairable
+diagrams, staggered tests, and proof tests that miss failures (#136).
+Meshed diagrams are decided by a binary
 decision diagram, in milliseconds where their path sets took minutes (#102,
 #103). Non-parametric nodes, and the fits to simulated lifetimes behind some
 standby and load-sharing models, are deprecated; everything deprecated goes
@@ -65,6 +68,35 @@ is required.
 
 ### Added
 
+- **Common cause, staggered tests and test coverage in repairable
+  diagrams** (#136), the three terms an IEC 61508/61511 PFDavg needs beyond
+  independent channels tested together:
+  - `RepairableRBD(..., ccf_groups=[CCFGroup(members, BetaFactor(β))])`
+    (or `MGL`): the model splits the members' failure rate between their
+    own causes and shared ones, each failing the members it names that are
+    up at once. The long-run values (`mean_availability`,
+    `mean_unavailability`, `system_failure_frequency`, MTBF, MUT, MDT, the
+    cost rate, `capacity_distribution` and the interval choices) are exact,
+    from a Markov chain of which members are down together, for
+    exponential lives either tested or repaired at exponential rates: a
+    tested 1oo2 pair with a β of 5% has a PFDavg of 5.29e-4, against
+    1.01e-4 without. Each member's own values are unchanged. The importance
+    measures, allocations, values over time from new and the simulations
+    refuse a diagram with groups, as yet (#140, #158), and say so in
+    `analysis_routes()`.
+  - An inspection's `"offset"` (the time of the first test) staggers the
+    tests of redundant components: half an interval apart, a 1oo2 pair's
+    PFDavg falls from about `(λτ)²/3` to `5(λτ)²/24`, and a shared cause's
+    term halves.
+  - An inspection's `"coverage"` (the chance that a test finds a failure)
+    with a `"full_test"` interval (a whole multiple of the interval, whose
+    tests find every failure): a failure a test misses stays hidden until
+    a full test, about `(1 − c)λT/2` more. Exact in the long run and from
+    new; simulated in Python, where a stream of its own decides whether a
+    test finds each failure, and each test that misses one is charged. A
+    unit whose tests can miss failures starts new (its state is not
+    taken), and `optimal_inspection_intervals` does not choose its
+    interval.
 - **Faster compiled simulations of large systems** (#150). Above 20
   components (where the compiled loop has no table of every state), the
   compiled engine keeps whether the system works up to date as components

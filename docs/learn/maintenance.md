@@ -466,6 +466,18 @@ of 86, and halving the test interval would quarter it again. Tests with a
 duration, and repairs that take time, are simulated (see
 [Costs](../guide/costs.md#hidden-failures-and-inspection)).
 
+A real safety function needs three more terms, each of which the diagram
+takes. The two valves share a design and a service, so some failures strike
+both at once: a common-cause group (`ccf_groups`, [Lesson 5](dependence.md))
+whose shared share `β` of the failures adds about $\beta\lambda\tau/2$, which
+for a redundant pair is usually the largest term. Testing the valves half an
+interval apart (an `"offset"`) halves that shared term, as a shared failure is
+found by whichever test comes first. And a test that finds only a share `c`
+of the failures (a `"coverage"`) leaves the rest hidden until a full test
+(`"full_test"`), adding about $(1 - c)\lambda T/2$ for full tests every $T$.
+All three are exact: see
+[Costs](../guide/costs.md#common-cause-staggered-tests-and-test-coverage).
+
 **Choosing the test interval.** Each test costs $c_i$, and each hour the part
 lies failed costs $c_d$. The cost rate is then about
 $c_i/\tau + c_d\,\lambda\tau/2$: the first term falls as the interval grows,
