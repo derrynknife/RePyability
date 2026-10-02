@@ -23,8 +23,9 @@ downtime and cost over a window (#123), and a system's mean time to failure
 current states rather than new (#125). `analysis_routes()` says, without running anything, how each
 analysis will be computed: exactly, numerically, by simulation or not at all
 (#127). Availability simulations run faster, and about ten times as fast
-again when compiled with numba (#119, #120), and `import repyability` is
-quicker (#121). Components can share a limited number of repair crews (#89),
+again when compiled with numba (#119, #120), which now also runs
+maintenance, inspections, repair crews, standby groups, nested RBDs and
+capacities (#155), and `import repyability` is quicker (#121). Components can share a limited number of repair crews (#89),
 with exact long-run values from a Markov chain when their lives and repairs
 are exponential (#90); a duty unit and its spares can be a standby group,
 repaired one unit at a time (#91); `spares_demand` and `spares_stock` count
