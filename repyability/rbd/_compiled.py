@@ -5,11 +5,12 @@ It runs the simulations of a system whose components are plain
 ``NonRepairable`` units -- every model a surpyval parametric one, so that
 its draws come from its own streams (see ``_streams``) -- in any structure,
 with components held working or broken, antithetic pairs, common random
-numbers and costs, under age and block replacement and with hidden
-failures found by periodic tests (#155). Anything else (replacement on
-condition, repair crews, standby groups, maintenance groups, imperfect
-repair, nested RBDs, capacities, models whose draws cannot be streamed)
-runs in Python, which ``engine="auto"`` chooses by itself.
+numbers and costs, under age and block replacement, with hidden failures
+found by periodic tests, and with fewer repair crews than components
+(#155). Anything else (replacement on condition, standby groups,
+maintenance groups, imperfect repair, nested RBDs, capacities, models whose
+draws cannot be streamed) runs in Python, which ``engine="auto"`` chooses
+by itself.
 
 The two engines give the same results to the last bit: the compiled loop
 (``_kernel``) is the Python one over arrays, reading the same draws, and
@@ -22,10 +23,10 @@ nothing when numba is not installed.
 
 Other packages can add compiled engines of their own (see ``engines``):
 ``engine="auto"`` runs the one of highest priority, numba's being 0, on
-what ``unsupported`` allows: plain components. Age and block replacement
-and inspections are numba's own loop's (``unsupported(..., numba=True)``),
-so a system under them runs on numba, not on an engine of the interface's
-version.
+what ``unsupported`` allows: plain components. Age and block
+replacement, inspections and repair crews are numba's own loop's
+(``unsupported(..., numba=True)``), so a system with them runs on numba,
+not on an engine of the interface's version.
 """
 
 import importlib.util
@@ -81,8 +82,9 @@ def unsupported(
     """What in a run a compiled engine cannot simulate, or None: an engine
     of the interface's version (see ``engines``) simulates plain
     components; with ``numba``, numba's own loop also simulates age and
-    block replacement and inspections of hidden failures (#155), from new
-    (a run from the components' ``states`` shifts their calendars)."""
+    block replacement, inspections of hidden failures and repair crews
+    (#155), from new for the first two (a run from the components'
+    ``states`` shifts their calendars)."""
     from repyability.non_repairable import NonRepairable
     from repyability.rbd.repairable_rbd import RepairableRBD
 
@@ -92,7 +94,7 @@ def unsupported(
         return "components started from a state"
     if numba and states and (rbd._preventive or rbd._inspection):
         return "components started from a state"
-    if rbd._crews_limited():
+    if rbd._crews_limited() and not numba:
         return "repair crews"
     if rbd._standby:
         return "standby groups"
@@ -402,7 +404,14 @@ class _System:
                 test_charge[c] = stream(
                     ((node,), _streams.COST_KINDS["inspection_cost"])
                 )
-        self.maintenance = (
+        #: The repair crews when there are fewer than the components (-1
+        #: otherwise: no job waits), and each component's rank in their
+        #: queue (its priority, negated: the lowest rank first).
+        crews = rbd.repair_crews if rbd._crews_limited() else -1
+        rank = np.array([-rbd._priority.get(node, 0.0) for node in nodes])
+        #: Everything numba's own loop simulates besides plain components
+        #: (see ``_kernel._simulate``).
+        self.upkeep = (
             policy,
             interval,
             duration,
@@ -417,6 +426,8 @@ class _System:
             test_draw,
             test_charge,
             test_amount,
+            int(crews),
+            rank,
         )
         initial_up = rbd.is_system_working(
             {node: bool(start[c]) for c, node in enumerate(nodes)}, method
@@ -764,7 +775,7 @@ class Runner:
                     draws,
                     out,
                     min(todo.size, 4 * self._threads),
-                    self._model.maintenance,
+                    self._model.upkeep,
                 )
             else:
                 kernel.run_serial(
@@ -776,7 +787,7 @@ class Runner:
                     self._model.kept,
                     draws,
                     out,
-                    self._model.maintenance,
+                    self._model.upkeep,
                 )
             codes = status[todo - first]
             if np.any(codes < 0):

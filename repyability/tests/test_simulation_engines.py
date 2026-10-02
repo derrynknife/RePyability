@@ -599,14 +599,12 @@ def test_the_compiled_engine_refuses_what_it_cannot_run():
         on_condition().availability(
             100.0, mc_samples=5, seed=2, engine="numba"
         )
-    bridge = plain_rbds()["bridge"]
-    crewed = RepairableRBD(
-        [tuple(e) for e in bridge._init_args["edges"]],
-        bridge._init_args["components"],
-        repair_crews=1,
+    standby = RepairableRBD(
+        [("s", "g"), ("g", "t")],
+        {"g": {**unit_spec(70, 2.0), "standby": {"units": 3, "k": 2}}},
     )
-    with pytest.raises(NotImplementedError, match="repair crews"):
-        crewed.availability(100.0, mc_samples=5, seed=2, engine="numba")
+    with pytest.raises(NotImplementedError, match="standby groups"):
+        standby.availability(100.0, mc_samples=5, seed=2, engine="numba")
 
 
 def test_without_numba_the_compiled_engine_cannot_be_asked_for(monkeypatch):
@@ -875,10 +873,16 @@ def test_what_numbas_loop_runs_besides_plain_components():
         routes["inspected"],
         *maintained_rbds().values(),
         *inspected_rbds().values(),
+        *crewed_rbds().values(),
     ]:
         plan, _ = rbd._stream_plan(100.0, 1, False)
         # Not given to an engine of the interface's version.
-        reason = "preventive maintenance" if rbd._preventive else "inspections"
+        if rbd._crews_limited():
+            reason = "repair crews"
+        elif rbd._preventive:
+            reason = "preventive maintenance"
+        else:
+            reason = "inspections"
         assert reason in _compiled.unsupported(rbd, plan, None)
         assert _compiled.unsupported(rbd, plan, None, numba=True) is None
     timed = {"interval": 30.0, "duration": binomial_first([2, 1.5])}
@@ -1046,6 +1050,145 @@ def inspected_rbds():
 @pytest.mark.parametrize("name", sorted(inspected_rbds()))
 def test_the_engines_agree_on_inspections(name, options):
     engines_agree(inspected_rbds()[name], options)
+
+
+def crewed_rbds():
+    """Systems with fewer repair crews than components, which numba's own
+    loop simulates (#155): one crew and two, with priorities and without
+    (the job due first, then the one queued first, goes first), maintenance
+    and tests that wait for a crew (a unit off line for a test does not age
+    while it waits), fixed lives whose jobs fall due together, and more
+    components than the loop tabulates."""
+
+    def slow(scale, shape, **extra):
+        # Repairs long enough for jobs to wait.
+        return {
+            "reliability": W([scale, shape]),
+            "repairability": L([2.0, 0.5]),
+            **extra,
+        }
+
+    big = pairs_in_series(12)
+    return {
+        "one crew, priorities": RepairableRBD(
+            BRIDGE,
+            {
+                "a": slow(70, 2.5, priority=2.0, repair_cost=3.0),
+                "b": slow(80, 2.0, priority=1.0),
+                "c": slow(90, 1.5),
+                "d": slow(60, 3.0, priority=1.0, replace_cost=G([2.0, 1.0])),
+                "e": slow(75, 1.2),
+            },
+            repair_crews=1,
+            downtime_cost_rate=4.0,
+        ),
+        "two crews, maintenance and tests": RepairableRBD(
+            BRIDGE,
+            {
+                "a": slow(
+                    70,
+                    2.5,
+                    preventive={"interval": 30.0, "duration": L([0.5, 0.4])},
+                    priority=1.0,
+                ),
+                "b": slow(
+                    80,
+                    2.0,
+                    preventive={
+                        "interval": 25.0,
+                        "policy": "block",
+                        "duration": E([0.3]),
+                        "cost": 2.0,
+                    },
+                ),
+                "c": slow(
+                    90,
+                    1.5,
+                    inspection={
+                        "interval": 25.0,
+                        "offset": 5.0,
+                        "coverage": 0.8,
+                        "full_test": 100.0,
+                        "duration": E([0.5]),
+                    },
+                ),
+                "d": slow(
+                    60,
+                    3.0,
+                    inspection={
+                        "interval": 30.0,
+                        "duration": X(1.0),
+                        "cost": 1.0,
+                    },
+                    repair_cost=5.0,
+                    priority=3.0,
+                ),
+                "e": slow(75, 1.2),
+            },
+            repair_crews=2,
+            downtime_cost_rate=2.0,
+        ),
+        "fixed lives, falling due together": RepairableRBD(
+            [
+                ("s", "a"),
+                ("s", "b"),
+                ("s", "c"),
+                ("a", "t"),
+                ("b", "t"),
+                ("c", "t"),
+            ],
+            {
+                "a": {"reliability": X(10.0), "repairability": X(3.0)},
+                "b": {"reliability": X(10.0), "repairability": X(2.0)},
+                "c": {
+                    "reliability": X(10.0),
+                    "repairability": X(1.0),
+                    "priority": 1.0,
+                },
+            },
+            repair_crews=1,
+        ),
+        "large": RepairableRBD(
+            [tuple(e) for e in big._init_args["edges"]],
+            {
+                node: {**spec, "repairability": L([2.5, 0.5])}
+                for node, spec in big._init_args["components"].items()
+            },
+            repair_crews=3,
+        ),
+    }
+
+
+@needs_numba
+@UPKEEP_RUNS
+@pytest.mark.parametrize("name", sorted(crewed_rbds()))
+def test_the_engines_agree_with_repair_crews(name, options):
+    engines_agree(crewed_rbds()[name], options)
+
+
+@needs_numba
+def test_jobs_wait_for_a_crew_in_the_compiled_loop():
+    rbd = crewed_rbds()["one crew, priorities"]
+    run = dict(t_simulation=1000.0, mc_samples=200, seed=9, engine="numba")
+    crewed = rbd.availability(**run)
+    unlimited = RepairableRBD(
+        BRIDGE, rbd._init_args["components"], downtime_cost_rate=4.0
+    ).availability(**run)
+    # The same draws, but repairs that wait for the crew.
+    for node in "ae":
+        assert crewed.node_uptime[node] < unlimited.node_uptime[node]
+    # Three units fail at 10, for one crew: the first to fail takes it, and
+    # of the two left waiting, the one of higher priority goes first,
+    # though it was queued second.
+    fixed = crewed_rbds()["fixed lives, falling due together"]
+    run = dict(t_simulation=20.0, mc_samples=1, seed=1)
+    result = fixed.availability(engine="numba", **run)
+    identical(result, fixed.availability(engine="python", **run))
+    down = {node: 20.0 - up for node, up in result.node_uptime.items()}
+    # a: repaired 10 to 13; c: waits 3, repaired by 14; b: waits 4 (its
+    # repair of 2 then ends at 16).
+    assert down == pytest.approx({"a": 3.0, "b": 6.0, "c": 4.0})
+    assert result.system_uptime == pytest.approx(17.0)
 
 
 @needs_numba

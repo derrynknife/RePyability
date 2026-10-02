@@ -209,15 +209,18 @@ def test_the_exact_methods_refuse_while_a_job_can_wait(method):
     method(system(3))  # enough crews: nothing waits
 
 
-def test_the_report_and_the_engines_follow_the_crews():
+def test_the_report_and_the_engines_follow_the_crews(monkeypatch):
     report = system(1).analysis_routes()
     assert report["mean_availability"].route == r.REFUSED
     assert "repair crew" in report["mean_availability"].reason
     assert report["availability"].route == r.SIMULATED
-    assert report["availability"].engine == "python"
-    assert "repair crews" in report["availability"].engine_reason
+    # numba's own loop simulates the crews (#155); an engine of the
+    # interface's version is not given them.
     plan = system(1)._stream_plan(1.0, 0, False)[0]
     assert _compiled.unsupported(system(1), plan, None) == "repair crews"
+    assert _compiled.unsupported(system(1), plan, None, numba=True) is None
+    monkeypatch.setattr(_compiled, "available", lambda: True)
+    assert system(1).analysis_routes()["availability"].engine == "numba"
     enough = system(3).analysis_routes()["mean_availability"]
     assert enough.route != r.REFUSED
 

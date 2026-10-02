@@ -603,19 +603,22 @@ The compiled engine simulates plain components (`reliability` and
 `repairability` specs, or `NonRepairable` objects, with surpyval parametric
 models) in any structure, with nodes held working or broken, costs,
 antithetic pairs, tolerances and common random numbers; age and block
-replacement, in zero time or taking time; and hidden failures found by
+replacement, in zero time or taking time; hidden failures found by
 periodic tests, in zero time or taking time, staggered, and with a coverage
-below 1 (a failure a test misses waits for a full test). Replacement on
-condition, repair crews, standby groups, maintenance groups, imperfect
-repair, nested RBDs, capacities, a run from the components' states with
-maintenance or tests, and other models run in Python, which `"auto"`
-chooses by itself. With `n_jobs` it runs on that many threads, which start
-at once. Under age replacement (half the units maintained in zero time,
-half taking time), the compiled engine ran 9 to 12 times as fast as Python
-on one thread, and 18 to 29 times on four, on the three systems below; with
-every unit tested (half the tests in zero time, staggered, half taking time
-and missing one failure in ten), 17 to 27 times on one thread, and 32 to 63
-on four.
+below 1 (a failure a test misses waits for a full test); and fewer repair
+crews than components, the jobs waiting by priority. Replacement on
+condition, standby groups, maintenance groups, imperfect repair, nested
+RBDs, capacities, a run from the components' states with maintenance or
+tests, and other models run in Python, which `"auto"` chooses by itself.
+With `n_jobs` it runs on that many threads, which start at once. Under age
+replacement (half the units maintained in zero time, half taking time), the
+compiled engine ran 9 to 12 times as fast as Python on one thread, and 18 to
+29 times on four, on the three systems below; with every unit tested (half
+the tests in zero time, staggered, half taking time and missing one failure
+in ten), 17 to 27 times on one thread, and 32 to 63 on four; and with one,
+two and four crews, 13, 9 and 5 times on one thread, and 19, 25 and 8 on
+four (on the 70 components, drawing the numbers and adding up the results
+take most of the time).
 
 On a four-core 2.8 GHz Xeon, in millions of events (failures and repairs)
 a second:

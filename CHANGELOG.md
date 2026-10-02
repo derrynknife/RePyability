@@ -198,6 +198,19 @@ is required.
   inspected system in Python (a state's phase shifts its calendar), as
   does a test time that cannot be streamed; and, as for maintenance, an
   engine another package adds is not given inspected systems.
+- **Repair crews compiled** (#155). With fewer repair crews than
+  components, a job that falls due (a repair, maintenance that takes time,
+  or a test that takes time) waits for a crew in the compiled engine as in
+  Python: the next crew free starts the waiting job of highest priority,
+  then the one due first, then the one queued first, and the job ends as
+  late as it waited (a unit off line for a test does not age meanwhile).
+  The engines agree to the last bit on crewed systems with priorities and
+  without, maintenance and tests waiting for crews, jobs falling due
+  together, and one too large for the table of states. With one, two and
+  four crews it ran 13, 9 and 5 times as fast as Python on one thread, and
+  19, 25 and 8 times on four, on 3, 12 and 70 components (on 70, drawing
+  the numbers and adding up the results take most of the time). An engine
+  another package adds is still not given crewed systems.
 - **Faster compiled simulations of large systems** (#150). Above 20
   components (where the compiled loop has no table of every state), the
   compiled engine keeps whether the system works up to date as components

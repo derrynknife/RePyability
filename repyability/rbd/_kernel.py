@@ -2,15 +2,15 @@
 
 ``_simulate`` is ``RepairableRBD._replicate`` for components that are
 plain ``NonRepairable`` units, under age or block replacement, inspected
-for hidden failures or neither (#155), operation for operation, over
-arrays: the same heap (``heapq``'s algorithm, so equal times come out in
-the same order), the same arithmetic in the same order, and the draws read
-from the same keyed streams (see ``_streams``). Each simulation's results
-go to its own row of the output arrays, so the rows can be worked out in
-any order, on any number of threads, and a simulation that runs out of
-draws (or of room for its system's changes) is simply run again once there
-is more. ``_compiled`` prepares the arrays and adds the rows to the tally
-in order.
+for hidden failures or neither, and with as many repair crews as needed or
+fewer (#155), operation for operation, over arrays: the same heap
+(``heapq``'s algorithm, so equal times come out in the same order), the
+same arithmetic in the same order, and the draws read from the same keyed
+streams (see ``_streams``). Each simulation's results go to its own row
+of the output arrays, so the rows can be worked out in any order, on any
+number of threads, and a simulation that runs out of draws (or of room for
+its system's changes) is simply run again once there is more.
+``_compiled`` prepares the arrays and adds the rows to the tally in order.
 
 Importing this module imports numba, which compiles the loop on first use
 (or loads it from numba's cache).
@@ -287,6 +287,92 @@ def _tested_next(c, t, upkeep, pending):
     return due, _TEST_DOWN
 
 
+@njit(cache=True, inline="always")
+def _before(rank, due, order, other_rank, other_due, other_order):
+    """Whether a waiting job is started before another (``_Crews``'
+    order): of higher priority (lower rank), then due first, then queued
+    first."""
+    if rank != other_rank:
+        return rank < other_rank
+    if due != other_due:
+        return due < other_due
+    return order < other_order
+
+
+@njit(cache=True, inline="always")
+def _wait(queue, size, rank, due, order, c, done, kind):
+    """Queue component ``c``'s job, due at ``due`` and ending at ``done``
+    (an event of ``kind``) if started at once, until a repair crew is free
+    (``_Crews.request``); the queue's new size."""
+    ranks, dues, orders, nodes, ends, kinds = queue
+    pos = size
+    while pos > 0:
+        parent = (pos - 1) >> 1
+        if not _before(
+            rank, due, order, ranks[parent], dues[parent], orders[parent]
+        ):
+            break
+        ranks[pos] = ranks[parent]
+        dues[pos] = dues[parent]
+        orders[pos] = orders[parent]
+        nodes[pos] = nodes[parent]
+        ends[pos] = ends[parent]
+        kinds[pos] = kinds[parent]
+        pos = parent
+    ranks[pos] = rank
+    dues[pos] = due
+    orders[pos] = order
+    nodes[pos] = c
+    ends[pos] = done
+    kinds[pos] = kind
+    return size + 1
+
+
+@njit(cache=True, inline="always")
+def _start_waiting(queue, size):
+    """The waiting job a free crew starts (``_Crews.release``): its
+    component, when it fell due, when and how it ends if started then, and
+    the queue's new size."""
+    ranks, dues, orders, nodes, ends, kinds = queue
+    c0, due0, done0, kind0 = nodes[0], dues[0], ends[0], kinds[0]
+    size -= 1
+    if size > 0:
+        rank, due, order = ranks[size], dues[size], orders[size]
+        c, done, kind = nodes[size], ends[size], kinds[size]
+        pos = 0
+        child = 1
+        while child < size:
+            right = child + 1
+            if right < size and _before(
+                ranks[right],
+                dues[right],
+                orders[right],
+                ranks[child],
+                dues[child],
+                orders[child],
+            ):
+                child = right
+            if not _before(
+                ranks[child], dues[child], orders[child], rank, due, order
+            ):
+                break
+            ranks[pos] = ranks[child]
+            dues[pos] = dues[child]
+            orders[pos] = orders[child]
+            nodes[pos] = nodes[child]
+            ends[pos] = ends[child]
+            kinds[pos] = kinds[child]
+            pos = child
+            child = 2 * pos + 1
+        ranks[pos] = rank
+        dues[pos] = due
+        orders[pos] = order
+        nodes[pos] = c
+        ends[pos] = done
+        kinds[pos] = kind
+    return c0, due0, done0, kind0, size
+
+
 @njit(cache=True)
 def truth_table(n, structure):
     """``_works`` for every state of ``n`` components: entry ``mask`` is
@@ -310,7 +396,8 @@ def _simulate(
     the system works is looked up in the table of every state, or, without
     one, kept up to date as components change (``kept``, see
     ``_compiled._kept``). ``upkeep`` is the components' preventive
-    maintenance and inspections (see ``_compiled._System.maintenance``)."""
+    maintenance and inspections, and the repair crews (see
+    ``_compiled._System.upkeep``)."""
     (
         start,
         active,
@@ -367,7 +454,20 @@ def _simulate(
         test_draw,
         test_charge,
         test_amount,
-    ) = upkeep[5:]
+    ) = upkeep[5:14]
+    # The repair crews (-1 for as many as needed) and each component's rank
+    # in their queue, and which components hold one, the jobs waiting for
+    # one (see ``_wait``) and how many were ever queued.
+    crews, rank = upkeep[14], upkeep[15]
+    holding = np.empty(n, np.int8)
+    queue = (
+        np.empty(n),
+        np.empty(n),
+        np.empty(n, np.int64),
+        np.empty(n, np.int64),
+        np.empty(n),
+        np.empty(n, np.int8),
+    )
     maintained = np.empty(n, np.int64)
     pm_charged = np.empty(n, np.int64)
     # Each unit with hidden failures: when it is due to fail (NaN once it
@@ -420,6 +520,10 @@ def _simulate(
         timed[:] = 0
         finding[:] = 0
         test_charged[:] = 0
+        free = crews
+        holding[:] = 0
+        waiting = 0
+        queued = 0
         last[:] = 0.0
         up_at[:] = 0.0
         down_at[:] = 0.0
@@ -755,6 +859,59 @@ def _simulate(
                 lives[c] = k + 1
                 t_next = t + flat[base[s] + k]
                 kind_next = _FAIL
+            if crews >= 0:
+                # The repair crews (RepairableRBD._crew_follow_up).
+                if up_now:
+                    if holding[c]:
+                        # Its job done, its crew starts the next waiting
+                        # one, if any, ending as late as it waited.
+                        holding[c] = 0
+                        if waiting == 0:
+                            free += 1
+                        else:
+                            w, due, done, kind_done, waiting = _start_waiting(
+                                queue, waiting
+                            )
+                            holding[w] = 1
+                            wait = t - due
+                            ends = done + wait
+                            # Off line for a test, a unit does not age while
+                            # it waits.
+                            if not np.isnan(pending[w]):
+                                pending[w] = pending[w] + wait
+                            if ends < t_end:
+                                size = _push(
+                                    heap_times,
+                                    heap_nodes,
+                                    heap_states,
+                                    size,
+                                    ends,
+                                    w,
+                                    kind_done,
+                                )
+                elif (
+                    kind_next == _RESTORE
+                    or kind_next == _PM_END
+                    or kind_next == _PM_IN_PLACE
+                    or kind_next == _TEST_UP
+                ):
+                    # A job falls due: started by a free crew, or waiting.
+                    if free > 0:
+                        free -= 1
+                        holding[c] = 1
+                    else:
+                        waiting = _wait(
+                            queue,
+                            waiting,
+                            rank[c],
+                            t,
+                            queued,
+                            c,
+                            t_next,
+                            kind_next,
+                        )
+                        queued += 1
+                        continue
             if t_next < t_end:
                 size = _push(
                     heap_times,
