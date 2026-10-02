@@ -60,6 +60,16 @@ is required.
 
 ### Added
 
+- **Faster compiled simulations of large systems** (#150). Above 20
+  components (where the compiled loop has no table of every state), the
+  compiled engine keeps whether the system works up to date as components
+  fail and are repaired: each series, parallel or k-out-of-n part keeps how
+  many of its members work, and a change goes up the structure only as far
+  as it changes something (a core's path sets keep how many members are
+  down). An event costs the depth of the structure at most, rather than
+  the size of it: 70 components in redundant pairs ran 1.7 times as fast on
+  one core and 1.5 times on four. The results are the same, to the last
+  bit.
 - **System capacity** (#97): how much a system can deliver, not just
   whether it works. Every RBD class takes `capacity={node: throughput}`,
   each node's throughput while it works. The system's capacity is the

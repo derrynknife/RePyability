@@ -442,11 +442,14 @@ a second:
 |---|---|---|---|---|
 | The plant above, 3 components | 1 000 h | 0.75 | 8.3 | 16.3 |
 | A bridge feeding a 2-out-of-3 vote, 12 components | 5 000 h | 0.63 | 10.0 | 25.0 |
-| 35 redundant pairs in series, 105 components | 2 000 h | 0.25 | 2.1 | 2.9 |
+| 35 redundant pairs in series, 70 components | 2 000 h | 0.51 | 7.1 | 17.3 |
 
-Above 20 components, the compiled loop works out whether the system is up
-after each event that could change it, rather than looking it up in a
-table of every state, so those events cost more.
+Above 20 components the compiled loop has no table of every state to look
+the system up in. It keeps whether the system is up up to date as
+components fail and are repaired instead, following each change up the
+diagram's structure only as far as it changes anything: on the 70
+components, 1.7 times as fast on one thread as working the system out at
+each event, and 1.5 times on four.
 
 A `NonRepairableRBD`'s lifetimes are drawn vectorised, a block of samples
 at once through the diagram's modules; on the same machine, a million of
