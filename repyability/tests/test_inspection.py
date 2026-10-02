@@ -57,7 +57,7 @@ def test_a_hidden_failure_is_down_until_the_next_inspection():
             "inspection": {"interval": 5, "cost": 1.0},
         }
     )
-    result = rbd.availability(60.0, N=2, seed=1)
+    result = rbd.availability(60.0, mc_samples=2, seed=1)
     assert per_run(result, result.system_downtime) == 12.0
     assert per_run(result, result.system_failures) == 4
     assert per_run(result, result.system_restorations) == 3
@@ -71,6 +71,7 @@ def test_a_hidden_failure_is_down_until_the_next_inspection():
         "inspection": 11.0,
         "component_downtime": 0.0,
         "system_downtime": 0.0,
+        "setup": 0.0,
     }
 
 
@@ -89,7 +90,7 @@ def test_a_test_takes_the_unit_off_line_and_it_does_not_age():
             "downtime_cost": 10.0,
         }
     )
-    result = rbd.availability(60.0, N=2, seed=1)
+    result = rbd.availability(60.0, mc_samples=2, seed=1)
     # Down 8 times for 1 (the tests), and 4 + 5 + 5 for the failures.
     assert per_run(result, result.system_downtime) == 22.0
     assert per_run(result, result.system_planned_outages) == 8
@@ -114,7 +115,7 @@ def test_an_inspection_during_a_repair_is_skipped():
             "inspection": {"interval": 5, "cost": 1.0},
         }
     )
-    result = rbd.availability(55.0, N=1, seed=1)
+    result = rbd.availability(55.0, mc_samples=1, seed=1)
     assert result.system_failures == 4
     assert result.cost.by_category["inspection"] == 4.0  # at 5, 20, 35, 50
     # Up 0-3, 17-20, 32-35 and 47-50.
@@ -132,7 +133,7 @@ def test_every_inspection_happens_once(interval):
             "inspection": {"interval": interval, "cost": 1.0},
         }
     )
-    result = rbd.availability(10 * interval, N=1, seed=1)
+    result = rbd.availability(10 * interval, mc_samples=1, seed=1)
     assert result.cost.by_category["inspection"] == 9.0
 
 
@@ -140,7 +141,7 @@ def test_no_inspection_means_failures_are_revealed():
     # The same component without an inspection is repaired at once, at 12,
     # 24, 36 and 48.
     spec = {"reliability": X(12), "repairability": "instant"}
-    result = single(spec).availability(60.0, N=1, seed=1)
+    result = single(spec).availability(60.0, mc_samples=1, seed=1)
     assert result.system_downtime == 0.0
     assert result.system_failures == 4
 
@@ -338,16 +339,31 @@ def test_a_forced_node_is_not_inspected():
         | {"inspection": {"interval": 50, "cost": 5.0}}
     )
     assert rbd.expected_cost_rate(working_nodes=["c"]) == 0.0
-    result = rbd.availability(200.0, N=2, seed=1, working_nodes=["c"])
+    result = rbd.availability(200.0, mc_samples=2, seed=1, working_nodes=["c"])
     assert result.cost.by_category["inspection"] == 0.0
 
 
-def test_exact_values_need_a_constant_rate_and_instant_tests_and_repair():
+def test_exact_values_need_instant_tests_and_repair():
+    # Any life, with instant tests and repairs (see
+    # test_hidden_failures_any_life.py); a repair that takes time, or tests
+    # that miss failures of a life that is not exponential, are simulated.
+    single(
+        {
+            "reliability": W([100, 2]),
+            "repairability": "instant",
+            "inspection": {"interval": 50},
+        }
+    ).mean_availability()
     for spec in (
-        {"reliability": W([100, 2]), "repairability": "instant"},
         {"reliability": E([0.01]), "repairability": E([1.0])},
+        {
+            "reliability": W([100, 2]),
+            "repairability": "instant",
+            "inspection": {"coverage": 0.5, "full_test": 100},
+        },
     ):
-        rbd = single({**spec, "inspection": {"interval": 50}})
+        inspection = {"interval": 50, **spec.pop("inspection", {})}
+        rbd = single({**spec, "inspection": inspection})
         with pytest.raises(NotImplementedError, match="hidden failures"):
             rbd.mean_availability()
     timed = single(
@@ -426,7 +442,7 @@ def test_the_simulation_matches_the_exact_values():
         },
         downtime_cost_rate=1000.0,
     )
-    result = rbd.availability(t_simulation=500.0, N=4000, seed=7)
+    result = rbd.availability(t_simulation=500.0, mc_samples=4000, seed=7)
     window = result.n_simulations * result.time_simulated_to
     # The window is ten whole intervals, and each interval starts afresh.
     simulated = 1 - float(result.system_uptime) / window
@@ -495,7 +511,7 @@ def test_an_inspected_rbd_round_trips():
             "b": 25.0,
         }
         assert json.dumps(back.to_dict()) == json.dumps(rbd.to_dict())
-        first = back.availability(300.0, N=20, seed=3)
-        second = rbd.availability(300.0, N=20, seed=3)
+        first = back.availability(300.0, mc_samples=20, seed=3)
+        second = rbd.availability(300.0, mc_samples=20, seed=3)
         assert first.system_uptime == second.system_uptime
         assert first.cost.samples.tolist() == second.cost.samples.tolist()

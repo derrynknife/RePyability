@@ -202,6 +202,54 @@ repaired.capacity_distribution().delivered_fraction(100)   # -> 0.7942
 repaired.mean_availability()                               # -> 0.99951
 ```
 
+## Over time from new (exact)
+
+A contract period starts with every unit new, and the long run is where a
+plant settles, not where it starts.
+[`point_capacity(x)`][repyability.RepairableRBD.point_capacity] gives the
+distribution of the capacity at each time `x` from new, and
+[`mission_capacity(t)`][repyability.RepairableRBD.mission_capacity] the
+expected fraction of a window `[0, t]` spent at each level, so its
+`delivered_fraction(demand)` is the production availability of the window:
+
+```python
+early = pumps.point_capacity([0.0, 10.0, 100.0, 1000.0])
+early.meets(100)                     # array([1.    , 0.9993, 0.9957, 0.9957])
+year = pumps.mission_capacity(8760)
+year.delivered_fraction(100)         # -> 0.99782   the long run: 0.99781
+pumps.mission_capacity([24.0, 168.0, 720.0]).delivered_fraction(100)   # array([0.9995, 0.9982, 0.9979])
+```
+
+Both are exact, with no simulation, and take `state=` to start from the
+components' [current states](repairable.md#from-the-plant-as-it-is-now)
+rather than new: each component is up at `t` with its
+point availability (see [Availability over
+time](repairable.md#availability-over-time-exact)), and the system's
+distribution is the same computation at those as in the long run, so the
+probability of a capacity above 0 is `point_availability(t)`, and the
+distribution settles at `capacity_distribution()`. The window's mean is
+integrated as `mission_availability` integrates the availability, and a
+window of decades costs no more than a few years.
+
+A component with levels while it is up is at each with its share of its
+availability. A degrading component is in each stage with the probability
+its first unit is, by its age, or a unit put into service after a repair
+is, by its renewals (solved on the grid of its availability, to about
+`1e-7`); a degrading pump that starts new spends its first years at full
+output more than in the long run:
+
+```python
+early = repaired.point_capacity([1000.0, 5000.0, 50000.0])
+early.meets(100)                     # array([0.5543, 0.3723, 0.3728])   both at full output
+repaired.mission_capacity(8760).delivered_fraction(100)   # -> 0.8127   the long run: 0.7942
+```
+
+A nested RBD with capacities brings its own distribution over time. They
+take `working_nodes` and `broken_nodes` (a degrading component or nested
+RBD held working is at the levels it is up at, in proportion), and cover
+what `point_availability` covers; a degrading component on a maintenance or
+inspection schedule is refused, as in the long run.
+
 ## Over a window (simulated)
 
 The long run is where a plant settles; a contract year starts with every
@@ -210,7 +258,7 @@ simulates the window, and when nodes have capacities the same simulations
 follow what the system can deliver, against a `demand`:
 
 ```python
-year = pumps.availability(8760, N=500, seed=1, demand=100)   # a year, in hours
+year = pumps.availability(8760, mc_samples=500, seed=1, demand=100)   # a year, in hours
 year.capacity[:3]                   # array([150. , 149.9, 149.8])   the mean capacity curve
 year.mean_capacity                  # -> 144.2     the long run: 144.23
 year.delivered_fraction             # -> 0.99782   the long run: 0.99781
@@ -236,9 +284,15 @@ year.capacity_time[100.0] / (500 * 8760)   # -> 0.10638   the time at 100
 The simulation draws only when components fail and are repaired, exactly
 as without capacities, so the availability results are unchanged. A node
 working at several levels counts at each in proportion to its
-probability. Nodes that take their capacity from their models (a
+probability. The capacity of each set of components down that the
+simulations meet is worked out once, and those a simulation meets first
+(a batch of simulations, compiled) together, when every node works at one
+level. A large system can meet many: 62 components in redundant pairs met
+90 000 in 500 simulations of 1 000 hours, which took 16 seconds in Python
+and under 3 compiled. Nodes that take their capacity from their models (a
 `DegradingNode`'s stages, or a nested RBD's capacities) are not followed:
-give them a capacity, or use the exact long-run `capacity_distribution()`.
+give them a capacity, or use the exact `point_capacity` and
+`mission_capacity`, or the long-run `capacity_distribution()`.
 
 ## From node probabilities
 

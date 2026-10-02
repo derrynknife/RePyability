@@ -60,6 +60,8 @@ rbd.sf_given_state(20, {})      # -> 0.9674   an empty state is exactly sf
 rbd.sf_given_state([0, 20, 40], state)   # array([1.    , 0.9063, 0.7494])
 ```
 
+A plain number is an age: `{"pump1": 80}` is `{"pump1": NodeState(age=80)}`.
+
 At `x = 0` it is 1: whatever is alive now has not failed yet. A component
 known to have failed takes zero:
 
@@ -151,14 +153,15 @@ reliability is the model's survival there, `R(t) = model.sf(t, Z)`:
 ```python
 cool = RegressionNode(model, covariates=[30])
 hot = RegressionNode(model, covariates=[70])
-cool.sf(3000)   # array([0.8474])
-hot.sf(3000)    # array([0.4363])
-hot.sf(3000)[0]   # -> 0.4363
+cool.sf(3000)   # -> 0.8474
+hot.sf(3000)    # -> 0.4363
+hot.sf([1000, 3000])   # array([0.9147, 0.4363])
 ```
 
-A node model returns an array even for a scalar time; the RBD methods convert
-to floats. The node takes part in everything an ordinary distribution does:
-system reliability, importance, MTTF and the condition-based methods above.
+A scalar time gives a float and an array of times an array, as for a
+surpyval model. The node takes part in everything an ordinary distribution
+does: system reliability, importance, MTTF and the condition-based methods
+above.
 
 ```python
 motor = NonRepairableRBD([("s", "m"), ("m", "t")], {"m": hot})
@@ -184,8 +187,8 @@ from surpyval import StepSchedule
 ramp = RegressionNode(
     model, schedule=StepSchedule.from_changepoints([0, 2000], [[30.0], [70.0]])
 )
-ramp.sf(1500)[0]   # -> 0.9603   still on the cool segment: same as `cool`
-ramp.sf(4000)[0]   # -> 0.4599   between cool (0.743) and hot (0.226)
+ramp.sf(1500)   # -> 0.9603   still on the cool segment: same as `cool`
+ramp.sf(4000)   # -> 0.4599   between cool (0.743) and hot (0.226)
 ```
 
 Conditioning on age works along the path: a unit 2500 hours in has spent

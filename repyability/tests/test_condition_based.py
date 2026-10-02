@@ -234,7 +234,11 @@ def test_unknown_node_in_state_raises():
 def test_state_value_must_be_nodestate():
     rbd = _weibull_series()
     with pytest.raises(TypeError, match="must be a NodeState"):
-        rbd.sf_given_state(5.0, {2: 5.0})
+        rbd.sf_given_state(5.0, {2: "worn"})
+    # A plain number is the node's age (#134).
+    assert rbd.sf_given_state(5.0, {2: 5.0}) == rbd.sf_given_state(
+        5.0, {2: NodeState(age=5.0)}
+    )
 
 
 def test_state_must_be_a_mapping():

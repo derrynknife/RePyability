@@ -489,6 +489,57 @@ class FaultTree:
         p, q = self._event_probabilities(t)
         return self._out(self._top(p, q, len(t)), scalar)
 
+    def ff(self, t: Optional[ArrayLike] = None):
+        """The probability that the top event has occurred by ``t``: the
+        unreliability of the system the tree describes, by the name an
+        RBD's ``ff`` has (the same as ``top_event_probability``).
+
+        Parameters
+        ----------
+        t : array_like, optional
+            Time/s, as for ``top_event_probability``.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The probability.
+        """
+        return self.top_event_probability(t)
+
+    def sf(self, t: Optional[ArrayLike] = None):
+        """The probability that the top event has not occurred by ``t``: the
+        reliability of the system the tree describes, as an RBD's ``sf``
+        gives it. Worked out in its own right, not as one less ``ff``, so a
+        small one keeps its precision.
+
+        Parameters
+        ----------
+        t : array_like, optional
+            Time/s, as for ``top_event_probability``.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The probability.
+
+        Examples
+        --------
+        >>> from repyability import FaultTree
+        >>> tree = FaultTree(
+        ...     {"top": ("and", ["a", "b"])}, {"a": 0.1, "b": 0.2}
+        ... )
+        >>> round(tree.sf(), 4), round(tree.ff(), 4)
+        (0.98, 0.02)
+        """
+        t, scalar = self._times(t)
+        p, q = self._event_probabilities(t)
+        size = len(t)
+        works, _ = self._decomposition.probabilities(
+            p, q, shape=size, works=True, fails=False
+        )
+        values = np.broadcast_to(np.asarray(works, dtype=float), (size,))
+        return self._out(values, scalar)
+
     def occurs(self, events: Collection[Hashable]) -> bool:
         """Whether the top event occurs when exactly ``events`` have.
 
@@ -551,6 +602,29 @@ class FaultTree:
                 self._decomposition.cut_sets(), key=_sort_key
             )
         return list(self._cut_sets)
+
+    def get_min_cut_sets(self) -> set:
+        """The minimal cut sets as a set, as an RBD's ``get_min_cut_sets``
+        gives them (``minimal_cut_sets`` lists them).
+
+        Returns
+        -------
+        set of frozenset
+            The minimal cut sets.
+        """
+        return set(self.minimal_cut_sets())
+
+    def get_min_path_sets(self) -> set:
+        """The minimal path sets as a set, as an RBD's
+        ``get_min_path_sets(include_in_out_nodes=False)`` gives them
+        (``minimal_path_sets`` lists them).
+
+        Returns
+        -------
+        set of frozenset
+            The minimal path sets.
+        """
+        return set(self.minimal_path_sets())
 
     def minimal_path_sets(self) -> List[frozenset]:
         """The minimal path sets: the smallest sets of basic events whose
@@ -783,27 +857,39 @@ class FaultTree:
             out = {e: top / not_occurred[e] for e in self.events}
         return self._out(out, scalar)
 
-    def fussell_vesely(self, t: Optional[ArrayLike] = None) -> dict:
+    def fussell_vesely(
+        self, t: Optional[ArrayLike] = None, method: str = "exact"
+    ) -> dict:
         """Fussell-Vesely importance of each basic event.
 
         The share of the top event probability carried by the minimal cut
-        sets that contain the event: the sum of their probabilities (the
-        rare-event approximation of their union) divided by the top event
-        probability, as ``NonRepairableRBD.fussell_vesely`` computes it.
-        Values can exceed 1 when the events are not rare. ``nan`` where the
-        top event cannot occur.
+        sets that contain the event: the probability that one of them has
+        occurred (every event in it), over the top event probability, as
+        ``NonRepairableRBD.fussell_vesely`` computes it. It is exact, and
+        between 0 and 1, by default; ``method="rare_event"`` sums the cut
+        sets' probabilities instead (the rare-event approximation of their
+        union, as many PRA tools report it), which can exceed 1 when the
+        events are not rare. ``nan`` where the top event cannot occur.
 
         Parameters
         ----------
         t : array_like, optional
             Time/s, a number or an array. May be left out when no event's
             probability depends on time.
+        method : str, optional
+            ``"exact"`` (the default) or ``"rare_event"``.
 
         Returns
         -------
         dict
             ``{event: importance}``: floats for a number ``t``, arrays for
             an array.
+
+        Raises
+        ------
+        ValueError
+            If ``method`` is not "exact" or "rare_event", or ``t`` is left
+            out and an event's probability depends on time.
 
         Examples
         --------
@@ -816,14 +902,25 @@ class FaultTree:
         >>> {e: round(v, 4) for e, v in tree.fussell_vesely().items()}
         {'pump 1': 0.1681, 'pump 2': 0.1681, 'valve': 0.8403}
         """
+        if method not in ("exact", "rare_event"):
+            raise ValueError(
+                f"method must be 'exact' or 'rare_event', got {method!r}."
+            )
         times, scalar = self._times(t)
         p, q = self._event_probabilities(times)
         top = self._top(p, q, len(times))
         share = {e: np.zeros(len(times)) for e in self.events}
-        for cut in self.minimal_cut_sets():
-            probability = np.prod([q[e] for e in cut], axis=0)
-            for e in cut:
+        if method == "exact":
+            failed = self._decomposition.failed_cut_sets(
+                p, q, shape=len(times)
+            )
+            for e, probability in failed.items():
                 share[e] = share[e] + probability
+        else:
+            for cut in self.minimal_cut_sets():
+                probability = np.prod([q[e] for e in cut], axis=0)
+                for e in cut:
+                    share[e] = share[e] + probability
         with np.errstate(divide="ignore", invalid="ignore"):
             out = {e: share[e] / top for e in self.events}
         return self._out(out, scalar)
@@ -1168,32 +1265,46 @@ class FaultTree:
         }
         return cls(gates, events, top=_node_name(d["top"]))
 
-    def to_json(self, **json_kwargs) -> str:
-        """The tree as a JSON string (see ``to_dict``); keyword arguments
-        pass to ``json.dumps``.
+    def to_json(self, fp=None, **json_kwargs) -> Optional[str]:
+        """The tree as a JSON document (see ``to_dict``): returned, or
+        written to ``fp`` (as surpyval's models' ``to_json(fp)`` writes
+        them).
+
+        Parameters
+        ----------
+        fp : str, os.PathLike or file, optional
+            A path, or a file opened for writing, to write the document to;
+            by default None: it is returned.
+        **json_kwargs
+            Passed to ``json.dumps``, e.g. ``indent=2``.
 
         Returns
         -------
-        str
-            The JSON document.
+        str or None
+            The JSON document, or None once written to ``fp``.
         """
-        return json.dumps(self.to_dict(), **json_kwargs)
+        from repyability.utils.json_io import write_json
+
+        return write_json(json.dumps(self.to_dict(), **json_kwargs), fp)
 
     @classmethod
-    def from_json(cls, s: str) -> "FaultTree":
+    def from_json(cls, s) -> "FaultTree":
         """Rebuild a tree from ``to_json``'s output.
 
         Parameters
         ----------
-        s : str
-            The JSON document.
+        s : str, os.PathLike or file
+            The JSON document: its text, a path to a file holding it, or a
+            file opened for reading.
 
         Returns
         -------
         FaultTree
             The tree.
         """
-        return cls.from_dict(json.loads(s))
+        from repyability.utils.json_io import read_json
+
+        return cls.from_dict(json.loads(read_json(s)))
 
 
 def _pruned(

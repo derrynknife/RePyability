@@ -14,14 +14,14 @@ exp_model = Exponential.from_params([1])
 
 def test_repated_once():
     model = Weibull.from_params([10, 2])
-    repeated_with_1 = RepeatedStandbyNode(model, 1, N=20_000)
+    repeated_with_1 = RepeatedStandbyNode(model, 1)
     assert pytest.approx(model.sf(10), rel=1e-1) == repeated_with_1.sf(10)
     assert pytest.approx(model.ff(10), rel=1e-1) == repeated_with_1.ff(10)
     assert pytest.approx(model.mean(), rel=1e-1) == repeated_with_1.mean()
 
 
 def test_random():
-    node = RepeatedStandbyNode(exp_model, 3, N=20_000)
+    node = RepeatedStandbyNode(exp_model, 3)
     size = 1000
     randoms = node.random(size)
     assert randoms.shape == (size,)
@@ -29,12 +29,12 @@ def test_random():
 
 def test_mean():
     # Cold standby of 3 iid Exp(1): mean is the sum of the means = 3.
-    node = RepeatedStandbyNode(exp_model, 3, N=20_000)
+    node = RepeatedStandbyNode(exp_model, 3)
     assert pytest.approx(node.mean(), rel=1e-2) == 3
 
 
 def test_sf():
-    node = RepeatedStandbyNode(exp_model, 3, N=50_000)
+    node = RepeatedStandbyNode(exp_model, 3)
     assert pytest.approx(node.sf(10), rel=1e-1) == Gamma.from_params(
         [3, 1.0]
     ).sf(10)

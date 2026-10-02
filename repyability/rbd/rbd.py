@@ -10,10 +10,21 @@ that at least one set of elements fully works, minimal cut sets from minimal
 path sets, and the probability scaling used by reliability allocation.
 """
 
-import pprint
+import difflib
+import functools
 import warnings
 from collections import defaultdict
-from typing import Any, Dict, Hashable, Iterable, Iterator, Optional
+from typing import (
+    Any,
+    Dict,
+    Hashable,
+    Iterable,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    Tuple,
+)
 
 import networkx as nx
 import numpy as np
@@ -52,6 +63,99 @@ def _check_on_infeasible_rbd(value: Any) -> None:
             "'on_infeasible_rbd' must be one of {'raise', 'warn', 'ignore'}, "
             f"got {value!r}."
         )
+
+
+def leaves_out_junctions(method):
+    """A measure's or an allocation's per-node results without the
+    diagram's perfect junction nodes (see ``RBD._junctions``): drawing
+    devices, such as a k-out-of-n vote, that never fail and cannot be
+    improved. A dict of such results (by measure) loses them from each."""
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        result = method(self, *args, **kwargs)
+        junctions = self._junctions()
+        if not junctions or not isinstance(result, dict):
+            return result
+
+        def strip(values: dict) -> dict:
+            return {n: v for n, v in values.items() if n not in junctions}
+
+        if result and all(isinstance(v, dict) for v in result.values()):
+            return {key: strip(values) for key, values in result.items()}
+        return strip(result)
+
+    return wrapper
+
+
+def _set_order(nodes: frozenset) -> tuple:
+    """Path and cut sets' order in a list: smallest first, then by name (as
+    a ``FaultTree`` lists them)."""
+    return (len(nodes), sorted(map(str, nodes)))
+
+
+def _names(nodes) -> str:
+    """Node names for a message, in a stable order."""
+    return ", ".join(sorted((repr(n) for n in nodes), key=str))
+
+
+def _close_name(name, candidates) -> Optional[Any]:
+    """The one of ``candidates`` whose name is closest to ``name``'s (a
+    likely typo), if any is close."""
+    by_text = {str(c): c for c in candidates}
+    close = difflib.get_close_matches(str(name), list(by_text), n=1)
+    return by_text[close[0]] if close else None
+
+
+def structure_problems(check: dict) -> List[str]:
+    """What a diagram's ``structure_check`` found wrong, one sentence each
+    (see ``RBD``), in the order a user would fix them."""
+    lines = []
+    missing = list(check.get("nodes_with_no_model", ()))
+    for node in missing:
+        lines.append(f"node {node!r} (in the edges) has no model")
+    for node in check.get("nodes_in_no_edge", ()):
+        line = f"model {node!r} is not a node in the edges"
+        close = _close_name(node, missing)
+        if close is not None:
+            line += f"; did you mean {close!r}?"
+        lines.append(line)
+    for cycle in check.get("cycles", ()):
+        lines.append(f"there is a cycle through {_names(cycle)}")
+    sources = check.get("nodes_with_no_predecessors", ())
+    if not check.get("has_unique_input_node", True):
+        lines.append(
+            "more than one node has no incoming edges, so the input node is "
+            f"not clear: {_names(sources)} (only the input node has none)"
+        )
+    elif sources:
+        lines.append(
+            f"node(s) {_names(sources)} have no incoming edges, which only "
+            f"the input node, {check['input_node']!r}, may have"
+        )
+    sinks = check.get("nodes_with_no_successors", ())
+    if not check.get("has_unique_output_node", True):
+        lines.append(
+            "more than one node has no outgoing edges, so the output node is "
+            f"not clear: {_names(sinks)} (every node but the output needs an "
+            "edge onward)"
+        )
+    elif sinks:
+        lines.append(
+            f"node(s) {_names(sinks)} have no outgoing edges, which only the "
+            f"output node, {check['output_node']!r}, may have"
+        )
+    lines.extend(check.get("koon_errors", ()))
+    return lines
+
+
+def structure_message(check: dict) -> str:
+    """The message an infeasible diagram raises or warns with: what its
+    ``structure_check`` found, one line each."""
+    lines = structure_problems(check) or ["see structure_check"]
+    return "RBD not correctly structured:\n" + "\n".join(
+        f"  - {line}" for line in lines
+    )
 
 
 def log_linearly_scale_probabilities(p: float, x: float) -> np.ndarray:
@@ -378,16 +482,20 @@ class RBD:
     a cycle; if it has not exactly one node with no incoming edges, or not
     exactly one with no outgoing edges (e.g. a node in ``nodes`` that is in
     no edge); if a ``k`` is 0 or greater than the node's number of incoming
-    edges; or if ``k`` names a node not in the diagram. ``on_infeasible_rbd``
-    sets what then happens, and the full report is kept in
-    ``structure_check``. On construction the diagram is also reduced to its
-    modules: the series, parallel and k-out-of-n parts, each of which has a
-    closed form, leaving only the rest (e.g. a bridge) to be worked out from
-    its minimal path sets. This keeps large redundant diagrams fast, and a
-    series-parallel diagram never needs its path sets, however many there
-    are (see [`system_probability`][repyability.RBD.system_probability]).
-    The minimal path and cut sets are found on first use and cached, so
-    repeated evaluations are cheap.
+    edges; or if ``k`` names a node not in the diagram. The subclasses add
+    that every node in the edges but the input and output has a model, and
+    that every model is for a node in the edges. ``on_infeasible_rbd`` sets
+    what then happens: the error or warning lists each finding on a line of
+    its own (a model in no edge with the node it was likely meant for), and
+    the full report is kept in ``structure_check``. On construction the
+    diagram is also reduced to its modules: the series, parallel and
+    k-out-of-n parts, each of which has a closed form, leaving only the rest
+    (e.g. a bridge) to be worked out from its minimal path sets. This keeps
+    large redundant diagrams fast, and a series-parallel diagram never needs
+    its path sets, however many there are (see
+    [`system_probability`][repyability.RBD.system_probability]). The
+    minimal path and cut sets are found on first use and cached, so repeated
+    evaluations are cheap.
 
     Parameters
     ----------
@@ -398,9 +506,8 @@ class RBD:
     nodes : Iterable, optional
         Node names that must be in the diagram as well as those in
         ``edges``, by default None. A name that is in no edge is an isolated
-        node, which makes the structure infeasible; the subclasses pass
-        their component names here so that a component missing from
-        ``edges`` is reported.
+        node, which makes the structure infeasible. (The subclasses check
+        their models' names against the edges instead.)
     k : dict[Any, int], optional
         The k-out-of-n value of nodes, keyed by node name, by default None
         (every node has ``k = 1``).
@@ -463,12 +570,9 @@ class RBD:
         with probabilities adding up to 1, or is given for the input or
         output node or a node not in the diagram;
         if the structure is infeasible
-        and ``on_infeasible_rbd`` is ``"raise"`` (the message does not
-        list the problems: use ``"warn"`` to see them); if
-        ``on_infeasible_rbd`` is not one of its three values; or if, with
-        ``"warn"`` or ``"ignore"``, no set of working nodes can reach the
-        output node (e.g. a ``k`` greater than the node's number of
-        incoming edges).
+        and ``on_infeasible_rbd`` is ``"raise"`` (the message lists what is
+        wrong, one finding a line); or if ``on_infeasible_rbd`` is not one
+        of its three values.
 
     Examples
     --------
@@ -508,6 +612,10 @@ class RBD:
     # the RBD can be re-created (see ``serialisation``); declared here so the
     # attribute is visible on the base type.
     _init_args: dict
+    # The names a subclass has models for, set before the base constructor
+    # runs (None for a structure alone): one in no edge is reported as
+    # such, and a node in the edges with none as having no model.
+    _models_given: Optional[list] = None
 
     def __init__(
         self,
@@ -578,20 +686,42 @@ class RBD:
         if structure_check["is_valid"]:
             structure_check["is_valid"] = valid_rbd
 
-        if has_excess_koon_nodes:
+        for node in excess_koon_nodes:
             structure_check["koon_errors"].append(
-                "Check if you have repeated KooN nodes"
+                f"k is given for {node!r}, which is not a node of the diagram"
             )
+
+        models = self._models_given
+        if models is not None:
+            # A model for a name in no edge is reported as unused (not added
+            # as an isolated node, which would hide the input and output); a
+            # node in the edges with no model as such, but for the nodes
+            # with no incoming or no outgoing edges, which need none as the
+            # input and output (more than one is reported as that).
+            ends = {
+                n
+                for n in self.G.nodes
+                if self.G.in_degree(n) == 0 or self.G.out_degree(n) == 0
+            }
+            given = set(models)
+            unused = [n for n in models if n not in self.G]
+            missing = [
+                n for n in self.G.nodes if n not in given and n not in ends
+            ]
+            structure_check["nodes_in_no_edge"] = unused
+            structure_check["nodes_with_no_model"] = missing
+            if unused or missing:
+                structure_check["is_valid"] = False
 
         if not structure_check["is_valid"]:
             if on_infeasible_rbd == "warn":
                 warnings.warn(
-                    "Structural Errors in RBD:\n"
-                    + pprint.pformat(structure_check),
+                    structure_message(structure_check)
+                    + "\n(built anyway, as on_infeasible_rbd='warn' asks)",
                     stacklevel=2,
                 )
             elif on_infeasible_rbd == "raise":
-                raise ValueError("RBD not correctly structured")
+                raise ValueError(structure_message(structure_check))
 
         self.structure_check = structure_check
         self.input_node = structure_check["input_node"]
@@ -612,6 +742,7 @@ class RBD:
         if (
             not structure_check["has_cycles"]
             and not structure_check["has_nodes_with_no_successor"]
+            and not structure_check["has_koon_errors"]
         ):
             # Reduces the diagram, and raises if nothing reaches the output.
             self._decomposition()
@@ -620,6 +751,39 @@ class RBD:
                 self.structure_check["has_irrelevant_nodes"] = True
 
             self.structure_check["irrelevant_nodes"] = irrelevant_nodes
+
+    def __repr__(self) -> str:
+        """A short summary: the nodes, the input and output nodes, any
+        k-out-of-n nodes, and what else shapes the diagram."""
+        nodes = list(getattr(self, "nodes", []))
+        shown = ", ".join(repr(n) for n in nodes[:8])
+        if len(nodes) > 8:
+            shown += f", ... ({len(nodes) - 8} more)"
+        parts = [
+            f"{len(nodes)} node{'' if len(nodes) == 1 else 's'}: {shown}",
+            f"input {getattr(self, 'input_node', None)!r}, "
+            f"output {getattr(self, 'output_node', None)!r}",
+        ]
+        graph = getattr(self, "G", None)
+        if graph is not None:
+            koon = {
+                n: graph.nodes[n]["k"]
+                for n in graph.nodes
+                if graph.nodes[n]["k"] != 1
+            }
+            if koon:
+                parts.append(
+                    "k-out-of-n "
+                    + ", ".join(f"{n!r}: {k}" for n, k in koon.items())
+                )
+        parts.extend(self._repr_details())
+        if not getattr(self, "structure_check", {}).get("is_valid", True):
+            parts.append("infeasible (see structure_check)")
+        return f"{type(self).__name__}({'; '.join(parts)})"
+
+    def _repr_details(self) -> List[str]:
+        """What a subclass adds to ``repr``."""
+        return []
 
     def find_irrelevant_components(self) -> set:
         """Return the nodes that cannot affect whether the system works.
@@ -801,6 +965,126 @@ class RBD:
         if method not in ("p", "c"):
             raise ValueError("`method` must be either 'p' or 'c'")
         return self._decomposition().works(component_status, method)
+
+    def system_timeline(self, timelines: Mapping) -> Any:
+        """The system's up/down history from its components': the
+        structure function followed over time.
+
+        The components' timelines are merged up the diagram's modules (see
+        [`system_probability`][repyability.RBD.system_probability]): a
+        series module is up while all its members are, a parallel one while
+        any is, a k-out-of-n one while at least ``k`` are, and what is left
+        (e.g. a bridge) while one of its minimal path sets is all up. Each
+        change of the system's timeline keeps its cause, the component
+        whose change made it, and whether that change was planned; changes
+        at the same time are taken in the order of the diagram's
+        components, each one's in its own order (see
+        ``repyability.timelines``).
+
+        It takes any timelines: an outage log, a what-if edit of one, or
+        simulated histories (see
+        [`RepairableRBD.simulate_timelines`][repyability.RepairableRBD.simulate_timelines]).
+
+        Parameters
+        ----------
+        timelines : Mapping
+            ``{node: timeline}``: a [`Timeline`][repyability.Timeline] or
+            [`Timelines`][repyability.Timelines] for each component the
+            system depends on (all over one window; Timelines with as many
+            histories each, and a Timeline among them standing for each
+            history). A drawing junction (a perfectly reliable node) left
+            out is up throughout; a component no path set needs is
+            ignored.
+
+        Returns
+        -------
+        Timeline or Timelines
+            The system's: a Timelines if any component's is one, else a
+            Timeline. Its causes are node names.
+
+        Raises
+        ------
+        ValueError
+            If a component the system depends on has no timeline, a key is
+            not a component (the input or output node, a repeated node's
+            copy, or an unknown name), or the timelines do not share a
+            window or a number of histories.
+        TypeError
+            If ``timelines`` is not a mapping of Timeline or Timelines
+            objects.
+
+        Examples
+        --------
+        Two pumps in parallel feeding a valve, from their outage logs:
+
+        >>> from repyability import RBD, Timeline
+        >>> rbd = RBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "v"), ("b", "v"), ("v", "t")]
+        ... )
+        >>> logs = {
+        ...     "a": Timeline.from_outages([(10, 30)], end=100),
+        ...     "b": Timeline.from_outages([(20, 25), (60, 70)], end=100),
+        ...     "v": Timeline.from_outages([(80, 81)], end=100),
+        ... }
+        >>> plant = rbd.system_timeline(logs)
+        >>> plant.down_intervals.tolist()
+        [[20.0, 25.0], [80.0, 81.0]]
+        >>> plant.failures_by_cause()
+        {'a': 0, 'b': 1, 'v': 1}
+        """
+        from repyability.timelines import _system_timeline
+
+        return _system_timeline(self, timelines)
+
+    def minimal_path_sets(self) -> List[frozenset]:
+        """The minimal path sets of the components (no input or output
+        node), as a list, smallest first (then by name): the same as
+        [`get_min_path_sets`][repyability.RBD.get_min_path_sets]
+        ``(include_in_out_nodes=False)``, in the form a
+        [`FaultTree`][repyability.FaultTree]'s ``minimal_path_sets``
+        gives, so the same code runs on either.
+
+        Returns
+        -------
+        list of frozenset
+            The minimal path sets.
+
+        Examples
+        --------
+        >>> from repyability import RBD
+        >>> rbd = RBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")]
+        ... )
+        >>> [sorted(p) for p in rbd.minimal_path_sets()]
+        [['a', 'c'], ['b', 'c']]
+        """
+        return sorted(
+            self.get_min_path_sets(include_in_out_nodes=False),
+            key=_set_order,
+        )
+
+    def minimal_cut_sets(self) -> List[frozenset]:
+        """The minimal cut sets of the components, as a list, smallest first
+        (then by name): the same as
+        [`get_min_cut_sets`][repyability.RBD.get_min_cut_sets]``()``, in
+        the form a [`FaultTree`][repyability.FaultTree]'s
+        ``minimal_cut_sets`` gives, so the same code runs on either.
+
+        Returns
+        -------
+        list of frozenset
+            The minimal cut sets.
+
+        Examples
+        --------
+        >>> from repyability import RBD
+        >>> rbd = RBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")]
+        ... )
+        >>> [sorted(c) for c in rbd.minimal_cut_sets()]
+        [['c'], ['a', 'b']]
+        """
+        return sorted(self.get_min_cut_sets(), key=_set_order)
 
     def get_min_cut_sets(
         self, include_in_out_nodes=False
@@ -1016,6 +1300,104 @@ class RBD:
             return np.array(works, dtype=float)
         return 1 - np.asarray(fails, dtype=float)
 
+    def _system_unreliability(
+        self, node_probabilities: Dict, node_failures: Optional[Dict] = None
+    ) -> np.ndarray:
+        """The probability that the system fails, worked out as a sum of
+        products in its own right rather than as one less the probability
+        that it works, so that a small one keeps its precision (``ff``,
+        the long-run unavailability, and the risk worths, which divide by
+        it). ``node_failures`` gives each node's probability of failing,
+        when it is known more precisely than one less its probability of
+        working (from a reliable node's ``ff``, say): without it, the
+        nodes' are ``1 - p``."""
+        return self._system_probabilities(
+            node_probabilities, node_failures, works=False
+        )[1]
+
+    def _system_probabilities(
+        self,
+        node_probabilities: Dict,
+        node_failures: Optional[Dict] = None,
+        works: bool = True,
+    ) -> Tuple[Optional[np.ndarray], np.ndarray]:
+        """The probabilities that the system works (unless ``works`` is
+        false: then None) and that it fails, in one pass, each a sum of
+        products that keeps a small one's precision (see
+        ``_system_unreliability``)."""
+        arrays, failures, size = self._node_pairs(
+            node_probabilities, node_failures
+        )
+        up, down = self._decomposition().probabilities(
+            arrays, failures, shape=size, works=works, fails=True
+        )
+        return (
+            np.array(up, dtype=float) if works else None,
+            np.array(down, dtype=float),
+        )
+
+    def _failures_with_overrides(
+        self, node_failures: dict, working_nodes, broken_nodes
+    ) -> dict:
+        """A copy of ``node_failures`` (each node's probability of failing)
+        with the nodes held working at 0 and those held broken at 1, as
+        ``_probabilities_with_overrides`` holds their probabilities of
+        working at 1 and 0."""
+        out = dict(node_failures)
+        for node in working_nodes or ():
+            out[node] = np.zeros_like(
+                np.atleast_1d(np.asarray(out[node], dtype=float))
+            )
+        for node in broken_nodes or ():
+            out[node] = np.ones_like(
+                np.atleast_1d(np.asarray(out[node], dtype=float))
+            )
+        return out
+
+    def _node_pairs(
+        self, node_probabilities: Dict, node_failures: Optional[Dict] = None
+    ) -> tuple[dict, dict, int]:
+        """Each intermediate node's probabilities of working and of failing,
+        as 1-d arrays of one length, and that length (see ``_node_arrays``):
+        the second from ``node_failures`` when it is given (as for
+        ``_system_unreliability``), else one less the first."""
+        p, size = self._node_arrays(node_probabilities)
+        if node_failures is None:
+            return p, {node: 1.0 - value for node, value in p.items()}, size
+        q, length = self._node_arrays(node_failures)
+        if length != size:
+            raise ValueError("Probability arrays must be same length")
+        return p, q, size
+
+    def _importances(
+        self, node_probabilities: Dict, node_failures: Optional[Dict] = None
+    ) -> tuple[dict, np.ndarray, np.ndarray, dict, dict]:
+        """Every node's Birnbaum importance (the derivative of the system's
+        probability of working with respect to the node's), the
+        probabilities that the system works and that it fails, and the
+        nodes' probabilities of working and of failing (see
+        ``_node_pairs``), as 1-d arrays of one length.
+
+        All come from one pass of the decomposition (see
+        ``Decomposition.value_and_gradient``), and each is a sum of
+        products, so a small one keeps its full relative precision: the
+        importance ``R(i works) - R(i failed)`` would be a difference of
+        two values near 1 in a reliable system."""
+        p, q, size = self._node_pairs(node_probabilities, node_failures)
+        works, fails, gradient = self._decomposition().value_and_gradient(
+            p, q, shape=size
+        )
+
+        def full(value: Any) -> np.ndarray:
+            return np.array(
+                np.broadcast_to(np.asarray(value, dtype=float), (size,))
+            )
+
+        importance = {
+            node: full(gradient.get(node, 0.0)) for node in self.nodes
+        }
+        return importance, full(works), full(fails), p, q
+
     def _node_arrays(self, node_probabilities: Dict) -> tuple[dict, int]:
         """Each intermediate node's probability as a 1-d array, and their
         common length."""
@@ -1047,6 +1429,14 @@ class RBD:
                 aliases=self._component_aliases(),
             )
         return self._modules
+
+    def _junctions(self) -> frozenset:
+        """The nodes that are only drawing devices: perfectly reliable
+        junctions (a ``NonRepairableRBD``'s ``PerfectReliability`` nodes,
+        such as a k-out-of-n vote), which never fail and cannot be
+        improved. The importance measures and allocations leave them out
+        (and hold them at 1); none in a structure alone."""
+        return frozenset()
 
     def _component_aliases(self) -> dict:
         """``{node: component}`` for the nodes that stand for a component
@@ -1240,6 +1630,7 @@ class RBD:
             return _capacity.working(distribution)
         return distribution
 
+    @leaves_out_junctions
     @check_probability
     def improvement_allocation(
         self,
@@ -1335,6 +1726,10 @@ class RBD:
         }
         for node in self.nodes:
             probabilities.setdefault(node, 0.5)
+        # A perfect junction stays perfect.
+        for node in self._junctions():
+            probabilities[node] = 1.0
+            fixed_nodes.add(node)
 
         # Solve for the common multiplier m = exp(-x) of the free nodes'
         # unreliabilities, q -> min(1, q * m ** w): unlike x it has a finite
@@ -1379,6 +1774,7 @@ class RBD:
         )
         return allocated(m)
 
+    @leaves_out_junctions
     @check_probability
     def equal_allocation(self, target: float):
         """Give every node the same probability, chosen to meet a target.
@@ -1425,6 +1821,7 @@ class RBD:
 
         return self.improvement_allocation(target, node_probabilities)
 
+    @leaves_out_junctions
     @check_probability
     def simple_allocation(
         self,
@@ -1513,9 +1910,12 @@ class RBD:
         >>> round(float(rbd.system_probability(new)[0]), 4)
         0.99
         """
+        # A perfect junction stays perfect, and takes no weight.
+        junctions = self._junctions()
         weight_of = {
             n: 1.0 if weights is None else float(weights[n])
             for n in self.nodes
+            if n not in junctions
         }
         for node, value in weight_of.items():
             if not (np.isfinite(value) and value >= 0.0):
@@ -1523,12 +1923,12 @@ class RBD:
                     f"weights[{node!r}] must be a finite, non-negative "
                     f"number, got {value}."
                 )
-        free = [n for n in self.nodes if weight_of[n] > 0.0]
+        free = [n for n in weight_of if weight_of[n] > 0.0]
         weight = np.array([weight_of[n] for n in free])
 
         def probabilities(log_odds: np.ndarray) -> tuple[Dict, Dict]:
-            p = {n: 0.5 for n in self.nodes}
-            q = dict(p)
+            p = {n: 1.0 if n in junctions else 0.5 for n in self.nodes}
+            q = {n: 1.0 - p[n] for n in self.nodes}
             for i, n in enumerate(free):
                 p[n] = float(sigmoid(log_odds[i]))
                 q[n] = float(sigmoid(-log_odds[i]))
@@ -1605,15 +2005,24 @@ class RBD:
     def _allocation_start(self, node_probabilities: Dict) -> Dict[Any, float]:
         """The current probability of every intermediate node, validated.
         Other keys (e.g. the input and output nodes) are not used."""
-        missing = [n for n in self.nodes if n not in node_probabilities]
+        junctions = self._junctions()
+        missing = [
+            n
+            for n in self.nodes
+            if n not in node_probabilities and n not in junctions
+        ]
         if missing:
             raise ValueError(
                 "node_probabilities needs the current probability of every "
                 f"intermediate node; missing {missing}."
             )
         return {
-            node: _probability_value(
-                f"node_probabilities[{node!r}]", node_probabilities[node]
+            node: (
+                1.0
+                if node in junctions
+                else _probability_value(
+                    f"node_probabilities[{node!r}]", node_probabilities[node]
+                )
             )
             for node in self.nodes
         }
@@ -1650,6 +2059,7 @@ class RBD:
             for n in self.nodes
         }
 
+    @leaves_out_junctions
     @check_probability
     def minimum_effort_allocation(
         self, target: float, node_probabilities: Dict
@@ -1754,6 +2164,7 @@ class RBD:
                 "cost_based_allocation for other structures."
             )
 
+    @leaves_out_junctions
     @check_probability
     def cost_based_allocation(
         self,
@@ -1995,6 +2406,7 @@ class RBD:
         """
         return list(self.nodes)
 
+    @leaves_out_junctions
     def structural_importance(
         self,
         working_nodes: Optional[Iterable[Hashable]] = None,
@@ -2004,7 +2416,9 @@ class RBD:
 
         The fraction of the states of the *other* nodes in which the node is
         pivotal -- the system works when the node works and fails when it
-        fails, holding the others fixed. It is computed exactly as the
+        fails, holding the others fixed. A perfect junction node (a
+        ``PerfectReliability`` drawing device, such as a k-out-of-n vote) is
+        always working, and is left out. It is computed exactly as the
         Birnbaum importance with every node probability at 1/2, so it
         depends only on the RBD's structure and not on any failure model --
         useful at design time, before any life data exists. It is the same
@@ -2061,8 +2475,12 @@ class RBD:
         >>> {k: round(v, 4) for k, v in sorted(si.items())}
         {'a': 0.5, 'b': 1.0}
         """
+        # A perfect junction (see _junctions) is always working: it is no
+        # part of the other nodes' states.
+        junctions = self._junctions()
         node_probabilities: dict[Any, ArrayLike] = {
-            node: np.full(1, 0.5) for node in self.nodes
+            node: np.full(1, 1.0 if node in junctions else 0.5)
+            for node in self.nodes
         }
         node_probabilities = self._probabilities_with_overrides(
             node_probabilities, working_nodes, broken_nodes
@@ -2129,23 +2547,27 @@ class RBD:
 
         return rbd_to_dict(self)
 
-    def to_json(self, **json_kwargs) -> str:
-        """Serialise the RBD to a JSON string.
+    def to_json(self, fp=None, **json_kwargs) -> Optional[str]:
+        """Serialise the RBD to JSON: a string, or written to a file.
 
         Equivalent to ``json.dumps(self.to_dict(), **json_kwargs)``; see
         [`to_dict`][repyability.RBD.to_dict] for what is stored. String,
         integer and tuple node names all survive: JSON turns a tuple into a
-        list, and loading turns it back.
+        list, and loading turns it back. With ``fp`` it is written there, as
+        surpyval's models' ``to_json(fp)`` writes them.
 
         Parameters
         ----------
+        fp : str, os.PathLike or file, optional
+            A path, or a file opened for writing, to write the document to;
+            by default None: it is returned.
         **json_kwargs
             Passed to ``json.dumps``, e.g. ``indent=2``.
 
         Returns
         -------
-        str
-            The JSON document.
+        str or None
+            The JSON document, or None once written to ``fp``.
 
         Raises
         ------
@@ -2171,8 +2593,9 @@ class RBD:
         'NonRepairableRBD'
         """
         from repyability.rbd.serialisation import rbd_to_json
+        from repyability.utils.json_io import write_json
 
-        return rbd_to_json(self, **json_kwargs)
+        return write_json(rbd_to_json(self, **json_kwargs), fp)
 
     @classmethod
     def from_dict(cls, d: dict) -> "RBD":
@@ -2229,16 +2652,20 @@ class RBD:
         return rbd_from_dict(d)
 
     @classmethod
-    def from_json(cls, s: str) -> "RBD":
-        """Reconstruct an RBD from a JSON string made by ``to_json``.
+    def from_json(cls, s) -> "RBD":
+        """Reconstruct an RBD from a JSON document made by ``to_json``.
 
         Equivalent to ``cls.from_dict(json.loads(s))``, so the same type
-        rules apply (see [`from_dict`][repyability.RBD.from_dict]).
+        rules apply (see [`from_dict`][repyability.RBD.from_dict]). ``s``
+        can be the document's text or, as surpyval's ``from_json`` takes, a
+        path to the file holding it.
 
         Parameters
         ----------
-        s : str
-            A JSON document made by [`to_json`][repyability.RBD.to_json].
+        s : str, os.PathLike or file
+            A JSON document made by [`to_json`][repyability.RBD.to_json]:
+            its text, a path to a file holding it, or a file opened for
+            reading.
 
         Returns
         -------
@@ -2250,6 +2677,8 @@ class RBD:
         ValueError
             If ``s`` is not valid JSON (``json.JSONDecodeError`` is a
             ValueError), or for the reasons given in ``from_dict``.
+        FileNotFoundError
+            If ``s`` is neither a JSON document nor the path of a file.
         KeyError
             If a required entry is missing (see ``from_dict``).
 
@@ -2271,7 +2700,9 @@ class RBD:
         """
         import json
 
-        return cls.from_dict(json.loads(s))
+        from repyability.utils.json_io import read_json
+
+        return cls.from_dict(json.loads(read_json(s)))
 
     def _probabilities_with_overrides(
         self,
@@ -2336,11 +2767,15 @@ class RBD:
         self,
         node_probabilities: dict[Any, ArrayLike],
         weights: Optional[np.ndarray] = None,
+        node_failures: Optional[dict[Any, ArrayLike]] = None,
     ) -> dict[Any, np.ndarray]:
-        """Returns the Birnbaum measure of importance for all nodes.
+        """Returns the Birnbaum measure of importance for all nodes:
+        ``R(i works) - R(i failed)``, the derivative of the system's
+        probability of working with respect to node ``i``'s.
 
-        Note: Birnbaum's measure of importance assumes all nodes are
-        independent.
+        It is worked out for every node at once, as a sum of products (see
+        ``_importances``), so a small one keeps its precision. Note:
+        Birnbaum's measure of importance assumes all nodes are independent.
 
         Parameters
         ----------
@@ -2354,6 +2789,11 @@ class RBD:
             see ``RepairableRBD._long_run_grid``), by default None: one
             value per element. The same for every importance helper here;
             each ratio is then of averages.
+        node_failures : Dict, optional
+            Each node's probability of failing, when it is known more
+            precisely than one less its probability of working (from a
+            reliable node's ``ff``, say), by default None. The same for
+            every importance helper here (see ``_system_unreliability``).
 
         Returns
         -------
@@ -2361,37 +2801,29 @@ class RBD:
             Dictionary with node names as keys and Birnbaum importances as
             values
         """
-
-        node_importance: dict[Any, np.ndarray] = {}
-        for node in self.nodes:
-            node_probabilities_i = {
-                **node_probabilities,
-                **{node: np.ones_like(node_probabilities[node])},
-            }
-            guaranteed = self.system_probability(node_probabilities_i)
-            node_probabilities_i = {
-                **node_probabilities,
-                **{node: np.zeros_like(node_probabilities[node])},
-            }
-            guaranteed_not: np.ndarray = self.system_probability(
-                node_probabilities_i
-            )
-            node_importance[node] = _averaged(
-                guaranteed - guaranteed_not, weights
-            )
-        return node_importance
+        importance = self._importances(node_probabilities, node_failures)[0]
+        return {
+            node: _averaged(value, weights)
+            for node, value in importance.items()
+        }
 
     def _improvement_potential(
         self,
         node_probabilities: dict[Any, ArrayLike],
         weights: Optional[np.ndarray] = None,
+        node_failures: Optional[dict[Any, ArrayLike]] = None,
     ) -> dict[Any, np.ndarray]:
-        """Returns the improvement potential of all nodes.
+        """Returns the improvement potential of all nodes: ``R(i works) -
+        R``, which is ``I_B(i) * (1 - p_i)`` (the system's probability of
+        working is linear in each node's), worked out as that product so
+        that a small one keeps its precision.
 
         Parameters
         ----------
-        x : ArrayLike
-            Time/s as a number or iterable
+        node_probabilities : Dict
+            The probability that each node works (arrays of one length).
+        weights, node_failures : optional
+            As for ``_birnbaum_importance``.
 
         Returns
         -------
@@ -2399,79 +2831,80 @@ class RBD:
             Dictionary with node names as keys and improvement potentials as
             values
         """
-        node_importance: dict[Any, np.ndarray] = {}
-        for node in self.nodes:
-            node_probabilities_i = {
-                **node_probabilities,
-                **{node: np.ones_like(node_probabilities[node])},
-            }
-            when_working = self.system_probability(node_probabilities_i)
-            as_is: np.ndarray = self.system_probability(node_probabilities)
-            node_importance[node] = _averaged(when_working - as_is, weights)
-        return node_importance
+        importance, _, _, _, q = self._importances(
+            node_probabilities, node_failures
+        )
+        return {
+            node: _averaged(importance[node] * q[node], weights)
+            for node in self.nodes
+        }
 
     def _risk_achievement_worth(
         self,
         node_probabilities: dict[Any, ArrayLike],
         weights: Optional[np.ndarray] = None,
+        node_failures: Optional[dict[Any, ArrayLike]] = None,
     ) -> dict[Any, np.ndarray]:
         """Returns the RAW importance per Modarres & Kaminskiy. That is RAW_i =
         (unreliability of system given i failed) /
-        (nominal system unreliability).
+        (nominal system unreliability), each unreliability a sum of
+        products (see ``_system_unreliability``).
 
         Parameters
         ----------
-        x : ArrayLike
-            Time/s as a number or iterable
+        node_probabilities : Dict
+            The probability that each node works (arrays of one length).
+        weights, node_failures : optional
+            As for ``_birnbaum_importance``.
 
         Returns
         -------
         dict[Any, float]
             Dictionary with node names as keys and RAW importances as values
         """
+        p, q, _ = self._node_pairs(node_probabilities, node_failures)
+        as_is = _averaged(self._system_unreliability(p, q), weights)
         node_importance: dict[Any, np.ndarray] = {}
-        as_is: np.ndarray = 1 - self.system_probability(node_probabilities)
         for node in self.nodes:
-            node_probabilities_i = {
-                **node_probabilities,
-                **{node: np.zeros_like(node_probabilities[node])},
-            }
-            when_failed = 1 - self.system_probability(node_probabilities_i)
-            node_importance[node] = _averaged(
-                when_failed, weights
-            ) / _averaged(as_is, weights)
+            one, zero = np.ones_like(p[node]), np.zeros_like(p[node])
+            when_failed = self._system_unreliability(
+                {**p, node: zero}, {**q, node: one}
+            )
+            node_importance[node] = _averaged(when_failed, weights) / as_is
         return node_importance
 
     def _risk_reduction_worth(
         self,
         node_probabilities: dict[Any, ArrayLike],
         weights: Optional[np.ndarray] = None,
+        node_failures: Optional[dict[Any, ArrayLike]] = None,
     ) -> dict[Any, np.ndarray]:
         """Returns the RRW importance per Modarres & Kaminskiy. That is RRW_i =
         (nominal unreliability of system) /
-        (unreliability of system given i is working).
+        (unreliability of system given i is working), each unreliability a
+        sum of products (see ``_system_unreliability``).
 
         Parameters
         ----------
-        x : ArrayLike
-            Time/s as a number or iterable
+        node_probabilities : Dict
+            The probability that each node works (arrays of one length).
+        weights, node_failures : optional
+            As for ``_birnbaum_importance``.
 
         Returns
         -------
         dict[Any, float]
             Dictionary with node names as keys and RRW importances as values
         """
+        p, q, _ = self._node_pairs(node_probabilities, node_failures)
+        as_is = _averaged(self._system_unreliability(p, q), weights)
         node_importance: dict[Any, np.ndarray] = {}
-        as_is: np.ndarray = 1 - self.system_probability(node_probabilities)
         for node in self.nodes:
-            node_probabilities_i = {
-                **node_probabilities,
-                **{node: np.ones_like(node_probabilities[node])},
-            }
-            working = 1 - self.system_probability(node_probabilities_i)
-            node_importance[node] = _averaged(as_is, weights) / _averaged(
-                working, weights
+            one, zero = np.ones_like(p[node]), np.zeros_like(p[node])
+            working = self._system_unreliability(
+                {**p, node: one}, {**q, node: zero}
             )
+            node_importance[node] = as_is / _averaged(working, weights)
         return node_importance
 
     def _criticality_importance(
@@ -2479,6 +2912,7 @@ class RBD:
         node_probabilities: dict[Any, ArrayLike],
         kind: str = "failure",
         weights: Optional[np.ndarray] = None,
+        node_failures: Optional[dict[Any, ArrayLike]] = None,
     ) -> dict[Any, np.ndarray]:
         """The criticality importance of every node.
 
@@ -2486,8 +2920,9 @@ class RBD:
         (Rausand & Høyland), ``I_B(i) * (1 - p_i) / (1 - P_sys)``: the
         probability that node ``i`` has failed and is critical, given that
         the system has failed, i.e. the share of system failures node ``i``
-        accounts for. It is computed from the system unreliability directly
-        (a sum of products, like the reliability), so it is not lost to
+        accounts for. It is computed from the system unreliability and the
+        Birnbaum importance directly (sums of products, like the
+        reliability; see ``_importances``), so it is not lost to
         cancellation in ``1 - P_sys`` however reliable the system is; it is
         ``nan`` where the system cannot fail.
 
@@ -2503,6 +2938,8 @@ class RBD:
             The probability that each node works (arrays of one length).
         kind : str, optional
             ``"failure"`` (the default) or ``"success"``.
+        weights, node_failures : optional
+            As for ``_birnbaum_importance``.
 
         Returns
         -------
@@ -2518,54 +2955,21 @@ class RBD:
             raise ValueError(
                 f"kind must be 'failure' or 'success', got {kind!r}."
             )
-        node_importance: dict[Any, np.ndarray] = {}
-        if kind == "success":
-            bi: dict[Any, np.ndarray] = self._birnbaum_importance(
-                node_probabilities
-            )
-            system_sf = _averaged(
-                self.system_probability(node_probabilities), weights
-            )
-            for node in self.nodes:
-                critical = _averaged(
-                    bi[node] * node_probabilities[node], weights
-                )
-                with np.errstate(divide="ignore", invalid="ignore"):
-                    node_importance[node] = np.where(
-                        system_sf > 0, critical / system_sf, np.nan
-                    )
-            return node_importance
-        # Failure-oriented: from the system unreliability itself, so that
-        # small unreliabilities keep their precision (1 - P_sys would
-        # cancel).
-        p, size = self._node_arrays(
-            {
-                node: np.asarray(node_probabilities[node], dtype=float)
-                for node in self.nodes
-            }
+        importance, works, fails, p, q = self._importances(
+            node_probabilities, node_failures
         )
-        q = {node: 1.0 - value for node, value in p.items()}
-        structure = self._decomposition()
-
-        def unreliability(node=None, failed=False):
-            # The system unreliability, with ``node`` failed or working.
-            if node is None:
-                return structure.probabilities(p, q, size, works=False)[1]
-            one, zero = np.ones_like(p[node]), np.zeros_like(p[node])
-            forced_p = {**p, node: zero if failed else one}
-            forced_q = {**q, node: one if failed else zero}
-            return structure.probabilities(
-                forced_p, forced_q, size, works=False
-            )[1]
-
-        system_ff = _averaged(unreliability(), weights)
+        # Success-oriented: critical and working, over the system working;
+        # failure-oriented: critical and failed, over the system failing
+        # (from the system unreliability itself, so that a small one keeps
+        # its precision, where 1 - P_sys would cancel).
+        system, member = (works, p) if kind == "success" else (fails, q)
+        system = _averaged(system, weights)
+        node_importance: dict[Any, np.ndarray] = {}
         for node in self.nodes:
-            failed = unreliability(node, failed=True)
-            working = unreliability(node, failed=False)
-            critical = _averaged((failed - working) * q[node], weights)
+            critical = _averaged(importance[node] * member[node], weights)
             with np.errstate(divide="ignore", invalid="ignore"):
                 node_importance[node] = np.where(
-                    system_ff > 0, critical / system_ff, np.nan
+                    system > 0, critical / system, np.nan
                 )
         return node_importance
 
@@ -2573,33 +2977,40 @@ class RBD:
         self,
         node_probabilities: dict[Any, ArrayLike],
         fv_type: str = "c",
-        approx: bool = True,
+        method: str = "exact",
         weights: Optional[np.ndarray] = None,
+        node_failures: Optional[dict[Any, ArrayLike]] = None,
     ) -> dict[Any, np.ndarray]:
-        """Calculate Fussell-Vesely importance of all components at time/s x.
+        """The Fussell-Vesely importance of every node: the probability
+        that some minimal cut set containing it has failed (every node in
+        it), over the probability that the system has failed.
 
-        Briefly, the Fussel-Vesely importance measure for node i =
-        (sum of probabilities of cut-sets including node i occuring/failing) /
-        (the probability of the system failing).
+        ``method="exact"`` works out that union exactly, from the exact
+        engine's decomposition (see ``Decomposition.failed_cut_sets``);
+        ``"rare_event"`` sums the probabilities of the cut sets instead,
+        the usual rare-event approximation, which over-estimates the union
+        and can exceed 1 when failures are not rare.
 
-        Typically this measure is implemented using cut-sets as mentioned
-        above, although the measure can be implemented using path-sets. Both
-        are implemented here.
+        ``fv_type="p"`` puts the minimal path sets in place of the cut sets
+        (the union, or the sum, of the probabilities that every node of a
+        path set containing the node has failed): the exact union is the
+        dual structure's (see ``Decomposition.dual``).
 
-        fv_type dictates the method:
-            "c" - cut-set
-            "p" - path-set
+        Each set's probability is a product of its nodes' probabilities of
+        failing, and the system's probability of failing is a sum of
+        products (see ``_system_unreliability``), so a small one keeps its
+        precision.
 
         Parameters
         ----------
-        x : ArrayLike
-            Time/s as a number or iterable
+        node_probabilities : Dict
+            The probability that each node works (arrays of one length).
         fv_type : str, optional
-            Dictates the method of calculation, 'c' = cut-set and
-            'p' = path-set, by default "c"
-        approx: bool, optional
-            If True uses the sum of failure probabilities as the approximate
-            solution to the (1 - PI(1 - Q)) product, by default True
+            ``"c"`` (cut sets, the default) or ``"p"`` (path sets).
+        method : str, optional
+            ``"exact"`` (the default) or ``"rare_event"``.
+        weights, node_failures : optional
+            As for ``_birnbaum_importance``.
 
         Returns
         -------
@@ -2610,74 +3021,73 @@ class RBD:
         Raises
         ------
         ValueError
-            If ``fv_type`` is not 'c' (cut-set) or 'p' (path-set), or if the
-            node probability arrays are not all the same length.
+            If ``fv_type`` is not 'c' (cut-set) or 'p' (path-set), or
+            ``method`` not 'exact' or 'rare_event', or if the node
+            probability arrays are not all the same length.
         """
-        node_probabilities_new: dict[Any, np.ndarray] = {}
-        lengths = np.array([], dtype=np.int64)
-        for k, v in node_probabilities.items():
-            node_probabilities_new[k] = np.atleast_1d(v)
-            lengths = np.append(lengths, len(node_probabilities_new[k]))
+        if fv_type not in ("c", "p"):
+            raise ValueError(
+                "fv_type must be either 'c' (cut-set) or 'p' (path-set), "
+                f"fv_type={fv_type!r} was given."
+            )
+        if method not in ("exact", "rare_event"):
+            raise ValueError(
+                "method must be 'exact' or 'rare_event', " f"got {method!r}."
+            )
+        p, q, size = self._node_pairs(node_probabilities, node_failures)
 
-        if np.any(lengths[0] != lengths[1:]):
-            raise ValueError("Probability arrays must be same length")
-        else:
-            # get shape of input array
-            array_shape = lengths[0]
+        # The system unreliability, the denominator for every node.
+        system_ff = _averaged(self._system_unreliability(p, q), weights)
+        numerators = self._fv_numerators(p, q, size, fv_type, method)
+        return {
+            node: _averaged(numerators[node], weights) / system_ff
+            for node in self.nodes
+        }
+
+    def _fv_numerators(
+        self, p: dict, q: dict, size: int, fv_type: str, method: str
+    ) -> dict[Any, np.ndarray]:
+        """The numerators of the Fussell-Vesely importances (see
+        ``_fussell_vesely``) at the nodes' probabilities of working ``p``
+        and of failing ``q`` (1-d arrays of length ``size``): for each node,
+        the probability that every node of some minimal cut (or path) set
+        containing it has failed, or with ``"rare_event"`` the sum of those
+        sets' probabilities."""
+        zero = np.zeros(size)
+        if method == "exact":
+            decomposition = self._decomposition()
+            if decomposition.always_works:
+                failed: dict = {}
+            else:
+                if fv_type == "p":
+                    decomposition = decomposition.dual()
+                failed = decomposition.failed_cut_sets(p, q, shape=size)
+            return {
+                node: np.broadcast_to(failed.get(node, zero), (size,))
+                for node in self.nodes
+            }
 
         # Get node-sets based on what method was requested
         if fv_type == "c":
             node_sets = self.get_min_cut_sets()
-        elif fv_type == "p":
+        else:
             node_sets = {
                 frozenset(path_set)
                 for path_set in self.get_min_path_sets(
                     include_in_out_nodes=False
                 )
             }
-        else:
-            raise ValueError(
-                f"fv_type must be either 'c' (cut-set) or 'p' (path-set), \
-                fv_type={fv_type} was given."
-            )
-
-        # Get system unreliability, this will be the denominator for all node
-        # importance calcs
-        system_probability_complement = np.float64(
-            1.0
-        ) - self.system_probability(node_probabilities_new)
-
-        # The return dict
-        node_importance: dict[Any, np.ndarray] = {}
-
-        # For each node,
+        out: dict[Any, np.ndarray] = {}
         for this_node in self.nodes:
-            # Sum up the probabilities of the node_sets containing the node
-            # from failing
-            node_fv_numerator = (
-                np.zeros(array_shape) if approx else np.ones(array_shape)
-            )
+            # The sum of the probabilities of the sets containing the node
+            # failing.
+            numerator = np.zeros(size)
             for node_set in node_sets:
-                node_set_fail_prob = np.ones(array_shape)
                 if this_node not in node_set:
                     continue
-                else:
-                    for other_node in node_set:
-                        node_set_fail_prob *= (
-                            np.ones(array_shape)
-                            - node_probabilities_new[other_node]
-                        )
-                if approx:
-                    node_fv_numerator += node_set_fail_prob
-                else:
-                    node_fv_numerator *= (
-                        np.ones(array_shape) - node_set_fail_prob
-                    )
-
-            node_fv_numerator = (
-                node_fv_numerator if approx else 1 - node_fv_numerator
-            )
-            node_importance[this_node] = _averaged(
-                node_fv_numerator, weights
-            ) / _averaged(system_probability_complement, weights)
-        return node_importance
+                set_fails = np.ones(size)
+                for other_node in node_set:
+                    set_fails = set_fails * q[other_node]
+                numerator = numerator + set_fails
+            out[this_node] = numerator
+        return out

@@ -83,6 +83,21 @@ def row_sampler(model) -> Optional[RowSampler]:
     return own() if callable(own) else None
 
 
+def lifetime_sampler(model) -> Optional[RowSampler]:
+    """A component's lifetimes as a :class:`RowSampler` (see
+    :func:`row_sampler`), or None if they cannot be drawn in a block. A
+    fixed probability, which surpyval draws as an event indicator, is a
+    unit that fails at the start (a lifetime of 0) or never (``inf``)."""
+    from repyability.rbd._model_utils import is_fixed_probability
+
+    if is_fixed_probability(model):
+        failure = float(np.ravel(model.ff(1.0))[0])
+        return RowSampler(
+            1, lambda u: np.where(u[:, 0] < failure, 0.0, np.inf)
+        )
+    return row_sampler(model)
+
+
 #: The quantile functions of surpyval's Normal and LogNormal, computed as
 #: surpyval computes them but without the argument checks of scipy.stats'
 #: generic ppf, which cost four times the maths: ``norm.ppf(u, mu, sigma)``

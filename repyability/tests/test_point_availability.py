@@ -304,7 +304,7 @@ def test_age_replacement_matches_the_simulation():
     )
     rbd = pair(spec, dict(spec))
     T = 100.0
-    result = rbd.availability(T, N=20_000, seed=5)
+    result = rbd.availability(T, mc_samples=20_000, seed=5)
     window = result.mean_availability_interval(confidence=0.999)
     assert window.lower <= rbd.mission_availability(T) <= window.upper
     lower, upper = result.availability_interval(confidence=0.999)
@@ -471,7 +471,7 @@ def test_a_nested_rbd_is_its_own_structure_function():
 def test_matches_the_simulation(name):
     rbd = repairable_rbds()[name]
     T = 200.0
-    result = rbd.availability(T, N=4000, seed=11)
+    result = rbd.availability(T, mc_samples=4000, seed=11)
     window = result.mean_availability_interval(confidence=0.999)
     assert window.lower <= rbd.mission_availability(T) <= window.upper
     lower, upper = result.availability_interval(confidence=0.999)
@@ -578,9 +578,13 @@ def test_shapes_and_errors():
 
 
 def test_what_it_does_not_cover():
-    # Hidden failures with a life that wears out, as for the long run.
+    # Hidden failures found by tests that take time, as for the long run.
     inspected = alone(
-        unit(W([60.0, 1.5]), "instant", inspection={"interval": 10.0})
+        unit(
+            W([60.0, 1.5]),
+            "instant",
+            inspection={"interval": 10.0, "duration": E([1.0])},
+        )
     )
     with pytest.raises(NotImplementedError, match="hidden failures"):
         inspected.point_availability(5.0)

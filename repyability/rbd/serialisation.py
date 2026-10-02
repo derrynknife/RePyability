@@ -25,6 +25,8 @@ Design notes
 """
 
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 from surpyval import NonParametric
@@ -44,9 +46,72 @@ from repyability.rbd.repeated_node import PARALLEL, RepeatedNode
 from repyability.rbd.repeated_standby_node import RepeatedStandbyNode
 from repyability.rbd.standby_node import StandbyModel
 
+#: Whether every model must load back as the class it is (see
+#: ``exactly``).
+_EXACT: ContextVar[bool] = ContextVar("exact", default=False)
+
+#: The class each kind of saved RePyability node wrapper loads as.
+_WRAPPERS = {
+    "degrading": DegradingNode,
+    "standby": StandbyModel,
+    "repeated_standby": RepeatedStandbyNode,
+    "repeated_node": RepeatedNode,
+    "non_repairable": NonRepairable,
+    "regression_node": RegressionNode,
+    "load_sharing": LoadSharingModel,
+}
+
+
+@contextmanager
+def exactly():
+    """Save so that every model loads back as the class it is: a model of
+    a subclass (of a surpyval distribution, or of a RePyability node
+    wrapper), which saves as the class it extends and would load without
+    what the subclass changes, raises ``NotImplementedError``. A shard
+    (see ``repyability.rbd.shards``), which a worker must simulate as the
+    system itself, saves its system so."""
+    token = _EXACT.set(True)
+    try:
+        yield
+    finally:
+        _EXACT.reset(token)
+
+
+def _check_exact(model: Any, saved: dict) -> None:
+    """Under ``exactly``: refuse a model that would load back as another
+    class than its own."""
+    import surpyval
+
+    kind = saved["kind"]
+    pairs = []
+    if kind == "surpyval":
+        pairs.append((model, type(surpyval.from_dict(saved["model"]))))
+    elif kind in _WRAPPERS:
+        pairs.append((model, _WRAPPERS[kind]))
+    if kind == "load_sharing":
+        pairs.extend(
+            (unit, type(surpyval.from_dict(unit_saved)))
+            for unit, unit_saved in zip(model.models, saved["models"])
+        )
+    for item, loads_as in pairs:
+        if type(item) is not loads_as:
+            package = loads_as.__module__.split(".")[0]
+            raise NotImplementedError(
+                f"a node model of type {type(item).__name__} saves as "
+                f"{package}'s {loads_as.__name__}, and would load without "
+                "what it changes"
+            )
+
 
 def serialise_model(model: Any) -> dict:
     """Serialise a node model to a JSON-friendly dict."""
+    saved = _serialise_model(model)
+    if _EXACT.get():
+        _check_exact(model, saved)
+    return saved
+
+
+def _serialise_model(model: Any) -> dict:
     if model is PerfectReliability:
         return {"kind": "perfect_reliability"}
     if model is PerfectUnreliability:
@@ -67,7 +132,7 @@ def serialise_model(model: Any) -> dict:
             "kind": "standby",
             "reliabilities": [serialise_model(m) for m in model.reliabilities],
             "k": model.k,
-            "n_sims": model.n_sims,
+            "mc_samples": model.mc_samples,
             "switching_probability": model.switching_probability,
             "dormancy_factor": model.dormancy_factor,
         }
@@ -101,7 +166,7 @@ def serialise_model(model: Any) -> dict:
             "models": [m.to_dict() for m in model.models],
             "load": model.load,
             "k": model.k,
-            "n_sims": model.n_sims,
+            "mc_samples": model.mc_samples,
         }
     if distribution_name(model) is not None or isinstance(
         model, NonParametric
@@ -147,7 +212,7 @@ def deserialise_model(d: dict) -> Any:
         return StandbyModel(
             [deserialise_model(m) for m in d["reliabilities"]],
             k=d["k"],
-            n_sims=d.get("n_sims", 10_000),
+            mc_samples=d.get("mc_samples", d.get("n_sims", 10_000)),
             switching_probability=d.get("switching_probability", 1.0),
             dormancy_factor=d.get("dormancy_factor", 0.0),
         )
@@ -175,7 +240,7 @@ def deserialise_model(d: dict) -> Any:
             [surpyval.from_dict(md) for md in d["models"]],
             load=d["load"],
             k=d["k"],
-            n_sims=d.get("n_sims", 10_000),
+            mc_samples=d.get("mc_samples", d.get("n_sims", 10_000)),
         )
     raise ValueError(f"Unknown model kind {kind!r}.")
 
@@ -230,29 +295,59 @@ def _serialise_component(value) -> dict:
                 out[key] = float(cost)
         if value.get("acquisition_cost"):
             out["acquisition_cost"] = float(value["acquisition_cost"])
+        if value.get("priority"):
+            out["priority"] = float(value["priority"])
+        if value.get("group") is not None:
+            # A maintenance group's name, as a node's is.
+            out["group"] = value["group"]
+        if value.get("repair") is not None:
+            # Imperfect repair: the model's name and its restoration factor.
+            out["repair"] = {
+                "model": value["repair"]["model"],
+                "q": float(value["repair"]["q"]),
+            }
+        if value.get("replace_after") is not None:
+            out["replace_after"] = int(value["replace_after"])
         for key in ("preventive", "inspection"):
             if value.get(key) is not None:
                 out[key] = _serialise_schedule(value[key])
+        if value.get("standby") is not None:
+            # A standby group: numbers only.
+            out["standby"] = {
+                key: float(number) if isinstance(number, float) else number
+                for key, number in value["standby"].items()
+            }
         return out
     return serialise_model(value)
 
 
 def _serialise_schedule(spec: dict) -> dict:
     # A component's preventive-maintenance or inspection schedule: the
-    # interval (and policy) as they are, the duration ("instant" or a model)
-    # and the cost (a number or a distribution).
+    # interval (and policy, and a condition policy's threshold) as they are,
+    # the duration ("instant" or a model) and the costs (each a number or a
+    # distribution).
     out: dict[str, Any] = {"interval": float(spec["interval"])}
     if "policy" in spec:
         out["policy"] = spec["policy"]
+    if spec.get("threshold") is not None:
+        out["threshold"] = float(spec["threshold"])
+    if spec.get("opportunity") is not None:
+        out["opportunity"] = float(spec["opportunity"])
+    # An inspection's offset, coverage and full tests, when given (so a
+    # file without them is unchanged).
+    for key in ("offset", "coverage", "full_test"):
+        if spec.get(key) is not None:
+            out[key] = float(spec[key])
     duration = spec.get("duration", "instant")
     out["duration"] = (
         "instant" if isinstance(duration, str) else serialise_model(duration)
     )
-    cost = spec.get("cost")
-    if hasattr(cost, "qf"):
-        out["cost"] = serialise_model(cost)
-    elif cost:
-        out["cost"] = float(cost)
+    for key in ("cost", "inspection_cost"):
+        cost = spec.get(key)
+        if hasattr(cost, "qf"):
+            out[key] = serialise_model(cost)
+        elif cost:
+            out[key] = float(cost)
     return out
 
 
@@ -260,8 +355,9 @@ def _deserialise_schedule(d: dict) -> dict:
     out = dict(d)
     if isinstance(d["duration"], dict):
         out["duration"] = deserialise_model(d["duration"])
-    if isinstance(d.get("cost"), dict):
-        out["cost"] = deserialise_model(d["cost"])
+    for key in ("cost", "inspection_cost"):
+        if isinstance(d.get(key), dict):
+            out[key] = deserialise_model(d[key])
     return out
 
 
@@ -285,9 +381,19 @@ def _deserialise_component(d: dict) -> Any:
                 )
         if "acquisition_cost" in d:
             out["acquisition_cost"] = d["acquisition_cost"]
+        if "priority" in d:
+            out["priority"] = d["priority"]
+        if "group" in d:
+            out["group"] = _node_name(d["group"])
+        if "repair" in d:
+            out["repair"] = dict(d["repair"])
+        if "replace_after" in d:
+            out["replace_after"] = d["replace_after"]
         for key in ("preventive", "inspection"):
             if key in d:
                 out[key] = _deserialise_schedule(d[key])
+        if "standby" in d:
+            out["standby"] = dict(d["standby"])
         return out
     return deserialise_model(d)
 
@@ -300,6 +406,18 @@ def _k_from_list(k_list):
     if not k_list:
         return None
     return {_node_name(e["node"]): e["k"] for e in k_list}
+
+
+def _group_options(options) -> dict:
+    # A maintenance group's options: its set-up cost and whether a system
+    # outage is a stop (numbers and booleans only).
+    out: dict[str, Any] = {}
+    options = options or {}
+    if options.get("setup_cost"):
+        out["setup_cost"] = float(options["setup_cost"])
+    if options.get("system_down"):
+        out["system_down"] = True
+    return out
 
 
 def _capacity_to_list(capacity):
@@ -346,6 +464,10 @@ def _ccf_to_list(ccf_groups):
             raise NotImplementedError(
                 f"Cannot serialise CCF model {type(group.model).__name__}."
             )
+        if group.model.basis != "probability":
+            # Saved only when not the default, so older files read as
+            # they always have.
+            model["basis"] = group.model.basis
         out.append({"members": list(group.members), "model": model})
     return out
 
@@ -359,10 +481,11 @@ def _ccf_from_list(ccf_list):
     for entry in ccf_list:
         model_dict = entry["model"]
         kind = model_dict["kind"]
+        basis = model_dict.get("basis", "probability")
         if kind == "beta_factor":
-            model: object = BetaFactor(model_dict["beta"])
+            model: object = BetaFactor(model_dict["beta"], basis=basis)
         elif kind == "mgl":
-            model = MGL(*model_dict["letters"])
+            model = MGL(*model_dict["letters"], basis=basis)
         else:
             raise ValueError(f"Unknown CCF model kind {kind!r}.")
         members = [_node_name(m) for m in entry["members"]]
@@ -389,6 +512,16 @@ def rbd_to_dict(rbd: RBD) -> dict:
             for n, v in args["components"].items()
         ]
         out["downtime_cost_rate"] = args.get("downtime_cost_rate", 0.0)
+        if args.get("repair_crews") is not None:
+            out["repair_crews"] = int(args["repair_crews"])
+        if args.get("maintenance_groups"):
+            # Each group's options, by name (a name may not be a JSON key).
+            out["maintenance_groups"] = [
+                {"group": name, **_group_options(options)}
+                for name, options in args["maintenance_groups"].items()
+            ]
+        if args.get("ccf_groups"):
+            out["ccf_groups"] = _ccf_to_list(args["ccf_groups"])
     else:
         nodes = set(args["reliabilities"].keys())
         out["reliabilities"] = [
@@ -422,10 +555,19 @@ def rbd_from_dict(d: dict) -> RBD:
             _node_name(e["node"]): _deserialise_component(e["component"])
             for e in d["components"]
         }
+        groups = {
+            _node_name(e["group"]): {
+                key: value for key, value in e.items() if key != "group"
+            }
+            for e in d.get("maintenance_groups") or ()
+        }
         return RepairableRBD(
             edges,
             components,
             downtime_cost_rate=d.get("downtime_cost_rate", 0.0),
+            repair_crews=d.get("repair_crews"),
+            maintenance_groups=groups or None,
+            ccf_groups=_ccf_from_list(d.get("ccf_groups")),
             **common,
         )
     if rbd_type == "NonRepairableRBD":

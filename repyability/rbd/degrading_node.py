@@ -5,6 +5,8 @@ from typing import Any, Sequence, Tuple
 
 import numpy as np
 
+from repyability.utils.deprecation import renamed
+
 from ._model_utils import model_mean, never_fails
 from .numerical_convolution import ConvolvedSurvival
 from .results import CapacityDistribution
@@ -205,23 +207,26 @@ class DegradingNode(StandbyModel):
             return self.reliabilities[0].ff(x, *args, **kwargs)
         return super().ff(x, *args, **kwargs)
 
-    def mean(self, N=10_000, seed=None):
+    def mean(self, mc_samples=None, seed=None, *, N=None):
         """Mean lifetime (MTTF): the sum of the stages' mean times, exactly;
         infinite if a stage may never end.
 
         Parameters
         ----------
-        N : int, optional
+        mc_samples : int, optional
             Ignored: accepted so ``mean`` can be called as a
             ``StandbyModel``'s is.
         seed : int or None, optional
-            Ignored, as ``N`` is.
+            Ignored, as ``mc_samples`` is.
+        N : int, optional
+            Deprecated: the old name of ``mc_samples``.
 
         Returns
         -------
         float
             The mean lifetime.
         """
+        renamed("mc_samples", mc_samples, "N", N)
         return float(sum(model_mean(m) for m in self.reliabilities))
 
     def capacity_distribution(self, x) -> CapacityDistribution:

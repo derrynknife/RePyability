@@ -48,6 +48,11 @@ class AnalysisRoute:
         ``engine_reason``). None otherwise.
     engine_reason : str
         Why that engine.
+    twin : str
+        For a ``RepairableRBD``'s simulated availability and cost: the
+        exact twin ``control_variate=True`` controls the estimate by (see
+        [`ControlVariate`][repyability.ControlVariate]), as what it leaves
+        out of the system, or why there is none. "" otherwise.
     """
 
     route: str
@@ -55,11 +60,14 @@ class AnalysisRoute:
     nodes: Tuple[Hashable, ...] = ()
     engine: Optional[str] = None
     engine_reason: str = ""
+    twin: str = ""
 
     def __str__(self) -> str:
         text = f"{self.route}: {self.reason}"
         if self.engine is not None:
             text += f" Engine: {self.engine} ({self.engine_reason})."
+        if self.twin:
+            text += f" Exact twin: {self.twin}"
         return text
 
 
@@ -92,10 +100,15 @@ def model_route(model) -> Tuple[str, str]:
         if model.is_simulated:
             return (
                 SIMULATED,
-                f"a Kaplan-Meier fit to {model.n_sims} simulated lifetimes",
+                f"a Kaplan-Meier fit to {model.mc_samples} simulated "
+                "lifetimes",
             )
         if isinstance(model._sf_model, ConvolvedSurvival):
             return NUMERICAL, "a numerical convolution of its units' lives"
+        how = getattr(model._sf_model, "how", None)
+        if how is not None:
+            route = getattr(model._sf_model, "route", NUMERICAL)
+            return (EXACT if route == "exact" else NUMERICAL), how
         return EXACT, "a closed form"
     if isinstance(model, RepeatedStandbyNode):
         return NUMERICAL, "a numerical convolution of its copies' lives"
@@ -115,6 +128,47 @@ def model_route(model) -> Tuple[str, str]:
     if isinstance(model, NonParametric):
         return EXACT, "its fitted curve"
     return EXACT, "its own sf"
+
+
+def mean_route(model) -> Tuple[str, str]:
+    """How a node model's mean lifetime (its ``mean()``) is found: the route,
+    and a phrase saying how, or the message its ``mean()`` would raise."""
+    from .degrading_node import DegradingNode
+    from .load_sharing_node import LoadSharingModel
+    from .non_repairable_rbd import NonRepairableRBD
+    from .regression_node import RegressionNode
+    from .repeated_node import RepeatedNode
+    from .standby_node import StandbyModel
+
+    if isinstance(model, NonRepairableRBD):
+        message = refusal(model._require_lifetimes)
+        if message:
+            return REFUSED, message
+    if isinstance(model, (NonRepairableRBD, RepeatedNode)):
+        route, how = model_route(model)
+        if route == EXACT:
+            return NUMERICAL, "the area under its exact reliability"
+        return route, f"the area under its reliability, from {how}"
+    if isinstance(model, DegradingNode):
+        return EXACT, "the sum of its stages' mean times"
+    if isinstance(model, (StandbyModel, LoadSharingModel)):
+        if model.is_simulated:
+            return (
+                SIMULATED,
+                f"the mean of the {model.mc_samples} lifetimes simulated "
+                "when it was built",
+            )
+        sf_model = model._sf_model
+        if getattr(sf_model, "route", None) == EXACT:
+            return (
+                NUMERICAL,
+                "the area under its exact reliability "
+                f"({getattr(sf_model, 'how', '')})",
+            )
+        return model_route(model)
+    if isinstance(model, RegressionNode):
+        return NUMERICAL, "the mean of its survival function on a grid"
+    return EXACT, "its model's mean"
 
 
 def with_nodes(

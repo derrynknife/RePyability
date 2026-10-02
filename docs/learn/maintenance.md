@@ -360,7 +360,7 @@ answers for the same pump: the structure and the downtime move the optimum.
 The simulation prices the same policy over a finite window, with its spread:
 
 ```python
-year = alone(580).availability(t_simulation=8760.0, N=500, seed=0)
+year = alone(580).availability(t_simulation=8760.0, mc_samples=500, seed=0)
 year.system_failures / year.n_simulations          # -> 3.524   failures a year
 year.system_planned_outages / year.n_simulations   # -> 11.90   planned stops a year
 year.cost.by_category["preventive"]                # -> 11904.0
@@ -374,7 +374,7 @@ every simulated year starts with a new pump.)
 Now compare block replacement at the same interval:
 
 ```python
-block = alone(580, "block").availability(t_simulation=8760.0, N=500, seed=0)
+block = alone(580, "block").availability(t_simulation=8760.0, mc_samples=500, seed=0)
 block.system_planned_outages / block.n_simulations   # -> 14.70
 block.cost.cost_rate    # -> 13.89   per hour, against...
 year.cost.cost_rate     # -> 12.80   ...for age replacement
@@ -465,6 +465,18 @@ Redundancy did far more than halve the PFDavg here: it cut it by a factor
 of 86, and halving the test interval would quarter it again. Tests with a
 duration, and repairs that take time, are simulated (see
 [Costs](../guide/costs.md#hidden-failures-and-inspection)).
+
+A real safety function needs three more terms, each of which the diagram
+takes. The two valves share a design and a service, so some failures strike
+both at once: a common-cause group (`ccf_groups`, [Lesson 5](dependence.md))
+whose shared share `β` of the failures adds about $\beta\lambda\tau/2$, which
+for a redundant pair is usually the largest term. Testing the valves half an
+interval apart (an `"offset"`) halves that shared term, as a shared failure is
+found by whichever test comes first. And a test that finds only a share `c`
+of the failures (a `"coverage"`) leaves the rest hidden until a full test
+(`"full_test"`), adding about $(1 - c)\lambda T/2$ for full tests every $T$.
+All three are exact: see
+[Costs](../guide/costs.md#common-cause-staggered-tests-and-test-coverage).
 
 **Choosing the test interval.** Each test costs $c_i$, and each hour the part
 lies failed costs $c_d$. The cost rate is then about

@@ -36,7 +36,11 @@ def test_nonrepairable_random_reproducible_with_seed():
 
 def test_nonrepairable_mean_reproducible_with_seed():
     rbd = _series_rbd()
-    assert rbd.mean(2000, seed=1) == rbd.mean(2000, seed=1)
+
+    def simulated():
+        return rbd.mean(method="simulate", mc_samples=2000, seed=1)
+
+    assert simulated() == simulated()
 
 
 def test_seed_does_not_disturb_global_rng():
@@ -83,7 +87,7 @@ def test_repairable_availability_reproducible_with_seed():
             }
         },
     )
-    r1 = rbd.availability(t_simulation=10.0, N=200, seed=5)
-    r2 = rbd.availability(t_simulation=10.0, N=200, seed=5)
+    r1 = rbd.availability(t_simulation=10.0, mc_samples=200, seed=5)
+    r2 = rbd.availability(t_simulation=10.0, mc_samples=200, seed=5)
     np.testing.assert_array_equal(r1["availability"], r2["availability"])
     assert r1["system_uptime"] == r2["system_uptime"]

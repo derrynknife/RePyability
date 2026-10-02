@@ -89,7 +89,7 @@ def test_a_forkserver_run_matches_one_in_this_process(forkserver_by_default):
         [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")],
         {n: unit for n in "abc"},
     )
-    kwargs = dict(t_simulation=50.0, N=600, seed=3)
+    kwargs = dict(t_simulation=50.0, mc_samples=600, seed=3)
     # n_jobs=1 runs the same seeded blocks here, with no processes.
     served = plant.availability(**kwargs, n_jobs=2)
     here = plant.availability(**kwargs, n_jobs=1)

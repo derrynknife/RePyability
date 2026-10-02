@@ -157,7 +157,11 @@ def test_mttf(name):
     # In parallel with units that may never fail, it may never fail: an
     # infinite MTTF, and a run to a tolerance stops at once.
     if model.p < 1:
-        assert parallel(model).mean(2_000, seed=8) == math.inf
+        assert parallel(model).mean() == math.inf
+        simulated = parallel(model).mean(
+            method="simulate", mc_samples=2_000, seed=8
+        )
+        assert simulated == math.inf
         stopped = parallel(model).mean_time_to_failure_interval(
             mc_samples=200, seed=8, tolerance=1.0
         )
@@ -318,7 +322,7 @@ def test_a_unit_that_may_never_fail_ends_up_for_good():
     assert rbd.system_failure_frequency() == 0.0
     # Each replacement never fails with probability 0.1: the number of
     # failures is geometric, with mean 0.9 / 0.1.
-    result = rbd.availability(2_000.0, N=2_000, seed=13)
+    result = rbd.availability(2_000.0, mc_samples=2_000, seed=13)
     failures = result.system_failures / result.n_simulations
     se = math.sqrt(0.9 / 0.1**2 / result.n_simulations)
     assert abs(failures - 9.0) < 4 * se
@@ -338,7 +342,7 @@ def test_long_run_availability_with_absorbing_ends():
     assert rbd.mean_availability() == pytest.approx(exact, rel=1e-12)
     # Over a long window, the fraction of it up is close to that (the
     # time before the unit settles is short).
-    result = rbd.availability(5_000.0, N=2_000, seed=14)
+    result = rbd.availability(5_000.0, mc_samples=2_000, seed=14)
     window = result.mean_availability_interval()
     assert abs(window.estimate - exact) < 4 * window.standard_error + 0.01
 
@@ -350,7 +354,7 @@ def test_repairable_draws_come_from_their_streams():
     # is what its component's draws make it.
     rbd = repairable(W([10, 2], p=0.9, f0=0.05))
     window = 200.0
-    result = rbd.availability(window, N=60, seed=15)
+    result = rbd.availability(window, mc_samples=60, seed=15)
     draws = KeyedDraws(rbd, window, 15)
     never, dead = 0, 0
     for r in range(60):
@@ -380,10 +384,14 @@ def test_repairable_draws_come_from_their_streams():
     )
     specs, complete = maintained._stream_specs(200.0)
     assert complete and (("c",), DURATION) in specs
-    assert maintained.availability(200.0, N=100, seed=17).n_simulations
+    assert maintained.availability(
+        200.0, mc_samples=100, seed=17
+    ).n_simulations
     # So antithetic pairs and common random numbers work with them.
-    assert rbd.compare(rbd, 200.0, N=50, seed=1).estimate == 0.0
-    assert rbd.availability(200.0, N=20, seed=1, antithetic=True).antithetic
+    assert rbd.compare(rbd, 200.0, mc_samples=50, seed=1).estimate == 0.0
+    assert rbd.availability(
+        200.0, mc_samples=20, seed=1, antithetic=True
+    ).antithetic
 
 
 # -- saving and sensitivity ---------------------------------------------------

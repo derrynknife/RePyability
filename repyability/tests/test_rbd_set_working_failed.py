@@ -200,7 +200,7 @@ def test_availability_zero_system_failures_does_not_crash():
     # system_failures == 0 -> previously ZeroDivisionError.
     rbd = _repairable_parallel()
     result = rbd.availability(
-        t_simulation=20.0, N=200, working_nodes=["A"], seed=1
+        t_simulation=20.0, mc_samples=200, working_nodes=["A"], seed=1
     )
     assert result["availability"].min() == pytest.approx(1.0)
     fci = result["criticalities"]["failure_criticality_index"][
@@ -225,7 +225,7 @@ def test_availability_broken_component_accounted_as_down():
     # not silently as fully up.
     rbd = _repairable_parallel()
     result = rbd.availability(
-        t_simulation=20.0, N=200, broken_nodes=["A"], seed=1
+        t_simulation=20.0, mc_samples=200, broken_nodes=["A"], seed=1
     )
     assert result["node_uptime"]["A"] == 0.0
 
@@ -245,7 +245,7 @@ def test_availability_broken_in_series_keeps_system_down():
     }
     rbd = RepairableRBD([("s", "A"), ("A", "B"), ("B", "t")], comps)
     result = rbd.availability(
-        t_simulation=20.0, N=200, broken_nodes=["A"], seed=1
+        t_simulation=20.0, mc_samples=200, broken_nodes=["A"], seed=1
     )
     assert result["system_uptime"] == 0.0
     assert result["availability"].max() == pytest.approx(0.0)

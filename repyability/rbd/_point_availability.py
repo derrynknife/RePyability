@@ -56,9 +56,29 @@ with hidden failures by its closed form (an ``InspectionCurve``). Every
 curve is constant (``period`` None) or repeats with ``period`` after
 ``settle``, which is what lets a mission average over many years integrate
 one period and repeat it.
+
+Asked to (``counts``), a curve also counts the unit's expected events from
+new (``events``): its failures, planned outages, corrective and preventive
+actions and inspections before each time. The first unit's failures come
+from its life's distribution, exactly; the later units' from the renewals'
+lattice against the life's exact CDF, at the grid's points, which is exact
+to the square of the step (about 1e-8 for a repair some hundreds of steps
+long), and linear between them. Events at
+exact times are kept apart (``atoms``): a unit dead on arrival at 0, the
+failures of an exact lifetime, and the preventive maintenance of the units
+that each reach their replacement age, one after another, at ``(n + 1)
+age`` plus ``n`` maintenance times (exactly for a fixed or no maintenance
+time, from the sum's distribution on ``ChainDips``' fine grid otherwise).
+Past the grid's end the counts grow at their long-run rates.
+
+A unit that degrades through stages (``stages``) is in stage ``j`` at ``t``
+if its first unit is, by its age, or a unit put into service at ``s`` is,
+by its age ``t - s``: the renewals against the probability of being in the
+stage at each age, as for the failures; past the grid's end, the long-run
+shares of the up time.
 """
 
-from typing import Callable, Optional, Tuple
+from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple
 
 import numpy as np
 
@@ -222,6 +242,95 @@ def _convolve(a: np.ndarray, b: np.ndarray, n: int) -> np.ndarray:
     return fftconvolve(a, b)[:n]
 
 
+def _running(lattice: np.ndarray) -> np.ndarray:
+    """The expected number of a lattice's events before each grid point:
+    each point's mass is spread over its hat function (see ``_lattice``),
+    so half of a point's own mass falls before it, and the mass at 0 falls
+    wholly before the next point (none before 0)."""
+    out = np.zeros(len(lattice))
+    out[1:] = np.cumsum(lattice)[:-1] + 0.5 * lattice[1:]
+    return out
+
+
+def multiples_before(x: np.ndarray, interval: float) -> np.ndarray:
+    """How many of ``interval, 2 interval, ...`` (each ``k * interval``, as
+    the simulation schedules them) fall strictly before each ``x``."""
+    x = np.asarray(x, dtype=float)
+    with np.errstate(invalid="ignore"):
+        k = np.maximum(np.ceil(x / interval) - 1.0, 0.0)
+    # Rounding in the division: one more or one fewer.
+    k = np.where((k + 1.0) * interval < x, k + 1.0, k)
+    k = np.where((k >= 1.0) & (k * interval >= x), k - 1.0, k)
+    return k
+
+
+def _events(
+    failures: np.ndarray,
+    planned: Optional[np.ndarray] = None,
+    corrective: Optional[np.ndarray] = None,
+    preventive: Optional[np.ndarray] = None,
+    inspections: Optional[np.ndarray] = None,
+) -> Dict[str, np.ndarray]:
+    """A curve's expected events before each time (see
+    ``GridCurve.events``), none of those not given."""
+    zero = np.zeros_like(failures)
+    return {
+        "failures": failures,
+        "planned": zero if planned is None else planned,
+        "corrective": failures if corrective is None else corrective,
+        "preventive": zero if preventive is None else preventive,
+        "inspections": zero if inspections is None else inspections,
+    }
+
+
+class Atoms(NamedTuple):
+    """A node's events at exact times (see ``GridCurve.atoms``): when, and
+    at each the probability that it fails there, that it is taken down for
+    planned maintenance there, and that it is maintained there (a
+    preventive replacement, taking time or not); and ``drop``, how much of
+    its point availability there (``at``) those events take off (none for
+    an outage in no time)."""
+
+    times: np.ndarray
+    failure: np.ndarray
+    planned: np.ndarray
+    preventive: np.ndarray
+    drop: np.ndarray
+
+    @staticmethod
+    def none() -> "Atoms":
+        empty = np.empty(0)
+        return Atoms(empty, empty, empty, empty, empty)
+
+
+class First(NamedTuple):
+    """The unit at 0 when it is not new (see ``unit_curve``): up, with
+    ``cdf`` the distribution of its failure time from 0 (what is left of
+    its life; ``splits`` its quantiles) and its preventive maintenance due
+    at ``due`` (0 if it is due now, None if it has none); or down (``cdf``
+    None), with ``down_sf`` the survival function of what is left of its
+    repair or maintenance (``down_splits`` its quantiles). ``stages``, for
+    a unit up that degrades through stages, gives the probability that it
+    is in each of them at each time from 0."""
+
+    cdf: Optional[Callable] = None
+    splits: Any = ()
+    due: Optional[float] = None
+    down_sf: Optional[Callable] = None
+    down_splits: Any = ()
+    stages: Optional[Callable] = None
+
+
+def _capped(cdf: Callable, limit: float, at_limit: float) -> Callable:
+    """A failure time's CDF ``cdf`` with no failure from ``limit`` on: the
+    unit is maintained then instead."""
+
+    def capped(x):
+        return np.where(x < limit, cdf(np.minimum(x, limit)), at_limit)
+
+    return capped
+
+
 def unit_curve(
     up_cdf: Callable,
     up_splits,
@@ -232,6 +341,9 @@ def unit_curve(
     age: Optional[float] = None,
     maintenance_sf: Optional[Callable] = None,
     maintenance_splits=(),
+    counts: bool = False,
+    stages: Optional[Callable] = None,
+    first: Optional[First] = None,
 ) -> "GridCurve":
     """The point availability of a unit new at 0 over ``[0, n step]``, on
     the grid ``k step`` (see the module's docstring).
@@ -243,7 +355,16 @@ def unit_curve(
     maintained instead, for a time with survival function
     ``maintenance_sf`` (none: no time). The ``*_splits`` are times at which
     those distributions change quickly (their quantiles): the integrals
-    split the cells there.
+    split the cells there. With ``counts``, the curve counts the unit's
+    expected events too (see ``UnitEvents``). ``stages``, for a unit that
+    degrades through stages, gives the probability that a unit is in each
+    of them at each age (one row per stage): the curve then follows the
+    unit's stage over time too (see ``StageCurves``).
+
+    ``first`` starts the unit from a state other than new (see ``First``):
+    only its first unit (or what is left of its down time) differs, and
+    the renewals after it are those of a new unit, convolved with when they
+    start.
     """
     t = step * np.arange(n + 1)
     size = n + 1
@@ -252,39 +373,65 @@ def unit_curve(
     limit = np.inf if age is None else float(age)
     if limit <= t[-1]:
         F_limit = float(up_cdf(np.array([limit]))[0])
-
-        def fail_cdf(x):
-            return np.where(x < limit, up_cdf(np.minimum(x, limit)), F_limit)
-
+        fail_cdf = _capped(up_cdf, limit, F_limit)
         fail_splits = np.append(np.asarray(up_splits, dtype=float), limit)
         preventive = 1.0 - F_limit
     else:
         fail_cdf, fail_splits, preventive = up_cdf, up_splits, 0.0
+
+    # The unit at 0: new; up, with what is left of its life, and its
+    # maintenance due sooner; or down (``first_cdf`` None). ``first_due``
+    # and ``first_survive``: when its maintenance is due, and the
+    # probability that it reaches it.
+    first_cdf: Optional[Callable] = fail_cdf
+    first_splits = fail_splits
+    first_due: Optional[float] = limit if preventive > 0.0 else None
+    first_survive = preventive
+    if first is not None:
+        first_due, first_survive = None, 0.0
+        first_cdf, first_splits = first.cdf, first.splits
+        if first.cdf is not None and first.due is not None:
+            due = max(float(first.due), 0.0)
+            if due <= t[-1]:
+                F_due = float(first.cdf(np.array([due]))[0]) if due else 0.0
+                first_cdf = _capped(first.cdf, due, F_due)
+                first_splits = np.append(np.asarray(first.splits), due)
+                first_due, first_survive = due, 1.0 - F_due
 
     def repair_cdf(s):
         return 1.0 - repair_sf(s)
 
     atom, mass, position = _cells(fail_cdf, t, fail_splits)
     fails = _lattice(atom, mass, position)
-    # A lifetime that ends at a few exact times: the first unit's failures
-    # there are dips, and its other failures a density.
-    exact = _atoms(fail_cdf, fail_splits, t[-1])
-    if not 0 < len(exact) <= _MAX_ATOMS:
-        exact = []
-    if exact:
+    # The first unit's failure times: its lattice, and its cells with the
+    # atoms of a lifetime that ends at a few exact times kept apart (dips),
+    # the rest a density.
+    atom1, mass1, position1 = atom, mass, position
+    fails1 = fails
+    exact: list = []
+    if first_cdf is not None:
+        if first is not None:
+            atom1, mass1, position1 = _cells(first_cdf, t, first_splits)
+            fails1 = _lattice(atom1, mass1, position1)
+        exact = _atoms(first_cdf, first_splits, t[-1])
+        if not 0 < len(exact) <= _MAX_ATOMS:
+            exact = []
+        if exact:
+            cdf = first_cdf
 
-        def spread_cdf(x):
-            out = fail_cdf(x)
-            for at, jump in exact:
-                out = out - jump * (x >= at)
-            return out
+            def spread_cdf(x):
+                out = cdf(x)
+                for at, jump in exact:
+                    out = out - jump * (x >= at)
+                return out
 
-        _, mass, position = _cells(spread_cdf, t, fail_splits)
+            _, mass1, position1 = _cells(spread_cdf, t, first_splits)
     repairs = _lattice(*_cells(repair_cdf, t, repair_splits))
     cycle = _convolve(fails, repairs, size)
     flat, slope, hat = _survival_weights(repair_sf, t, repair_splits)
 
     maintains = np.zeros(size)
+    done: Optional[np.ndarray] = None
     if preventive > 0.0:
         maintains = _atom_lattice(preventive, limit, t)
         if maintenance_sf is not None:
@@ -296,6 +443,20 @@ def unit_curve(
             cycle = cycle + _convolve(maintains, done, size)
         else:
             cycle = cycle + maintains
+    elif first_survive > 0.0 and maintenance_sf is not None:
+        done = _lattice(
+            *_cells(lambda s: 1.0 - maintenance_sf(s), t, maintenance_splits)
+        )
+    maintains1 = maintains
+    if first is not None and first_survive > 0.0:
+        assert first_due is not None
+        maintains1 = _atom_lattice(first_survive, first_due, t)
+
+    def maintained(lattice: np.ndarray) -> np.ndarray:
+        """The renewals after the maintenance of ``lattice``'s starts."""
+        if done is None:
+            return lattice
+        return _convolve(lattice, done, size)
 
     # Renewals: u = delta_0 + u * cycle. The later ones (after the first
     # unit's start at 0) are u less the atom at 0.
@@ -303,52 +464,188 @@ def unit_curve(
     one_minus[0] += 1.0
     later = _series_inverse(one_minus, size)
     later[0] -= 1.0
+    if first is not None:
+        # The first unit's cycle (its failure and repair, or its
+        # maintenance; or what is left of its down time), and new units'
+        # renewals after it.
+        if first_cdf is not None:
+            cycle1 = _convolve(fails1, repairs, size)
+            if first_survive > 0.0:
+                cycle1 = cycle1 + maintained(maintains1)
+        else:
+            cycle1 = _lattice(
+                *_cells(
+                    lambda s: 1.0 - first.down_sf(s),  # type: ignore
+                    t,
+                    first.down_splits,
+                )
+            )
+        later = cycle1 + _convolve(cycle1, later, size)
 
     # The first unit: its failures from its continuous distribution, against
     # the repair time's survival function; its preventive maintenance, if
-    # any, at exactly ``age``.
+    # any, at exactly ``first_due``.
     down = np.zeros(size)
-    down[1:] = _convolve(mass, flat, n) + _convolve(
-        mass * 6.0 * (2.0 * position - 1.0), slope, n
-    )
+    if first_cdf is not None:
+        down[1:] = _convolve(mass1, flat, n) + _convolve(
+            mass1 * 6.0 * (2.0 * position1 - 1.0), slope, n
+        )
     # Later units, through the grid.
-    down += _convolve(_convolve(later, fails, size), hat, size)
+    later_failures = _convolve(later, fails, size)
+    down += _convolve(later_failures, hat, size)
     chain = None
-    if preventive > 0.0 and maintenance_sf is not None:
+    chained = None
+    # The units that each reach their age, one after another: the n-th
+    # after the first is maintained at ``first_due`` plus n ages and n
+    # maintenance times, for n up to ``count`` (past it, beyond the grid or
+    # all but never).
+    count = 0
+    if first_survive > 0.0 and preventive > 0.0:
+        assert first_due is not None
+        if first is None:
+            count = int(np.floor(t[-1] / limit)) - 1
+            if preventive < 1.0:
+                count = min(count, int(np.log(1e-15) / np.log(preventive)))
+        else:
+            count = int(np.floor((t[-1] - first_due) / limit))
+            if preventive < 1.0:
+                count = min(
+                    count,
+                    int(np.log(1e-15 / first_survive) / np.log(preventive)),
+                )
+    if maintenance_sf is not None and (first_survive > 0.0 or preventive):
         _, _, maintenance_hat = _survival_weights(
             maintenance_sf, t, maintenance_splits
         )
         # The units that each reach their age are maintained at nearly
         # fixed times (``ChainDips``): the grid keeps the maintenance of
-        # the units started after a failure.
-        one_minus = -_convolve(maintains, done, size)
-        one_minus[0] += 1.0
-        chained = _series_inverse(one_minus, size)
-        chained[0] -= 1.0
+        # the units started after a failure (from a unit down at 0, of
+        # every unit).
+        if first_survive > 0.0:
+            one_minus = -maintained(maintains)
+            one_minus[0] += 1.0
+            chained = _series_inverse(one_minus, size)
+            chained[0] -= 1.0
+            if first is not None:
+                started = maintained(maintains1)
+                chained = started + _convolve(started, chained, size)
+        else:
+            chained = np.zeros(size)
         down += _convolve(
             _convolve(later - chained, maintains, size),
             maintenance_hat,
             size,
         )
-        count = int(np.floor(t[-1] / limit)) - 1
-        if preventive < 1.0:
-            count = min(count, int(np.log(1e-15) / np.log(preventive)))
         if count > 0:
             chain = ChainDips(
-                limit, preventive, maintenance_sf, maintenance_splits, count
+                limit,
+                preventive,
+                maintenance_sf,
+                maintenance_splits,
+                count,
+                cdfs=counts,
+                first_due=first_due,
+                first_survive=first_survive,
             )
     smooth = 1.0 - down
     # At 0 exactly the unit is down only if dead on arrival: a dip.
     smooth[0] = 1.0
     # The first unit's repair if it is dead on arrival, and its preventive
-    # maintenance at exactly ``age``: exact, however short they are.
+    # maintenance at exactly ``first_due``: exact, however short they are.
+    # Down at 0, what is left of its down time is exact too.
     dips = []
-    if atom > 0.0:
-        dips.append((atom, 0.0, repair_sf, repair_splits))
+    if first_cdf is None:
+        assert first is not None and first.down_sf is not None
+        dips.append((1.0, 0.0, first.down_sf, first.down_splits))
+    elif atom1 > 0.0:
+        dips.append((atom1, 0.0, repair_sf, repair_splits))
     dips += [(jump, at, repair_sf, repair_splits) for at, jump in exact]
-    if preventive > 0.0 and maintenance_sf is not None:
-        dips.append((preventive, limit, maintenance_sf, maintenance_splits))
-    return GridCurve(step, smooth, dips, chain=chain)
+    if first_survive > 0.0 and maintenance_sf is not None:
+        assert first_due is not None
+        dips.append(
+            (first_survive, first_due, maintenance_sf, maintenance_splits)
+        )
+    curve = GridCurve(step, smooth, dips, chain=chain)
+    if stages is not None:
+        # In each stage: the first unit by its own age, the later ones by
+        # the renewals against the probability at each age (a unit renewed
+        # at a grid point itself, spread over its hat, is renewed before
+        # it half the time).
+        occupied = np.atleast_2d(np.asarray(stages(t), dtype=float))
+        occupied = occupied.copy()
+        occupied[:, 0] *= 0.5
+        first_stages = stages
+        if first is not None:
+            first_stages = first.stages or (
+                lambda x: np.zeros((len(occupied), np.size(x)))
+            )
+        curve.stages = StageCurves(
+            t,
+            first_stages,
+            np.vstack(
+                [
+                    np.maximum(_convolve(later, row, size), 0.0)
+                    for row in occupied
+                ]
+            ),
+        )
+    if not counts:
+        return curve
+    others = None
+    fixed: Optional[float] = None
+    if first_survive > 0.0 or preventive > 0.0:
+        if chained is None:
+            # In no time: the units that each reach their age are renewed
+            # at its multiples (after the first's, from a state).
+            one_minus = -maintains
+            one_minus[0] += 1.0
+            chained = _series_inverse(one_minus, size)
+            chained[0] -= 1.0
+            if first is not None:
+                chained = (
+                    maintains1 + _convolve(maintains1, chained, size)
+                    if first_survive > 0.0
+                    else np.zeros(size)
+                )
+        # The other units' maintenance, through the grid.
+        others = _running(_convolve(later - chained, maintains, size))
+        if maintenance_sf is None:
+            fixed = 0.0
+        elif chain is not None:
+            fixed = chain.fixed  # None: a time that varies
+        else:
+            fixed = 0.0  # no later unit reaches its age on the grid
+    # The later units' failures before each grid point: the renewals
+    # against the life's exact CDF there (a unit renewed at the point
+    # itself, spread over its hat, is dead on arrival before it half the
+    # time).
+    lived = np.array(fail_cdf(t), dtype=float)
+    lived[0] = 0.5 * atom
+    first_atoms = list(exact)
+    if first_cdf is not None and atom1 > 0.0:
+        first_atoms.insert(0, (0.0, atom1))
+    curve.unit_events = UnitEvents(
+        t,
+        first_cdf if first_cdf is not None else (lambda x: np.zeros(len(x))),
+        first_atoms,
+        float(repair_sf(np.zeros(1))[0]),
+        np.maximum(_convolve(later, lived, size), 0.0),
+        age=limit if others is not None else None,
+        survive=preventive,
+        fixed=fixed,
+        chain=chain,
+        count=max(count, 0),
+        others=others,
+        takedown=maintenance_sf is not None,
+        maintenance_drop=(
+            0.0
+            if maintenance_sf is None
+            else float(maintenance_sf(np.zeros(1))[0])
+        ),
+        first_due=first_due,
+        first_survive=first_survive,
+    )
+    return curve
 
 
 def _moments(sf: Callable, t: np.ndarray, splits) -> Tuple[float, float]:
@@ -381,6 +678,17 @@ def _cubic(values: np.ndarray, position: np.ndarray) -> np.ndarray:
     )
 
 
+def chain_due(first_due: float, age: float, n):
+    """When the ``n``-th of the units that each reach their age after the
+    first (whose maintenance is due at ``first_due``) is due, but for the
+    maintenance times before it: ``first_due + n age``, or ``(n + 1) age``
+    from new (as block times are multiples of their interval)."""
+    n = np.asarray(n, dtype=float)
+    if first_due == age:
+        return (n + 1.0) * age
+    return first_due + n * age
+
+
 class ChainDips:
     """The preventive maintenance of a unit under age replacement whose
     units, one after another, each reach their replacement age ``age``
@@ -401,17 +709,39 @@ class ChainDips:
     fourth power of the step (``_CHAIN_STEPS`` steps per standard deviation
     give about 1e-7). A sum wider than ``_CHAIN_POINTS`` points moves to a
     grid of twice the step. A maintenance of a fixed time ``d`` has
-    ``G_n(s) = 1`` on ``[n d, (n + 1) d)``, exactly."""
+    ``G_n(s) = 1`` on ``[n d, (n + 1) d)``, exactly.
 
-    def __init__(self, age: float, survive: float, sf, splits, count: int):
+    With ``cdfs``, it also keeps the distribution of each ``T_n``, the
+    lattice's running sums sharpened likewise (the Euler-Maclaurin
+    correction), for counting the maintenance (``before``)."""
+
+    def __init__(
+        self,
+        age: float,
+        survive: float,
+        sf,
+        splits,
+        count: int,
+        cdfs: bool = False,
+        first_due: Optional[float] = None,
+        first_survive: Optional[float] = None,
+    ):
         self.age = float(age)
         self.survive = float(survive)
+        # The first unit's maintenance (a unit not new at 0: sooner, and
+        # with its own probability); the later ones follow at ``age``.
+        self.first_due = self.age if first_due is None else float(first_due)
+        self.first_survive = (
+            self.survive if first_survive is None else float(first_survive)
+        )
         self.count = int(count)
         self.sf = sf
         splits = np.asarray(splits, dtype=float)
         self.splits = splits[np.isfinite(splits) & (splits >= 0.0)]
         self.top = float(self.splits.max()) if self.splits.size else 0.0
         self.windows: list = []  # (start, step, values) for n = 1..count
+        # (start, step, values, mass) of T_n's CDF for n = 1..count.
+        self.cdfs: list = []
         self.fixed: Optional[float] = None
         if self.top <= 0.0:
             self.fixed = 0.0  # instant: no dips
@@ -444,6 +774,17 @@ class ChainDips:
                 start += int(keep[0])
             self.windows.append((start * step, step, values))
             kept += len(values)
+            if cdfs:
+                # P(T_n < s) at the fine points: the masses before each,
+                # half of its own, and the Euler-Maclaurin correction.
+                mass = float(total.sum())
+                running = np.cumsum(total) - 0.5 * total
+                padded = np.concatenate([[0.0], running, [mass]])
+                second = padded[2:] - 2.0 * padded[1:-1] + padded[:-2]
+                self.cdfs.append(
+                    (first * step, step, running - second / 12.0, mass)
+                )
+                kept += len(running)
             if kept > _CHAIN_VALUES:
                 raise NotImplementedError(self._too_many)
             total = fftconvolve(total, kernel)
@@ -460,6 +801,12 @@ class ChainDips:
         "its later age replacements, which fall at nearly fixed times, are "
         "too many, or their times too spread out, to follow exactly"
     )
+
+    def _due(self, n: int) -> Tuple[float, float]:
+        """When the ``n``-th maintenance after the first is due, before the
+        ``n`` maintenance times, and the probability that it happens."""
+        due = float(chain_due(self.first_due, self.age, n))
+        return due, self.first_survive * self.survive**n
 
     def _kernels(self, step: float):
         """The maintenance time's lattice on the grid ``step * k`` from
@@ -505,8 +852,7 @@ class ChainDips:
         order = np.argsort(x, kind="stable")
         ordered = x[order]
         for n in range(1, self.count + 1):
-            due = (n + 1) * self.age
-            weight = self.survive ** (n + 1)
+            due, weight = self._due(n)
             if self.fixed is not None:
                 lo, hi = due + n * self.fixed, due + (n + 1) * self.fixed
                 a, b = np.searchsorted(ordered, [lo, hi], side="left")
@@ -521,11 +867,36 @@ class ChainDips:
                 out[order[a:b]] += weight * _cubic(values, position)
         return out
 
+    def before(self, x: np.ndarray) -> np.ndarray:
+        """The expected number of these maintenances, ``n = 1..count``,
+        that start before each ``x``: ``survive ** (n + 1) * P((n + 1) age
+        + T_n < x)``, from the CDFs kept (``cdfs``), for a maintenance
+        whose time varies."""
+        out = np.zeros(len(x))
+        order = np.argsort(x, kind="stable")
+        ordered = x[order]
+        # Each sum's mass, for the times past its window.
+        past = np.zeros(len(x) + 1)
+        for n in range(1, len(self.cdfs) + 1):
+            due, weight = self._due(n)
+            start, step, values, mass = self.cdfs[n - 1]
+            lo = due + start - step
+            hi = due + start + step * len(values)
+            a, b = np.searchsorted(ordered, [lo, hi], side="right")
+            if b > a:
+                position = (ordered[a:b] - due - start) / step
+                extended = np.concatenate([values, [mass, mass]])
+                position = np.minimum(position, len(extended) - 1.0)
+                out[order[a:b]] += weight * _cubic(extended, position)
+            past[b] += weight * mass
+        out[order] += np.cumsum(past)[:-1]
+        return out
+
     def knots(self, start: float, stop: float) -> np.ndarray:
         """Times in ``[start, stop]`` between which the dips are smooth."""
         parts = []
         for n in range(1, self.count + 1):
-            due = (n + 1) * self.age
+            due, _ = self._due(n)
             if self.fixed is not None:
                 parts.append(due + self.fixed * np.array([n, n + 1.0]))
                 continue
@@ -541,6 +912,235 @@ class ChainDips:
         return times[(times >= start) & (times <= stop)]
 
 
+class UnitEvents:
+    """What a unit new at 0 is expected to do by each time (see
+    ``unit_curve``), on the grid ``times``.
+
+    Its first unit fails at a time with CDF ``fail_cdf`` (none after its
+    replacement age), with ``first_atoms``, ``(time, probability)``, at
+    exact times; a failure's repair takes time with probability
+    ``repair_drop``. ``later`` is the later units' expected failures before
+    each grid point. Under age replacement at ``age``, the units that each
+    reach it one after another (each with probability ``survive``) are
+    maintained at ``(n + 1) age + T_n``: ``T_n = n * fixed`` for a
+    maintenance of a fixed time (0 for none), or from ``chain``'s CDFs, for
+    ``n`` up to ``count``; ``others`` is the other units' expected
+    maintenance before each grid point. ``takedown``: the maintenance takes
+    the unit down (it has a time model), and takes time with probability
+    ``maintenance_drop``. Past the grid's end, the counts grow at
+    ``failure_rate`` and ``preventive_rate``, the long-run rates, which the
+    caller sets when the grid has settled."""
+
+    def __init__(
+        self,
+        times: np.ndarray,
+        fail_cdf: Callable,
+        first_atoms: list,
+        repair_drop: float,
+        later: np.ndarray,
+        age: Optional[float] = None,
+        survive: float = 0.0,
+        fixed: Optional[float] = None,
+        chain: Optional[ChainDips] = None,
+        count: int = 0,
+        others: Optional[np.ndarray] = None,
+        takedown: bool = False,
+        maintenance_drop: float = 0.0,
+        first_due: Optional[float] = None,
+        first_survive: Optional[float] = None,
+    ):
+        self.times = times
+        self.fail_cdf = fail_cdf
+        self.first_atoms = list(first_atoms)
+        self.repair_drop = repair_drop
+        self.later = later
+        self.age = age
+        self.survive = survive
+        self.fixed = fixed
+        self.chain = chain
+        self.count = count
+        self.others = others
+        self.takedown = takedown
+        self.maintenance_drop = maintenance_drop
+        # The first unit's maintenance: at the age from new, sooner (or
+        # none) from a state.
+        self.first_due = age if first_due is None else first_due
+        self.first_survive = (
+            survive if first_survive is None else first_survive
+        )
+        self.failure_rate: Optional[float] = None
+        self.preventive_rate: Optional[float] = None
+
+    def _chain_dues(self) -> Tuple[np.ndarray, np.ndarray]:
+        """When the units that each reach their age are maintained, and
+        the probabilities, for a maintenance of a fixed time (or none):
+        ``n = 0..count``, within the grid (none if the first is never
+        maintained)."""
+        if self.first_due is None or not self.first_survive:
+            return np.empty(0), np.empty(0)
+        assert self.age is not None and self.fixed is not None
+        n = np.arange(self.count + 1, dtype=float)
+        dues = chain_due(self.first_due, self.age, n) + n * self.fixed
+        weights = self.first_survive * self.survive**n
+        keep = dues <= self.times[-1]
+        return dues[keep], weights[keep]
+
+    def _maintained(self, x: np.ndarray, inside: np.ndarray) -> np.ndarray:
+        """The expected preventive maintenance before each ``x`` (``inside``
+        it, held at the grid's end)."""
+        assert self.others is not None, "the unit is not maintained"
+        out = np.interp(inside, self.times, self.others)
+        if self.fixed is not None:
+            dues, weights = self._chain_dues()
+            running = np.concatenate([[0.0], np.cumsum(weights)])
+            return out + running[np.searchsorted(dues, x, side="left")]
+        # The first at its due time exactly; the later ones' times vary.
+        if self.first_due is not None and self.first_survive:
+            out += self.first_survive * (x > self.first_due)
+        if self.chain is not None:
+            out += self.chain.before(inside)
+        return out
+
+    def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
+        """The expected failures, planned outages, corrective and
+        preventive actions before each ``x`` (see ``GridCurve.events``)."""
+        x = np.asarray(x, dtype=float)
+        end = float(self.times[-1])
+        inside = np.minimum(x, end)
+        # The first unit: its life's continuous part to ``inside``, and its
+        # atoms strictly before ``x``.
+        first = np.array(self.fail_cdf(inside), dtype=float)
+        for at, probability in self.first_atoms:
+            first -= probability * (inside >= at)
+            first += probability * (x > at)
+        failures = first + np.interp(inside, self.times, self.later)
+        past = np.maximum(x - end, 0.0)
+        if self.failure_rate is not None:
+            failures = failures + self.failure_rate * past
+        # Nothing happens before 0 (the lattice's rounding aside).
+        started = x > 0.0
+        failures = np.where(started, failures, 0.0)
+        if self.age is None:
+            return _events(failures)
+        preventive = self._maintained(x, inside)
+        if self.preventive_rate is not None:
+            preventive = preventive + self.preventive_rate * past
+        preventive = np.where(started, preventive, 0.0)
+        planned = preventive if self.takedown else None
+        return _events(failures, planned, preventive=preventive)
+
+    def atoms(self, stop: float) -> Atoms:
+        """The unit's events at exact times before ``stop`` (see
+        ``Atoms``): the first unit's failures, and its maintenance at its
+        age and, for a fixed time (or none), the later ones'."""
+        first = np.array(self.first_atoms, dtype=float).reshape(-1, 2)
+        first = first[first[:, 0] < stop]
+        zero = np.zeros(len(first))
+        failing = Atoms(
+            first[:, 0],
+            first[:, 1],
+            zero,
+            zero,
+            first[:, 1] * self.repair_drop,
+        )
+        if self.age is None:
+            return failing
+        if self.fixed is not None:
+            dues, weights = self._chain_dues()
+            # The first is a dip; a later one takes the unit down for the
+            # fixed time, if any.
+            drops = np.full(len(dues), 1.0 if self.fixed > 0.0 else 0.0)
+        elif self.first_due is not None and self.first_survive:
+            dues = np.array([self.first_due])
+            weights = np.array([self.first_survive])
+            drops = np.ones(1)
+        else:
+            dues = weights = drops = np.empty(0)
+        if len(drops):
+            drops[0] = self.maintenance_drop
+        keep = dues < stop
+        dues, weights, drops = dues[keep], weights[keep], drops[keep]
+        takedown = 1.0 if self.takedown else 0.0
+        maintained = Atoms(
+            dues,
+            np.zeros(len(dues)),
+            weights * takedown,
+            weights,
+            weights * drops * takedown,
+        )
+        merged = Atoms(*(np.concatenate(c) for c in zip(failing, maintained)))
+        order = np.argsort(merged.times, kind="stable")
+        return Atoms(*(column[order] for column in merged))
+
+    def settled(self, tolerance: float = 1e-7) -> bool:
+        """Whether the counts have reached their long-run rates over the
+        last quarter of the grid, to ``tolerance`` relative to the rate
+        (or, for a rate of 0, to the mean rate so far)."""
+        n = len(self.times) - 1
+        tail = self.times[n - n // 4 :]  # noqa: E203
+        if len(tail) < 3:
+            return False
+        events = self.events(tail)
+        for key, rate in (
+            ("failures", self.failure_rate),
+            ("preventive", self.preventive_rate),
+        ):
+            if key == "preventive" and self.age is None:
+                continue
+            if rate is None:
+                return False
+            slope = np.diff(events[key]) / np.diff(tail)
+            scale = max(rate, float(events[key][-1]) / float(tail[-1]))
+            if np.any(np.abs(slope - rate) > tolerance * scale):
+                return False
+        return True
+
+
+class StageCurves:
+    """Which stage a unit that degrades through stages is in, from new (see
+    ``unit_curve``): ``first(x)``, the probability that the first unit is
+    in each stage at ``x`` (one row per stage), and ``later``, that a later
+    one is, at each grid point of ``times``. Past the grid's end the unit's
+    up time is shared among the stages as ``fractions`` (set by the caller
+    when the grid has settled): the long-run share of its up time in
+    each."""
+
+    def __init__(self, times: np.ndarray, first: Callable, later):
+        self.times = times
+        self.first = first
+        self.later = later
+        self.fractions: Optional[np.ndarray] = None
+
+    def shares(self, x: np.ndarray) -> np.ndarray:
+        """The share of the probability that the unit is up at each ``x``
+        that falls in each stage (one row per stage)."""
+        x = np.asarray(x, dtype=float)
+        inside = np.minimum(x, self.times[-1])
+        occupied = np.atleast_2d(np.asarray(self.first(inside), dtype=float))
+        occupied = occupied + np.vstack(
+            [np.interp(inside, self.times, row) for row in self.later]
+        )
+        total = occupied.sum(axis=0)
+        shares = np.zeros_like(occupied)
+        shares[0] = 1.0  # where it cannot be up: a new unit's first stage
+        np.divide(occupied, total, out=shares, where=total > 0.0)
+        if self.fractions is not None:
+            shares[:, x > self.times[-1]] = self.fractions[:, None]
+        return shares
+
+    def settled(self, tolerance: float = 1e-8) -> bool:
+        """Whether the shares have reached ``fractions`` over the last
+        quarter of the grid."""
+        if self.fractions is None:
+            return False
+        n = len(self.times) - 1
+        tail = self.times[n - n // 4 :]  # noqa: E203
+        shares = self.shares(tail)
+        return bool(
+            np.all(np.abs(shares - self.fractions[:, None]) <= tolerance)
+        )
+
+
 class GridCurve:
     """A unit's point availability on a grid from 0, linear between its
     points, less its dips: ``(probability, start, sf, splits)`` for a down
@@ -548,7 +1148,9 @@ class GridCurve:
     with survival function ``sf`` (quantiles ``splits``), and those of
     ``chain`` (see ``ChainDips``). After the grid's end the curve holds
     ``long_run`` if given (it has settled there by then), and the grid then
-    reaches the times it is needed at."""
+    reaches the times it is needed at. ``unit_events``, if counted, are the
+    unit's expected events (see ``UnitEvents``), and ``stages``, if
+    followed, the stages of a unit that degrades (see ``StageCurves``)."""
 
     period = None
 
@@ -565,6 +1167,31 @@ class GridCurve:
         self.dips = list(dips)
         self.long_run = long_run
         self.chain = chain
+        self.unit_events: Optional[UnitEvents] = None
+        self.stages: Optional[StageCurves] = None
+
+    def stages_at(self, x: np.ndarray) -> np.ndarray:
+        """The probability that the unit is up and in each of its stages
+        at each time ``x`` (one row per stage): its point availability
+        shared among the stages (see ``StageCurves``), so that the rows add
+        up to it."""
+        assert self.stages is not None, "stages were not asked for"
+        return self.stages.shares(x) * self.at(np.asarray(x, dtype=float))
+
+    def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
+        """The unit's expected events before each time ``x`` (in
+        ``[0, x)``, as the simulation counts them): ``"failures"``,
+        ``"planned"`` outages (preventive maintenance that takes time),
+        ``"corrective"`` actions (repairs, at each failure),
+        ``"preventive"`` actions (maintenance, taking time or not) and
+        ``"inspections"`` (none)."""
+        assert self.unit_events is not None, "counts were not asked for"
+        return self.unit_events.events(x)
+
+    def atoms(self, stop: float) -> Atoms:
+        """The unit's events at exact times before ``stop``."""
+        assert self.unit_events is not None, "counts were not asked for"
+        return self.unit_events.atoms(stop)
 
     @property
     def settle(self) -> float:
@@ -599,7 +1226,8 @@ class BlockCurve:
     """A unit's point availability under block replacement, from new (see
     ``_block_replacement.BlockAvailability``), the last interval repeating
     once it has settled. ``duration_knots`` are quantiles of the time a
-    replacement takes."""
+    replacement takes. After a head (not ``fresh``), the curve starts at a
+    block time, with the replacement due there."""
 
     def __init__(self, result, duration_knots):
         self.interval = float(result.interval)
@@ -608,11 +1236,71 @@ class BlockCurve:
         self.smooth = result.smooth
         self.replaced = result.replaced
         self.replace = result.replace
+        self.failures = result.failures
+        self.fresh = result.fresh
         knots = np.asarray(duration_knots, dtype=float)
         self.duration_knots = knots[(knots > 0.0) & (knots < self.interval)]
         last = len(self.replaced) - 1
         self.settle = last * self.interval if result.settled else np.inf
         self.period = self.interval if result.settled else None
+
+    def _whole(self, values: np.ndarray, k: np.ndarray) -> np.ndarray:
+        """The sum of ``values`` (one per interval, the last repeating) over
+        the intervals before the ``k``-th."""
+        rows = len(values)
+        running = np.concatenate([[0.0], np.cumsum(values)])
+        inside = np.minimum(k, rows).astype(int)
+        return running[inside] + np.maximum(k - rows, 0.0) * values[-1]
+
+    def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
+        """The unit's expected events before each time ``x`` (see
+        ``GridCurve.events``): its failures, interval by interval, and its
+        replacements at the block times, which take it down if they take
+        time (have a time model)."""
+        x = np.asarray(x, dtype=float)
+        k = np.floor(x / self.interval)
+        s = x - k * self.interval
+        over, under = s >= self.interval, s < 0.0
+        k[over] += 1.0
+        s[over] -= self.interval
+        k[under] -= 1.0
+        s[under] += self.interval
+        row = np.minimum(k, len(self.replaced) - 1).astype(int)
+        position = s / self.step
+        j = np.clip(np.floor(position).astype(int), 0, len(self.grid) - 2)
+        fraction = position - j
+        within = (
+            self.failures[row, j] * (1.0 - fraction)
+            + self.failures[row, j + 1] * fraction
+        )
+        failures = self._whole(self.failures[:, -1], k) + within
+        # The replacements at the block times before x: the k-th is
+        # replaced with probability ``replaced[k]`` (none at 0 from new).
+        due = multiples_before(x, self.interval)
+        replaced = self.replaced.copy()
+        if self.fresh:
+            replaced[0] = 0.0
+        preventive = self._whole(replaced, np.where(x > 0.0, due + 1.0, 0.0))
+        planned = preventive if self.replace.model is not None else None
+        return _events(failures, planned, preventive=preventive)
+
+    def atoms(self, stop: float) -> Atoms:
+        """The replacements at the block times before ``stop`` (see
+        ``Atoms``)."""
+        count = int(multiples_before(np.array([stop]), self.interval)[0])
+        first = 1 if self.fresh else 0
+        if count < first or stop <= 0.0:
+            return Atoms.none()
+        k = np.arange(first, count + 1)
+        count = len(k)
+        times = k * self.interval
+        weights = self.replaced[np.minimum(k, len(self.replaced) - 1)]
+        if self.replace.model is None:
+            planned = drop = np.zeros(count)
+        else:
+            planned = weights
+            drop = weights * (1.0 - float(self.replace.cdf(np.zeros(1))[0]))
+        return Atoms(times, np.zeros(count), planned, weights, drop)
 
     def at(self, x: np.ndarray) -> np.ndarray:
         # The interval each time falls in, and the time since its start (in
@@ -632,7 +1320,9 @@ class BlockCurve:
             self.smooth[row, j] * (1.0 - fraction)
             + self.smooth[row, j + 1] * fraction
         )
-        back = np.where(k == 0.0, 1.0, self.replace.cdf(s))
+        back = self.replace.cdf(s)
+        if self.fresh:
+            back = np.where(k == 0.0, 1.0, back)
         return np.clip(smooth + self.replaced[row] * back, 0.0, 1.0)
 
     def knots(self, start: float, stop: float) -> np.ndarray:
@@ -651,27 +1341,84 @@ class BlockCurve:
 
 class InspectionCurve:
     """A unit with hidden failures, a constant failure ``rate``, and instant
-    tests and repair every ``interval`` from 0: up with probability
-    ``exp(-rate * u)``, ``u`` the time since the last test."""
+    tests and repair every ``interval``, the last test ``phase`` before 0
+    (0: tested at 0, as from new), and last known up ``since`` before 0 (at
+    that test, by default, or since put into service after it): up with
+    probability ``exp(-rate * u)``, ``u`` the time since it was last known
+    up (at a test, after the first). It repeats from its first test on (from
+    0, if it was last known up at its last test)."""
 
-    settle = 0.0
-
-    def __init__(self, rate: float, interval: float):
+    def __init__(
+        self,
+        rate: float,
+        interval: float,
+        phase: float = 0.0,
+        since: Optional[float] = None,
+    ):
         self.rate = rate
         self.interval = interval
         self.period = interval
+        self.phase = float(phase)
+        self.since = self.phase if since is None else float(since)
+        #: The first test after 0.
+        self.first = interval - self.phase
+        self.settle = 0.0 if self.since == self.phase else self.first
 
     def at(self, x: np.ndarray) -> np.ndarray:
-        since = x - self.interval * np.floor(x / self.interval)
+        position = x + self.phase
+        since = position - self.interval * np.floor(position / self.interval)
+        if self.since != self.phase:
+            since = np.where(x < self.first, x + self.since, since)
         return np.exp(-self.rate * since)
+
+    def _failed(self, position: np.ndarray) -> np.ndarray:
+        """The expected hidden failures from the calendar's start (a test)
+        to each ``position`` on it."""
+        whole = np.floor(position / self.interval)
+        since = np.maximum(position - self.interval * whole, 0.0)
+        per_test = -np.expm1(-self.rate * self.interval)
+        return whole * per_test - np.expm1(-self.rate * since)
+
+    def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
+        """The unit's expected events before each time ``x`` (see
+        ``GridCurve.events``): its hidden failures, at most one between
+        two tests, ``1 - exp(-rate * u)`` by a time ``u`` after it was last
+        known up; the tests; and the failures they find (each repaired
+        then, as a corrective action)."""
+        x = np.asarray(x, dtype=float)
+        tests = multiples_before(x + self.phase, self.interval)
+        per_test = -np.expm1(-self.rate * self.interval)
+        if self.since == self.phase:
+            failures = self._failed(x + self.phase)
+            if self.phase:
+                failures = failures - self._failed(np.array(self.phase))
+            corrective = tests * per_test
+        else:
+            # Up to the first test, from when it was last known up; from
+            # then on, as from a test.
+            known = np.exp(-self.rate * self.since)
+            head = known - np.exp(
+                -self.rate * (self.since + np.minimum(x, self.first))
+            )
+            later = np.maximum(x - self.first, 0.0)
+            failures = head + np.where(tests > 0, self._failed(later), 0.0)
+            found = -np.expm1(-self.rate * (self.since + self.first))
+            corrective = np.where(
+                tests > 0, found + (tests - 1.0) * per_test, 0.0
+            )
+        return _events(failures, corrective=corrective, inspections=tests)
+
+    def atoms(self, stop: float) -> Atoms:
+        """None: a test, in no time, takes nothing down."""
+        return Atoms.none()
 
     def knots(self, start: float, stop: float) -> np.ndarray:
         """The tests in ``[start, stop]``, and times between them close
         enough (``rate`` times the gap at most 1/4) for quadrature to be
         exact to rounding."""
         pieces = max(1, int(np.ceil(4.0 * self.rate * self.interval)))
-        first = int(np.floor(start / self.interval))
-        last = int(np.floor(stop / self.interval))
+        first = int(np.floor((start + self.phase) / self.interval))
+        last = int(np.floor((stop + self.phase) / self.interval))
         times = (
             self.interval
             * (
@@ -679,6 +1426,301 @@ class InspectionCurve:
                 + np.arange(pieces)[None, :] / pieces
             )
         ).ravel()
+        if self.phase:
+            times = times - self.phase
+        return times[(times >= start) & (times <= stop)]
+
+
+class PartialTestCurve:
+    """A unit with hidden failures, a constant failure ``rate``, and instant
+    tests and repair, from new, whose tests can miss a failure: tested in
+    full at ``offset`` (at 0, as new, with none) and at every ``per_full``
+    tests after it, and every ``interval`` in between by a test that finds
+    a failure with probability ``coverage`` (below 1). Up with probability
+    ``exp(-rate * x)`` before its first test, then ``rho ** k * exp(-rate *
+    u)``, ``k`` the tests since the last full one and ``u`` the time since
+    the last, ``rho = 1 - (1 - coverage) * (1 - exp(-rate * interval))``
+    (see ``RepairableRBD._tested_profile``). It repeats every full test's
+    interval from its first test."""
+
+    def __init__(
+        self,
+        rate: float,
+        interval: float,
+        offset: float,
+        coverage: float,
+        per_full: int,
+    ):
+        self.rate = rate
+        self.interval = interval
+        self.offset = float(offset)
+        self.coverage = coverage
+        self.per_full = per_full
+        self.period = interval * per_full
+        self.settle = self.offset
+        missed = (1.0 - coverage) * -np.expm1(-rate * interval)
+        #: log(rho).
+        self.kept = float(np.log1p(-missed))
+        #: The expected failures over a full test's cycle, all found by its
+        #: end: (1 - rho ** per_full) / (1 - coverage).
+        self.per_cycle = float(-np.expm1(per_full * self.kept)) / (
+            1.0 - coverage
+        )
+
+    def _position(self, x: np.ndarray):
+        """For times ``x`` from the first test on: the full tests' cycles
+        since it, the tests since the last full one, and the time since
+        the last test."""
+        since = x - self.offset
+        cycles = np.floor(since / self.period)
+        within = since - cycles * self.period
+        tests = np.clip(np.floor(within / self.interval), 0, self.per_full - 1)
+        return cycles, tests, within - tests * self.interval
+
+    def at(self, x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, dtype=float)
+        _, tests, since = self._position(np.maximum(x, self.offset))
+        later = np.exp(tests * self.kept - self.rate * since)
+        return np.where(x < self.offset, np.exp(-self.rate * x), later)
+
+    def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
+        """The unit's expected events before each time ``x`` (see
+        ``GridCurve.events``): its hidden failures (before the first test,
+        at most one, which it finds; then, between two tests, at most one
+        for a unit up after the first, ``rho ** j (1 - exp(-rate * u))``);
+        the tests; and the failures they find, each repaired then: a
+        failure in a cycle is found by its next test with probability
+        ``coverage``, else by the full test that ends the cycle, so the
+        ``j``-th test of a cycle finds ``coverage * rho ** (j - 1) * (1 -
+        exp(-rate * interval))`` and the full test the rest."""
+        x = np.asarray(x, dtype=float)
+        c = self.coverage
+        after = x > self.offset
+        head = -np.expm1(-self.rate * np.minimum(x, self.offset))
+        cycles, tests, since = self._position(np.maximum(x, self.offset))
+        # Up after the k-th test with probability rho ** k: the failures in
+        # its first k intervals, sum_j rho ** j (1 - e), are
+        # (1 - rho ** k) / (1 - c).
+        within = -np.expm1(tests * self.kept) / (1.0 - c) + np.exp(
+            tests * self.kept
+        ) * -np.expm1(-self.rate * since)
+        failures = head + np.where(
+            after, cycles * self.per_cycle + within, 0.0
+        )
+        later = multiples_before(x - self.offset, self.interval)
+        whole, rest = np.divmod(later, self.per_full)
+        found = whole * self.per_cycle + c * -np.expm1(rest * self.kept) / (
+            1.0 - c
+        )
+        corrective = np.where(after, head + found, 0.0)
+        inspections = later + (after if self.offset else 0.0)
+        return _events(
+            failures, corrective=corrective, inspections=inspections
+        )
+
+    def atoms(self, stop: float) -> Atoms:
+        """None: a test, in no time, takes nothing down."""
+        return Atoms.none()
+
+    def knots(self, start: float, stop: float) -> np.ndarray:
+        """The tests in ``[start, stop]``, and times between them close
+        enough (``rate`` times the gap at most 1/4) for quadrature to be
+        exact to rounding (before the first test too)."""
+        pieces = max(1, int(np.ceil(4.0 * self.rate * self.interval)))
+        first = int(np.floor((start - self.offset) / self.interval))
+        last = int(np.floor((stop - self.offset) / self.interval))
+        times = (
+            self.offset
+            + self.interval
+            * (
+                np.arange(first, last + 1)[:, None]
+                + np.arange(pieces)[None, :] / pieces
+            )
+        ).ravel()
+        return times[(times >= start) & (times <= stop)]
+
+
+class SteadyCurve:
+    """A unit in its long-run state from 0 (a stationary start, for a unit
+    long in service whose state is not known): up with its long-run
+    ``availability`` throughout, its failures and preventive maintenance
+    at their long-run rates (taking it down, with ``takedown``), and a
+    degrading unit in each stage with its long-run share of its up time,
+    ``fractions``."""
+
+    settle = 0.0
+    period = None
+
+    def __init__(
+        self,
+        availability: float,
+        failure_rate: float = 0.0,
+        preventive_rate: float = 0.0,
+        takedown: bool = False,
+        fractions: Optional[np.ndarray] = None,
+    ):
+        self.availability = float(availability)
+        self.failure_rate = float(failure_rate)
+        self.preventive_rate = float(preventive_rate)
+        self.takedown = takedown
+        self.fractions = fractions
+
+    def at(self, x: np.ndarray) -> np.ndarray:
+        return np.full(np.shape(x), self.availability)
+
+    def knots(self, start: float, stop: float) -> np.ndarray:
+        return np.empty(0)
+
+    def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
+        """The unit's expected events before each time ``x``: at their
+        long-run rates."""
+        x = np.asarray(x, dtype=float)
+        preventive = self.preventive_rate * x
+        return _events(
+            self.failure_rate * x,
+            preventive if self.takedown else None,
+            preventive=preventive,
+        )
+
+    def atoms(self, stop: float) -> Atoms:
+        return Atoms.none()
+
+    def stages_at(self, x: np.ndarray) -> np.ndarray:
+        assert self.fractions is not None, "the unit has no stages"
+        return self.fractions[:, None] * self.at(np.atleast_1d(x))[None, :]
+
+
+class ShiftedCurve:
+    """A unit on a calendar in its long-run state, ``shift`` into ``curve``
+    (one settled into repeating with its ``period``): from new, then far
+    enough on for its long-run cycle, and on to the phase of its
+    calendar. A time within rounding (1e-9 of the period) of a scheduled
+    time is that time, so that the events there fall where the curve
+    says."""
+
+    def __init__(self, curve, shift: float):
+        self.curve = curve
+        self.shift = float(shift)
+        self.period = curve.period
+        # It repeats from the start, unless the start is itself one of its
+        # scheduled times: that time's events are past, so the first period
+        # is not like the later ones, and it repeats from the second.
+        self.settle = 0.0
+        if self.period and self._past().times.size:
+            self.settle = float(self.period)
+
+    def _position(self, x) -> np.ndarray:
+        position = np.asarray(x, dtype=float) + self.shift
+        if self.period:
+            k = np.round(position / self.period)
+            near = np.abs(position - k * self.period) <= 1e-9 * self.period
+            position = np.where(near, k * self.period, position)
+        return position
+
+    def at(self, x: np.ndarray) -> np.ndarray:
+        return self.curve.at(self._position(x))
+
+    def knots(self, start: float, stop: float) -> np.ndarray:
+        times = self.curve.knots(start + self.shift, stop + self.shift)
+        times = times - self.shift
+        return times[(times >= start) & (times <= stop)]
+
+    def _past(self) -> Atoms:
+        """The curve's events at the start itself, which are past (the
+        replacement just done, at the phase's 0)."""
+        start = float(self._position(0.0))
+        atoms = self.curve.atoms(np.nextafter(start, np.inf))
+        keep = atoms.times == start
+        return Atoms(*(column[keep] for column in atoms))
+
+    def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
+        """The unit's expected events before each time ``x``: the curve's
+        from the shift on, less those at the start itself, which are past
+        (none before a time that is the start, to rounding)."""
+        position = self._position(np.asarray(x, dtype=float))
+        begin = float(self._position(0.0))
+        later = self.curve.events(position)
+        start = self.curve.events(np.array([begin]))
+        past = self._past()
+        taken = {
+            "failures": past.failure.sum(),
+            "planned": past.planned.sum(),
+            "corrective": past.failure.sum(),
+            "preventive": past.preventive.sum(),
+            "inspections": 0.0,
+        }
+        after = position > begin
+        return {
+            key: np.where(after, later[key] - start[key][0] - taken[key], 0.0)
+            for key in later
+        }
+
+    def atoms(self, stop: float) -> Atoms:
+        start = float(self._position(0.0))
+        atoms = self.curve.atoms(float(self._position(stop)))
+        keep = atoms.times > start
+        kept = [column[keep] for column in atoms]
+        kept[0] = kept[0] - self.shift
+        return Atoms(*kept)
+
+
+class StartedBlockCurve:
+    """A unit under block replacement started from a state: ``head``, its
+    own curve up to its first block time, ``length`` after the start, and
+    then ``tail``, the block-replacement curve from there (a ``BlockCurve``
+    started after the head; see ``_block_replacement.BlockHead``)."""
+
+    def __init__(self, head, tail, length: float):
+        self.head = head
+        self.tail = tail
+        self.length = float(length)
+        self.settle = self.length + tail.settle
+        self.period = tail.period
+
+    def at(self, x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, dtype=float)
+        before = x < self.length
+        out = np.empty(x.shape)
+        if before.any():
+            out[before] = self.head.at(x[before])
+        if (~before).any():
+            out[~before] = self.tail.at(x[~before] - self.length)
+        return out
+
+    def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
+        """The unit's expected events before each time ``x``: the head's,
+        to its end, and the tail's after it."""
+        x = np.asarray(x, dtype=float)
+        head = self.head.events(np.minimum(x, self.length))
+        after = x > self.length
+        if not after.any():
+            return head
+        tail = self.tail.events(np.maximum(x - self.length, 0.0))
+        return {
+            key: head[key] + np.where(after, tail[key], 0.0) for key in head
+        }
+
+    def atoms(self, stop: float) -> Atoms:
+        head = self.head.atoms(min(stop, self.length))
+        if stop <= self.length:
+            return head
+        tail = self.tail.atoms(stop - self.length)
+        return Atoms(
+            np.concatenate([head.times, tail.times + self.length]),
+            *(
+                np.concatenate([mine, theirs])
+                for mine, theirs in zip(head[1:], tail[1:])
+            ),
+        )
+
+    def knots(self, start: float, stop: float) -> np.ndarray:
+        parts = [self.head.knots(start, min(stop, self.length))]
+        if stop >= self.length:
+            later = self.tail.knots(
+                max(start - self.length, 0.0), stop - self.length
+            )
+            parts += [np.array([self.length]), later + self.length]
+        times = np.concatenate(parts)
         return times[(times >= start) & (times <= stop)]
 
 
@@ -695,6 +1737,20 @@ class SystemCurve:
 
     def at(self, x: np.ndarray) -> np.ndarray:
         return self.rbd._curves_at(self.curves, x, set(), set(), "p")
+
+    def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
+        """The nested RBD's expected failures and planned outages before
+        each time ``x`` (see ``RepairableRBD._window_counts``): its own
+        maintenance is not this RBD's to count."""
+        counts = self.rbd._window_counts(
+            self.curves, np.asarray(x, dtype=float), set(), set(), "p"
+        )
+        return _events(counts["failures"], counts["planned"])
+
+    def atoms(self, stop: float) -> Atoms:
+        """The nested RBD's failures and planned outages at exact times
+        before ``stop`` (see ``RepairableRBD._atom_groups``)."""
+        return self.rbd._system_atoms(self.curves, stop)
 
     def knots(self, start: float, stop: float) -> np.ndarray:
         parts = [curve.knots(start, stop) for curve in self.curves.values()]

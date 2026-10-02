@@ -24,8 +24,10 @@ def test_rbd_mean_time_to_failure_series():
             "b": Exponential.from_params([0.02]),
         },
     )
+    assert rbd.mean() == pytest.approx(1 / 0.03, rel=1e-12)
     np.random.seed(0)
-    assert rbd.mean(mc_samples=20_000) == pytest.approx(1 / 0.03, rel=5e-2)
+    simulated = rbd.mean(method="simulate", mc_samples=20_000)
+    assert simulated == pytest.approx(1 / 0.03, rel=5e-2)
 
 
 # Check components are correct lengths
@@ -135,7 +137,9 @@ def test_an_invalid_on_infeasible_rbd_is_rejected_on_a_valid_diagram(cls):
 
 
 def test_structure_warning():
-    with pytest.warns(UserWarning, match="^Structural Errors in RBD"):
+    with pytest.warns(
+        UserWarning, match="^RBD not correctly structured:\n.*'b', 's'"
+    ):
         NonRepairableRBD(
             [("s", "a"), ("a", "t"), ("b", "t")],
             {

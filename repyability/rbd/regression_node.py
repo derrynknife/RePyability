@@ -106,7 +106,7 @@ class RegressionNode:
     A component always run at load 1:
 
     >>> node = RegressionNode(model, covariates=[1.0])
-    >>> round(float(node.sf(100.0)[0]), 4)  # exp(-100 / 100)
+    >>> round(float(node.sf(100.0)), 4)  # exp(-100 / 100)
     0.3679
     >>> round(node.mean(), 1)
     100.0
@@ -117,7 +117,7 @@ class RegressionNode:
     ...     [0, 50], [[1.0], [2.0]]
     ... )
     >>> ramped = RegressionNode(model, schedule=schedule)
-    >>> round(float(ramped.sf(100.0)[0]), 4)  # exp(-50 / 100 - 50 / 25)
+    >>> round(float(ramped.sf(100.0)), 4)  # exp(-50 / 100 - 50 / 25)
     0.0821
     """
 
@@ -140,6 +140,15 @@ class RegressionNode:
             else np.atleast_1d(np.asarray(covariates, dtype=float))
         )
         self.schedule = schedule
+        # A covariate vector of another width than the model was fitted
+        # with: say so directly.
+        fitted = getattr(model, "phi_param_map", None)
+        if self.covariates is not None and isinstance(fitted, dict):
+            if len(self.covariates) != len(fitted):
+                raise ValueError(
+                    f"The model was fitted with {len(fitted)} covariate(s); "
+                    f"covariates has {len(self.covariates)}."
+                )
         # Probe the survival interface so a misuse fails clearly at
         # construction (wrong covariate width, or a surpyval whose sf_tvc
         # cannot evaluate the model's family in schedule mode).
@@ -187,14 +196,23 @@ class RegressionNode:
 
         Returns
         -------
-        numpy.ndarray
-            The probability of surviving beyond each ``x``. Always an
-            array: a scalar ``x`` gives a 1-element array.
+        float or numpy.ndarray
+            The probability of surviving beyond each ``x``: a float for a
+            scalar ``x``, as a surpyval model gives it, and an array for an
+            array.
         """
-        return self._sf_at(np.atleast_1d(np.asarray(x, dtype=float)))
+        out = self._sf_at(np.atleast_1d(np.asarray(x, dtype=float)))
+        return out[0] if np.ndim(x) == 0 else out
 
     def ff(self, x: ArrayLike) -> np.ndarray:
         """Unreliability: ``1 - sf(x)``.
+
+        ``model.ff(x, Z)`` at the fixed covariates, or
+        ``-expm1(-model.Hf_tvc(x, schedule))`` along the schedule: worked
+        out in its own right, so that a small one keeps its precision.
+        Along a schedule that is the precision of the model's ``Hf_tvc``,
+        which for a proportional-odds model loses it where the cumulative
+        hazard is small (surpyval #528).
 
         Parameters
         ----------
@@ -203,11 +221,18 @@ class RegressionNode:
 
         Returns
         -------
-        numpy.ndarray
-            The probability of failing by each ``x``; always an array, as
-            for ``sf``.
+        float or numpy.ndarray
+            The probability of failing by each ``x``: a float for a scalar
+            ``x``, as for ``sf``.
         """
-        return 1.0 - self.sf(x)
+        scalar = np.ndim(x) == 0
+        x = np.atleast_1d(np.asarray(x, dtype=float))
+        if self.schedule is not None:
+            H = np.asarray(self.model.Hf_tvc(x, self.schedule), dtype=float)
+            out = -np.expm1(-H)
+        else:
+            out = np.asarray(self.model.ff(x, self._Z(len(x))), dtype=float)
+        return out[0] if scalar else out
 
     def _survival_grid(self):
         """A cached ``(t, sf(t))`` grid spanning the bulk of the lifetime.
@@ -396,7 +421,7 @@ class RegressionNode:
         >>> node = RegressionNode(model, covariates=[1.0])
         >>> text = json.dumps(node.to_dict())
         >>> restored = RegressionNode.from_dict(json.loads(text))
-        >>> round(float(restored.sf(100.0)[0]), 4)
+        >>> round(float(restored.sf(100.0)), 4)
         0.3679
         """
         import surpyval

@@ -285,16 +285,20 @@ minimal cut set: a set of components that have all failed. The
 comes through cut sets containing component $i$:
 
 $$
-FV(i) \approx \frac{\sum_{C \ni i} \prod_{j \in C} q_j}{Q}
+FV(i) = \frac{P(\text{some minimal cut set containing } i \text{ has failed})}{Q}
+\approx \frac{\sum_{C \ni i} \prod_{j \in C} q_j}{Q}
 $$
 
-where the sum runs over the minimal cut sets $C$ that contain $i$, and
-$q_j = 1 - p_j$. The example has two minimal cut sets, $\{\text{valve}\}$
-(probability 0.05) and $\{\text{pump1}, \text{pump2}\}$ (probability 0.01):
+where $q_j = 1 - p_j$. The approximation is the rare-event one of
+[Lesson 3](structure.md): the sum over the minimal cut sets $C$ that contain
+$i$ counts the failures of two of them at once twice. The example has two
+minimal cut sets, $\{\text{valve}\}$ (probability 0.05) and
+$\{\text{pump1}, \text{pump2}\}$ (probability 0.01), and each component
+is in one of them, so here the two agree:
 
 $$
-FV(\text{valve}) \approx \frac{0.05}{0.0595} = 0.840, \qquad
-FV(\text{pump1}) \approx \frac{0.01}{0.0595} = 0.168.
+FV(\text{valve}) = \frac{0.05}{0.0595} = 0.840, \qquad
+FV(\text{pump1}) = \frac{0.01}{0.0595} = 0.168.
 $$
 
 ```python
@@ -302,6 +306,11 @@ rbd.fussell_vesely()
 # {'pump1': 0.1681, 'pump2': 0.1681, 'valve': 0.8403}
 rbd.fussell_vesely()["valve"]   # -> 0.8403
 ```
+
+RePyability computes the exact share, which is never more than 1. Many
+safety-analysis tools report the sum, which `method="rare_event"` gives: it
+is close while failures are rare, but where cut sets overlap (a bridge) and
+failure is likely, it can approach 2.
 
 It is close to the failure-oriented criticality, but asks a slightly
 different question: in what fraction of failures did component $i$
@@ -403,10 +412,10 @@ plant.criticality_importance()["C"]   # -> 0.7018
       It is 1 for all of them.
     - **Forgetting time and state.** Rankings change as parts age, and
       differ for a fleet in service from a fleet of new units.
-    - **Forgetting dependence.** All these measures assume components fail
+    - **Forgetting dependence.** These measures take components that fail
       independently. [Lesson 5](dependence.md) shows how common causes break
-      that; RePyability's probability-based measures raise an error on an RBD
-      with common-cause groups rather than give a misleading answer.
+      that; with common-cause groups, RePyability conditions a member's
+      measures on its state through the shared causes (see the [guide](../guide/common-cause.md#importance-sensitivity-uncertainty-and-allocation)).
 
 ## Summary
 

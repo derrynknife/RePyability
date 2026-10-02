@@ -94,6 +94,8 @@ nav:
       - Building an RBD: guide/building.md
       - Fault trees: guide/fault-trees.md
       - Reliability of a system: guide/reliability.md
+      - Phased missions: guide/phased-missions.md
+      - Networks: guide/networks.md
       - Importance measures: guide/importance.md
       - Condition-based evaluation: guide/condition-based.md
       - Redundancy models: guide/redundancy-models.md
@@ -101,8 +103,11 @@ nav:
       - Repairable systems: guide/repairable.md
       - System capacity: guide/capacity.md
       - Costs: guide/costs.md
+      - Spares: guide/spares.md
       - Design and allocation: guide/design.md
       - Maintenance policies: guide/maintenance.md
+      - Demonstration testing: guide/demonstration.md
+      - Timelines: guide/timelines.md
       - Simulation precision and speed: guide/simulation.md
       - Saving, reproducibility and performance: guide/saving.md
   - Concepts: concepts.md

@@ -121,6 +121,13 @@ module = [
 ]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+# numba ships type information but sets some attributes at run time
+# (numba.config.NUMBA_NUM_THREADS), and CI's lint job doesn't install it:
+# check it as untyped whether it is installed or not.
+module = ['numba', 'numba.*']
+follow_imports = 'skip'
+
 # Coverage
 [tool.coverage.run]
 source = ["repyability"]

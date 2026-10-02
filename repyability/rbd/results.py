@@ -76,6 +76,9 @@ class ConfidenceInterval(_ResultMapping):
         The standard error of the estimate.
     n_samples : int
         The number of Monte-Carlo samples the estimate was computed from.
+    method : str, optional
+        How the estimate was simulated, where the method chooses
+        (``NonRepairableRBD.unreliability_interval``); None otherwise.
 
     Examples
     --------
@@ -103,6 +106,153 @@ class ConfidenceInterval(_ResultMapping):
     confidence: float
     standard_error: float
     n_samples: int
+    method: Optional[str] = None
+
+
+@dataclass
+class ControlVariate(_ResultMapping):
+    """The exact twin a simulation run was controlled by (#154), with
+    ``RepairableRBD.availability``'s or ``cost``'s ``control_variate``.
+
+    The twin is the system with its components failing and repaired
+    independently: the same diagram, components and models, without what
+    ties them together (a limit on repair crews, maintenance groups) or
+    what the exact methods over time do not take (a standby group's
+    switching, its units then operating together; imperfect repair;
+    replacement on condition; inspections they do not take), so that its
+    expected values over the window are exact. It is simulated alongside
+    the system with common random numbers (each of its streams draws what
+    the system's stream of the same name draws), so its values move with
+    the system's, and its error against its exact value shows how far the
+    system's own mean is off. Each simulation's controlled value is ``x -
+    coefficient * (twin - exact)``: their mean estimates the system's mean
+    without bias (but for the coefficient's coming from the same run, an
+    error of order ``1 / n``), with ``1 - correlation**2`` times the
+    variance of the plain mean.
+
+    Attributes
+    ----------
+    twin : numpy.ndarray
+        The twin's value in each simulation, in order: its fraction of the
+        window up, or its cost.
+    exact : float
+        The twin's exact expected value over the window
+        (``mission_availability``, or ``expected_cost``'s mean).
+    coefficient : float
+        The multiple of the twin's error taken off: ``cov(x, twin) /
+        var(twin)`` over the run (over antithetic pairs' means, for an
+        antithetic run), the one that leaves the least variance.
+    correlation : float
+        The correlation of the system's values with the twin's, over the
+        same.
+
+    Examples
+    --------
+    Four simulations whose twin was up 96.5% of the time on average,
+    where its exact mean is 95%: the system's own mean, 95.25%, is taken
+    down by about as much.
+
+    >>> import numpy as np
+    >>> from repyability import ControlVariate
+    >>> x = np.array([0.90, 0.95, 0.99, 0.97])
+    >>> twin = np.array([0.92, 0.96, 1.00, 0.98])
+    >>> control = ControlVariate.of(x, twin, exact=0.95)
+    >>> round(control.coefficient, 4), round(control.correlation, 4)
+    (1.1286, 0.9981)
+    >>> round(float(control.controlled(x).mean()), 4)
+    0.9356
+    >>> round(control.variance_reduction)
+    261
+    """
+
+    twin: np.ndarray
+    exact: float
+    coefficient: float
+    correlation: float
+
+    @classmethod
+    def of(
+        cls, values, twin, exact: float, antithetic: bool = False
+    ) -> "ControlVariate":
+        """The control of a run whose simulations gave ``values``, by a
+        twin that gave ``twin`` (in the same order) and whose exact mean is
+        ``exact``.
+
+        Parameters
+        ----------
+        values : array_like
+            The system's value in each simulation.
+        twin : array_like
+            The twin's value in each simulation.
+        exact : float
+            The twin's exact expected value.
+        antithetic : bool, optional
+            Whether the simulations come in antithetic pairs, by default
+            False: the coefficient is then worked out from the pairs'
+            means.
+
+        Returns
+        -------
+        ControlVariate
+            The twin's values, its exact value, the coefficient and the
+            correlation.
+        """
+        x = np.asarray(values, dtype=float)
+        y = np.asarray(twin, dtype=float)
+        if antithetic and len(x) % 2 == 0:
+            x = x.reshape(-1, 2).mean(axis=1)
+            y_fit = y.reshape(-1, 2).mean(axis=1)
+        else:
+            y_fit = y
+        coefficient = correlation = 0.0
+        if len(x) > 1:
+            covariance = np.cov(x, y_fit)
+            if covariance[1, 1] > 0.0:
+                coefficient = float(covariance[0, 1] / covariance[1, 1])
+                if covariance[0, 0] > 0.0:
+                    correlation = float(
+                        covariance[0, 1]
+                        / np.sqrt(covariance[0, 0] * covariance[1, 1])
+                    )
+        return cls(
+            twin=y,
+            exact=float(exact),
+            coefficient=coefficient,
+            correlation=correlation,
+        )
+
+    def controlled(self, values) -> np.ndarray:
+        """The controlled values of the simulations whose own ``values``
+        (in the same order as the twin's) these were.
+
+        Parameters
+        ----------
+        values : array_like
+            The system's value in each simulation.
+
+        Returns
+        -------
+        numpy.ndarray
+            ``values - coefficient * (twin - exact)``.
+        """
+        return np.asarray(values, dtype=float) - self.coefficient * (
+            self.twin - self.exact
+        )
+
+    @property
+    def variance_reduction(self) -> float:
+        """How many times as many plain simulations the controlled estimate
+        is worth: ``1 / (1 - correlation**2)``, the plain mean's variance
+        over the controlled mean's (infinite for a twin that is the system
+        itself).
+
+        Returns
+        -------
+        float
+            The factor.
+        """
+        left = 1.0 - self.correlation**2
+        return 1.0 / left if left > 0.0 else float("inf")
 
 
 @dataclass
@@ -264,7 +414,7 @@ class UpDownImportance(_ResultMapping):
     ...     [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
     ...     {"a": unit, "b": unit},
     ... )
-    >>> result = rbd.availability(t_simulation=50, N=200, seed=0)
+    >>> result = rbd.availability(t_simulation=50, mc_samples=200, seed=0)
     >>> oci = result.criticalities.operational_criticality_index
     >>> {node: round(float(v), 4) for node, v in oci.down.items()}
     {'a': 1.0, 'b': 1.0}
@@ -306,7 +456,7 @@ class FailureCriticalityIndex(_ResultMapping):
     >>> rbd = RepairableRBD(
     ...     [("s", "a"), ("a", "b"), ("b", "t")], {"a": unit, "b": unit}
     ... )
-    >>> result = rbd.availability(t_simulation=50, N=200, seed=0)
+    >>> result = rbd.availability(t_simulation=50, mc_samples=200, seed=0)
     >>> fci = result.criticalities.failure_criticality_index
     >>> round(sum(fci.per_system_failure.values()), 4)
     1.0
@@ -357,7 +507,7 @@ class RestorationCriticalityIndex(_ResultMapping):
     ...     [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
     ...     {"a": unit, "b": unit},
     ... )
-    >>> result = rbd.availability(t_simulation=50, N=200, seed=0)
+    >>> result = rbd.availability(t_simulation=50, mc_samples=200, seed=0)
     >>> share = result.criticalities.restoration_criticality_index.by_system
     >>> {node: round(share[node], 1) for node in sorted(share)}
     {'a': 0.5, 'b': 0.5}
@@ -420,7 +570,8 @@ class Criticalities(_ResultMapping):
     >>> rbd = RepairableRBD(
     ...     [("s", "a"), ("a", "b"), ("b", "t")], {"a": unit, "b": unit}
     ... )
-    >>> crit = rbd.availability(t_simulation=50, N=200, seed=0).criticalities
+    >>> result = rbd.availability(t_simulation=50, mc_samples=200, seed=0)
+    >>> crit = result.criticalities
 
     In series the system is up only while every node is up, but each node
     is down for only about half of the system's down time:
@@ -475,8 +626,9 @@ class CostResult(_ResultMapping):
         Mean per-replication cost split into ``"repair"`` and ``"replace"``
         (both charged per failure; for a hidden failure, when an inspection
         finds it), ``"preventive"`` (charged per preventive replacement),
-        ``"inspection"`` (charged per inspection), ``"component_downtime"``
-        and ``"system_downtime"``. The six sum to ``mean``.
+        ``"inspection"`` (charged per inspection), ``"component_downtime"``,
+        ``"system_downtime"`` and ``"setup"`` (a maintenance group's set-up
+        cost, charged once per stop). The seven sum to ``mean``.
     by_component : dict
         Mean per-replication cost attributable to each costed component (its
         repair, replace, preventive, inspection and own downtime cost; the
@@ -493,6 +645,12 @@ class CostResult(_ResultMapping):
         default False. Each sample is still a correct draw of a window's
         cost, but only the pairs are independent, so ``mean_se`` and
         ``mean_interval`` are worked out from the pairs' means.
+    control_variate : ControlVariate, optional
+        The exact twin the run was controlled by, with ``control_variate=
+        True`` (see [`ControlVariate`][repyability.ControlVariate]):
+        ``mean_interval`` is then the controlled estimate's, while
+        ``samples``, ``mean`` and the breakdowns stay the simulations' own.
+        None otherwise.
 
     Examples
     --------
@@ -512,7 +670,7 @@ class CostResult(_ResultMapping):
     ...     },
     ...     downtime_cost_rate=50.0,
     ... )
-    >>> result = rbd.cost(t_simulation=100.0, N=200, seed=0)
+    >>> result = rbd.cost(t_simulation=100.0, mc_samples=200, seed=0)
     >>> round(result.mean, 2), round(result.std, 2)
     (1354.77, 429.75)
     >>> round(result.by_category["repair"], 2)  # 100 per failure
@@ -531,6 +689,7 @@ class CostResult(_ResultMapping):
     by_component: Dict[Hashable, float]
     acquisition_cost: float = 0.0
     antithetic: bool = False
+    control_variate: Optional[ControlVariate] = None
 
     @property
     def mean(self) -> float:
@@ -584,8 +743,11 @@ class CostResult(_ResultMapping):
         with standard error ``mean_se``, from which the interval
         ``mean +/- z * mean_se`` is built, for the normal quantile ``z`` of
         ``confidence``; the lower bound is clipped at 0. Use it to judge
-        whether ``N`` was large enough; for the range a single window's cost
-        could fall in, use ``percentile`` instead.
+        whether ``mc_samples`` was large enough; for the range a single
+        window's cost could fall in, use ``percentile`` instead. With a
+        ``control_variate``, the estimate and its standard error are the
+        controlled values' (see
+        [`ControlVariate`][repyability.ControlVariate]).
 
         Parameters
         ----------
@@ -604,8 +766,13 @@ class CostResult(_ResultMapping):
         """
         if not 0.0 < confidence < 1.0:
             raise ValueError("confidence must be between 0 and 1.")
-        estimate = self.mean
-        standard_error = self.mean_se
+        if self.control_variate is None:
+            estimate = self.mean
+            standard_error = self.mean_se
+        else:
+            values = self.control_variate.controlled(self.samples)
+            estimate = float(np.mean(values))
+            standard_error = montecarlo.standard_error(values, self.antithetic)
         z = float(ndtri(0.5 + confidence / 2.0))
         return ConfidenceInterval(
             estimate=estimate,
@@ -655,6 +822,175 @@ class CostResult(_ResultMapping):
             If ``q`` is outside ``[0, 100]``.
         """
         return float(np.percentile(self.samples, q))
+
+
+@dataclass
+class ExpectedEvents(_ResultMapping):
+    """What a system is expected to do over a window from new: returned by
+    ``RepairableRBD.expected_events``.
+
+    Every value is exact (numerical, with no simulation): the mean of what
+    ``RepairableRBD.availability`` counts in each simulation of the window,
+    and divides by ``n_simulations``. Events at the window's end itself
+    fall outside it, as in the simulation. Each value is a float for one
+    window, or an array in the shape of the windows given.
+
+    Attributes
+    ----------
+    window : float or numpy.ndarray
+        The window's length, from new.
+    system_failures : float or numpy.ndarray
+        The expected number of system failures in the window (changes from
+        up to down caused by a failure, including the zero-length outages
+        an instantly repaired component causes).
+    system_planned_outages : float or numpy.ndarray
+        The expected number of planned outages of the system: changes from
+        up to down caused by preventive maintenance that takes time.
+    system_downtime : float or numpy.ndarray
+        The expected time the system is down in the window,
+        ``window * (1 - mission_availability(window))``.
+    node_failures : dict
+        Each component's expected number of failures (a nested RBD's: its
+        system failures).
+    node_corrective : dict
+        Each component's expected number of corrective actions, at each of
+        which ``repair_cost`` and ``replace_cost`` are charged: its failures,
+        or for hidden failures, those found by a test in the window.
+    node_preventive : dict
+        Each component's expected number of preventive replacements (age or
+        block), at each of which its preventive cost is charged.
+    node_inspections : dict
+        Each component's expected number of tests (of hidden failures).
+    node_downtime : dict
+        Each component's expected time down in the window.
+
+    Examples
+    --------
+    One component with failure rate 0.1 and repair rate 1, over 10 time
+    units, fails ``0.1 * (10 / 1.1 + 0.1 / 1.1 ** 2 * (1 - exp(-11)))``
+    times on average:
+
+    >>> import surpyval as surv
+    >>> from repyability import RepairableRBD
+    >>> rbd = RepairableRBD(
+    ...     [("s", "c"), ("c", "t")],
+    ...     {
+    ...         "c": {
+    ...             "reliability": surv.Exponential.from_params([0.1]),
+    ...             "repairability": surv.Exponential.from_params([1.0]),
+    ...         }
+    ...     },
+    ... )
+    >>> window = rbd.expected_events(10.0)
+    >>> round(window.system_failures, 4)
+    0.9174
+    >>> round(window.node_downtime["c"], 3)
+    0.826
+    """
+
+    window: Any
+    system_failures: Any
+    system_planned_outages: Any
+    system_downtime: Any
+    node_failures: Dict[Hashable, Any]
+    node_corrective: Dict[Hashable, Any]
+    node_preventive: Dict[Hashable, Any]
+    node_inspections: Dict[Hashable, Any]
+    node_downtime: Dict[Hashable, Any]
+
+
+@dataclass
+class ExpectedCost(_ResultMapping):
+    """The expected cost of running a system over a window from new:
+    returned by ``RepairableRBD.expected_cost``.
+
+    Exact (numerical, with no simulation): the mean that
+    ``RepairableRBD.cost`` estimates, by the same categories, from each
+    category's expected events (see
+    [`ExpectedEvents`][repyability.ExpectedEvents]) times its mean cost,
+    and the expected downtimes times their rates. Each value is a float for
+    one window, or an array in the shape of the windows given.
+
+    Attributes
+    ----------
+    window : float or numpy.ndarray
+        The window's length, from new.
+    mean : float or numpy.ndarray
+        The expected running cost of the window: the sum of
+        ``by_category``.
+    by_category : dict
+        The expected cost of ``"repair"`` and ``"replace"`` (per corrective
+        action), ``"preventive"`` (per preventive replacement),
+        ``"inspection"`` (per test), ``"component_downtime"``,
+        ``"system_downtime"`` and ``"setup"`` (once per stop of a
+        maintenance group), as in ``CostResult``.
+    by_component : dict
+        The expected cost attributable to each costed component (its
+        repair, replace, preventive, inspection and own downtime cost).
+    acquisition_cost : float
+        The one-off cost of buying the components, not in ``mean``.
+
+    Examples
+    --------
+    One component with MTTF 10 and MTTR 1, at 100 per repair, and 50 per
+    unit time of system downtime, over 100 time units:
+
+    >>> import surpyval as surv
+    >>> from repyability import RepairableRBD
+    >>> rbd = RepairableRBD(
+    ...     [("s", "c"), ("c", "t")],
+    ...     {
+    ...         "c": {
+    ...             "reliability": surv.Exponential.from_params([0.1]),
+    ...             "repairability": surv.Exponential.from_params([1.0]),
+    ...             "repair_cost": 100.0,
+    ...         }
+    ...     },
+    ...     downtime_cost_rate=50.0,
+    ... )
+    >>> cost = rbd.expected_cost(100.0)
+    >>> round(cost.mean, 2)  # cost() simulates about this, with its spread
+    1360.33
+    >>> round(cost.by_category["repair"], 2)  # 100 per failure
+    909.92
+    >>> round(cost.by_category["system_downtime"], 2)  # 50 per unit down
+    450.41
+    >>> round(cost.cost_rate, 2), round(rbd.expected_cost_rate(), 2)
+    (13.6, 13.64)
+    """
+
+    window: Any
+    mean: Any
+    by_category: Dict[str, Any]
+    by_component: Dict[Hashable, Any]
+    acquisition_cost: float = 0.0
+
+    @property
+    def total(self) -> Any:
+        """The cost of owning the system for the window from new:
+        ``acquisition_cost + mean``.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The total cost for each window.
+        """
+        return self.acquisition_cost + self.mean
+
+    @property
+    def cost_rate(self) -> Any:
+        """The mean cost per unit time over the window, ``mean / window``
+        (nan for a window of 0); it approaches
+        ``RepairableRBD.expected_cost_rate()`` as the window grows.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The cost rate for each window.
+        """
+        with np.errstate(invalid="ignore", divide="ignore"):
+            rate = np.divide(self.mean, self.window)
+        return float(rate) if np.ndim(rate) == 0 else rate
 
 
 @dataclass
@@ -1092,12 +1428,17 @@ class AvailabilityResult(_ResultMapping):
     timeline : numpy.ndarray
         Event times at which the (mean) system availability changes: 0,
         every time at which some simulated system changed state, and
-        ``time_simulated_to``, in increasing order.
+        ``time_simulated_to``, in increasing order. With ``curve_points``
+        (see ``RepairableRBD.availability``), the grid's times instead:
+        ``time_simulated_to * k / curve_points`` for ``k`` from 0.
     availability : numpy.ndarray
         Mean system availability at each time in ``timeline``: the fraction
         of the simulated systems that are up from that time until the next
         (the estimated point availability). The last value, at
-        ``time_simulated_to``, repeats the one before it.
+        ``time_simulated_to``, repeats the one before it. On a grid
+        (``curve_points``), the fraction up at each grid time (from just
+        after any change there), which the full curve takes there too; it
+        may change between grid times.
     system_uptime : float
         Total system uptime summed over all simulations.
     time_simulated_to : float
@@ -1120,7 +1461,7 @@ class AvailabilityResult(_ResultMapping):
         Number of system restorations observed across all simulations
         (changes from down to up, after a failure or a planned outage).
     n_simulations : int
-        The number of simulations run (``N``).
+        The number of simulations run (``mc_samples``).
     cost : CostResult, optional
         The simulated cost distribution, when the RBD declares any costs;
         ``None`` when nothing is priced (no cost model to run).
@@ -1157,6 +1498,16 @@ class AvailabilityResult(_ResultMapping):
         Each simulation's delivered fraction, in order: the integral of
         ``min(capacity, demand)`` over the window, over ``demand`` times
         its length. None without a demand.
+    opportunistic_renewals : dict, optional
+        With maintenance groups (see ``RepairableRBD``): each component's
+        early renewals at another's stop, summed over the simulations.
+        None without groups.
+    control_variate : ControlVariate, optional
+        The exact twin the run was controlled by, with ``control_variate=
+        True`` (see [`ControlVariate`][repyability.ControlVariate]):
+        ``mean_availability_interval`` is then the controlled estimate's,
+        while everything else (``uptimes``, the curve, the totals) stays
+        the simulations' own. None otherwise.
 
     Examples
     --------
@@ -1171,7 +1522,7 @@ class AvailabilityResult(_ResultMapping):
     ...         }
     ...     },
     ... )
-    >>> result = rbd.availability(t_simulation=50, N=200, seed=0)
+    >>> result = rbd.availability(t_simulation=50, mc_samples=200, seed=0)
     >>> float(result.availability[0])  # every simulation starts up
     1.0
     >>> window = result.n_simulations * result.time_simulated_to
@@ -1205,6 +1556,8 @@ class AvailabilityResult(_ResultMapping):
     capacity_time: Optional[Dict[float, float]] = None
     demand: Optional[float] = None
     delivered: Optional[np.ndarray] = None
+    opportunistic_renewals: Optional[Dict[Hashable, int]] = None
+    control_variate: Optional[ControlVariate] = None
 
     @property
     def mean_capacity(self) -> Optional[float]:
@@ -1305,6 +1658,8 @@ class AvailabilityResult(_ResultMapping):
         ``estimate +/- z * standard_error`` is built, clipped to [0, 1]. It
         describes the simulation error, and narrows like ``1 / sqrt(n)``;
         ``availability(tolerance=...)`` runs until it is narrow enough.
+        With a ``control_variate``, the fractions are the controlled ones
+        (see [`ControlVariate`][repyability.ControlVariate]).
 
         Parameters
         ----------
@@ -1332,6 +1687,8 @@ class AvailabilityResult(_ResultMapping):
         fractions = np.asarray(self.uptimes, dtype=float) / (
             self.time_simulated_to
         )
+        if self.control_variate is not None:
+            fractions = self.control_variate.controlled(fractions)
         estimate = float(np.mean(fractions))
         se = montecarlo.standard_error(fractions, self.antithetic)
         z = montecarlo.z_value(confidence)
@@ -1462,4 +1819,366 @@ class AvailabilityResult(_ResultMapping):
         """
         return self.system_failures / (
             self.n_simulations * self.time_simulated_to
+        )
+
+
+@dataclass
+class SparesDemand(_ResultMapping):
+    """How many spares a component uses over a horizon: the distribution of
+    its replacements, from new, for one system or a fleet of them.
+
+    Returned (one per component) by ``RepairableRBD.spares_demand``. A
+    component uses a spare at each failure and each preventive replacement
+    (a standby group, at each of its units' failures). Like the other result
+    types it is also a read-only mapping of its fields.
+
+    Attributes
+    ----------
+    probabilities : numpy.ndarray
+        The probability of each number of replacements, ``0, 1, 2, ...``;
+        they sum to 1 (up to a tail below about 1e-12).
+    horizon : float
+        The time they are counted over, from new.
+    fleet : int
+        How many systems use them, each from new.
+    method : str
+        ``"exact"``, worked out to about 1e-6, or ``"simulate"``, the
+        fractions of simulations.
+
+    Examples
+    --------
+    A component with a constant failure rate of 0.01, replaced in no time,
+    uses a Poisson number of spares, 10 on average in 1,000 hours:
+
+    >>> import surpyval as surv
+    >>> from repyability import RepairableRBD
+    >>> rbd = RepairableRBD(
+    ...     [("s", "pump"), ("pump", "t")],
+    ...     {
+    ...         "pump": {
+    ...             "reliability": surv.Exponential.from_params([0.01]),
+    ...             "repairability": "instant",
+    ...         }
+    ...     },
+    ... )
+    >>> demand = rbd.spares_demand(1000.0)["pump"]
+    >>> round(demand.mean(), 4)
+    10.0
+    >>> demand.stock(0.95)  # covers the 1,000 hours 95% of the time
+    15
+    """
+
+    probabilities: np.ndarray
+    horizon: float
+    fleet: int
+    method: str
+
+    def mean(self) -> float:
+        """The expected number of spares used."""
+        return float(self.probabilities @ np.arange(len(self.probabilities)))
+
+    def std(self) -> float:
+        """The standard deviation of the number of spares used."""
+        counts = np.arange(len(self.probabilities))
+        mean = self.mean()
+        return float(np.sqrt(self.probabilities @ (counts - mean) ** 2))
+
+    def covered(self, stock: int) -> float:
+        """The probability that ``stock`` spares cover the horizon's
+        demand: that it is ``stock`` or fewer.
+
+        Parameters
+        ----------
+        stock : int
+            The spares held, none replenished.
+
+        Returns
+        -------
+        float
+            The probability.
+        """
+        if stock < 0:
+            return 0.0
+        return float(min(self.probabilities[: int(stock) + 1].sum(), 1.0))
+
+    def stock(self, probability: float) -> int:
+        """The fewest spares that cover the horizon's demand with at least
+        ``probability``, none replenished.
+
+        Parameters
+        ----------
+        probability : float
+            The chance of not running out, in ``[0, 1)``.
+
+        Returns
+        -------
+        int
+            The stock.
+
+        Raises
+        ------
+        ValueError
+            If ``probability`` is not in ``[0, 1)``.
+        """
+        if not 0.0 <= probability < 1.0:
+            raise ValueError(
+                f"probability must be in [0, 1), got {probability!r}."
+            )
+        cumulative = np.cumsum(self.probabilities)
+        return int(np.searchsorted(cumulative, probability - 1e-12))
+
+
+@dataclass
+class SparesStock(_ResultMapping):
+    """The stock of a component's spares that meets a target when each
+    spare used is reordered at once and arrives a lead time later
+    (one-for-one, or ``(S - 1, S)``, replenishment), in the long run.
+
+    Returned (one per component) by ``RepairableRBD.spares_stock``. With a
+    stock of ``S``, a spare is on the shelf when fewer than ``S`` are on
+    order: those used in the last lead time. Like the other result types
+    it is also a read-only mapping of its fields.
+
+    Attributes
+    ----------
+    stock : int
+        The fewest spares that meet the targets.
+    fill_rate : float
+        With that stock, the fraction of demands met from the shelf.
+    stockout_probability : float
+        With that stock, the fraction of time none is on the shelf.
+    lead_time : float
+        The time a spare ordered takes to arrive.
+    fleet : int
+        How many systems draw on the stock.
+    on_order : numpy.ndarray
+        The distribution of how many spares are on order at a random time:
+        the demand in a lead time.
+    on_order_at_demand : numpy.ndarray
+        The same, as a demand finds it (not counting itself).
+
+    Examples
+    --------
+    A component with a constant failure rate of 0.01, replaced in no time,
+    and a lead time of 300 hours: the spares on order are Poisson, 3 on
+    average, and 6 on the shelf meet 96.6% of demands:
+
+    >>> import surpyval as surv
+    >>> from repyability import RepairableRBD
+    >>> rbd = RepairableRBD(
+    ...     [("s", "pump"), ("pump", "t")],
+    ...     {
+    ...         "pump": {
+    ...             "reliability": surv.Exponential.from_params([0.01]),
+    ...             "repairability": "instant",
+    ...         }
+    ...     },
+    ... )
+    >>> stock = rbd.spares_stock(300.0, fill_rate=0.95)["pump"]
+    >>> stock.stock
+    7
+    >>> round(stock.fill_rate, 4)
+    0.9665
+    """
+
+    stock: int
+    fill_rate: float
+    stockout_probability: float
+    lead_time: float
+    fleet: int
+    on_order: np.ndarray
+    on_order_at_demand: np.ndarray
+
+    def fill_rate_for(self, stock: int) -> float:
+        """The fraction of demands a stock of ``stock`` meets from the
+        shelf: that a demand finds fewer than ``stock`` on order.
+
+        Parameters
+        ----------
+        stock : int
+            The spares held.
+
+        Returns
+        -------
+        float
+            The fill rate.
+        """
+        if stock <= 0:
+            return 0.0
+        return float(min(self.on_order_at_demand[: int(stock)].sum(), 1.0))
+
+    def stockout_probability_for(self, stock: int) -> float:
+        """The fraction of time a stock of ``stock`` leaves the shelf
+        empty: that ``stock`` or more are on order.
+
+        Parameters
+        ----------
+        stock : int
+            The spares held.
+
+        Returns
+        -------
+        float
+            The stock-out probability.
+        """
+        if stock <= 0:
+            return 1.0
+        return float(max(1.0 - self.on_order[: int(stock)].sum(), 0.0))
+
+
+@dataclass
+class TimelineSimulation(_ResultMapping):
+    """Simulated up/down histories of a repairable system and its
+    components, one per simulation, as timelines.
+
+    Returned by
+    [`RepairableRBD.simulate_timelines`][repyability.RepairableRBD.simulate_timelines].
+    Each [`Timelines`][repyability.Timelines] works out its measures for
+    every simulation at once (``uptime``, ``failures``, ``first_failure``,
+    ``availability_curve()``, ...), indexes to one simulation's
+    [`Timeline`][repyability.Timeline], and merges with others. Like the
+    other result types it is also a read-only mapping of its fields.
+
+    Attributes
+    ----------
+    system : Timelines
+        The system's histories, as the event loop has them: each change's
+        cause is the component whose change made it.
+    components : dict
+        Node -> its [`Timelines`][repyability.Timelines]: each component's
+        histories (a nested RBD's, its own system's; a standby group's, the
+        group's).
+    time_simulated_to : float
+        The window's end.
+    n_simulations : int
+        How many histories each holds.
+    antithetic : bool
+        Whether the simulations came in antithetic pairs.
+    engine : str
+        The engine that made them: ``"python"`` or ``"numba"``.
+    method : str
+        How: ``"event loop"``, recorded by the event loop as it ran them,
+        or ``"streams"``, each component's history drawn straight from its
+        streams and the system's merged from theirs (independent
+        components, on the Python engine). Either way they are the
+        simulations ``availability`` runs with the same seed, with the same
+        histories.
+    start : int
+        The run's simulation the first history is (see ``join``).
+
+    Examples
+    --------
+    >>> import surpyval as surv
+    >>> from repyability import RepairableRBD
+    >>> unit = {
+    ...     "reliability": surv.Weibull.from_params([100, 1.5]),
+    ...     "repairability": surv.Exponential.from_params([0.5]),
+    ... }
+    >>> rbd = RepairableRBD(
+    ...     [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+    ...     {"a": unit, "b": unit},
+    ... )
+    >>> runs = rbd.simulate_timelines(
+    ...     1000.0, mc_samples=500, seed=1, engine="python"
+    ... )
+    >>> runs.method, len(runs.system)
+    ('streams', 500)
+    >>> pair, pump = runs.system.failures, runs.components["a"].failures
+    >>> bool(pair.mean() < pump.mean())
+    True
+
+    Two halves of the run, made apart and joined, are the run:
+
+    >>> halves = [
+    ...     rbd.simulate_timelines(1000.0, mc_samples=250, seed=1, start=s)
+    ...     for s in (0, 250)
+    ... ]
+    >>> TimelineSimulation.join(halves).system == runs.system
+    True
+    """
+
+    system: Any
+    components: Dict[Hashable, Any]
+    time_simulated_to: float
+    n_simulations: int
+    antithetic: bool = False
+    engine: str = "python"
+    method: str = "streams"
+    start: int = 0
+
+    @classmethod
+    def join(cls, parts) -> "TimelineSimulation":
+        """Consecutive ranges of one run's simulations, made apart (with
+        ``simulate_timelines``' ``start``, in other processes or on other
+        machines, say), as the one result of them all.
+
+        Parameters
+        ----------
+        parts : iterable of TimelineSimulation
+            The ranges, in any order: together, simulations ``start`` to
+            ``start + n - 1`` of one run, with no gap.
+
+        Returns
+        -------
+        TimelineSimulation
+            Their histories one after another, from the first range's
+            ``start``. Its ``engine`` and ``method`` are the parts', joined
+            by commas where they differ.
+
+        Raises
+        ------
+        ValueError
+            If there are no parts, or they are not consecutive ranges of a
+            run over one window, with the same components and pairing.
+        """
+        from repyability.timelines import Timelines, _stacked
+
+        ranges = sorted(parts, key=lambda part: part.start)
+        if not ranges:
+            raise ValueError("Give at least one TimelineSimulation to join.")
+        first = ranges[0]
+        nodes = list(first.components)
+        for before, after in zip(ranges, ranges[1:]):
+            if after.start != before.start + before.n_simulations:
+                raise ValueError(
+                    f"The parts are not consecutive: simulations "
+                    f"{before.start} to "
+                    f"{before.start + before.n_simulations - 1} are followed "
+                    f"by {after.start}."
+                )
+        for part in ranges:
+            if (
+                part.time_simulated_to != first.time_simulated_to
+                or part.antithetic != first.antithetic
+                or list(part.components) != nodes
+            ):
+                raise ValueError(
+                    "The parts are not of one run: they differ in their "
+                    "window, components or antithetic pairing."
+                )
+
+        def joined(timelines: list) -> Any:
+            data = [timeline._data for timeline in timelines]
+            return Timelines._from_data(
+                _stacked(data, data[0].leaves, first.time_simulated_to),
+                timelines[0].name,
+            )
+
+        def names(field: str) -> str:
+            return ", ".join(
+                dict.fromkeys(getattr(part, field) for part in ranges)
+            )
+
+        return cls(
+            system=joined([part.system for part in ranges]),
+            components={
+                node: joined([part.components[node] for part in ranges])
+                for node in nodes
+            },
+            time_simulated_to=first.time_simulated_to,
+            n_simulations=sum(part.n_simulations for part in ranges),
+            antithetic=first.antithetic,
+            engine=names("engine"),
+            method=names("method"),
+            start=first.start,
         )

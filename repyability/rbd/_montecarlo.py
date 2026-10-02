@@ -159,8 +159,9 @@ def available_cpus() -> int:
     return os.cpu_count() or 1
 
 
-def process_pool(jobs: int):
-    """A pool of ``jobs`` worker processes for a parallel run.
+def process_pool(jobs: int, initializer=None, initargs: tuple = ()):
+    """A pool of ``jobs`` worker processes for a parallel run, each
+    started by ``initializer(*initargs)`` if given.
 
     Under the forkserver start method (Linux's default from Python 3.14)
     the server, which every worker is forked from, first imports
@@ -181,7 +182,12 @@ def process_pool(jobs: int):
         preload = list(getattr(server, "_preload_modules", ["__main__"]))
         if "repyability" not in preload:
             context.set_forkserver_preload(preload + ["repyability"])
-    return ProcessPoolExecutor(max_workers=jobs, mp_context=context)
+    return ProcessPoolExecutor(
+        max_workers=jobs,
+        mp_context=context,
+        initializer=initializer,
+        initargs=initargs,
+    )
 
 
 def blocks(n: int, block: int) -> List[int]:
