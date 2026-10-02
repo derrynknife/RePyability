@@ -104,28 +104,31 @@ def test_parametric_diagrams_do_not_warn():
     [
         (
             lambda: StandbyModel(
-                [W([100, 2])] * 2, dormancy_factor=0.5, mc_samples=200, seed=1
+                [W([100, 2])] * 3,
+                k=2,
+                dormancy_factor=0.5,
+                mc_samples=200,
+                seed=1,
             ),
-            "warm standby",
+            "warm standby with 2 units operating",
         ),
         (
             lambda: StandbyModel(
-                [W([100, 2])] * 2, dormancy_factor=1.0, mc_samples=200, seed=1
+                [W([100, 2]), W([80, 1.5]), W([100, 2])], k=2, mc_samples=200
             ),
-            "parallel nodes give the exact reliability",
-        ),
-        (
-            lambda: StandbyModel([W([100, 2])] * 3, k=2, mc_samples=200),
-            "cold standby with 2 units operating",
+            "cold standby with 2 different units operating",
         ),
         (
             lambda: LoadSharingModel(
-                [aft("weibull")] * 2, load=2.0, mc_samples=200, seed=3
+                [aft("weibull"), aft("exponential")],
+                load=2.0,
+                mc_samples=200,
+                seed=3,
             ),
-            "not identical with an Exponential baseline",
+            "units that are different",
         ),
     ],
-    ids=["warm", "hot", "cold, two operating", "load sharing"],
+    ids=["warm, two operating", "cold, two different", "load sharing"],
 )
 def test_a_fit_to_simulated_lifetimes_warns(build, case):
     with pytest.warns(FutureWarning, match=rf"{case}.*removed in {REMOVAL}"):
@@ -138,7 +141,11 @@ def test_exact_and_numerical_models_do_not_warn():
         lambda: StandbyModel([W([100, 2])] * 2),
         lambda: StandbyModel([E([0.01])] * 2, dormancy_factor=0.5),
         lambda: StandbyModel([E([0.01])] * 3, k=2),
+        lambda: StandbyModel([W([100, 2])] * 2, dormancy_factor=0.5),
+        lambda: StandbyModel([W([100, 2]), W([80, 1.5])], dormancy_factor=1),
+        lambda: StandbyModel([W([100, 2])] * 3, k=2),
         lambda: LoadSharingModel([aft("exponential")] * 2, load=2.0),
+        lambda: LoadSharingModel([aft("weibull")] * 2, load=2.0),
     ):
         assert not quiet(build).is_simulated
 

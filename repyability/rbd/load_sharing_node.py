@@ -26,8 +26,10 @@ Engine (per Monte-Carlo replicate) -- a cumulative-exposure event loop::
     group lifetime = t
 
 For identical units with an Exponential baseline the group lifetime has an
-exact closed form (a hypoexponential distribution); otherwise the survival
-function is a Kaplan-Meier fit to simulated lifetimes (like ``StandbyModel``).
+exact closed form (a hypoexponential distribution); for other identical
+units it is numerical (``_dependent_lifetimes.LoadSharingSurvival``); for
+different units the survival function is a Kaplan-Meier fit to simulated
+lifetimes (like ``StandbyModel``).
 """
 
 import warnings
@@ -42,6 +44,7 @@ from repyability.utils.deprecation import (
 )
 from repyability.utils.wrappers import conditional_survival, numpy_seed
 
+from ._dependent_lifetimes import LoadSharingSurvival
 from ._model_utils import is_exponential
 from ._sampling import RowSampler, column, inverse_sampler
 
@@ -110,10 +113,16 @@ class LoadSharingModel:
       rate ``lambda`` and the units' ``phi`` agree at every stage: the
       lifetime is hypoexponential with stage rates
       ``s * lambda * phi(L / s)`` for ``s = N, ..., k`` survivors.
-    - **Simulated** otherwise, or when two of those stage rates coincide:
-      a Kaplan-Meier fit to ``mc_samples`` lifetimes drawn with
-      ``random``.
-      ``is_simulated`` tells which applies.
+    - **Numerical**, for other identical units (one baseline and one
+      ``phi``): every survivor ages alike, so the units fail in the order
+      of their exposures to failure, and a recursion over the failures on
+      a grid of exposure and time gives the lifetime's distribution, to
+      about ``1e-4`` of a probability.
+    - **Simulated** for different units: a Kaplan-Meier fit to
+      ``mc_samples`` lifetimes drawn with ``random`` (deprecated: it goes
+      in 0.12).
+
+    ``is_simulated`` tells which applies.
 
     As an RBD node, ``sf``/``ff`` give its reliability, ``random`` its
     lifetimes for Monte-Carlo system simulation and ``mean`` its MTTF.
@@ -189,14 +198,14 @@ class LoadSharingModel:
     >>> round(float(pumps.sf(50.0)), 4)
     0.6004
 
-    A Weibull baseline has no closed form, so the group is simulated;
-    ``seed`` makes the fit reproducible:
+    A Weibull baseline has no closed form, so the reliability of two such
+    pumps is numerical:
 
     >>> w = surv.WeibullAFT.fit(x, Z=load)
-    >>> sim = LoadSharingModel([w, w], load=2.0, mc_samples=2000, seed=1)
-    >>> sim.is_simulated
-    True
-    >>> round(float(sim.sf([50.0])[0]), 2)
+    >>> numerical = LoadSharingModel([w, w], load=2.0)
+    >>> numerical.is_simulated
+    False
+    >>> round(float(numerical.sf(50.0)), 2)
     0.92
     """
 
@@ -261,17 +270,35 @@ class LoadSharingModel:
                 self._sf_model = Hypoexponential.from_params(rates)
             except ValueError:
                 self._sf_model = None
+        if self._sf_model is None and self._identical():
+            # Identical units age alike, so they fail in the order of their
+            # exposures to failure: a recursion over the failures (see
+            # LoadSharingSurvival).
+            self._sf_model = LoadSharingSurvival(
+                self._baselines[0],
+                [self._phi_table[0, s - 1] for s in range(self.N, 0, -1)],
+                self.N,
+                self.k,
+            )
         if self._sf_model is not None:
             self.model = None
         else:
-            warn_simulated_fit(
-                "LoadSharingModel",
-                "units that are not identical with an Exponential baseline",
-            )
+            warn_simulated_fit("LoadSharingModel", "units that are different")
             x_random = self.random(mc_samples, seed=seed)
             self.model = KaplanMeier.fit(x_random, set_lower_limit=lower)
             # The simulated lifetimes' mean, for mean().
             self._simulated_mean = float(np.mean(x_random))
+
+    def _identical(self) -> bool:
+        """Whether the units are identical: one baseline (the same
+        distribution and parameters) and one aging rate at every stage."""
+        from .non_repairable_rbd import NonRepairableRBD
+
+        first = self._baselines[0]
+        return all(
+            NonRepairableRBD._same_model(base, first)
+            for base in self._baselines[1:]
+        ) and bool(np.allclose(self._phi_table, self._phi_table[0]))
 
     def random(self, size, seed=None):
         """Simulate group lifetimes with the cumulative-exposure event loop.

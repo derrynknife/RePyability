@@ -53,7 +53,13 @@ def nonrepairable_rbds():
         "simulated standby": NonRepairableRBD(
             EDGES,
             {
-                "a": StandbyModel([unit] * 3, k=2, mc_samples=2000, seed=1),
+                "a": StandbyModel(
+                    [unit] * 3,
+                    k=2,
+                    dormancy_factor=0.5,
+                    mc_samples=2000,
+                    seed=1,
+                ),
                 **rest,
             },
         ),
@@ -91,7 +97,11 @@ def nonrepairable_rbds():
                     [("s", "x"), ("x", "t")],
                     {
                         "x": StandbyModel(
-                            [unit] * 3, k=2, mc_samples=500, seed=2
+                            [unit] * 3,
+                            k=2,
+                            dormancy_factor=0.5,
+                            mc_samples=500,
+                            seed=2,
                         )
                     },
                 ),
@@ -195,7 +205,11 @@ def repairable_rbds():
             "simulated standby life": system(
                 {
                     "reliability": StandbyModel(
-                        [life] * 3, k=2, mc_samples=2000, seed=1
+                        [life] * 3,
+                        k=2,
+                        dormancy_factor=0.5,
+                        mc_samples=2000,
+                        seed=1,
                     ),
                     "repairability": repair,
                 }
@@ -425,8 +439,13 @@ def test_nodes_are_routed_by_how_their_reliability_is_found():
         (surv.KaplanMeier.fit([1.0, 2.0, 3.0]), routes.EXACT),
         (StandbyModel([E([0.01])] * 3, k=2), routes.EXACT),
         (StandbyModel([unit, unit]), routes.NUMERICAL),
+        (StandbyModel([unit] * 3, k=2), routes.NUMERICAL),
+        (StandbyModel([unit] * 2, dormancy_factor=0.5), routes.NUMERICAL),
+        (StandbyModel([unit] * 3, k=2, dormancy_factor=1.0), routes.EXACT),
         (
-            StandbyModel([unit] * 3, k=2, mc_samples=500, seed=1),
+            StandbyModel(
+                [unit] * 3, k=2, dormancy_factor=0.5, mc_samples=500, seed=1
+            ),
             routes.SIMULATED,
         ),
         (RepeatedStandbyNode(unit, 3), routes.NUMERICAL),
@@ -501,7 +520,7 @@ def test_the_engine_is_the_one_auto_would_run(monkeypatch):
     assert capacities["cost"].engine == "numba"
 
 
-def test_a_load_sharing_group_is_simulated_only_without_a_closed_form():
+def test_a_load_sharing_group_is_simulated_only_with_different_units():
     rng = np.random.default_rng(0)
     load = rng.uniform(0.5, 2.0, size=400)
     x = rng.exponential(scale=100.0 / np.exp(0.6 * (load - 1.0)), size=400)
@@ -511,9 +530,13 @@ def test_a_load_sharing_group_is_simulated_only_without_a_closed_form():
         Z=load.reshape(-1, 1),
     )
     closed = LoadSharingModel([exponential] * 2, load=2.0)
-    fitted = LoadSharingModel([weibull] * 2, load=2.0, mc_samples=500, seed=3)
+    identical = LoadSharingModel([weibull] * 2, load=2.0)
+    different = LoadSharingModel(
+        [weibull, exponential], load=2.0, mc_samples=500, seed=3
+    )
     assert routes.model_route(closed)[0] == routes.EXACT
-    assert routes.model_route(fitted)[0] == routes.SIMULATED
+    assert routes.model_route(identical)[0] == routes.NUMERICAL
+    assert routes.model_route(different)[0] == routes.SIMULATED
 
 
 def test_a_route_reads_as_a_sentence():
@@ -571,7 +594,11 @@ def test_the_readme_says_what_is_simulated():
         rng.weibull(2.0, size=400) * 80.0 / np.exp(0.4 * (load - 1)) + 1e-3,
         Z=load.reshape(-1, 1),
     )
-    sharing = LoadSharingModel([weibull] * 2, load=2.0, mc_samples=500, seed=3)
+    x = rng.exponential(scale=100.0 / np.exp(0.6 * (load - 1.0)), size=400)
+    exponential = surv.ExponentialAFT.fit(x + 1e-3, Z=load.reshape(-1, 1))
+    sharing = LoadSharingModel(
+        [weibull, exponential], load=2.0, mc_samples=500, seed=3
+    )
     plain, ccf = nonrepairable["plain"], nonrepairable["common cause"]
     crew = repairable["one repair crew, exponential"]
     group = repairable["standby group"]
@@ -603,21 +630,32 @@ def test_the_readme_says_what_is_simulated():
             (nonrepairable["simulated standby"], "ff", "simulated"),
             (plain, "ff", "exact"),
         ],
-        "Warm or hot standby of non-exponential units": [
+        "Warm standby with two or more units operating, of "
+        "non-exponential units": [
+            (nonrepairable["simulated standby"], "sf", "simulated"),
+            (
+                alone(StandbyModel([unit] * 2, dormancy_factor=0.5)),
+                "sf",
+                "numerical",
+            ),
+            (
+                alone(StandbyModel([unit] * 2, dormancy_factor=1.0)),
+                "sf",
+                "exact",
+            ),
+        ],
+        "Cold standby with two or more different units operating, and "
+        "load sharing of different units": [
             (
                 alone(
                     StandbyModel(
-                        [unit] * 2, dormancy_factor=f, mc_samples=500, seed=1
+                        [unit, W([80, 1.5]), unit], k=2, mc_samples=500, seed=1
                     )
                 ),
                 "sf",
                 "simulated",
-            )
-            for f in (0.5, 1.0)
-        ],
-        "Cold standby with two or more units operating, and load sharing, "
-        "of non-exponential units": [
-            (nonrepairable["simulated standby"], "sf", "simulated"),
+            ),
+            (alone(StandbyModel([unit] * 3, k=2)), "sf", "numerical"),
             (alone(sharing), "sf", "simulated"),
         ],
         "Anything a simulated node is part of": [

@@ -69,7 +69,9 @@ def test_a_simulated_arrangement_has_one_mean():
     # the same at every call, the area under its sf, and made without
     # touching numpy's global RNG.
     w = Weibull.from_params([100, 2])
-    sim = StandbyModel([w, w, w], k=2, mc_samples=2000, seed=1)
+    sim = StandbyModel(
+        [w, w, w], k=2, dormancy_factor=0.5, mc_samples=2000, seed=1
+    )
     assert sim.model is not None
     before = np.random.get_state()[1].copy()
     assert sim.mean() == sim.mean() == sim.random(2000, seed=1).mean()

@@ -36,12 +36,12 @@ operating one:
 
 ```python
 cold = StandbyModel([pump, pump])                         # dormancy_factor=0
-warm = StandbyModel([pump, pump], dormancy_factor=0.3, seed=0)
-hot = StandbyModel([pump, pump], dormancy_factor=1.0, seed=0)
+warm = StandbyModel([pump, pump], dormancy_factor=0.3)
+hot = StandbyModel([pump, pump], dormancy_factor=1.0)
 
 cold.sf(150)      # -> 0.6342   the spare only starts ageing when switched in
-warm.sf(150)      # -> 0.4735   the spare ages at 30% of the rate while dormant
-hot.sf(150)       # -> 0.2006   the same as two units in parallel (0.1997)
+warm.sf(150)      # -> 0.4815   the spare ages at 30% of the rate while dormant
+hot.sf(150)       # -> 0.1997   exactly two units in parallel
 ```
 
 - **Cold** (`0`, the default): a dormant spare does not age. With `k = 1`,
@@ -55,22 +55,24 @@ hot.sf(150)       # -> 0.2006   the same as two units in parallel (0.1997)
 `k` operating units at once is supported for every dormancy:
 
 ```python
-two_of_three = StandbyModel([pump, pump, pump], k=2, mc_samples=20_000, seed=0)
-two_of_three.sf(100)   # -> 0.512
+two_of_three = StandbyModel([pump, pump, pump], k=2)
+two_of_three.sf(100)   # -> 0.5172
 ```
 
 ### Imperfect switching
 
-`switching_probability` is the probability that each switch-over succeeds;
-a failed switch ends the arrangement. It is supported for cold standby with
-`k = 1`:
+`switching_probability` is the probability that each switch-over succeeds,
+one value for all or one per spare; a failed switch ends the arrangement. It
+is supported for cold standby, with any `k`:
 
 ```python
 unreliable_switch = StandbyModel([pump, pump], switching_probability=0.9)
 unreliable_switch.sf(150)   # -> 0.5813   against 0.6342 with a perfect switch
+StandbyModel([pump, pump, pump], k=2, switching_probability=0.9).sf(100)
+# -> 0.479   against 0.5172
 ```
 
-Other combinations raise `NotImplementedError`.
+Warm or hot standby with imperfect switching raises `NotImplementedError`.
 
 ### How the survival function is obtained
 
@@ -78,17 +80,19 @@ Other combinations raise `NotImplementedError`.
 |---|---|
 | Identical Exponential units, cold, perfect switching (any `k`) | Exact: Erlang. |
 | Identical Exponential units, warm or hot | Exact: hypoexponential. |
+| Hot, any units (any `k`) | Exact: `k`-out-of-`n` of the units, each working independently. |
 | Cold, `k = 1` (any units, including imperfect switching) | Numerical convolution of the units' lifetimes: deterministic, and accurate to about 1e-6 (1e-5 for the steepest early-life densities, a gamma with shape 0.5 or less). |
-| Everything else (warm or hot non-Exponential units, cold `k ≥ 2` non-Exponential units) | Simulation: a Kaplan–Meier fit to `mc_samples` simulated lifetimes (default 10 000), seeded by `seed`, with `lower` passed as the fit's lower limit. |
+| Cold, `k ≥ 2`, identical units (including imperfect switching) | Numerical: each operating position runs a renewal process of the units' lives, and the arrangement fails at the `n − k + 1`-th failure in all; the counts come from the same convolution. |
+| Warm, `k = 1` (any units) | Numerical: a recursion over the spares' switch-ins on a time grid (a spare switched in at `τ` has aged `dormancy_factor · τ`), accurate to about 1e-5. |
+| Everything else (warm with `k ≥ 2`, cold `k ≥ 2` of different units) | Simulation: a Kaplan–Meier fit to `mc_samples` simulated lifetimes (default 10 000), seeded by `seed`, with `lower` passed as the fit's lower limit. |
 
 The simulated cases carry Monte-Carlo error, and their `sf` returns
 one-element arrays even for a scalar time. **The fit to simulated
 lifetimes is deprecated** (such a model warns when built): in 0.12 these
 arrangements will still draw lifetimes for simulations, but have no `sf`,
 so the analyses that need one will refuse and point to the system's
-simulations. Exact and numerical methods for most of them are planned
-(#135, #138). For hot standby with non-Exponential
-units, drawing the units as ordinary parallel nodes gives the exact answer.
+simulations. A numerical method for cold standby of two different units
+operating is planned (#138).
 
 `mean()` and `random(size, seed=None)` give the arrangement's mean lifetime
 and draw lifetimes; `cs(x, X)` is its conditional survival. A standby node
@@ -171,12 +175,15 @@ p = RegressionNode(unit, covariates=[1.0]).sf(50)
 ```
 
 - Identical units with an **Exponential** baseline have an exact
-  (hypoexponential) group lifetime and `is_simulated` is `False`. Otherwise
-  the survival function is a Kaplan–Meier fit to `mc_samples` simulated lifetimes
-  (seeded by `seed`), and `is_simulated` is `True`. That fit is deprecated,
-  as for standby: from 0.12 such a group has no `sf`, and is simulated only
-  in the system's simulations (a numerical method for identical units is
-  planned, #139).
+  (hypoexponential) group lifetime. Other identical units (one baseline and
+  one load response) have a numerical one: they all age alike, so they fail
+  in the order of their exposures to failure, and a recursion over the
+  failures on a grid of exposure and time gives the lifetime's
+  distribution, to about 1e-4. Either way `is_simulated` is `False`.
+- Different units' survival function is a Kaplan–Meier fit to
+  `mc_samples` simulated lifetimes (seeded by `seed`), and `is_simulated`
+  is `True`. That fit is deprecated, as for standby: from 0.12 such a group
+  has no `sf`, and is simulated only in the system's simulations.
 - With no load effect the units neither share stress nor accelerate, and the
   group reduces exactly to `k`-out-of-`n` parallel.
 - The units must be AFT models (they need the time-scaling `phi(load)`);

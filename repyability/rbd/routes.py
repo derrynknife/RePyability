@@ -97,6 +97,10 @@ def model_route(model) -> Tuple[str, str]:
             )
         if isinstance(model._sf_model, ConvolvedSurvival):
             return NUMERICAL, "a numerical convolution of its units' lives"
+        how = getattr(model._sf_model, "how", None)
+        if how is not None:
+            route = getattr(model._sf_model, "route", NUMERICAL)
+            return (EXACT if route == "exact" else NUMERICAL), how
         return EXACT, "a closed form"
     if isinstance(model, RepeatedStandbyNode):
         return NUMERICAL, "a numerical convolution of its copies' lives"
@@ -145,6 +149,13 @@ def mean_route(model) -> Tuple[str, str]:
                 SIMULATED,
                 f"the mean of the {model.mc_samples} lifetimes simulated "
                 "when it was built",
+            )
+        sf_model = model._sf_model
+        if getattr(sf_model, "route", None) == EXACT:
+            return (
+                NUMERICAL,
+                "the area under its exact reliability "
+                f"({getattr(sf_model, 'how', '')})",
             )
         return model_route(model)
     if isinstance(model, RegressionNode):

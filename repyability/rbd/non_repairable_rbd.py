@@ -3808,7 +3808,7 @@ class NonRepairableRBD(RBD):
         Examples
         --------
         One cold spare for one unit is a numerical convolution; two units
-        of three needed working, with one cold spare, is simulated:
+        of three needed working, with one warm spare, is simulated:
 
         >>> import surpyval as surv
         >>> from repyability import NonRepairableRBD, StandbyModel
@@ -3820,7 +3820,15 @@ class NonRepairableRBD(RBD):
         True
         >>> trio = NonRepairableRBD(
         ...     [("s", "a"), ("a", "t")],
-        ...     {"a": StandbyModel([unit] * 3, k=2, mc_samples=2000, seed=1)},
+        ...     {
+        ...         "a": StandbyModel(
+        ...             [unit] * 3,
+        ...             k=2,
+        ...             dormancy_factor=0.5,
+        ...             mc_samples=2000,
+        ...             seed=1,
+        ...         )
+        ...     },
         ... )
         >>> trio.is_analytically_solvable()
         False
@@ -3863,7 +3871,11 @@ class NonRepairableRBD(RBD):
         ...     [("s", "a"), ("a", "b"), ("b", "t")],
         ...     {
         ...         "a": StandbyModel(
-        ...             [unit] * 3, k=2, mc_samples=2000, seed=1
+        ...             [unit] * 3,
+        ...             k=2,
+        ...             dormancy_factor=0.5,
+        ...             mc_samples=2000,
+        ...             seed=1,
         ...         ),
         ...         "b": unit,
         ...     },
@@ -4182,8 +4194,8 @@ class NonRepairableRBD(RBD):
                     "Each candidate's exact system reliability, searched "
                     "exactly or greedily. Cold standby copies (strategy "
                     "'cold' or 'choose') are scored as a StandbyModel, "
-                    "simulated for a node that needs two or more copies "
-                    "working, unless they are identical Exponential units.",
+                    "numerically, or simulated for a node that needs two "
+                    "or more copies of different kinds working.",
                 )
             ),
         )

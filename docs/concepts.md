@@ -327,12 +327,19 @@ its baseline failure age. It can therefore fail *latent*, before it is ever
 switched in. For identical Exponential units the memoryless property makes
 each stage (from `j` to `j − 1` surviving units) exponential with rate
 `λ (k + (j − k) κ)`, so the lifetime is **hypoexponential**; `κ = 0` gives
-the cold Erlang and `κ = 1` the parallel order statistic. Other units are
-simulated and fitted with Kaplan–Meier. Hot standby (`κ = 1`) is exactly
-*k*-out-of-*n* active parallel.
+the cold Erlang and `κ = 1` the parallel order statistic. Hot standby
+(`κ = 1`) is exactly *k*-out-of-*n* active parallel, and is worked out so
+for any units. With one unit operating and any units, a spare switched in at
+`τ` has aged `κτ` and runs until its failure age, so the lifetime follows a
+recursion over the switch-ins, which is computed on a time grid; with two
+units, `R(t) = S₁(t) + ∫₀ᵗ f₁(u) S₂(t − (1 − κ)u) du`.
 
-With `k ≥ 2` operating units and general lifetimes, which unit fails next
-depends on the order of failures, so the lifetime is not a simple sum and is
+With `k ≥ 2` operating units, cold, each operating position runs a renewal
+process of the lives of the units put into it; for identical units these are
+independent, so the number of failures by `t` is a sum of `k` renewal counts,
+whose distributions come from the convolution, and the arrangement fails at
+the `n − k + 1`-th. With different units, which unit goes where depends on
+the order of failures, and warm with `k ≥ 2` the spares' ages too: those are
 simulated.
 
 ## Dependent failures: load sharing

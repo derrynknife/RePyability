@@ -231,7 +231,11 @@ def test_the_report_routes_the_mttf_through_the_nodes():
     assert (
         series(E([0.01])).analysis_routes()["mean"].route == routes.NUMERICAL
     )
-    simulated = series(StandbyModel([W([100, 2])] * 3, k=2, mc_samples=500))
+    simulated = series(
+        StandbyModel(
+            [W([100, 2])] * 3, k=2, dormancy_factor=0.5, mc_samples=500
+        )
+    )
     report = simulated.analysis_routes()
     assert report["mean"].route == routes.SIMULATED
     assert report["mean"].nodes == (0,)

@@ -275,22 +275,22 @@ lifetimes, some 4e10 for `p = 1e-8`. Where the unreliability is exact,
 worked out from the components' own failure probabilities, not as one less
 the reliability); through a numerical node, such as a cold-standby group of
 non-exponential units, only to that node's accuracy, about 1e-6. Where a
-node is simulated, as a warm-standby
-group of Weibull pumps is (its reliability is fitted to 20 000 simulated
-lifetimes, none of which ends in the first 50 hours), the far tail has no
-exact value, and `unreliability_interval(x)` estimates `P(T <= x)` by
-simulation, to a relative precision, with methods that find rare failures:
+node is simulated, as warm standby with two Weibull pumps operating is (its
+reliability is fitted to 20 000 simulated lifetimes, none of which ends in
+the first 50 hours), the far tail has no exact value, and
+`unreliability_interval(x)` estimates `P(T <= x)` by simulation, to a
+relative precision, with methods that find rare failures:
 
 ```python
 from repyability import StandbyModel
 
 pump = surv.Weibull.from_params([1000, 1.5])
-pumps = StandbyModel([pump, pump, pump], dormancy_factor=0.3, mc_samples=20_000, seed=1)
+pumps = StandbyModel([pump] * 4, k=2, dormancy_factor=0.3, mc_samples=20_000, seed=1)
 station = NonRepairableRBD([("s", "pumps"), ("pumps", "t")], {"pumps": pumps})
 station.ff(50.0)                         # -> 0.0   from the fitted reliability
 tail = station.unreliability_interval(50.0, seed=1)
-tail.estimate                            # ~> 2.06e-07
-tail.method, tail.n_samples              # ('subset', 852000)
+tail.estimate                            # ~> 1.59e-06
+tail.method, tail.n_samples              # ('subset', 570000)
 ```
 
 Each draws the system's lifetime from a row of uniforms, as `random` does

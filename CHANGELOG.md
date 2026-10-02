@@ -55,7 +55,10 @@ breakdown has a seventh category, `"setup"` (#108); perfect junction
 nodes are left out of the importance measures and allocations, and a
 `RegressionNode` gives a float for a scalar time (#134); a common-cause
 group that splits a probability warns once its members' probability of
-failing passes 0.1 (#132); and surpyval 0.21
+failing passes 0.1 (#132); hot standby, warm standby with one unit
+operating, cold standby of identical units and load sharing of identical
+units are no longer fits to simulated lifetimes, so their reliabilities
+lose their Monte-Carlo error (#135, #138, #139); and surpyval 0.21
 is required.
 
 ### Added
@@ -522,6 +525,31 @@ is required.
   simulated, and which of those simulations must be and which could be made
   exact (with the issues that would do it). A test keeps it in line with
   `analysis_routes()`.
+- **Standby and load sharing without simulation** (#135, #138, #139).
+  Arrangements that were Kaplan–Meier fits to simulated lifetimes are
+  worked out instead, deterministically:
+  - hot standby of any units, exactly: it is k-out-of-n, the number of
+    failed units a Poisson-binomial count of the units' own probabilities
+    (each tail to full precision);
+  - warm standby with one unit operating, of any units: a recursion over
+    the spares' switch-ins on a time grid (a spare switched in at `τ` has
+    aged `dormancy_factor · τ`), accurate to about 1e-5;
+  - cold standby of identical units with several operating: each operating
+    position runs a renewal process of the units' lives, so the failures by
+    `t` are a sum of renewal counts, from the cold-standby convolution;
+  - load sharing of identical units: they age alike, so they fail in the
+    order of their exposures to failure, and a recursion over the failures
+    on a grid of exposure and time gives the lifetime, to about 1e-4.
+  Their routes are exact or numerical, `is_simulated` is `False`, and they
+  no longer warn. Cold standby takes imperfect switching with several units
+  operating too (one probability for all, or one per spare), in its
+  numerical reliability and its simulations alike. Still simulated (and
+  deprecated): warm standby with several operating, cold standby of
+  different units with several operating, and load sharing of different
+  units. Checked against parallel and k-out-of-n units, Erlang and
+  hypoexponential lives, the two-unit warm integral, the expected order
+  statistics of a load-sharing group, and a million simulated lifetimes of
+  each.
 - **Uncertainty intervals on the MTTF and lifetimes** (#133):
   `mean_uncertainty`, `bx_life_uncertainty` and
   `time_to_reliability_uncertainty` carry the uncertainty of fitted

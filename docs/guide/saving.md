@@ -68,8 +68,9 @@ into a list, and loading turns it back). Loading with the wrong class
       inputs (`mc_samples`, `dormancy_factor`, ...) but not their `seed`, and are
       re-simulated when loaded. A reloaded simulated node's reliability can
       therefore differ from the original within Monte-Carlo error. Nodes with
-      an exact reliability (cold `k = 1` standby, identical Exponential
-      units) reload exactly.
+      an exact or numerical reliability (cold standby with one unit
+      operating, or several identical ones; warm standby with one operating;
+      hot standby; load sharing of identical units) reload exactly.
 
 Condition-based state (`NodeState`) is not part of the RBD and is not saved.
 

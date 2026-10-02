@@ -70,12 +70,16 @@ def test_a_convolved_standby_is_analytic_under_k_out_of_n(
 
 
 def simulated_standby_rbd() -> NonRepairableRBD:
-    # Two units needed of three, with a cold spare: no closed form or
-    # convolution, so the node's reliability is simulated.
+    # Two units needed of three, with a warm spare: no closed form or
+    # numerical method, so the node's reliability is simulated.
     unit = surv.Weibull.from_params([5, 1.1])
     return NonRepairableRBD(
         [(1, 7), (7, 8)],
-        {7: StandbyModel([unit] * 3, k=2, mc_samples=500, seed=1)},
+        {
+            7: StandbyModel(
+                [unit] * 3, k=2, dormancy_factor=0.5, mc_samples=500, seed=1
+            )
+        },
     )
 
 
