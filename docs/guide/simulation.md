@@ -243,14 +243,15 @@ merged = plant.availability_from_chunks(sent)
 whole = plant.availability(t_simulation=100.0, mc_samples=2_000, seed=0)
 bool((merged.uptimes == whole.uptimes).all())        # True: the same simulations
 bool((merged.availability == whole.availability).all())   # True
+merged.system_uptime == whole.system_uptime          # True: the totals too
 ```
 
 - **The same run.** Chunks of simulations `0` to `N - 1` give the result of
   `availability(..., mc_samples=N)`: the same per-simulation values
-  (`uptimes`, the cost `samples`) and timeline, and the same totals to the
-  last digits or so (the run adds them simulation by simulation, the merge
-  chunk by chunk). With costs, the result's `cost` is the cost
-  distribution. Chunks may leave gaps; the result is then that of the
+  (`uptimes`, the cost `samples`) and timeline, and the same totals, to
+  the last bit: every total is kept exactly and rounded once, so it does
+  not depend on how the run is cut. With costs, the result's `cost` is the
+  cost distribution. Chunks may leave gaps; the result is then that of the
   simulations they hold.
 - **Checked.** Chunks merge only with chunks of the same run: the same
   system (a hash of it saved as JSON, which a chunk carries, so a worker

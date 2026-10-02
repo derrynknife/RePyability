@@ -1,12 +1,18 @@
 """Chunks of a simulation run (#114): simulations a to b of a run, run
-anywhere, saved, and merged into the run's result; and blocks of a
-NonRepairableRBD's lifetimes."""
+anywhere, saved, and merged into the run's result, the same to the last bit
+as the run's however it is cut, as its totals are kept exactly (#151); and
+blocks of a NonRepairableRBD's lifetimes."""
+
+import dataclasses
+import math
+from collections.abc import Mapping
 
 import numpy as np
 import pytest
 import surpyval as surv
 
 from repyability import NonRepairableRBD, RepairableRBD, SimulationChunk
+from repyability.rbd._exact import ExactSum, expansion
 
 E, W = surv.Exponential.from_params, surv.Weibull.from_params
 
@@ -33,26 +39,31 @@ def plant(**options):
     )
 
 
-def same_result(a, b, rel=1e-12):
-    """Whether two results hold the same simulations: per-simulation values
-    and timeline exactly, totals to rounding."""
-    assert np.array_equal(a.uptimes, b.uptimes)
-    assert np.array_equal(a.timeline, b.timeline)
-    assert np.array_equal(a.availability, b.availability)
-    assert (a.system_failures, a.system_restorations) == (
-        b.system_failures,
-        b.system_restorations,
-    )
-    assert a.n_simulations == b.n_simulations
-    for node in a.node_uptime:
-        assert a.node_uptime[node] == pytest.approx(
-            b.node_uptime[node], rel=rel
-        )
-    if a.cost is not None:
-        assert np.array_equal(a.cost.samples, b.cost.samples)
-        for key, value in a.cost.by_category.items():
-            assert value == pytest.approx(b.cost.by_category[key], rel=rel)
+def identical(a, b, path="result"):
+    """Whether two results are the same to the last bit: every field, the
+    totals too, which are kept exactly however the run is split (#151)."""
+    if dataclasses.is_dataclass(a):
+        assert type(a) is type(b), path
+        for f in dataclasses.fields(a):
+            identical(
+                getattr(a, f.name), getattr(b, f.name), f"{path}.{f.name}"
+            )
+    elif isinstance(a, Mapping):
+        assert list(a) == list(b), path
+        for key in a:
+            identical(a[key], b[key], f"{path}[{key!r}]")
+    elif isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+        assert np.array_equal(a, b, equal_nan=True), path
+    elif isinstance(a, float):
+        assert a == b or (math.isnan(a) and math.isnan(b)), (path, a, b)
+    else:
+        assert a == b, path
     return True
+
+
+def same_result(a, b):
+    """Whether two results hold the same simulations, to the last bit."""
+    return identical(a, b)
 
 
 @pytest.mark.parametrize("engine", ["python", "numba"])
@@ -184,8 +195,7 @@ def test_chunks_follow_the_capacity():
     merged = rbd.availability_from_chunks(chunks)
     assert np.array_equal(merged.delivered, whole.delivered)
     assert np.array_equal(merged.capacity_timeline, whole.capacity_timeline)
-    np.testing.assert_allclose(merged.capacity, whole.capacity, rtol=1e-12)
-    assert merged.capacity_time.keys() == whole.capacity_time.keys()
+    assert identical(merged, whole)
 
 
 @pytest.mark.parametrize(
@@ -226,3 +236,72 @@ def test_random_blocks_are_the_draws_blocks():
     for block, seed in ((-1, 5), (1.0, 5), (True, 5), (0, None)):
         with pytest.raises(ValueError):
             rbd.random_block(block, seed=seed)
+
+
+# -- exact totals (#151) ------------------------------------------------------
+
+
+def test_exact_sums_are_the_same_however_they_are_split():
+    rng = np.random.default_rng(0)
+    values = rng.standard_normal(5000) * 10.0 ** rng.integers(-12, 13, 5000)
+    whole = math.fsum(values)
+    canonical = ExactSum(values).partials
+    for pieces in (2, 7, 64):
+        cuts = np.sort(
+            rng.choice(np.arange(1, len(values)), pieces - 1, False)
+        )
+        parts = [ExactSum(part) for part in np.split(values, cuts)]
+        order = rng.permutation(len(parts))
+        total = ExactSum()
+        for i in order:
+            total += parts[i]
+        assert float(total) == whole
+        assert total.partials == canonical
+    # One value at a time, in any order.
+    one = ExactSum()
+    for value in rng.permutation(values):
+        one += float(value)
+    assert float(one) == whole and one.partials == canonical
+    # What rounding in order loses, it keeps.
+    assert float(ExactSum([1e100, 1.0, -1e100])) == 1.0
+    assert expansion([1e100, 1.0, -1e100]) == [1.0]
+    assert expansion([1.0, 2.0**-60]) == [1.0, 2.0**-60]
+    assert float(ExactSum()) == 0.0 and ExactSum().partials == []
+    assert float(ExactSum([1.0, math.inf])) == math.inf
+    assert math.isnan(float(ExactSum([math.inf, -math.inf])))
+
+
+@pytest.mark.parametrize("engine", ["python", "numba"])
+@pytest.mark.parametrize(
+    "settings",
+    [{}, {"antithetic": True}, {"broken_nodes": ["B"]}],
+    ids=["plain", "antithetic", "held broken"],
+)
+def test_a_run_cut_anywhere_is_the_run(engine, settings):
+    # Uneven pieces, merged in any order, give the run to the last bit:
+    # its curve, its per-simulation values and its totals.
+    if engine == "numba":
+        pytest.importorskip("numba")
+    rbd = plant()
+    whole = rbd.availability(
+        100.0, mc_samples=600, seed=5, engine=engine, **settings
+    )
+    rng = np.random.default_rng(1)
+    for cuts in ([0, 600], [0, 2, 600], [0, 2, 132, 400, 598, 600]):
+        chunks = [
+            rbd.simulate_chunk(100.0, a, b, seed=5, engine=engine, **settings)
+            for a, b in zip(cuts, cuts[1:])
+        ]
+        chunks = [chunks[i] for i in rng.permutation(len(chunks))]
+        assert identical(rbd.availability_from_chunks(chunks), whole)
+
+
+def test_the_totals_are_rounded_once():
+    rbd = plant()
+    result = rbd.availability(100.0, mc_samples=500, seed=3)
+    assert result.system_uptime == math.fsum(result.uptimes)
+    assert result.system_downtime == math.fsum(100.0 - result.uptimes)
+    costs = rbd.cost(100.0, mc_samples=500, seed=3)
+    assert math.fsum(costs.samples) == pytest.approx(
+        500 * sum(costs.by_category.values()), rel=1e-14
+    )

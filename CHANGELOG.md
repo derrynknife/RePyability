@@ -35,7 +35,7 @@ with numerical long-run values (#145), or
 early at a stop of its maintenance group, sharing its set-up (opportunistic
 maintenance, #108), and repaired imperfectly, by Kijima's virtual age, or
 replaced at the N-th failure (#109); a simulation run can be split across
-machines and merged (#114); and small failure probabilities are estimated by
+machines and merged, to the last bit (#114, #151); and small failure probabilities are estimated by
 rare-event simulation (#115), and keep their full precision where they are
 exact (#148); phased missions are new, exact and simulated (#100, #101), as
 are the two-terminal reliability of undirected networks (#104), both
@@ -61,7 +61,10 @@ once, as each random quantity now has a stream of its own (#119);
 behind `method="simulate"`, and the exact MTTF refuses common-cause groups
 (#122); the number of simulations is `mc_samples` everywhere, and its cap
 `max_samples`, with the old names deprecated until 0.12 (#105);
-`is_analytically_solvable()` flags only simulated nodes (#127); cold-standby
+`is_analytically_solvable()` flags only simulated nodes (#127); a
+simulation's totals are rounded once from their exact sums, rather than
+added in order, so seeded totals move in their last bit (#151);
+cold-standby
 reliabilities are more accurate, so they move slightly (#128); a cost
 breakdown has a seventh category, `"setup"` (#108); perfect junction
 nodes are left out of the importance measures and allocations, and a
@@ -550,11 +553,25 @@ is required.
   (`SimulationChunk.merge`). `availability_from_chunks` turns chunks into
   the run's `AvailabilityResult`: chunks of simulations `0` to `N - 1` give
   the same per-simulation values and timeline as the run, and its totals
-  to the last digits. Chunks carry their run's settings and a hash of the
+  to the last bit (#151). Chunks carry their run's settings and a hash of the
   system, and only chunks of one run merge. `NonRepairableRBD.
   random_block(block, seed)` draws one 10 000-lifetime block of the
   lifetimes `random(size, seed=seed, n_jobs=...)` draws. The simulation
   guide gives the engines' throughput on one machine, in a table.
+  - **Exact totals** (#151). Every total a simulation run adds up (the
+    system's and each node's up and down times, the times each node is up
+    and down with the system, the costs by category and by component, the
+    capacity curve and the time at each capacity) is kept exactly, as
+    floats whose exact sum it is, and rounded once, correctly, when the
+    result is built (`repyability/rbd/_exact.py`). Chunks merged in any
+    grouping then give the run's totals to the last bit, and the totals are
+    slightly more accurate than sums in order. An array of values is
+    summed exactly at once by error-free extraction (Rump, Ogita and
+    Oishi's AccSum), so it costs about 5% of a compiled run of a small
+    system, and less in Python. Checked by sums of 5 000 values of 24
+    orders of magnitude cut into 2, 7 and 64 pieces in any order, and by
+    runs cut into uneven pieces (with antithetic pairs, a node held broken
+    and costs, on both engines), against the whole run, field by field.
 - **Imperfect repair** (#109). A component spec's `"repair": {"model":
   "kijima1" | "kijima2", "q": q}` makes its repairs imperfect: a repair
   after the unit has operated `x` since the last takes its virtual age from

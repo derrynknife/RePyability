@@ -11,8 +11,9 @@ Python, which ``engine="auto"`` chooses by itself.
 
 The two engines give the same results to the last bit: the compiled loop
 (``_kernel``) is the Python one over arrays, reading the same draws, and
-this module adds its simulations to the tally one after another in the same
-order, with the same arithmetic (see ``_Tally``).
+this module adds its simulations' values to the tally's totals, which keep
+them exactly, so that the order they come in does not matter (see
+``_Tally``).
 
 Only ``_kernel`` imports numba, so checking what the engine can run costs
 nothing when numba is not installed.
@@ -162,15 +163,25 @@ def ready(name: str, auto: bool) -> str:
     return name
 
 
-def _continued(total: float, values: np.ndarray) -> float:
-    """``total`` with each of ``values`` added in turn (as ``+=`` in a
-    loop would, rounding after each)."""
+def _continued(total, values: np.ndarray):
+    """``total`` with each of ``values`` added: exactly, for an
+    ``ExactSum``, as the tally keeps its totals (#151); for a float, in
+    turn, rounding after each, as ``+=`` in a loop would."""
+    from repyability.rbd._exact import ExactSum
+
+    if isinstance(total, ExactSum):
+        return total.add(values)
     return float(np.cumsum(np.concatenate(([total], values)))[-1])
 
 
 def _continued_rows(totals: list, values: np.ndarray) -> list:
     """``_continued`` for each column of ``values`` (one row per
     simulation) and its total in ``totals``."""
+    from repyability.rbd._exact import ExactSum, add_columns
+
+    if totals and isinstance(totals[0], ExactSum):
+        add_columns(totals, values)
+        return totals
     stacked = np.vstack((np.asarray(totals, dtype=float)[None, :], values))
     return np.cumsum(stacked, axis=0)[-1].tolist()
 
@@ -624,7 +635,7 @@ class Runner:
 
     def _add(self, out, size: int) -> None:
         """Add a batch's simulations to the tally, in order: as
-        ``_Tally.add`` would, one at a time."""
+        ``_Tally.add`` would, one at a time (its totals exactly)."""
         (
             uptime,
             node,
@@ -638,32 +649,14 @@ class Runner:
             by_node,
             _,
         ) = out
-        tally, t_end = self._tally, self._t
+        tally = self._tally
         tally.n += size
-        tally.system_uptime = _continued(tally.system_uptime, uptime)
-        tally.system_downtime = _continued(
-            tally.system_downtime, t_end - uptime
-        )
         tally.uptimes.extend(uptime.tolist())
         failures, restorations, planned = system.sum(axis=0).tolist()
         tally.system_failures += failures
         tally.system_restorations += restorations
         tally.system_planned_outages += planned
-        up, both_up, both_down = node[:, :, 0], node[:, :, 1], node[:, :, 2]
-        tally.node_uptime = _continued_rows(tally.node_uptime, up)
-        tally.node_downtime = _continued_rows(tally.node_downtime, t_end - up)
-        tally.intersection_uptime = _continued_rows(
-            tally.intersection_uptime, both_up
-        )
-        tally.intersection_downtime = _continued_rows(
-            tally.intersection_downtime, both_down
-        )
-        tally.union_uptime = _continued_rows(
-            tally.union_uptime, t_end - both_down
-        )
-        tally.union_downtime = _continued_rows(
-            tally.union_downtime, t_end - both_up
-        )
+        tally.fold_columns(uptime, node[:, :, 0], node[:, :, 1], node[:, :, 2])
         for i, added in enumerate(counts.sum(axis=0).tolist()):
             tally.counts[i] = [a + b for a, b in zip(tally.counts[i], added)]
         kept = np.arange(change_times.shape[1]) < change_count[:, None]
@@ -671,17 +664,9 @@ class Runner:
             (change_times[kept], change_deltas[kept].astype(np.int64))
         )
         if self._model.has_costs:
-            from repyability.rbd.repairable_rbd import _CATEGORIES
-
             tally.cost_samples.extend(cost.tolist())
-            for j, category in enumerate(_CATEGORIES):
-                tally.cost_by_category[category] = _continued(
-                    tally.cost_by_category[category], by_category[:, j]
-                )
-            for j, name in enumerate(self._model.costed):
-                tally.cost_by_component[name] = _continued(
-                    tally.cost_by_component[name], by_node[:, j]
-                )
+            costed = len(self._model.costed)
+            tally.fold_costs(np.hstack([by_category, by_node[:, :costed]]))
 
     def close(self) -> None:
         if self._pool is not None:

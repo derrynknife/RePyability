@@ -56,6 +56,7 @@ from repyability.rbd._block_replacement import (
     block_cycle,
 )
 from repyability.rbd._condition_replacement import condition_cycle
+from repyability.rbd._exact import ExactSum, add_columns
 from repyability.rbd._hidden_life import (
     TestedLife,
     TestedLifeCurve,
@@ -908,17 +909,47 @@ def _working_over_time(
     return time, weights.cumsum()
 
 
-class _Tally:
-    """The running totals of an availability simulation, added to one
-    simulation at a time, in order.
+def _add_at(totals: dict, key, value) -> None:
+    """Add ``value`` (a float or an ``ExactSum``) to ``totals[key]``,
+    exactly: a float while only one value has come, an ``ExactSum`` once
+    another does."""
+    held = totals.get(key)
+    if held is None:
+        totals[key] = ExactSum(value) if isinstance(value, ExactSum) else value
+    elif isinstance(held, ExactSum):
+        held.add(value)
+    else:
+        totals[key] = ExactSum((held,)).add(value)
 
-    Every total that is a sum of floats is added up simulation by
-    simulation, in the simulations' order, whether they ran one after
-    another in this process, in blocks in other processes, or in the
-    compiled engine: so the totals are the same to the last bit whichever
-    way the simulations ran. Per-node totals are lists in the order of
-    ``nodes``.
+
+def _partials(value) -> list:
+    """The floats whose exact sum is ``value`` (see ``_add_at``)."""
+    return value.partials if isinstance(value, ExactSum) else [value]
+
+
+def _exact_total(data) -> ExactSum:
+    """An exact total from ``_Tally.to_dict``'s data: the floats whose
+    exact sum it is (or a number)."""
+    if isinstance(data, (int, float)):
+        return ExactSum(float(data))
+    return ExactSum([float(v) for v in data])
+
+
+class _Tally:
+    """The running totals of an availability simulation.
+
+    Every total that is a sum of floats is kept exactly, as an ``ExactSum``
+    (see ``_exact``), and rounded once when the result is built (#151): so
+    the totals are the same to the last bit however the simulations ran,
+    one after another in this process, in blocks in other processes,
+    compiled, or in chunks merged later. Per-node totals are lists in the
+    order of ``nodes``; the per-simulation values (``uptimes``,
+    ``cost_samples``, ``delivered``) are kept in the simulations' order.
     """
+
+    #: Simulations whose per-node values wait to be folded into the
+    #: per-node totals (see ``_fold``).
+    _ROWS = 256
 
     def __init__(self, nodes: list, costs: dict, t_simulation: float):
         n = len(nodes)
@@ -936,27 +967,33 @@ class _Tally:
         self.system_restorations = 0
         self.system_failures = 0
         self.system_planned_outages = 0
-        self.system_uptime = 0.0
-        self.system_downtime = 0.0
-        self.node_uptime = [0.0] * n
-        self.node_downtime = [0.0] * n
-        self.intersection_uptime = [0.0] * n
-        self.intersection_downtime = [0.0] * n
-        self.union_uptime = [0.0] * n
-        self.union_downtime = [0.0] * n
+        self.system_uptime = ExactSum()
+        self.system_downtime = ExactSum()
+        self.node_uptime = [ExactSum() for _ in range(n)]
+        self.node_downtime = [ExactSum() for _ in range(n)]
+        self.intersection_uptime = [ExactSum() for _ in range(n)]
+        self.intersection_downtime = [ExactSum() for _ in range(n)]
+        self.union_uptime = [ExactSum() for _ in range(n)]
+        self.union_downtime = [ExactSum() for _ in range(n)]
+        # Each simulation's up time, its nodes' up times and times up and
+        # down with the system, and its costs, until they are folded into
+        # the totals (see _fold).
+        self._rows: list = []
+        self._cost_rows: list = []
         # One system uptime (and, when priced, one total cost) per
         # replication, in order.
         self.uptimes: List[float] = []
         self.cost_samples: List[float] = []
-        self.cost_by_category = dict.fromkeys(_CATEGORIES, 0.0)
-        self.cost_by_component = {node: 0.0 for node in costs}
+        self.cost_by_category = {key: ExactSum() for key in _CATEGORIES}
+        self.cost_by_component = {node: ExactSum() for node in costs}
         # With capacities (see _CapacityRecorder): time -> net change in the
-        # simulated systems' total expected capacity, and in how many of them
-        # can carry an unlimited amount; the time spent at each capacity; and
-        # each replication's delivered fraction of the demand, in order.
-        self.capacity_changes: dict = defaultdict(float)
+        # simulated systems' total expected capacity (exactly, see
+        # _add_at), and in how many of them can carry an unlimited amount;
+        # the time spent at each capacity; and each replication's delivered
+        # fraction of the demand, in order.
+        self.capacity_changes: dict = {}
         self.unlimited_changes: dict = defaultdict(int)
-        self.capacity_time: dict = defaultdict(float)
+        self.capacity_time: dict = {}
         self.delivered: List[float] = []
         # Each replication's replacements of each node, when asked for
         # (see RepairableRBD.spares_demand).
@@ -966,53 +1003,35 @@ class _Tally:
 
     def add(self, rec: _Replication) -> None:
         """Add the next simulation's results."""
-        t_end = self.t_simulation
         self.n += 1
-        self.system_uptime += rec.uptime
-        self.system_downtime += t_end - rec.uptime
         self.uptimes.append(rec.uptime)
         self.system_failures += rec.failures
         self.system_restorations += rec.restorations
         self.system_planned_outages += rec.planned
         self.changes.extend(rec.changes)
         self.deltas.extend(rec.deltas)
-        node_up, node_down = self.node_uptime, self.node_downtime
-        both_up, both_down = (
-            self.intersection_uptime,
-            self.intersection_downtime,
+        self._rows.append(
+            [rec.uptime, *rec.node_up, *rec.both_up, *rec.both_down]
         )
-        either_up, either_down = self.union_uptime, self.union_downtime
-        for c, (up, bu, bd) in enumerate(
-            zip(rec.node_up, rec.both_up, rec.both_down)
-        ):
-            node_up[c] += up
-            node_down[c] += t_end - up
-            both_up[c] += bu
-            both_down[c] += bd
-            either_up[c] += t_end - bd
-            either_down[c] += t_end - bu
         for totals, counts in zip(self.counts, rec.counts):
             for c, count in enumerate(counts):
                 if count:
                     totals[c] += count
         if rec.cost is not None:
             self.cost_samples.append(rec.cost)
-            categories = self.cost_by_category
-            for category, amount in zip(_CATEGORIES, rec.by_category):
-                categories[category] += amount
-            components = self.cost_by_component
-            for node, amount in rec.by_node.items():
-                components[node] += amount
+            self._cost_rows.append([*rec.by_category, *rec.by_node.values()])
+        if len(self._rows) >= self._ROWS:
+            self._fold()
         if rec.capacity_changes is not None:
             capacity, unlimited = self.capacity_changes, self.unlimited_changes
             for time, mean, limitless in rec.capacity_changes:
                 if mean:
-                    capacity[time] += mean
+                    _add_at(capacity, time, mean)
                 if limitless:
                     unlimited[time] += limitless
             spent = self.capacity_time
             for level, time in rec.capacity_time or ():
-                spent[level] += time
+                _add_at(spent, level, time)
             if rec.delivered is not None:
                 self.delivered.append(rec.delivered)
         if self.replacements is not None:
@@ -1020,6 +1039,67 @@ class _Tally:
         for c, count in enumerate(rec.opportunistic):
             if count:
                 self.opportunistic[c] += count
+
+    def _fold(self) -> None:
+        """Fold the values of the simulations added since the last fold
+        into the totals, all at once (see ``fold_columns``)."""
+        if self._rows:
+            table = np.asarray(self._rows, dtype=float)
+            self._rows = []
+            n = len(self.nodes)
+            self.fold_columns(
+                table[:, 0],
+                table[:, 1 : 1 + n],  # noqa: E203
+                table[:, 1 + n : 1 + 2 * n],  # noqa: E203
+                table[:, 1 + 2 * n :],  # noqa: E203
+            )
+        if self._cost_rows:
+            self.fold_costs(np.asarray(self._cost_rows, dtype=float))
+            self._cost_rows = []
+
+    def fold_columns(self, uptime, up, both_up, both_down) -> None:
+        """Add simulations' values to the totals, exactly (one row per
+        simulation): the system's up time (and so its down time), each
+        node's up time (and down time), and its times up and down with the
+        system (and so either up or either down)."""
+        t_end = self.t_simulation
+        uptime = np.asarray(uptime, dtype=float).reshape(-1, 1)
+        add_columns(
+            [
+                self.system_uptime,
+                self.system_downtime,
+                *self.node_uptime,
+                *self.node_downtime,
+                *self.intersection_uptime,
+                *self.intersection_downtime,
+                *self.union_uptime,
+                *self.union_downtime,
+            ],
+            np.hstack(
+                [
+                    uptime,
+                    t_end - uptime,
+                    up,
+                    t_end - up,
+                    both_up,
+                    both_down,
+                    t_end - both_down,
+                    t_end - both_up,
+                ]
+            ),
+        )
+
+    def fold_costs(self, table) -> None:
+        """Add simulations' costs to the totals, exactly: one row per
+        simulation, its costs by category and then by component (in the
+        order of ``cost_by_component``)."""
+        add_columns(
+            [
+                *self.cost_by_category.values(),
+                *self.cost_by_component.values(),
+            ],
+            table,
+        )
 
     def state_changes(self) -> Tuple[np.ndarray, np.ndarray]:
         """Every time a simulated system changed state (``-0.0`` made
@@ -1049,18 +1129,19 @@ class _Tally:
 
     def merge(self, other: "_Tally") -> None:
         """Add ``other``'s simulations, which come after this tally's (see
-        ``SimulationChunk``). The per-simulation values follow on in order;
-        the totals are added, so they can differ from one run's in the last
-        digits (a run adds simulation by simulation)."""
+        ``SimulationChunk``). The per-simulation values follow on in order,
+        and the totals, kept exactly, are those of one run of them all, to
+        the last bit."""
+        self._fold()
+        other._fold()
         self.n += other.n
-        self.system_uptime += other.system_uptime
-        self.system_downtime += other.system_downtime
+        self.system_uptime.add(other.system_uptime)
+        self.system_downtime.add(other.system_downtime)
         for name in self._COUNTS:
             setattr(self, name, getattr(self, name) + getattr(other, name))
         for name in self._NODE_SUMS:
-            mine = getattr(self, name)
-            for c, value in enumerate(getattr(other, name)):
-                mine[c] += value
+            for mine, theirs in zip(getattr(self, name), getattr(other, name)):
+                mine.add(theirs)
         for totals, counts in zip(self.counts, other.counts):
             for c, count in enumerate(counts):
                 totals[c] += count
@@ -1071,19 +1152,21 @@ class _Tally:
         self.uptimes.extend(other.uptimes)
         self.cost_samples.extend(other.cost_samples)
         for key, amount in other.cost_by_category.items():
-            self.cost_by_category[key] += amount
+            self.cost_by_category[key].add(amount)
         for node, amount in other.cost_by_component.items():
-            self.cost_by_component[node] += amount
+            self.cost_by_component[node].add(amount)
         for time, change in other.capacity_changes.items():
-            self.capacity_changes[time] += change
+            _add_at(self.capacity_changes, time, change)
         for time, change in other.unlimited_changes.items():
             self.unlimited_changes[time] += change
         for level, time in other.capacity_time.items():
-            self.capacity_time[level] += time
+            _add_at(self.capacity_time, level, time)
         self.delivered.extend(other.delivered)
 
     def to_dict(self) -> dict:
-        """The totals, as JSON data (see ``SimulationChunk.to_dict``)."""
+        """The totals, as JSON data (see ``SimulationChunk.to_dict``): each
+        exact total as the floats whose exact sum it is."""
+        self._fold()
         times, deltas = self.state_changes()
         return {
             "nodes": list(self.nodes),
@@ -1093,19 +1176,31 @@ class _Tally:
             "deltas": deltas.tolist(),
             "counts": [list(counts) for counts in self.counts],
             **{name: getattr(self, name) for name in self._COUNTS},
-            "system_uptime": self.system_uptime,
-            "system_downtime": self.system_downtime,
-            **{name: list(getattr(self, name)) for name in self._NODE_SUMS},
+            "system_uptime": self.system_uptime.partials,
+            "system_downtime": self.system_downtime.partials,
+            **{
+                name: [total.partials for total in getattr(self, name)]
+                for name in self._NODE_SUMS
+            },
             "uptimes": list(self.uptimes),
             "cost_samples": list(self.cost_samples),
-            "cost_by_category": dict(self.cost_by_category),
+            "cost_by_category": {
+                key: amount.partials
+                for key, amount in self.cost_by_category.items()
+            },
             "cost_by_component": [
-                [node, amount]
+                [node, amount.partials]
                 for node, amount in self.cost_by_component.items()
             ],
-            "capacity_changes": sorted(self.capacity_changes.items()),
+            "capacity_changes": sorted(
+                (time, _partials(change))
+                for time, change in self.capacity_changes.items()
+            ),
             "unlimited_changes": sorted(self.unlimited_changes.items()),
-            "capacity_time": sorted(self.capacity_time.items()),
+            "capacity_time": sorted(
+                (level, _partials(time))
+                for level, time in self.capacity_time.items()
+            ),
             "delivered": list(self.delivered),
             "opportunistic": list(self.opportunistic),
         }
@@ -1127,23 +1222,26 @@ class _Tally:
         tally.counts = [[int(c) for c in counts] for counts in data["counts"]]
         for name in cls._COUNTS:
             setattr(tally, name, int(data[name]))
-        tally.system_uptime = float(data["system_uptime"])
-        tally.system_downtime = float(data["system_downtime"])
+        tally.system_uptime = _exact_total(data["system_uptime"])
+        tally.system_downtime = _exact_total(data["system_downtime"])
         for name in cls._NODE_SUMS:
-            setattr(tally, name, [float(v) for v in data[name]])
+            setattr(tally, name, [_exact_total(v) for v in data[name]])
         tally.uptimes = [float(v) for v in data["uptimes"]]
         tally.cost_samples = [float(v) for v in data["cost_samples"]]
         tally.cost_by_category.update(
-            {key: float(v) for key, v in data["cost_by_category"].items()}
+            {
+                key: _exact_total(v)
+                for key, v in data["cost_by_category"].items()
+            }
         )
         tally.cost_by_component = {
-            _node_name(node): float(amount)
+            _node_name(node): _exact_total(amount)
             for node, amount in data["cost_by_component"]
         }
         for name in ("capacity_changes", "capacity_time"):
             totals = getattr(tally, name)
             for key, value in data[name]:
-                totals[float(key)] = float(value)
+                totals[float(key)] = _exact_total(value)
         for time, change in data["unlimited_changes"]:
             tally.unlimited_changes[float(time)] = int(change)
         tally.delivered = [float(v) for v in data["delivered"]]
@@ -11312,9 +11410,10 @@ class RepairableRBD(RBD):
         ``availability_from_chunks`` merges the chunks into the run's
         [`AvailabilityResult`][repyability.AvailabilityResult]. Chunks of
         simulations ``0`` to ``N - 1`` give the result of
-        ``availability(..., mc_samples=N)``: the same simulations, so the
-        same per-simulation values and timeline, with totals added up chunk
-        by chunk (equal to the last digits or so).
+        ``availability(..., mc_samples=N)``, to the last bit: the same
+        simulations, so the same per-simulation values and timeline, and
+        the same totals, which are kept exactly however the run is cut
+        (#151).
 
         Parameters
         ----------
@@ -11458,8 +11557,9 @@ class RepairableRBD(RBD):
         Chunks of simulations ``0`` to ``N - 1`` give the result of
         ``availability(t_simulation, mc_samples=N, seed=seed, ...)``: the
         same per-simulation values (``uptimes``, the costs' ``samples``) and
-        timeline, and the same totals to the last digits or so (the run
-        adds them simulation by simulation, the merge chunk by chunk).
+        timeline, and the same totals, to the last bit: every total is kept
+        exactly and rounded once, so it does not depend on how the run was
+        cut (#151).
         Chunks with gaps between them give the result of the simulations
         they hold. With costs, the result's ``cost`` is the simulated cost
         distribution, as ``cost`` gives it.
@@ -12278,31 +12378,40 @@ class RepairableRBD(RBD):
         antithetic: bool,
         capacity: Optional[_CapacityRecorder] = None,
     ) -> AvailabilityResult:
-        """The ``AvailabilityResult`` of the replications in ``tally``."""
+        """The ``AvailabilityResult`` of the replications in ``tally``: its
+        exact totals rounded, once."""
         N = tally.n
         nodes = tally.nodes
+        tally._fold()
+
+        def rounded(totals) -> list:
+            return [float(total) for total in totals]
+
+        system_uptime = float(tally.system_uptime)
+        system_downtime = float(tally.system_downtime)
+        both_up = rounded(tally.intersection_uptime)
+        both_down = rounded(tally.intersection_downtime)
         # Collect Importance/Criticality measures from the simulation
         # reference: https://www.weibull.com/pubs/2004rm_05B_02.pdf
         # Operational Criticality Index
         oci_down = {
-            k: _safe_ratio(v, tally.system_downtime)
-            for k, v in zip(nodes, tally.intersection_downtime)
+            k: _safe_ratio(v, system_downtime)
+            for k, v in zip(nodes, both_down)
         }
         oci_up = {
-            k: _safe_ratio(v, tally.system_uptime)
-            for k, v in zip(nodes, tally.intersection_uptime)
+            k: _safe_ratio(v, system_uptime) for k, v in zip(nodes, both_up)
         }
         # Intersection Over Union Importance
         iou_up = {
             k: _safe_ratio(both, either)
             for k, both, either in zip(
-                nodes, tally.intersection_uptime, tally.union_uptime
+                nodes, both_up, rounded(tally.union_uptime)
             )
         }
         iou_down = {
             k: _safe_ratio(both, either)
             for k, both, either in zip(
-                nodes, tally.intersection_downtime, tally.union_downtime
+                nodes, both_down, rounded(tally.union_downtime)
             )
         }
         FCI, RCI = tally.criticality_counts()
@@ -12367,7 +12476,9 @@ class RepairableRBD(RBD):
                 | set(tally.unlimited_changes)
                 | {0.0, t_simulation}
             )
-            totals = np.cumsum([tally.capacity_changes[t] for t in times])
+            totals = np.cumsum(
+                [float(tally.capacity_changes.get(t, 0.0)) for t in times]
+            )
             unlimited = np.cumsum([tally.unlimited_changes[t] for t in times])
             curve = np.where(
                 unlimited > 0, np.inf, np.maximum(totals / N, 0.0)
@@ -12376,7 +12487,7 @@ class RepairableRBD(RBD):
                 capacity_timeline=np.array(times),
                 capacity=curve,
                 capacity_time={
-                    level: tally.capacity_time[level]
+                    level: float(tally.capacity_time[level])
                     for level in sorted(tally.capacity_time)
                 },
                 demand=capacity.demand,
@@ -12390,12 +12501,12 @@ class RepairableRBD(RBD):
         return AvailabilityResult(
             timeline=time,
             availability=system_availability,
-            system_uptime=tally.system_uptime,
+            system_uptime=system_uptime,
             time_simulated_to=t_simulation,
             criticalities=criticalities,
-            node_uptime=dict(zip(nodes, tally.node_uptime)),
-            node_downtime=dict(zip(nodes, tally.node_downtime)),
-            system_downtime=tally.system_downtime,
+            node_uptime=dict(zip(nodes, rounded(tally.node_uptime))),
+            node_downtime=dict(zip(nodes, rounded(tally.node_downtime))),
+            system_downtime=system_downtime,
             system_failures=tally.system_failures,
             system_restorations=tally.system_restorations,
             n_simulations=N,
