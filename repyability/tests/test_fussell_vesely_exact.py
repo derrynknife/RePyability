@@ -299,7 +299,7 @@ def test_a_repairable_diagram_averages_the_union_over_its_inspections():
             **{n: repairable(0.2) for n in "bcde"},
         },
     )
-    p, q, weights = rbd._importance_probabilities(None, None)
+    p, q, weights, _ = rbd._importance_probabilities(None, None)
     size = len(weights)
     cuts = rbd.get_min_cut_sets()
     nodes = list("abcde")
