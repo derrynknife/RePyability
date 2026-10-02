@@ -847,3 +847,33 @@ def test_the_kept_structure_starts_as_the_structure_function(seed):
         assert works == rbd.is_system_working(
             {node: bool(start[c]) for c, node in enumerate(nodes)}, "p"
         )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    ["none", "random", "at zero", "repeated times"],
+)
+def test_the_curve_is_the_same_from_changes_in_order(changes):
+    # An engine may keep its changes in order of time; the curve worked
+    # out from them as they come is the one worked out by sorting them.
+    rng = np.random.default_rng(3)
+    times = {
+        "none": np.zeros(0),
+        "random": rng.random(5000) * 100.0,
+        "at zero": np.concatenate(([0.0, 0.0], rng.random(50) * 100.0)),
+        "repeated times": np.repeat(rng.random(300) * 100.0, 3),
+    }[changes]
+    deltas = rng.choice([-1, 1], times.size).astype(np.int64)
+    order = np.argsort(times, kind="stable")
+    for start in (0, 40):
+        shuffled = repairable_rbd._working_over_time(
+            times, deltas, 100.0, start
+        )
+        ordered = repairable_rbd._working_over_time(
+            times[order], deltas[order], 100.0, start
+        )
+        for a, b in zip(shuffled, ordered):
+            assert a.dtype == b.dtype and np.array_equal(a, b)
+        time, working = ordered
+        assert time[0] == 0.0 and time[-1] == 100.0
+        assert working[0] == start + deltas[times == 0.0].sum()

@@ -70,6 +70,14 @@ is required.
   the size of it: 70 components in redundant pairs ran 1.7 times as fast on
   one core and 1.5 times on four. The results are the same, to the last
   bit.
+- **Simulation engines from other packages.** A package can register a
+  compiled engine for `RepairableRBD` simulations under the
+  `repyability.engines` entry point group (the interface is in
+  `repyability.rbd.engines`). `availability`, `cost` and `compare` then take
+  its name as `engine`, and `engine="auto"` prefers it to numba when its
+  priority is higher, on what the compiled engine simulates; if it cannot
+  load, `"auto"` warns and runs on the next engine. `analysis_routes()`
+  reports it as the engine `"auto"` runs.
 - **System capacity** (#97): how much a system can deliver, not just
   whether it works. Every RBD class takes `capacity={node: throughput}`,
   each node's throughput while it works. The system's capacity is the

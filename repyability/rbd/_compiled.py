@@ -16,15 +16,20 @@ order, with the same arithmetic (see ``_Tally``).
 
 Only ``_kernel`` imports numba, so checking what the engine can run costs
 nothing when numba is not installed.
+
+Other packages can add compiled engines of their own (see ``engines``):
+``engine="auto"`` runs the one of highest priority, numba's being 0, on
+what ``unsupported`` allows.
 """
 
 import importlib.util
 import sys
+import warnings
 from typing import Any, Optional
 
 import numpy as np
 
-from repyability.rbd import _streams
+from repyability.rbd import _streams, engines
 
 # The kinds of term of the structure (see ``modular``).
 NODE_TERM, SERIES_TERM, PARALLEL_TERM = 0, 1, 2
@@ -101,20 +106,60 @@ def compiled() -> bool:
     return kernel is not None and kernel.used()
 
 
+def preferred() -> Optional[str]:
+    """The compiled engine ``engine="auto"`` runs: the usable engine of the
+    highest priority among those other packages add (see ``engines``) and
+    numba (priority 0), or None."""
+    for engine in engines.by_priority(minimum=1):
+        return engine.name
+    if available():
+        return "numba"
+    for engine in engines.by_priority():
+        return engine.name
+    return None
+
+
 def worthwhile(plan: _streams.Plan, N: int) -> bool:
     """Whether ``engine="auto"`` runs ``N`` simulations of ``plan``
-    compiled: when numba is installed and the loop is ready, or the run is
-    long enough to pay for loading it."""
-    if not available():
+    compiled: when a compiled engine is installed and its loop is ready, or
+    the run is long enough to pay for loading it."""
+    name = preferred()
+    if name is None:
         return False
-    if compiled():
-        return True
-    draws = sum(
+    draws = N * sum(
         spec.rows
         for spec in plan.specs.values()
         if spec.kind in (_streams.FAILURE, _streams.REPAIR)
     )
-    return N * draws >= AUTO_DRAWS
+    if name != "numba":
+        return bool(engines.registered()[name].worthwhile(draws))
+    if compiled():
+        return True
+    return draws >= AUTO_DRAWS
+
+
+def ready(name: str, auto: bool) -> str:
+    """The engine to run, once loaded: ``name`` itself or, when
+    ``engine="auto"`` chose an engine another package adds and it cannot
+    load, the next one (with a warning). Asked for outright, its error is
+    raised."""
+    engine = engines.get(name)
+    if engine is None:
+        return name
+    try:
+        engines.load(engine)
+    except ImportError as error:
+        if not auto:
+            raise
+        fallback = preferred() or "python"
+        warnings.warn(
+            f"The {name!r} simulation engine could not be loaded, so the "
+            f"simulations run on {fallback!r}:\n{error}",
+            RuntimeWarning,
+            stacklevel=4,
+        )
+        return ready(fallback, auto)
+    return name
 
 
 def _continued(total: float, values: np.ndarray) -> float:

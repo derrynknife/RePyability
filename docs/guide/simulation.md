@@ -461,6 +461,15 @@ them:
 | 10 bridges in series, 60 components | 0.51 million | 1.6 million |
 | 35 redundant pairs in series, 105 components | 0.34 million | 1.1 million |
 
+### Engines from other packages
+
+Another package can add a compiled engine of its own, registered under the
+`repyability.engines` entry point group (see `repyability.rbd.engines` for
+the interface). `engine=` then takes its name, and `engine="auto"` runs it
+in preference to numba when it says so, on the same systems, with the same
+results to the last bit; if it cannot load, `"auto"` warns and runs on the
+next engine. `analysis_routes()` reports which engine `"auto"` would run.
+
 ## Which to use
 
 - **A precision to meet:** give a `tolerance`, rather than guessing `mc_samples`.

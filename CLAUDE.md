@@ -38,6 +38,12 @@
   `test (with numba, ...)` jobs) and the Python loop against a reference
   written from the streams' definition. What the compiled engine does not
   simulate, `_compiled.unsupported` sends to Python.
+- **Engines from other packages** (`repyability/rbd/engines.py`) run what
+  `_compiled.unsupported` allows and are handed the run's own objects (the
+  `_compiled.Runner` arguments), so they may build on `_compiled`'s
+  `_System`, `_Store` and `_structure` and on `_streams`' blocks. Keep those
+  compatible, or raise `engines.API` (with a CHANGELOG entry) when an engine
+  would have to change with them.
 - **The random streams (`repyability/rbd/_streams.py`) define every seeded
   result.** Changing how a stream is named, seeded or laid out (its width,
   `BLOCK_DRAWS`, `MAX_WIDTH`, `first_rows`, the expected draws in

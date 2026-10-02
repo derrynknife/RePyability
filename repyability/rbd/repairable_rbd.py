@@ -835,6 +835,52 @@ class _Replication:
     opportunistic: List[int]
 
 
+def _working_over_time(
+    changed_at: np.ndarray, deltas: np.ndarray, t_end: float, start: int
+) -> Tuple[np.ndarray, np.ndarray]:
+    """How many simulated systems work after each time at which one changed
+    state (and at 0 and ``t_end`` whether or not any did): the times, in
+    order, and the counts, ``start`` working at 0. Changes given in order of
+    time (as an engine may keep them) are added up as they come; otherwise
+    they are sorted first. Either way the counts are whole numbers added
+    exactly, so the order cannot change them."""
+    in_order = changed_at.size == 0 or (
+        changed_at[0] >= 0.0
+        and changed_at[-1] < t_end
+        and bool(np.all(changed_at[1:] >= changed_at[:-1]))
+    )
+    if not in_order:
+        time, inverse = np.unique(
+            np.concatenate(([0.0, t_end], changed_at)), return_inverse=True
+        )
+        working = np.bincount(
+            inverse.ravel(),
+            weights=np.concatenate(([start, 0], deltas)),
+            minlength=time.size,
+        )
+        return time, working.cumsum()
+    new = np.empty(changed_at.size, bool)
+    if changed_at.size:
+        new[0] = True
+        np.not_equal(changed_at[1:], changed_at[:-1], out=new[1:])
+    firsts = np.flatnonzero(new)
+    times = changed_at[firsts]
+    sums = (
+        np.add.reduceat(deltas, firsts).astype(float)
+        if changed_at.size
+        else np.zeros(0)
+    )
+    at_zero = bool(times.size) and times[0] == 0.0
+    if at_zero:
+        sums[0] += start
+        time = np.concatenate((times, [t_end]))
+        weights = np.concatenate((sums, [0.0]))
+    else:
+        time = np.concatenate(([0.0], times, [t_end]))
+        weights = np.concatenate(([float(start)], sums, [0.0]))
+    return time, weights.cumsum()
+
+
 class _Tally:
     """The running totals of an availability simulation, added to one
     simulation at a time, in order.
@@ -6327,9 +6373,10 @@ class RepairableRBD(RBD):
         component under age replacement, say.
 
         For a simulation, ``engine`` is the engine ``engine="auto"`` runs a
-        long simulation on: ``"numba"`` when numba is installed and the
-        compiled engine simulates the system, else ``"python"``, with the
-        reason in ``engine_reason``.
+        long simulation on: when the compiled engine simulates the system,
+        ``"numba"`` if numba is installed (or the name of an engine another
+        package adds, see ``repyability.rbd.engines``), else ``"python"``,
+        with the reason in ``engine_reason``.
 
         Returns
         -------
@@ -6865,14 +6912,15 @@ class RepairableRBD(RBD):
         )
         if reason is not None:
             return "python", f"the compiled engine does not simulate {reason}"
-        if not _compiled.available():
+        engine = _compiled.preferred()
+        if engine is None:
             return (
                 "python",
                 "numba is not installed; pip install 'repyability[fast]' "
                 "for the compiled engine",
             )
         return (
-            "numba",
+            engine,
             "compiled for a run long enough to repay loading it; a short "
             "one runs in Python",
         )
@@ -9874,7 +9922,9 @@ class RepairableRBD(RBD):
             nodes held working or broken, costs, antithetic pairs and
             tolerances; preventive maintenance, inspections, nested RBDs,
             capacities, other models and runs from a ``state`` run in
-            Python. By default ``"auto"``.
+            Python. Another package can add a compiled engine of its own,
+            which ``engine`` then takes by name and ``"auto"`` may prefer
+            (see ``repyability.rbd.engines``). By default ``"auto"``.
         demand : float, optional
             The demand the delivered fraction is measured against, in the
             capacities' units, when nodes have capacities. By default the
@@ -10572,6 +10622,19 @@ class RepairableRBD(RBD):
                     method,
                     jobs,
                 )
+            elif engine != "python":
+                from repyability.rbd import engines
+
+                runner = engines.registered()[engine].runner(
+                    self,
+                    plan,
+                    tally,
+                    progress,
+                    working_nodes,
+                    broken_nodes,
+                    method,
+                    jobs,
+                )
             else:
                 runner = _PythonRunner(
                     self,
@@ -10633,29 +10696,35 @@ class RepairableRBD(RBD):
         capacity: Optional[_CapacityRecorder],
         N: int,
     ) -> str:
-        """The engine that runs a simulation: ``"python"`` or ``"numba"``
-        (see ``availability``'s ``engine``)."""
-        if engine not in ("auto", "python", "numba"):
-            raise ValueError(
-                "engine must be 'auto', 'python' or 'numba', got "
-                f"{engine!r}."
+        """The engine that runs a simulation: ``"python"``, ``"numba"`` or
+        one another package adds (see ``availability``'s ``engine``)."""
+        from repyability.rbd import _compiled, engines
+
+        added = engines.registered()
+        if engine not in ("auto", "python", "numba") and engine not in added:
+            names = ", ".join(
+                repr(name) for name in ["auto", "python", "numba", *added]
             )
+            raise ValueError(f"engine must be one of {names}, got {engine!r}.")
         if engine == "python":
             return engine
-        from repyability.rbd import _compiled
-
         reason = _compiled.unsupported(self, plan, capacity)
-        if engine == "numba":
-            _compiled.require()
+        if engine != "auto":
+            if engine == "numba":
+                _compiled.require()
+            elif not added[engine].available():
+                raise ImportError(
+                    f"The {engine!r} simulation engine cannot run here."
+                )
             if reason is not None:
                 raise NotImplementedError(
                     f"The compiled engine does not simulate {reason}: use "
                     "engine='python', or 'auto', which chooses the engine "
                     "that can."
                 )
-            return engine
+            return _compiled.ready(engine, auto=False)
         if reason is None and _compiled.worthwhile(plan, N):
-            return "numba"
+            return _compiled.ready(str(_compiled.preferred()), auto=True)
         return "python"
 
     def _replicate(self, ctx: "_Context", replication: int) -> _Replication:
@@ -11017,16 +11086,10 @@ class RepairableRBD(RBD):
         # simulated systems work after each time at which one changed state
         # (and at 0 and t_simulation whether or not any did), over N.
         changed_at, deltas = tally.state_changes()
-        time, inverse = np.unique(
-            np.concatenate(([0.0, t_simulation], changed_at)),
-            return_inverse=True,
+        time, working = _working_over_time(
+            changed_at, deltas, t_simulation, N if initial_up else 0
         )
-        working = np.bincount(
-            inverse.ravel(),
-            weights=np.concatenate(([N if initial_up else 0, 0], deltas)),
-            minlength=time.size,
-        )
-        system_availability = working.cumsum() / N
+        system_availability = working / N
 
         cost_result = None
         if self.has_costs:
