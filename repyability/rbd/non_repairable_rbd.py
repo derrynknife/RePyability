@@ -2839,6 +2839,7 @@ class NonRepairableRBD(RBD):
 
         def evaluate(reliabilities: tuple) -> float:
             if reliabilities not in cache:
+                value: Union[float, np.ndarray]
                 if conditions is None:
                     probabilities = dict(base)
                     for node, p in zip(nodes, reliabilities):

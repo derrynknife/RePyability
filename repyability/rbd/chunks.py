@@ -202,7 +202,7 @@ class SimulationChunk:
         """
         data = self.to_dict()
         totals = data["totals"]
-        arrays = {}
+        arrays: Dict[str, Any] = {}
         for name, kind in _ARRAYS.items():
             values = totals.pop(name, None)
             if values is not None:

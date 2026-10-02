@@ -167,6 +167,7 @@ def condition_cycle(
     from scipy.signal import fftconvolve
 
     g = _grid(life, repair, duration, interval, node, starts=True)
+    assert g.renewals is not None and g.done is not None  # starts=True
     steps, h, T = g.steps, g.h, g.interval
     ages = _Ages(life, h, T, threshold)
     if _never_replaced(ages, steps):
