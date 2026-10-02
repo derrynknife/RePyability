@@ -23,7 +23,7 @@ def test_repairable_rbd_missing_repairability_component():
         ("input_node", "no_repairability"),
         ("no_repairability", "output_node"),
     ]
-    with pytest.raises(KeyError):
+    with pytest.raises(ValueError, match="needs a 'repairability'"):
         RepairableRBD(edges, components)
 
 

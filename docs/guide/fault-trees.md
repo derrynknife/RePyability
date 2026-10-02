@@ -32,7 +32,14 @@ cooling = FaultTree(
 )
 cooling.top                        # 'no cooling'
 cooling.top_event_probability()    # -> 0.0595   1 − (1 − 0.1²)(1 − 0.05)
+cooling.ff()                       # -> 0.0595   the same, by an RBD's name
+cooling.sf()                       # -> 0.9405   worked out in its own right
 ```
+
+A tree answers to an RBD's names too, so the same code runs on either:
+`ff` and `sf`, and the cut and path sets as a list
+(`minimal_cut_sets()`, which an RBD has as well) or a set
+(`get_min_cut_sets()`, as an RBD gives them).
 
 | Gate | Written | Occurs when |
 |---|---|---|

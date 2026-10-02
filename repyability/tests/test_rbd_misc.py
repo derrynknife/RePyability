@@ -137,7 +137,9 @@ def test_an_invalid_on_infeasible_rbd_is_rejected_on_a_valid_diagram(cls):
 
 
 def test_structure_warning():
-    with pytest.warns(UserWarning, match="^Structural Errors in RBD"):
+    with pytest.warns(
+        UserWarning, match="^RBD not correctly structured:\n.*'b', 's'"
+    ):
         NonRepairableRBD(
             [("s", "a"), ("a", "t"), ("b", "t")],
             {

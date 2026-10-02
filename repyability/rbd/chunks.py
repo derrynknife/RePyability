@@ -203,31 +203,43 @@ class SimulationChunk:
             _Tally.from_dict(data["totals"]),
         )
 
-    def to_json(self) -> str:
-        """The chunk as a JSON string (``from_json`` loads it).
+    def to_json(self, fp=None) -> Union[str, None]:
+        """The chunk as a JSON document (``from_json`` loads it): returned,
+        or written to ``fp``.
+
+        Parameters
+        ----------
+        fp : str, os.PathLike or file, optional
+            A path, or a file opened for writing, to write the document to;
+            by default None: it is returned.
 
         Returns
         -------
-        str
-            ``to_dict``'s output, as JSON.
+        str or None
+            ``to_dict``'s output, as JSON, or None once written to ``fp``.
         """
-        return json.dumps(self.to_dict())
+        from repyability.utils.json_io import write_json
+
+        return write_json(json.dumps(self.to_dict()), fp)
 
     @classmethod
-    def from_json(cls, text: str) -> "SimulationChunk":
+    def from_json(cls, text) -> "SimulationChunk":
         """The chunk ``to_json`` saved.
 
         Parameters
         ----------
-        text : str
-            ``to_json``'s output.
+        text : str, os.PathLike or file
+            ``to_json``'s output: its text, a path to a file holding it, or
+            a file opened for reading.
 
         Returns
         -------
         SimulationChunk
             The chunk.
         """
-        return cls.from_dict(json.loads(text))
+        from repyability.utils.json_io import read_json
+
+        return cls.from_dict(json.loads(read_json(text)))
 
 
 def _run_key(settings: Dict[str, Any]) -> tuple:

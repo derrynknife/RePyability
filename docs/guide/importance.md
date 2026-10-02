@@ -179,6 +179,11 @@ see [Repairable systems](repairable.md#criticality-measures).
 
 ## Limits
 
+- A perfect junction node (`PerfectReliability`, such as the vote of a
+  k-out-of-n arrangement) is a drawing device that never fails and cannot
+  be improved: every importance measure leaves it out, the structural
+  importance takes it as always working, and the allocations hold it at 1
+  and leave it out of their results.
 - The probability-based measures and `parameter_sensitivity` raise
   `NotImplementedError` on an RBD with common-cause groups (structural
   importance does not).

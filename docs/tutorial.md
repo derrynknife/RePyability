@@ -261,7 +261,7 @@ Modelled *independently*, the same two pumps each pinned at the half-load
 would read higher:
 
 ```python
-p = RegressionNode(pump, covariates=[1.0]).sf(4000)[0]
+p = RegressionNode(pump, covariates=[1.0]).sf(4000)
 1 - (1 - p) ** 2   # -> 0.9119
 ```
 
@@ -314,8 +314,8 @@ duty_unit = surv.WeibullAFT.fit(run_hours, Z=duty_history.reshape(-1, 1))
 # benign until 3000 h, then a harsher duty for the rest of life
 duty = StepSchedule.from_changepoints([0, 3000], [[0.0], [1.0]])
 node = RegressionNode(duty_unit, schedule=duty)
-node.sf(4000)[0]   # -> 0.7024   just after the step up
-node.sf(6000)[0]   # -> 0.3799   the harsher duty has now done real damage
+node.sf(4000)   # -> 0.7024   just after the step up
+node.sf(6000)   # -> 0.3799   the harsher duty has now done real damage
 ```
 
 Held at the benign duty the same unit would read `0.762` and `0.554`.

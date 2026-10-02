@@ -164,7 +164,17 @@ is not a valid RBD. It checks for:
   successors;
 - a `k` of zero, or a `k` larger than the node's number of inputs, or a `k`
   given for a node that is not in the graph;
-- a node without a model.
+- a node in the edges without a model (but the input and output nodes,
+  which need none), and a model for a name in no edge.
+
+The error lists each problem on a line of its own, and suggests the node a
+mistyped model was meant for:
+
+```text
+ValueError: RBD not correctly structured:
+  - node 'pump' (in the edges) has no model
+  - model 'pmup' is not a node in the edges; did you mean 'pump'?
+```
 
 Pass `on_infeasible_rbd="warn"` to get a warning instead, or `"ignore"` to
 build it silently, and inspect the findings in `structure_check`:
@@ -181,7 +191,9 @@ broken.structure_check["nodes_with_no_predecessors"]   # ['s', 'b']
 
 `structure_check` is a dict of findings: `is_valid`, `has_cycles` and
 `cycles`, `nodes_with_no_predecessors` / `nodes_with_no_successors`,
-`koon_errors` and `koon_warnings`, `irrelevant_nodes`,
+`nodes_with_no_model` and `nodes_in_no_edge` (models for names in no edge,
+which are left out of the diagram), `koon_errors` and `koon_warnings`,
+`irrelevant_nodes`,
 `all_distributions_fixed`, and `is_analytically_solvable` with
 `non_analytic_nodes`. An RBD built with errors can give meaningless results;
 use `"warn"`/`"ignore"` to diagnose a diagram, not to analyse it.

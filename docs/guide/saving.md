@@ -21,6 +21,18 @@ text = rbd.to_json(indent=2)    # a JSON string (keyword arguments go to json.du
 
 clone = NonRepairableRBD.from_json(text)
 clone.sf(30) == rbd.sf(30)      # True
+```
+
+As surpyval's models do, `to_json` writes to a file given a path (or a file
+opened for writing), and `from_json` reads a path as well as the text:
+
+```python
+import tempfile
+from pathlib import Path
+
+path = Path(tempfile.mkdtemp()) / "plant.json"
+rbd.to_json(path)                       # written; returns None
+NonRepairableRBD.from_json(path).sf(30) == rbd.sf(30)   # True
 type(RBD.from_dict(data)).__name__   # 'NonRepairableRBD': the base class dispatches on type
 data["type"], data["repyability_version"]   # ('NonRepairableRBD', '0.11')
 ```

@@ -377,7 +377,7 @@ independent 2-out-of-3 group at the initial load (Lesson 2) would have had
 $100.8/2 = 50.4$ h for the second stage:
 
 ```python
-p = at_1.sf(50)[0]                   # one unit at load 1.0 survives 50 h
+p = at_1.sf(50)                   # one unit at load 1.0 survives 50 h
 3 * p**2 - 2 * p**3                  # -> 0.6608   independent 2-out-of-3
 at_1.mean() / 3 + at_1.mean() / 2    # -> 84.0
 ```

@@ -10,10 +10,20 @@ that at least one set of elements fully works, minimal cut sets from minimal
 path sets, and the probability scaling used by reliability allocation.
 """
 
-import pprint
+import difflib
+import functools
 import warnings
 from collections import defaultdict
-from typing import Any, Dict, Hashable, Iterable, Iterator, Optional, Tuple
+from typing import (
+    Any,
+    Dict,
+    Hashable,
+    Iterable,
+    Iterator,
+    List,
+    Optional,
+    Tuple,
+)
 
 import networkx as nx
 import numpy as np
@@ -52,6 +62,99 @@ def _check_on_infeasible_rbd(value: Any) -> None:
             "'on_infeasible_rbd' must be one of {'raise', 'warn', 'ignore'}, "
             f"got {value!r}."
         )
+
+
+def leaves_out_junctions(method):
+    """A measure's or an allocation's per-node results without the
+    diagram's perfect junction nodes (see ``RBD._junctions``): drawing
+    devices, such as a k-out-of-n vote, that never fail and cannot be
+    improved. A dict of such results (by measure) loses them from each."""
+
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        result = method(self, *args, **kwargs)
+        junctions = self._junctions()
+        if not junctions or not isinstance(result, dict):
+            return result
+
+        def strip(values: dict) -> dict:
+            return {n: v for n, v in values.items() if n not in junctions}
+
+        if result and all(isinstance(v, dict) for v in result.values()):
+            return {key: strip(values) for key, values in result.items()}
+        return strip(result)
+
+    return wrapper
+
+
+def _set_order(nodes: frozenset) -> tuple:
+    """Path and cut sets' order in a list: smallest first, then by name (as
+    a ``FaultTree`` lists them)."""
+    return (len(nodes), sorted(map(str, nodes)))
+
+
+def _names(nodes) -> str:
+    """Node names for a message, in a stable order."""
+    return ", ".join(sorted((repr(n) for n in nodes), key=str))
+
+
+def _close_name(name, candidates) -> Optional[Any]:
+    """The one of ``candidates`` whose name is closest to ``name``'s (a
+    likely typo), if any is close."""
+    by_text = {str(c): c for c in candidates}
+    close = difflib.get_close_matches(str(name), list(by_text), n=1)
+    return by_text[close[0]] if close else None
+
+
+def structure_problems(check: dict) -> List[str]:
+    """What a diagram's ``structure_check`` found wrong, one sentence each
+    (see ``RBD``), in the order a user would fix them."""
+    lines = []
+    missing = list(check.get("nodes_with_no_model", ()))
+    for node in missing:
+        lines.append(f"node {node!r} (in the edges) has no model")
+    for node in check.get("nodes_in_no_edge", ()):
+        line = f"model {node!r} is not a node in the edges"
+        close = _close_name(node, missing)
+        if close is not None:
+            line += f"; did you mean {close!r}?"
+        lines.append(line)
+    for cycle in check.get("cycles", ()):
+        lines.append(f"there is a cycle through {_names(cycle)}")
+    sources = check.get("nodes_with_no_predecessors", ())
+    if not check.get("has_unique_input_node", True):
+        lines.append(
+            "more than one node has no incoming edges, so the input node is "
+            f"not clear: {_names(sources)} (only the input node has none)"
+        )
+    elif sources:
+        lines.append(
+            f"node(s) {_names(sources)} have no incoming edges, which only "
+            f"the input node, {check['input_node']!r}, may have"
+        )
+    sinks = check.get("nodes_with_no_successors", ())
+    if not check.get("has_unique_output_node", True):
+        lines.append(
+            "more than one node has no outgoing edges, so the output node is "
+            f"not clear: {_names(sinks)} (every node but the output needs an "
+            "edge onward)"
+        )
+    elif sinks:
+        lines.append(
+            f"node(s) {_names(sinks)} have no outgoing edges, which only the "
+            f"output node, {check['output_node']!r}, may have"
+        )
+    lines.extend(check.get("koon_errors", ()))
+    return lines
+
+
+def structure_message(check: dict) -> str:
+    """The message an infeasible diagram raises or warns with: what its
+    ``structure_check`` found, one line each."""
+    lines = structure_problems(check) or ["see structure_check"]
+    return "RBD not correctly structured:\n" + "\n".join(
+        f"  - {line}" for line in lines
+    )
 
 
 def log_linearly_scale_probabilities(p: float, x: float) -> np.ndarray:
@@ -378,16 +481,20 @@ class RBD:
     a cycle; if it has not exactly one node with no incoming edges, or not
     exactly one with no outgoing edges (e.g. a node in ``nodes`` that is in
     no edge); if a ``k`` is 0 or greater than the node's number of incoming
-    edges; or if ``k`` names a node not in the diagram. ``on_infeasible_rbd``
-    sets what then happens, and the full report is kept in
-    ``structure_check``. On construction the diagram is also reduced to its
-    modules: the series, parallel and k-out-of-n parts, each of which has a
-    closed form, leaving only the rest (e.g. a bridge) to be worked out from
-    its minimal path sets. This keeps large redundant diagrams fast, and a
-    series-parallel diagram never needs its path sets, however many there
-    are (see [`system_probability`][repyability.RBD.system_probability]).
-    The minimal path and cut sets are found on first use and cached, so
-    repeated evaluations are cheap.
+    edges; or if ``k`` names a node not in the diagram. The subclasses add
+    that every node in the edges but the input and output has a model, and
+    that every model is for a node in the edges. ``on_infeasible_rbd`` sets
+    what then happens: the error or warning lists each finding on a line of
+    its own (a model in no edge with the node it was likely meant for), and
+    the full report is kept in ``structure_check``. On construction the
+    diagram is also reduced to its modules: the series, parallel and
+    k-out-of-n parts, each of which has a closed form, leaving only the rest
+    (e.g. a bridge) to be worked out from its minimal path sets. This keeps
+    large redundant diagrams fast, and a series-parallel diagram never needs
+    its path sets, however many there are (see
+    [`system_probability`][repyability.RBD.system_probability]). The
+    minimal path and cut sets are found on first use and cached, so repeated
+    evaluations are cheap.
 
     Parameters
     ----------
@@ -398,9 +505,8 @@ class RBD:
     nodes : Iterable, optional
         Node names that must be in the diagram as well as those in
         ``edges``, by default None. A name that is in no edge is an isolated
-        node, which makes the structure infeasible; the subclasses pass
-        their component names here so that a component missing from
-        ``edges`` is reported.
+        node, which makes the structure infeasible. (The subclasses check
+        their models' names against the edges instead.)
     k : dict[Any, int], optional
         The k-out-of-n value of nodes, keyed by node name, by default None
         (every node has ``k = 1``).
@@ -463,12 +569,9 @@ class RBD:
         with probabilities adding up to 1, or is given for the input or
         output node or a node not in the diagram;
         if the structure is infeasible
-        and ``on_infeasible_rbd`` is ``"raise"`` (the message does not
-        list the problems: use ``"warn"`` to see them); if
-        ``on_infeasible_rbd`` is not one of its three values; or if, with
-        ``"warn"`` or ``"ignore"``, no set of working nodes can reach the
-        output node (e.g. a ``k`` greater than the node's number of
-        incoming edges).
+        and ``on_infeasible_rbd`` is ``"raise"`` (the message lists what is
+        wrong, one finding a line); or if ``on_infeasible_rbd`` is not one
+        of its three values.
 
     Examples
     --------
@@ -508,6 +611,10 @@ class RBD:
     # the RBD can be re-created (see ``serialisation``); declared here so the
     # attribute is visible on the base type.
     _init_args: dict
+    # The names a subclass has models for, set before the base constructor
+    # runs (None for a structure alone): one in no edge is reported as
+    # such, and a node in the edges with none as having no model.
+    _models_given: Optional[list] = None
 
     def __init__(
         self,
@@ -578,20 +685,42 @@ class RBD:
         if structure_check["is_valid"]:
             structure_check["is_valid"] = valid_rbd
 
-        if has_excess_koon_nodes:
+        for node in excess_koon_nodes:
             structure_check["koon_errors"].append(
-                "Check if you have repeated KooN nodes"
+                f"k is given for {node!r}, which is not a node of the diagram"
             )
+
+        models = self._models_given
+        if models is not None:
+            # A model for a name in no edge is reported as unused (not added
+            # as an isolated node, which would hide the input and output); a
+            # node in the edges with no model as such, but for the nodes
+            # with no incoming or no outgoing edges, which need none as the
+            # input and output (more than one is reported as that).
+            ends = {
+                n
+                for n in self.G.nodes
+                if self.G.in_degree(n) == 0 or self.G.out_degree(n) == 0
+            }
+            given = set(models)
+            unused = [n for n in models if n not in self.G]
+            missing = [
+                n for n in self.G.nodes if n not in given and n not in ends
+            ]
+            structure_check["nodes_in_no_edge"] = unused
+            structure_check["nodes_with_no_model"] = missing
+            if unused or missing:
+                structure_check["is_valid"] = False
 
         if not structure_check["is_valid"]:
             if on_infeasible_rbd == "warn":
                 warnings.warn(
-                    "Structural Errors in RBD:\n"
-                    + pprint.pformat(structure_check),
+                    structure_message(structure_check)
+                    + "\n(built anyway, as on_infeasible_rbd='warn' asks)",
                     stacklevel=2,
                 )
             elif on_infeasible_rbd == "raise":
-                raise ValueError("RBD not correctly structured")
+                raise ValueError(structure_message(structure_check))
 
         self.structure_check = structure_check
         self.input_node = structure_check["input_node"]
@@ -612,6 +741,7 @@ class RBD:
         if (
             not structure_check["has_cycles"]
             and not structure_check["has_nodes_with_no_successor"]
+            and not structure_check["has_koon_errors"]
         ):
             # Reduces the diagram, and raises if nothing reaches the output.
             self._decomposition()
@@ -620,6 +750,39 @@ class RBD:
                 self.structure_check["has_irrelevant_nodes"] = True
 
             self.structure_check["irrelevant_nodes"] = irrelevant_nodes
+
+    def __repr__(self) -> str:
+        """A short summary: the nodes, the input and output nodes, any
+        k-out-of-n nodes, and what else shapes the diagram."""
+        nodes = list(getattr(self, "nodes", []))
+        shown = ", ".join(repr(n) for n in nodes[:8])
+        if len(nodes) > 8:
+            shown += f", ... ({len(nodes) - 8} more)"
+        parts = [
+            f"{len(nodes)} node{'' if len(nodes) == 1 else 's'}: {shown}",
+            f"input {getattr(self, 'input_node', None)!r}, "
+            f"output {getattr(self, 'output_node', None)!r}",
+        ]
+        graph = getattr(self, "G", None)
+        if graph is not None:
+            koon = {
+                n: graph.nodes[n]["k"]
+                for n in graph.nodes
+                if graph.nodes[n]["k"] != 1
+            }
+            if koon:
+                parts.append(
+                    "k-out-of-n "
+                    + ", ".join(f"{n!r}: {k}" for n, k in koon.items())
+                )
+        parts.extend(self._repr_details())
+        if not getattr(self, "structure_check", {}).get("is_valid", True):
+            parts.append("infeasible (see structure_check)")
+        return f"{type(self).__name__}({'; '.join(parts)})"
+
+    def _repr_details(self) -> List[str]:
+        """What a subclass adds to ``repr``."""
+        return []
 
     def find_irrelevant_components(self) -> set:
         """Return the nodes that cannot affect whether the system works.
@@ -801,6 +964,56 @@ class RBD:
         if method not in ("p", "c"):
             raise ValueError("`method` must be either 'p' or 'c'")
         return self._decomposition().works(component_status, method)
+
+    def minimal_path_sets(self) -> List[frozenset]:
+        """The minimal path sets of the components (no input or output
+        node), as a list, smallest first (then by name): the same as
+        [`get_min_path_sets`][repyability.RBD.get_min_path_sets]
+        ``(include_in_out_nodes=False)``, in the form a
+        [`FaultTree`][repyability.FaultTree]'s ``minimal_path_sets``
+        gives, so the same code runs on either.
+
+        Returns
+        -------
+        list of frozenset
+            The minimal path sets.
+
+        Examples
+        --------
+        >>> from repyability import RBD
+        >>> rbd = RBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")]
+        ... )
+        >>> [sorted(p) for p in rbd.minimal_path_sets()]
+        [['a', 'c'], ['b', 'c']]
+        """
+        return sorted(
+            self.get_min_path_sets(include_in_out_nodes=False),
+            key=_set_order,
+        )
+
+    def minimal_cut_sets(self) -> List[frozenset]:
+        """The minimal cut sets of the components, as a list, smallest first
+        (then by name): the same as
+        [`get_min_cut_sets`][repyability.RBD.get_min_cut_sets]``()``, in
+        the form a [`FaultTree`][repyability.FaultTree]'s
+        ``minimal_cut_sets`` gives, so the same code runs on either.
+
+        Returns
+        -------
+        list of frozenset
+            The minimal cut sets.
+
+        Examples
+        --------
+        >>> from repyability import RBD
+        >>> rbd = RBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")]
+        ... )
+        >>> [sorted(c) for c in rbd.minimal_cut_sets()]
+        [['c'], ['a', 'b']]
+        """
+        return sorted(self.get_min_cut_sets(), key=_set_order)
 
     def get_min_cut_sets(
         self, include_in_out_nodes=False
@@ -1146,6 +1359,14 @@ class RBD:
             )
         return self._modules
 
+    def _junctions(self) -> frozenset:
+        """The nodes that are only drawing devices: perfectly reliable
+        junctions (a ``NonRepairableRBD``'s ``PerfectReliability`` nodes,
+        such as a k-out-of-n vote), which never fail and cannot be
+        improved. The importance measures and allocations leave them out
+        (and hold them at 1); none in a structure alone."""
+        return frozenset()
+
     def _component_aliases(self) -> dict:
         """``{node: component}`` for the nodes that stand for a component
         drawn in more than one place (a ``NonRepairableRBD``'s repeated
@@ -1338,6 +1559,7 @@ class RBD:
             return _capacity.working(distribution)
         return distribution
 
+    @leaves_out_junctions
     @check_probability
     def improvement_allocation(
         self,
@@ -1433,6 +1655,10 @@ class RBD:
         }
         for node in self.nodes:
             probabilities.setdefault(node, 0.5)
+        # A perfect junction stays perfect.
+        for node in self._junctions():
+            probabilities[node] = 1.0
+            fixed_nodes.add(node)
 
         # Solve for the common multiplier m = exp(-x) of the free nodes'
         # unreliabilities, q -> min(1, q * m ** w): unlike x it has a finite
@@ -1477,6 +1703,7 @@ class RBD:
         )
         return allocated(m)
 
+    @leaves_out_junctions
     @check_probability
     def equal_allocation(self, target: float):
         """Give every node the same probability, chosen to meet a target.
@@ -1523,6 +1750,7 @@ class RBD:
 
         return self.improvement_allocation(target, node_probabilities)
 
+    @leaves_out_junctions
     @check_probability
     def simple_allocation(
         self,
@@ -1611,9 +1839,12 @@ class RBD:
         >>> round(float(rbd.system_probability(new)[0]), 4)
         0.99
         """
+        # A perfect junction stays perfect, and takes no weight.
+        junctions = self._junctions()
         weight_of = {
             n: 1.0 if weights is None else float(weights[n])
             for n in self.nodes
+            if n not in junctions
         }
         for node, value in weight_of.items():
             if not (np.isfinite(value) and value >= 0.0):
@@ -1621,12 +1852,12 @@ class RBD:
                     f"weights[{node!r}] must be a finite, non-negative "
                     f"number, got {value}."
                 )
-        free = [n for n in self.nodes if weight_of[n] > 0.0]
+        free = [n for n in weight_of if weight_of[n] > 0.0]
         weight = np.array([weight_of[n] for n in free])
 
         def probabilities(log_odds: np.ndarray) -> tuple[Dict, Dict]:
-            p = {n: 0.5 for n in self.nodes}
-            q = dict(p)
+            p = {n: 1.0 if n in junctions else 0.5 for n in self.nodes}
+            q = {n: 1.0 - p[n] for n in self.nodes}
             for i, n in enumerate(free):
                 p[n] = float(sigmoid(log_odds[i]))
                 q[n] = float(sigmoid(-log_odds[i]))
@@ -1703,15 +1934,24 @@ class RBD:
     def _allocation_start(self, node_probabilities: Dict) -> Dict[Any, float]:
         """The current probability of every intermediate node, validated.
         Other keys (e.g. the input and output nodes) are not used."""
-        missing = [n for n in self.nodes if n not in node_probabilities]
+        junctions = self._junctions()
+        missing = [
+            n
+            for n in self.nodes
+            if n not in node_probabilities and n not in junctions
+        ]
         if missing:
             raise ValueError(
                 "node_probabilities needs the current probability of every "
                 f"intermediate node; missing {missing}."
             )
         return {
-            node: _probability_value(
-                f"node_probabilities[{node!r}]", node_probabilities[node]
+            node: (
+                1.0
+                if node in junctions
+                else _probability_value(
+                    f"node_probabilities[{node!r}]", node_probabilities[node]
+                )
             )
             for node in self.nodes
         }
@@ -1748,6 +1988,7 @@ class RBD:
             for n in self.nodes
         }
 
+    @leaves_out_junctions
     @check_probability
     def minimum_effort_allocation(
         self, target: float, node_probabilities: Dict
@@ -1852,6 +2093,7 @@ class RBD:
                 "cost_based_allocation for other structures."
             )
 
+    @leaves_out_junctions
     @check_probability
     def cost_based_allocation(
         self,
@@ -2093,6 +2335,7 @@ class RBD:
         """
         return list(self.nodes)
 
+    @leaves_out_junctions
     def structural_importance(
         self,
         working_nodes: Optional[Iterable[Hashable]] = None,
@@ -2102,7 +2345,9 @@ class RBD:
 
         The fraction of the states of the *other* nodes in which the node is
         pivotal -- the system works when the node works and fails when it
-        fails, holding the others fixed. It is computed exactly as the
+        fails, holding the others fixed. A perfect junction node (a
+        ``PerfectReliability`` drawing device, such as a k-out-of-n vote) is
+        always working, and is left out. It is computed exactly as the
         Birnbaum importance with every node probability at 1/2, so it
         depends only on the RBD's structure and not on any failure model --
         useful at design time, before any life data exists. It is the same
@@ -2159,8 +2404,12 @@ class RBD:
         >>> {k: round(v, 4) for k, v in sorted(si.items())}
         {'a': 0.5, 'b': 1.0}
         """
+        # A perfect junction (see _junctions) is always working: it is no
+        # part of the other nodes' states.
+        junctions = self._junctions()
         node_probabilities: dict[Any, ArrayLike] = {
-            node: np.full(1, 0.5) for node in self.nodes
+            node: np.full(1, 1.0 if node in junctions else 0.5)
+            for node in self.nodes
         }
         node_probabilities = self._probabilities_with_overrides(
             node_probabilities, working_nodes, broken_nodes
@@ -2227,23 +2476,27 @@ class RBD:
 
         return rbd_to_dict(self)
 
-    def to_json(self, **json_kwargs) -> str:
-        """Serialise the RBD to a JSON string.
+    def to_json(self, fp=None, **json_kwargs) -> Optional[str]:
+        """Serialise the RBD to JSON: a string, or written to a file.
 
         Equivalent to ``json.dumps(self.to_dict(), **json_kwargs)``; see
         [`to_dict`][repyability.RBD.to_dict] for what is stored. String,
         integer and tuple node names all survive: JSON turns a tuple into a
-        list, and loading turns it back.
+        list, and loading turns it back. With ``fp`` it is written there, as
+        surpyval's models' ``to_json(fp)`` writes them.
 
         Parameters
         ----------
+        fp : str, os.PathLike or file, optional
+            A path, or a file opened for writing, to write the document to;
+            by default None: it is returned.
         **json_kwargs
             Passed to ``json.dumps``, e.g. ``indent=2``.
 
         Returns
         -------
-        str
-            The JSON document.
+        str or None
+            The JSON document, or None once written to ``fp``.
 
         Raises
         ------
@@ -2269,8 +2522,9 @@ class RBD:
         'NonRepairableRBD'
         """
         from repyability.rbd.serialisation import rbd_to_json
+        from repyability.utils.json_io import write_json
 
-        return rbd_to_json(self, **json_kwargs)
+        return write_json(rbd_to_json(self, **json_kwargs), fp)
 
     @classmethod
     def from_dict(cls, d: dict) -> "RBD":
@@ -2327,16 +2581,20 @@ class RBD:
         return rbd_from_dict(d)
 
     @classmethod
-    def from_json(cls, s: str) -> "RBD":
-        """Reconstruct an RBD from a JSON string made by ``to_json``.
+    def from_json(cls, s) -> "RBD":
+        """Reconstruct an RBD from a JSON document made by ``to_json``.
 
         Equivalent to ``cls.from_dict(json.loads(s))``, so the same type
-        rules apply (see [`from_dict`][repyability.RBD.from_dict]).
+        rules apply (see [`from_dict`][repyability.RBD.from_dict]). ``s``
+        can be the document's text or, as surpyval's ``from_json`` takes, a
+        path to the file holding it.
 
         Parameters
         ----------
-        s : str
-            A JSON document made by [`to_json`][repyability.RBD.to_json].
+        s : str, os.PathLike or file
+            A JSON document made by [`to_json`][repyability.RBD.to_json]:
+            its text, a path to a file holding it, or a file opened for
+            reading.
 
         Returns
         -------
@@ -2348,6 +2606,8 @@ class RBD:
         ValueError
             If ``s`` is not valid JSON (``json.JSONDecodeError`` is a
             ValueError), or for the reasons given in ``from_dict``.
+        FileNotFoundError
+            If ``s`` is neither a JSON document nor the path of a file.
         KeyError
             If a required entry is missing (see ``from_dict``).
 
@@ -2369,7 +2629,9 @@ class RBD:
         """
         import json
 
-        return cls.from_dict(json.loads(s))
+        from repyability.utils.json_io import read_json
+
+        return cls.from_dict(json.loads(read_json(s)))
 
     def _probabilities_with_overrides(
         self,

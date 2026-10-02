@@ -147,7 +147,7 @@ def test_repairable_missing_component_raises_clearly():
         },
     }
     # Node "B" is in the graph but has no component definition.
-    with pytest.raises(ValueError, match="no entry in"):
+    with pytest.raises(ValueError, match=r"node 'B' \(in the edges\) has no"):
         RepairableRBD([("s", "A"), ("A", "B"), ("B", "t")], comps)
 
 

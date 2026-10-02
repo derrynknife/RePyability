@@ -7,7 +7,6 @@ uses (``check_x`` and the ``NodeFailure`` simulation event).
 
 import functools
 import math
-import pprint
 import warnings
 import zlib
 from copy import copy
@@ -54,7 +53,7 @@ from .degrading_node import DegradingNode
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .load_sharing_node import LoadSharingModel
 from .node_state import NodeState
-from .rbd import RBD, _check_on_infeasible_rbd
+from .rbd import RBD, _check_on_infeasible_rbd, leaves_out_junctions
 from .redundancy_allocation import ComponentOption, active_unreliability
 from .repeated_node import RepeatedNode
 from .repeated_standby_node import RepeatedStandbyNode
@@ -218,6 +217,38 @@ def _dsf_dparam(cls, params, j, x_arr, rel_step, extras=None) -> np.ndarray:
     if down is not None:
         return (base - down) / h
     return np.full(x_arr.shape, np.nan)
+
+
+def _check_model(node, model) -> None:
+    """Raise if a node's model is not one (it has no ``sf``), saying what
+    to give instead; a number most likely means a probability."""
+    if callable(getattr(model, "sf", None)):
+        return
+    if isinstance(model, (int, float)) and not isinstance(model, bool):
+        value = float(model)
+        hint = ""
+        if 0.0 <= value <= 1.0:
+            hint = (
+                f" (if {value:g} is its reliability, "
+                f"FixedEventProbability.from_params({1.0 - value:g}))"
+            )
+        raise TypeError(
+            f"The model of node {node!r} is the number {model!r}, not a "
+            "model with a survival function (sf). For a node that fails "
+            "with a fixed probability q, give "
+            f"surpyval.FixedEventProbability.from_params(q), q being its "
+            f"probability of failing{hint}; for one with a lifetime, a "
+            "surpyval distribution such as "
+            "surpyval.Weibull.from_params([alpha, beta])."
+        )
+    raise TypeError(
+        f"The model of node {node!r} is {model!r}, which has no survival "
+        "function (sf): give a surpyval model (e.g. "
+        "surpyval.Weibull.from_params([alpha, beta]), or "
+        "surpyval.FixedEventProbability.from_params(q) for a fixed "
+        "probability of failing), a node class of RePyability's, or another "
+        "NonRepairableRBD."
+    )
 
 
 class NonRepairableRBD(RBD):
@@ -454,15 +485,19 @@ class NonRepairableRBD(RBD):
             for k, v in reliabilities.items()
             if v not in reliabilities.keys()
         }
+        for node, model in reliabilities.items():
+            _check_model(node, model)
 
         # A repeated node stays where it is drawn, and the exact engine
         # treats every appearance as the one component it repeats (joining
         # the nodes in the graph instead would add paths the diagram does
-        # not have). Set before the base class works out the structure.
+        # not have). Set before the base class works out the structure,
+        # with the names given models, which it checks against the edges.
         self._aliases = dict(repeated)
+        self._models_given = list(reliabilities) + list(repeated)
         super().__init__(
             edges,
-            set(reliabilities.keys()),
+            None,
             k,
             input_node,
             output_node,
@@ -470,6 +505,14 @@ class NonRepairableRBD(RBD):
             capacity=capacity,
         )
         self.structure_check["has_repeated_node_in_cycle"] = False
+        # A model for a name in no edge is not part of the diagram (the
+        # structure check reports it).
+        unused = set(self.structure_check["nodes_in_no_edge"])
+        reliabilities = {
+            n: m for n, m in reliabilities.items() if n not in unused
+        }
+        repeated = {n: m for n, m in repeated.items() if n not in unused}
+        self._aliases = dict(repeated)
 
         # Check for repeated cycles or non-repeated cycles
         if self.structure_check["has_unique_input_node"]:
@@ -477,31 +520,12 @@ class NonRepairableRBD(RBD):
         if self.structure_check["has_unique_output_node"]:
             reliabilities[self.output_node] = PerfectReliability
 
-        # Check that all nodes in graph were in the reliabilities dict
-        # Checking that all in the reliabilities dict are in the graph
-        # is done in RBD initialisation since the RBD adds nodes from the
-        # reliabilities dict and checks if they are connected.
-        self.structure_check["is_missing_distributions"] = False
-        self.structure_check["nodes_with_no_reliability_distribution"] = []
-        for n in self.G.nodes:
-            if n not in reliabilities and n not in repeated:
-                self.structure_check["is_valid"] = False
-                self.structure_check["is_missing_distributions"] = True
-                self.structure_check[
-                    "nodes_with_no_reliability_distribution"
-                ].append(n)
-
-        if not self.structure_check["is_valid"]:
-            if on_infeasible_rbd == "warn":
-                warnings.warn(
-                    "Structural Errors in RBD:\n"
-                    + pprint.pformat(self.structure_check),
-                    stacklevel=2,
-                )
-            elif on_infeasible_rbd == "raise":
-                raise ValueError("RBD not correctly structured")
-            elif on_infeasible_rbd == "ignore":
-                pass
+        # The nodes in the edges with no model, as the base class found them.
+        missing = list(self.structure_check["nodes_with_no_model"])
+        self.structure_check["is_missing_distributions"] = bool(missing)
+        self.structure_check["nodes_with_no_reliability_distribution"] = (
+            missing
+        )
 
         self.reliabilities = reliabilities
         warn_nonparametric(nonparametric_nodes(reliabilities))
@@ -522,6 +546,34 @@ class NonRepairableRBD(RBD):
             len(non_analytic_nodes) == 0
         )
         self.structure_check["non_analytic_nodes"] = non_analytic_nodes
+
+    def _repr_details(self) -> List[str]:
+        """Repeated nodes, perfect junctions and common-cause groups, for
+        ``repr``."""
+        out = []
+        repeated = getattr(self, "repeated", {})
+        if repeated:
+            out.append(f"{len(repeated)} repeated node(s)")
+        junctions = self._junctions()
+        if junctions:
+            out.append(
+                "junction(s) "
+                + ", ".join(repr(n) for n in sorted(junctions, key=str))
+            )
+        groups = getattr(self, "ccf_groups", [])
+        if groups:
+            out.append(f"{len(groups)} common-cause group(s)")
+        return out
+
+    def _junctions(self) -> frozenset:
+        """The ``PerfectReliability`` nodes: drawing devices, such as a
+        k-out-of-n vote (see ``RBD._junctions``)."""
+        reliabilities = getattr(self, "reliabilities", {})
+        return frozenset(
+            node
+            for node in self.nodes
+            if reliabilities.get(node) is PerfectReliability
+        )
 
     def _validate_node_overrides(self, working_nodes, broken_nodes) -> None:
         """Extends the base check with the repeated-node rule: a repeated node
@@ -5046,24 +5098,34 @@ class NonRepairableRBD(RBD):
             ),
         )
 
-    def _validate_state(self, state) -> None:
-        """Validate a condition-based ``state`` mapping.
+    def _validate_state(self, state) -> dict:
+        """A condition-based ``state`` mapping, validated, with a plain
+        number taken as the node's age (``NodeState(age=...)``).
 
         Raises rather than silently ignoring bad input: a non-mapping, a value
-        that is not a :class:`NodeState`, the input/output node, an unknown
-        node, or a node whose model is composite/dynamic.
+        that is neither a :class:`NodeState` nor an age, the input/output
+        node, an unknown node, or a node whose model is composite/dynamic.
         """
         if not isinstance(state, dict):
             raise TypeError(
-                "state must be a dict of {node: NodeState}, got "
-                f"{type(state).__name__}."
+                "state must be a dict of {node: NodeState} (or {node: age}), "
+                f"got {type(state).__name__}."
             )
+        state = {
+            node: (
+                NodeState(age=float(value))
+                if isinstance(value, (int, float, np.integer, np.floating))
+                and not isinstance(value, (bool, np.bool_))
+                else value
+            )
+            for node, value in state.items()
+        }
         valid = set(self.nodes)
         for node, node_state in state.items():
             if not isinstance(node_state, NodeState):
                 raise TypeError(
-                    f"state[{node!r}] must be a NodeState, got "
-                    f"{type(node_state).__name__}."
+                    f"state[{node!r}] must be a NodeState (or a number, its "
+                    f"age), got {type(node_state).__name__}."
                 )
             if node in self.in_or_out:
                 which = "input" if node == self.input_node else "output"
@@ -5081,6 +5143,7 @@ class NonRepairableRBD(RBD):
                     f"distribution components in this release; node {node!r} "
                     f"is a {type(self.reliabilities[node]).__name__}."
                 )
+        return state
 
     def _state_node_probabilities(self, x, state) -> Dict[Any, ArrayLike]:
         """Per-node forward reliability at ``x`` given each node's ``state``.
@@ -5091,7 +5154,7 @@ class NonRepairableRBD(RBD):
         contributes ``conditional_survival(model, x, X) = sf(X + x) / sf(X)``.
         """
         self._require_no_ccf_for_states()
-        self._validate_state(state)
+        state = self._validate_state(state)
         node_probabilities: Dict[Any, ArrayLike] = {}
         for node_name, model in self.reliabilities.items():
             node_state = state.get(node_name)
@@ -5251,6 +5314,22 @@ class NonRepairableRBD(RBD):
         >>> round(rbd.remaining_life(0.9, {"c": NodeState(age=40)}), 2)
         11.51
         """
+        if isinstance(target, dict):
+            raise TypeError(
+                "remaining_life's first argument is the reliability target, a "
+                "number in (0, 1), and the states come second: "
+                "remaining_life(0.9, state) or remaining_life(0.9, "
+                "state=state)."
+            )
+        if (
+            isinstance(target, bool)
+            or not isinstance(target, (int, float, np.integer, np.floating))
+            or not 0.0 < float(target) < 1.0
+        ):
+            raise ValueError(
+                "target is the reliability to fall to, a number strictly "
+                f"between 0 and 1, got {target!r}."
+            )
         if state is None:
             state = {}
         return self._invert_reliability(
@@ -5259,6 +5338,7 @@ class NonRepairableRBD(RBD):
             upper_bound,
         )
 
+    @leaves_out_junctions
     def importances_given_state(
         self,
         x: Optional[ArrayLike] = None,
@@ -5455,6 +5535,7 @@ class NonRepairableRBD(RBD):
 
     # Importance measures
     # https://www.ntnu.edu/documents/624876/1277590549/chapt05.pdf/82cd565f-fa2f-43e4-a81a-095d95d39272
+    @leaves_out_junctions
     @check_x
     def birnbaum_importance(
         self,
@@ -5534,6 +5615,7 @@ class NonRepairableRBD(RBD):
             ),
         )
 
+    @leaves_out_junctions
     @check_x
     def improvement_potential(
         self,
@@ -5605,6 +5687,7 @@ class NonRepairableRBD(RBD):
             ),
         )
 
+    @leaves_out_junctions
     @check_x
     def risk_achievement_worth(
         self,
@@ -5675,6 +5758,7 @@ class NonRepairableRBD(RBD):
             ),
         )
 
+    @leaves_out_junctions
     @check_x
     def risk_reduction_worth(
         self,
@@ -5746,6 +5830,7 @@ class NonRepairableRBD(RBD):
             ),
         )
 
+    @leaves_out_junctions
     @check_x
     def criticality_importance(
         self,
@@ -5850,6 +5935,7 @@ class NonRepairableRBD(RBD):
             ),
         )
 
+    @leaves_out_junctions
     @check_x
     def fussell_vesely(
         self,

@@ -166,7 +166,7 @@ Treating the three units as independent, each pinned at its initial share
 (load 1.0), would overstate the group:
 
 ```python
-p = RegressionNode(unit, covariates=[1.0]).sf(50)[0]
+p = RegressionNode(unit, covariates=[1.0]).sf(50)
 3 * p**2 - 2 * p**3   # -> 0.6608   two-out-of-three, ignoring the load transfer
 ```
 

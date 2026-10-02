@@ -107,8 +107,8 @@ class NonRepairable:
           survival function ``sf``.
     time_to_replace : surpyval model, optional
         The distribution of the time taken to replace the unit after a
-        failure, used by the availability and event methods. Default
-        ``ExactEventTime.from_params(0)``: instantaneous replacement.
+        failure, used by the availability and event methods. By default
+        None: instantaneous replacement (``ExactEventTime.from_params(0)``).
 
     Attributes
     ----------
@@ -159,9 +159,10 @@ class NonRepairable:
     0.9804
     """
 
-    def __init__(
-        self, reliability, time_to_replace=ExactEventTime.from_params(0)
-    ):
+    def __init__(self, reliability, time_to_replace=None):
+        if time_to_replace is None:
+            # Replaced in no time.
+            time_to_replace = ExactEventTime.from_params(0)
         if isinstance(reliability, Parametric):
             self.model_parameterization = "parametric"
             self.reliability_function = reliability.sf

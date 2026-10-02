@@ -16,7 +16,6 @@ import heapq
 import itertools
 import json
 import math
-import pprint
 import warnings
 from collections import Counter, defaultdict, deque
 from collections.abc import Mapping
@@ -2900,7 +2899,16 @@ class RepairableRBD(RBD):
         self._member_group: dict[Any, Hashable] = {}
         # Components repaired imperfectly, by node (see _ImperfectComponent).
         self._imperfect: dict[Any, _Imperfect] = {}
-        components = copy(components)
+        # The base class checks the names given components against the
+        # edges; a component for a name in no edge is not part of the
+        # diagram (the structure check reports it).
+        self._models_given = list(components)
+        in_edges = {node for edge in edges for node in edge}
+        components = {
+            name: component
+            for name, component in components.items()
+            if name in in_edges
+        }
         reliability = {}
         repairability = {}
         for name, component in components.items():
@@ -3007,7 +3015,7 @@ class RepairableRBD(RBD):
 
         super().__init__(
             edges,
-            set(components.keys()),
+            None,
             k,
             input_node,
             output_node,
@@ -3016,32 +3024,36 @@ class RepairableRBD(RBD):
         )
 
         # Every intermediate graph node needs a component definition (the
-        # input/output nodes do not). Surface missing ones now with a clear
-        # error rather than a KeyError mid-simulation.
-        missing = [
-            n
-            for n in self.G.nodes
-            if n not in components and n not in self.in_or_out
-        ]
+        # input/output nodes do not): the base class has checked, and
+        # reported the missing ones, rather than a KeyError mid-simulation.
+        missing = list(self.structure_check["nodes_with_no_model"])
         self.structure_check["is_missing_components"] = bool(missing)
         self.structure_check["nodes_with_no_component"] = missing
-        if missing:
-            self.structure_check["is_valid"] = False
-            if on_infeasible_rbd == "raise":
-                raise ValueError(
-                    f"Node(s) {sorted(missing, key=str)} have no entry in "
-                    "the components dict."
-                )
-            elif on_infeasible_rbd == "warn":
-                warnings.warn(
-                    "Nodes with no component definition: "
-                    + pprint.pformat(missing),
-                    stacklevel=2,
-                )
 
         self.components = components
         self.repairability = copy(repairability)
         self._maintenance = self._validate_groups(maintenance_groups)
+
+    def _repr_details(self) -> List[str]:
+        """What shapes the repairable diagram, for ``repr``: its
+        maintenance, tests, standby groups, nested RBDs and repair crews."""
+        counts = [
+            (len(getattr(self, "_preventive", {})), "maintained"),
+            (len(getattr(self, "_inspection", {})), "tested"),
+            (len(getattr(self, "_standby", {})), "standby group(s)"),
+            (len(getattr(self, "_imperfect", {})), "repaired imperfectly"),
+            (
+                sum(
+                    isinstance(c, RepairableRBD)
+                    for c in getattr(self, "components", {}).values()
+                ),
+                "nested RBD(s)",
+            ),
+        ]
+        out = [f"{count} {what}" for count, what in counts if count]
+        if getattr(self, "repair_crews", None) is not None:
+            out.append(f"{self.repair_crews} repair crew(s)")
+        return out
 
     def _validate_imperfect(self, node, spec: dict) -> Optional[_Imperfect]:
         """A component spec's imperfect repair (``"repair"`` and
@@ -3218,6 +3230,32 @@ class RepairableRBD(RBD):
                 f"{sorted(map(str, unknown))}. A component spec takes "
                 f"{', '.join(cls.COMPONENT_SPEC_KEYS)}."
             )
+        for key, what in (
+            ("reliability", "its lives (time to failure)"),
+            ("repairability", "its repair times"),
+        ):
+            if key not in spec:
+                raise ValueError(
+                    f"Component {node!r} needs a {key!r}: the "
+                    f"distribution of {what}."
+                )
+            value = spec[key]
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                mean = "MTTF" if key == "reliability" else "MTTR"
+                instant = (
+                    ", or 'instant' for a repair in zero time"
+                    if key == "repairability"
+                    else ""
+                )
+                raise TypeError(
+                    f"Component {node!r}: {key} is the number {value!r}, "
+                    f"not a distribution of {what}. For an {mean} of "
+                    f"{value:g}, give e.g. "
+                    f"surpyval.Exponential.from_params([1 / {value:g}]); "
+                    "for a fixed time, "
+                    f"surpyval.ExactEventTime.from_params([{value:g}])"
+                    f"{instant}."
+                )
 
     @classmethod
     def _validate_preventive(cls, node, spec) -> Tuple[_Preventive, Any, Any]:

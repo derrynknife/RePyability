@@ -489,6 +489,57 @@ class FaultTree:
         p, q = self._event_probabilities(t)
         return self._out(self._top(p, q, len(t)), scalar)
 
+    def ff(self, t: Optional[ArrayLike] = None):
+        """The probability that the top event has occurred by ``t``: the
+        unreliability of the system the tree describes, by the name an
+        RBD's ``ff`` has (the same as ``top_event_probability``).
+
+        Parameters
+        ----------
+        t : array_like, optional
+            Time/s, as for ``top_event_probability``.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The probability.
+        """
+        return self.top_event_probability(t)
+
+    def sf(self, t: Optional[ArrayLike] = None):
+        """The probability that the top event has not occurred by ``t``: the
+        reliability of the system the tree describes, as an RBD's ``sf``
+        gives it. Worked out in its own right, not as one less ``ff``, so a
+        small one keeps its precision.
+
+        Parameters
+        ----------
+        t : array_like, optional
+            Time/s, as for ``top_event_probability``.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The probability.
+
+        Examples
+        --------
+        >>> from repyability import FaultTree
+        >>> tree = FaultTree(
+        ...     {"top": ("and", ["a", "b"])}, {"a": 0.1, "b": 0.2}
+        ... )
+        >>> round(tree.sf(), 4), round(tree.ff(), 4)
+        (0.98, 0.02)
+        """
+        t, scalar = self._times(t)
+        p, q = self._event_probabilities(t)
+        size = len(t)
+        works, _ = self._decomposition.probabilities(
+            p, q, shape=size, works=True, fails=False
+        )
+        values = np.broadcast_to(np.asarray(works, dtype=float), (size,))
+        return self._out(values, scalar)
+
     def occurs(self, events: Collection[Hashable]) -> bool:
         """Whether the top event occurs when exactly ``events`` have.
 
@@ -551,6 +602,29 @@ class FaultTree:
                 self._decomposition.cut_sets(), key=_sort_key
             )
         return list(self._cut_sets)
+
+    def get_min_cut_sets(self) -> set:
+        """The minimal cut sets as a set, as an RBD's ``get_min_cut_sets``
+        gives them (``minimal_cut_sets`` lists them).
+
+        Returns
+        -------
+        set of frozenset
+            The minimal cut sets.
+        """
+        return set(self.minimal_cut_sets())
+
+    def get_min_path_sets(self) -> set:
+        """The minimal path sets as a set, as an RBD's
+        ``get_min_path_sets(include_in_out_nodes=False)`` gives them
+        (``minimal_path_sets`` lists them).
+
+        Returns
+        -------
+        set of frozenset
+            The minimal path sets.
+        """
+        return set(self.minimal_path_sets())
 
     def minimal_path_sets(self) -> List[frozenset]:
         """The minimal path sets: the smallest sets of basic events whose
@@ -1168,32 +1242,46 @@ class FaultTree:
         }
         return cls(gates, events, top=_node_name(d["top"]))
 
-    def to_json(self, **json_kwargs) -> str:
-        """The tree as a JSON string (see ``to_dict``); keyword arguments
-        pass to ``json.dumps``.
+    def to_json(self, fp=None, **json_kwargs) -> Optional[str]:
+        """The tree as a JSON document (see ``to_dict``): returned, or
+        written to ``fp`` (as surpyval's models' ``to_json(fp)`` writes
+        them).
+
+        Parameters
+        ----------
+        fp : str, os.PathLike or file, optional
+            A path, or a file opened for writing, to write the document to;
+            by default None: it is returned.
+        **json_kwargs
+            Passed to ``json.dumps``, e.g. ``indent=2``.
 
         Returns
         -------
-        str
-            The JSON document.
+        str or None
+            The JSON document, or None once written to ``fp``.
         """
-        return json.dumps(self.to_dict(), **json_kwargs)
+        from repyability.utils.json_io import write_json
+
+        return write_json(json.dumps(self.to_dict(), **json_kwargs), fp)
 
     @classmethod
-    def from_json(cls, s: str) -> "FaultTree":
+    def from_json(cls, s) -> "FaultTree":
         """Rebuild a tree from ``to_json``'s output.
 
         Parameters
         ----------
-        s : str
-            The JSON document.
+        s : str, os.PathLike or file
+            The JSON document: its text, a path to a file holding it, or a
+            file opened for reading.
 
         Returns
         -------
         FaultTree
             The tree.
         """
-        return cls.from_dict(json.loads(s))
+        from repyability.utils.json_io import read_json
+
+        return cls.from_dict(json.loads(read_json(s)))
 
 
 def _pruned(

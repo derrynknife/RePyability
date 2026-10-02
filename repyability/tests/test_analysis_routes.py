@@ -389,6 +389,8 @@ def test_the_report_covers_every_public_analysis(cls):
         "get_all_path_sets",
         "get_min_cut_sets",
         "get_min_path_sets",
+        "minimal_cut_sets",
+        "minimal_path_sets",
         "get_non_analytic_nodes",
         "is_analytically_solvable",
         "is_system_working",

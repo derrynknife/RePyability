@@ -51,8 +51,10 @@ behind `method="simulate"`, and the exact MTTF refuses common-cause groups
 `max_samples`, with the old names deprecated until 0.12 (#105);
 `is_analytically_solvable()` flags only simulated nodes (#127); cold-standby
 reliabilities are more accurate, so they move slightly (#128); a cost
-breakdown has a seventh category, `"setup"` (#108); and surpyval 0.21 is
-required.
+breakdown has a seventh category, `"setup"` (#108); perfect junction
+nodes are left out of the importance measures and allocations, and a
+`RegressionNode` gives a float for a scalar time (#134); and surpyval 0.21
+is required.
 
 ### Added
 
@@ -503,6 +505,33 @@ required.
 
 ### Changed
 
+- **A diagram that is not one says what is wrong** (#131). Building an RBD
+  that is not a valid diagram raised `ValueError: RBD not correctly
+  structured` and nothing more; the message (and the warning, with
+  `on_infeasible_rbd="warn"`) now lists each finding on a line of its own:
+  a node in the edges with no model, a model for a name in no edge (with
+  the node it was likely meant for: "did you mean 'pump'?"), a cycle, more
+  than one node with no incoming or no outgoing edges, a `k` of 0, above the
+  node's inputs, or for no node. A model for a name in no edge is reported
+  as such, and left out of the diagram, rather than added as an isolated
+  node, which hid the input and output nodes and reported them as missing
+  models; `structure_check` gains `nodes_with_no_model` and
+  `nodes_in_no_edge`. `on_infeasible_rbd="ignore"` now builds a diagram
+  with k-out-of-n errors (it raised that no path reached the output), so
+  its `structure_check` can be read. A `RepairableRBD` component with no
+  `"repairability"` raises a ValueError that says so, not a KeyError.
+- **Perfect junction nodes are no components to rank or allocate** (#134).
+  A `PerfectReliability` node, such as the vote of a k-out-of-n
+  arrangement, is a drawing device: the importance measures (Birnbaum,
+  improvement potential, risk worths, criticality, Fussell–Vesely,
+  `importances_given_state` and the structural importance) leave it out,
+  the structural importance takes it as always working (so the other nodes'
+  values change: each pump of a 2-out-of-3 vote now has 0.5, not 0.25), and
+  the allocations hold it at 1 and leave it out of their results, where
+  `equal_allocation` and `simple_allocation` gave it a value below 1.
+- **`RegressionNode.sf` and `ff` give a float for a scalar time** (#134),
+  as every other node does (and surpyval's models), rather than a
+  one-element array.
 - **Versions have two parts**, major.minor: this release is 0.11, not
   0.11.0, and the next, whether it adds or fixes, will be 0.12. From 1.0,
   only a release that breaks compatibility raises the major number.
@@ -671,6 +700,34 @@ required.
 
 ### Fixed
 
+- **New users' first stumbles** (#134):
+  - `repr()` of an RBD summarises it: its nodes, input and output, k-out-of-n
+    nodes and, for a `NonRepairableRBD`, repeated nodes, junctions and
+    common-cause groups, or for a `RepairableRBD`, its maintained, tested,
+    standby and nested components and repair crews.
+  - A number given as a `NonRepairableRBD` node's model raised an
+    `AttributeError` at the first analysis; it is refused at construction,
+    with what to give instead (`FixedEventProbability.from_params(q)`, q the
+    probability of failing). A number as a `RepairableRBD` component's
+    `"reliability"` or `"repairability"` says the same, with the
+    exponential of that mean and the fixed time as the alternatives.
+  - `remaining_life(state)`, with the state where the target goes, raised a
+    `TypeError` about comparing a float and a dict; it says which argument
+    is which, and checks the target is in (0, 1). A state may give a plain
+    number as a node's age.
+  - `to_json(fp)` writes to a path or a file and `from_json` reads one, as
+    surpyval's do, for RBDs, fault trees and simulation chunks; without a
+    path `to_json` returns the text, as before.
+  - A `FaultTree` has an RBD's `ff` and `sf` (the latter in its own right,
+    to its full precision), and `get_min_cut_sets` and `get_min_path_sets`
+    (sets); an RBD has a fault tree's `minimal_cut_sets` and
+    `minimal_path_sets` (lists, smallest first), so the same code runs on
+    either.
+  - `NonRepairable`'s `time_to_replace` defaults to None (an instant
+    replacement), so `help()` no longer prints a surpyval model inside the
+    signature.
+  - A `RegressionNode` with a covariate vector of the wrong width says how
+    many covariates the model was fitted with.
 - **Risk achievement and reduction worth keep their precision** when the
   system's unreliability is small: they divide unreliabilities, which were
   computed as one less a reliability close to 1, losing digits (for a
