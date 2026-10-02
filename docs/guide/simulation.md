@@ -586,7 +586,7 @@ pip install "repyability[fast]"
 `engine="auto"`, the default of `availability`, `cost` and `compare`, then
 compiles a run when the compiled engine simulates the system and the run is
 long enough to repay loading it: about a third of a second from numba's
-cache (some seconds the first time ever, while numba compiles it).
+cache (a minute or two the first time ever, while numba compiles it).
 `engine="numba"` asks for it outright, and raises an error if numba is not
 installed or the system is one it does not simulate; `engine="python"` keeps
 to Python. The two engines give the same results, to the last bit: the
@@ -606,21 +606,23 @@ antithetic pairs, tolerances and common random numbers; age and block
 replacement, in zero time or taking time; hidden failures found by
 periodic tests, in zero time or taking time, staggered, and with a coverage
 below 1 (a failure a test misses waits for a full test); fewer repair
-crews than components, the jobs waiting by priority; and standby groups,
-cold, warm or hot, with switches that can fail. Replacement on condition,
-maintenance groups, imperfect repair, nested RBDs, capacities, a run from
-the components' states with maintenance or tests, and other models run in
-Python, which `"auto"` chooses by itself.
-With `n_jobs` it runs on that many threads, which start at once. Under age
-replacement (half the units maintained in zero time, half taking time), the
-compiled engine ran 9 to 12 times as fast as Python on one thread, and 18 to
-29 times on four, on the three systems below; with every unit tested (half
+crews than components, the jobs waiting by priority; standby groups,
+cold, warm or hot, with switches that can fail; and nested RBDs of up to 20
+components, each stepped to its next change as in Python. Replacement on
+condition, maintenance groups, imperfect repair, capacities, a run from the
+components' states with maintenance, tests or nested RBDs, and other
+models run in Python, which `"auto"` chooses by itself. With `n_jobs` it
+runs on that many threads, which start at once. Under age replacement (half
+the units maintained in zero time, half taking time), the compiled engine
+ran 9 to 12 times as fast as Python on one thread, and 18 to 29 times on
+four, on the three systems below; with every unit tested (half
 the tests in zero time, staggered, half taking time and missing one failure
 in ten), 17 to 27 times on one thread, and 32 to 63 on four; with one,
 two and four crews, 13, 9 and 5 times on one thread, and 19, 25 and 8 on
 four (on the 70 components, drawing the numbers and adding up the results
-take most of the time); and with half the nodes standby groups of three
-units, 6 to 8 times on one thread, and 7 to 19 on four.
+take most of the time); with half the nodes standby groups of three
+units, 6 to 8 times on one thread, and 7 to 19 on four; and with every
+node a nested pair, 6 times on one thread and 17 to 18 on four.
 
 On a four-core 2.8 GHz Xeon, in millions of events (failures and repairs)
 a second:

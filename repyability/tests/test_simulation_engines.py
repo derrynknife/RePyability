@@ -797,7 +797,8 @@ def engines_agree(rbd, options):
     ``availability`` and (with costs) ``cost``, on a system numba's own
     loop runs but an engine of the interface's version is not given."""
     if "broken_nodes" in options and "b" not in rbd.components:
-        options = {**options, "broken_nodes": [rbd.nodes[1]]}
+        nodes = list(rbd.components)
+        options = {**options, "broken_nodes": [nodes[min(1, len(nodes) - 1)]]}
     plan, _ = rbd._stream_plan(100.0, 1, False)
     assert _compiled.unsupported(rbd, plan, None) is not None
     assert _compiled.unsupported(rbd, plan, None, numba=True) is None
@@ -880,6 +881,7 @@ def test_what_numbas_loop_runs_besides_plain_components():
         *inspected_rbds().values(),
         *crewed_rbds().values(),
         *standby_rbds().values(),
+        *nested_rbds().values(),
     ]:
         plan, _ = rbd._stream_plan(100.0, 1, False)
         # Not given to an engine of the interface's version.
@@ -889,8 +891,10 @@ def test_what_numbas_loop_runs_besides_plain_components():
             reason = "standby groups"
         elif rbd._preventive:
             reason = "preventive maintenance"
-        else:
+        elif rbd._inspection:
             reason = "inspections"
+        else:
+            reason = "nested RBDs"
         assert reason in _compiled.unsupported(rbd, plan, None)
         assert _compiled.unsupported(rbd, plan, None, numba=True) is None
     timed = {"interval": 30.0, "duration": binomial_first([2, 1.5])}
@@ -1308,6 +1312,216 @@ def standby_rbds():
 @pytest.mark.parametrize("name", sorted(standby_rbds()))
 def test_the_engines_agree_on_standby_groups(name, options):
     engines_agree(standby_rbds()[name], options)
+
+
+def nested_rbds():
+    """Systems with nested RBDs, which numba's own loop simulates (#155),
+    each a level of its own stepped to its next change: nested RBDs
+    maintained (their planned outages planned outages of the system),
+    tested, with crews of their own beside the system's, with standby
+    groups, nested three deep, and with fixed lives whose events fall
+    together across levels."""
+
+    def unit(scale, shape, repair=None, **extra):
+        return {
+            "reliability": W([scale, shape]),
+            "repairability": L([1.0, 0.5]) if repair is None else repair,
+            **extra,
+        }
+
+    pair = [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")]
+    slow = L([2.0, 0.5])
+    crewed = RepairableRBD(
+        [
+            ("s", "a"),
+            ("s", "b"),
+            ("s", "c"),
+            ("a", "t"),
+            ("b", "t"),
+            ("c", "t"),
+        ],
+        {
+            "a": unit(40, 2.0, slow, priority=1.0),
+            "b": unit(45, 2.0, slow),
+            "c": unit(50, 2.0, slow),
+        },
+        repair_crews=1,
+    )
+    return {
+        "maintained inside": RepairableRBD(
+            [("s", "m"), ("m", "c"), ("c", "t")],
+            {
+                "m": RepairableRBD(
+                    pair,
+                    {
+                        "a": unit(
+                            50,
+                            2.5,
+                            preventive={
+                                "interval": 20.0,
+                                "duration": E([1.0]),
+                            },
+                        ),
+                        "b": unit(
+                            55,
+                            2.0,
+                            preventive={"interval": 15.0, "policy": "block"},
+                        ),
+                    },
+                ),
+                "c": unit(90, 1.5, repair_cost=2.0),
+            },
+            downtime_cost_rate=1.0,
+        ),
+        "tested inside": RepairableRBD(
+            [("s", "m"), ("s", "c"), ("m", "t"), ("c", "t")],
+            {
+                "m": RepairableRBD(
+                    pair,
+                    {
+                        "a": unit(
+                            50,
+                            2.5,
+                            inspection={"interval": 10.0, "duration": X(0.5)},
+                        ),
+                        "b": unit(
+                            55,
+                            2.0,
+                            inspection={
+                                "interval": 12.0,
+                                "offset": 6.0,
+                                "coverage": 0.7,
+                                "full_test": 48.0,
+                            },
+                        ),
+                    },
+                ),
+                "c": unit(60, 1.5),
+            },
+        ),
+        "crews inside and out": RepairableRBD(
+            [
+                ("s", "m"),
+                ("s", "c"),
+                ("s", "d"),
+                ("m", "t"),
+                ("c", "t"),
+                ("d", "t"),
+            ],
+            {
+                "m": crewed,
+                "c": unit(40, 2.0, slow),
+                "d": unit(45, 2.0, slow, priority=2.0),
+            },
+            repair_crews=1,
+        ),
+        "standby inside": RepairableRBD(
+            [("s", "m"), ("m", "c"), ("c", "t")],
+            {
+                "m": RepairableRBD(
+                    [("s", "g"), ("g", "x"), ("x", "t")],
+                    {
+                        "g": unit(
+                            40,
+                            2.0,
+                            slow,
+                            standby={
+                                "units": 3,
+                                "dormancy_factor": 0.3,
+                                "switching_probability": 0.9,
+                            },
+                        ),
+                        "x": unit(80, 1.5),
+                    },
+                    repair_crews=1,
+                ),
+                "c": unit(90, 1.5),
+            },
+        ),
+        "three levels": RepairableRBD(
+            [("s", "m"), ("m", "t")],
+            {
+                "m": RepairableRBD(
+                    [("s", "x"), ("s", "y"), ("x", "t"), ("y", "t")],
+                    {
+                        "x": RepairableRBD(
+                            pair, {"a": unit(30, 2.0), "b": unit(35, 2.0)}
+                        ),
+                        "y": crewed,
+                    },
+                )
+            },
+        ),
+        "fixed lives across levels": RepairableRBD(
+            [("s", "m"), ("m", "c"), ("c", "t")],
+            {
+                "m": RepairableRBD(
+                    pair,
+                    {
+                        "a": {"reliability": X(10.0), "repairability": X(2.0)},
+                        "b": {
+                            "reliability": X(10.0),
+                            "repairability": "instant",
+                        },
+                    },
+                ),
+                "c": {"reliability": X(10.0), "repairability": X(1.0)},
+            },
+        ),
+    }
+
+
+@needs_numba
+@UPKEEP_RUNS
+@pytest.mark.parametrize("name", sorted(nested_rbds()))
+def test_the_engines_agree_on_nested_rbds(name, options):
+    engines_agree(nested_rbds()[name], options)
+
+
+@needs_numba
+def test_a_nested_rbd_s_planned_outage_is_the_system_s():
+    rbd = nested_rbds()["maintained inside"]
+    run = dict(t_simulation=500.0, mc_samples=100, seed=3)
+    compiled = rbd.availability(engine="numba", **run)
+    identical(compiled, rbd.availability(engine="python", **run))
+    assert compiled.system_planned_outages > 0
+    # Held, a nested RBD is not simulated at all.
+    for held in ("broken_nodes", "working_nodes"):
+        identical(
+            rbd.availability(engine="numba", **{held: ["m"]}, **run),
+            rbd.availability(engine="python", **{held: ["m"]}, **run),
+        )
+
+
+def test_what_numba_does_not_run_inside_a_nested_rbd():
+    unit = {"reliability": W([50, 2.0]), "repairability": L([1.0, 0.5])}
+
+    def outer(inner):
+        return RepairableRBD(
+            [("s", "m"), ("m", "c"), ("c", "t")], {"m": inner, "c": dict(unit)}
+        )
+
+    wide = pairs_in_series(11)
+    imperfect = RepairableRBD(
+        [("s", "a"), ("a", "t")],
+        {"a": {**unit, "repair": {"model": "kijima1", "q": 0.5}}},
+    )
+    for inner, reason in [
+        (wide, "22 components (a nested RBD of more than 20)"),
+        (imperfect, "imperfect repair"),
+        (on_condition(), "replacement on condition"),
+    ]:
+        rbd = outer(inner)
+        plan, _ = rbd._stream_plan(100.0, 1, False)
+        assert reason in _compiled.unsupported(rbd, plan, None, numba=True)
+        # An engine of the interface's version is given no nested RBD.
+        assert _compiled.unsupported(rbd, plan, None) == "nested RBDs"
+    rbd = nested_rbds()["maintained inside"]
+    plan, _ = rbd._stream_plan(100.0, 1, False)
+    state = {"c": NodeState(age=0.0, phase=1.0)}
+    assert "started from a state" in _compiled.unsupported(
+        rbd, plan, None, numba=True, states=state
+    )
 
 
 @needs_numba

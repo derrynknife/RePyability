@@ -6,11 +6,11 @@ It runs the simulations of a system whose components are plain
 its draws come from its own streams (see ``_streams``) -- in any structure,
 with components held working or broken, antithetic pairs, common random
 numbers and costs, under age and block replacement, with hidden failures
-found by periodic tests, with fewer repair crews than components and with
-standby groups (#155). Anything else (replacement on condition,
-maintenance groups, imperfect repair, nested RBDs, capacities, models whose
-draws cannot be streamed) runs in Python, which ``engine="auto"`` chooses
-by itself.
+found by periodic tests, with fewer repair crews than components, with
+standby groups, and with nested RBDs of up to ``MAX_TABLED`` components
+(#155). Anything else (replacement on condition, maintenance groups,
+imperfect repair, capacities, models whose draws cannot be streamed) runs
+in Python, which ``engine="auto"`` chooses by itself.
 
 The two engines give the same results to the last bit: the compiled loop
 (``_kernel``) is the Python one over arrays, reading the same draws, and
@@ -24,9 +24,9 @@ nothing when numba is not installed.
 Other packages can add compiled engines of their own (see ``engines``):
 ``engine="auto"`` runs the one of highest priority, numba's being 0, on
 what ``unsupported`` allows: plain components. Age and block
-replacement, inspections, repair crews and standby groups are numba's own
-loop's (``unsupported(..., numba=True)``), so a system with them runs on
-numba, not on an engine of the interface's version.
+replacement, inspections, repair crews, standby groups and nested RBDs are
+numba's own loop's (``unsupported(..., numba=True)``), so a system with
+them runs on numba, not on an engine of the interface's version.
 """
 
 import importlib.util
@@ -45,7 +45,7 @@ NODE_TERM, SERIES_TERM, PARALLEL_TERM = 0, 1, 2
 #: before ``engine="auto"`` runs it compiled, when the compiled loop is not
 #: loaded in the process yet: about half a second of the Python loop, as
 #: loading the compiled loop from numba's cache takes about a third of a
-#: second (compiling it, the first time ever, some seconds).
+#: second (compiling it, the first time ever, a minute or two).
 AUTO_DRAWS = 1_000_000
 #: About the most memory a batch of simulations takes: its draws, and room
 #: for its systems' changes of state.
@@ -80,20 +80,43 @@ def unsupported(
     states: Optional[dict] = None,
 ) -> Optional[str]:
     """What in a run a compiled engine cannot simulate, or None: an engine
-    of the interface's version (see ``engines``) simulates plain
-    components; with ``numba``, numba's own loop also simulates age and
-    block replacement, inspections of hidden failures, repair crews and
-    standby groups (#155), from new for the first two (a run from the
-    components' ``states`` shifts their calendars)."""
-    from repyability.non_repairable import NonRepairable
-    from repyability.rbd.repairable_rbd import RepairableRBD
-
+    of the interface's version (see engines) simulates plain
+    components; with numba, numba's own loop also simulates age and
+    block replacement, inspections of hidden failures, repair crews,
+    standby groups and nested RBDs of up to MAX_TABLED components
+    (#155), from new for maintenance, inspections and nested RBDs (a run
+    from the components' states shifts their calendars)."""
     if capacity is not None:
         return "capacities"
     if any(kind == _streams.START for _, kind in plan.specs):
         return "components started from a state"
-    if numba and states and (rbd._preventive or rbd._inspection):
+    if (
+        numba
+        and states
+        and (rbd._preventive or rbd._inspection or _nested(rbd))
+    ):
         return "components started from a state"
+    return _unsupported_level(rbd, plan, numba, ())
+
+
+def _nested(rbd) -> bool:
+    """Whether a node of rbd is a nested RBD."""
+    from repyability.rbd.repairable_rbd import RepairableRBD
+
+    return any(
+        isinstance(component, RepairableRBD)
+        for component in rbd.components.values()
+    )
+
+
+def _unsupported_level(
+    rbd, plan: _streams.Plan, numba: bool, prefix: tuple
+) -> Optional[str]:
+    """What in rbd, the system or a nested RBD at prefix, a compiled
+    engine cannot simulate (see unsupported)."""
+    from repyability.non_repairable import NonRepairable
+    from repyability.rbd.repairable_rbd import RepairableRBD
+
     if rbd._crews_limited() and not numba:
         return "repair crews"
     if rbd._standby and not numba:
@@ -105,26 +128,42 @@ def unsupported(
     if rbd._preventive:
         if not numba:
             return "scheduled preventive maintenance"
-        reason = _unsupported_maintenance(rbd, plan)
+        reason = _unsupported_maintenance(rbd, plan, prefix)
         if reason is not None:
             return reason
     if rbd._inspection:
         if not numba:
             return "inspections"
-        reason = _unsupported_inspections(rbd, plan)
+        reason = _unsupported_inspections(rbd, plan, prefix)
         if reason is not None:
             return reason
     for name, component in rbd.components.items():
         if isinstance(component, RepairableRBD):
-            return "nested RBDs"
+            if not numba:
+                return "nested RBDs"
+            if type(component) is not RepairableRBD:
+                return f"node {name!r}'s {type(component).__name__}"
+            if len(component.components) > MAX_TABLED:
+                return (
+                    f"node {name!r}'s {len(component.components)} "
+                    f"components (a nested RBD of more than {MAX_TABLED})"
+                )
+            reason = _unsupported_level(
+                component, plan, numba, prefix + (name,)
+            )
+            if reason is not None:
+                return reason
+            continue
         if type(component) is not NonRepairable:
             return f"node {name!r}'s {type(component).__name__}"
-        if not _streamed(name, plan, rbd._standby.get(name)):
+        if not _streamed(prefix + (name,), plan, rbd._standby.get(name)):
             return f"node {name!r}'s models (their draws cannot be streamed)"
     return None
 
 
-def _unsupported_maintenance(rbd, plan: _streams.Plan) -> Optional[str]:
+def _unsupported_maintenance(
+    rbd, plan: _streams.Plan, prefix: tuple = ()
+) -> Optional[str]:
     """What in a run's preventive maintenance numba's loop cannot simulate:
     replacement on condition, and a maintenance time whose draws cannot be
     streamed. (A component whose own draws cannot be is refused for that,
@@ -132,10 +171,11 @@ def _unsupported_maintenance(rbd, plan: _streams.Plan) -> Optional[str]:
     for node, schedule in rbd._preventive.items():
         if schedule.policy == "condition":
             return "replacement on condition"
+        path = prefix + (node,)
         if (
             schedule.duration is not None
-            and _streamed(node, plan)
-            and ((node,), _streams.DURATION) not in plan.specs
+            and _streamed(path, plan)
+            and (path, _streams.DURATION) not in plan.specs
         ):
             return (
                 f"node {node!r}'s maintenance time (its draws cannot be "
@@ -144,30 +184,34 @@ def _unsupported_maintenance(rbd, plan: _streams.Plan) -> Optional[str]:
     return None
 
 
-def _unsupported_inspections(rbd, plan: _streams.Plan) -> Optional[str]:
+def _unsupported_inspections(
+    rbd, plan: _streams.Plan, prefix: tuple = ()
+) -> Optional[str]:
     """What in a run's inspections numba's loop cannot simulate: a test
     time whose draws cannot be streamed."""
     for node, inspection in rbd._inspection.items():
+        path = prefix + (node,)
         if (
             inspection.duration is not None
-            and _streamed(node, plan)
-            and ((node,), _streams.DURATION) not in plan.specs
+            and _streamed(path, plan)
+            and (path, _streams.DURATION) not in plan.specs
         ):
             return f"node {node!r}'s test time (its draws cannot be streamed)"
     return None
 
 
-def _streamed(node, plan: _streams.Plan, standby=None) -> bool:
-    """Whether a component's lives and repairs are streamed: a standby
-    group's, its units' (``standby``, its arrangement)."""
+def _streamed(path: tuple, plan: _streams.Plan, standby=None) -> bool:
+    """Whether the component at path has its lives and repairs
+    streamed: a standby group's, its units' (standby, its
+    arrangement)."""
     paths: list = (
-        [(node,)]
+        [path]
         if standby is None
-        else [(node, unit) for unit in range(standby.units)]
+        else [path + (unit,) for unit in range(standby.units)]
     )
     return all(
-        (path, kind) in plan.specs
-        for path in paths
+        (place, kind) in plan.specs
+        for place in paths
         for kind in (_streams.FAILURE, _streams.REPAIR)
     )
 
@@ -284,11 +328,12 @@ class _System:
     streams and initial states, the charges, and the structure function."""
 
     def __init__(self, rbd, plan, working, broken, method: str, kernel):
-        from repyability.rbd.repairable_rbd import _CATEGORIES
+        from repyability.rbd.repairable_rbd import _CATEGORIES, RepairableRBD
 
         nodes = list(rbd.components)
         index = {node: c for c, node in enumerate(nodes)}
         n = len(nodes)
+        working, broken = set(working), set(broken)
         #: The streams the loop reads, in the order of its stream numbers.
         self.specs: list = []
         numbers: dict = {}
@@ -299,28 +344,61 @@ class _System:
                 self.specs.append(plan.specs[name])
             return numbers[name]
 
-        working, broken = set(working), set(broken)
-        start = np.ones(n, np.int8)
-        active = np.zeros(n, np.int8)
-        fail = np.zeros(n, np.int64)
-        repair = np.zeros(n, np.int64)
-        for c, node in enumerate(nodes):
-            if node in broken:
+        # Every level's components (#155): the system's own first, then
+        # each nested RBD's, a level each, in the order they are found
+        # (outer before inner); with each component's RBD, name, path (its
+        # streams' place) and level, and each nested node's level.
+        level_rbds = [rbd]
+        level_paths: list = [()]
+        everything: list = []
+        child_of: dict = {}
+        level = 0
+        while level < len(level_rbds):
+            here, prefix = level_rbds[level], level_paths[level]
+            for name, component in here.components.items():
+                c = len(everything)
+                everything.append((here, name, prefix + (name,), level))
+                held = level == 0 and (name in working or name in broken)
+                if isinstance(component, RepairableRBD) and not held:
+                    child_of[c] = len(level_rbds)
+                    level_rbds.append(component)
+                    level_paths.append(prefix + (name,))
+            level += 1
+        n_all = len(everything)
+        levels = len(level_rbds)
+        level_start = np.zeros(levels, np.int64)
+        level_stop = np.zeros(levels, np.int64)
+        level_of = np.array([entry[3] for entry in everything], np.int64)
+        for c in range(n_all - 1, -1, -1):
+            level_start[level_of[c]] = c
+        for c in range(n_all):
+            level_stop[level_of[c]] = c + 1
+        child_level = np.full(n_all, -1, np.int64)
+        for c, child in child_of.items():
+            child_level[c] = child
+
+        start = np.ones(n_all, np.int8)
+        active = np.ones(n_all, np.int8)
+        fail = np.zeros(n_all, np.int64)
+        repair = np.zeros(n_all, np.int64)
+        for c, (here, name, path, _) in enumerate(everything):
+            if c < n and name in broken:
                 start[c] = 0
-            elif node not in working:
-                active[c] = 1
-                if node not in rbd._standby:
-                    fail[c] = stream(((node,), _streams.FAILURE))
-                    repair[c] = stream(((node,), _streams.REPAIR))
+                active[c] = 0
+            elif c < n and name in working:
+                active[c] = 0
+            elif c not in child_of and name not in here._standby:
+                fail[c] = stream((path, _streams.FAILURE))
+                repair[c] = stream((path, _streams.REPAIR))
         #: Each standby group (#155): its node, its units (from the first's
         #: number, in all the groups' units), how many operate, the dormant
         #: rate and the switches' chance and stream (-1 for none drawn);
         #: and each unit's streams of lives and repairs, and its group.
-        group_of = np.full(n, -1, np.int64)
+        group_of = np.full(n_all, -1, np.int64)
         groups: list = []
         units: list = []
-        for c, node in enumerate(nodes):
-            arrangement = rbd._standby.get(node)
+        for c, (here, name, path, _) in enumerate(everything):
+            arrangement = here._standby.get(name)
             if arrangement is None or not active[c]:
                 continue
             group_of[c] = len(groups)
@@ -333,18 +411,14 @@ class _System:
                     arrangement.k,
                     float(arrangement.dormancy_factor),
                     p,
-                    (
-                        stream(((node,), _streams.SWITCH))
-                        if 0.0 < p < 1.0
-                        else -1
-                    ),
+                    (stream((path, _streams.SWITCH)) if 0.0 < p < 1.0 else -1),
                 )
             )
             for unit in range(arrangement.units):
                 units.append(
                     (
-                        stream(((node, unit), _streams.FAILURE)),
-                        stream(((node, unit), _streams.REPAIR)),
+                        stream((path + (unit,), _streams.FAILURE)),
+                        stream((path + (unit,), _streams.REPAIR)),
                         len(groups) - 1,
                     )
                 )
@@ -361,7 +435,7 @@ class _System:
         )
 
         # What each failure charges: a node's charge slots, in the order the
-        # Python loop pays them.
+        # Python loop pays them (a nested RBD's own costs are not counted).
         self.costed = list(rbd.costs)
         cost_index = np.zeros(n, np.int64)
         slot_start = np.zeros(n, np.int64)
@@ -395,6 +469,18 @@ class _System:
                     rate[c] = node_costs["downtime_cost"]
             slot_end[c] = len(categories)
         self.has_costs = bool(rbd.has_costs)
+
+        def charge_of(c, key):
+            """A charge (-2 for none, -1 for a fixed amount, else its
+            stream) and its fixed amount: the system's own components'
+            only."""
+            cost = rbd.costs.get(nodes[c], {}).get(key) if c < n else None
+            if cost is None:
+                return -2, 0.0
+            if isinstance(cost, float):
+                return -1, cost
+            return stream(((nodes[c],), _streams.COST_KINDS[key])), 0.0
+
         #: Each component's preventive maintenance (#155), for numba's own
         #: loop: its policy (0 none, 1 age, 2 block), its interval, the
         #: stream of its maintenance times (-1 for maintenance in zero
@@ -402,44 +488,37 @@ class _System:
         #: for a fixed amount, -2 for none) and fixed amount. An engine of
         #: the interface's version is given no system with any (see
         #: ``unsupported``).
-        policy = np.zeros(n, np.int8)
-        interval = np.zeros(n)
-        duration = np.full(n, -1, np.int64)
-        charge = np.full(n, -2, np.int64)
-        amount = np.zeros(n)
-        for c, node in enumerate(nodes):
-            schedule = rbd._preventive.get(node)
+        policy = np.zeros(n_all, np.int8)
+        interval = np.zeros(n_all)
+        duration = np.full(n_all, -1, np.int64)
+        charge = np.full(n_all, -2, np.int64)
+        amount = np.zeros(n_all)
+        for c, (here, name, path, _) in enumerate(everything):
+            schedule = here._preventive.get(name)
             if schedule is None or not active[c]:
                 continue
             policy[c] = 1 if schedule.policy == "age" else 2
             interval[c] = float(schedule.interval)
             if schedule.duration is not None:
-                duration[c] = stream(((node,), _streams.DURATION))
-            cost = rbd.costs.get(node, {}).get("preventive_cost")
-            if isinstance(cost, float):
-                charge[c] = -1
-                amount[c] = cost
-            elif cost is not None:
-                charge[c] = stream(
-                    ((node,), _streams.COST_KINDS["preventive_cost"])
-                )
+                duration[c] = stream((path, _streams.DURATION))
+            charge[c], amount[c] = charge_of(c, "preventive_cost")
         #: Each component's inspections of its hidden failures (#155):
         #: their interval (0 for none), offset, coverage, whether a test can
         #: miss a failure and the tests from one full test to the next, the
         #: streams of the test times (-1 for tests in zero time) and of the
         #: uniforms that decide whether a test finds a failure, and the
         #: inspection charge (as the preventive one).
-        tested = np.zeros(n)
-        offset = np.zeros(n)
-        coverage = np.ones(n)
-        partial = np.zeros(n, np.int8)
-        per_full = np.ones(n, np.int64)
-        test_time = np.full(n, -1, np.int64)
-        test_draw = np.full(n, -1, np.int64)
-        test_charge = np.full(n, -2, np.int64)
-        test_amount = np.zeros(n)
-        for c, node in enumerate(nodes):
-            inspection = rbd._inspection.get(node)
+        tested = np.zeros(n_all)
+        offset = np.zeros(n_all)
+        coverage = np.ones(n_all)
+        partial = np.zeros(n_all, np.int8)
+        per_full = np.ones(n_all, np.int64)
+        test_time = np.full(n_all, -1, np.int64)
+        test_draw = np.full(n_all, -1, np.int64)
+        test_charge = np.full(n_all, -2, np.int64)
+        test_amount = np.zeros(n_all)
+        for c, (here, name, path, _) in enumerate(everything):
+            inspection = here._inspection.get(name)
             if inspection is None or not active[c]:
                 continue
             tested[c] = float(inspection.interval)
@@ -448,28 +527,42 @@ class _System:
             partial[c] = int(inspection.partial)
             per_full[c] = inspection.per_full_test
             if inspection.duration is not None:
-                test_time[c] = stream(((node,), _streams.DURATION))
+                test_time[c] = stream((path, _streams.DURATION))
             if inspection.partial:
-                test_draw[c] = stream(((node,), _streams.TEST))
-            cost = rbd.costs.get(node, {}).get("inspection_cost")
-            if isinstance(cost, float):
-                test_charge[c] = -1
-                test_amount[c] = cost
-            elif cost is not None:
-                test_charge[c] = stream(
-                    ((node,), _streams.COST_KINDS["inspection_cost"])
-                )
-        #: The repair crews when there are fewer than the components (-1
-        #: otherwise: no job waits), and each component's rank in their
-        #: queue (its priority, negated: the lowest rank first).
-        crews = rbd.repair_crews if rbd._crews_limited() else -1
+                test_draw[c] = stream((path, _streams.TEST))
+            test_charge[c], test_amount[c] = charge_of(c, "inspection_cost")
+        #: Each level's repair crews when there are fewer than its
+        #: components (-1 otherwise: no job waits), and each component's
+        #: (and standby unit's) rank in their queue (its priority, negated:
+        #: the lowest rank first).
+        level_crews = np.array(
+            [
+                here.repair_crews if here._crews_limited() else -1
+                for here in level_rbds
+            ],
+            np.int64,
+        )
         rank = np.array(
-            [-rbd._priority.get(node, 0.0) for node in nodes]
+            [-here._priority.get(name, 0.0) for here, name, _, _ in everything]
             + [
-                -rbd._priority.get(nodes[group_node[g]], 0.0)
+                -everything[group_node[g]][0]._priority.get(
+                    everything[group_node[g]][1], 0.0
+                )
                 for g in unit_group
             ]
         )
+        #: Each nested RBD's table of every state of its components (the
+        #: system's own is ``table`` below), and the nested RBDs innermost
+        #: first, the order they start in.
+        tables = [np.zeros(0, np.int8)]
+        for level in range(1, levels):
+            here = level_rbds[level]
+            local = {name: c for c, name in enumerate(here.components)}
+            tables.append(
+                kernel.truth_table(len(local), _structure(here, local))
+            )
+        level_table_start = np.cumsum([0] + [t.size for t in tables[:-1]])
+        level_order = np.arange(levels - 1, 0, -1, dtype=np.int64)
         #: Everything numba's own loop simulates besides plain components
         #: (see ``_kernel._simulate``).
         self.upkeep = (
@@ -487,7 +580,7 @@ class _System:
             test_draw,
             test_charge,
             test_amount,
-            int(crews),
+            level_crews,
             rank,
             group_of,
             group_node,
@@ -500,6 +593,13 @@ class _System:
             unit_fail,
             unit_repair,
             unit_group,
+            child_level,
+            level_of,
+            level_start,
+            level_stop,
+            level_table_start.astype(np.int64),
+            np.concatenate(tables).astype(np.int8),
+            level_order,
         )
         initial_up = rbd.is_system_working(
             {node: bool(start[c]) for c, node in enumerate(nodes)}, method
@@ -512,7 +612,7 @@ class _System:
             else np.zeros(0, np.int8)
         )
         #: The structure laid out to be kept up to date, without a table.
-        self.kept = _kept(self.structure, None if tabled else start)
+        self.kept = _kept(self.structure, None if tabled else start[:n])
         self.system = (
             start,
             active,
@@ -539,20 +639,22 @@ class _System:
             2
             * sum(
                 (
-                    int(plan.specs[((node,), _streams.FAILURE)].rows)
+                    int(plan.specs[(path, _streams.FAILURE)].rows)
                     if group_of[c] < 0
                     else sum(
-                        int(plan.specs[((node, unit), _streams.FAILURE)].rows)
-                        for unit in range(rbd._standby[node].units)
+                        int(
+                            plan.specs[(path + (unit,), _streams.FAILURE)].rows
+                        )
+                        for unit in range(here._standby[name].units)
                     )
                 )
                 + (
-                    int(plan.specs[((node,), _streams.DURATION)].rows)
+                    int(plan.specs[(path, _streams.DURATION)].rows)
                     if duration[c] >= 0 or test_time[c] >= 0
                     else 0
                 )
-                for c, node in enumerate(nodes)
-                if active[c]
+                for c, (here, name, path, _) in enumerate(everything)
+                if active[c] and c not in child_of
             )
             + 2
         )
@@ -771,15 +873,13 @@ class Runner:
         self._t = float(tally.t_simulation)
         self._model = _System(rbd, plan, working, broken, method, _kernel)
         self._threads = _kernel.threads(jobs)
+        # The threads that draw the numbers and run the simulations (the
+        # compiled loop releases the GIL).
         self._pool: Any = None
-        # numba's thread count is the calling thread's, and stays set: it is
-        # put back once the run is over.
-        self._restore: Optional[int] = None
         if self._threads > 1:
             from concurrent.futures import ThreadPoolExecutor
 
             self._pool = ThreadPoolExecutor(self._threads)
-            self._restore = _kernel.get_threads()
         self._store = _Store(plan, self._model.specs, self._pool)
         rows = sum(spec.rows for spec in self._model.specs)
         size = BATCH_BYTES // (8 * rows + 9 * self._model.room)
@@ -843,8 +943,8 @@ class Runner:
         while todo.size:
             draws = self._draws(first, stop)
             if self._threads > 1:
-                kernel.set_threads(self._threads)
                 kernel.run_parallel(
+                    self._pool,
                     todo,
                     first,
                     self._t,
@@ -933,5 +1033,3 @@ class Runner:
     def close(self) -> None:
         if self._pool is not None:
             self._pool.shutdown()
-        if self._restore is not None:
-            self._kernel.set_threads(self._restore)

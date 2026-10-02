@@ -224,6 +224,26 @@ is required.
   half the nodes groups of three units, it ran 6 to 8 times as fast as
   Python on one thread, and 7 to 19 times on four, on 1, 12 and 70 nodes.
   An engine another package adds is still not given them.
+- **Nested RBDs compiled** (#155). The compiled engine simulates nested
+  RBDs of up to 20 components (with their own maintenance, tests, crews
+  and standby groups, nested as deep as they go): each is a level of its
+  own, with its own heap and crews, stepped to its next change as
+  ``RepairableRBD.next_event`` steps it, its levels on the way down
+  waiting on a stack. The engines agree to the last bit on nested RBDs
+  maintained (their planned outages planned outages of the system), tested,
+  with crews inside and out, with standby groups, three deep, and with
+  events falling together across levels. With every node a nested pair it
+  ran 6 times as fast as Python on one thread, and 17 to 18 times on four.
+  A run from the components' states keeps a system with nested RBDs in
+  Python, as do a nested RBD of more than 20 components and what Python
+  alone simulates anywhere inside one.
+- **The compiled engine's threads are Python's** (#155). With ``n_jobs``
+  the compiled loop runs on a pool of threads, releasing the GIL, rather
+  than on numba's ``prange``, which compiled the whole loop a second time:
+  numba now compiles it once, in about a minute and a half the first time
+  ever (it took that long again the first time a run used threads), and as
+  fast on four threads as before. numba's own thread count is no longer
+  touched.
 - **Faster compiled simulations of large systems** (#150). Above 20
   components (where the compiled loop has no table of every state), the
   compiled engine keeps whether the system works up to date as components
@@ -1123,6 +1143,10 @@ is required.
 
 ### Fixed
 
+- A run left its interim state in the nested RBDs of the system it
+  simulated (only the system's own was cleared), so a parallel run after
+  one, of a system with a standby group inside a nested RBD, could not
+  pickle the system for its processes (#155).
 - `parameter_sensitivity` left a model's offset, limited-failure-population
   and zero-inflation parameters out of the unperturbed value of a one-sided
   difference (taken where one side of a parameter is not valid), so such a

@@ -286,6 +286,24 @@ def test_a_group_inside_a_nested_rbd():
     assert interval.lower <= exact <= interval.upper
 
 
+def test_a_run_after_a_run_with_a_nested_group_can_go_parallel():
+    # A run leaves no draws behind in its nested RBDs: a nested group's
+    # samplers cannot be pickled for a parallel run's processes.
+    inner = group(0.02, 0.25, 1, units=3)
+    outer = RepairableRBD(
+        [("s", "m"), ("m", "c"), ("c", "t")],
+        {
+            "m": inner,
+            "c": {"reliability": E([0.01]), "repairability": E([1.0])},
+        },
+    )
+    run = dict(t_simulation=300.0, mc_samples=50, seed=4, engine="python")
+    serial = outer.availability(**run)
+    assert "_groups" not in vars(inner)
+    parallel = outer.availability(**run, n_jobs=2)
+    assert np.array_equal(serial.uptimes, parallel.uptimes)
+
+
 def test_runs_with_groups_are_reproducible_and_compiled(monkeypatch):
     rbd = group(0.02, 0.25, 1, units=3, switching_probability=0.8)
     run = dict(t_simulation=2_000.0, mc_samples=200, seed=9)

@@ -19,7 +19,7 @@ Importing this module imports numba, which compiles the loop on first use
 
 import numba
 import numpy as np
-from numba import njit, prange
+from numba import njit
 
 # The kinds of term of the structure (see ``modular``).
 _NODE, _SERIES, _PARALLEL = 0, 1, 2
@@ -537,6 +537,614 @@ def truth_table(n, structure):
     return table
 
 
+@njit(cache=True, inline="always")
+def _up_kind(kind):
+    """Whether an event of ``kind`` leaves its component up."""
+    return (
+        kind == _RESTORE
+        or kind == _PM_END
+        or kind == _PM_IN_PLACE
+        or kind == _TEST_UP
+    )
+
+
+@njit(cache=True)
+def _first(c, upkeep, fail, counters, pending, limit, flat, base):
+    """Component ``c``'s first event, new at 0 (``RepairableRBD.
+    initialize_event_queue``): its failure, maintenance or test. A status
+    code (a stream's number + 1 if it ran out of draws), the event's time
+    and its kind."""
+    lives = counters[0]
+    if upkeep[0][c]:
+        return _renewal(c, 0.0, upkeep, fail, lives, limit, flat, base)
+    code, life = _draw(fail[c], lives, c, limit, flat, base)
+    if code != 0:
+        return code, 0.0, _FAIL
+    if upkeep[5][c] > 0.0:
+        pending[c] = 0.0 + life
+        t, kind = _tested_next(c, 0.0, upkeep, pending)
+        return 0, t, kind
+    return 0, life, _FAIL
+
+
+@njit(cache=True)
+def _crew_follow(
+    c,
+    t,
+    up_now,
+    t_next,
+    kind_next,
+    t_end,
+    crews,
+    rank,
+    pending,
+    plan,
+    heap,
+    size,
+):
+    """The repair crews (``RepairableRBD._crew_follow_up``) after
+    component ``c``'s event at ``t``: a crew that has finished starts the
+    next waiting job; a job that falls due takes a free crew or waits. The
+    heap's new size (-1 if it has no room) and whether the next event
+    waits for a crew."""
+    crew, holding, queue = crews
+    n = pending.size
+    if up_now:
+        if holding[c]:
+            size = _release(
+                c, t, t_end, n, crew, holding, queue, pending, plan, heap, size
+            )
+        return size, False
+    if _up_kind(kind_next):
+        if crew[0] > 0:
+            crew[0] -= 1
+            holding[c] = 1
+            return size, False
+        crew[1] = _wait(
+            queue, crew[1], rank[c], t, crew[2], c, t_next, kind_next
+        )
+        crew[2] += 1
+        return size, True
+    return size, False
+
+
+@njit(cache=True)
+def _group_step(
+    g, c, t, t_end, limited, crews, rank, pending, standby, draws, heap, size
+):
+    """``_StandbyGroup.advance``: standby group ``g`` (node ``c``) takes its
+    next event at ``t`` -- a unit failing, or one repaired -- and queues its
+    next in the heap. A status code, whether it is up after it, whether a
+    unit failed (charged as a repair) and the heap's new size."""
+    (
+        group_node,
+        group_first,
+        group_count,
+        group_k,
+        dormancy,
+        switching,
+        switch,
+        unit_fail,
+        unit_repair,
+        unit_group,
+        units,
+        groups,
+        tags,
+    ) = standby
+    limit, flat, base = draws
+    crew, holding, queue = crews
+    n = pending.size
+    groups[4][g] = -1
+    u = _group_next(g, group_first, group_count, units)
+    units[5][u] = 0
+    unit_kind = units[4][u]
+    broken = False
+    if unit_kind == _UNIT_REPAIRED:
+        if limited:
+            plan = (
+                group_node,
+                group_first,
+                group_count,
+                unit_group,
+                units,
+                groups,
+                tags,
+            )
+            size = _release(
+                n + u,
+                t,
+                t_end,
+                n,
+                crew,
+                holding,
+                queue,
+                pending,
+                plan,
+                heap,
+                size,
+            )
+            if size < 0:
+                return -1, False, False, size
+        code, life = _draw(unit_fail[u], units[7], u, limit, flat, base)
+        if code != 0:
+            return code, False, False, size
+        units[0][u] = life
+        if groups[1][g] < group_k[g]:
+            _operate(u, g, t, units, groups)
+        else:
+            _stand_by(u, g, t, dormancy, group_first, units, groups)
+    else:
+        if unit_kind == _SPARE_FAILS:
+            # Out of the spares.
+            j = group_first[g]
+            while groups[3][j] != u:
+                j += 1
+            end = group_first[g] + groups[2][g] - 1
+            while j < end:
+                groups[3][j] = groups[3][j + 1]
+                j += 1
+            groups[2][g] -= 1
+        else:
+            units[6][u] = 0
+            groups[1][g] -= 1
+        broken = True
+        # Its repair, drawn now: a job for a crew.
+        code, span = _draw(unit_repair[u], units[8], u, limit, flat, base)
+        if code != 0:
+            return code, False, False, size
+        if not limited or crew[0] > 0:
+            if limited:
+                crew[0] -= 1
+                holding[n + u] = 1
+            _unit_event(u, g, t + span, _UNIT_REPAIRED, units, groups)
+        else:
+            crew[1] = _wait(
+                queue,
+                crew[1],
+                rank[n + u],
+                t,
+                crew[2],
+                n + u,
+                t + span,
+                _UNIT_JOB,
+            )
+            crew[2] += 1
+        if unit_kind == _UNIT_FAILS and groups[2][g] > 0:
+            # The spare that has waited longest is switched in, if the
+            # switch works.
+            spare = groups[3][group_first[g]]
+            switched = switching[g] >= 1.0
+            if not switched and switching[g] > 0.0:
+                code, uniform = _draw(
+                    switch[g], groups[6], g, limit, flat, base
+                )
+                if code != 0:
+                    return code, False, False, size
+                switched = uniform < switching[g]
+            if switched:
+                end = group_first[g] + groups[2][g] - 1
+                for j in range(group_first[g], end):
+                    groups[3][j] = groups[3][j + 1]
+                groups[2][g] -= 1
+                # It has used up its life at the dormant rate so far (all
+                # of it, at most).
+                units[5][spare] = 0
+                used = dormancy[g] * (t - units[1][spare])
+                units[0][spare] = max(units[0][spare] - used, 0.0)
+                _operate(spare, g, t, units, groups)
+    size = _arm(
+        g,
+        c,
+        t_end,
+        group_first,
+        group_count,
+        units,
+        groups,
+        heap,
+        size,
+        tags,
+    )
+    if size < 0:
+        return -1, False, False, size
+    return 0, groups[1][g] == group_k[g], broken, size
+
+
+@njit(cache=True)
+def _start_group(g, c, t_end, standby, draws, heap, size):
+    """``_StandbyGroup.__init__``: group ``g``'s units, new, the first k
+    operating, and its first event queued as node ``c``'s. A status code
+    and the heap's new size."""
+    (
+        _,
+        group_first,
+        group_count,
+        group_k,
+        dormancy,
+        _,
+        _,
+        unit_fail,
+        _,
+        _,
+        units,
+        groups,
+        tags,
+    ) = standby
+    limit, flat, base = draws
+    for u in range(group_first[g], group_first[g] + group_count[g]):
+        code, life = _draw(unit_fail[u], units[7], u, limit, flat, base)
+        if code != 0:
+            return code, size
+        units[0][u] = life
+        if u - group_first[g] < group_k[g]:
+            _operate(u, g, 0.0, units, groups)
+        else:
+            _stand_by(u, g, 0.0, dormancy, group_first, units, groups)
+    size = _arm(
+        g,
+        c,
+        t_end,
+        group_first,
+        group_count,
+        units,
+        groups,
+        heap,
+        size,
+        tags,
+    )
+    if size < 0:
+        return -1, size
+    return 0, size
+
+
+@njit(cache=True, inline="always")
+def _level_view(L, state):
+    """Nested RBD (level) ``L``'s heap and repair crews (its free crews,
+    which components hold one and the jobs waiting), from ``state``."""
+    heaps, crew2, holding, queue2 = state[3], state[5], state[7], state[6]
+    heap = (heaps[0][L], heaps[1][L], heaps[2][L], heaps[3][L])
+    queue = (
+        queue2[0][L],
+        queue2[1][L],
+        queue2[2][L],
+        queue2[3][L],
+        queue2[4][L],
+        queue2[5][L],
+    )
+    return heap, (crew2[L], holding, queue)
+
+
+@njit(cache=True)
+def _advance(root, t_end, upkeep, fail, repair, draws, state):
+    """``RepairableRBD.next_event`` for nested RBD ``root`` (a level of its
+    own): take its events in time order until its system changes, and
+    return that change: a status code, its time, the new state and whether
+    it is a planned outage. With none before the end, the end and the
+    state it is left in. A nested RBD of its own steps the same way when
+    its next change is wanted, so the levels on the way down wait on a
+    stack (numba's cache keeps no recursive functions). A component's next
+    event is written out as in ``_simulate``, for the same reason."""
+    (
+        status,
+        counters,
+        pending,
+        _,
+        sizes,
+        _,
+        _,
+        _,
+        standby,
+        level_up,
+        level_mask,
+        stack,
+        awaiting,
+        pending_change,
+    ) = state
+    level_crews, rank = upkeep[14], upkeep[15]
+    group_of = upkeep[16]
+    child_level, level_start = upkeep[27], upkeep[29]
+    level_table_start, level_table = upkeep[31], upkeep[32]
+    changed_, new_, time_, planned_ = pending_change
+    policy, duration = upkeep[0], upkeep[2]
+    tested, test_offset, coverage, partial = upkeep[5:9]
+    per_full, test_time, test_draw = upkeep[9:12]
+    lives, repairs, maintained, timed, finding = counters
+    limit, flat, base = draws
+    plan = (
+        standby[0],
+        standby[1],
+        standby[2],
+        standby[9],
+        standby[10],
+        standby[11],
+        standby[12],
+    )
+    entry_tag = standby[11][4]
+    stack[0] = root
+    depth = 1
+    returned = False
+    rt = 0.0
+    rs = 0
+    rp = False
+    L = root
+    heap, crews = _level_view(L, state)
+    while depth > 0:
+        if stack[depth - 1] != L:
+            L = stack[depth - 1]
+            heap, crews = _level_view(L, state)
+        limited = level_crews[L] >= 0
+        size = sizes[L]
+        if returned:
+            # The change of the nested RBD whose event L was taking: its
+            # next event, queued; and L's own change, if that event made
+            # one.
+            returned = False
+            c = awaiting[L]
+            awaiting[L] = -1
+            if rs:
+                kind_next = _RESTORE
+            elif rp:
+                kind_next = _PM_START
+            else:
+                kind_next = _FAIL
+            if rt < t_end:
+                if size == heap[0].size:
+                    return -1, 0.0, 0, False
+                size = _push(heap, size, rt, c, kind_next, 0)
+                sizes[L] = size
+            if changed_[L]:
+                changed_[L] = 0
+                level_up[L] = new_[L]
+                rt = time_[L]
+                rs = new_[L]
+                rp = planned_[L] != 0
+                depth -= 1
+                returned = True
+                continue
+        if size == 0:
+            # No change before the end: its queue is used up.
+            rt = t_end
+            rs = level_up[L]
+            rp = False
+            depth -= 1
+            returned = True
+            continue
+        t, c, kind_now, tag_now, size = _pop(heap, size)
+        sizes[L] = size
+        bit = 1 << (c - level_start[L])
+        if kind_now == _GROUP:
+            g = group_of[c]
+            if tag_now != entry_tag[g]:
+                continue  # superseded by an earlier one
+            code, now, _, size = _group_step(
+                g,
+                c,
+                t,
+                t_end,
+                limited,
+                crews,
+                rank,
+                pending,
+                standby,
+                draws,
+                heap,
+                size,
+            )
+            sizes[L] = size
+            if code != 0:
+                return code, 0.0, 0, False
+            state_now = 1 if now else 0
+            if state_now == status[c]:
+                continue
+            status[c] = state_now
+            if state_now:
+                level_mask[L] |= bit
+            else:
+                level_mask[L] &= ~bit
+            if state_now != level_up[L]:
+                new = level_table[level_table_start[L] + level_mask[L]]
+                if new != level_up[L]:
+                    level_up[L] = new
+                    rt = t
+                    rs = new
+                    rp = False
+                    depth -= 1
+                    returned = True
+            continue
+        up_now = _up_kind(kind_now)
+        state_now = 1 if up_now else 0
+        status[c] = state_now
+        if state_now:
+            level_mask[L] |= bit
+        else:
+            level_mask[L] &= ~bit
+        changed = False
+        new = level_up[L]
+        if state_now != level_up[L]:
+            new = level_table[level_table_start[L] + level_mask[L]]
+            changed = new != level_up[L]
+        planned = (
+            changed and new == 0 and _PM_START <= kind_now <= _TEST_MISSED
+        )
+        child = child_level[c]
+        if child >= 0:
+            # A nested RBD's next change, from its own events.
+            awaiting[L] = c
+            changed_[L] = 1 if changed else 0
+            new_[L] = new
+            time_[L] = t
+            planned_[L] = 1 if planned else 0
+            stack[depth] = child
+            depth += 1
+            continue
+        # The component's next event (RepairableRBD._follow_up), as in
+        # _simulate.
+        if tested[c] > 0.0:
+            if kind_now == _FAIL:
+                pending[c] = np.nan
+                t_next = _test_finding(t, tested[c], test_offset[c])
+                kind_next = _TEST_DOWN
+                if not _full_test(
+                    t_next, partial[c], tested[c], test_offset[c], per_full[c]
+                ):
+                    code, uniform = _draw(
+                        test_draw[c], finding, c, limit, flat, base
+                    )
+                    if code != 0:
+                        return code, 0.0, 0, False
+                    if not uniform < coverage[c]:
+                        kind_next = _TEST_MISSED
+            elif kind_now == _TEST_MISSED:
+                t_next = _test_due(t, tested[c], test_offset[c])
+                kind_next = _TEST_MISSED
+                if _full_test(
+                    t_next, partial[c], tested[c], test_offset[c], per_full[c]
+                ):
+                    kind_next = _TEST_DOWN
+            elif kind_now == _TEST_UP:
+                t_next, kind_next = _tested_next(c, t, upkeep, pending)
+            elif kind_now == _TEST_DOWN:
+                span = 0.0
+                if test_time[c] >= 0:
+                    code, span = _draw(
+                        test_time[c], timed, c, limit, flat, base
+                    )
+                    if code != 0:
+                        return code, 0.0, 0, False
+                if np.isnan(pending[c]):
+                    code, took = _draw(
+                        repair[c], repairs, c, limit, flat, base
+                    )
+                    if code != 0:
+                        return code, 0.0, 0, False
+                    t_next = t + span + took
+                    kind_next = _RESTORE
+                else:
+                    pending[c] = pending[c] + span
+                    t_next = t + span
+                    kind_next = _TEST_UP
+            else:
+                code, life = _draw(fail[c], lives, c, limit, flat, base)
+                if code != 0:
+                    return code, 0.0, 0, False
+                pending[c] = t + life
+                t_next, kind_next = _tested_next(c, t, upkeep, pending)
+        elif kind_now == _FAIL:
+            code, took = _draw(repair[c], repairs, c, limit, flat, base)
+            if code != 0:
+                return code, 0.0, 0, False
+            t_next = t + took
+            kind_next = _RESTORE
+        elif kind_now == _PM_START:
+            code, took = _draw(duration[c], maintained, c, limit, flat, base)
+            if code != 0:
+                return code, 0.0, 0, False
+            t_next = t + took
+            kind_next = _PM_END
+        elif policy[c]:
+            code, t_next, kind_next = _renewal(
+                c, t, upkeep, fail, lives, limit, flat, base
+            )
+            if code != 0:
+                return code, 0.0, 0, False
+        else:
+            code, life = _draw(fail[c], lives, c, limit, flat, base)
+            if code != 0:
+                return code, 0.0, 0, False
+            t_next = t + life
+            kind_next = _FAIL
+        waits = False
+        if limited:
+            size, waits = _crew_follow(
+                c,
+                t,
+                up_now,
+                t_next,
+                kind_next,
+                t_end,
+                crews,
+                rank,
+                pending,
+                plan,
+                heap,
+                size,
+            )
+            sizes[L] = size
+            if size < 0:
+                return -1, 0.0, 0, False
+        if not waits and t_next < t_end:
+            if size == heap[0].size:
+                return -1, 0.0, 0, False
+            size = _push(heap, size, t_next, c, kind_next, 0)
+            sizes[L] = size
+        if changed:
+            level_up[L] = new
+            rt = t
+            rs = new
+            rp = planned
+            depth -= 1
+            returned = True
+    return 0, rt, rs, rp
+
+
+@njit(cache=True)
+def _start_level(L, t_end, upkeep, fail, repair, draws, state):
+    """``RepairableRBD.initialize_event_queue`` for nested RBD (level)
+    ``L``, from new: its components' first events in order -- a nested
+    RBD's first change, once it has started (its levels start before the
+    levels they are in, see ``_simulate``) -- then its standby groups' and
+    its system's state. A status code."""
+    status, counters, pending = state[0], state[1], state[2]
+    sizes, standby, level_up, level_mask = (
+        state[4],
+        state[8],
+        state[9],
+        state[10],
+    )
+    limit, flat, base = draws
+    group_of = upkeep[16]
+    child_level, _, level_start, level_stop, level_table_start = upkeep[27:32]
+    level_table = upkeep[32]
+    heap, _ = _level_view(L, state)
+    size = 0
+    for c in range(level_start[L], level_stop[L]):
+        if group_of[c] >= 0:
+            continue
+        child = child_level[c]
+        if child >= 0:
+            status[c] = level_up[child]
+            code, t, now, planned = _advance(
+                child, t_end, upkeep, fail, repair, draws, state
+            )
+            if now:
+                kind = _RESTORE
+            elif planned:
+                kind = _PM_START
+            else:
+                kind = _FAIL
+        else:
+            code, t, kind = _first(
+                c, upkeep, fail, counters, pending, limit, flat, base
+            )
+        if code != 0:
+            return code
+        if t < t_end:
+            size = _push(heap, size, t, c, kind, 0)
+    for c in range(level_start[L], level_stop[L]):
+        g = group_of[c]
+        if g >= 0:
+            code, size = _start_group(g, c, t_end, standby, draws, heap, size)
+            if code != 0:
+                return code
+    sizes[L] = size
+    mask = 0
+    for c in range(level_start[L], level_stop[L]):
+        if status[c]:
+            mask |= 1 << (c - level_start[L])
+    level_mask[L] = mask
+    level_up[L] = level_table[level_table_start[L] + mask]
+    return 0
+
+
 @njit(cache=True)
 def _simulate(
     todo, lo, hi, first, t_end, system, structure, kept, draws, out, upkeep
@@ -545,8 +1153,13 @@ def _simulate(
     the system works is looked up in the table of every state, or, without
     one, kept up to date as components change (``kept``, see
     ``_compiled._kept``). ``upkeep`` is the components' preventive
-    maintenance and inspections, and the repair crews (see
-    ``_compiled._System.upkeep``)."""
+    maintenance and inspections, the repair crews, the standby groups and
+    the nested RBDs (see ``_compiled._System.upkeep``): the components of
+    nested RBDs come after the system's own, each nested RBD a level with
+    its own heap and crews, stepped to its next change by ``_advance``.
+    The system's own events are taken here, written out rather than
+    through the helpers ``_advance`` shares: their arguments' reference
+    counts would cost twice the time."""
     (
         start,
         active,
@@ -580,23 +1193,16 @@ def _simulate(
         node_cost_out,
         status_out,
     ) = out
-    n = start.size
+    # The system's own components, and every level's.
+    n = node_out.shape[1]
+    n_all = start.size
     streams = columns.size
     room = change_times.shape[1]
     base = np.empty(streams, np.int64)
     limit = np.empty(streams, np.int64)
-    status = np.empty(n, np.int8)
-    # One event a component, and room for standby groups' superseded
-    # entries (with the room for the system's changes, which grows when
-    # either runs out).
-    heap = (
-        np.empty(n + 1 + room),
-        np.empty(n + 1 + room, np.int64),
-        np.empty(n + 1 + room, np.int8),
-        np.empty(n + 1 + room, np.int64),
-    )
-    lives = np.empty(n, np.int64)
-    repairs = np.empty(n, np.int64)
+    status = np.empty(n_all, np.int8)
+    lives = np.empty(n_all, np.int64)
+    repairs = np.empty(n_all, np.int64)
     charged = np.empty(slot_category.size, np.int64)
     policy, _, duration, pm_charge, pm_amount = upkeep[:5]
     (
@@ -613,7 +1219,8 @@ def _simulate(
     # The repair crews (-1 for as many as needed) and each component's rank
     # in their queue, and which components hold one, the jobs waiting for
     # one (see ``_wait``) and how many were ever queued.
-    crews, rank = upkeep[14], upkeep[15]
+    level_crews, rank = upkeep[14], upkeep[15]
+    crews = level_crews[0]
     # The standby groups (#155; see ``_compiled._System.upkeep``).
     (
         group_of,
@@ -627,7 +1234,12 @@ def _simulate(
         unit_fail,
         unit_repair,
         unit_group,
-    ) = upkeep[16:]
+    ) = upkeep[16:27]
+    # The nested RBDs: each nested node's level, each level's components,
+    # and the nested levels, innermost first.
+    child_level, level_start, level_stop = upkeep[27], upkeep[29], upkeep[30]
+    level_order = upkeep[33]
+    levels = level_start.size
     m = unit_fail.size
     # Each unit's life left (as of when it last started operating or
     # waiting), that time, its next event's time, order and kind and
@@ -668,27 +1280,91 @@ def _simulate(
         groups,
         tags,
     )
-    # The free crews, the jobs waiting and the jobs ever queued; which
-    # components (and units) hold a crew.
-    crew = np.empty(3, np.int64)
-    holding = np.empty(n + m, np.int8)
-    queue = (
-        np.empty(n + m),
-        np.empty(n + m),
-        np.empty(n + m, np.int64),
-        np.empty(n + m, np.int64),
-        np.empty(n + m),
-        np.empty(n + m, np.int8),
+    # Each level's free crews, jobs waiting and jobs ever queued; which
+    # components (and units) hold a crew; and each level's jobs waiting
+    # (see ``_wait``).
+    crew2 = np.empty((levels, 3), np.int64)
+    holding = np.empty(n_all + m, np.int8)
+    queue2 = (
+        np.empty((levels, n_all + m)),
+        np.empty((levels, n_all + m)),
+        np.empty((levels, n_all + m), np.int64),
+        np.empty((levels, n_all + m), np.int64),
+        np.empty((levels, n_all + m)),
+        np.empty((levels, n_all + m), np.int8),
     )
-    maintained = np.empty(n, np.int64)
-    pm_charged = np.empty(n, np.int64)
+    maintained = np.empty(n_all, np.int64)
+    pm_charged = np.empty(n_all, np.int64)
     # Each unit with hidden failures: when it is due to fail (NaN once it
     # has failed), and its draws of test times, of tests' finding and of
     # inspection charges.
-    pending = np.empty(n)
-    timed = np.empty(n, np.int64)
-    finding = np.empty(n, np.int64)
-    test_charged = np.empty(n, np.int64)
+    pending = np.empty(n_all)
+    timed = np.empty(n_all, np.int64)
+    finding = np.empty(n_all, np.int64)
+    test_charged = np.empty(n_all, np.int64)
+    counters = (lives, repairs, maintained, timed, finding)
+    stream_draws = (limit, flat, base)
+    standby = (
+        group_node,
+        group_first,
+        group_count,
+        group_k,
+        dormancy,
+        switching,
+        switch,
+        unit_fail,
+        unit_repair,
+        unit_group,
+        units,
+        groups,
+        tags,
+    )
+    # Each level's heap: one event a component, and room for standby
+    # groups' superseded entries (with the room for the system's changes,
+    # which grows when either runs out).
+    widest = 0
+    for level in range(levels):
+        widest = max(widest, level_stop[level] - level_start[level])
+    cap = widest + 1 + room
+    heaps = (
+        np.empty((levels, cap)),
+        np.empty((levels, cap), np.int64),
+        np.empty((levels, cap), np.int8),
+        np.empty((levels, cap), np.int64),
+    )
+    sizes = np.zeros(levels, np.int64)
+    # Each level's system state and its components' states as bits; and
+    # the levels stepping to their next change (see ``_advance``): their
+    # stack, the nested node whose event each is taking, and whether that
+    # event changed it, to what, when and if planned.
+    level_up = np.empty(levels, np.int8)
+    level_mask = np.zeros(levels, np.int64)
+    stack = np.empty(levels, np.int64)
+    awaiting = np.empty(levels, np.int64)
+    pending_change = (
+        np.zeros(levels, np.int8),
+        np.zeros(levels, np.int8),
+        np.zeros(levels),
+        np.zeros(levels, np.int8),
+    )
+    shared = (
+        status,
+        counters,
+        pending,
+        heaps,
+        sizes,
+        crew2,
+        queue2,
+        holding,
+        standby,
+        level_up,
+        level_mask,
+        stack,
+        awaiting,
+        pending_change,
+    )
+    # The system's own heap and crews.
+    heap, (crew, _, queue) = _level_view(0, shared)
     last = np.empty(n)
     up_at = np.empty(n)
     down_at = np.empty(n)
@@ -732,10 +1408,15 @@ def _simulate(
         timed[:] = 0
         finding[:] = 0
         test_charged[:] = 0
-        crew[0] = crews
-        crew[1] = 0
-        crew[2] = 0
+        for level in range(levels):
+            crew2[level, 0] = level_crews[level]
+            crew2[level, 1] = 0
+            crew2[level, 2] = 0
         holding[:] = 0
+        sizes[:] = 0
+        level_up[:] = 1
+        awaiting[:] = -1
+        pending_change[0][:] = 0
         units[5][:] = 0
         units[6][:] = 0
         units[7][:] = 0
@@ -756,12 +1437,45 @@ def _simulate(
         rep_cost = 0.0
         code = 0
         size = 0
-        # Each component's first failure (or maintenance, or test), in the
-        # components' order.
+        # The nested RBDs start first, innermost first: each starts from
+        # new on its own, and only its first change is wanted where it is.
+        for j in range(level_order.size):
+            code = _start_level(
+                level_order[j],
+                t_end,
+                upkeep,
+                fail,
+                repair,
+                stream_draws,
+                shared,
+            )
+            if code != 0:
+                break
+        # Each component's first failure (or maintenance, or test, or a
+        # nested RBD's first change), in the components' order.
         for c in range(n):
+            if code != 0:
+                break
             if active[c] and group_of[c] < 0:
                 kind_next = _FAIL
-                if policy[c]:
+                if child_level[c] >= 0:
+                    status[c] = level_up[child_level[c]]
+                    code, t, now, was_planned = _advance(
+                        child_level[c],
+                        t_end,
+                        upkeep,
+                        fail,
+                        repair,
+                        stream_draws,
+                        shared,
+                    )
+                    if code != 0:
+                        break
+                    if now:
+                        kind_next = _RESTORE
+                    elif was_planned:
+                        kind_next = _PM_START
+                elif policy[c]:
                     code, t, kind_next = _renewal(
                         c, 0.0, upkeep, fail, lives, limit, flat, base
                     )
@@ -844,10 +1558,10 @@ def _simulate(
                 if unit_kind == _UNIT_REPAIRED:
                     if crews >= 0:
                         size = _release(
-                            n + u,
+                            n_all + u,
                             t,
                             t_end,
-                            n,
+                            n_all,
                             crew,
                             holding,
                             queue,
@@ -895,7 +1609,7 @@ def _simulate(
                     if crews < 0 or crew[0] > 0:
                         if crews >= 0:
                             crew[0] -= 1
-                            holding[n + u] = 1
+                            holding[n_all + u] = 1
                         _unit_event(
                             u, g, t + span, _UNIT_REPAIRED, units, groups
                         )
@@ -903,10 +1617,10 @@ def _simulate(
                         crew[1] = _wait(
                             queue,
                             crew[1],
-                            rank[n + u],
+                            rank[n_all + u],
                             t,
                             crew[2],
-                            n + u,
+                            n_all + u,
                             t + span,
                             _UNIT_JOB,
                         )
@@ -1145,7 +1859,27 @@ def _simulate(
                     changes += 1
                 if grouped:
                     continue  # the group has queued its next event
-            # The next event.
+            # The next event: a nested RBD's next change, from its own
+            # events (no crew works on a nested RBD); or the component's.
+            child = child_level[c]
+            if child >= 0:
+                code, t_next, now, was_planned = _advance(
+                    child, t_end, upkeep, fail, repair, stream_draws, shared
+                )
+                if code != 0:
+                    break
+                if t_next < t_end:
+                    if now:
+                        kind_next = _RESTORE
+                    elif was_planned:
+                        kind_next = _PM_START
+                    else:
+                        kind_next = _FAIL
+                    if size == heap[0].size:
+                        code = -1
+                        break
+                    size = _push(heap, size, t_next, c, kind_next, 0)
+                continue
             if tested[c] > 0.0:
                 # A unit with hidden failures (RepairableRBD.
                 # _inspected_follow_up).
@@ -1263,7 +1997,7 @@ def _simulate(
                             c,
                             t,
                             t_end,
-                            n,
+                            n_all,
                             crew,
                             holding,
                             queue,
@@ -1334,11 +2068,12 @@ def _simulate(
         change_count[row] = changes
 
 
-@njit(cache=True)
+@njit(cache=True, nogil=True)
 def run_serial(
     todo, first, t_end, system, structure, kept, draws, out, upkeep
 ):
-    """Simulations ``todo``, one after another."""
+    """Simulations ``todo``, one after another (without holding the GIL,
+    so that threads can run several at once)."""
     _simulate(
         todo,
         0,
@@ -1354,18 +2089,29 @@ def run_serial(
     )
 
 
-@njit(cache=True, parallel=True)
 def run_parallel(
-    todo, first, t_end, system, structure, kept, draws, out, chunks, upkeep
+    pool,
+    todo,
+    first,
+    t_end,
+    system,
+    structure,
+    kept,
+    draws,
+    out,
+    chunks,
+    upkeep,
 ):
-    """Simulations ``todo``, ``chunks`` of them at a time on numba's
-    threads."""
+    """Simulations ``todo``, in ``chunks`` pieces on the threads of
+    ``pool``: the one compiled loop of ``run_serial``, which numba
+    compiles once (a loop over ``prange`` would be compiled again, as
+    long). Each simulation writes its own row, so the pieces run in any
+    order."""
     m = todo.size
-    for j in prange(chunks):
-        _simulate(
-            todo,
-            j * m // chunks,
-            (j + 1) * m // chunks,
+    pieces = [
+        pool.submit(
+            run_serial,
+            todo[j * m // chunks : (j + 1) * m // chunks],
             first,
             t_end,
             system,
@@ -1375,6 +2121,10 @@ def run_parallel(
             out,
             upkeep,
         )
+        for j in range(chunks)
+    ]
+    for piece in pieces:
+        piece.result()
 
 
 def threads(jobs) -> int:
@@ -1385,14 +2135,6 @@ def threads(jobs) -> int:
     return int(min(jobs, numba.config.NUMBA_NUM_THREADS))
 
 
-def set_threads(count: int) -> None:
-    numba.set_num_threads(count)
-
-
-def get_threads() -> int:
-    return int(numba.get_num_threads())
-
-
 def used() -> bool:
     """Whether the loop has been compiled (or loaded) in this process."""
-    return bool(run_serial.signatures or run_parallel.signatures)
+    return bool(run_serial.signatures)

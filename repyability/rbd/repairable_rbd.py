@@ -11506,15 +11506,17 @@ class RepairableRBD(RBD):
             compiles when numba is installed, the system is one the
             compiled engine simulates, and the run is long enough to pay
             for loading it (about a third of a second from numba's cache;
-            several seconds the first time ever). The engines give the same
+            a minute or two the first time ever, while numba compiles it).
+            The engines give the same
             results to the last bit. The compiled engine simulates plain
             components (surpyval parametric models) in any structure, with
             nodes held working or broken, costs, antithetic pairs and
             tolerances, under age and block replacement, with hidden
-            failures found by inspections, with repair crews and with
-            standby groups; replacement on condition, maintenance groups,
-            imperfect repair, nested RBDs, capacities, other models and
-            runs from a ``state`` run in Python. Another package can add a
+            failures found by inspections, with repair crews, with standby
+            groups and with nested RBDs of up to 20 components;
+            replacement on condition, maintenance groups, imperfect repair,
+            capacities, other models and runs from a ``state`` run in
+            Python. Another package can add a
             compiled engine of its own, which ``engine`` then takes by name
             and ``"auto"`` may prefer (see ``repyability.rbd.engines``). By
             default ``"auto"``.
@@ -12963,27 +12965,39 @@ class RepairableRBD(RBD):
             if runner is not None:
                 runner.close()
             np.random.set_state(after)
-            # Clean up the interim variables of the simulation.
-            for name in (
-                "_event_queue",
-                "system_state",
-                "t_simulation",
-                "component_status",
-                "last_change_planned",
-                "_pending_failure",
-                "_in_service",
-                "_renewed_at",
-                "_pending_event",
-                "_cancelled",
-                "_early",
-                "_renewing",
-                "_crews",
-                "_groups",
-                "_step_sources",
-                "_phases",
-            ):
-                self.__dict__.pop(name, None)
+            self._forget_run()
         return tally
+
+    #: The interim variables of a simulation (see _forget_run).
+    _RUN_STATE = (
+        "_event_queue",
+        "system_state",
+        "t_simulation",
+        "component_status",
+        "last_change_planned",
+        "_pending_failure",
+        "_in_service",
+        "_renewed_at",
+        "_pending_event",
+        "_cancelled",
+        "_early",
+        "_renewing",
+        "_crews",
+        "_groups",
+        "_step_sources",
+        "_phases",
+    )
+
+    def _forget_run(self) -> None:
+        """Clean up the interim variables of a simulation, this RBD's and
+        its nested RBDs': left behind, a nested standby group's draws (whose
+        samplers cannot be pickled) would keep the RBD from going to the
+        processes of a later parallel run."""
+        for name in self._RUN_STATE:
+            self.__dict__.pop(name, None)
+        for component in self.components.values():
+            if isinstance(component, RepairableRBD):
+                component._forget_run()
 
     def _simulation_engine(
         self,
