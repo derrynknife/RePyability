@@ -105,6 +105,8 @@ models provided here (see [Building an RBD](guide/building.md) and
 
 ::: repyability.ConfidenceInterval
 
+::: repyability.ControlVariate
+
 ::: repyability.UncertaintyResult
 
 ::: repyability.RedundancyAllocation

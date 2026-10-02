@@ -24,6 +24,7 @@ simulations compiled.
 | `tolerance`, `confidence`, `max_samples` | `availability`, `cost`; `mean` and `mean_time_to_failure` with `method="simulate"`, `mean_time_to_failure_interval` | Simulate until the estimate is known to within `tolerance`. |
 | `antithetic=True` | the same, and `NonRepairableRBD.random` | Simulate in antithetic pairs. |
 | `n_jobs` | the same, and `RepairableRBD.compare` | Run the simulations on several CPUs. |
+| `control_variate=True` | `RepairableRBD`'s `availability` and `cost` | Control the estimate by the system's exact twin. |
 | `compare(other, ...)` | `RepairableRBD`, `NonRepairableRBD` | The difference between two designs, simulated with common random numbers. |
 | `engine` | `RepairableRBD`'s `availability`, `cost` and `compare` | Run the simulations compiled, with numba. |
 | `shard_map`; `shards`, `run_shard` | `RepairableRBD`'s `availability` and `cost` | Run the simulations as shards, in other processes or on other machines, through any map. |
@@ -178,6 +179,90 @@ pairs, each followed by its mirror image.
 Every component's draws must be replayable from uniform random numbers:
 surpyval parametric distributions, and the composite nodes built from them.
 Otherwise `antithetic=True` raises `NotImplementedError`.
+
+## An exact twin
+
+A repairable system that needs a simulation is usually close to one that
+does not: the same components, failing and repaired independently, whose
+availability and cost over a window are exact. `control_variate=True`
+simulates that *exact twin* alongside the system, with common random
+numbers (each of its components draws what the system's draws, as in
+[`compare`](#comparing-two-designs)), and takes the twin's error against its
+exact value off the system's mean:
+
+    estimate = mean(x) - b * (mean(twin) - exact)
+
+with the coefficient `b` that leaves the least variance. The estimate is
+unbiased (but for `b` coming from the same run, an error of order `1/n`),
+and its variance is `1 - corr**2` times the plain mean's, `corr` being the
+correlation of the system's simulations with the twin's. Three pumps with
+Weibull lives, sharing one repair crew:
+
+```python
+pump = {
+    "reliability": surv.Weibull.from_params([100, 1.5]),
+    "repairability": surv.LogNormal.from_params([1.5, 0.6]),
+}
+crewed = RepairableRBD(edges, {n: pump for n in "ABC"}, repair_crews=1)
+crewed.analysis_routes()["availability"].twin
+# 'the system without the limit on repair crews.'
+plain = crewed.availability(t_simulation=1000.0, mc_samples=2_000, seed=1)
+twin = crewed.availability(t_simulation=1000.0, mc_samples=2_000, seed=1,
+                           control_variate=True)
+plain.mean_availability_interval().standard_error   # -> 0.000399
+twin.mean_availability_interval().standard_error    # -> 0.000145
+twin.control_variate.variance_reduction             # -> 7.6
+```
+
+The controlled run is worth 7.6 times as many plain simulations.
+`mean_availability_interval` and the cost's `mean_interval` give the
+controlled estimates; everything else in the result (`uptimes`, the curve,
+the totals) is the simulations' own, and `result.control_variate` holds the
+twin's values, its exact value and `b`. A run to a `tolerance` is judged on
+the controlled estimate, so it stops sooner: here 1 000 simulations instead
+of 5 000 for `tolerance=0.0005`.
+
+- **What the twin leaves out.** What ties the components together: a limit
+  on repair crews, and maintenance groups. And, component by component,
+  what the exact methods over time do not take: a standby group's switching
+  (unless its units are exponential, when its own chain follows it), whose
+  units then operate together; imperfect repair; replacement on condition;
+  and inspections they do not take (tests or repairs that take time), whose
+  failures are then revealed. It keeps the rest, age and block replacement
+  among it: the closer the twin, the more it gains.
+  `analysis_routes()["availability"].twin` says what it leaves out, or why
+  there is none (a model that is a probability, or a simulated life).
+- **A system that is its own twin** (plain components, nothing left out)
+  gets its exact value, with a standard error of 0: its simulations are the
+  twin's.
+- **What it costs.** The twin's exact values take a fraction of a second,
+  and its simulations run compiled where they can. Every draw must come
+  from a stream (surpyval parametric models); the streams are laid out as
+  `compare` lays them, so a seeded run's simulations can differ from a run's
+  without it; and it does not run with `shard_map`.
+
+What it gains, on 4 000 simulations over 1 000 hours (variances of the mean
+availability, and of the mean cost, plain over controlled; *per second*
+counts the twin's time; antithetic pairs on the same system for
+comparison):
+
+| System | Availability | ÷ variance | per second | ÷ cost variance | antithetic ÷ |
+|---|---|---|---|---|---|
+| One crew, three pumps (MTTF ~90 h) | 0.937 | 7.1 | 1.9 | 11.1 | 2.2 |
+| One crew, three pumps (MTTF ~900 h) | 0.996 | 109 | 46 | 189 | 2.0 |
+| Two crews, four pumps | 0.970 | 10.9 | 3.5 | 27.6 | 1.3 |
+| One crew, with age replacement | 0.980 | 3.5 | 1.3 | 5.5 | 1.6 |
+| Cold standby of two units (Weibull) | 0.987 | 4.6 | 1.1 | 4.0 | 2.3 |
+| Cold standby of three units (Weibull) | 0.987 | 81 | 18 | 6.3 | 2.4 |
+| Inspections that take time | 0.958 | 2.8 | 2.5 | 5.0 | 1.8 |
+| Imperfect repair (Kijima I, q = 0.5) | 0.946 | 1.4 | 1.0 | 1.2 | 1.5 |
+| An opportunistic maintenance group | 0.987 | 14.9 | 5.9 | 8.8 | 2.4 |
+
+It gains most where the system is a small step from its twin: a crew
+rarely busy, a spare rarely needed. Each controlled estimate was within 1.8
+standard errors of a plain run of 100 000 simulations. It is not the
+default: where the twin is far from the system (imperfect repair, above) it
+gains nothing for the time it takes.
 
 ## Parallel runs
 
@@ -564,6 +649,8 @@ next engine. `analysis_routes()` reports which engine `"auto"` would run.
   separate estimates, whose errors add up.
 - **A quantity that rises with the components' lifetimes:** try
   `antithetic=True`, and check that the standard error falls.
+- **A system a small step from its exact twin** (a crew rarely busy, a
+  spare rarely needed): `control_variate=True`.
 - **Long simulations:** install numba (`pip install "repyability[fast]"`)
   for the compiled engine, and spread them over the cores with `n_jobs`.
 - **More than one machine can run in time:** [shard](#shards) the run.

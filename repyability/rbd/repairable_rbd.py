@@ -95,6 +95,7 @@ from repyability.rbd.results import (
     AvailabilityResult,
     CapacityDistribution,
     ConfidenceInterval,
+    ControlVariate,
     CostResult,
     Criticalities,
     ExpectedCost,
@@ -509,6 +510,22 @@ def _state_key(states: dict) -> Optional[str]:
 
     entries = plain(states)
     return json.dumps(entries, sort_keys=True) if entries else None
+
+
+def _hot_units(spec: dict) -> "RepairableRBD":
+    """A standby group's twin (see ``RepairableRBD._twin``): its units
+    operating together, each failing and repaired on its own, ``k`` of them
+    needed, as a nested RBD whose components are named ``0, 1, ...``, as
+    the group's units are, so that their streams are the units'."""
+    standby = spec["standby"]
+    units, k = int(standby.get("units", 2)), int(standby.get("k", 1))
+    keys = ("reliability", "repairability") + RepairableRBD.COST_KEYS
+    unit = {key: spec[key] for key in keys if key in spec}
+    return RepairableRBD(
+        [("s", u) for u in range(units)] + [(u, "t") for u in range(units)],
+        {u: dict(unit) for u in range(units)},
+        k={"t": k} if k > 1 else None,
+    )
 
 
 def _check_shard_map(shard_map, shard_size, n_jobs) -> None:
@@ -1529,12 +1546,13 @@ def _stopping_rule(
     antithetic: bool,
     target: str,
     t_simulation: float,
-) -> Optional[Callable[["_Tally"], int]]:
+) -> Optional[Callable[..., int]]:
     """``None`` for a fixed number of replications; otherwise a function
     of the tally so far giving how many more replications to run (0 once
     the confidence interval of the mean availability over the window, or of
     the mean cost, is at most ``tolerance`` either side, or ``max_N`` have
-    run: then with a warning)."""
+    run: then with a warning). Given the simulations' ``values`` too (a
+    controlled run's, see ``_controlled_run``), it judges those."""
     montecarlo.check_confidence(confidence)
     limit = montecarlo.sample_limit(
         N, tolerance, max_N, antithetic, ("mc_samples", "max_samples")
@@ -1542,8 +1560,11 @@ def _stopping_rule(
     if limit is None:
         return None
 
-    def stop(tally: "_Tally") -> int:
-        if target == "cost":
+    def stop(tally: "_Tally", values=None) -> int:
+        if values is not None:
+            # The controlled values of a run with an exact twin.
+            values = np.asarray(values, dtype=float)
+        elif target == "cost":
             values = np.asarray(tally.cost_samples, dtype=float)
         else:
             values = np.asarray(tally.uptimes, dtype=float) / t_simulation
@@ -7651,6 +7672,10 @@ class RepairableRBD(RBD):
                 engine_reason=why,
             )
         )
+        twin = self._twin_report()
+        for name in ("availability", "cost"):
+            if out[name].route == r.SIMULATED:
+                out[name] = dataclasses.replace(out[name], twin=twin)
         out["compare"] = (
             r.refused(groups)
             if groups
@@ -11354,6 +11379,7 @@ class RepairableRBD(RBD):
         curve_points: Optional[int] = None,
         shard_map: Optional[Callable] = None,
         shard_size: Optional[int] = None,
+        control_variate: bool = False,
         N: Optional[int] = None,
         max_N: Optional[int] = None,
     ) -> AvailabilityResult:
@@ -11534,6 +11560,33 @@ class RepairableRBD(RBD):
         shard_size : int, optional
             The simulations to a shard, with ``shard_map``: as ``shards``'
             ``size``, by default as many as make 1024 or more.
+        control_variate : bool, optional
+            Control the estimate of the mean availability by the system's
+            exact twin, by default False. The twin has the same diagram,
+            components and models, failing and repaired independently:
+            without a limit on repair crews or maintenance groups and,
+            component by component, without what the exact methods over
+            time do not take (a standby group's switching, its units then
+            operating together; imperfect repair; replacement on
+            condition; inspections they do not take). Its mean
+            availability over the window is exact (``mission_availability``,
+            and ``expected_cost`` its cost), and it is simulated alongside
+            the system with common random numbers, as ``compare`` does, so
+            its error against its exact value shows how far the system's
+            own mean is off. ``mean_availability_interval`` (and the
+            cost's ``mean_interval``) then give ``mean(x) - b * (mean(twin)
+            - exact)``, with the coefficient ``b`` that leaves the least
+            variance: ``1 - corr**2`` times the plain mean's. A
+            ``tolerance`` is judged on it, so the run stops sooner. The
+            result's ``control_variate`` holds the twin's values, its exact
+            value and ``b`` (see
+            [`ControlVariate`][repyability.ControlVariate]); everything else
+            is the simulations' own. Every draw must come from a stream
+            (surpyval parametric models), the streams are laid out as
+            ``compare`` lays them, so a seeded run's simulations can differ
+            from those of a run without it, and it does not run with
+            ``shard_map``. See
+            [An exact twin](guide/simulation.md#an-exact-twin).
 
         N : int, optional
             Deprecated: the old name of ``mc_samples``.
@@ -11561,14 +11614,17 @@ class RepairableRBD(RBD):
             a tolerance or below ``mc_samples``, ...); or if a ``demand`` is
             not a positive, finite number, or is
             given for an RBD with no capacities; or if ``shard_map`` is not
-            callable or comes with ``n_jobs``, or ``shard_size`` is not a
-            whole number at least 1 or comes without ``shard_map``.
+            callable or comes with ``n_jobs`` or ``control_variate``, or
+            ``shard_size`` is not a whole number at least 1 or comes without
+            ``shard_map``.
         NotImplementedError
             With ``antithetic``, if a component's draws cannot be replayed;
             with capacities, if a node takes its capacity from its model;
             with ``engine="numba"``, if the compiled engine does not
             simulate the system; with ``shard_map``, if the system cannot
-            be saved as JSON.
+            be saved as JSON; with ``control_variate``, if the system has
+            no exact twin (a component's model is a probability, or its
+            life is simulated) or a draw cannot come from a stream.
         ImportError
             With ``engine="numba"``, if numba is not installed.
 
@@ -11631,6 +11687,7 @@ class RepairableRBD(RBD):
             curve_points=_curve_points(curve_points),
             shard_map=shard_map,
             shard_size=shard_size,
+            control_variate=control_variate,
         )
 
     def simulate_chunk(
@@ -12359,6 +12416,154 @@ class RepairableRBD(RBD):
             if name in theirs
         }
 
+    def _twin(self) -> Tuple["RepairableRBD", List[str]]:
+        """This system's exact twin (#154), and what it changes, in words.
+
+        The twin has this system's diagram and components, with their
+        models, failing and repaired independently: without the limit on
+        repair crews or the maintenance groups, which tie components
+        together, and, component by component, without what the exact
+        methods over time do not take (see ``_twin_simpler``). Its expected
+        values over a window are then exact (``mission_availability``,
+        ``expected_cost``), and each of its streams is named as this
+        system's is (a standby group's units as the twin's nested units),
+        so that, simulated with common random numbers, it follows this
+        system closely: see ``availability``'s ``control_variate``.
+
+        Raises
+        ------
+        NotImplementedError
+            If no such twin has exact values over time: a component's model
+            is a probability, or a life is simulated.
+        """
+        from repyability.rbd import routes as r
+
+        args = self._init_args
+        changes = []
+        if self._crews_limited():
+            changes.append("the limit on repair crews")
+        if self._maintenance:
+            changes.append("the maintenance groups")
+        specs: Dict[Any, Any] = {}
+        for node, value in args["components"].items():
+            if isinstance(value, RepairableRBD):
+                nested, inner = value._twin()
+                specs[node] = nested
+                changes.extend(f"{what} in {node!r}" for what in inner)
+            elif isinstance(value, dict):
+                spec = {
+                    key: item
+                    for key, item in value.items()
+                    if key not in ("priority", "group")
+                }
+                preventive = value.get("preventive")
+                if preventive and "opportunity" in preventive:
+                    # Opportunities come from a group's stops.
+                    spec["preventive"] = {
+                        key: item
+                        for key, item in preventive.items()
+                        if key != "opportunity"
+                    }
+                specs[node] = spec
+            else:
+                specs[node] = value
+        twin = self._twin_from(specs)
+        simpler = {}
+        for node, spec in specs.items():
+            if isinstance(spec, dict):
+                simpler[node], change = twin._twin_simpler(node, spec)
+                if change:
+                    changes.append(change)
+        if any(simpler[node] is not specs[node] for node in simpler):
+            twin = self._twin_from({**specs, **simpler})
+        route = twin._over_time()
+        if route.route == r.REFUSED:
+            raise NotImplementedError(
+                "This system has no exact twin to control its simulation "
+                f"by: {route.reason}"
+            )
+        if route.route == r.SIMULATED:
+            raise NotImplementedError(
+                "This system has no exact twin to control its simulation "
+                "by: its components' values over time are simulated "
+                f"({route.reason})"
+            )
+        return twin, changes
+
+    def _twin_report(self) -> str:
+        """What ``analysis_routes`` says of the exact twin a run with
+        ``control_variate`` is controlled by (see ``AnalysisRoute.twin``):
+        what it leaves out of this system, or why there is none."""
+        try:
+            _, changes = self._twin()
+        except NotImplementedError as error:
+            return f"none. {error}"
+        _, complete = self._stream_specs(1.0)
+        if not complete:
+            return f"none. {_UNSTREAMED}"
+        if not changes:
+            return (
+                "the system itself, whose values over the window are exact "
+                "(mission_availability, expected_cost)."
+            )
+        return f"the system without {', '.join(changes)}."
+
+    def _twin_from(self, components: dict) -> "RepairableRBD":
+        """A system of this one's diagram with ``components`` (see
+        ``_twin``)."""
+        args = self._init_args
+        return RepairableRBD(
+            args["edges"],
+            components,
+            k=args["k"],
+            input_node=args["input_node"],
+            output_node=args["output_node"],
+            on_infeasible_rbd=args["on_infeasible_rbd"],
+            downtime_cost_rate=args["downtime_cost_rate"],
+        )
+
+    def _twin_simpler(self, node, spec: dict) -> Tuple[Any, str]:
+        """A component's spec in an exact twin (see ``_twin``), this system
+        being the twin so far, and what it changes (or ""): a standby group
+        whose own chain cannot follow it over time becomes its units
+        operating together; imperfect repair becomes perfect; replacement
+        on condition, inspections and block replacement that the exact
+        methods do not take go."""
+        from repyability.rbd import routes as r
+
+        if node in self._standby:
+            if r.refusal(partial(self._standby_rates, node)):
+                return (
+                    _hot_units(spec),
+                    f"the switching of standby group {node!r} (its units "
+                    "operate together)",
+                )
+            return spec, ""
+        drop: Dict[str, str] = {}
+        if r.refusal(partial(self._require_perfect_repair, node)):
+            drop["repair"] = drop["replace_after"] = "imperfect repair"
+        if r.refusal(partial(self._require_no_condition, node)):
+            drop["preventive"] = "replacement on condition"
+        if node in self._inspection and r.refusal(
+            partial(self._require_tested_exact, node)
+        ):
+            drop["inspection"] = "inspections"
+        schedule = self._preventive.get(node)
+        if (
+            schedule is not None
+            and schedule.policy == "block"
+            and r.refusal(partial(self._require_block_models, node))
+        ):
+            drop["preventive"] = "block replacement"
+        if not drop:
+            return spec, ""
+        what = list(dict.fromkeys(drop[key] for key in drop if key in spec))
+        note = " (its failures are revealed)" if "inspection" in drop else ""
+        return (
+            {key: value for key, value in spec.items() if key not in drop},
+            f"the {' and '.join(what)} of {node!r}{note}",
+        )
+
     def _simulated(
         self,
         t_simulation: float,
@@ -12381,10 +12586,12 @@ class RepairableRBD(RBD):
         curve_points: Optional[int] = None,
         shard_map: Optional[Callable] = None,
         shard_size: Optional[int] = None,
+        control_variate: bool = False,
     ) -> AvailabilityResult:
         """``availability`` (and ``cost``): validate, run the replications
         (serially, in parallel, or as shards through ``shard_map``, until
-        converged if asked) and build the result, its curve on a grid of
+        converged if asked; with ``control_variate``, alongside the system's
+        exact twin) and build the result, its curve on a grid of
         ``curve_points`` steps if given."""
         working_nodes = set() if working_nodes is None else set(working_nodes)
         broken_nodes = set() if broken_nodes is None else set(broken_nodes)
@@ -12401,6 +12608,19 @@ class RepairableRBD(RBD):
             N, tolerance, confidence, max_N, antithetic, target, t_simulation
         )
         _check_shard_map(shard_map, shard_size, n_jobs)
+        if not isinstance(control_variate, (bool, np.bool_)):
+            raise ValueError(
+                f"control_variate must be True or False, got "
+                f"{control_variate!r}."
+            )
+        twin = None
+        if control_variate:
+            if shard_map is not None:
+                raise ValueError(
+                    "A run with control_variate simulates the system's twin "
+                    "alongside it, here: leave out shard_map."
+                )
+            twin, _ = self._twin()
         capacity = None
         # Shards follow the capacities whatever the target, as chunks do.
         if (
@@ -12433,27 +12653,176 @@ class RepairableRBD(RBD):
             )
             step = self._shard_size(plan, shard_size)
             sharded = (shard_map, template, step)
-        tally = self._run(
-            t_simulation,
-            working_nodes,
-            broken_nodes,
-            method,
-            N,
-            verbose,
-            seed,
-            antithetic,
-            stop,
-            capacity=capacity,
-            jobs=None if n_jobs is None else montecarlo.jobs(n_jobs),
-            engine=engine,
-            entropy=entropy,
-            states=states,
-            curve_points=curve_points,
-            sharded=sharded,
-        )
+        jobs = None if n_jobs is None else montecarlo.jobs(n_jobs)
+        controls: Tuple[Optional[ControlVariate], ...] = (None, None)
+        if twin is not None:
+            tally, controls = self._controlled_run(
+                twin,
+                t_simulation,
+                working_nodes,
+                broken_nodes,
+                method,
+                N,
+                verbose,
+                seed,
+                antithetic,
+                stop,
+                capacity=capacity,
+                jobs=jobs,
+                engine=engine,
+                state=state,
+                states=states,
+                curve_points=curve_points,
+                target=target,
+            )
+        else:
+            tally = self._run(
+                t_simulation,
+                working_nodes,
+                broken_nodes,
+                method,
+                N,
+                verbose,
+                seed,
+                antithetic,
+                stop,
+                capacity=capacity,
+                jobs=jobs,
+                engine=engine,
+                entropy=entropy,
+                states=states,
+                curve_points=curve_points,
+                sharded=sharded,
+            )
         return self._availability_result(
-            tally, t_simulation, initial_up, antithetic, capacity
+            tally, t_simulation, initial_up, antithetic, capacity, controls
         )
+
+    def _controlled_run(
+        self,
+        twin: "RepairableRBD",
+        t_simulation: float,
+        working: set,
+        broken: set,
+        method: str,
+        N: int,
+        verbose: bool,
+        seed,
+        antithetic: bool,
+        stop: Optional[Callable[..., int]],
+        *,
+        capacity: Optional[_CapacityRecorder],
+        jobs: Optional[int],
+        engine: str,
+        state,
+        states: dict,
+        curve_points: Optional[int],
+        target: str,
+    ) -> Tuple["_Tally", Tuple[Optional[ControlVariate], ...]]:
+        """Run this system and its exact ``twin`` (see ``_twin``) with
+        common random numbers, as ``compare`` does, in rounds while
+        ``stop`` asks for more, judged by the controlled values; return
+        this system's totals and the controls of its fractions up and of
+        its costs (None without costs) by the twin's (see
+        ``ControlVariate``)."""
+        twin_states = twin._simulation_states(state, working | broken)
+        exact = float(
+            np.ravel(
+                twin.mission_availability(
+                    t_simulation, working, broken, method, state=state
+                )
+            )[0]
+        )
+        priced = self.has_costs and twin.has_costs
+        exact_cost = (
+            float(
+                np.ravel(
+                    twin.expected_cost(
+                        t_simulation, working, broken, method, state=state
+                    ).mean
+                )[0]
+            )
+            if priced
+            else None
+        )
+        entropy = _streams.entropy_of(seed)
+        widths = self._common_widths(twin, t_simulation, states, twin_states)
+        tally: Optional[_Tally] = None
+        twin_tally: Optional[_Tally] = None
+        first, count = 0, N
+        while True:
+            part = self._run(
+                t_simulation,
+                working,
+                broken,
+                method,
+                count,
+                verbose,
+                None,
+                antithetic,
+                capacity=capacity,
+                jobs=jobs,
+                engine=engine,
+                entropy=entropy,
+                widths=widths,
+                common=True,
+                first=first,
+                states=states,
+                curve_points=curve_points,
+            )
+            twin_part = twin._run(
+                t_simulation,
+                working,
+                broken,
+                method,
+                count,
+                False,
+                None,
+                antithetic,
+                jobs=jobs,
+                engine=engine,
+                entropy=entropy,
+                widths=widths,
+                common=True,
+                first=first,
+                states=twin_states,
+                curve_points=1,
+            )
+            if tally is None or twin_tally is None:
+                tally, twin_tally = part, twin_part
+            else:
+                tally.merge(part)
+                twin_tally.merge(twin_part)
+            fractions = np.asarray(tally.uptimes, dtype=float) / t_simulation
+            control = ControlVariate.of(
+                fractions,
+                np.asarray(twin_tally.uptimes, dtype=float) / t_simulation,
+                exact,
+                antithetic,
+            )
+            cost_control = None
+            if exact_cost is not None:
+                cost_control = ControlVariate.of(
+                    tally.cost_samples,
+                    twin_tally.cost_samples,
+                    exact_cost,
+                    antithetic,
+                )
+            if stop is None:
+                break
+            if target == "cost":
+                values = (
+                    tally.cost_samples
+                    if cost_control is None
+                    else cost_control.controlled(tally.cost_samples)
+                )
+            else:
+                values = control.controlled(fractions)
+            more = stop(tally, values)
+            if not more:
+                break
+            first, count = first + count, more
+        return tally, (control, cost_control)
 
     def _run(
         self,
@@ -12959,9 +13328,12 @@ class RepairableRBD(RBD):
         initial_up: bool,
         antithetic: bool,
         capacity: Optional[_CapacityRecorder] = None,
+        controls: Tuple[Optional[ControlVariate], ...] = (None, None),
     ) -> AvailabilityResult:
         """The ``AvailabilityResult`` of the replications in ``tally``: its
-        exact totals rounded, once."""
+        exact totals rounded, once; with ``controls``, the controls of its
+        fractions up and its costs by an exact twin (see
+        ``_controlled_run``)."""
         N = tally.n
         nodes = tally.nodes
         tally._fold()
@@ -13052,6 +13424,7 @@ class RepairableRBD(RBD):
                     k: float(v) / N for k, v in tally.cost_by_component.items()
                 },
                 antithetic=antithetic,
+                control_variate=controls[1],
             )
 
         capacity_fields: dict = {}
@@ -13107,6 +13480,7 @@ class RepairableRBD(RBD):
                 if self._maintenance
                 else None
             ),
+            control_variate=controls[0],
             **capacity_fields,
         )
 
@@ -13129,6 +13503,7 @@ class RepairableRBD(RBD):
         state=None,
         shard_map: Optional[Callable] = None,
         shard_size: Optional[int] = None,
+        control_variate: bool = False,
         N: Optional[int] = None,
         max_N: Optional[int] = None,
     ) -> Optional[CostResult]:
@@ -13214,6 +13589,11 @@ class RepairableRBD(RBD):
         shard_size : int, optional
             The simulations to a shard, with ``shard_map``, as for
             ``availability``.
+        control_variate : bool, optional
+            Control the estimate of the mean cost by the system's exact
+            twin, as for ``availability``: ``mean_interval`` then gives the
+            controlled estimate, from the twin's exact ``expected_cost``,
+            and a ``tolerance`` is judged on it. By default False.
 
         N : int, optional
             Deprecated: the old name of ``mc_samples``.
@@ -13286,6 +13666,7 @@ class RepairableRBD(RBD):
             curve_points=1,
             shard_map=shard_map,
             shard_size=shard_size,
+            control_variate=control_variate,
         ).cost
 
     def node_availability(self) -> dict[Hashable, float]:

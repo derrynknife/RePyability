@@ -48,6 +48,11 @@ class AnalysisRoute:
         ``engine_reason``). None otherwise.
     engine_reason : str
         Why that engine.
+    twin : str
+        For a ``RepairableRBD``'s simulated availability and cost: the
+        exact twin ``control_variate=True`` controls the estimate by (see
+        [`ControlVariate`][repyability.ControlVariate]), as what it leaves
+        out of the system, or why there is none. "" otherwise.
     """
 
     route: str
@@ -55,11 +60,14 @@ class AnalysisRoute:
     nodes: Tuple[Hashable, ...] = ()
     engine: Optional[str] = None
     engine_reason: str = ""
+    twin: str = ""
 
     def __str__(self) -> str:
         text = f"{self.route}: {self.reason}"
         if self.engine is not None:
             text += f" Engine: {self.engine} ({self.engine_reason})."
+        if self.twin:
+            text += f" Exact twin: {self.twin}"
         return text
 
 

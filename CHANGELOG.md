@@ -36,7 +36,8 @@ early at a stop of its maintenance group, sharing its set-up (opportunistic
 maintenance, #108), and repaired imperfectly, by Kijima's virtual age, or
 replaced at the N-th failure (#109); a simulation run can be split across
 machines and merged, to the last bit (#114, #151), through any executor
-(#152); and small failure probabilities are estimated by
+(#152), and controlled by the system's exact twin, worth up to a hundred
+times as many simulations (#154); and small failure probabilities are estimated by
 rare-event simulation (#115), and keep their full precision where they are
 exact (#148); phased missions are new, exact and simulated (#100, #101), as
 are the two-terminal reliability of undirected networks (#104), both
@@ -609,6 +610,34 @@ is required.
     before (2.6 times its one-process speed, from 2.0) and a 70-component
     one over 2 000 h 1.6 times (3.1, from 1.9), as the parent's share of a
     250-simulation block fell from 12 to 0.6 ms and from 29 to 2.2 ms.
+- **Control variates from an exact twin** (#154). `availability(...,
+  control_variate=True)` and `cost` simulate the system alongside its exact
+  twin: the same diagram, components and models, failing and repaired
+  independently, without a limit on repair crews or maintenance groups
+  and, component by component, without what the exact methods over time
+  do not take (a standby group's switching, its units then operating
+  together; imperfect repair; replacement on condition; inspections they
+  do not take). The twin's mean availability and cost over the window are
+  exact (`mission_availability`, `expected_cost`), and it draws the
+  system's random numbers (common random numbers, as `compare` does), so
+  its error against its exact value is taken off the system's mean, with
+  the coefficient that leaves the least variance: unbiased, with `1 -
+  corr**2` times the variance. `mean_availability_interval` and the cost's
+  `mean_interval` give the controlled estimates, a `tolerance` is judged
+  on them, and the new `ControlVariate` (the results' `control_variate`)
+  holds the twin's values, its exact value and the coefficient; everything
+  else in the result is the simulations' own. A system that is its own
+  twin gets its exact value, with a standard error of 0.
+  `analysis_routes()` says, in the new `AnalysisRoute.twin`, what the twin
+  leaves out, or why there is none. On 4 000 simulations over 1 000 hours
+  the mean availability's variance fell 7 times with one repair crew for
+  three pumps, 109 times when their failures are rare, 11 times with two
+  crews for four, 81 times for a cold-standby group of three Weibull units,
+  15 times for an opportunistic maintenance group, and 1.4 times with
+  imperfect repair (antithetic pairs: 1.3 to 2.4 times); the cost's, 1.2 to
+  189 times. Each controlled estimate was within 1.8 standard errors of a
+  plain run of 100 000 simulations. It is an option, as its gain depends on
+  how close the twin is (the simulation guide gives the table).
 - **Imperfect repair** (#109). A component spec's `"repair": {"model":
   "kijima1" | "kijima2", "q": q}` makes its repairs imperfect: a repair
   after the unit has operated `x` since the last takes its virtual age from

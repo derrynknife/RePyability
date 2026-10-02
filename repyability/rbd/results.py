@@ -110,6 +110,152 @@ class ConfidenceInterval(_ResultMapping):
 
 
 @dataclass
+class ControlVariate(_ResultMapping):
+    """The exact twin a simulation run was controlled by (#154), with
+    ``RepairableRBD.availability``'s or ``cost``'s ``control_variate``.
+
+    The twin is the system with its components failing and repaired
+    independently: the same diagram, components and models, without what
+    ties them together (a limit on repair crews, maintenance groups) or
+    what the exact methods over time do not take (a standby group's
+    switching, its units then operating together; imperfect repair;
+    replacement on condition; inspections they do not take), so that its
+    expected values over the window are exact. It is simulated alongside
+    the system with common random numbers (each of its streams draws what
+    the system's stream of the same name draws), so its values move with
+    the system's, and its error against its exact value shows how far the
+    system's own mean is off. Each simulation's controlled value is ``x -
+    coefficient * (twin - exact)``: their mean estimates the system's mean
+    without bias (but for the coefficient's coming from the same run, an
+    error of order ``1 / n``), with ``1 - correlation**2`` times the
+    variance of the plain mean.
+
+    Attributes
+    ----------
+    twin : numpy.ndarray
+        The twin's value in each simulation, in order: its fraction of the
+        window up, or its cost.
+    exact : float
+        The twin's exact expected value over the window
+        (``mission_availability``, or ``expected_cost``'s mean).
+    coefficient : float
+        The multiple of the twin's error taken off: ``cov(x, twin) /
+        var(twin)`` over the run (over antithetic pairs' means, for an
+        antithetic run), the one that leaves the least variance.
+    correlation : float
+        The correlation of the system's values with the twin's, over the
+        same.
+
+    Examples
+    --------
+    Four simulations whose twin was up 96.5% of the time on average,
+    where its exact mean is 95%: the system's own mean, 95.25%, is taken
+    down by about as much.
+
+    >>> import numpy as np
+    >>> from repyability import ControlVariate
+    >>> x = np.array([0.90, 0.95, 0.99, 0.97])
+    >>> twin = np.array([0.92, 0.96, 1.00, 0.98])
+    >>> control = ControlVariate.of(x, twin, exact=0.95)
+    >>> round(control.coefficient, 4), round(control.correlation, 4)
+    (1.1286, 0.9981)
+    >>> round(float(control.controlled(x).mean()), 4)
+    0.9356
+    >>> round(control.variance_reduction)
+    261
+    """
+
+    twin: np.ndarray
+    exact: float
+    coefficient: float
+    correlation: float
+
+    @classmethod
+    def of(
+        cls, values, twin, exact: float, antithetic: bool = False
+    ) -> "ControlVariate":
+        """The control of a run whose simulations gave ``values``, by a
+        twin that gave ``twin`` (in the same order) and whose exact mean is
+        ``exact``.
+
+        Parameters
+        ----------
+        values : array_like
+            The system's value in each simulation.
+        twin : array_like
+            The twin's value in each simulation.
+        exact : float
+            The twin's exact expected value.
+        antithetic : bool, optional
+            Whether the simulations come in antithetic pairs, by default
+            False: the coefficient is then worked out from the pairs'
+            means.
+
+        Returns
+        -------
+        ControlVariate
+            The twin's values, its exact value, the coefficient and the
+            correlation.
+        """
+        x = np.asarray(values, dtype=float)
+        y = np.asarray(twin, dtype=float)
+        if antithetic and len(x) % 2 == 0:
+            x = x.reshape(-1, 2).mean(axis=1)
+            y_fit = y.reshape(-1, 2).mean(axis=1)
+        else:
+            y_fit = y
+        coefficient = correlation = 0.0
+        if len(x) > 1:
+            covariance = np.cov(x, y_fit)
+            if covariance[1, 1] > 0.0:
+                coefficient = float(covariance[0, 1] / covariance[1, 1])
+                if covariance[0, 0] > 0.0:
+                    correlation = float(
+                        covariance[0, 1]
+                        / np.sqrt(covariance[0, 0] * covariance[1, 1])
+                    )
+        return cls(
+            twin=y,
+            exact=float(exact),
+            coefficient=coefficient,
+            correlation=correlation,
+        )
+
+    def controlled(self, values) -> np.ndarray:
+        """The controlled values of the simulations whose own ``values``
+        (in the same order as the twin's) these were.
+
+        Parameters
+        ----------
+        values : array_like
+            The system's value in each simulation.
+
+        Returns
+        -------
+        numpy.ndarray
+            ``values - coefficient * (twin - exact)``.
+        """
+        return np.asarray(values, dtype=float) - self.coefficient * (
+            self.twin - self.exact
+        )
+
+    @property
+    def variance_reduction(self) -> float:
+        """How many times as many plain simulations the controlled estimate
+        is worth: ``1 / (1 - correlation**2)``, the plain mean's variance
+        over the controlled mean's (infinite for a twin that is the system
+        itself).
+
+        Returns
+        -------
+        float
+            The factor.
+        """
+        left = 1.0 - self.correlation**2
+        return 1.0 / left if left > 0.0 else float("inf")
+
+
+@dataclass
 class UncertaintyResult(_ResultMapping):
     """The spread of a system quantity over plausible node models.
 
@@ -499,6 +645,12 @@ class CostResult(_ResultMapping):
         default False. Each sample is still a correct draw of a window's
         cost, but only the pairs are independent, so ``mean_se`` and
         ``mean_interval`` are worked out from the pairs' means.
+    control_variate : ControlVariate, optional
+        The exact twin the run was controlled by, with ``control_variate=
+        True`` (see [`ControlVariate`][repyability.ControlVariate]):
+        ``mean_interval`` is then the controlled estimate's, while
+        ``samples``, ``mean`` and the breakdowns stay the simulations' own.
+        None otherwise.
 
     Examples
     --------
@@ -537,6 +689,7 @@ class CostResult(_ResultMapping):
     by_component: Dict[Hashable, float]
     acquisition_cost: float = 0.0
     antithetic: bool = False
+    control_variate: Optional[ControlVariate] = None
 
     @property
     def mean(self) -> float:
@@ -591,7 +744,10 @@ class CostResult(_ResultMapping):
         ``mean +/- z * mean_se`` is built, for the normal quantile ``z`` of
         ``confidence``; the lower bound is clipped at 0. Use it to judge
         whether ``mc_samples`` was large enough; for the range a single
-        window's cost could fall in, use ``percentile`` instead.
+        window's cost could fall in, use ``percentile`` instead. With a
+        ``control_variate``, the estimate and its standard error are the
+        controlled values' (see
+        [`ControlVariate`][repyability.ControlVariate]).
 
         Parameters
         ----------
@@ -610,8 +766,13 @@ class CostResult(_ResultMapping):
         """
         if not 0.0 < confidence < 1.0:
             raise ValueError("confidence must be between 0 and 1.")
-        estimate = self.mean
-        standard_error = self.mean_se
+        if self.control_variate is None:
+            estimate = self.mean
+            standard_error = self.mean_se
+        else:
+            values = self.control_variate.controlled(self.samples)
+            estimate = float(np.mean(values))
+            standard_error = montecarlo.standard_error(values, self.antithetic)
         z = float(ndtri(0.5 + confidence / 2.0))
         return ConfidenceInterval(
             estimate=estimate,
@@ -1341,6 +1502,12 @@ class AvailabilityResult(_ResultMapping):
         With maintenance groups (see ``RepairableRBD``): each component's
         early renewals at another's stop, summed over the simulations.
         None without groups.
+    control_variate : ControlVariate, optional
+        The exact twin the run was controlled by, with ``control_variate=
+        True`` (see [`ControlVariate`][repyability.ControlVariate]):
+        ``mean_availability_interval`` is then the controlled estimate's,
+        while everything else (``uptimes``, the curve, the totals) stays
+        the simulations' own. None otherwise.
 
     Examples
     --------
@@ -1390,6 +1557,7 @@ class AvailabilityResult(_ResultMapping):
     demand: Optional[float] = None
     delivered: Optional[np.ndarray] = None
     opportunistic_renewals: Optional[Dict[Hashable, int]] = None
+    control_variate: Optional[ControlVariate] = None
 
     @property
     def mean_capacity(self) -> Optional[float]:
@@ -1490,6 +1658,8 @@ class AvailabilityResult(_ResultMapping):
         ``estimate +/- z * standard_error`` is built, clipped to [0, 1]. It
         describes the simulation error, and narrows like ``1 / sqrt(n)``;
         ``availability(tolerance=...)`` runs until it is narrow enough.
+        With a ``control_variate``, the fractions are the controlled ones
+        (see [`ControlVariate`][repyability.ControlVariate]).
 
         Parameters
         ----------
@@ -1517,6 +1687,8 @@ class AvailabilityResult(_ResultMapping):
         fractions = np.asarray(self.uptimes, dtype=float) / (
             self.time_simulated_to
         )
+        if self.control_variate is not None:
+            fractions = self.control_variate.controlled(fractions)
         estimate = float(np.mean(fractions))
         se = montecarlo.standard_error(fractions, self.antithetic)
         z = montecarlo.z_value(confidence)
