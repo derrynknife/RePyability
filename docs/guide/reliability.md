@@ -278,7 +278,10 @@ b10.interval(0.9)             # (33.36, 43.26)   around a B10 of 39.26
 
 The interval's width is a property of what is known about the models, and
 does not shrink with more draws, which only make its ends more precise. More
-failure data (a refit in surpyval) is what narrows it. Diagrams with
-common-cause groups raise `NotImplementedError`, and a node whose model is
-not a parametric distribution (a standby arrangement, a nested diagram) can
-only be given a list of models.
+failure data (a refit in surpyval) is what narrows it. With common-cause
+groups each draw is worked out with them: a group's members are given
+together, in one tuple, and the group's own model can be uncertain too (see
+[Common-cause
+failures](common-cause.md#importance-sensitivity-uncertainty-and-allocation)).
+A node whose model is not a parametric distribution (a standby
+arrangement, a nested diagram) can only be given a list of models.

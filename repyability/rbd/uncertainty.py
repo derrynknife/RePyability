@@ -21,6 +21,9 @@ in surpyval, already provides. A node's uncertainty is one of
   kept as they are;
 - a sequence of models (e.g. refits to bootstrap resamples, or posterior
   draws, made in surpyval): drawn with replacement.
+
+A common-cause group's model may be uncertain too (``draw_ccf_models``):
+distributions over its parameters, or a sequence of models.
 """
 
 from collections.abc import Mapping, Sequence
@@ -129,6 +132,23 @@ def _fit_draws(model, n: int, rng: np.random.Generator, label: str) -> list:
     return [model.with_params(list(row)) for row in drawn]
 
 
+def _quantiles(
+    prior, n: int, rng: np.random.Generator, label: str, name
+) -> np.ndarray:
+    """``n`` draws from ``prior``, through its quantile function."""
+    u = rng.random(n)
+    if hasattr(prior, "qf"):
+        values = prior.qf(u)
+    elif hasattr(prior, "ppf"):
+        values = prior.ppf(u)
+    else:
+        raise ValueError(
+            f"{label}: the distribution for {name!r} needs a quantile "
+            "function (qf, as surpyval's, or ppf, as scipy.stats')."
+        )
+    return np.asarray(values, dtype=float).reshape(-1)
+
+
 def _parameter_draws(
     model, priors: Mapping, n: int, rng: np.random.Generator, label: str
 ) -> list:
@@ -145,17 +165,7 @@ def _parameter_draws(
     bounds = list(getattr(dist, "bounds", [(None, None)] * len(names)))
     columns = np.tile(params, (n, 1))
     for name, prior in priors.items():
-        u = rng.random(n)
-        if hasattr(prior, "qf"):
-            values = prior.qf(u)
-        elif hasattr(prior, "ppf"):
-            values = prior.ppf(u)
-        else:
-            raise ValueError(
-                f"{label}: the distribution for {name!r} needs a quantile "
-                "function (qf, as surpyval's, or ppf, as scipy.stats')."
-            )
-        values = np.asarray(values, dtype=float).reshape(-1)
+        values = _quantiles(prior, n, rng, label, name)
         j = names.index(name)
         lower, upper = bounds[j] if j < len(bounds) else (None, None)
         if not np.all(np.isfinite(values)) or (
@@ -204,4 +214,67 @@ def draw_models(
     raise ValueError(
         f"{label}: the uncertainty must be 'fit', a dict of parameter "
         f"distributions or a list of models, got {spec!r}."
+    )
+
+
+def draw_ccf_models(
+    group, spec: Any, n: int, rng: np.random.Generator
+) -> List[Any]:
+    """``n`` plausible common-cause models of a ``CCFGroup``, as ``spec``
+    says: ``{parameter name: distribution}`` over its model's parameters
+    (``beta``, and an MGL model's ``gamma``, ``delta``, ...; see
+    ``ccf.parameters``), each drawn independently and in ``[0, 1]``, the
+    others kept; or a list of models (``BetaFactor`` or ``MGL``, for the
+    group's size and with its model's basis), drawn with replacement."""
+    from .ccf import MGL, BetaFactor, parameters, with_parameters
+
+    model = group.model
+    label = f"Common-cause group {list(group.members)!r}"
+    names = list(parameters(model))
+    if isinstance(spec, Mapping):
+        if not spec:
+            raise ValueError(f"{label}: no parameter distributions given.")
+        unknown = [p for p in spec if p not in names]
+        if unknown:
+            raise ValueError(
+                f"{label}: {sorted(map(str, unknown))} are not parameters "
+                f"of its model, {model!r}, whose parameters are {names}."
+            )
+        columns = {}
+        for name, prior in spec.items():
+            values = _quantiles(prior, n, rng, label, name)
+            if not np.all((values >= 0.0) & (values <= 1.0)):
+                raise ValueError(
+                    f"{label}: the distribution for {name!r} gives values "
+                    "outside [0, 1]."
+                )
+            columns[name] = values
+        return [
+            with_parameters(model, {k: v[i] for k, v in columns.items()})
+            for i in range(n)
+        ]
+    if isinstance(spec, Sequence) and not isinstance(spec, str):
+        if not spec:
+            raise ValueError(f"{label}: the list of models is empty.")
+        for m in spec:
+            size = (
+                m.required_group_size()
+                if isinstance(m, (BetaFactor, MGL))
+                else None
+            )
+            if (
+                not isinstance(m, (BetaFactor, MGL))
+                or size not in (None, len(group.members))
+                or m.basis != model.basis
+            ):
+                raise ValueError(
+                    f"{label}: every alternative model must be a "
+                    f"BetaFactor or an MGL model for {len(group.members)} "
+                    f"members, splitting the {model.basis} as its model "
+                    f"does; got {m!r}."
+                )
+        return [spec[i] for i in rng.integers(len(spec), size=n)]
+    raise ValueError(
+        f"{label}: its uncertainty must be a dict of distributions over its "
+        f"model's parameters ({names}) or a list of models, got {spec!r}."
     )

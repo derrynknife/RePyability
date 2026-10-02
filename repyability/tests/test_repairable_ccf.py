@@ -349,14 +349,21 @@ def test_a_nested_rbd_with_a_group():
 @pytest.mark.parametrize(
     "call",
     [
-        lambda rbd: rbd.birnbaum_importance(),
-        lambda rbd: rbd.fussell_vesely(),
+        lambda rbd: rbd.birnbaum_importance(working_nodes=["a"]),
         lambda rbd: rbd.point_availability([10.0]),
         lambda rbd: rbd.availability(100.0, mc_samples=10),
         lambda rbd: rbd.availability_allocation(0.999),
+        lambda rbd: rbd.allocate_redundancy(100.0, nodes=["a", "b"]),
         lambda rbd: rbd.mean_availability(working_nodes=["a"]),
     ],
-    ids=["importance", "FV", "over time", "simulation", "allocation", "held"],
+    ids=[
+        "held importance",
+        "over time",
+        "simulation",
+        "allocation",
+        "redundancy",
+        "held",
+    ],
 )
 def test_what_does_not_take_the_groups_in_refuses(call):
     rbd = RepairableRBD(
@@ -456,3 +463,177 @@ def test_the_capacity_distribution_with_the_group():
     got = rbd.capacity_distribution()
     np.testing.assert_allclose(got.levels, [0.0, 50.0, 100.0])
     np.testing.assert_allclose(got.probabilities, want, rtol=1e-10)
+
+
+# -- importance (#140) -----------------------------------------------------
+
+MEASURES = (
+    "birnbaum_importance",
+    "improvement_potential",
+    "risk_achievement_worth",
+    "risk_reduction_worth",
+    "criticality_importance",
+    "fussell_vesely",
+)
+
+
+def chain_by_hand(model, members, rate, repair):
+    """The members' long-run joint states, solved as a linear system (not
+    by GTH): ``{tuple of down flags: probability}``."""
+    n = len(members)
+    own, shared = model._causes(tuple(members))
+    at = {m: i for i, m in enumerate(members)}
+    causes = [((i,), own * rate) for i in range(n)]
+    causes += [
+        (tuple(at[m] for m in struck), share * rate)
+        for struck, share in shared
+        if share > 0.0
+    ]
+    states = list(itertools.product([0, 1], repeat=n))
+    index = {state: i for i, state in enumerate(states)}
+    generator = np.zeros((len(states), len(states)))
+    for state in states:
+        for struck, value in causes:
+            after = tuple(1 if i in struck else d for i, d in enumerate(state))
+            if after != state:
+                generator[index[state], index[after]] += value
+        for i in range(n):
+            if state[i]:
+                after = tuple(0 if j == i else d for j, d in enumerate(state))
+                generator[index[state], index[after]] += repair
+    np.fill_diagonal(generator, -generator.sum(axis=1))
+    system = np.vstack([generator.T, np.ones(len(states))])
+    target = np.zeros(len(states) + 1)
+    target[-1] = 1.0
+    pi = np.linalg.lstsq(system, target, rcond=None)[0]
+    return {state: pi[index[state]] for state in states}
+
+
+def measures_by_hand(rbd, members, joint, others):
+    """The importance measures by enumeration: the members' joint states,
+    and every other node independently down with its unavailability."""
+    nodes = list(members) + list(others)
+    cuts = rbd.get_min_cut_sets()
+    states: dict = {}
+    for grouped, p in joint.items():
+        for rest in itertools.product([0, 1], repeat=len(others)):
+            for (_, u), d in zip(others.items(), rest):
+                p *= u if d else 1.0 - u
+            key = tuple(grouped) + rest
+            states[key] = states.get(key, 0.0) + p
+            p = joint[grouped]
+
+    def down(key):
+        failed = {n for n, d in zip(nodes, key) if d}
+        return any(cut <= failed for cut in cuts)
+
+    Q = sum(p for key, p in states.items() if down(key))
+    R = sum(p for key, p in states.items() if not down(key))
+    out = {}
+    for i, node in enumerate(nodes):
+        works = sum(p for k, p in states.items() if not k[i])
+        fails = sum(p for k, p in states.items() if k[i])
+        q1 = sum(p for k, p in states.items() if not k[i] and down(k)) / works
+        q0 = sum(p for k, p in states.items() if k[i] and down(k)) / fails
+        cut = sum(
+            p
+            for k, p in states.items()
+            if any(
+                node in c and c <= {n for n, d in zip(nodes, k) if d}
+                for c in cuts
+            )
+        )
+        b = q0 - q1
+        out[node] = {
+            "birnbaum_importance": b,
+            "improvement_potential": fails * b,
+            "risk_achievement_worth": q0 / Q,
+            "risk_reduction_worth": Q / q1,
+            "criticality_importance": b * fails / Q,
+            "fussell_vesely": cut / Q,
+            "success": b * works / R,
+        }
+    return out
+
+
+@pytest.mark.parametrize(
+    "edges, members, model, k",
+    [
+        (
+            [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")],
+            ["a", "b"],
+            BetaFactor(0.2),
+            None,
+        ),
+        (
+            [("s", "c"), ("c", "a"), ("c", "b"), ("c", "x")]
+            + [("a", "t"), ("b", "t"), ("x", "t")],
+            ["a", "b", "x"],
+            MGL(0.2, 0.4),
+            {"t": 2},
+        ),
+    ],
+    ids=["pair and valve", "two of three"],
+)
+def test_a_members_importance_is_conditioned_on_its_state(
+    edges, members, model, k
+):
+    components = {m: revealed(0.01, 0.5) for m in members}
+    components["c"] = revealed(0.002, 0.2)
+    rbd = RepairableRBD(
+        edges, components, k=k, ccf_groups=[CCFGroup(members, model)]
+    )
+    joint = chain_by_hand(model, members, 0.01, 0.5)
+    want = measures_by_hand(rbd, members, joint, {"c": 0.002 / 0.202})
+    for measure in MEASURES:
+        got = getattr(rbd, measure)()
+        for node in want:
+            assert got[node] == pytest.approx(
+                want[node][measure], rel=1e-11
+            ), (measure, node)
+    success = rbd.criticality_importance(kind="success")
+    for node in want:
+        assert success[node] == pytest.approx(want[node]["success"], rel=1e-11)
+    assert rbd.analysis_routes()["birnbaum_importance"].route == "exact"
+
+
+def test_beta_zero_gives_the_independent_measures_of_tested_members():
+    # Staggered tests, which the groups' chain steps through.
+    def components():
+        return {
+            "a": hidden(0.001, 100.0),
+            "b": hidden(0.001, 100.0, offset=50.0),
+            "c": revealed(0.002, 0.2),
+        }
+
+    edges = [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")]
+    grouped = RepairableRBD(
+        edges,
+        components(),
+        ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.0))],
+    )
+    plain = RepairableRBD(edges, components())
+    for measure in MEASURES:
+        got, want = getattr(grouped, measure)(), getattr(plain, measure)()
+        for node in "abc":
+            assert got[node] == pytest.approx(want[node], rel=1e-9), (
+                measure,
+                node,
+            )
+
+
+def test_a_shared_cause_raises_the_members_importance():
+    # Tested members: a shared cause makes the pair fail together, so a
+    # member down says more of the other being down.
+    def pair(beta):
+        return RepairableRBD(
+            PAIR,
+            {"a": hidden(0.001, 100.0), "b": hidden(0.001, 100.0)},
+            ccf_groups=[CCFGroup(["a", "b"], BetaFactor(beta))],
+        )
+
+    independent, shared = pair(0.0), pair(0.1)
+    for measure in ("birnbaum_importance", "improvement_potential"):
+        assert getattr(shared, measure)()["a"] > (
+            getattr(independent, measure)()["a"]
+        )

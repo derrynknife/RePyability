@@ -15,7 +15,7 @@ import pytest
 import surpyval as surv
 from surpyval import FixedEventProbability
 
-from repyability import BetaFactor, CCFGroup, NonRepairableRBD
+from repyability import MGL, CCFGroup, NonRepairableRBD
 from repyability.rbd import redundancy_allocation
 
 
@@ -313,11 +313,13 @@ def test_time_varying_rbd_needs_mission_time(bridge):
         bridge.allocate_redundancy(BRIDGE_COSTS, budget=22.0)
 
 
-def test_ccf_rbd_not_supported():
+def test_an_mgl_groups_member_is_not_copied():
+    # Its letters are for its size (see test_ccf_analyses.py for the
+    # groups whose copies join them).
     rbd = NonRepairableRBD(
         [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
         {"a": fixed(0.9), "b": fixed(0.9)},
-        ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
+        ccf_groups=[CCFGroup(["a", "b"], MGL(0.1))],
     )
     with pytest.raises(NotImplementedError, match="common-cause"):
         rbd.allocate_redundancy({"a": 1.0}, budget=3)

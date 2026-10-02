@@ -181,7 +181,8 @@ def test_serialisation_roundtrip():
 # -- unsupported combinations raise clearly --------------------------------
 
 
-def test_importance_and_state_guarded():
+def test_the_analyses_given_ages_are_guarded():
+    # They need members of different ages, which the models do not cover.
     rbd = NonRepairableRBD(
         PARALLEL,
         {
@@ -191,12 +192,9 @@ def test_importance_and_state_guarded():
         ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
     )
     for call in (
-        lambda: rbd.birnbaum_importance(50.0),
-        lambda: rbd.criticality_importance(50.0),
-        lambda: rbd.fussell_vesely(50.0),
-        lambda: rbd.parameter_sensitivity(50.0),
         lambda: rbd.sf_given_state(50.0, {"a": NodeState(age=10)}),
         lambda: rbd.remaining_life(0.9, {"a": NodeState(age=10)}),
+        lambda: rbd.importances_given_state(50.0, {"a": NodeState(age=10)}),
     ):
         with pytest.raises(NotImplementedError, match="CCF|common-cause"):
             call()

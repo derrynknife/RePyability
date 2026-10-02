@@ -2967,7 +2967,22 @@ class RBD:
 
         # The system unreliability, the denominator for every node.
         system_ff = _averaged(self._system_unreliability(p, q), weights)
+        numerators = self._fv_numerators(p, q, size, fv_type, method)
+        return {
+            node: _averaged(numerators[node], weights) / system_ff
+            for node in self.nodes
+        }
 
+    def _fv_numerators(
+        self, p: dict, q: dict, size: int, fv_type: str, method: str
+    ) -> dict[Any, np.ndarray]:
+        """The numerators of the Fussell-Vesely importances (see
+        ``_fussell_vesely``) at the nodes' probabilities of working ``p``
+        and of failing ``q`` (1-d arrays of length ``size``): for each node,
+        the probability that every node of some minimal cut (or path) set
+        containing it has failed, or with ``"rare_event"`` the sum of those
+        sets' probabilities."""
+        zero = np.zeros(size)
         if method == "exact":
             decomposition = self._decomposition()
             if decomposition.always_works:
@@ -2976,12 +2991,8 @@ class RBD:
                 if fv_type == "p":
                     decomposition = decomposition.dual()
                 failed = decomposition.failed_cut_sets(p, q, shape=size)
-            zero = np.zeros(size)
             return {
-                node: _averaged(
-                    np.broadcast_to(failed.get(node, zero), (size,)), weights
-                )
-                / system_ff
+                node: np.broadcast_to(failed.get(node, zero), (size,))
                 for node in self.nodes
             }
 
@@ -2995,7 +3006,7 @@ class RBD:
                     include_in_out_nodes=False
                 )
             }
-        node_importance: dict[Any, np.ndarray] = {}
+        out: dict[Any, np.ndarray] = {}
         for this_node in self.nodes:
             # The sum of the probabilities of the sets containing the node
             # failing.
@@ -3007,7 +3018,5 @@ class RBD:
                 for other_node in node_set:
                     set_fails = set_fails * q[other_node]
                 numerator = numerator + set_fails
-            node_importance[this_node] = (
-                _averaged(numerator, weights) / system_ff
-            )
-        return node_importance
+            out[this_node] = numerator
+        return out

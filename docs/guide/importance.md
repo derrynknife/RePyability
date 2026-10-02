@@ -193,7 +193,11 @@ see [Repairable systems](repairable.md#criticality-measures).
   be improved: every importance measure leaves it out, the structural
   importance takes it as always working, and the allocations hold it at 1
   and leave it out of their results.
-- The probability-based measures and `parameter_sensitivity` raise
-  `NotImplementedError` on an RBD with common-cause groups (structural
-  importance does not).
-- All measures assume the nodes fail independently, as the exact engine does.
+- With common-cause groups, a member's measures are conditioned on its state
+  through the shared causes, and `parameter_sensitivity` reports a group's
+  parameters (and its model's `ccf_beta`, ...) once, under the tuple of its
+  members (see [Common-cause
+  failures](common-cause.md#importance-sensitivity-uncertainty-and-allocation)).
+  A member cannot be held working or broken.
+- Otherwise the measures assume the nodes fail independently, as the exact
+  engine does.

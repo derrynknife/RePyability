@@ -108,8 +108,9 @@ places, nested diagrams):
   deprecated and go in 0.12); repeated nodes; cold standby with one or
   two units operating (any units) or more (identical units); warm standby
   with one unit operating, and hot standby (any units); load sharing of
-  identical units; common-cause groups, for the system's reliability
-  (and, splitting the failure rate, its MTTF);
+  identical units; common-cause groups, for the system's reliability,
+  importance, sensitivity and redundancy allocation (and, splitting the
+  failure rate, its MTTF);
 - **non-repairable questions:** reliability, hazard, MTTF, B*X* life and
   importance measures at any time, also given each component's current age;
   the distribution of the system's capacity;
@@ -136,12 +137,12 @@ places, nested diagrams):
 | Warm standby with two or more units operating, of non-exponential units | Simulated: a fit to simulated lifetimes, deprecated (from 0.12, simulated only in the system's simulations: #149) | Yes, in general: which spare is switched in where, and how much each has aged, branch with the order of the failures. With one unit operating it is numerical, and hot standby (k-out-of-*n*) exact. |
 | Cold standby with three or more different units operating, and load sharing of different units | Simulated: a fit to simulated lifetimes, deprecated (from 0.12, simulated only in the system's simulations: #149) | Yes, in general: which spare goes where, and how old the others are, branch with the order of the failures. Identical units are numerical in both, and so are two different units operating. |
 | Anything a simulated node is part of | Simulated through that node | Only while the node is simulated. |
-| Common-cause groups: importance, allocation and analyses given ages, and the MTTF of a group splitting a failure probability | Refused (a simulated MTTF leaves a probability split out) | No: importance and allocation could be exact (#140). A group splitting the failure rate (`basis="rate"`) has an exact MTTF, and the simulations draw its shared shocks; the analyses given ages need a model of members of different ages. |
+| Common-cause groups: analyses given ages, and the MTTF of a group splitting a failure probability | Refused (a simulated MTTF leaves a probability split out) | No: the analyses given ages need a model of members of different ages. A group splitting the failure rate (`basis="rate"`) has an exact MTTF, and the simulations draw its shared shocks. Importance, parameter sensitivity and redundancy allocation are exact with groups (a beta-factor member's copies join its group), and parameter uncertainty is sampled with them. |
 | Kaplan–Meier lives in a repairable system | Long run refused; over time numerical | Non-parametric nodes are deprecated and go in 0.12 (#149): fit a parametric distribution in surpyval. |
 | **Architecture and maintenance** | | |
 | Phased missions over 200,000 states, and networks over 100,000 paths | Refused, pointing to `method="simulate"` | No: decision diagrams could keep them exact (#142, #143). |
 | Hidden failures found by tests (a constant failure rate with instant tests and repairs is exact, staggered or with tests that miss failures too) | Simulated | No: could be numerical (#144). |
-| Common-cause groups in a repairable diagram | Long run exact, for exponential lives, tested or repaired; over time, importance, allocation and the simulations refused | No: over time could be exact from the same Markov chain, and the simulations could draw the shared causes (#158); importance and allocation, #140. |
+| Common-cause groups in a repairable diagram | Long run and importance exact, for exponential lives, tested or repaired; over time, allocation and the simulations refused | No: over time could be exact from the same Markov chain, the simulations could draw the shared causes, and an allocation could build each design's chain (#158). |
 | Replacement on condition at periodic inspections | Simulated | No: could be numerical (#145). |
 | Shared repair crews | Long run exact for exponential lives and repairs; the rest simulated | Over time and importance, with exponential lives: could be exact from the same Markov chain (#146). Other lives: yes, in general. |
 | Standby groups (a duty unit and its spares, repaired) | Long run and importance exact for exponential units; the rest simulated | Over time, with exponential units: could be exact from the same Markov chain (#146). Other units: yes, in general. |

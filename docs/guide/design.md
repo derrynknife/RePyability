@@ -289,8 +289,13 @@ active.
 `n` copies of a node with reliability `p`, all active and independent, have
 reliability `1 − (1 − p)ⁿ` (with mixed types, `1 − (1 − p₁)(1 − p₂)…`). That
 is the right model for parts added in active parallel; standby spares are
-modelled with `strategy` (above), but common-cause coupling is not (an RBD
-with common-cause groups raises `NotImplementedError`). A budget that
+modelled with `strategy` (above). With common-cause groups, a copy of a
+member joins its group, so the shared cause fails it too: a `BetaFactor`
+group's members can be copied (active copies of their own model), while an
+`MGL` group's member, options and cold spares for a member raise
+`NotImplementedError` (see [Common-cause
+failures](common-cause.md#importance-sensitivity-uncertainty-and-allocation)).
+A budget that
 cannot buy one of each costed node, a target that no design within
 `max_units` (or the budget) reaches, or a node that uses none of any limited
 resource and has no `max_units` (so could be copied without limit) raises

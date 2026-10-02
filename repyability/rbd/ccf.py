@@ -475,6 +475,63 @@ class MGL(_Model):
         return f"MGL({', '.join(parts)})"
 
 
+#: The names of an MGL model's letters, in order: ``beta`` first.
+LETTERS = (
+    "beta",
+    "gamma",
+    "delta",
+    "epsilon",
+    "zeta",
+    "eta",
+    "theta",
+    "iota",
+    "kappa",
+    "lambda",
+    "mu",
+    "nu",
+    "xi",
+    "omicron",
+    "pi",
+    "rho",
+    "sigma",
+    "tau",
+    "upsilon",
+    "phi",
+    "chi",
+    "psi",
+    "omega",
+)
+
+
+def parameters(model) -> Dict[str, float]:
+    """A common-cause model's parameters by name: a ``BetaFactor``'s
+    ``beta``, an ``MGL`` model's letters (``beta``, ``gamma``, ``delta``,
+    ...)."""
+    if isinstance(model, BetaFactor):
+        return {"beta": model.beta}
+    return {
+        LETTERS[j] if j < len(LETTERS) else f"letter{j + 1}": value
+        for j, value in enumerate(model.letters)
+    }
+
+
+def with_parameters(model, values: Dict[str, float]) -> "_Model":
+    """``model`` with the parameters ``values`` names changed (see
+    ``parameters``), its basis kept: a ``ValueError`` for one outside
+    ``[0, 1]`` or a name it does not have."""
+    current = parameters(model)
+    unknown = [name for name in values if name not in current]
+    if unknown:
+        raise ValueError(
+            f"{sorted(unknown)} are not parameters of {model!r}, whose "
+            f"parameters are {list(current)}."
+        )
+    current.update({name: float(v) for name, v in values.items()})
+    if isinstance(model, BetaFactor):
+        return BetaFactor(current["beta"], basis=model.basis)
+    return MGL(*current.values(), basis=model.basis)
+
+
 def validity_warning(group: "CCFGroup", Q: float) -> None:
     """Warn that ``group``'s probability split is used at a probability of
     failing ``Q`` beyond ``VALIDITY``, and name the rate-based model to
@@ -530,9 +587,11 @@ class CCFGroup:
     leave the group out. A model that splits the failure *rate*
     (``basis="rate"``) holds over the whole life: the exact ``mean``
     includes the group, and the simulations draw its shared shocks. The
-    RBD's probability-based importance measures, parameter sensitivity,
-    redundancy allocation and condition-based methods raise
-    ``NotImplementedError`` when groups are present.
+    RBD's importance measures condition a member on its state through the
+    shock outcomes, its parameter sensitivity and uncertainty take a
+    group's members together (with the model's own parameters), and its
+    redundancy allocation lets a ``BetaFactor`` member's copies join the
+    group; its condition-based methods raise ``NotImplementedError``.
 
     Parameters
     ----------

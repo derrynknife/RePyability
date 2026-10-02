@@ -40,6 +40,8 @@ are the two-terminal reliability of undirected networks (#104) and
 demonstration test planning (#129). A safety function's PFDavg takes in
 the terms SIL verification asks for: common-cause groups in repairable
 diagrams, staggered tests, and proof tests that miss failures (#136).
+Common-cause groups enter the importance measures, parameter sensitivity
+and uncertainty, and redundancy allocation (#140).
 Meshed diagrams are decided by a binary
 decision diagram, in milliseconds where their path sets took minutes (#102,
 #103). Non-parametric nodes, and the fits to simulated lifetimes behind some
@@ -81,9 +83,9 @@ is required.
     exponential lives either tested or repaired at exponential rates: a
     tested 1oo2 pair with a β of 5% has a PFDavg of 5.29e-4, against
     1.01e-4 without. Each member's own values are unchanged. The importance
-    measures, allocations, values over time from new and the simulations
-    refuse a diagram with groups, as yet (#140, #158), and say so in
-    `analysis_routes()`.
+    measures take the groups in too (#140); the allocations, values over
+    time from new and the simulations refuse a diagram with groups, as yet
+    (#158), and say so in `analysis_routes()`.
   - An inspection's `"offset"` (the time of the first test) staggers the
     tests of redundant components: half an interval apart, a 1oo2 pair's
     PFDavg falls from about `(λτ)²/3` to `5(λτ)²/24`, and a shared cause's
@@ -97,6 +99,40 @@ is required.
     unit whose tests can miss failures starts new (its state is not
     taken), and `optimal_inspection_intervals` does not choose its
     interval.
+- **Common-cause groups in importance, sensitivity, uncertainty and
+  allocation** (#140). With a `NonRepairableRBD`'s `ccf_groups`:
+  - The importance measures (Birnbaum, improvement potential, RAW, RRW,
+    criticality, Fussell–Vesely) are exact with the groups. A member's
+    measures condition on its state through the groups' shock outcomes:
+    the system's reliability given that it works and given that it has
+    failed. A node outside the groups is held working and failed, as
+    before, and Fussell–Vesely sums each outcome's probability that a
+    minimal cut set containing the node has failed. Each is a sum of
+    products, so a small probability keeps its precision, and `beta = 0`
+    gives the measures without the group. A member cannot be held working
+    or broken.
+  - `parameter_sensitivity` reports a group's parameters once, under the
+    tuple of its members: the derivative as the parameter moves for all of
+    them, by differences of the exact system reliability. The parameters of
+    the group's own model come with them, as `ccf_beta` (and `ccf_gamma`,
+    ... for MGL).
+  - The parameter-uncertainty methods (`sf_uncertainty`,
+    `mean_uncertainty`, `time_to_reliability_uncertainty`,
+    `bx_life_uncertainty`) work out each draw with the groups. A group's
+    members are given together, in one tuple, and its own model can be
+    uncertain too: `{group: {"beta": distribution}}`, or a list of models.
+    `mean_uncertainty` refuses a group splitting a probability, as `mean`
+    does.
+  - In `allocate_redundancy` and `redundancy_front`, a copy of a
+    `BetaFactor` group's member joins its group, so the shared cause fails
+    it too: active copies of the member's own model, any number of them
+    required. Copies of an `MGL` group's member (whose letters are for its
+    group's size), and options or cold spares for a member, are refused.
+    `allocate_reliability_redundancy` takes the groups in, and refuses to
+    choose a member's reliability, which is the group's.
+  - A `RepairableRBD`'s importance measures take its groups in, a member's
+    conditioned on its state at each long-run time, then averaged over the
+    times as every node's are.
 - **Faster compiled simulations of large systems** (#150). Above 20
   components (where the compiled loop has no table of every state), the
   compiled engine keeps whether the system works up to date as components
@@ -844,6 +880,10 @@ is required.
 
 ### Fixed
 
+- `parameter_sensitivity` left a model's offset, limited-failure-population
+  and zero-inflation parameters out of the unperturbed value of a one-sided
+  difference (taken where one side of a parameter is not valid), so such a
+  difference was of two different models (#140).
 - **New users' first stumbles** (#134):
   - `repr()` of an RBD summarises it: its nodes, input and output, k-out-of-n
     nodes and, for a `NonRepairableRBD`, repeated nodes, junctions and

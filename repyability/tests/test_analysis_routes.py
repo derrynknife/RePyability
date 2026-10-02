@@ -539,8 +539,10 @@ def test_a_simulated_node_is_named_and_the_rest_stay_exact():
 def test_common_cause_groups_refuse_what_does_not_model_them():
     report = nonrepairable_rbds()["common cause"].analysis_routes()
     assert report["sf"].route == routes.EXACT
-    assert report["birnbaum_importance"].route == routes.REFUSED
-    assert report["allocate_redundancy"].route == routes.REFUSED
+    assert report["birnbaum_importance"].route == routes.EXACT
+    assert report["allocate_redundancy"].route == routes.EXACT
+    assert report["parameter_sensitivity"].route == routes.NUMERICAL
+    assert report["sf_given_state"].route == routes.REFUSED
     assert report["mean"].route == routes.REFUSED
     assert (
         "sampled independently"
@@ -736,20 +738,25 @@ def test_the_readme_says_what_is_simulated():
         "Anything a simulated node is part of": [
             (nonrepairable["nested"], "sf", "simulated"),
         ],
-        "Common-cause groups: importance, allocation and analyses given "
-        "ages, and the MTTF of a group splitting a failure probability": [
+        "Common-cause groups: analyses given ages, and the MTTF of a group "
+        "splitting a failure probability": [
             (ccf, "sf", "exact"),
+            (ccf, "birnbaum_importance", "exact"),
+            (ccf, "fussell_vesely", "exact"),
+            (ccf, "allocate_redundancy", "exact"),
+            (ccf, "parameter_sensitivity", "numerical"),
+            (ccf, "sf_uncertainty", "simulated"),
             (nonrepairable["common cause by rate"], "mean", "numerical"),
+            (
+                nonrepairable["common cause by rate"],
+                "mean_uncertainty",
+                "simulated",
+            ),
             (nonrepairable["common cause by rate"], "random", "simulated"),
         ]
         + [
             (ccf, name, "refused")
-            for name in (
-                "mean",
-                "birnbaum_importance",
-                "allocate_redundancy",
-                "sf_given_state",
-            )
+            for name in ("mean", "mean_uncertainty", "sf_given_state")
         ],
         "Kaplan–Meier lives in a repairable system": [
             (
@@ -793,8 +800,13 @@ def test_the_readme_says_what_is_simulated():
                 "refused",
             ),
             (
-                repairable["common cause, revealed"],
+                repairable["common cause, tested"],
                 "birnbaum_importance",
+                "exact",
+            ),
+            (
+                repairable["common cause, revealed"],
+                "availability_allocation",
                 "refused",
             ),
         ],

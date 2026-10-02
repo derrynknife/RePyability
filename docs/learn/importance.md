@@ -412,10 +412,10 @@ plant.criticality_importance()["C"]   # -> 0.7018
       It is 1 for all of them.
     - **Forgetting time and state.** Rankings change as parts age, and
       differ for a fleet in service from a fleet of new units.
-    - **Forgetting dependence.** All these measures assume components fail
+    - **Forgetting dependence.** These measures take components that fail
       independently. [Lesson 5](dependence.md) shows how common causes break
-      that; RePyability's probability-based measures raise an error on an RBD
-      with common-cause groups rather than give a misleading answer.
+      that; with common-cause groups, RePyability conditions a member's
+      measures on its state through the shared causes (see the [guide](../guide/common-cause.md#importance-sensitivity-uncertainty-and-allocation)).
 
 ## Summary
 

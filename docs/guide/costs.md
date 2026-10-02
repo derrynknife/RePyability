@@ -634,9 +634,10 @@ All three are exact, with the constant failure rates and instant tests and
 repairs the long-run values need: a group's members are a Markov chain of
 which of them are down, with each member found by its own tests, and a
 shared failure found alike by every test (the coverage is the group's).
-The importance measures, the allocations, the values over time from new
-and the simulations do not take a common-cause group in yet, and refuse
-it; see `analysis_routes()`.
+The importance measures take the groups in, a member's conditioned on its
+state at each time; the allocations, the values over time from new and the
+simulations do not take a common-cause group in yet, and refuse it (#158);
+see `analysis_routes()`.
 
 ### Choosing the interval
 

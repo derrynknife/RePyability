@@ -458,9 +458,13 @@ refuses one that splits a probability, where `Q` is no longer small. The
 Monte-Carlo `random()`, `mean(method="simulate")` and MTTF interval draw a
 rate-split group's shocks (each cause strikes at an exponential time in
 `H`), and sample the members of a probability-split group independently,
-leaving the common cause out. The probability-dependent
-importance/sensitivity and the condition-based methods do not yet account
-for it and raise a clear error on a CCF RBD; `structural_importance`, being
+leaving the common cause out. The importance measures condition a member
+on its state through the shock outcomes (a node outside the groups is held
+working and failed, as without them); parameter sensitivity and parameter
+uncertainty take a group's members together, with its model's parameters;
+and a copy of a beta-factor group's member joins the group in a redundancy
+allocation. The condition-based methods would need members of different
+ages, and raise a clear error on a CCF RBD; `structural_importance`, being
 probability-free, is unaffected.
 **Alpha-factor**, a data-estimable reparameterisation of the same
 multiplicities, is a planned extension.

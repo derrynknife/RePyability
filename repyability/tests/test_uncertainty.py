@@ -282,14 +282,15 @@ def test_invalid_requests_are_rejected():
         )
 
 
-def test_common_cause_groups_are_not_supported():
+def test_a_common_cause_groups_member_is_not_drawn_alone():
+    # Its members carry one model (see test_ccf_analyses.py).
     unit = FixedEventProbability.from_params(0.1)
     rbd = NonRepairableRBD(
         [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
         {"a": unit, "b": unit},
         ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
     )
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(ValueError, match="together"):
         rbd.sf_uncertainty(uncertainty={"a": [unit]})
 
 
@@ -322,7 +323,7 @@ def pump_fit():
 def test_each_draws_mttf_and_times_are_its_models():
     fit = pump_fit()
     rbd = one_node(fit)
-    drawn = rbd._uncertain_draws({"c": "fit"}, 300, 0)["c"]
+    drawn = rbd._uncertain_draws({"c": "fit"}, 300, 0)[0]["c"]
     mean = rbd.mean_uncertainty({"c": "fit"}, n_draws=300, seed=0)
     np.testing.assert_allclose(
         mean.samples, [m.mean() for m in drawn], rtol=1e-10
@@ -400,18 +401,16 @@ def test_the_lifetime_uncertainties_refuse_what_they_cannot_do():
         rbd.bx_life_uncertainty(100, {"c": "fit"})
     with pytest.raises(ValueError, match="Give the uncertain nodes"):
         rbd.mean_uncertainty({})
+    # A common-cause group splitting a probability has no exact MTTF.
     unit = E([0.01])
     grouped = NonRepairableRBD(
         [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
         {"a": unit, "b": unit},
-        ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1, basis="rate"))],
+        ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
     )
-    for call in (
-        lambda: grouped.mean_uncertainty({"a": [unit]}),
-        lambda: grouped.bx_life_uncertainty(10, {"a": [unit]}),
-    ):
-        with pytest.raises(NotImplementedError):
-            call()
+    with pytest.raises(NotImplementedError, match="split a failure"):
+        grouped.mean_uncertainty({("a", "b"): [unit]})
     routes = grouped.analysis_routes()
     assert routes["mean_uncertainty"].route == "refused"
+    assert routes["bx_life_uncertainty"].route == "simulated"
     assert rbd.analysis_routes()["bx_life_uncertainty"].route == "simulated"
