@@ -834,11 +834,16 @@ def test_the_readme_says_what_is_simulated():
                 "refused",
             ),
         ],
-        "Replacement on condition at periodic inspections": [
+        "Replacement on condition at periodic inspections, over time": [
+            (
+                repairable["replaced on condition"],
+                "point_availability",
+                "refused",
+            ),
             (
                 repairable["replaced on condition"],
                 "mean_availability",
-                "refused",
+                "numerical",
             ),
             (repairable["replaced on condition"], "availability", "simulated"),
         ],

@@ -51,11 +51,11 @@ from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd import _spares, _standby_chain, _streams
 from repyability.rbd import capacity as _capacity
 from repyability.rbd._block_replacement import (
-    BlockCycle,
     BlockHead,
     block_availability,
     block_cycle,
 )
+from repyability.rbd._condition_replacement import condition_cycle
 from repyability.rbd._hidden_life import (
     TestedLife,
     TestedLifeCurve,
@@ -4629,11 +4629,19 @@ class RepairableRBD(RBD):
                 rate += _mean_cost(preventive) * maintained
         inspection = node_costs.get("inspection_cost")
         if inspection is not None and not forced:
-            self._require_no_condition(node)
-            # One inspection per interval (none is skipped: repairs are
-            # instant, as the exact values require).
-            self._require_tested_exact(node)
-            rate += _mean_cost(inspection) / self._inspection[node].interval
+            schedule = self._preventive.get(node)
+            if schedule is not None and schedule.policy == "condition":
+                # Inspected at each multiple of the interval at which it is
+                # up (one in a repair or replacement is not).
+                up = self._block_cycle(node).before
+                rate += _mean_cost(inspection) * up / schedule.interval
+            else:
+                # One test per interval (none is skipped: repairs are
+                # instant, as the exact values require).
+                self._require_tested_exact(node)
+                rate += (
+                    _mean_cost(inspection) / self._inspection[node].interval
+                )
         # Optional cost of *this component* being down, whether or not the
         # system as a whole is.
         downtime_cost = node_costs.get("downtime_cost", 0.0)
@@ -7444,16 +7452,20 @@ class RepairableRBD(RBD):
             if life == r.EXACT:
                 return r.EXACT, "its mean life and mean repair time"
             return life, f"its mean life, {how}"
-        message = r.refusal(
-            partial(self._require_no_condition, node)
-        ) or r.refusal(partial(self._require_no_opportunities, node))
+        message = r.refusal(partial(self._require_no_opportunities, node))
         if message:
             return r.REFUSED, message
         life, how = r.model_route(component.reliability)
-        if schedule.policy == "block":
+        if schedule.policy in ("block", "condition"):
             message = r.refusal(partial(self._require_block_models, node))
             if message:
                 return r.REFUSED, message
+            if schedule.policy == "condition":
+                return (
+                    r.NUMERICAL,
+                    "replacement on condition: its renewal cycle, followed "
+                    "from one inspection to the next on a grid",
+                )
             return (
                 r.NUMERICAL,
                 "block replacement: its renewal cycle, solved on a grid",
@@ -12311,16 +12323,18 @@ class RepairableRBD(RBD):
 
     def _require_no_condition(self, node) -> None:
         """Raise if a component is replaced on condition (a ``"preventive"``
-        schedule with ``"policy": "condition"``): its long-run values and
-        its availability over time are known only by simulation."""
+        schedule with ``"policy": "condition"``): its availability over time
+        is known only by simulation (its long-run values are numerical:
+        see ``_condition_replacement``)."""
         schedule = self._preventive.get(node)
         if schedule is not None and schedule.policy == "condition":
             raise NotImplementedError(
                 f"Component {node!r} is replaced on condition (at an "
                 "inspection, if it is then likely enough to fail before the "
-                "next), so its long-run values and its availability over "
-                "time have no exact value here. Estimate them by simulation, "
-                "with availability() or cost()."
+                "next), so its availability over time has no exact value "
+                "here, as yet (#161): its long-run values do. Estimate the "
+                "values over time by simulation, with availability() or "
+                "cost()."
             )
 
     def _imperfect_phrase(self, node) -> str:
@@ -12548,16 +12562,19 @@ class RepairableRBD(RBD):
         return life.intensity(self._tested_phase(node, times))
 
     def _block_nodes(self) -> list:
-        """The components under block replacement."""
+        """The components renewed on a calendar, whose long-run values vary
+        with it: under block replacement, or replaced on condition at
+        inspections (#145)."""
         return [
             node
             for node, schedule in self._preventive.items()
-            if schedule.policy == "block"
+            if schedule.policy in ("block", "condition")
         ]
 
-    def _block_cycle(self, node) -> BlockCycle:
+    def _block_cycle(self, node):
         """The renewal cycle of a component under block replacement (see
-        ``_block_replacement``), computed once and kept."""
+        ``_block_replacement``) or replaced on condition (see
+        ``_condition_replacement``), computed once and kept."""
         component = self.components[node]
         schedule = self._preventive[node]
         cache = self.__dict__.setdefault("_block_cycles", {})
@@ -12567,15 +12584,27 @@ class RepairableRBD(RBD):
             id(component.time_to_replace),
             float(schedule.interval),
             id(schedule.duration),
+            schedule.policy,
+            schedule.threshold,
         )
         if key not in cache:
-            cache[key] = block_cycle(
-                component.reliability,
-                component.time_to_replace,
-                schedule.duration,
-                schedule.interval,
-                node,
-            )
+            if schedule.policy == "condition":
+                cache[key] = condition_cycle(
+                    component.reliability,
+                    component.time_to_replace,
+                    schedule.duration,
+                    schedule.interval,
+                    float(schedule.threshold),
+                    node,
+                )
+            else:
+                cache[key] = block_cycle(
+                    component.reliability,
+                    component.time_to_replace,
+                    schedule.duration,
+                    schedule.interval,
+                    node,
+                )
         return cache[key]
 
     def _has_calendar(self) -> bool:
@@ -13102,14 +13131,18 @@ class RepairableRBD(RBD):
         replacement, whichever comes first. Under block replacement it runs
         from one block time at which the unit is up (and replaced) to the
         next, with any failures and repairs in between (see
-        ``_block_replacement``); it is computed once and kept."""
-        self._require_no_condition(node)
+        ``_block_replacement``); replaced on condition, from one inspection
+        that replaces the unit to the next (see ``_condition_replacement``).
+        It is computed once and kept."""
         self._require_no_opportunities(node)
         self._require_perfect_repair(node)
         component = self.components[node]
         if schedule.policy == "block":
             block = self._block_cycle(node)
             return block.up, block.length, block.failures, 1.0
+        if schedule.policy == "condition":
+            kept = self._block_cycle(node)
+            return kept.up, kept.length, kept.failures, kept.replaced
         # Kept by interval, as a search over intervals revisits them.
         cache = self.__dict__.setdefault("_age_cycles", {})
         key = (

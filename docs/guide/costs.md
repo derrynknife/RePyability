@@ -378,13 +378,14 @@ weekly = {"interval": 168.0, "policy": "condition", "threshold": 0.2,
 inspected = RepairableRBD([("s", "p"), ("p", "t")],
                           {"p": dict(pump(580), preventive=weekly)},
                           downtime_cost_rate=500.0)
+inspected.expected_cost_rate()              # -> 13.37   per hour
 run = inspected.cost(200_000.0, mc_samples=20, seed=1)
-run.mean_interval().estimate / 200_000.0    # -> 13.28   per hour, simulated
+run.mean_interval().estimate / 200_000.0    # -> 13.28   simulated, ± 0.2
 ```
 
 | Threshold | 0.05 | 0.1 | 0.15 | 0.2 | 0.25 | 0.3 |
 |---|---|---|---|---|---|---|
-| Cost per hour (± 0.2) | 22.12 | 16.09 | 13.62 | 13.28 | 14.03 | 14.42 |
+| Cost per hour | 22.10 | 15.98 | 13.47 | 13.37 | 14.02 | 14.34 |
 
 Judged on its age alone, a unit replaced on condition is replaced much as
 under age replacement (13.14 at the best age), but on the inspection
@@ -396,9 +397,20 @@ calendar. A low threshold replaces it too young; a high one lets it fail.
 - **A constant failure rate** gives the same probability at every age,
   `1 − exp(−λT)`: the unit is replaced at every inspection or at none, and
   it fails as often either way.
-- **Simulated.** The exact long-run values and the availability over time
-  refuse a component replaced on condition, with the reason; `availability`,
-  `cost` and `compare` simulate it, in Python.
+- **Numerical in the long run** (#145). The inspections that replace the
+  unit are regeneration points, and a cycle between two is followed one
+  inspection interval at a time: the units put into service in an interval
+  as an alternating renewal process, as under block replacement, and the
+  units an inspection keeps on into the next interval by their ages. So the
+  long-run values, the cost rate (the inspections charged at the unit's
+  availability just before them) and the importance measures are
+  numerical, to about `1e-7`. A cycle in which the unit fails many times
+  before an inspection replaces it is summed to its end as a geometric
+  series once it falls at a steady rate.
+- **Simulated over time.** The availability over time and the expected
+  events of a window refuse a component replaced on condition, with the
+  reason (#161); `availability`, `cost` and `compare` simulate it, in
+  Python.
 
 ### Opportunistic maintenance
 

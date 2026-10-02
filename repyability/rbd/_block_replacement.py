@@ -236,11 +236,21 @@ class _Grid(NamedTuple):
     in_repair: np.ndarray
     fix: _Duration
     replace: _Duration
+    #: With ``starts``: the expected number of units put into service after
+    #: a repair by each grid time, ``M`` (the renewal function of a life
+    #: and a repair); and ``integral_0^x G``, ``G`` the repair's CDF, on the
+    #: long grid.
+    renewals: Optional[np.ndarray] = None
+    done: Optional[np.ndarray] = None
 
 
-def _grid(life, repair, duration, interval: float, node) -> _Grid:
+def _grid(
+    life, repair, duration, interval: float, node, starts: bool = False
+) -> _Grid:
     """The grid and renewal functions of a unit under block replacement
-    (see ``block_cycle`` for the arguments)."""
+    (see ``block_cycle`` for the arguments; ``starts``: with the renewal
+    function of the units put into service, for replacement on
+    condition)."""
     from scipy.signal import fftconvolve
 
     _check_life(life, node)
@@ -279,7 +289,9 @@ def _grid(life, repair, duration, interval: float, node) -> _Grid:
     H[1:] = fftconvolve(np.diff(F) / h, np.diff(done[: steps + 1]))[:steps]
     H = np.clip(H, 0.0, 1.0)
 
-    N, A, U = _renewal(H, np.vstack([F, 1.0 - F, up_time]))
+    rows = [F, 1.0 - F, up_time] + ([H] if starts else [])
+    solved = _renewal(H, np.vstack(rows))
+    N, A, U = solved[0], solved[1], solved[2]
     # The repair still going on at a block time, for a failure in each cell
     # before it: its integral over the cell, from the end of the interval.
     in_repair = np.diff(repaired)
@@ -296,6 +308,8 @@ def _grid(life, repair, duration, interval: float, node) -> _Grid:
         in_repair,
         fix,
         replace,
+        solved[3] if starts else None,
+        done if starts else None,
     )
 
 

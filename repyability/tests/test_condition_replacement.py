@@ -282,22 +282,24 @@ def test_the_chance_of_failing_before_the_next_inspection():
     ]
 
 
-def test_the_exact_methods_refuse_and_say_why():
+def test_the_values_over_time_refuse_and_say_why():
+    # The long-run values are numerical (see test_condition_long_run.py);
+    # over time, and the spares, they are not yet (#161).
     rbd = single(dict(WORN, replace_cost=10.0, preventive=on_condition(0.1)))
     for method in (
-        rbd.mean_availability,
-        rbd.system_failure_frequency,
-        rbd.expected_cost_rate,
         lambda: rbd.point_availability([10.0]),
-        rbd.birnbaum_importance,
+        lambda: rbd.mission_availability(10.0),
+        lambda: rbd.expected_events(10.0),
     ):
         with pytest.raises(NotImplementedError, match="replaced on condition"):
             method()
     with pytest.raises(NotImplementedError, match="replaced on condition"):
         rbd.spares_demand(100.0)
     report = rbd.analysis_routes()
-    assert report["mean_availability"].route == r.REFUSED
-    assert "replaced on condition" in report["mean_availability"].reason
+    assert report["mean_availability"].route == r.NUMERICAL
+    assert "replacement on condition" in report["mean_availability"].reason
+    assert report["point_availability"].route == r.REFUSED
+    assert "replaced on condition" in report["point_availability"].reason
     assert report["availability"].route == r.SIMULATED
     assert report["availability"].engine == "python"
     # Held working, it needs no maintenance at all.

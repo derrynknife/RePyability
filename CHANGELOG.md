@@ -30,7 +30,8 @@ are exponential (#90); a duty unit and its spares can be a standby group,
 repaired one unit at a time (#91); `spares_demand` and `spares_stock` count
 the spares each component uses and the stock to hold for a lead time (#95),
 block-replaced and proof-tested components' too (#147);
-a component can be replaced on condition at periodic inspections (#96), or
+a component can be replaced on condition at periodic inspections (#96),
+with numerical long-run values (#145), or
 early at a stop of its maintenance group, sharing its set-up (opportunistic
 maintenance, #108), and repaired imperfectly, by Kijima's virtual age, or
 replaced at the N-th failure (#109); a simulation run can be split across
@@ -469,11 +470,24 @@ is required.
   rate is replaced at every inspection or at none. The simulations
   (`availability`, `cost`, `compare`, the event-stepping API) follow it, in
   Python, deciding each unit's replacement once when it is put into
-  service; the exact long-run values and the availability over time refuse
-  it with the reason, and `analysis_routes()` says so. The threshold and
-  inspection cost are saved with the RBD. Checked against a timeline
-  worked by hand, block replacement and run to failure (identical results),
-  constant failure rates, and a direct simulation of the policy.
+  service. The threshold and inspection cost are saved with the RBD.
+  Checked against a timeline worked by hand, block replacement and run to
+  failure (identical results), constant failure rates, and a direct
+  simulation of the policy.
+  - Its long-run values are numerical (#145). The inspections that replace
+    the unit are regeneration points, and a cycle between two is followed
+    one inspection interval at a time. As under block replacement, the
+    units put into service in an interval are an alternating renewal
+    process of lives and repairs. The units an inspection keeps on carry
+    into the next interval by age, failing as their ages say. That gives
+    the long-run availability, failure frequency, MTBF, MUT, MDT, the cost
+    rate (each inspection charged at the unit's availability just before
+    it), the importance measures, and the calendar profile that units
+    inspected at the same times share. A cycle in which the unit fails
+    many times before an inspection replaces it is summed as a geometric
+    series once it falls at a steady rate. A threshold of 0 gives block
+    replacement's values to every digit, and one no age reaches gives run
+    to failure. Over time it still refuses, with the reason (#161).
 - **Small failure probabilities** (#115).
   `NonRepairableRBD.unreliability_interval(x)` estimates `P(T <= x)` by
   simulation to a relative precision (`relative_tolerance`, by default
