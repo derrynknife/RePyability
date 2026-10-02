@@ -522,6 +522,20 @@ is required.
   simulated, and which of those simulations must be and which could be made
   exact (with the issues that would do it). A test keeps it in line with
   `analysis_routes()`.
+- **Uncertainty intervals on the MTTF and lifetimes** (#133):
+  `mean_uncertainty`, `bx_life_uncertainty` and
+  `time_to_reliability_uncertainty` carry the uncertainty of fitted
+  component models to the MTTF, a B*X* life and the time to a reliability,
+  as `sf_uncertainty` does to the reliability: the same `uncertainty`
+  argument and draws (`"fit"`, parameter distributions, or lists of models,
+  shared by the nodes given together), each draw's value worked out
+  exactly (the area under its reliability, or by root-finding on it), and
+  an `UncertaintyResult`. On fitted data the MTTF's interval is many times
+  wider than the simulation error `mean_time_to_failure_interval`
+  reports, which is all an interval on the MTTF said before. Checked
+  against each drawn model's own mean and quantiles, the diagram rebuilt
+  with each drawn model, and the known distribution of a shared rate's
+  MTTF and B10.
 - **Common-cause groups over a lifetime** (#132): `BetaFactor(beta,
   basis="rate")` and `MGL(..., basis="rate")` split each member's failure
   *rate* rather than its probability. The shared cause is a shock that has

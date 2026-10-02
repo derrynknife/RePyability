@@ -589,7 +589,16 @@ def test_the_readme_says_what_is_simulated():
             (repairable["costed_pairs"], "compare", "simulated"),
         ],
         "The uncertainty from fitted component parameters "
-        "(`sf_uncertainty`)": [(plain, "sf_uncertainty", "simulated")],
+        "(`sf_uncertainty`, `mean_uncertainty`, `bx_life_uncertainty`, "
+        "`time_to_reliability_uncertainty`)": [
+            (plain, name, "simulated")
+            for name in (
+                "sf_uncertainty",
+                "mean_uncertainty",
+                "bx_life_uncertainty",
+                "time_to_reliability_uncertainty",
+            )
+        ],
         "Small failure probabilities, with a simulated node": [
             (nonrepairable["simulated standby"], "ff", "simulated"),
             (plain, "ff", "exact"),

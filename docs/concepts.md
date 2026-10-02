@@ -176,7 +176,11 @@ the log-likelihood, from surpyval) gives the draws on a transformed scale
 (log for a positive parameter, logit for one in (0, 1)), which is the delta
 method's normal approximation. Nodes of one population share their
 parameters and so their draws: drawing them independently averages part of
-the uncertainty away.
+the uncertainty away. The same draws give the MTTF's, a B*X* life's and the
+time to a reliability's uncertainty (`mean_uncertainty`,
+`bx_life_uncertainty`, `time_to_reliability_uncertainty`): each draw's value
+is the exact one for its models, the area under its reliability or the root
+of its reliability less the target.
 
 ## Reliability vs availability
 

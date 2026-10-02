@@ -17,7 +17,8 @@ taking already-fitted lifetime models (from
   conversion to and from block diagrams.
 - **Reliability**: exact system reliability, hazard and conditional survival;
   the exact MTTF (or simulated, with confidence intervals); B*X* life;
-  uncertainty intervals from uncertain (fitted) component models.
+  uncertainty intervals on the reliability, MTTF, B*X* life and time to a
+  reliability from uncertain (fitted) component models.
 - **Networks**: undirected networks whose links fail: the exact
   reliability of the connection between two terminals.
 - **Phased missions**: missions through phases (take-off, cruise,
@@ -128,7 +129,7 @@ places, nested diagrams):
 | **What you ask** | | |
 | Sampled lifetimes or histories, and distributions or percentiles of an outcome over a window | Simulated (from new, or from the components' current states) | Yes: the answer is a sample. Its mean over a window (failures, outages, downtime, cost, the capacity delivered) is exact, from new or from a state: `expected_events`, `expected_cost`, `mission_capacity`. |
 | Comparing two designs (`compare`) | Simulated, with common random numbers | No, where both are exact: compare their exact values. |
-| The uncertainty from fitted component parameters (`sf_uncertainty`) | Sampled over the parameters | Sampling is the method. Intervals on the MTTF and B*X* life are missing (#133). |
+| The uncertainty from fitted component parameters (`sf_uncertainty`, `mean_uncertainty`, `bx_life_uncertainty`, `time_to_reliability_uncertainty`) | Sampled over the parameters, each draw exact | Sampling is the method. |
 | Small failure probabilities, with a simulated node | Rare-event simulation (`unreliability_interval`) | Only while the node is simulated: an exact diagram gives `ff` directly, to full precision however small (a numerical node, such as a cold-standby group of non-exponential units, to its own accuracy, about 1e-6). |
 | **Components** | | |
 | Warm or hot standby of non-exponential units | Simulated: a fit to simulated lifetimes, deprecated (from 0.12, simulated only in the system's simulations: #149) | No: could be exact (#135). Hot standby is *k*-out-of-*n*: draw the units as parallel nodes for an exact answer now. |

@@ -255,6 +255,27 @@ np.round(lower, 4)            # array([0.9414, 0.7785, 0.291 ])
 np.round(upper, 4)            # array([0.9565, 0.8728, 0.5419])
 ```
 
+The same draws give the uncertainty of the MTTF, a B*X* life and the time to
+a reliability: `mean_uncertainty(uncertainty)`,
+`bx_life_uncertainty(x, uncertainty)` and
+`time_to_reliability_uncertainty(target, uncertainty)` work each draw's value
+out exactly, as `mean` and `time_to_reliability` do, and return an
+`UncertaintyResult` like `sf_uncertainty`'s. The MTTF's interval from the
+fit is far wider than its simulation error, which is all
+`mean_time_to_failure_interval` reports:
+
+```python
+pumps = {("pump1", "pump2"): "fit"}
+mttf = fitted.mean_uncertainty(pumps, n_draws=2000, seed=0)
+mttf.nominal                  # -> 93.42   the exact MTTF with the fitted models
+lower, upper = mttf.interval(0.9)
+lower, upper                  # (81.78, 106.75)   from the data behind the fits
+ci = fitted.mean_time_to_failure_interval(seed=0)
+ci.lower, ci.upper            # (93.10, 93.63)   simulation error only
+b10 = fitted.bx_life_uncertainty(10, pumps, n_draws=2000, seed=0)
+b10.interval(0.9)             # (33.36, 43.26)   around a B10 of 39.26
+```
+
 The interval's width is a property of what is known about the models, and
 does not shrink with more draws, which only make its ends more precise. More
 failure data (a refit in surpyval) is what narrows it. Diagrams with

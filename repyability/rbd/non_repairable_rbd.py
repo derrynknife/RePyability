@@ -1358,6 +1358,300 @@ class NonRepairableRBD(RBD):
         (0.409, 0.813)
         """
         self._require_no_ccf()
+        drawn = self._uncertain_draws(uncertainty, n_draws, seed)
+
+        fixed = self.is_fixed and all(
+            self._model_is_fixed(m) for ms in drawn.values() for m in ms
+        )
+        if x is None:
+            if not fixed:
+                raise ValueError(
+                    "x is required: a node model's probability depends on "
+                    "time."
+                )
+            x = 1.0
+        scalar = np.ndim(x) == 0
+        times = np.atleast_1d(np.asarray(x, dtype=float))
+        probabilities: dict = {}
+        for node in self.nodes:
+            if node in drawn:
+                rows = [
+                    np.broadcast_to(
+                        np.asarray(m.sf(times), dtype=float), times.shape
+                    )
+                    for m in drawn[node]
+                ]
+                probabilities[node] = np.concatenate(rows)
+            else:
+                values = np.broadcast_to(
+                    np.asarray(self.reliabilities[node].sf(times), float),
+                    times.shape,
+                )
+                probabilities[node] = np.tile(values, n_draws)
+        samples = np.asarray(
+            self.system_probability(probabilities), dtype=float
+        ).reshape(n_draws, len(times))
+        nominal = np.asarray(self.sf(times), dtype=float)
+        if scalar:
+            return UncertaintyResult(
+                samples=samples[:, 0],
+                nominal=float(nominal.reshape(-1)[0]),
+                n_draws=n_draws,
+            )
+        return UncertaintyResult(
+            samples=samples, nominal=nominal, n_draws=n_draws
+        )
+
+    def mean_uncertainty(
+        self,
+        uncertainty: Optional[Dict[Hashable, Any]] = None,
+        *,
+        n_draws: int = 1000,
+        seed=None,
+    ) -> UncertaintyResult:
+        """The system's MTTF over plausible node models (parameter
+        uncertainty).
+
+        As [`sf_uncertainty`][repyability.NonRepairableRBD.sf_uncertainty]
+        does for the reliability: each of the ``n_draws`` draws gives every
+        uncertain node a plausible model, and the system's MTTF is worked
+        out exactly for that draw, as ``mean`` works it out (the area under
+        the draw's system reliability). The spread of the results says how
+        well the MTTF is known from the data behind the models, which the
+        simulation error of ``mean_time_to_failure_interval`` does not:
+        that interval narrows with more simulations, this one only with
+        more data.
+
+        Parameters
+        ----------
+        uncertainty : dict
+            ``{node or tuple of nodes: uncertainty}`` for the uncertain
+            nodes, as for ``sf_uncertainty``: ``"fit"``, ``{parameter
+            name: distribution}`` or a list of models; nodes given together
+            in a tuple share their draws.
+        n_draws : int, optional
+            The number of draws, by default 1000.
+        seed : int, optional
+            Seed for the draws, for reproducible results.
+
+        Returns
+        -------
+        UncertaintyResult
+            The MTTF of every draw (``samples``; ``inf`` for a draw in
+            which the system may never fail), the exact MTTF with the
+            nodes' own models (``nominal``), and summaries such as
+            ``interval``.
+
+        Raises
+        ------
+        ValueError
+            As for ``sf_uncertainty``, or if every node is
+            fixed-probability (the system has no lifetimes).
+        NotImplementedError
+            If the RBD has common-cause groups.
+
+        Examples
+        --------
+        Two pumps of one type in parallel, whose exponential failure rate is
+        known only to lie between 1 and 3 per 1000 h:
+
+        >>> import scipy.stats as st
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> pump = surv.Exponential.from_params([0.002])
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "p1"), ("s", "p2"), ("p1", "t"), ("p2", "t")],
+        ...     {"p1": pump, "p2": pump},
+        ... )
+        >>> rate = {"failure_rate": st.uniform(0.001, 0.002)}
+        >>> result = rbd.mean_uncertainty({("p1", "p2"): rate}, seed=1)
+        >>> round(result.nominal, 6)  # 1.5 / 0.002
+        750.0
+        >>> lower, upper = result.interval(0.9)
+        >>> round(lower), round(upper)
+        (515, 1352)
+        """
+        self._require_no_ccf()
+        self._require_lifetimes()
+        drawn = self._uncertain_draws(uncertainty, n_draws, seed)
+        samples = np.empty(n_draws)
+        for i in range(n_draws):
+            sf, models = self._drawn_sf(drawn, i)
+            knots = [model_knots(model) for model in models.values()]
+            samples[i] = mean_lifetime(
+                sf, np.concatenate([np.empty(0), *knots])
+            )
+        return UncertaintyResult(
+            samples=samples, nominal=self._exact_mean(), n_draws=n_draws
+        )
+
+    def time_to_reliability_uncertainty(
+        self,
+        target: float,
+        uncertainty: Optional[Dict[Hashable, Any]] = None,
+        *,
+        n_draws: int = 1000,
+        seed=None,
+        upper_bound: Optional[float] = None,
+    ) -> UncertaintyResult:
+        """The time at which the system reliability falls to ``target``,
+        over plausible node models (parameter uncertainty).
+
+        Each of the ``n_draws`` draws gives every uncertain node a plausible
+        model (see
+        [`sf_uncertainty`][repyability.NonRepairableRBD.sf_uncertainty]),
+        and the time is found exactly for that draw, as
+        ``time_to_reliability`` finds it.
+
+        Parameters
+        ----------
+        target : float
+            The reliability level, in (0, 1).
+        uncertainty : dict
+            ``{node or tuple of nodes: uncertainty}`` for the uncertain
+            nodes, as for ``sf_uncertainty``.
+        n_draws : int, optional
+            The number of draws, by default 1000.
+        seed : int, optional
+            Seed for the draws, for reproducible results.
+        upper_bound : float, optional
+            An upper bound for each draw's search, at which its reliability
+            is below ``target``; found by doubling if None.
+
+        Returns
+        -------
+        UncertaintyResult
+            The time of every draw (``samples``), the time with the nodes'
+            own models (``nominal``), and summaries such as ``interval``.
+
+        Raises
+        ------
+        ValueError
+            If ``target`` is not in (0, 1), the RBD is fixed-probability,
+            a draw's reliability starts below ``target`` or cannot be
+            bracketed, or as for ``sf_uncertainty``.
+        NotImplementedError
+            If the RBD has common-cause groups.
+
+        Examples
+        --------
+        A pump fitted (in surpyval) to 20 failure times: the time to 90%
+        reliability, over the fit's uncertainty:
+
+        >>> import numpy as np
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> times = surv.Weibull.from_params([100, 2]).qf(
+        ...     np.linspace(0.025, 0.975, 20)
+        ... )
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "pump"), ("pump", "t")],
+        ...     {"pump": surv.Weibull.fit(times)},
+        ... )
+        >>> result = rbd.time_to_reliability_uncertainty(
+        ...     0.9, {"pump": "fit"}, seed=0
+        ... )
+        >>> round(result.nominal, 2)
+        33.64
+        >>> lower, upper = result.interval(0.9)
+        >>> round(lower, 1), round(upper, 1)
+        (21.6, 49.3)
+        """
+        self._require_no_ccf()
+        self._require_time_varying()
+        if not 0.0 < target < 1.0:
+            raise ValueError("target reliability must be in (0, 1).")
+        drawn = self._uncertain_draws(uncertainty, n_draws, seed)
+        samples = np.array(
+            [
+                self._invert_reliability(
+                    self._drawn_sf(drawn, i)[0], target, upper_bound
+                )
+                for i in range(n_draws)
+            ]
+        )
+        nominal = self.time_to_reliability(target, upper_bound=upper_bound)
+        return UncertaintyResult(
+            samples=samples, nominal=nominal, n_draws=n_draws
+        )
+
+    def bx_life_uncertainty(
+        self,
+        x: float,
+        uncertainty: Optional[Dict[Hashable, Any]] = None,
+        *,
+        n_draws: int = 1000,
+        seed=None,
+        upper_bound: Optional[float] = None,
+    ) -> UncertaintyResult:
+        """The Bx life, the time by which ``x`` percent of systems have
+        failed (the B10 life for ``x = 10``), over plausible node models
+        (parameter uncertainty).
+
+        ``time_to_reliability_uncertainty(1 - x / 100, ...)``: see
+        [`time_to_reliability_uncertainty`][repyability.NonRepairableRBD.time_to_reliability_uncertainty].
+
+        Parameters
+        ----------
+        x : float
+            The percentage failed, in (0, 100).
+        uncertainty : dict
+            ``{node or tuple of nodes: uncertainty}`` for the uncertain
+            nodes, as for ``sf_uncertainty``.
+        n_draws : int, optional
+            The number of draws, by default 1000.
+        seed : int, optional
+            Seed for the draws, for reproducible results.
+        upper_bound : float, optional
+            An upper bound for each draw's search, found by doubling if
+            None.
+
+        Returns
+        -------
+        UncertaintyResult
+            The Bx life of every draw, the nominal one, and their
+            summaries.
+
+        Raises
+        ------
+        ValueError
+            If ``x`` is not in (0, 100), or as for
+            ``time_to_reliability_uncertainty``.
+        NotImplementedError
+            If the RBD has common-cause groups.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> times = surv.Weibull.from_params([100, 2]).qf(
+        ...     np.linspace(0.025, 0.975, 20)
+        ... )
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "pump"), ("pump", "t")],
+        ...     {"pump": surv.Weibull.fit(times)},
+        ... )
+        >>> b10 = rbd.bx_life_uncertainty(10, {"pump": "fit"}, seed=0)
+        >>> round(b10.nominal, 2)  # the same as the time to 90% reliability
+        33.64
+        """
+        if not 0.0 < x < 100.0:
+            raise ValueError("x must be a percentage in (0, 100).")
+        return self.time_to_reliability_uncertainty(
+            1.0 - x / 100.0,
+            uncertainty,
+            n_draws=n_draws,
+            seed=seed,
+            upper_bound=upper_bound,
+        )
+
+    def _uncertain_draws(
+        self, uncertainty, n_draws: int, seed
+    ) -> Dict[Hashable, list]:
+        """``n_draws`` plausible models for each uncertain node, after
+        checking ``uncertainty`` and ``n_draws`` (see ``sf_uncertainty``):
+        the nodes given together share their models."""
         if isinstance(n_draws, bool) or not isinstance(
             n_draws, (int, np.integer)
         ):
@@ -1414,48 +1708,34 @@ class NonRepairableRBD(RBD):
             )
             for node in members:
                 drawn[node] = models
+        return drawn
 
-        fixed = self.is_fixed and all(
-            self._model_is_fixed(m) for ms in drawn.values() for m in ms
-        )
-        if x is None:
-            if not fixed:
-                raise ValueError(
-                    "x is required: a node model's probability depends on "
-                    "time."
-                )
-            x = 1.0
-        scalar = np.ndim(x) == 0
-        times = np.atleast_1d(np.asarray(x, dtype=float))
-        probabilities: dict = {}
-        for node in self.nodes:
-            if node in drawn:
-                rows = [
-                    np.broadcast_to(
-                        np.asarray(m.sf(times), dtype=float), times.shape
-                    )
-                    for m in drawn[node]
-                ]
-                probabilities[node] = np.concatenate(rows)
-            else:
-                values = np.broadcast_to(
-                    np.asarray(self.reliabilities[node].sf(times), float),
-                    times.shape,
-                )
-                probabilities[node] = np.tile(values, n_draws)
-        samples = np.asarray(
-            self.system_probability(probabilities), dtype=float
-        ).reshape(n_draws, len(times))
-        nominal = np.asarray(self.sf(times), dtype=float)
-        if scalar:
-            return UncertaintyResult(
-                samples=samples[:, 0],
-                nominal=float(nominal.reshape(-1)[0]),
-                n_draws=n_draws,
+    def _drawn_sf(self, drawn: Dict[Hashable, list], i: int):
+        """The system reliability as a function of time with draw ``i``'s
+        models for the uncertain nodes (see ``_uncertain_draws``), and the
+        models it uses."""
+        models = {
+            node: drawn[node][i] if node in drawn else self.reliabilities[node]
+            for node in self.nodes
+        }
+
+        def sf(t):
+            times = np.atleast_1d(np.asarray(t, dtype=float))
+            values = np.asarray(
+                self.system_probability(
+                    {
+                        node: np.broadcast_to(
+                            np.asarray(model.sf(times), dtype=float),
+                            times.shape,
+                        )
+                        for node, model in models.items()
+                    }
+                ),
+                dtype=float,
             )
-        return UncertaintyResult(
-            samples=samples, nominal=nominal, n_draws=n_draws
-        )
+            return values if np.ndim(t) else float(values.reshape(-1)[0])
+
+        return sf, models
 
     @staticmethod
     def _same_model(a, b) -> bool:
@@ -3769,6 +4049,30 @@ class NonRepairableRBD(RBD):
                 "The node parameters drawn from their uncertainty, and the "
                 "exact system reliability for each draw.",
             )
+        )
+        no_lifetimes = no_ccf or r.refusal(self._require_lifetimes)
+        out["mean_uncertainty"] = (
+            r.refused(no_lifetimes)
+            if no_lifetimes
+            else r.AnalysisRoute(
+                r.SIMULATED,
+                "The node parameters drawn from their uncertainty, and the "
+                "exact MTTF for each draw (the area under its reliability).",
+            )
+        )
+        no_time = no_ccf or fixed
+        give(
+            ("time_to_reliability_uncertainty", "bx_life_uncertainty"),
+            (
+                r.refused(no_time)
+                if no_time
+                else r.AnalysisRoute(
+                    r.SIMULATED,
+                    "The node parameters drawn from their uncertainty, and "
+                    "the time found exactly for each draw, by root-finding "
+                    "on its reliability.",
+                )
+            ),
         )
         independent = (
             " The members of a common-cause group that splits a failure "

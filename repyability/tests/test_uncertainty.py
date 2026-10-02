@@ -309,3 +309,109 @@ def test_a_model_on_the_edge_of_its_range_has_no_normal_approximation():
         .n_draws
         == 5
     )
+
+
+# -- the MTTF, B-life and time to a reliability (#133) ------------------------
+
+
+def pump_fit():
+    times = W([100.0, 2.0]).qf(np.linspace(0.025, 0.975, 20))
+    return surv.Weibull.fit(times)
+
+
+def test_each_draws_mttf_and_times_are_its_models():
+    fit = pump_fit()
+    rbd = one_node(fit)
+    drawn = rbd._uncertain_draws({"c": "fit"}, 300, 0)["c"]
+    mean = rbd.mean_uncertainty({"c": "fit"}, n_draws=300, seed=0)
+    np.testing.assert_allclose(
+        mean.samples, [m.mean() for m in drawn], rtol=1e-10
+    )
+    assert mean.nominal == pytest.approx(fit.mean(), rel=1e-10)
+    t80 = rbd.time_to_reliability_uncertainty(
+        0.8, {"c": "fit"}, n_draws=300, seed=0
+    )
+    np.testing.assert_allclose(
+        t80.samples, [m.qf(0.2) for m in drawn], rtol=1e-9
+    )
+    assert t80.nominal == pytest.approx(fit.qf(0.2), rel=1e-9)
+    b20 = rbd.bx_life_uncertainty(20, {"c": "fit"}, n_draws=300, seed=0)
+    np.testing.assert_array_equal(b20.samples, t80.samples)
+    assert b20.nominal == t80.nominal
+    # The same draws as the reliability's.
+    sf = rbd.sf_uncertainty(40.0, {"c": "fit"}, n_draws=300, seed=0)
+    np.testing.assert_allclose(
+        sf.samples, [m.sf(40.0) for m in drawn], rtol=1e-12
+    )
+
+
+def test_a_shared_rate_gives_the_mttfs_distribution():
+    # Two pumps of one type in parallel, rate uniform on [0.001, 0.003]:
+    # the MTTF is 1.5 / rate, so its percentiles are the rate's, inverted.
+    pump = E([0.002])
+    rbd = NonRepairableRBD(
+        [("s", "p1"), ("s", "p2"), ("p1", "t"), ("p2", "t")],
+        {"p1": pump, "p2": pump},
+    )
+    rate = st.uniform(0.001, 0.002)
+    result = rbd.mean_uncertainty(
+        {("p1", "p2"): {"failure_rate": rate}}, n_draws=1500, seed=3
+    )
+    assert result.nominal == pytest.approx(750.0, rel=1e-10)
+    for q in (0.05, 0.5, 0.95):
+        assert_percentile(result.samples, 1.5 / rate.ppf(1 - q), q)
+    # The system's B10: 1 - (1 - e^(-rate t))^2 = 0.9.
+    b10 = rbd.bx_life_uncertainty(
+        10, {("p1", "p2"): {"failure_rate": rate}}, n_draws=1500, seed=3
+    )
+    unit = 1 - math.sqrt(0.1)  # each pump's reliability at the B10
+    for q in (0.05, 0.5, 0.95):
+        assert_percentile(b10.samples, -math.log(unit) / rate.ppf(1 - q), q)
+
+
+def test_a_system_draw_is_the_system_with_the_drawn_models():
+    base = {n: W([100.0 + 20 * i, 1.5]) for i, n in enumerate("abcde")}
+    choices = {"a": [W([80.0, 1.5]), W([140.0, 2.5])]}
+    mean = bridge(base).mean_uncertainty(choices, n_draws=40, seed=6)
+    t90 = bridge(base).time_to_reliability_uncertainty(
+        0.9, choices, n_draws=40, seed=6
+    )
+    built = [bridge({**base, "a": a}) for a in choices["a"]]
+    means = [b.mean() for b in built]
+    times = [b.time_to_reliability(0.9) for b in built]
+    for m, t in zip(mean.samples, t90.samples):
+        assert min(abs(m - v) for v in means) < 1e-8 * m
+        assert min(abs(t - v) for v in times) < 1e-8 * t
+    assert {round(m, 6) for m in mean.samples} == {round(m, 6) for m in means}
+
+
+def test_the_lifetime_uncertainties_refuse_what_they_cannot_do():
+    fixed = one_node(FixedEventProbability.from_params(0.1))
+    spec = {"c": [FixedEventProbability.from_params(0.2)]}
+    with pytest.raises(ValueError, match="no lifetimes"):
+        fixed.mean_uncertainty(spec)
+    with pytest.raises(ValueError, match="does not vary with time"):
+        fixed.time_to_reliability_uncertainty(0.9, spec)
+    rbd = one_node(pump_fit())
+    for target in (0.0, 1.0, 1.5):
+        with pytest.raises(ValueError, match=r"in \(0, 1\)"):
+            rbd.time_to_reliability_uncertainty(target, {"c": "fit"})
+    with pytest.raises(ValueError, match="percentage"):
+        rbd.bx_life_uncertainty(100, {"c": "fit"})
+    with pytest.raises(ValueError, match="Give the uncertain nodes"):
+        rbd.mean_uncertainty({})
+    unit = E([0.01])
+    grouped = NonRepairableRBD(
+        [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        {"a": unit, "b": unit},
+        ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1, basis="rate"))],
+    )
+    for call in (
+        lambda: grouped.mean_uncertainty({"a": [unit]}),
+        lambda: grouped.bx_life_uncertainty(10, {"a": [unit]}),
+    ):
+        with pytest.raises(NotImplementedError):
+            call()
+    routes = grouped.analysis_routes()
+    assert routes["mean_uncertainty"].route == "refused"
+    assert rbd.analysis_routes()["bx_life_uncertainty"].route == "simulated"
