@@ -222,6 +222,29 @@ affinity, where the platform reports one). A container limited by a CPU
 quota rather than by affinity can report more CPUs than it may use: set
 `n_jobs` explicitly there.
 
+## A large run's curve
+
+`availability()`'s curve has a point at every time a simulated system
+changed state: hundreds a simulation for a busy system, millions for a
+large run, which take memory and time to keep and to sort, and are most of
+what a chunk (below) carries. `curve_points=G` keeps the curve on a grid of
+`G` steps instead, `t_simulation * k / G` for `k` from 0: the simulations
+count their changes in the grid's steps, so the curve costs `G` counts
+however many run. Its value at each grid time is the full curve's value
+there, exactly; between grid times it is not followed. Everything else in
+the result (the up times, the mean availability and its interval, the
+counts, the costs and the criticalities) is the same either way:
+
+```python
+grid = plant.availability(t_simulation=100.0, mc_samples=2_000, seed=0,
+                          curve_points=100)
+len(grid.timeline)       # -> 101
+```
+
+A compiled run of 40 960 simulations of a nine-component system over
+5 000 hours kept 3 million points without it, and ran 16% faster with
+`curve_points=1000`.
+
 ## Splitting a run across machines
 
 A run's simulations are numbered, and simulation `i` draws from streams

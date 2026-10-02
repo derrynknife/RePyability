@@ -660,8 +660,8 @@ class Runner:
         for i, added in enumerate(counts.sum(axis=0).tolist()):
             tally.counts[i] = [a + b for a, b in zip(tally.counts[i], added)]
         kept = np.arange(change_times.shape[1]) < change_count[:, None]
-        tally.change_arrays.append(
-            (change_times[kept], change_deltas[kept].astype(np.int64))
+        tally.add_changes(
+            change_times[kept], change_deltas[kept].astype(np.int64)
         )
         if self._model.has_costs:
             tally.cost_samples.extend(cost.tolist())

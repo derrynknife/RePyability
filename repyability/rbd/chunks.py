@@ -57,8 +57,9 @@ class SimulationChunk:
         ``"working_nodes"`` and ``"broken_nodes"``, ``"antithetic"``,
         ``"demand"``, ``"fingerprint"``, a hash of the system saved as
         JSON (with the RePyability version), or None if it cannot be saved,
-        and ``"state"``, the components' states at the start as JSON, or
-        None for new.
+        ``"state"``, the components' states at the start as JSON, or None
+        for new, and ``"curve_points"``, the grid the curve is counted on,
+        or None for every change (see ``RepairableRBD.availability``).
     """
 
     def __init__(self, ranges, settings: Dict[str, Any], tally) -> None:
@@ -254,4 +255,5 @@ def _run_key(settings: Dict[str, Any]) -> tuple:
         None if settings["demand"] is None else float(settings["demand"]),
         settings["fingerprint"],
         settings.get("state"),
+        settings.get("curve_points"),
     )

@@ -558,6 +558,18 @@ is required.
   random_block(block, seed)` draws one 10 000-lifetime block of the
   lifetimes `random(size, seed=seed, n_jobs=...)` draws. The simulation
   guide gives the engines' throughput on one machine, in a table.
+  - **The curve on a grid** (#153). `availability(..., curve_points=G)`
+    keeps the availability over time on `G` steps of the window instead of
+    at every change of every simulation: the simulations count their
+    changes in the steps, so the curve costs `G` counts however many run,
+    and its values at the grid's times are the full curve's there,
+    exactly. Everything else in the result is the same. `simulate_chunk`
+    takes it too, and a chunk then carries the counts rather than every
+    change (chunks counted on different grids are of different runs).
+    The default, None, keeps the full curve. A compiled run of 40 960
+    simulations whose full curve had 3 million points ran 16% faster with
+    1 000 steps. `cost()`, whose result has no curve, now counts the
+    changes on a one-step grid rather than keeping them.
   - **Exact totals** (#151). Every total a simulation run adds up (the
     system's and each node's up and down times, the times each node is up
     and down with the system, the costs by category and by component, the

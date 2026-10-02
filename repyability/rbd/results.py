@@ -1267,12 +1267,17 @@ class AvailabilityResult(_ResultMapping):
     timeline : numpy.ndarray
         Event times at which the (mean) system availability changes: 0,
         every time at which some simulated system changed state, and
-        ``time_simulated_to``, in increasing order.
+        ``time_simulated_to``, in increasing order. With ``curve_points``
+        (see ``RepairableRBD.availability``), the grid's times instead:
+        ``time_simulated_to * k / curve_points`` for ``k`` from 0.
     availability : numpy.ndarray
         Mean system availability at each time in ``timeline``: the fraction
         of the simulated systems that are up from that time until the next
         (the estimated point availability). The last value, at
-        ``time_simulated_to``, repeats the one before it.
+        ``time_simulated_to``, repeats the one before it. On a grid
+        (``curve_points``), the fraction up at each grid time (from just
+        after any change there), which the full curve takes there too; it
+        may change between grid times.
     system_uptime : float
         Total system uptime summed over all simulations.
     time_simulated_to : float

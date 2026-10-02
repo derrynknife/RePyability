@@ -951,7 +951,13 @@ class _Tally:
     #: per-node totals (see ``_fold``).
     _ROWS = 256
 
-    def __init__(self, nodes: list, costs: dict, t_simulation: float):
+    def __init__(
+        self,
+        nodes: list,
+        costs: dict,
+        t_simulation: float,
+        curve_points: Optional[int] = None,
+    ):
         n = len(nodes)
         self.nodes = nodes
         self.t_simulation = t_simulation
@@ -961,6 +967,17 @@ class _Tally:
         self.changes: list = []
         self.deltas: list = []
         self.change_arrays: list = []
+        # With curve_points (#153), the changes are counted on a grid of
+        # times instead of kept: the net change in how many systems work
+        # in each bin up to each grid time (from just after the one
+        # before), the grid's first time 0.
+        self.curve_points = curve_points
+        self.edges: Optional[np.ndarray] = None
+        self.binned: Optional[np.ndarray] = None
+        if curve_points is not None:
+            steps = np.arange(curve_points + 1)
+            self.edges = t_simulation * steps / curve_points
+            self.binned = np.zeros(curve_points + 1, dtype=np.int64)
         # Per node: its failures, the system failures they caused, its
         # restorations and the system restorations they caused.
         self.counts = [[0] * n for _ in range(4)]
@@ -1040,9 +1057,34 @@ class _Tally:
             if count:
                 self.opportunistic[c] += count
 
+    def add_changes(self, times: np.ndarray, deltas: np.ndarray) -> None:
+        """Add simulations' changes of state (times, and +1 or -1), as an
+        engine gives them: kept, or counted on the grid."""
+        self.change_arrays.append((times, deltas))
+        if self.binned is not None:
+            self._fold_changes()
+
+    def _fold_changes(self) -> None:
+        """Count the changes kept so far in the grid's bins (each time in
+        the bin of the first grid time at or after it), and drop them."""
+        assert self.binned is not None and self.edges is not None
+        if not (self.changes or self.change_arrays):
+            return
+        times, deltas = self.state_changes()
+        self.changes, self.deltas, self.change_arrays = [], [], []
+        bins = np.minimum(
+            np.searchsorted(self.edges, times, side="left"),
+            len(self.edges) - 1,
+        )
+        counted = np.bincount(bins, weights=deltas, minlength=len(self.edges))
+        self.binned += counted.astype(np.int64)
+
     def _fold(self) -> None:
         """Fold the values of the simulations added since the last fold
-        into the totals, all at once (see ``fold_columns``)."""
+        into the totals, all at once (see ``fold_columns``), and the
+        changes into the grid's bins, with ``curve_points``."""
+        if self.binned is not None:
+            self._fold_changes()
         if self._rows:
             table = np.asarray(self._rows, dtype=float)
             self._rows = []
@@ -1147,8 +1189,12 @@ class _Tally:
                 totals[c] += count
         for c, count in enumerate(other.opportunistic):
             self.opportunistic[c] += count
-        times, deltas = other.state_changes()
-        self.change_arrays.append((times, deltas))
+        if self.binned is not None:
+            assert other.binned is not None  # chunks of one run
+            self.binned += other.binned
+        else:
+            times, deltas = other.state_changes()
+            self.change_arrays.append((times, deltas))
         self.uptimes.extend(other.uptimes)
         self.cost_samples.extend(other.cost_samples)
         for key, amount in other.cost_by_category.items():
@@ -1174,6 +1220,8 @@ class _Tally:
             "n": self.n,
             "changes": times.tolist(),
             "deltas": deltas.tolist(),
+            "curve_points": self.curve_points,
+            "binned": None if self.binned is None else self.binned.tolist(),
             "counts": [list(counts) for counts in self.counts],
             **{name: getattr(self, name) for name in self._COUNTS},
             "system_uptime": self.system_uptime.partials,
@@ -1215,10 +1263,17 @@ class _Tally:
         components = [
             _node_name(node) for node, _ in data["cost_by_component"]
         ]
-        tally = cls(nodes, dict.fromkeys(components), data["t_simulation"])
+        tally = cls(
+            nodes,
+            dict.fromkeys(components),
+            data["t_simulation"],
+            data.get("curve_points"),
+        )
         tally.n = int(data["n"])
         tally.changes = [float(t) for t in data["changes"]]
         tally.deltas = [int(d) for d in data["deltas"]]
+        if data.get("binned") is not None:
+            tally.binned = np.array(data["binned"], dtype=np.int64)
         tally.counts = [[int(c) for c in counts] for counts in data["counts"]]
         for name in cls._COUNTS:
             setattr(tally, name, int(data[name]))
@@ -1869,6 +1924,20 @@ _ALLOCATION_CREWS = (
     "Compare designs by their long-run values, or simulate them with "
     "compare().",
 )
+
+
+def _curve_points(value) -> Optional[int]:
+    """``curve_points`` checked: None, or a whole number of at least 1."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+        raise ValueError(
+            f"curve_points must be a whole number of grid steps, got "
+            f"{value!r}."
+        )
+    if value < 1:
+        raise ValueError(f"curve_points must be at least 1, got {value!r}.")
+    return int(value)
 
 
 def _horizon(horizon) -> float:
@@ -11133,6 +11202,7 @@ class RepairableRBD(RBD):
         demand: Optional[float] = None,
         engine: str = "auto",
         state=None,
+        curve_points: Optional[int] = None,
         N: Optional[int] = None,
         max_N: Optional[int] = None,
     ) -> AvailabilityResult:
@@ -11286,6 +11356,17 @@ class RepairableRBD(RBD):
             replacement, inspections) is shifted by its phase; a component
             left out starts new. Such a run is simulated in Python. By
             default None: every component new at 0.
+        curve_points : int, optional
+            Keep the availability over time on a grid of ``curve_points``
+            steps, ``t_simulation * k / curve_points`` for ``k`` from 0,
+            rather than at every time a simulated system changed state:
+            the simulations count their changes in the grid's steps, so
+            the curve costs ``curve_points`` counts however many run, and
+            its values at the grid's times are those the full curve takes
+            there, exactly (and only there). For a large run, whose full
+            curve has a point at every change of every simulation. By
+            default None: the full curve. Everything else in the result is
+            the same either way.
 
         N : int, optional
             Deprecated: the old name of ``mc_samples``.
@@ -11294,8 +11375,9 @@ class RepairableRBD(RBD):
         Returns
         -------
         AvailabilityResult
-            The availability over time (``timeline``, ``availability``),
-            the up and down totals summed over the simulations, the system
+            The availability over time (``timeline``, ``availability``; on
+            the grid, with ``curve_points``), the up and down totals summed
+            over the simulations, the system
             failure, planned outage and restoration counts, the
             ``criticalities``, the ``cost`` and each simulation's up time
             (``uptimes``); with capacities, also the capacity over time,
@@ -11376,6 +11458,7 @@ class RepairableRBD(RBD):
             demand=demand,
             engine=engine,
             state=state,
+            curve_points=_curve_points(curve_points),
         )
 
     def simulate_chunk(
@@ -11394,6 +11477,7 @@ class RepairableRBD(RBD):
         n_jobs: Optional[int] = None,
         verbose: bool = False,
         state=None,
+        curve_points: Optional[int] = None,
     ) -> "SimulationChunk":
         """Run simulations ``start`` to ``stop - 1`` of the run
         ``availability(t_simulation, mc_samples=N, seed=seed, ...)`` makes,
@@ -11448,6 +11532,10 @@ class RepairableRBD(RBD):
         state : dict, optional
             The components' states at the start, as for ``availability``
             (the chunks of a run share it); by default None: new.
+        curve_points : int, optional
+            Count the curve on a grid, as for ``availability`` (the chunks
+            of a run share it): the chunk then holds the grid's counts
+            rather than every change. By default None: every change.
 
         Returns
         -------
@@ -11535,6 +11623,7 @@ class RepairableRBD(RBD):
             entropy=entropy,
             first=int(start),
             states=states,
+            curve_points=_curve_points(curve_points),
         )
         settings = {
             "t_simulation": float(t_simulation),
@@ -11546,6 +11635,7 @@ class RepairableRBD(RBD):
             "demand": None if demand is None else float(demand),
             "fingerprint": self._fingerprint(),
             "state": _state_key(states),
+            "curve_points": tally.curve_points,
         }
         return SimulationChunk([(int(start), int(stop))], settings, tally)
 
@@ -11845,10 +11935,11 @@ class RepairableRBD(RBD):
         demand: Optional[float] = None,
         engine: str = "auto",
         state=None,
+        curve_points: Optional[int] = None,
     ) -> AvailabilityResult:
         """``availability`` (and ``cost``): validate, run the replications
         (serially or in parallel, until converged if asked) and build the
-        result."""
+        result, its curve on a grid of ``curve_points`` steps if given."""
         working_nodes = set() if working_nodes is None else set(working_nodes)
         broken_nodes = set() if broken_nodes is None else set(broken_nodes)
         self._validate_node_overrides(working_nodes, broken_nodes)
@@ -11885,6 +11976,7 @@ class RepairableRBD(RBD):
             jobs=None if n_jobs is None else montecarlo.jobs(n_jobs),
             engine=engine,
             states=states,
+            curve_points=curve_points,
         )
         return self._availability_result(
             tally, t_simulation, initial_up, antithetic, capacity
@@ -11910,6 +12002,7 @@ class RepairableRBD(RBD):
         replacements: bool = False,
         first: int = 0,
         states: Optional[dict] = None,
+        curve_points: Optional[int] = None,
     ) -> "_Tally":
         """Run ``N`` simulations, from simulation ``first`` (then more,
         while ``stop`` asks for them), and return their totals: each from
@@ -11929,14 +12022,17 @@ class RepairableRBD(RBD):
         ``capacity``, each simulation also follows the system's capacity;
         with ``replacements``, the tally keeps each simulation's
         replacements of each component, which only the Python engine
-        counts.
+        counts; with ``curve_points``, it counts the changes of state on a
+        grid (see ``availability``).
         """
         self._require_no_ccf("the simulation", nested=True)
         from tqdm import tqdm
 
         state = np.random.get_state()
         after = state
-        tally = _Tally(list(self.components), self.costs, t_simulation)
+        tally = _Tally(
+            list(self.components), self.costs, t_simulation, curve_points
+        )
         if replacements:
             # Only the Python engine counts them.
             tally.replacements = []
@@ -12441,10 +12537,16 @@ class RepairableRBD(RBD):
         # The availability from t=0..t_simulation: how many of the N
         # simulated systems work after each time at which one changed state
         # (and at 0 and t_simulation whether or not any did), over N.
-        changed_at, deltas = tally.state_changes()
-        time, working = _working_over_time(
-            changed_at, deltas, t_simulation, N if initial_up else 0
-        )
+        if tally.binned is not None:
+            # On the grid (#153): how many work at each of its times.
+            assert tally.edges is not None
+            time = tally.edges.copy()
+            working = (N if initial_up else 0) + np.cumsum(tally.binned)
+        else:
+            changed_at, deltas = tally.state_changes()
+            time, working = _working_over_time(
+                changed_at, deltas, t_simulation, N if initial_up else 0
+            )
         system_availability = working / N
 
         cost_result = None
@@ -12686,6 +12788,8 @@ class RepairableRBD(RBD):
             target="cost",
             engine=engine,
             state=state,
+            # The cost result has no curve: count the changes, not keep them.
+            curve_points=1,
         ).cost
 
     def node_availability(self) -> dict[Hashable, float]:
