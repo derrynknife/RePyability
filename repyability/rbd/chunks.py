@@ -13,10 +13,25 @@ availability_from_chunks`` turns them into the run's result.
 """
 
 import copy
+import io
 import json
 from typing import Any, Dict, Iterable, List, Tuple, Union
+from zipfile import BadZipFile
+
+import numpy as np
 
 from repyability._version import __version__
+
+#: The per-simulation values (and the curve's changes or counts) a chunk
+#: keeps as arrays in its ``to_npz`` form, rather than in its JSON header.
+_ARRAYS = {
+    "uptimes": np.float64,
+    "cost_samples": np.float64,
+    "delivered": np.float64,
+    "changes": np.float64,
+    "deltas": np.int64,
+    "binned": np.int64,
+}
 
 
 def _canonical(nodes) -> List[str]:
@@ -115,14 +130,7 @@ class SimulationChunk:
             If there are none, they belong to different runs, or their
             simulations overlap or interleave.
         """
-        items = [
-            (
-                chunk
-                if isinstance(chunk, SimulationChunk)
-                else SimulationChunk.from_dict(chunk)
-            )
-            for chunk in chunks
-        ]
+        items = [SimulationChunk._load(chunk) for chunk in chunks]
         if not items:
             raise ValueError("There are no chunks to merge.")
         first = items[0]
@@ -168,6 +176,76 @@ class SimulationChunk:
             "settings": self.settings,
             "totals": self._tally.to_dict(),
         }
+
+    @staticmethod
+    def _load(chunk) -> "SimulationChunk":
+        """A chunk, from itself, its ``to_dict`` data or its ``to_npz``
+        bytes."""
+        if isinstance(chunk, SimulationChunk):
+            return chunk
+        if isinstance(chunk, (bytes, bytearray, memoryview)):
+            return SimulationChunk.from_npz(chunk)
+        return SimulationChunk.from_dict(chunk)
+
+    def to_npz(self) -> bytes:
+        """The chunk as the bytes of a NumPy ``.npz`` file (``from_npz``
+        loads it): its per-simulation values and the curve's changes (or
+        counts) as arrays, and the rest, the ranges, settings and exact
+        totals, as JSON in an array of its own. Compact, and read without
+        pickle, so a worker can send it back to any coordinator (see
+        ``repyability.rbd.shards``).
+
+        Returns
+        -------
+        bytes
+            The ``.npz`` file's bytes.
+        """
+        data = self.to_dict()
+        totals = data["totals"]
+        arrays = {}
+        for name, kind in _ARRAYS.items():
+            values = totals.pop(name, None)
+            if values is not None:
+                arrays[name] = np.asarray(values, dtype=kind)
+        header = json.dumps(data).encode()
+        buffer = io.BytesIO()
+        np.savez(
+            buffer, header=np.frombuffer(header, dtype=np.uint8), **arrays
+        )
+        return buffer.getvalue()
+
+    @classmethod
+    def from_npz(cls, data) -> "SimulationChunk":
+        """The chunk ``to_npz`` saved.
+
+        Parameters
+        ----------
+        data : bytes
+            ``to_npz``'s output.
+
+        Returns
+        -------
+        SimulationChunk
+            The chunk.
+
+        Raises
+        ------
+        ValueError
+            If ``data`` is not a saved chunk.
+        """
+        try:
+            with np.load(io.BytesIO(bytes(data)), allow_pickle=False) as npz:
+                saved = json.loads(npz["header"].tobytes().decode())
+                totals = saved["totals"]
+                for name in _ARRAYS:
+                    if name in npz.files:
+                        totals[name] = npz[name].tolist()
+        except (OSError, EOFError, ValueError, KeyError, BadZipFile) as error:
+            raise ValueError(
+                f"This is not a saved SimulationChunk: {error}"
+            ) from None
+        totals.setdefault("binned", None)
+        return cls.from_dict(saved)
 
     @classmethod
     def from_dict(cls, data: dict) -> "SimulationChunk":

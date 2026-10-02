@@ -26,6 +26,7 @@ simulations compiled.
 | `n_jobs` | the same, and `RepairableRBD.compare` | Run the simulations on several CPUs. |
 | `compare(other, ...)` | `RepairableRBD`, `NonRepairableRBD` | The difference between two designs, simulated with common random numbers. |
 | `engine` | `RepairableRBD`'s `availability`, `cost` and `compare` | Run the simulations compiled, with numba. |
+| `shard_map`; `shards`, `run_shard` | `RepairableRBD`'s `availability` and `cost` | Run the simulations as shards, in other processes or on other machines, through any map. |
 
 The examples use two units in parallel and the plant of
 [Repairable systems](repairable.md):
@@ -192,9 +193,11 @@ bool((fast.uptimes == same.uptimes).all())   # True
 ```
 
 The [compiled engine](#the-compiled-engine) runs them on `k` threads. The
-Python engine sends blocks of 250 of them to `k` processes, each with a copy
-of the diagram, and adds up their results in order, so it pays off for long
-simulations (many failures and repairs in a window).
+Python engine gives each of `k` processes a copy of the diagram, once, sends
+them blocks of 250 simulations, and merges the totals each block sends back,
+in order, so it pays off for long simulations (many failures and repairs in
+a window). To spread a run over machines, or over more processes than one
+machine has, [shard](#shards) it.
 
 A `NonRepairableRBD`'s lifetimes are split over the processes in blocks of
 10 000, seeded in turn from `seed`, so the result depends on the seed and
@@ -289,6 +292,66 @@ merged.system_uptime == whole.system_uptime          # True: the totals too
 A `NonRepairableRBD`'s lifetimes split the same way:
 `random_block(block, seed)` draws block `block` of the 10 000-lifetime
 blocks that `random(size, seed=seed, n_jobs=...)` draws.
+
+### Shards
+
+A *shard* is a range of a run's simulations as plain data: JSON holding the
+system (as `to_dict` saves it), the run's settings, the number its seed
+gives the [streams](#random-streams), and the range. `shards(t_simulation,
+mc_samples, seed=...)` cuts a run into shards, and `run_shard(shard)` runs
+one anywhere RePyability (the same version) is installed, giving back its
+*partial*: the simulations' totals, as the bytes of a NumPy `.npz` file,
+read without pickle. `availability_from_chunks(partials, mc_samples)` puts
+the partials together, in any order, into the run's result, and refuses a
+missing one:
+
+```python
+from repyability import run_shard
+
+shards = plant.shards(100.0, 4_000, seed=0)
+len(shards)                                          # -> 4
+partials = [run_shard(shard) for shard in reversed(shards)]   # anywhere
+merged = plant.availability_from_chunks(partials, mc_samples=4_000)
+whole = plant.availability(t_simulation=100.0, mc_samples=4_000, seed=0)
+merged.system_uptime == whole.system_uptime          # True
+```
+
+`availability` and `cost` do it all with `shard_map`, a map that runs the
+shards wherever it sends them: `shard_map(run_shard, shards)` must give back
+each shard's partial, as `map` does. A run to a `tolerance` maps a round of
+shards at a time. The result is the same to the last bit:
+
+```python
+from concurrent.futures import ProcessPoolExecutor
+
+with ProcessPoolExecutor(2) as pool:
+    sharded = plant.availability(t_simulation=100.0, mc_samples=4_000, seed=0,
+                                 shard_map=pool.map)
+sharded.system_uptime == whole.system_uptime         # True
+```
+
+- **Any executor.** Ray's: `shard_map=lambda f, shards:
+  ray.get([ray.remote(f).remote(s) for s in shards])`; Dask's:
+  `shard_map=lambda f, shards: client.gather(client.map(f, shards))`; a
+  batch system's, a job a shard: `python -m repyability.rbd.shards <
+  shard.json > partial.npz` (or with the two files' names).
+- **Seconds a shard.** A worker takes a second or so to import RePyability,
+  numpy and surpyval, so make shards that run for seconds (`shard_size`, or
+  `shards`' `size`; by default 1024 simulations), and keep workers alive, as
+  a pool does. A shard's size is rounded up to a whole number of the run's
+  widest block of draws, so that no two shards draw the same block.
+- **The engine where it runs.** Each shard is simulated by `engine` on the
+  worker, `"auto"` choosing there. `n_jobs` is for one machine: give the
+  map's workers the CPUs instead.
+- **Checked.** A worker refuses a shard of another RePyability version,
+  which could simulate it differently, and the result refuses partials of
+  other shards than those sent. A system that cannot travel as JSON (a
+  model that is not a surpyval one, or a subclass of one, which would load
+  without what it changes) cannot be sharded: run it with `n_jobs`.
+- **Small partials.** A partial carries each simulation's up time (and
+  cost) and every change of the system's state, which the full curve
+  needs; with [`curve_points`](#a-large-runs-curve), only the grid's
+  counts.
 
 ## Small failure probabilities
 
@@ -503,3 +566,4 @@ next engine. `analysis_routes()` reports which engine `"auto"` would run.
   `antithetic=True`, and check that the standard error falls.
 - **Long simulations:** install numba (`pip install "repyability[fast]"`)
   for the compiled engine, and spread them over the cores with `n_jobs`.
+- **More than one machine can run in time:** [shard](#shards) the run.

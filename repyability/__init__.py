@@ -58,6 +58,7 @@ from repyability.rbd.results import (
     UpDownImportance,
 )
 from repyability.rbd.routes import AnalysisRoute
+from repyability.rbd.shards import run_shard
 from repyability.rbd.standby_node import StandbyModel
 from repyability.repairable import (
     Repairable,
@@ -122,4 +123,5 @@ __all__ = [
     "SparesDemand",
     "SparesStock",
     "SimulationChunk",
+    "run_shard",
 ]

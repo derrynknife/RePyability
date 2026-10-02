@@ -25,6 +25,8 @@ Design notes
 """
 
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any
 
 from surpyval import NonParametric
@@ -44,9 +46,72 @@ from repyability.rbd.repeated_node import PARALLEL, RepeatedNode
 from repyability.rbd.repeated_standby_node import RepeatedStandbyNode
 from repyability.rbd.standby_node import StandbyModel
 
+#: Whether every model must load back as the class it is (see
+#: ``exactly``).
+_EXACT: ContextVar[bool] = ContextVar("exact", default=False)
+
+#: The class each kind of saved RePyability node wrapper loads as.
+_WRAPPERS = {
+    "degrading": DegradingNode,
+    "standby": StandbyModel,
+    "repeated_standby": RepeatedStandbyNode,
+    "repeated_node": RepeatedNode,
+    "non_repairable": NonRepairable,
+    "regression_node": RegressionNode,
+    "load_sharing": LoadSharingModel,
+}
+
+
+@contextmanager
+def exactly():
+    """Save so that every model loads back as the class it is: a model of
+    a subclass (of a surpyval distribution, or of a RePyability node
+    wrapper), which saves as the class it extends and would load without
+    what the subclass changes, raises ``NotImplementedError``. A shard
+    (see ``repyability.rbd.shards``), which a worker must simulate as the
+    system itself, saves its system so."""
+    token = _EXACT.set(True)
+    try:
+        yield
+    finally:
+        _EXACT.reset(token)
+
+
+def _check_exact(model: Any, saved: dict) -> None:
+    """Under ``exactly``: refuse a model that would load back as another
+    class than its own."""
+    import surpyval
+
+    kind = saved["kind"]
+    pairs = []
+    if kind == "surpyval":
+        pairs.append((model, type(surpyval.from_dict(saved["model"]))))
+    elif kind in _WRAPPERS:
+        pairs.append((model, _WRAPPERS[kind]))
+    if kind == "load_sharing":
+        pairs.extend(
+            (unit, type(surpyval.from_dict(unit_saved)))
+            for unit, unit_saved in zip(model.models, saved["models"])
+        )
+    for item, loads_as in pairs:
+        if type(item) is not loads_as:
+            package = loads_as.__module__.split(".")[0]
+            raise NotImplementedError(
+                f"a node model of type {type(item).__name__} saves as "
+                f"{package}'s {loads_as.__name__}, and would load without "
+                "what it changes"
+            )
+
 
 def serialise_model(model: Any) -> dict:
     """Serialise a node model to a JSON-friendly dict."""
+    saved = _serialise_model(model)
+    if _EXACT.get():
+        _check_exact(model, saved)
+    return saved
+
+
+def _serialise_model(model: Any) -> dict:
     if model is PerfectReliability:
         return {"kind": "perfect_reliability"}
     if model is PerfectUnreliability:

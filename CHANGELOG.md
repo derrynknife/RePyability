@@ -35,7 +35,8 @@ with numerical long-run values (#145), or
 early at a stop of its maintenance group, sharing its set-up (opportunistic
 maintenance, #108), and repaired imperfectly, by Kijima's virtual age, or
 replaced at the N-th failure (#109); a simulation run can be split across
-machines and merged, to the last bit (#114, #151); and small failure probabilities are estimated by
+machines and merged, to the last bit (#114, #151), through any executor
+(#152); and small failure probabilities are estimated by
 rare-event simulation (#115), and keep their full precision where they are
 exact (#148); phased missions are new, exact and simulated (#100, #101), as
 are the two-terminal reliability of undirected networks (#104), both
@@ -584,6 +585,30 @@ is required.
     orders of magnitude cut into 2, 7 and 64 pieces in any order, and by
     runs cut into uneven pieces (with antithetic pairs, a node held broken
     and costs, on both engines), against the whole run, field by field.
+  - **Shards** (#152). `RepairableRBD.shards(t_simulation, mc_samples,
+    seed=...)` cuts a run into shards: ranges of its simulations as plain
+    data (JSON holding the system as `to_dict` saves it, the run's settings
+    and the number its seed gives the streams), each a whole number of the
+    run's widest block of draws. `repyability.run_shard(shard)` runs one
+    anywhere, on any engine, and gives back its partial: its totals, as the
+    bytes of a NumPy `.npz` file read without pickle
+    (`SimulationChunk.to_npz` and `from_npz`); so does `python -m
+    repyability.rbd.shards < shard.json > partial.npz`, for batch systems.
+    `availability_from_chunks(partials, mc_samples=N)` puts them together
+    in any order, and refuses a missing one. `availability(...,
+    shard_map=...)` and `cost` do it all through any map
+    (`concurrent.futures`, Ray, Dask, ...), in rounds for a `tolerance`,
+    with the same result to the last bit. A worker refuses a shard of
+    another RePyability version, and the result partials of other shards.
+    A system whose models would not load back as themselves from JSON (a
+    subclass of a surpyval model) is refused, as a worker would simulate
+    another system, and `analysis_routes()` says so. `n_jobs`' processes now
+    get the system once, when they start, and send back each block's totals
+    rather than every simulation, which the parent merges: on four cores,
+    `n_jobs=4` ran a 12-component system over 5 000 h 1.5 times as fast as
+    before (2.6 times its one-process speed, from 2.0) and a 70-component
+    one over 2 000 h 1.6 times (3.1, from 1.9), as the parent's share of a
+    250-simulation block fell from 12 to 0.6 ms and from 29 to 2.2 ms.
 - **Imperfect repair** (#109). A component spec's `"repair": {"model":
   "kijima1" | "kijima2", "q": q}` makes its repairs imperfect: a repair
   after the unit has operated `x` since the last takes its virtual age from

@@ -123,6 +123,8 @@ models provided here (see [Building an RBD](guide/building.md) and
 
 ::: repyability.SimulationChunk
 
+::: repyability.run_shard
+
 ::: repyability.MaintenancePolicy
 
 ::: repyability.FailureLimitPolicy

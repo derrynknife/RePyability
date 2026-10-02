@@ -16,6 +16,7 @@ import heapq
 import itertools
 import json
 import math
+import pickle
 import warnings
 from collections import Counter, defaultdict, deque
 from collections.abc import Mapping
@@ -45,6 +46,7 @@ from scipy.optimize import OptimizeResult, brentq, minimize
 from scipy.special import expit, logit, logsumexp, softmax
 from surpyval import ExactEventTime
 
+from repyability._version import __version__
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import _ccf_chain, _chain_transient, _crew_chain
 from repyability.rbd import _montecarlo as montecarlo
@@ -507,6 +509,52 @@ def _state_key(states: dict) -> Optional[str]:
 
     entries = plain(states)
     return json.dumps(entries, sort_keys=True) if entries else None
+
+
+def _check_shard_map(shard_map, shard_size, n_jobs) -> None:
+    """Check ``availability``'s ``shard_map`` and ``shard_size``."""
+    if shard_map is None:
+        if shard_size is not None:
+            raise ValueError(
+                "shard_size is the size of the shards shard_map runs: give "
+                "shard_map too."
+            )
+        return
+    if not callable(shard_map):
+        raise ValueError(
+            "shard_map must be a map: called as shard_map(run_shard, "
+            f"shards), like map; got {shard_map!r}."
+        )
+    if n_jobs is not None:
+        raise ValueError(
+            "shard_map runs the shards wherever it sends them: give its "
+            "workers the CPUs, and leave out n_jobs."
+        )
+
+
+def _shard_bytes(template: dict, start: int, stop: int) -> bytes:
+    """A shard (see ``RepairableRBD.shards``): the run's ``template`` with
+    the range of its simulations, as JSON."""
+    return json.dumps({**template, "start": start, "stop": stop}).encode()
+
+
+def _states_from_key(rbd, key: Optional[str]) -> dict:
+    """The components' states ``_state_key`` saved, for ``rbd`` (a copy of
+    the system the key was made for, as a shard rebuilds it): each node by
+    its ``repr``, a nested RBD's own states in turn."""
+
+    def states(rbd, entries: list) -> dict:
+        nodes = {repr(node): node for node in rbd.components}
+        out: dict = {}
+        for name, value in entries:
+            node = nodes[name]
+            if isinstance(value, dict):
+                out[node] = NodeState(**value)
+            else:
+                out[node] = states(rbd.components[node], value)
+        return out
+
+    return {} if key is None else states(rbd, json.loads(key))
 
 
 def _draws_start(start) -> bool:
@@ -1099,6 +1147,17 @@ class _Tally:
             self.fold_costs(np.asarray(self._cost_rows, dtype=float))
             self._cost_rows = []
 
+    def compact(self) -> "_Tally":
+        """This tally with its simulations' values folded into the totals
+        and its changes of state in arrays: small to send from a worker
+        process to the parent (see ``_simulate_block``)."""
+        self._fold()
+        if self.changes:
+            times, deltas = self.state_changes()
+            self.changes, self.deltas = [], []
+            self.change_arrays = [(times, deltas)]
+        return self
+
     def fold_columns(self, uptime, up, both_up, both_down) -> None:
         """Add simulations' values to the totals, exactly (one row per
         simulation): the system's up time (and so its down time), each
@@ -1208,6 +1267,9 @@ class _Tally:
         for level, time in other.capacity_time.items():
             _add_at(self.capacity_time, level, time)
         self.delivered.extend(other.delivered)
+        if self.replacements is not None:
+            assert other.replacements is not None  # blocks of one run
+            self.replacements.extend(other.replacements)
 
     def to_dict(self) -> dict:
         """The totals, as JSON data (see ``SimulationChunk.to_dict``): each
@@ -1499,12 +1561,33 @@ def _stopping_rule(
     return stop
 
 
-def _simulate_block(task) -> List[_Replication]:
-    """Simulations ``start`` to ``stop`` of a parallel run (in their own
-    process)."""
-    rbd, t, working, broken, method, start, stop, streams, capacity = task
-    context = rbd._context(t, working, broken, method, capacity, *streams)
-    return [rbd._replicate(context, r) for r in range(start, stop)]
+#: A parallel run's worker process's run (see ``_start_worker``).
+_WORKER: Dict[str, Any] = {}
+
+
+def _start_worker(run: bytes) -> None:
+    """Start a worker process of a parallel run (see ``_PythonRunner``):
+    unpickle the run, the system and what its simulations share, once, for
+    every block the worker runs."""
+    rbd, args, curve_points, replacements = pickle.loads(run)
+    _WORKER["run"] = (rbd, rbd._context(*args), curve_points, replacements)
+
+
+def _simulate_block(span: Tuple[int, int]) -> "_Tally":
+    """Simulations ``start`` to ``stop - 1`` of a parallel run, in a worker
+    process (see ``_start_worker``): their totals, compact."""
+    rbd, context, curve_points, replacements = _WORKER["run"]
+    tally = _Tally(
+        list(rbd.components),
+        rbd.costs,
+        context.t_simulation,
+        curve_points,
+    )
+    if replacements:
+        tally.replacements = []
+    for replication in range(*span):
+        tally.add(rbd._replicate(context, replication))
+    return tally.compact()
 
 
 class _Context(NamedTuple):
@@ -1533,23 +1616,36 @@ class _Context(NamedTuple):
 class _PythonRunner:
     """Runs a run's simulations in Python: one after another in this
     process, or, with ``jobs`` above 1, in blocks of ``PARALLEL_BLOCK`` in
-    that many processes; either way they are added to the tally in order.
-    ``args`` are ``RepairableRBD._context``'s."""
+    that many processes. Each worker process is given the run once, when it
+    starts (see ``_start_worker``), and sends back each block's totals,
+    compact (#152), which are merged into the tally in order: the same
+    totals, kept exactly, as adding the simulations one by one. ``args``
+    are ``RepairableRBD._context``'s."""
 
     def __init__(self, rbd, tally, progress, args: tuple, jobs):
         self._rbd = rbd
         self._tally = tally
         self._progress = progress
-        self._args = args
         self._context: Optional[_Context] = None
         self._executor: Any = None
         if jobs is not None and jobs > 1:
-            self._executor = montecarlo.process_pool(jobs)
+            run = pickle.dumps(
+                (
+                    rbd,
+                    args,
+                    tally.curve_points,
+                    tally.replacements is not None,
+                ),
+                protocol=pickle.HIGHEST_PROTOCOL,
+            )
+            self._executor = montecarlo.process_pool(
+                jobs, initializer=_start_worker, initargs=(run,)
+            )
         else:
             self._context = rbd._context(*args)
 
     def __call__(self, start: int, stop: int) -> None:
-        """Simulations ``start`` to ``stop``."""
+        """Simulations ``start`` to ``stop - 1``."""
         if self._executor is None:
             for replication in range(start, stop):
                 self._tally.add(
@@ -1557,29 +1653,67 @@ class _PythonRunner:
                 )
                 self._progress.update()
             return
-        t, working, broken, method, capacity, *streams = self._args
-        tasks = [
-            (
-                self._rbd,
-                t,
-                working,
-                broken,
-                method,
-                first,
-                min(first + PARALLEL_BLOCK, stop),
-                tuple(streams),
-                capacity,
-            )
+        spans = [
+            (first, min(first + PARALLEL_BLOCK, stop))
             for first in range(start, stop, PARALLEL_BLOCK)
         ]
-        for records in self._executor.map(_simulate_block, tasks):
-            for rec in records:
-                self._tally.add(rec)
-            self._progress.update(len(records))
+        for block in self._executor.map(_simulate_block, spans):
+            self._tally.merge(block)
+            self._progress.update(block.n)
 
     def close(self) -> None:
         if self._executor is not None:
             self._executor.shutdown()
+
+
+class _ShardRunner:
+    """Runs a run's simulations as shards (see ``repyability.rbd.shards``):
+    each range of simulations asked for is cut into shards at the multiples
+    of ``step``, which ``shard_map(run_shard, shards)`` runs wherever it
+    sends them, and the partials it gives back, checked to be those
+    shards', are merged into the tally in order. ``template`` is what
+    every shard of the run holds (see ``RepairableRBD._shard_template``)."""
+
+    def __init__(self, rbd, tally, progress, shard_map, template, step):
+        from repyability.rbd.chunks import _run_key
+
+        self._tally = tally
+        self._progress = progress
+        self._map = shard_map
+        self._template = template
+        self._step = step
+        self._key = _run_key({**template, "fingerprint": rbd._fingerprint()})
+
+    def __call__(self, start: int, stop: int) -> None:
+        """Simulations ``start`` to ``stop - 1``."""
+        from repyability.rbd.chunks import SimulationChunk, _run_key
+        from repyability.rbd.shards import run_shard
+
+        if stop <= start:
+            return
+        step = self._step
+        cuts = [start, *range((start // step + 1) * step, stop, step), stop]
+        ranges = list(zip(cuts, cuts[1:]))
+        shards = [_shard_bytes(self._template, a, b) for a, b in ranges]
+        chunks = []
+        for saved in self._map(run_shard, shards):
+            chunk = SimulationChunk._load(saved)
+            chunks.append(chunk)
+            self._progress.update(chunk.n_simulations)
+        chunks.sort(key=lambda chunk: chunk.ranges[0])
+        if [chunk.ranges for chunk in chunks] != [[r] for r in ranges] or any(
+            _run_key(chunk.settings) != self._key for chunk in chunks
+        ):
+            raise ValueError(
+                "shard_map gave back other partials than those of the "
+                "shards it was given: it must give back run_shard's result "
+                "for each shard, as map(run_shard, shards) does."
+            )
+        for chunk in chunks:
+            self._tally.merge(chunk._tally)
+
+    def close(self) -> None:
+        pass
 
 
 #: The per-action costs: charged at each preventive action or inspection.
@@ -7481,6 +7615,21 @@ class RepairableRBD(RBD):
             )
         )
         out["simulate_chunk"] = out["availability"]
+        unsaved = r.refusal(self._shard_system)
+        out["shards"] = (
+            out["availability"]
+            if out["availability"].route == r.REFUSED
+            else (
+                r.refused(unsaved)
+                if unsaved
+                else r.AnalysisRoute(
+                    r.SIMULATED,
+                    "The run's simulations as shards, to simulate anywhere "
+                    "with run_shard (see shards); availability_from_chunks "
+                    "merges their partials into its result.",
+                )
+            )
+        )
         out["availability_from_chunks"] = (
             out["availability"]
             if given or groups
@@ -11203,6 +11352,8 @@ class RepairableRBD(RBD):
         engine: str = "auto",
         state=None,
         curve_points: Optional[int] = None,
+        shard_map: Optional[Callable] = None,
+        shard_size: Optional[int] = None,
         N: Optional[int] = None,
         max_N: Optional[int] = None,
     ) -> AvailabilityResult:
@@ -11367,6 +11518,22 @@ class RepairableRBD(RBD):
             curve has a point at every change of every simulation. By
             default None: the full curve. Everything else in the result is
             the same either way.
+        shard_map : callable, optional
+            Run the simulations as shards (see ``shards``) through this
+            map, wherever it sends them: ``shard_map(run_shard, shards)``
+            must give back ``run_shard``'s result for each shard, in any
+            order, as ``map`` does. The built-in ``map`` runs them here;
+            ``concurrent.futures.ProcessPoolExecutor(...).map`` in other
+            processes; Ray's, Dask's or a batch system's on other machines
+            (see [Shards](guide/simulation.md#shards)). The result is the
+            same to the last bit; a run to a ``tolerance`` maps a round of
+            shards at a time. Each shard is simulated by ``engine`` where it
+            runs, and carries the system as JSON, so the system must save
+            (``to_dict``). Not with ``n_jobs``: give the map's workers the
+            CPUs. By default None.
+        shard_size : int, optional
+            The simulations to a shard, with ``shard_map``: as ``shards``'
+            ``size``, by default as many as make 1024 or more.
 
         N : int, optional
             Deprecated: the old name of ``mc_samples``.
@@ -11393,12 +11560,15 @@ class RepairableRBD(RBD):
             (``mc_samples`` odd with ``antithetic``, ``max_samples`` without
             a tolerance or below ``mc_samples``, ...); or if a ``demand`` is
             not a positive, finite number, or is
-            given for an RBD with no capacities.
+            given for an RBD with no capacities; or if ``shard_map`` is not
+            callable or comes with ``n_jobs``, or ``shard_size`` is not a
+            whole number at least 1 or comes without ``shard_map``.
         NotImplementedError
             With ``antithetic``, if a component's draws cannot be replayed;
             with capacities, if a node takes its capacity from its model;
             with ``engine="numba"``, if the compiled engine does not
-            simulate the system.
+            simulate the system; with ``shard_map``, if the system cannot
+            be saved as JSON.
         ImportError
             With ``engine="numba"``, if numba is not installed.
 
@@ -11459,6 +11629,8 @@ class RepairableRBD(RBD):
             engine=engine,
             state=state,
             curve_points=_curve_points(curve_points),
+            shard_map=shard_map,
+            shard_size=shard_size,
         )
 
     def simulate_chunk(
@@ -11551,6 +11723,10 @@ class RepairableRBD(RBD):
         NotImplementedError
             As for ``availability``.
 
+        See Also
+        --------
+        shards : The run's simulations as plain data, to run anywhere.
+
         Examples
         --------
         Two chunks of a run, merged, are the run:
@@ -11569,8 +11745,6 @@ class RepairableRBD(RBD):
         >>> bool((merged.uptimes == whole.uptimes).all())
         True
         """
-        from repyability.rbd.chunks import SimulationChunk
-
         if seed is None:
             raise ValueError(
                 "A chunk needs the run's seed: the chunks of a run share it."
@@ -11596,34 +11770,62 @@ class RepairableRBD(RBD):
         broken = set() if broken_nodes is None else set(broken_nodes)
         self._validate_node_overrides(working, broken)
         states = self._simulation_states(state, working | broken)
-        self.is_system_working(
-            {c: c not in broken for c in self.components}, method
+        return self._chunk(
+            t_simulation,
+            int(start),
+            int(stop),
+            _streams.entropy_of(seed),
+            working,
+            broken,
+            method,
+            antithetic,
+            demand,
+            engine,
+            None if n_jobs is None else montecarlo.jobs(n_jobs),
+            verbose,
+            states,
+            _curve_points(curve_points),
         )
-        capacity = None
-        if self._has_capacity():
-            capacity = _CapacityRecorder(self, demand)
-        elif demand is not None:
-            raise ValueError(
-                "A demand is measured against capacities, and no node has "
-                "one: give them with capacity={node: capacity}."
-            )
-        entropy = _streams.entropy_of(seed)
+
+    def _chunk(
+        self,
+        t_simulation: float,
+        start: int,
+        stop: int,
+        entropy: int,
+        working: set,
+        broken: set,
+        method: str,
+        antithetic: bool,
+        demand: Optional[float],
+        engine: str,
+        jobs: Optional[int],
+        verbose: bool,
+        states: dict,
+        curve_points: Optional[int],
+    ) -> "SimulationChunk":
+        """Simulations ``start`` to ``stop - 1`` of the run of ``entropy``
+        (see ``simulate_chunk``, whose arguments, checked, these are), as
+        a chunk with the run's settings."""
+        from repyability.rbd.chunks import SimulationChunk
+
+        capacity = self._chunk_capacity(broken, method, demand)
         tally = self._run(
             t_simulation,
             working,
             broken,
             method,
-            int(stop - start),
+            stop - start,
             verbose,
-            seed,
+            None,
             antithetic,
             capacity=capacity,
-            jobs=None if n_jobs is None else montecarlo.jobs(n_jobs),
+            jobs=jobs,
             engine=engine,
             entropy=entropy,
-            first=int(start),
+            first=start,
             states=states,
-            curve_points=_curve_points(curve_points),
+            curve_points=curve_points,
         )
         settings = {
             "t_simulation": float(t_simulation),
@@ -11637,12 +11839,241 @@ class RepairableRBD(RBD):
             "state": _state_key(states),
             "curve_points": tally.curve_points,
         }
-        return SimulationChunk([(int(start), int(stop))], settings, tally)
+        return SimulationChunk([(start, stop)], settings, tally)
 
-    def availability_from_chunks(self, chunks) -> AvailabilityResult:
+    def _chunk_capacity(
+        self, broken: set, method: str, demand: Optional[float]
+    ) -> Optional[_CapacityRecorder]:
+        """Check a chunk's (or shard's) ``method`` and ``demand``, and give
+        the recorder of the capacities it follows, if the system has
+        them."""
+        self.is_system_working(
+            {c: c not in broken for c in self.components}, method
+        )
+        if self._has_capacity():
+            return _CapacityRecorder(self, demand)
+        if demand is not None:
+            raise ValueError(
+                "A demand is measured against capacities, and no node has "
+                "one: give them with capacity={node: capacity}."
+            )
+        return None
+
+    def shards(
+        self,
+        t_simulation: float,
+        mc_samples: Optional[int] = None,
+        *,
+        seed: Optional[int] = None,
+        size: Optional[int] = None,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        method: str = "p",
+        antithetic: bool = False,
+        demand: Optional[float] = None,
+        engine: str = "auto",
+        state=None,
+        curve_points: Optional[int] = None,
+    ) -> List[bytes]:
+        """The run ``availability(t_simulation, mc_samples, seed=seed,
+        ...)`` makes, as shards: ranges of its simulations as plain data,
+        to run anywhere (see ``repyability.rbd.shards``).
+
+        Each shard is JSON: this system as ``to_dict`` gives it, the run's
+        entropy (drawn once, here, from the seed) and settings, and its
+        range. ``repyability.run_shard`` runs one in any process, on any
+        machine and by any executor (``concurrent.futures``, Ray, Dask, a
+        batch system with ``python -m repyability.rbd.shards < shard.json
+        > partial.npz``), and gives back its partial, the simulations'
+        totals as ``.npz`` bytes; ``availability_from_chunks(partials,
+        mc_samples)`` puts them together, in any order, into the run's
+        result, to the last bit. ``availability(..., shard_map=...)`` does
+        it all through a ``map`` of your choosing.
+
+        Parameters
+        ----------
+        t_simulation : float
+            The window each simulation covers, from 0.
+        mc_samples : int, optional
+            The run's simulations, by default 10_000.
+        seed : int, optional
+            The run's seed, by default None: drawn from numpy's global RNG,
+            as ``availability`` does.
+        size : int, optional
+            Simulations to a shard, rounded up to a whole number of the
+            run's widest block of draws (see
+            [Random streams](guide/simulation.md#random-streams)), so that
+            no two shards draw the same block; by default as many as make
+            1024 or more. A shard should run for some seconds, to repay a
+            worker's start.
+        working_nodes : Collection[Hashable], optional
+            Nodes held working, as for ``availability``.
+        broken_nodes : Collection[Hashable], optional
+            Nodes held failed, as for ``availability``.
+        method : str, optional
+            ``"p"`` or ``"c"``, as for ``availability``.
+        antithetic : bool, optional
+            Run the simulations in antithetic pairs, as for
+            ``availability``: ``mc_samples`` must then be even.
+        demand : float, optional
+            The demand the delivered fraction is measured against, as for
+            ``availability``.
+        state : dict, optional
+            The components' states at the start, as for ``availability``.
+        engine : str, optional
+            What runs each shard: as for ``availability``, in the worker,
+            by default ``"auto"``.
+        curve_points : int, optional
+            Count the curve on a grid, as for ``availability``, so that a
+            partial carries the grid's counts rather than every change. By
+            default None.
+
+        Returns
+        -------
+        list of bytes
+            The shards, in order of their simulations, as JSON.
+
+        Raises
+        ------
+        ValueError
+            If an argument is invalid, as for ``availability`` (with
+            ``antithetic``, ``mc_samples`` must be even).
+        NotImplementedError
+            If this system cannot be saved as JSON (a model that is not a
+            surpyval parametric one), as a shard carries it: run it with
+            ``availability(..., n_jobs=...)`` instead.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> E = surv.Exponential.from_params
+        >>> rbd = RepairableRBD(
+        ...     [("s", "a"), ("a", "t")],
+        ...     {"a": {"reliability": E([0.1]), "repairability": E([1.0])}},
+        ... )
+        >>> len(rbd.shards(100.0, 10_000, seed=1, size=4096))
+        3
+        """
+        N = 10_000 if mc_samples is None else mc_samples
+        montecarlo.check_count(N, antithetic, "mc_samples")
+        working = set() if working_nodes is None else set(working_nodes)
+        broken = set() if broken_nodes is None else set(broken_nodes)
+        self._validate_node_overrides(working, broken)
+        states = self._simulation_states(state, working | broken)
+        capacity = self._chunk_capacity(broken, method, demand)
+        self._require_no_ccf("the simulation", nested=True)
+        entropy = _streams.entropy_of(seed)
+        template = self._shard_template(
+            t_simulation,
+            entropy,
+            working,
+            broken,
+            method,
+            antithetic,
+            demand,
+            engine,
+            states,
+            _curve_points(curve_points),
+        )
+        # What a run checks before it simulates (see _run).
+        plan, complete = self._stream_plan(
+            t_simulation, entropy, antithetic, None, states
+        )
+        if antithetic and not complete:
+            raise NotImplementedError(_UNSTREAMED)
+        self._simulation_engine(engine, plan, capacity, N, here=False)
+        step = self._shard_size(plan, size)
+        return [
+            _shard_bytes(template, first, min(first + step, N))
+            for first in range(0, N, step)
+        ]
+
+    def _shard_template(
+        self,
+        t_simulation: float,
+        entropy: int,
+        working: set,
+        broken: set,
+        method: str,
+        antithetic: bool,
+        demand: Optional[float],
+        engine: str,
+        states: dict,
+        curve_points: Optional[int],
+    ) -> dict:
+        """What every shard of a run holds (see ``shards``): all but its
+        range."""
+        from repyability.rbd.shards import KIND
+
+        return {
+            "kind": KIND,
+            "repyability_version": __version__,
+            "system": self._shard_system(),
+            "t_simulation": float(t_simulation),
+            "entropy": int(entropy),
+            "method": method,
+            "working_nodes": sorted(working, key=repr),
+            "broken_nodes": sorted(broken, key=repr),
+            "antithetic": bool(antithetic),
+            "demand": None if demand is None else float(demand),
+            "engine": engine,
+            "state": _state_key(states),
+            "curve_points": curve_points,
+        }
+
+    def _shard_system(self) -> dict:
+        """This system as a shard carries it: ``to_dict``'s JSON data, with
+        every model of a class that loads back as itself (see
+        ``serialisation.exactly``), so that a worker simulates this
+        system."""
+        from repyability.rbd.serialisation import exactly
+
+        try:
+            with exactly():
+                system = self.to_dict()
+            json.dumps(system)
+            if type(self) is not RepairableRBD:
+                raise NotImplementedError(
+                    f"it is a {type(self).__name__}, which loads as a "
+                    "RepairableRBD"
+                )
+        except Exception as error:
+            raise NotImplementedError(
+                "A shard carries the system as JSON, and this one cannot be "
+                f"saved: {str(error).rstrip('.')}. Run it with "
+                "availability(n_jobs=...) instead."
+            ) from None
+        return system
+
+    @staticmethod
+    def _shard_size(plan: _streams.Plan, size: Optional[int]) -> int:
+        """Simulations to a shard of the run of ``plan``: ``size`` (by
+        default 1024), rounded up to a whole number of its widest block of
+        draws, so that no two shards draw the same block."""
+        wanted = 1024 if size is None else size
+        if (
+            isinstance(wanted, bool)
+            or not isinstance(wanted, (int, np.integer))
+            or wanted < 1
+        ):
+            raise ValueError(
+                "The size of a shard must be a whole number of simulations, "
+                f"at least 1; got {size!r}."
+            )
+        widest = max(
+            [plan.columns(spec) for spec in plan.specs.values()]
+            + [2 if plan.antithetic else 1]
+        )
+        return int(-(-int(wanted) // widest) * widest)
+
+    def availability_from_chunks(
+        self, chunks, mc_samples: Optional[int] = None
+    ) -> AvailabilityResult:
         """The result of the simulations of ``chunks`` (see
-        ``simulate_chunk``), as ``availability`` gives it: merged, in
-        order of their positions in the run.
+        ``simulate_chunk``, and the partials ``run_shard`` gives back from
+        ``shards``), as ``availability`` gives it: merged, in order of
+        their positions in the run, whatever order they come in.
 
         Chunks of simulations ``0`` to ``N - 1`` give the result of
         ``availability(t_simulation, mc_samples=N, seed=seed, ...)``: the
@@ -11657,8 +12088,13 @@ class RepairableRBD(RBD):
         Parameters
         ----------
         chunks : SimulationChunk, or an iterable of them
-            The chunks, or their ``to_dict`` data: of one run of this
-            system, holding different simulations.
+            The chunks, their ``to_dict`` data, or their ``to_npz`` bytes
+            (a shard's partial): of one run of this system, holding
+            different simulations.
+        mc_samples : int, optional
+            The run's number of simulations: the chunks must then hold
+            simulations ``0`` to ``mc_samples - 1``, all of them, which
+            refuses a missing chunk. By default None: whatever they hold.
 
         Returns
         -------
@@ -11670,7 +12106,8 @@ class RepairableRBD(RBD):
         ValueError
             If the chunks are of different runs, of another system (or of
             it saved by another RePyability version), or their simulations
-            overlap or interleave.
+            overlap or interleave; or, with ``mc_samples``, they do not
+            hold simulations ``0`` to ``mc_samples - 1``.
 
         Examples
         --------
@@ -11688,9 +12125,15 @@ class RepairableRBD(RBD):
         """
         from repyability.rbd.chunks import SimulationChunk
 
-        if isinstance(chunks, (SimulationChunk, dict)):
+        if isinstance(chunks, (SimulationChunk, dict, bytes, bytearray)):
             chunks = [chunks]
         chunk = SimulationChunk.merge(chunks)
+        if mc_samples is not None and chunk.ranges != [(0, int(mc_samples))]:
+            raise ValueError(
+                f"The chunks hold simulations {chunk.ranges} (as "
+                "(start, stop) ranges), not all of simulations 0 to "
+                f"{int(mc_samples) - 1}: some are missing."
+            )
         settings = chunk.settings
         fingerprint = self._fingerprint()
         if (
@@ -11936,10 +12379,13 @@ class RepairableRBD(RBD):
         engine: str = "auto",
         state=None,
         curve_points: Optional[int] = None,
+        shard_map: Optional[Callable] = None,
+        shard_size: Optional[int] = None,
     ) -> AvailabilityResult:
         """``availability`` (and ``cost``): validate, run the replications
-        (serially or in parallel, until converged if asked) and build the
-        result, its curve on a grid of ``curve_points`` steps if given."""
+        (serially, in parallel, or as shards through ``shard_map``, until
+        converged if asked) and build the result, its curve on a grid of
+        ``curve_points`` steps if given."""
         working_nodes = set() if working_nodes is None else set(working_nodes)
         broken_nodes = set() if broken_nodes is None else set(broken_nodes)
         self._validate_node_overrides(working_nodes, broken_nodes)
@@ -11954,14 +12400,39 @@ class RepairableRBD(RBD):
         stop = _stopping_rule(
             N, tolerance, confidence, max_N, antithetic, target, t_simulation
         )
+        _check_shard_map(shard_map, shard_size, n_jobs)
         capacity = None
-        if target == "availability" and self._has_capacity():
+        # Shards follow the capacities whatever the target, as chunks do.
+        if (
+            target == "availability" or shard_map is not None
+        ) and self._has_capacity():
             capacity = _CapacityRecorder(self, demand)
         elif demand is not None:
             raise ValueError(
                 "A demand is measured against capacities, and no node has "
                 "one: give them with capacity={node: capacity}."
             )
+        entropy = sharded = None
+        if shard_map is not None:
+            self._require_no_ccf("the simulation", nested=True)
+            entropy = _streams.entropy_of(seed)
+            template = self._shard_template(
+                t_simulation,
+                entropy,
+                working_nodes,
+                broken_nodes,
+                method,
+                antithetic,
+                demand,
+                engine,
+                states,
+                curve_points,
+            )
+            plan, _ = self._stream_plan(
+                t_simulation, entropy, antithetic, None, states
+            )
+            step = self._shard_size(plan, shard_size)
+            sharded = (shard_map, template, step)
         tally = self._run(
             t_simulation,
             working_nodes,
@@ -11975,8 +12446,10 @@ class RepairableRBD(RBD):
             capacity=capacity,
             jobs=None if n_jobs is None else montecarlo.jobs(n_jobs),
             engine=engine,
+            entropy=entropy,
             states=states,
             curve_points=curve_points,
+            sharded=sharded,
         )
         return self._availability_result(
             tally, t_simulation, initial_up, antithetic, capacity
@@ -12003,6 +12476,7 @@ class RepairableRBD(RBD):
         first: int = 0,
         states: Optional[dict] = None,
         curve_points: Optional[int] = None,
+        sharded: Optional[tuple] = None,
     ) -> "_Tally":
         """Run ``N`` simulations, from simulation ``first`` (then more,
         while ``stop`` asks for them), and return their totals: each from
@@ -12023,7 +12497,9 @@ class RepairableRBD(RBD):
         with ``replacements``, the tally keeps each simulation's
         replacements of each component, which only the Python engine
         counts; with ``curve_points``, it counts the changes of state on a
-        grid (see ``availability``).
+        grid (see ``availability``). With ``sharded``, ``(shard_map,
+        template, step)``, the simulations run as shards (see
+        ``_ShardRunner``), on the engine each shard's worker chooses.
         """
         self._require_no_ccf("the simulation", nested=True)
         from tqdm import tqdm
@@ -12048,11 +12524,15 @@ class RepairableRBD(RBD):
             )
             if (antithetic or common) and not complete:
                 raise NotImplementedError(_UNSTREAMED)
-            engine = self._simulation_engine(engine, plan, capacity, N)
+            engine = self._simulation_engine(
+                engine, plan, capacity, N, here=sharded is None
+            )
             progress = tqdm(
                 total=N, disable=not verbose, desc="Running simulations"
             )
-            if engine == "numba":
+            if sharded is not None:
+                runner = _ShardRunner(self, tally, progress, *sharded)
+            elif engine == "numba":
                 from repyability.rbd import _compiled
 
                 runner = _compiled.Runner(
@@ -12138,9 +12618,13 @@ class RepairableRBD(RBD):
         plan: _streams.Plan,
         capacity: Optional[_CapacityRecorder],
         N: int,
+        here: bool = True,
     ) -> str:
         """The engine that runs a simulation: ``"python"``, ``"numba"`` or
-        one another package adds (see ``availability``'s ``engine``)."""
+        one another package adds (see ``availability``'s ``engine``). Not
+        ``here`` (the simulations run as shards elsewhere), only whether
+        it can simulate the system is checked, and ``engine`` is kept, for
+        each shard's worker to choose by."""
         from repyability.rbd import _compiled, engines
 
         added = engines.registered()
@@ -12153,9 +12637,9 @@ class RepairableRBD(RBD):
             return engine
         reason = _compiled.unsupported(self, plan, capacity)
         if engine != "auto":
-            if engine == "numba":
+            if here and engine == "numba":
                 _compiled.require()
-            elif not added[engine].available():
+            elif here and not added[engine].available():
                 raise ImportError(
                     f"The {engine!r} simulation engine cannot run here."
                 )
@@ -12165,7 +12649,9 @@ class RepairableRBD(RBD):
                     "engine='python', or 'auto', which chooses the engine "
                     "that can."
                 )
-            return _compiled.ready(engine, auto=False)
+            return _compiled.ready(engine, auto=False) if here else engine
+        if not here:
+            return engine
         if reason is None and _compiled.worthwhile(plan, N):
             return _compiled.ready(str(_compiled.preferred()), auto=True)
         return "python"
@@ -12641,6 +13127,8 @@ class RepairableRBD(RBD):
         n_jobs: Optional[int] = None,
         engine: str = "auto",
         state=None,
+        shard_map: Optional[Callable] = None,
+        shard_size: Optional[int] = None,
         N: Optional[int] = None,
         max_N: Optional[int] = None,
     ) -> Optional[CostResult]:
@@ -12720,6 +13208,12 @@ class RepairableRBD(RBD):
             NodeState}``. Costs incurred before 0 (a repair or maintenance
             going on at 0 was charged when it started) are not counted. By
             default None: every component new at 0.
+        shard_map : callable, optional
+            Run the simulations as shards through this map, wherever it
+            sends them, as for ``availability``. By default None.
+        shard_size : int, optional
+            The simulations to a shard, with ``shard_map``, as for
+            ``availability``.
 
         N : int, optional
             Deprecated: the old name of ``mc_samples``.
@@ -12790,6 +13284,8 @@ class RepairableRBD(RBD):
             state=state,
             # The cost result has no curve: count the changes, not keep them.
             curve_points=1,
+            shard_map=shard_map,
+            shard_size=shard_size,
         ).cost
 
     def node_availability(self) -> dict[Hashable, float]:

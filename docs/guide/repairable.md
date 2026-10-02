@@ -249,8 +249,8 @@ before the other is back.
   from new. Under block replacement, the unit's own curve runs to its first
   block time, and the interval-by-interval solution from there. A unit
   whose hidden failures are repaired at once cannot be down in them.
-- **The simulation** (`availability`, `cost`, `compare`, `simulate_chunk`
-  and `initialize_event_queue`) takes the same states. A component started
+- **The simulation** (`availability`, `cost`, `compare`, `simulate_chunk`,
+  `shards` and `initialize_event_queue`) takes the same states. A component started
   from one draws what is left of its life, repair or maintenance from one
   uniform of a stream of its own, by the inverse transform of its
   conditional distribution, so a seeded run is reproducible and a run from
