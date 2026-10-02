@@ -247,3 +247,16 @@ def test_an_engine_can_run_numbas_loop():
         rbd.availability(engine="python", **options),
         rbd.availability(engine="borrowed", **options),
     )
+
+
+def test_numbas_own_loop_runs_what_an_engine_does_not(monkeypatch):
+    # Age and block replacement are numba's own loop's (#155): an engine of
+    # the interface's version is never given them, and "auto" runs them on
+    # numba even when it prefers the engine for plain components.
+    engine = Engine(priority=5)
+    engines.register(engine)
+    monkeypatch.setattr(_compiled, "available", lambda: True)
+    maintained = repairable_rbds()["maintained"]
+    assert maintained.analysis_routes()["availability"].engine == "numba"
+    koon = plain_rbds()["koon"].analysis_routes()["availability"]
+    assert koon.engine == "borrowed"

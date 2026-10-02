@@ -167,6 +167,21 @@ is required.
   diagrams as `numerical` rather than refused. Tests or repairs that take
   time, and tests that miss failures of a life that is not exponential,
   are still simulated (#159).
+- **Age and block replacement compiled** (#155). The compiled engine
+  simulates scheduled preventive maintenance under the age and block
+  policies, in zero time (a working unit renewed in place) or taking time
+  (a planned outage, from the maintenance time's stream), with fixed or
+  drawn preventive costs: the Python loop's events and arithmetic, in the
+  same order, so the engines agree to the last bit (checked on maintained
+  systems of every policy, with costs, ties from fixed lives on the
+  schedule, held nodes, antithetic pairs, threads and tolerances, and on
+  one too large for the table of states). It ran 9 to 12 times as fast as
+  Python on one thread, and 18 to 29 times on four, on 3, 12 and 70
+  components. Replacement on condition, opportunistic groups and a
+  maintenance time or preventive cost that cannot be streamed stay in
+  Python. An engine another package adds is still given only plain
+  components (its interface, ``engines.API``, is unchanged): a maintained
+  system runs on numba's own loop, which ``engine="auto"`` chooses.
 - **Faster compiled simulations of large systems** (#150). Above 20
   components (where the compiled loop has no table of every state), the
   compiled engine keeps whether the system works up to date as components

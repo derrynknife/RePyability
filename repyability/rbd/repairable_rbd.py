@@ -8042,12 +8042,11 @@ class RepairableRBD(RBD):
         from repyability.rbd import _compiled
 
         plan = self._stream_plan(1.0, 0, False)[0]
-        reason = _compiled.unsupported(
+        engine, reason = _compiled.choice(
             self, plan, object() if capacity else None
         )
         if reason is not None:
             return "python", f"the compiled engine does not simulate {reason}"
-        engine = _compiled.preferred()
         if engine is None:
             return (
                 "python",
@@ -11511,8 +11510,9 @@ class RepairableRBD(RBD):
             results to the last bit. The compiled engine simulates plain
             components (surpyval parametric models) in any structure, with
             nodes held working or broken, costs, antithetic pairs and
-            tolerances; preventive maintenance, inspections, nested RBDs,
-            capacities, other models and runs from a ``state`` run in
+            tolerances, and age and block replacement; replacement on
+            condition, inspections, repair crews, standby groups, nested
+            RBDs, capacities, other models and runs from a ``state`` run in
             Python. Another package can add a compiled engine of its own,
             which ``engine`` then takes by name and ``"auto"`` may prefer
             (see ``repyability.rbd.engines``). By default ``"auto"``.
@@ -12039,7 +12039,9 @@ class RepairableRBD(RBD):
         )
         if antithetic and not complete:
             raise NotImplementedError(_UNSTREAMED)
-        self._simulation_engine(engine, plan, capacity, N, here=False)
+        self._simulation_engine(
+            engine, plan, capacity, N, here=False, states=states
+        )
         step = self._shard_size(plan, size)
         return [
             _shard_bytes(template, first, min(first + step, N))
@@ -12894,7 +12896,7 @@ class RepairableRBD(RBD):
             if (antithetic or common) and not complete:
                 raise NotImplementedError(_UNSTREAMED)
             engine = self._simulation_engine(
-                engine, plan, capacity, N, here=sharded is None
+                engine, plan, capacity, N, here=sharded is None, states=states
             )
             progress = tqdm(
                 total=N, disable=not verbose, desc="Running simulations"
@@ -12988,12 +12990,14 @@ class RepairableRBD(RBD):
         capacity: Optional[_CapacityRecorder],
         N: int,
         here: bool = True,
+        states: Optional[dict] = None,
     ) -> str:
         """The engine that runs a simulation: ``"python"``, ``"numba"`` or
-        one another package adds (see ``availability``'s ``engine``). Not
-        ``here`` (the simulations run as shards elsewhere), only whether
-        it can simulate the system is checked, and ``engine`` is kept, for
-        each shard's worker to choose by."""
+        one another package adds (see ``availability``'s ``engine``), for a
+        run from the components' ``states``. Not ``here`` (the simulations
+        run as shards elsewhere), only whether it can simulate the system
+        is checked, and ``engine`` is kept, for each shard's worker to
+        choose by."""
         from repyability.rbd import _compiled, engines
 
         added = engines.registered()
@@ -13004,8 +13008,10 @@ class RepairableRBD(RBD):
             raise ValueError(f"engine must be one of {names}, got {engine!r}.")
         if engine == "python":
             return engine
-        reason = _compiled.unsupported(self, plan, capacity)
         if engine != "auto":
+            reason = _compiled.unsupported(
+                self, plan, capacity, numba=engine == "numba", states=states
+            )
             if here and engine == "numba":
                 _compiled.require()
             elif here and not added[engine].available():
@@ -13021,8 +13027,9 @@ class RepairableRBD(RBD):
             return _compiled.ready(engine, auto=False) if here else engine
         if not here:
             return engine
-        if reason is None and _compiled.worthwhile(plan, N):
-            return _compiled.ready(str(_compiled.preferred()), auto=True)
+        name, _ = _compiled.choice(self, plan, capacity, states)
+        if name is not None and _compiled.worthwhile(plan, N, name):
+            return _compiled.ready(name, auto=True)
         return "python"
 
     def _replicate(self, ctx: "_Context", replication: int) -> _Replication:

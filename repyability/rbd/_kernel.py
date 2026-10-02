@@ -1,7 +1,8 @@
 """The compiled event loop of ``RepairableRBD`` simulations (numba).
 
 ``_simulate`` is ``RepairableRBD._replicate`` for components that are
-plain ``NonRepairable`` units, operation for operation, over arrays: the
+plain ``NonRepairable`` units, under age or block replacement or none
+(#155), operation for operation, over arrays: the
 same heap (``heapq``'s algorithm, so equal times come out in the same
 order), the same arithmetic in the same order, and the draws read from the
 same keyed streams (see ``_streams``). Each simulation's results go to its
@@ -20,6 +21,11 @@ from numba import njit, prange
 
 # The kinds of term of the structure (see ``modular``).
 _NODE, _SERIES, _PARALLEL = 0, 1, 2
+
+# The kinds of event: a failure, a restoration, and preventive maintenance
+# (#155): an outage starting and ending, and a renewal in place (in zero
+# time, of a working unit). An event's kind is its state code in the heap.
+_FAIL, _RESTORE, _PM_START, _PM_END, _PM_IN_PLACE = 0, 1, 2, 3, 4
 
 
 @njit(cache=True, inline="always")
@@ -189,6 +195,36 @@ def _keep(kept, value, count, down, c, state, working_paths):
     return working_paths
 
 
+@njit(cache=True, inline="always")
+def _renewal(c, t, maintenance, fail, lives, limit, flat, base):
+    """``RepairableRBD._renewal`` for a unit under age or block replacement
+    put into service as new at ``t``: its life drawn, and its next event,
+    its failure or its maintenance, whichever is due first (a failure at
+    the same time first). Returns a status code (a stream's number + 1 if
+    it ran out of draws), the event's time and its kind."""
+    policy, interval, duration = maintenance[0], maintenance[1], maintenance[2]
+    s = fail[c]
+    k = lives[c]
+    if k >= limit[s]:
+        return s + 1, 0.0, _FAIL
+    lives[c] = k + 1
+    life = flat[base[s] + k]
+    if policy[c] == 1:
+        due = t + interval[c]
+    else:
+        # The next multiple of the interval after t.
+        due = (np.floor(t / interval[c]) + 1.0) * interval[c]
+        if not due > t:
+            due = due + interval[c]
+    if due < t:
+        due = t
+    if t + life <= due:
+        return 0, t + life, _FAIL
+    if duration[c] < 0:
+        return 0, due, _PM_IN_PLACE
+    return 0, due, _PM_START
+
+
 @njit(cache=True)
 def truth_table(n, structure):
     """``_works`` for every state of ``n`` components: entry ``mask`` is
@@ -205,11 +241,14 @@ def truth_table(n, structure):
 
 
 @njit(cache=True)
-def _simulate(todo, lo, hi, first, t_end, system, structure, kept, draws, out):
+def _simulate(
+    todo, lo, hi, first, t_end, system, structure, kept, draws, out, upkeep
+):
     """Simulations ``todo[lo:hi]`` (each into row ``r - first``). Whether
     the system works is looked up in the table of every state, or, without
     one, kept up to date as components change (``kept``, see
-    ``_compiled._kept``)."""
+    ``_compiled._kept``). ``upkeep`` is the components' preventive
+    maintenance (see ``_compiled._System.maintenance``)."""
     (
         start,
         active,
@@ -255,6 +294,9 @@ def _simulate(todo, lo, hi, first, t_end, system, structure, kept, draws, out):
     lives = np.empty(n, np.int64)
     repairs = np.empty(n, np.int64)
     charged = np.empty(slot_category.size, np.int64)
+    policy, _, duration, pm_charge, pm_amount = upkeep
+    maintained = np.empty(n, np.int64)
+    pm_charged = np.empty(n, np.int64)
     last = np.empty(n)
     up_at = np.empty(n)
     down_at = np.empty(n)
@@ -292,35 +334,89 @@ def _simulate(todo, lo, hi, first, t_end, system, structure, kept, draws, out):
         lives[:] = 0
         repairs[:] = 0
         charged[:] = 0
+        maintained[:] = 0
+        pm_charged[:] = 0
         last[:] = 0.0
         up_at[:] = 0.0
         down_at[:] = 0.0
         failures = 0
         restorations = 0
+        planned = 0
         changes = 0
         rep_cost = 0.0
         code = 0
         size = 0
-        # Each component's first failure, in the components' order.
+        # Each component's first failure (or maintenance), in the
+        # components' order.
         for c in range(n):
             if active[c]:
-                s = fail[c]
-                k = lives[c]
-                if k >= limit[s]:
-                    code = s + 1
-                    break
-                lives[c] = k + 1
-                t = flat[base[s] + k]
+                kind_next = _FAIL
+                if policy[c]:
+                    code, t, kind_next = _renewal(
+                        c, 0.0, upkeep, fail, lives, limit, flat, base
+                    )
+                    if code != 0:
+                        break
+                else:
+                    s = fail[c]
+                    k = lives[c]
+                    if k >= limit[s]:
+                        code = s + 1
+                        break
+                    lives[c] = k + 1
+                    t = flat[base[s] + k]
                 if t < t_end:
                     size = _push(
-                        heap_times, heap_nodes, heap_states, size, t, c, 0
+                        heap_times,
+                        heap_nodes,
+                        heap_states,
+                        size,
+                        t,
+                        c,
+                        kind_next,
                     )
         up = initial_up
         system_up = 0.0
         system_down = 0.0
         since = 0.0
         while code == 0 and size > 0:
-            t, c, state, size = _pop(heap_times, heap_nodes, heap_states, size)
+            t, c, kind_now, size = _pop(
+                heap_times, heap_nodes, heap_states, size
+            )
+            if kind_now == _PM_IN_PLACE:
+                # Maintenance in zero time of a working unit: renewed in
+                # place and charged, with no change of state.
+                q = pm_charge[c]
+                if q > -2:
+                    if q == -1:
+                        charge = pm_amount[c]
+                    else:
+                        k = pm_charged[c]
+                        if k >= limit[q]:
+                            code = q + 1
+                            break
+                        pm_charged[c] = k + 1
+                        charge = flat[base[q] + k]
+                    rep_cost += charge
+                    category_out[row, 2] += charge
+                    node_cost_out[row, cost_index[c]] += charge
+                code, t_next, kind_next = _renewal(
+                    c, t, upkeep, fail, lives, limit, flat, base
+                )
+                if code != 0:
+                    break
+                if t_next < t_end:
+                    size = _push(
+                        heap_times,
+                        heap_nodes,
+                        heap_states,
+                        size,
+                        t_next,
+                        c,
+                        kind_next,
+                    )
+                continue
+            state = 1 if kind_now == _RESTORE or kind_now == _PM_END else 0
             if up:
                 system_up_t = system_up + (t - since)
                 system_down_t = system_down
@@ -347,6 +443,22 @@ def _simulate(todo, lo, hi, first, t_end, system, structure, kept, draws, out):
                 )
             if state:
                 counts_out[row, 2, c] += 1
+            elif kind_now == _PM_START:
+                # A planned outage: charged the preventive cost.
+                q = pm_charge[c]
+                if q > -2:
+                    if q == -1:
+                        charge = pm_amount[c]
+                    else:
+                        k = pm_charged[c]
+                        if k >= limit[q]:
+                            code = q + 1
+                            break
+                        pm_charged[c] = k + 1
+                        charge = flat[base[q] + k]
+                    rep_cost += charge
+                    category_out[row, 2] += charge
+                    node_cost_out[row, cost_index[c]] += charge
             else:
                 counts_out[row, 0, c] += 1
                 for q in range(slot_start[c], slot_end[c]):
@@ -388,25 +500,49 @@ def _simulate(todo, lo, hi, first, t_end, system, structure, kept, draws, out):
                     counts_out[row, 3, c] += 1
                 else:
                     change_deltas[row, changes] = -1
-                    failures += 1
-                    counts_out[row, 1, c] += 1
+                    if kind_now == _PM_START:
+                        planned += 1
+                    else:
+                        failures += 1
+                        counts_out[row, 1, c] += 1
                 changes += 1
-            # The next event: a failure after a restoration, a restoration
-            # after a failure.
-            if state:
-                s = fail[c]
-                k = lives[c]
-                lives[c] = k + 1
-                next_state = 0
-            else:
+            # The next event: a restoration after a failure, the end of an
+            # outage for maintenance after its start; after a restoration,
+            # a failure, or for a maintained unit, renewed, its failure or
+            # its maintenance.
+            if kind_now == _FAIL:
                 s = repair[c]
                 k = repairs[c]
+                if k >= limit[s]:
+                    code = s + 1
+                    break
                 repairs[c] = k + 1
-                next_state = 1
-            if k >= limit[s]:
-                code = s + 1
-                break
-            t_next = t + flat[base[s] + k]
+                t_next = t + flat[base[s] + k]
+                kind_next = _RESTORE
+            elif kind_now == _PM_START:
+                s = duration[c]
+                k = maintained[c]
+                if k >= limit[s]:
+                    code = s + 1
+                    break
+                maintained[c] = k + 1
+                t_next = t + flat[base[s] + k]
+                kind_next = _PM_END
+            elif policy[c]:
+                code, t_next, kind_next = _renewal(
+                    c, t, upkeep, fail, lives, limit, flat, base
+                )
+                if code != 0:
+                    break
+            else:
+                s = fail[c]
+                k = lives[c]
+                if k >= limit[s]:
+                    code = s + 1
+                    break
+                lives[c] = k + 1
+                t_next = t + flat[base[s] + k]
+                kind_next = _FAIL
             if t_next < t_end:
                 size = _push(
                     heap_times,
@@ -415,7 +551,7 @@ def _simulate(todo, lo, hi, first, t_end, system, structure, kept, draws, out):
                     size,
                     t_next,
                     c,
-                    next_state,
+                    kind_next,
                 )
         status_out[row] = code
         if code != 0:
@@ -444,21 +580,33 @@ def _simulate(todo, lo, hi, first, t_end, system, structure, kept, draws, out):
         cost_out[row] = rep_cost
         system_out[row, 0] = failures
         system_out[row, 1] = restorations
-        system_out[row, 2] = 0
+        system_out[row, 2] = planned
         change_count[row] = changes
 
 
 @njit(cache=True)
-def run_serial(todo, first, t_end, system, structure, kept, draws, out):
+def run_serial(
+    todo, first, t_end, system, structure, kept, draws, out, upkeep
+):
     """Simulations ``todo``, one after another."""
     _simulate(
-        todo, 0, todo.size, first, t_end, system, structure, kept, draws, out
+        todo,
+        0,
+        todo.size,
+        first,
+        t_end,
+        system,
+        structure,
+        kept,
+        draws,
+        out,
+        upkeep,
     )
 
 
 @njit(cache=True, parallel=True)
 def run_parallel(
-    todo, first, t_end, system, structure, kept, draws, out, chunks
+    todo, first, t_end, system, structure, kept, draws, out, chunks, upkeep
 ):
     """Simulations ``todo``, ``chunks`` of them at a time on numba's
     threads."""
@@ -475,6 +623,7 @@ def run_parallel(
             kept,
             draws,
             out,
+            upkeep,
         )
 
 

@@ -37,7 +37,9 @@
   `test_simulation_engines.py` checks them against each other (run by CI's
   `test (with numba, ...)` jobs) and the Python loop against a reference
   written from the streams' definition. What the compiled engine does not
-  simulate, `_compiled.unsupported` sends to Python.
+  simulate, `_compiled.unsupported` sends to Python: numba's own loop takes
+  `numba=True`, as it also runs age and block replacement (#155), while
+  engines from other packages keep the plain-components contract.
 - **Engines from other packages** (`repyability/rbd/engines.py`) run what
   `_compiled.unsupported` allows and are handed the run's own objects (the
   `_compiled.Runner` arguments), so they may build on `_compiled`'s

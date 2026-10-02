@@ -602,10 +602,14 @@ bool((fast.uptimes == slow.uptimes).all())   # True, with numba or without
 The compiled engine simulates plain components (`reliability` and
 `repairability` specs, or `NonRepairable` objects, with surpyval parametric
 models) in any structure, with nodes held working or broken, costs,
-antithetic pairs, tolerances and common random numbers. Preventive
-maintenance, inspections, repair crews, nested RBDs, capacities and other
-models run in Python, which `"auto"` chooses by itself. With `n_jobs` it runs on that many
-threads, which start at once.
+antithetic pairs, tolerances and common random numbers, and age and block
+replacement, in zero time or taking time. Replacement on condition,
+inspections, repair crews, standby groups, nested RBDs, capacities and
+other models run in Python, which `"auto"` chooses by itself. With `n_jobs`
+it runs on that many threads, which start at once. Under age replacement
+(half the units maintained in zero time, half taking time), the compiled
+engine ran 9 to 12 times as fast as Python on one thread, and 18 to 29
+times on four, on the three systems below.
 
 On a four-core 2.8 GHz Xeon, in millions of events (failures and repairs)
 a second:

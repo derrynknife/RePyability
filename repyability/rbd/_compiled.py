@@ -5,7 +5,8 @@ It runs the simulations of a system whose components are plain
 ``NonRepairable`` units -- every model a surpyval parametric one, so that
 its draws come from its own streams (see ``_streams``) -- in any structure,
 with components held working or broken, antithetic pairs, common random
-numbers and costs. Anything else (preventive maintenance, inspections,
+numbers and costs, and under age and block replacement (#155). Anything
+else (replacement on condition, inspections, repair crews, standby groups,
 nested RBDs, capacities, models whose draws cannot be streamed) runs in
 Python, which ``engine="auto"`` chooses by itself.
 
@@ -20,7 +21,9 @@ nothing when numba is not installed.
 
 Other packages can add compiled engines of their own (see ``engines``):
 ``engine="auto"`` runs the one of highest priority, numba's being 0, on
-what ``unsupported`` allows.
+what ``unsupported`` allows: plain components. Age and block replacement
+are numba's own loop's (``unsupported(..., numba=True)``), so a system
+under them runs on numba, not on an engine of the interface's version.
 """
 
 import importlib.util
@@ -66,14 +69,26 @@ def require() -> None:
         )
 
 
-def unsupported(rbd, plan: _streams.Plan, capacity) -> Optional[str]:
-    """What in a run the compiled engine cannot simulate, or None."""
+def unsupported(
+    rbd,
+    plan: _streams.Plan,
+    capacity,
+    numba: bool = False,
+    states: Optional[dict] = None,
+) -> Optional[str]:
+    """What in a run a compiled engine cannot simulate, or None: an engine
+    of the interface's version (see ``engines``) simulates plain
+    components; with ``numba``, numba's own loop also simulates age and
+    block replacement (#155), from new (a run from the components'
+    ``states`` shifts their calendars)."""
     from repyability.non_repairable import NonRepairable
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     if capacity is not None:
         return "capacities"
     if any(kind == _streams.START for _, kind in plan.specs):
+        return "components started from a state"
+    if numba and states and rbd._preventive:
         return "components started from a state"
     if rbd._crews_limited():
         return "repair crews"
@@ -84,7 +99,11 @@ def unsupported(rbd, plan: _streams.Plan, capacity) -> Optional[str]:
     if rbd._imperfect:
         return "imperfect repair"
     if rbd._preventive:
-        return "scheduled preventive maintenance"
+        if not numba:
+            return "scheduled preventive maintenance"
+        reason = _unsupported_maintenance(rbd, plan)
+        if reason is not None:
+            return reason
     if rbd._inspection:
         return "inspections"
     for name, component in rbd.components.items():
@@ -101,30 +120,81 @@ def unsupported(rbd, plan: _streams.Plan, capacity) -> Optional[str]:
     return None
 
 
+def _unsupported_maintenance(rbd, plan: _streams.Plan) -> Optional[str]:
+    """What in a run's preventive maintenance numba's loop cannot simulate:
+    replacement on condition, and a maintenance time or preventive cost
+    whose draws cannot be streamed."""
+    for node, schedule in rbd._preventive.items():
+        if schedule.policy == "condition":
+            return "replacement on condition"
+        if (
+            schedule.duration is not None
+            and ((node,), _streams.DURATION) not in plan.specs
+        ):
+            return (
+                f"node {node!r}'s maintenance time (its draws cannot be "
+                "streamed)"
+            )
+        cost = rbd.costs.get(node, {}).get("preventive_cost")
+        kind = _streams.COST_KINDS["preventive_cost"]
+        if (
+            cost is not None
+            and not isinstance(cost, float)
+            and ((node,), kind) not in plan.specs
+        ):
+            return (
+                f"node {node!r}'s preventive cost (its draws cannot be "
+                "streamed)"
+            )
+    return None
+
+
 def compiled() -> bool:
     """Whether the compiled loop is ready in this process."""
     kernel = sys.modules.get("repyability.rbd._kernel")
     return kernel is not None and kernel.used()
 
 
-def preferred() -> Optional[str]:
+def preferred(numba_only: bool = False) -> Optional[str]:
     """The compiled engine ``engine="auto"`` runs: the usable engine of the
     highest priority among those other packages add (see ``engines``) and
-    numba (priority 0), or None."""
-    for engine in engines.by_priority(minimum=1):
-        return engine.name
+    numba (priority 0), or None. With ``numba_only``, numba if installed
+    (for a run only its own loop simulates; see ``unsupported``)."""
+    if not numba_only:
+        for engine in engines.by_priority(minimum=1):
+            return engine.name
     if available():
         return "numba"
-    for engine in engines.by_priority():
-        return engine.name
+    if not numba_only:
+        for engine in engines.by_priority():
+            return engine.name
     return None
 
 
-def worthwhile(plan: _streams.Plan, N: int) -> bool:
+def choice(
+    rbd, plan: _streams.Plan, capacity, states: Optional[dict] = None
+) -> tuple:
+    """The compiled engine ``engine="auto"`` would run a run on (see
+    ``preferred``), or None, and what keeps it in Python (None if
+    nothing does): an engine of the interface's version where it can
+    simulate the run, else numba's own loop where it can."""
+    reason = unsupported(rbd, plan, capacity)
+    if reason is None:
+        return preferred(), None
+    reason = unsupported(rbd, plan, capacity, numba=True, states=states)
+    if reason is None:
+        return preferred(numba_only=True), None
+    return None, reason
+
+
+def worthwhile(
+    plan: _streams.Plan, N: int, name: Optional[str] = None
+) -> bool:
     """Whether ``engine="auto"`` runs ``N`` simulations of ``plan``
-    compiled: when a compiled engine is installed and its loop is ready, or
-    the run is long enough to pay for loading it."""
-    name = preferred()
+    compiled, on ``name`` (by default the preferred engine): when it is
+    installed and its loop is ready, or the run is long enough to pay for
+    loading it."""
+    name = preferred() if name is None else name
     if name is None:
         return False
     draws = N * sum(
@@ -254,6 +324,35 @@ class _System:
                     rate[c] = node_costs["downtime_cost"]
             slot_end[c] = len(categories)
         self.has_costs = bool(rbd.has_costs)
+        #: Each component's preventive maintenance (#155), for numba's own
+        #: loop: its policy (0 none, 1 age, 2 block), its interval, the
+        #: stream of its maintenance times (-1 for maintenance in zero
+        #: time), and its preventive charge (the stream of its amounts, -1
+        #: for a fixed amount, -2 for none) and fixed amount. An engine of
+        #: the interface's version is given no system with any (see
+        #: ``unsupported``).
+        policy = np.zeros(n, np.int8)
+        interval = np.zeros(n)
+        duration = np.full(n, -1, np.int64)
+        charge = np.full(n, -2, np.int64)
+        amount = np.zeros(n)
+        for c, node in enumerate(nodes):
+            schedule = rbd._preventive.get(node)
+            if schedule is None or not active[c]:
+                continue
+            policy[c] = 1 if schedule.policy == "age" else 2
+            interval[c] = float(schedule.interval)
+            if schedule.duration is not None:
+                duration[c] = stream(((node,), _streams.DURATION))
+            cost = rbd.costs.get(node, {}).get("preventive_cost")
+            if isinstance(cost, float):
+                charge[c] = -1
+                amount[c] = cost
+            elif cost is not None:
+                charge[c] = stream(
+                    ((node,), _streams.COST_KINDS["preventive_cost"])
+                )
+        self.maintenance = (policy, interval, duration, charge, amount)
         initial_up = rbd.is_system_working(
             {node: bool(start[c]) for c, node in enumerate(nodes)}, method
         )
@@ -286,11 +385,17 @@ class _System:
         )
         self.n = n
         # Room for a simulation's system changes: two for each failure it
-        # is expected to have (a failure and the restoration after it).
+        # is expected to have (a failure and the restoration after it), and
+        # for each maintenance that takes time.
         self.room = (
             2
             * sum(
                 int(plan.specs[((node,), _streams.FAILURE)].rows)
+                + (
+                    int(plan.specs[((node,), _streams.DURATION)].rows)
+                    if duration[c] >= 0
+                    else 0
+                )
                 for c, node in enumerate(nodes)
                 if active[c]
             )
@@ -594,6 +699,7 @@ class Runner:
                     draws,
                     out,
                     min(todo.size, 4 * self._threads),
+                    self._model.maintenance,
                 )
             else:
                 kernel.run_serial(
@@ -605,6 +711,7 @@ class Runner:
                     self._model.kept,
                     draws,
                     out,
+                    self._model.maintenance,
                 )
             codes = status[todo - first]
             if np.any(codes < 0):

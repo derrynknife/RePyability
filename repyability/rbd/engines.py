@@ -26,9 +26,10 @@ An engine is an object with:
   object that runs simulations ``start`` to ``stop`` of the run when called
   with them, adding them to ``tally`` in order, and has a ``close()``. Its
   arguments are those ``_compiled.Runner`` takes, the run's own objects:
-  the engine runs what ``_compiled.unsupported`` allows, reading the
-  run's streams (``plan``), and must give the same results as the Python
-  engine to the last bit.
+  the engine runs what ``_compiled.unsupported`` allows (plain components;
+  what numba's own loop runs besides, such as age and block replacement,
+  goes to numba), reading the run's streams (``plan``), and must give the
+  same results as the Python engine to the last bit.
 
 The run's objects are RePyability's own, and change with it: :data:`API` is
 raised when they change in a way an engine must follow.
