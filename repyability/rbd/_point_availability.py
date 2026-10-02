@@ -1431,6 +1431,115 @@ class InspectionCurve:
         return times[(times >= start) & (times <= stop)]
 
 
+class PartialTestCurve:
+    """A unit with hidden failures, a constant failure ``rate``, and instant
+    tests and repair, from new, whose tests can miss a failure: tested in
+    full at ``offset`` (at 0, as new, with none) and at every ``per_full``
+    tests after it, and every ``interval`` in between by a test that finds
+    a failure with probability ``coverage`` (below 1). Up with probability
+    ``exp(-rate * x)`` before its first test, then ``rho ** k * exp(-rate *
+    u)``, ``k`` the tests since the last full one and ``u`` the time since
+    the last, ``rho = 1 - (1 - coverage) * (1 - exp(-rate * interval))``
+    (see ``RepairableRBD._tested_profile``). It repeats every full test's
+    interval from its first test."""
+
+    def __init__(
+        self,
+        rate: float,
+        interval: float,
+        offset: float,
+        coverage: float,
+        per_full: int,
+    ):
+        self.rate = rate
+        self.interval = interval
+        self.offset = float(offset)
+        self.coverage = coverage
+        self.per_full = per_full
+        self.period = interval * per_full
+        self.settle = self.offset
+        missed = (1.0 - coverage) * -np.expm1(-rate * interval)
+        #: log(rho).
+        self.kept = float(np.log1p(-missed))
+        #: The expected failures over a full test's cycle, all found by its
+        #: end: (1 - rho ** per_full) / (1 - coverage).
+        self.per_cycle = float(-np.expm1(per_full * self.kept)) / (
+            1.0 - coverage
+        )
+
+    def _position(self, x: np.ndarray):
+        """For times ``x`` from the first test on: the full tests' cycles
+        since it, the tests since the last full one, and the time since
+        the last test."""
+        since = x - self.offset
+        cycles = np.floor(since / self.period)
+        within = since - cycles * self.period
+        tests = np.clip(np.floor(within / self.interval), 0, self.per_full - 1)
+        return cycles, tests, within - tests * self.interval
+
+    def at(self, x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, dtype=float)
+        _, tests, since = self._position(np.maximum(x, self.offset))
+        later = np.exp(tests * self.kept - self.rate * since)
+        return np.where(x < self.offset, np.exp(-self.rate * x), later)
+
+    def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
+        """The unit's expected events before each time ``x`` (see
+        ``GridCurve.events``): its hidden failures (before the first test,
+        at most one, which it finds; then, between two tests, at most one
+        for a unit up after the first, ``rho ** j (1 - exp(-rate * u))``);
+        the tests; and the failures they find, each repaired then: a
+        failure in a cycle is found by its next test with probability
+        ``coverage``, else by the full test that ends the cycle, so the
+        ``j``-th test of a cycle finds ``coverage * rho ** (j - 1) * (1 -
+        exp(-rate * interval))`` and the full test the rest."""
+        x = np.asarray(x, dtype=float)
+        c = self.coverage
+        after = x > self.offset
+        head = -np.expm1(-self.rate * np.minimum(x, self.offset))
+        cycles, tests, since = self._position(np.maximum(x, self.offset))
+        # Up after the k-th test with probability rho ** k: the failures in
+        # its first k intervals, sum_j rho ** j (1 - e), are
+        # (1 - rho ** k) / (1 - c).
+        within = -np.expm1(tests * self.kept) / (1.0 - c) + np.exp(
+            tests * self.kept
+        ) * -np.expm1(-self.rate * since)
+        failures = head + np.where(
+            after, cycles * self.per_cycle + within, 0.0
+        )
+        later = multiples_before(x - self.offset, self.interval)
+        whole, rest = np.divmod(later, self.per_full)
+        found = whole * self.per_cycle + c * -np.expm1(rest * self.kept) / (
+            1.0 - c
+        )
+        corrective = np.where(after, head + found, 0.0)
+        inspections = later + (after if self.offset else 0.0)
+        return _events(
+            failures, corrective=corrective, inspections=inspections
+        )
+
+    def atoms(self, stop: float) -> Atoms:
+        """None: a test, in no time, takes nothing down."""
+        return Atoms.none()
+
+    def knots(self, start: float, stop: float) -> np.ndarray:
+        """The tests in ``[start, stop]``, and times between them close
+        enough (``rate`` times the gap at most 1/4) for quadrature to be
+        exact to rounding (before the first test too)."""
+        pieces = max(1, int(np.ceil(4.0 * self.rate * self.interval)))
+        first = int(np.floor((start - self.offset) / self.interval))
+        last = int(np.floor((stop - self.offset) / self.interval))
+        times = (
+            self.offset
+            + self.interval
+            * (
+                np.arange(first, last + 1)[:, None]
+                + np.arange(pieces)[None, :] / pieces
+            )
+        ).ravel()
+        return times[(times >= start) & (times <= stop)]
+
+
 class SteadyCurve:
     """A unit in its long-run state from 0 (a stationary start, for a unit
     long in service whose state is not known): up with its long-run

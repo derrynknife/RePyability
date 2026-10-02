@@ -52,6 +52,9 @@ AGED = 8
 #: The uniform a component started from a state (not new) draws what is
 #: left of its life, repair or maintenance from: one per simulation.
 START = 9
+#: The uniforms that decide whether a test that can miss a hidden failure
+#: (a coverage below 1) finds it: one per failure.
+TEST = 10
 #: The kind of each cost that can be a distribution, by its cost key.
 COST_KINDS = {
     "repair_cost": 3,

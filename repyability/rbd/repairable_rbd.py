@@ -65,6 +65,7 @@ from repyability.rbd._point_availability import (
     BlockCurve,
     First,
     InspectionCurve,
+    PartialTestCurve,
     ShiftedCurve,
     StartedBlockCurve,
     SteadyCurve,
@@ -192,15 +193,25 @@ class _StreamedComponent:
         "_duration",
         "_model",
         "_start",
+        "_test",
     )
 
-    def __init__(self, failure, repair, duration=None, model=None, start=None):
+    def __init__(
+        self,
+        failure,
+        repair,
+        duration=None,
+        model=None,
+        start=None,
+        test=None,
+    ):
         self._failure = failure
         self._repair = repair
         self._fails_next = True
         self._duration = duration
         self._model = model
         self._start = start
+        self._test = test
 
     def reset(self):
         self._fails_next = True
@@ -217,6 +228,13 @@ class _StreamedComponent:
         global RNG."""
         if self._start is not None:
             return self._start.draw()
+        return float(np.random.random())
+
+    def test_uniform(self) -> float:
+        """The uniform that decides whether a test that can miss a failure
+        finds it: from its ``TEST`` stream, or numpy's global RNG."""
+        if self._test is not None:
+            return self._test.draw()
         return float(np.random.random())
 
     def life_drawn(self) -> None:
@@ -310,8 +328,9 @@ class _ImperfectComponent(_StreamedComponent):
         aged=None,
         duration=None,
         model=None,
+        test=None,
     ):
-        super().__init__(failure, repair, duration, model)
+        super().__init__(failure, repair, duration, model, test=test)
         self._unit = unit
         self._aged = aged
         self._q = imperfect.q
@@ -401,6 +420,7 @@ def _stand_in(
             run.stream(path, _streams.AGED),
             run.stream(path, _streams.DURATION),
             duration,
+            run.stream(path, _streams.TEST),
         )
     if failure is None or repair is None:
         return component
@@ -410,6 +430,7 @@ def _stand_in(
         run.stream(path, _streams.DURATION),
         duration,
         run.stream(path, _streams.START),
+        run.stream(path, _streams.TEST),
     )
 
 
@@ -1482,6 +1503,10 @@ class Event:
         working node, or the end of a test that took time; with ``status``
         False it starts such a test (a planned outage) or, if the node has
         failed, finds the failure, and the repair starts.
+    missed : bool
+        True for an inspection of a failed node that does not find the
+        failure (a test whose coverage is below 1), by default False: the
+        node stays down until a full test finds it.
 
     Examples
     --------
@@ -1495,6 +1520,7 @@ class Event:
     status: bool = field(compare=False)
     preventive: bool = field(default=False, compare=False)
     inspection: bool = field(default=False, compare=False)
+    missed: bool = field(default=False, compare=False)
 
 
 class _Preventive(NamedTuple):
@@ -1571,24 +1597,74 @@ def _failures_between(model, ages: np.ndarray) -> np.ndarray:
 
 class _Inspection(NamedTuple):
     """A node's periodic inspection, which is what finds its (hidden)
-    failures: at every multiple of ``interval``, taking a time drawn from
-    ``duration`` (None: no time)."""
+    failures: at ``offset`` and every ``interval`` after it (at every
+    multiple of ``interval`` with no offset), taking a time drawn from
+    ``duration`` (None: no time). A test finds a failure with probability
+    ``coverage``; the tests at ``offset`` and every ``full_test`` after it
+    (a whole multiple of ``interval``) find every failure, and with a
+    ``coverage`` of 1 every test does."""
 
     interval: float
     duration: Any
+    offset: float = 0.0
+    coverage: float = 1.0
+    full_test: Optional[float] = None
+
+    @property
+    def partial(self) -> bool:
+        """Whether its tests can miss a failure (a coverage below 1)."""
+        return self.coverage < 1.0
+
+    @property
+    def period(self) -> float:
+        """The time after which its tests repeat: its full tests' interval
+        when its tests can miss a failure, else its interval."""
+        if self.partial and self.full_test is not None:
+            return self.full_test
+        return self.interval
+
+    @property
+    def per_full_test(self) -> int:
+        """Its tests from one full test to the next."""
+        return int(round(self.period / self.interval))
 
     def due(self, t: float) -> float:
         """The first inspection after ``t``."""
-        k = np.floor(t / self.interval) + 1.0
-        due = float(k * self.interval)
-        return due if due > t else float((k + 1.0) * self.interval)
+        if not self.offset:
+            k = np.floor(t / self.interval) + 1.0
+            due = float(k * self.interval)
+            return due if due > t else float((k + 1.0) * self.interval)
+        k = np.floor((t - self.offset) / self.interval) + 1.0
+        due = float(self.offset + k * self.interval)
+        if due > t:
+            return due
+        return float(self.offset + (k + 1.0) * self.interval)
 
     def finds(self, t: float) -> float:
         """The inspection that finds a failure at ``t``: the first at or
         after it."""
-        k = np.ceil(t / self.interval)
-        due = float(k * self.interval)
-        return due if due >= t else float((k + 1.0) * self.interval)
+        if not self.offset:
+            k = np.ceil(t / self.interval)
+            due = float(k * self.interval)
+            return due if due >= t else float((k + 1.0) * self.interval)
+        k = np.ceil((t - self.offset) / self.interval)
+        due = float(self.offset + k * self.interval)
+        if due >= t:
+            return due
+        return float(self.offset + (k + 1.0) * self.interval)
+
+    def is_full(self, t: float) -> bool:
+        """Whether the test at ``t`` (one of its tests) finds every
+        failure."""
+        if not self.partial:
+            return True
+        k = int(round((t - self.offset) / self.interval))
+        return k % self.per_full_test == 0
+
+    def without_offset(self) -> "_Inspection":
+        """The schedule on a calendar from 0 (a start from a state, whose
+        phase places it)."""
+        return self._replace(offset=0.0) if self.offset else self
 
 
 class _Standby(NamedTuple):
@@ -1945,6 +2021,44 @@ def _failed_by(component: NonRepairable, age: float, survives: float) -> float:
     if component.model_parameterization == "non-parametric":
         return 1.0 - survives
     return float(np.ravel(component.reliability.ff(age))[0])
+
+
+def _log_kept(rate: float, inspection: "_Inspection") -> float:
+    """``log(rho)``, ``rho = 1 - (1 - c) (1 - exp(-rate * interval))``: the
+    chance that a unit with hidden failures, up after a test, is up after
+    the next one or had its failure found by it (a coverage ``c``)."""
+    missed = (1.0 - inspection.coverage) * -math.expm1(
+        -rate * inspection.interval
+    )
+    return math.log1p(-missed)
+
+
+def _tests_in(inspection: "_Inspection", period: float) -> list:
+    """The times of an inspection's tests in ``[0, period)`` that are not
+    multiples of its interval (those of a schedule with an offset), on a
+    calendar that repeats every ``period``."""
+    if not inspection.offset:
+        return []
+    count = int(round(period / inspection.interval))
+    times = inspection.offset + inspection.interval * np.arange(count)
+    return list(np.where(times >= period, times - period, times))
+
+
+def _test_finds(source, coverage: float) -> bool:
+    """Whether a test that finds a failure with probability ``coverage``
+    finds one: from the component's detection stream, or numpy's global
+    RNG."""
+    if isinstance(source, _StreamedComponent):
+        return source.test_uniform() < coverage
+    return float(np.random.random()) < coverage
+
+
+def _number_or_nan(value) -> float:
+    """``value`` as a float, or nan if it is not a number."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float("nan")
 
 
 def _common_period(intervals: Iterable[float]) -> float:
@@ -2881,7 +2995,14 @@ class RepairableRBD(RBD):
     #: The keys of a maintenance group's options.
     GROUP_KEYS = ("setup_cost", "system_down")
     #: The keys of a component's ``"inspection"`` spec.
-    INSPECTION_KEYS = ("interval", "duration", "cost")
+    INSPECTION_KEYS = (
+        "interval",
+        "duration",
+        "cost",
+        "offset",
+        "coverage",
+        "full_test",
+    )
     #: The keys of a component's ``"standby"`` spec.
     STANDBY_KEYS = ("units", "k", "dormancy_factor", "switching_probability")
     #: The costs charged per action (per failure, per preventive
@@ -3522,7 +3643,46 @@ class RepairableRBD(RBD):
             cost = cls._validate_component_cost(node, "inspection_cost", cost)
             if isinstance(cost, float) and cost == 0.0:
                 cost = None
-        return _Inspection(interval, duration), cost
+        offset = _number_or_nan(spec.get("offset", 0.0))
+        if not 0.0 <= offset < interval:
+            raise ValueError(
+                f"Component {node!r}: the inspection offset, the time of its "
+                "first test, must be at least 0 and less than its interval, "
+                f"{interval:g}, got {spec['offset']!r}."
+            )
+        coverage = _number_or_nan(spec.get("coverage", 1.0))
+        if not 0.0 <= coverage <= 1.0:
+            raise ValueError(
+                f"Component {node!r}: the inspection coverage, the chance "
+                "that a test finds a failure, must be from 0 to 1, got "
+                f"{spec['coverage']!r}."
+            )
+        full_test = spec.get("full_test")
+        if full_test is not None:
+            given = full_test
+            full_test = _number_or_nan(full_test)
+            count = full_test / interval
+            if not (
+                np.isfinite(count)
+                and round(count) >= 1
+                and abs(count - round(count)) <= 1e-9 * count
+            ):
+                raise ValueError(
+                    f"Component {node!r}: the full_test interval must be a "
+                    f"whole multiple of its inspection interval, {interval:g} "
+                    f"(every so many tests is a full one), got {given!r}."
+                )
+            full_test = round(count) * interval
+        elif coverage < 1.0:
+            raise ValueError(
+                f"Component {node!r}: with a coverage below 1, the failures "
+                "its tests miss are found only by a full test: give its "
+                "full_test interval, a whole multiple of its inspection "
+                "interval (the mission time, say, after which it is "
+                "renewed)."
+            )
+        schedule = _Inspection(interval, duration, offset, coverage, full_test)
+        return schedule, cost
 
     @classmethod
     def _validate_cost(cls, node, key: str, value) -> float:
@@ -3664,6 +3824,11 @@ class RepairableRBD(RBD):
             if name in self._imperfect:
                 # A life after each repair, given the unit's virtual age.
                 add(path, _streams.AGED, _uniforms, expected["repair"])
+            inspection = self._inspection.get(name)
+            if inspection is not None and inspection.partial:
+                # Whether a test finds each failure: one for each failure
+                # a test can miss.
+                add(path, _streams.TEST, _uniforms, expected["failure"])
             duration = self._duration_model(name)
             if duration is not None:
                 sampler = inverse_sampler(duration)
@@ -5561,8 +5726,12 @@ class RepairableRBD(RBD):
         if inspection:
             plan._inspection = dict(self._inspection)
             for node, interval in inspection.items():
-                plan._inspection[node] = self._inspection[node]._replace(
-                    interval=float(interval)
+                schedule = self._inspection[node]
+                # An offset keeps its share of the interval (a pair tested
+                # half an interval apart stays so).
+                share = schedule.offset / schedule.interval
+                plan._inspection[node] = schedule._replace(
+                    interval=float(interval), offset=share * float(interval)
                 )
         return plan
 
@@ -5908,15 +6077,25 @@ class RepairableRBD(RBD):
                     "No component has hidden failures: give the components "
                     "an 'inspection' schedule to have its interval chosen."
                 )
-            return list(self._inspection)
-        chosen = list(nodes)
-        if not chosen:
-            raise ValueError("nodes is empty.")
+            chosen = list(self._inspection)
+        else:
+            chosen = list(nodes)
+            if not chosen:
+                raise ValueError("nodes is empty.")
+            for node in chosen:
+                if node not in self._inspection:
+                    raise ValueError(
+                        f"Node {node!r} has no hidden failures: give it an "
+                        "'inspection' schedule to have its interval chosen."
+                    )
         for node in chosen:
-            if node not in self._inspection:
-                raise ValueError(
-                    f"Node {node!r} has no hidden failures: give it an "
-                    "'inspection' schedule to have its interval chosen."
+            if self._inspection[node].partial:
+                raise NotImplementedError(
+                    f"Component {node!r}'s tests can miss a failure (a "
+                    "coverage below 1), and its interval must divide its "
+                    "full tests' interval, so it is not chosen here: "
+                    "compare the intervals that do with mean_availability "
+                    "and expected_cost_rate."
                 )
         return chosen
 
@@ -6080,7 +6259,16 @@ class RepairableRBD(RBD):
         self._phases: dict = {
             node: start.phase
             for node, start in states.items()
-            if isinstance(start, NodeState) and start.phase
+            if isinstance(start, NodeState)
+            and (
+                start.phase
+                or (
+                    # On a calendar from 0, not at its offset.
+                    start.phase is not None
+                    and node in self._inspection
+                    and self._inspection[node].offset
+                )
+            )
         }
 
         # Keep record of component status', initially they're all working
@@ -6263,8 +6451,11 @@ class RepairableRBD(RBD):
         a state, by its phase, so that the last action fell that long
         before 0."""
         phase = self._phases.get(node) if self._phases else None
-        if not phase:
+        if phase is None:
             return schedule.due(t)
+        if isinstance(schedule, _Inspection):
+            # The phase places the calendar: no offset.
+            schedule = schedule.without_offset()
         due = schedule.due(t + phase) - phase
         return due if due > t else due + schedule.interval
 
@@ -6272,8 +6463,9 @@ class RepairableRBD(RBD):
         """The test that finds a failure at ``t``, on ``node``'s calendar
         (see ``_due``): the first at or after it, and not before 0."""
         phase = self._phases.get(node) if self._phases else None
-        if not phase:
+        if phase is None:
             return inspection.finds(t)
+        inspection = inspection.without_offset()
         found = inspection.finds(t + phase) - phase
         if found < t or found < 0.0:
             found += inspection.interval
@@ -8100,6 +8292,25 @@ class RepairableRBD(RBD):
                 self._no_standby_curve(node)
             elif node in self._inspection:
                 rate, interval = self._inspected_rate(node)
+                inspection = self._inspection[node]
+                if inspection.partial:
+                    # From new (its state is not taken: see _check_state).
+                    curves[node] = PartialTestCurve(
+                        rate,
+                        interval,
+                        inspection.offset,
+                        inspection.coverage,
+                        inspection.per_full_test,
+                    )
+                    continue
+                if start is None and inspection.offset:
+                    # New at 0, first tested at the offset: on a calendar
+                    # whose last test was interval - offset before 0, last
+                    # known up at 0.
+                    curves[node] = InspectionCurve(
+                        rate, interval, interval - inspection.offset, 0.0
+                    )
+                    continue
                 if start is not None and not start.alive:
                     raise NotImplementedError(
                         f"Component {node!r} has hidden failures, repaired "
@@ -8194,6 +8405,17 @@ class RepairableRBD(RBD):
         taken."""
         schedule = self._preventive.get(node)
         inspection = self._inspection.get(node)
+        if (
+            inspection is not None
+            and inspection.partial
+            and (state.phase is not None or not state.new)
+        ):
+            raise NotImplementedError(
+                f"Component {node!r}'s tests can miss a failure (a coverage "
+                "below 1): its state (how long since its last full test, "
+                "and whether a failure its tests missed is waiting) is not "
+                "taken: leave it out (new)."
+            )
         interval = None
         if inspection is not None:
             interval = inspection.interval
@@ -9583,10 +9805,26 @@ class RepairableRBD(RBD):
             if event.status:
                 # Repaired: as new, from t.
                 return self._inspected_renewal(node, t, source, inspection)
-            # Failed, unseen: found by the first inspection at or after t.
+            # Failed, unseen: found by the first inspection at or after t,
+            # unless that one can miss it and does.
             self._pending_failure[node] = None
             found = self._finds(node, inspection, t)
+            if not inspection.is_full(found) and not _test_finds(
+                source, inspection.coverage
+            ):
+                return Event(found, node, False, inspection=True, missed=True)
             return Event(found, node, False, inspection=True)
+        if event.missed:
+            # A test that missed the failure: the next test misses it too,
+            # unless it is a full test.
+            due = self._due(node, inspection, t)
+            return Event(
+                due,
+                node,
+                False,
+                inspection=True,
+                missed=not inspection.is_full(due),
+            )
         if event.status:
             # Tested in zero time, or back from a test: working, with its
             # failure still ahead of it.
@@ -10892,7 +11130,7 @@ class RepairableRBD(RBD):
                         rep_cost += stop(member_group[node], event.time, node)
                 else:
                     rep_cost += pay(node, 3, inspection_charges.get(node))
-                    if not event.status:
+                    if not event.status and not event.missed:
                         rep_cost += corrective(node, index[node])
                 follow = self._follow_up(event, sources[node])
                 next_event: Optional[Event] = (
@@ -11443,6 +11681,16 @@ class RepairableRBD(RBD):
             return self._standby_long_run(node).availability
         if node in self._inspection:
             rate, interval = self._inspected_rate(node)
+            inspection = self._inspection[node]
+            if inspection.partial:
+                # Up with probability rho ** k * exp(-rate * u) (see
+                # _tested_profile): averaged over a full test's cycle,
+                # (1 - rho ** m) / ((1 - coverage) * rate * full_test).
+                kept = _log_kept(rate, inspection)
+                return float(
+                    -np.expm1(inspection.per_full_test * kept)
+                    / ((1.0 - inspection.coverage) * rate * inspection.period)
+                )
             return float(-np.expm1(-rate * interval) / (rate * interval))
         schedule = self._preventive.get(node)
         if schedule is None:
@@ -11753,10 +12001,13 @@ class RepairableRBD(RBD):
         intervals |= {
             self._inspection[node].interval for node in self._inspection
         }
-        period = _common_period(intervals)
+        schedules = list(self._inspection.values())
+        period = _common_period(intervals | {s.period for s in schedules})
         pieces = [np.array([0.0, period])]
         for interval in intervals:
             pieces.append(interval * np.arange(int(round(period / interval))))
+        for schedule in schedules:
+            pieces.append(np.array(sorted(_tests_in(schedule, period))))
         for node in blocks:
             phase = self._block_cycle(node).phase
             repeats = int(round(period / phase[-1]))
@@ -11815,7 +12066,7 @@ class RepairableRBD(RBD):
             return 0.0
         intervals = {self._preventive[node].interval for node in blocks}
         intervals |= {
-            self._inspection[node].interval for node in self._inspection
+            self._inspection[node].period for node in self._inspection
         }
         period = _common_period(intervals)
         due: dict = {}
@@ -11888,11 +12139,14 @@ class RepairableRBD(RBD):
             return np.zeros(1), np.ones(1)
         rates = {node: self._inspected_rate(node) for node in self._inspection}
         intervals = {interval for _, interval in rates.values()}
-        period = _common_period(intervals)
+        schedules = list(self._inspection.values())
+        period = _common_period(intervals | {s.period for s in schedules})
         breaks = {0.0, period}
         for interval in intervals:
             count = int(round(period / interval))
             breaks.update(k * interval for k in range(1, count))
+        for schedule in schedules:
+            breaks.update(_tests_in(schedule, period))
         edges = np.array(sorted(breaks))
         fastest = max(rate for rate, _ in rates.values())
         points, weights = np.polynomial.legendre.leggauss(16)
@@ -11907,6 +12161,36 @@ class RepairableRBD(RBD):
                 masses.append(half * weights)
         return np.concatenate(times), np.concatenate(masses) / period
 
+    def _tested_profile(
+        self, node, times: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """A component with hidden failures: its probabilities of being up
+        and down at each of ``times``, in the long run.
+
+        Tested at ``offset`` and every ``interval`` after it, it is up with
+        probability ``exp(-rate * u)``, ``u`` the time since its last test.
+        A test that can miss a failure (a ``coverage`` ``c`` below 1) finds
+        what it can: up just after the ``k``-th test since a full one with
+        probability ``rho ** k``, where ``rho = 1 - (1 - c) * (1 -
+        exp(-rate * interval))`` keeps the units that were up or whose
+        failure it found; so up with probability ``rho ** k * exp(-rate *
+        u)``. Down is worked out in its own right, by ``expm1``."""
+        rate, interval = self._inspected_rate(node)
+        inspection = self._inspection[node]
+        position = times - inspection.offset if inspection.offset else times
+        if not inspection.partial:
+            since = position - interval * np.floor(position / interval)
+            return np.exp(-rate * since), -np.expm1(-rate * since)
+        cycle = inspection.period
+        within = position - cycle * np.floor(position / cycle)
+        tests = np.clip(
+            np.floor(within / interval), 0, inspection.per_full_test - 1
+        )
+        exponent = tests * _log_kept(rate, inspection) - rate * (
+            within - tests * interval
+        )
+        return np.exp(exponent), -np.expm1(exponent)
+
     def _availabilities_at(self, times: np.ndarray) -> dict:
         """Every node's availability at each of ``times`` (see
         ``_long_run_grid``): ``exp(-lambda * u)``, ``u`` the time since the
@@ -11916,9 +12200,7 @@ class RepairableRBD(RBD):
         blocks = set(self._block_nodes())
         for node in self.components:
             if node in self._inspection:
-                rate, interval = self._inspected_rate(node)
-                since = times - interval * np.floor(times / interval)
-                out[node] = np.exp(-rate * since)
+                out[node] = self._tested_profile(node, times)[0]
             elif node in blocks:
                 out[node] = self._block_profile(node, times)
             else:
@@ -11940,9 +12222,7 @@ class RepairableRBD(RBD):
         blocks = set(self._block_nodes())
         for node in self.components:
             if node in self._inspection:
-                rate, interval = self._inspected_rate(node)
-                since = times - interval * np.floor(times / interval)
-                out[node] = -np.expm1(-rate * since)
+                out[node] = self._tested_profile(node, times)[1]
             elif node in blocks:
                 out[node] = 1.0 - self._block_profile(node, times)
             else:
@@ -12062,6 +12342,9 @@ class RepairableRBD(RBD):
             # At most one failure per inspection interval: the unit, down
             # from its failure, is renewed at the inspection that finds it.
             rate, interval = self._inspected_rate(node)
+            if self._inspection[node].partial:
+                # It fails at its constant rate while it is up.
+                return rate * self._node_availability(node), 0.0, 0.0
             return float(-np.expm1(-rate * interval) / interval), 0.0, 0.0
         schedule = self._preventive.get(node)
         if schedule is None:

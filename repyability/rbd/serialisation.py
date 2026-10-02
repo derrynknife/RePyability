@@ -268,6 +268,11 @@ def _serialise_schedule(spec: dict) -> dict:
         out["threshold"] = float(spec["threshold"])
     if spec.get("opportunity") is not None:
         out["opportunity"] = float(spec["opportunity"])
+    # An inspection's offset, coverage and full tests, when given (so a
+    # file without them is unchanged).
+    for key in ("offset", "coverage", "full_test"):
+        if spec.get(key) is not None:
+            out[key] = float(spec[key])
     duration = spec.get("duration", "instant")
     out["duration"] = (
         "instant" if isinstance(duration, str) else serialise_model(duration)
