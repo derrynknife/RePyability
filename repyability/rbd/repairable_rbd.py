@@ -4760,13 +4760,12 @@ class RepairableRBD(RBD):
                 )
         return chosen
 
-    def _replacements(
-        self, node, long_run: bool = False
-    ) -> "_spares.Replacements":
+    def _replacements(self, node, long_run: bool = False):
         """What a component's replacements follow, for counting them
-        exactly (see ``_spares``); raise if they are not counted exactly.
-        ``long_run``: for the counts in a lead time, which need a demand
-        that goes on."""
+        exactly (see ``_spares``): a renewal process, a block schedule's
+        (``_spares.Block``) or a test lattice's (``_spares.Tested``); raise
+        if they are not counted exactly. ``long_run``: for the counts in a
+        lead time, which need a demand that goes on."""
         simulate = (
             "count its spares by simulation: spares_demand(method='simulate')."
         )
@@ -4776,15 +4775,24 @@ class RepairableRBD(RBD):
                 f"failures depend on each other: {simulate}"
             )
         if node in self._inspection:
-            raise NotImplementedError(
-                f"Component {node!r}'s failures are found by inspection: "
-                f"{simulate}"
-            )
+            return self._tested_replacements(node, simulate)
         schedule = self._preventive.get(node)
         if schedule is not None and schedule.policy == "block":
-            raise NotImplementedError(
-                f"Component {node!r} is replaced on a block schedule, whose "
-                f"replacements do not renew it: {simulate}"
+            if long_run:
+                raise NotImplementedError(
+                    f"Component {node!r} is replaced on a block schedule: "
+                    "its demand in a lead time depends on where the lead "
+                    "time falls in the block interval, which the stock "
+                    "levels do not take yet (#160). spares_demand counts "
+                    "its spares over a horizon."
+                )
+            component = self.components[node]
+            duration = schedule.duration
+            return _spares.Block(
+                _cdf(component.reliability),
+                _cdf(component.time_to_replace),
+                None if duration is None else _cdf(duration),
+                float(schedule.interval),
             )
         if schedule is not None and schedule.policy == "condition":
             raise NotImplementedError(
@@ -4830,6 +4838,49 @@ class RepairableRBD(RBD):
             mean_cycle,
         )
 
+    def _tested_replacements(self, node, simulate: str) -> "_spares.Tested":
+        """A component with hidden failures: its replacements fall on its
+        tests, as tested and repaired in no time with tests that find every
+        failure (see ``_spares.Tested``); raise otherwise."""
+        inspection = self._inspection[node]
+        component = self.components[node]
+        if (
+            inspection.duration is not None
+            or model_mean(component.time_to_replace) != 0.0
+            or inspection.partial
+        ):
+            raise NotImplementedError(
+                f"Component {node!r}'s failures are found by tests: its "
+                "spares are counted exactly only when its tests and repairs "
+                "take no time and its tests find every failure (#159): "
+                f"{simulate}"
+            )
+        life = self._tested_life(node) or TestedLife(
+            component.reliability, inspection.interval
+        )
+        cycle = np.where(
+            life.down[:-1] <= 0.5,
+            np.diff(life.down),
+            life.up[:-1] - life.up[1:],
+        )
+        model = component.reliability
+        first = float(inspection.offset or inspection.interval)
+        interval = float(inspection.interval)
+
+        def found(tests: int) -> np.ndarray:
+            # The unit new at 0 fails before the first test, or between two.
+            times = first + interval * np.arange(tests)
+            failed = np.clip(_cdf(model)(times), 0.0, 1.0)
+            survive = np.clip(_sf_values(model.sf, times), 0.0, 1.0)
+            before = np.concatenate([[0.0], failed[:-1]])
+            alive = np.concatenate([[1.0], survive[:-1]])
+            return np.maximum(
+                np.where(before <= 0.5, failed - before, alive - survive),
+                0.0,
+            )
+
+        return _spares.Tested(first, interval, found, np.maximum(cycle, 0.0))
+
     def spares_demand(
         self,
         horizon: float,
@@ -4854,12 +4905,17 @@ class RepairableRBD(RBD):
         sum falling before it (a replacement at the horizon itself falls
         after it, as in the simulation). ``method="exact"`` works that out
         on a grid, to about 1e-6, for components with corrective repair
-        alone or under age replacement; a fleet's is the sum of its
+        alone or under age replacement. Under block replacement, a unit's
+        next replacement is at its failure or at the next block time,
+        whichever comes first (a unit down then skips it), counted block
+        interval by block interval on the grid. With hidden failures
+        tested and repaired in no time, the replacements fall on the tests,
+        and are counted there exactly. A fleet's count is the sum of its
         systems', independent and each from new. ``method="simulate"``
         counts them in ``mc_samples`` simulations of the whole system
-        instead, which also covers block replacement, hidden failures,
-        standby groups and repair crews. With constant failure rates and
-        instant repair, the counts are Poisson.
+        instead, which also covers standby groups, repair crews and tests
+        that take time. With constant failure rates and instant repair,
+        the counts are Poisson.
 
         Parameters
         ----------
@@ -4892,11 +4948,11 @@ class RepairableRBD(RBD):
             whole number of at least 1, ``method`` is unknown, or ``nodes``
             names a node that is not a component, or a nested RBD.
         NotImplementedError
-            With ``method="exact"``, for a component under block
-            replacement, with hidden failures or a standby group, or while
-            a component can wait for a repair crew (see ``repair_crews``),
-            or if more than 2,000 replacements are likely: count them by
-            simulation.
+            With ``method="exact"``, for a standby group, a component with
+            hidden failures whose tests or repairs take time or whose tests
+            can miss a failure, or while a component can wait for a repair
+            crew (see ``repair_crews``), or if more than 2,000 replacements
+            are likely: count them by simulation.
 
         Examples
         --------
@@ -4990,7 +5046,11 @@ class RepairableRBD(RBD):
         from a random time, and the fill rate that of fewer than ``S`` in
         the lead time before a replacement. For a fleet, the systems'
         demands add up. Worked out on a grid, to about 1e-6, for components
-        with corrective repair alone or under age replacement.
+        with corrective repair alone or under age replacement; and exactly,
+        on its tests, for a component with hidden failures tested and
+        repaired in no time (from a random time, the next replacement is
+        ``j`` tests on with probability ``R((j - 1) T) / S``, ``S`` the
+        mean cycle in tests).
 
         Parameters
         ----------
@@ -5021,10 +5081,11 @@ class RepairableRBD(RBD):
             number of at least 1, or ``nodes`` names a node that is not a
             component, or a nested RBD.
         NotImplementedError
-            For a component under block replacement, with hidden failures,
-            a standby group or a life that may never end, or while a
-            component can wait for a repair crew, or if more than 2,000
-            replacements are likely in a lead time.
+            For a component under block replacement (#160), with hidden
+            failures whose tests or repairs take time or whose tests can
+            miss a failure, a standby group or a life that may never end,
+            or while a component can wait for a repair crew, or if more
+            than 2,000 replacements are likely in a lead time.
 
         Examples
         --------
@@ -7214,7 +7275,9 @@ class RepairableRBD(RBD):
                 else r.AnalysisRoute(
                     r.NUMERICAL,
                     "Each component's replacements, a renewal process, "
-                    "counted on a grid (to about 1e-6).",
+                    "counted on a grid (to about 1e-6): under block "
+                    "replacement, from one block interval to the next; with "
+                    "hidden failures, exactly, on its tests.",
                 )
             )
         streamed = self._stream_plan(1.0, 0, False)[1]

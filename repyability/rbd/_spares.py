@@ -30,6 +30,24 @@ a grid point and up to the next. The mean of the two, from a grid point, is the
 probability half a step later to second order, and is read off half a step
 earlier than the time wanted. The grid is refined until the probabilities move
 less than ``TOLERANCE``.
+
+Two kinds of component are counted otherwise (#147):
+
+- **Under block replacement every ``T``** (``Block``), a unit up at a block
+  time is replaced there, and one down then (being repaired or replaced)
+  is not. So a new unit's next replacement is at its failure, if that comes
+  before the next block time, and at the block time otherwise. The
+  distribution of each replacement's time follows from the one before,
+  block interval by block interval, on the grid with the block times on it;
+  a repair or replacement still going on at a block time carries the next
+  unit's start past it, as it does in the simulation.
+- **With hidden failures, tested and renewed in no time** (``Tested``), a
+  unit is replaced at the test that finds it failed, so the replacements
+  fall on the tests, and their count is that of a discrete renewal process
+  on them: exactly, with no grid. In a lead time from a random time, the
+  next replacement is ``j`` tests on with probability ``R((j - 1) T) / S``
+  (``S`` the mean cycle, in tests); and before a replacement, the ones
+  before it are whole cycles back.
 """
 
 import math
@@ -62,6 +80,30 @@ class Replacements(NamedTuple):
     maintenance: Optional[Cdf]
     age: float
     mean_cycle: float
+
+
+class Block(NamedTuple):
+    """What a component under block replacement replaces on: the CDFs of
+    its life, its repair time and its block replacement's duration (None
+    for one in no time), and its block interval."""
+
+    life: Cdf
+    repair: Cdf
+    maintenance: Optional[Cdf]
+    interval: float
+
+
+class Tested(NamedTuple):
+    """What a component with hidden failures, tested and renewed in no
+    time, replaces on: its tests, at ``first`` and every ``interval`` after;
+    ``found(n)``, the chances that the unit in service at 0 is found failed
+    at each of the first ``n`` tests; and ``cycle``, the chances that a unit
+    renewed at a test is found failed ``1, 2, ...`` tests later."""
+
+    first: float
+    interval: float
+    found: Callable[[int], np.ndarray]
+    cycle: np.ndarray
 
 
 class _Dist(NamedTuple):
@@ -152,11 +194,13 @@ class _Grid:
     def at_most(self, up: _Dist, down: _Dist) -> float:
         """``P(X < end)`` from ``X`` rounded up and down: its atoms before
         the end (one at the end itself falls after it, as in the
-        simulation), and the mean of its roundings' continuous parts, which
-        from a grid point is the probability half a step later, read half
-        a step before the end."""
+        simulation; the mean of the two roundings', which differ where an
+        atom's mass depends on what was rounded, as at a block time), and
+        the mean of its roundings' continuous parts, which from a grid
+        point is the probability half a step later, read half a step
+        before the end."""
         reach = int(math.ceil(self.end / self.step * (1.0 - 1e-12) - 1e-9))
-        atoms = float(up.atoms[:reach].sum())
+        atoms = 0.5 * float(up.atoms[:reach].sum() + down.atoms[:reach].sum())
         cumulative = 0.5 * (np.cumsum(up.rest) + np.cumsum(down.rest))
         position = self.end / self.step - 0.5
         if position < 0.0:
@@ -283,10 +327,190 @@ def _count_tails(
     return np.array([first] + _tails(grid, tuple(afters), cycles))
 
 
-def count(model: Replacements, end: float, kind: str) -> np.ndarray:
+def _block_step(
+    start: _Dist,
+    before: np.ndarray,
+    life: _Dist,
+    period: Optional[int],
+    up: bool,
+) -> Tuple[_Dist, _Dist]:
+    """From the distribution of a new unit's start (on the grid), that of
+    its replacement: at its failure, if that comes before the next block
+    time (every ``period`` grid steps), and otherwise at that block time
+    (an atom there). Rounded up, a failure on the block time itself came
+    before it; rounded down, after it. ``before`` holds units put into
+    service on a block time but just before it (rounded up onto it), which
+    are replaced there unless dead on arrival."""
+    size = len(start.rest)
+    failed = _Dist(np.zeros(size), np.zeros(size))
+    blocks = np.zeros(size)
+    if period is None or period >= size:
+        return _sum(start, life), _Dist(np.zeros(size), blocks)
+    width = period + 1
+    cut = _Dist(life.rest[:width], life.atoms[:width])
+    dead = float(life.atoms[0])
+    for lo in range(0, size, period):
+        hi = lo + period
+        if hi < size and before[hi]:
+            failed.atoms[hi] += before[hi] * dead
+            blocks[hi] += before[hi] * (1.0 - dead)
+        rest, atoms = start.rest[lo:hi], start.atoms[lo:hi]
+        if not (rest.any() or atoms.any()):
+            continue
+        part = _Dist(
+            np.pad(rest, (0, width - len(rest))),
+            np.pad(atoms, (0, width - len(atoms))),
+        )
+        out = _sum(part, cut)
+        keep = width if up else width - 1
+        stop = min(lo + keep, size)
+        failed.rest[lo:stop] += out.rest[: stop - lo]
+        failed.atoms[lo:stop] += out.atoms[: stop - lo]
+        survive = float(rest.sum() + atoms.sum()) - float(
+            out.rest[: stop - lo].sum() + out.atoms[: stop - lo].sum()
+        )
+        if hi < size:
+            blocks[hi] += max(survive, 0.0)
+    return failed, _Dist(np.zeros(size), blocks)
+
+
+def _block_starts(
+    failed: _Dist,
+    blocks: _Dist,
+    repair: _Dist,
+    maintenance: _Dist,
+    period: Optional[int],
+    up: bool,
+) -> Tuple[_Dist, np.ndarray]:
+    """The next units' starts: after each failure's repair and each block
+    replacement's. Rounded up, a start on a block time is before it (its
+    true time is at most the grid's), unless it is the unit put in there
+    by that block's replacement in no time: those are kept apart."""
+    start = _sum(failed, repair) + _sum(blocks, maintenance)
+    size = len(start.rest)
+    before = np.zeros(size)
+    if not up or period is None or period >= size:
+        return start, before
+    on = np.arange(period, size, period)
+    total = start.rest[on] + start.atoms[on]
+    renewed = blocks.atoms[on] * float(maintenance.atoms[0])
+    before[on] = np.maximum(total - renewed, 0.0)
+    start.rest[on] = 0.0
+    start.atoms[on] = np.minimum(renewed, total)
+    return start, before
+
+
+def _block_tails(model: Block, end: float, steps: int) -> np.ndarray:
+    """``P(N >= s)``, ``s = 1, 2, ...``, for a component under block
+    replacement, from new, by ``end``, on a grid of about ``steps`` steps
+    with the block times on it (see the module docstring)."""
+    grid = _Grid(end, model.interval, steps)
+    period = grid.index(model.interval)
+    pieces = []
+    for up in (True, False):
+        life = grid.from_cdf(model.life, up)
+        repair = grid.from_cdf(model.repair, up)
+        maintenance = (
+            grid.from_cdf(model.maintenance, up)
+            if model.maintenance is not None
+            else grid.unit()
+        )
+        pieces.append((life, repair, maintenance, up))
+    starts = [(grid.unit(), np.zeros(grid.size)) for _ in range(2)]
+    tails: List[float] = []
+    while len(tails) < MAX_COUNT:
+        steps_out = [
+            _block_step(start, before, life, period, up)
+            for (start, before), (life, _, _, up) in zip(starts, pieces)
+        ]
+        tail = grid.at_most(
+            steps_out[0][0] + steps_out[0][1],
+            steps_out[1][0] + steps_out[1][1],
+        )
+        tails.append(tail)
+        if tail < _TAIL:
+            return np.array(tails)
+        starts = [
+            _block_starts(failed, blocks, repair, maintenance, period, up)
+            for (failed, blocks), (_, repair, maintenance, up) in zip(
+                steps_out, pieces
+            )
+        ]
+    raise NotImplementedError(
+        f"More than {MAX_COUNT} replacements are likely in the time: count "
+        "them by simulation instead."
+    )
+
+
+def _lattice_tails(first: np.ndarray, cycle: np.ndarray, last: int) -> list:
+    """``P(J_s <= last)``, ``s = 1, 2, ...``, until it is below ``_TAIL``:
+    ``J_1`` has the distribution ``first`` (over ``0, 1, 2, ...`` tests),
+    and each next one is a ``cycle`` (over ``0, 1, 2, ...``) more."""
+    from scipy.signal import fftconvolve
+
+    tails: List[float] = []
+    if last < 0:
+        return [0.0]
+    head = np.asarray(first, dtype=float)[: last + 1]
+    step = np.asarray(cycle, dtype=float)[: last + 1]
+    while len(tails) < MAX_COUNT:
+        tail = float(head.sum())
+        tails.append(min(tail, 1.0))
+        if tail < _TAIL:
+            return tails
+        if len(head) * len(step) <= 4_000_000:
+            head = np.convolve(head, step)[: last + 1]
+        else:
+            head = np.maximum(fftconvolve(head, step)[: last + 1], 0.0)
+    raise NotImplementedError(
+        f"More than {MAX_COUNT} replacements are likely in the time: count "
+        "them by simulation instead."
+    )
+
+
+def _tested_tails(model: Tested, end: float, kind: str) -> np.ndarray:
+    """``P(N >= s)``, ``s = 1, 2, ...``, for a component whose replacements
+    fall on its tests (see the module docstring for ``kind``)."""
+    T = model.interval
+    cycle = np.concatenate([[0.0], model.cycle])
+    if kind == "new":
+        # The tests strictly before the end.
+        tests = 0
+        if end > model.first:
+            tests = int(math.ceil((end - model.first) / T - 1e-12))
+        if tests == 0:
+            return np.zeros(1)
+        first = np.concatenate([[0.0], model.found(tests)])
+        return np.array(_lattice_tails(first, cycle, tests))
+    if kind == "arrival":
+        # The replacements before one, whole cycles back, within the time.
+        last = int(math.ceil(end / T - 1e-12)) - 1
+        return np.array(_lattice_tails(cycle, cycle, last))
+    # From a random time: the next replacement j tests on with probability
+    # P(cycle >= j) / E[cycle], over the tests in the time (one more with
+    # the probability of the fraction of an interval over).
+    survive = 1.0 - np.concatenate([[0.0], np.cumsum(model.cycle)])
+    delay = np.concatenate([[0.0], np.clip(survive[:-1], 0.0, 1.0)])
+    delay /= delay.sum()
+    whole = int(math.floor(end / T + 1e-12))
+    share = end / T - whole
+    if share < 1e-12:
+        share = 0.0
+    fewer = np.array(_lattice_tails(delay, cycle, whole))
+    if not share:
+        return fewer
+    more = np.array(_lattice_tails(delay, cycle, whole + 1))
+    size = max(len(fewer), len(more))
+    fewer = np.pad(fewer, (0, size - len(fewer)))
+    more = np.pad(more, (0, size - len(more)))
+    return (1.0 - share) * fewer + share * more
+
+
+def count(model, end: float, kind: str) -> np.ndarray:
     """The distribution of a component's replacements (see
     ``_count_tails`` for ``kind``): their probabilities for ``0, 1, 2,
-    ...``, from grids refined until they agree to ``TOLERANCE``.
+    ...``, from grids refined until they agree to ``TOLERANCE`` (a
+    ``Block`` from new only; a ``Tested`` exactly, with no grid).
 
     Raises
     ------
@@ -295,11 +519,22 @@ def count(model: Replacements, end: float, kind: str) -> np.ndarray:
     """
     if end <= 0.0:
         return np.ones(1)
+    if isinstance(model, Tested):
+        tails = np.minimum.accumulate(
+            np.clip(_tested_tails(model, end, kind), 0.0, 1.0)
+        )
+        return -np.diff(np.concatenate(([1.0], tails, [0.0])))
+
+    def tails_on(steps: int) -> np.ndarray:
+        if isinstance(model, Block):
+            return _block_tails(model, end, steps)
+        return _count_tails(model, end, kind, steps)
+
     steps = FIRST_STEPS
-    previous = _count_tails(model, end, kind, steps)
+    previous = tails_on(steps)
     while steps < MAX_STEPS:
         steps *= 2
-        tails = _count_tails(model, end, kind, steps)
+        tails = tails_on(steps)
         size = max(len(previous), len(tails))
         change = np.abs(
             np.pad(tails, (0, size - len(tails)))

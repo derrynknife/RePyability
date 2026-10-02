@@ -874,9 +874,17 @@ def test_the_readme_says_what_is_simulated():
                 "refused",
             ),
         ],
-        "Spares of block-replaced or tested components": [
-            (repairable["block replacement"], "spares_demand", "refused"),
-            (repairable["tested, constant rate"], "spares_demand", "refused"),
+        "Spares of tested components whose tests or repairs take time, and "
+        "the stock of block-replaced ones": [
+            (repairable["tested, taking time"], "spares_demand", "refused"),
+            (repairable["block replacement"], "spares_stock", "refused"),
+            (repairable["block replacement"], "spares_demand", "numerical"),
+            (
+                repairable["tested, constant rate"],
+                "spares_demand",
+                "numerical",
+            ),
+            (repairable["tested, Weibull"], "spares_stock", "numerical"),
         ],
     }
     rows = [

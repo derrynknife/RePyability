@@ -98,6 +98,46 @@ stock["pump"].fill_rate_for(26)       # -> 0.8870
 - **A fleet** shares one store, its systems' independent demands adding
   up.
 
+## Block replacement and proof tests
+
+Two kinds of component replace on a calendar, and are counted their own way
+(#147):
+
+- **Block replacement** renews the unit at every multiple of its
+  interval, whatever its age, unless it is down then (being repaired or
+  replaced), when that replacement is skipped. Replacing the pumps every
+  1,000 hours of the calendar, in about 4 hours, uses more pumps than
+  replacing each at 1,000 hours of its age, since young pumps are replaced
+  too:
+
+  ```python
+  blocked = dict(pump, preventive={"interval": 1000.0, "policy": "block",
+                                   "duration": surv.Exponential.from_params([1 / 4.0])})
+  calendar = RepairableRBD(edges, {"pump": blocked, "seal": seal})
+  calendar.spares_demand(8760.0, fleet=20, nodes=["pump"])["pump"].mean()   # -> 187.32
+  ```
+
+- **Hidden failures found by proof tests**, tested and repaired in no time,
+  use a spare at each test that finds a failure. A valve that wears out
+  (MTTF about 15 years), tested yearly, in a fleet of 50 over 20 years, and
+  its stock for a lead time of 26 weeks:
+
+  ```python
+  valve = {"reliability": surv.Weibull.from_params([150_000.0, 2.5]),
+           "repairability": "instant",
+           "inspection": {"interval": 8760.0}}
+  valves = RepairableRBD([("s", "v"), ("v", "t")], {"v": valve})
+  used = valves.spares_demand(20 * 8760.0, fleet=50)["v"]
+  used.mean()       # -> 41.21
+  used.stock(0.95)  # -> 48
+  valves.spares_stock(26 * 7 * 24.0, fill_rate=0.95, fleet=50)["v"].stock   # -> 5
+  ```
+
+A block-replaced component's stock is refused as yet (#160): its demand in a
+lead time depends on where in the block interval the lead time falls. Proof
+tests that take time, repairs that take time, and tests that can miss a
+failure are refused too (#159).
+
 ## How it is computed
 
 A component is replaced at each failure and each preventive replacement,
@@ -120,12 +160,24 @@ from a random time; the fill rate, that of fewer than `S` in the lead time
 before a replacement. Both methods report `numerical` in
 [`analysis_routes`](saving.md#what-is-exact-and-what-is-simulated).
 
-Some components' replacements are not a renewal process, and the counts
+Under block replacement, a new unit's next replacement is at its failure,
+if that comes before the next block time, and at the block time otherwise.
+So each replacement's time follows from the one before, block interval by
+block interval, on a grid with the block times on it. A repair or
+replacement still going on at a block time carries the next unit's start
+past it, as in the simulation. With proof tests, every replacement falls on
+a test, and the count is that of a discrete renewal process on the tests:
+exact, with no grid. A unit renewed at a test is renewed again `k` tests
+later with probability `R((k − 1)τ) − R(kτ)`. From a random time, the next
+replacement is `j` tests on with probability `R((j − 1)τ) / S`, `S` being
+the mean cycle in tests.
+
+Some components' replacements are not counted this way, and the counts
 refuse, with the reason:
 
-- a component under **block replacement**, replaced on schedule whatever
-  its age;
-- a component with **hidden failures** found by inspection;
+- a component with **hidden failures** whose tests or repairs take time, or
+  whose tests can miss a failure (#159), and the stock of one under
+  **block replacement** (#160);
 - a **standby group**, whose units' failures depend on each other;
 - any component while **repair crews** can keep components waiting.
 

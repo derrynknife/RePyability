@@ -28,7 +28,8 @@ quicker (#121). Components can share a limited number of repair crews (#89),
 with exact long-run values from a Markov chain when their lives and repairs
 are exponential (#90); a duty unit and its spares can be a standby group,
 repaired one unit at a time (#91); `spares_demand` and `spares_stock` count
-the spares each component uses and the stock to hold for a lead time (#95);
+the spares each component uses and the stock to hold for a lead time (#95),
+block-replaced and proof-tested components' too (#147);
 a component can be replaced on condition at periodic inspections (#96), or
 early at a stop of its maintenance group, sharing its set-up (opportunistic
 maintenance, #108), and repaired imperfectly, by Kijima's virtual age, or
@@ -433,11 +434,25 @@ is required.
   any life and repair models on a grid refined to about 1e-6, with their
   atoms (a replacement age, work in no time) exact, over `[0, horizon)` as
   the simulation counts them (a replacement at the horizon itself falls
-  after it); a fleet's systems add up independently. Block replacement, hidden failures, standby groups and
+  after it); a fleet's systems add up independently. Standby groups and
   waiting for repair crews are not renewal processes: the counts refuse
   them, and `spares_demand(method="simulate")` counts every component's
   replacements in simulations of the whole system. `analysis_routes()`
-  reports both. Checked against Poisson closed forms (constant failure
+  reports both.
+  - Block-replaced and proof-tested components are counted too (#147).
+    Under block replacement, a unit's next replacement is at its failure
+    or at the next block time, whichever comes first, and a unit down then
+    skips it. That is counted block interval by block interval on a grid
+    with the block times on it, repairs and replacements taking any time.
+    A tested component (tests and repairs in no time, any life) is
+    replaced at the tests that find it failed, and is counted there
+    exactly: from new, from a random time (the next replacement `j` tests
+    on with probability `R((j - 1) T) / S`), and before a replacement. So
+    `spares_demand` takes both, and `spares_stock` the tested ones. A
+    block-replaced component's stock (#160), and tests or repairs that take
+    time (#159), still refuse. Checked against the plain renewal count of
+    each block interval, binomial counts for a constant failure rate, a
+    Monte Carlo of the replacements, and the RBD's simulation. Checked against Poisson closed forms (constant failure
   rates, instant replacement), a direct simulation of the renewal process
   (Weibull lives, lognormal repairs and age replacement: from new, from a
   random time and before a replacement) and the RBD's simulation. A new

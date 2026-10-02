@@ -191,9 +191,11 @@ The nodes can change a route:
   measures, the availability over time and the allocations refuse, and the
   simulations follow the queue, in Python.
 - **Spares.** The spares counts need each component's replacements to be a
-  renewal process: block replacement, hidden failures, standby groups,
-  renewals at a maintenance group's stops and waiting for repair crews make
-  them refuse, and
+  renewal process, or to fall on a calendar: under block replacement they
+  are counted block interval by block interval (the stock refuses, #160),
+  and with hidden failures on the tests, when the tests and repairs take no
+  time. Standby groups, renewals at a maintenance group's stops, waiting for
+  repair crews, and tests or repairs that take time make them refuse, and
   `spares_demand(method="simulate")` counts them instead.
 - **Imperfect repair.** `Repairable` policies are analytic for a power-law
   process and simulated for imperfect repair.

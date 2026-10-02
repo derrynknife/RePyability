@@ -123,8 +123,9 @@ places, nested diagrams):
   over a window, from new or from the components' current states (their
   ages, the repairs going on, where they are in their calendars, or the
   long run); the capacity distribution in the long run and over time, with
-  the production availability of a window; and, without block replacement,
-  the spares used over a horizon.
+  the production availability of a window; and the spares used over a
+  horizon, and the stock to hold for a lead time (but under block
+  replacement).
 
 **Simulated**, or refused with the simulation to run instead:
 
@@ -150,7 +151,7 @@ places, nested diagrams):
 | Standby groups (a duty unit and its spares, repaired) | Long run and importance exact for exponential units; the rest simulated | Over time, with exponential units: could be exact from the same Markov chain (#146). Other units: yes, in general. |
 | Opportunistic maintenance (renewals at a group's stops) | Simulated | Yes: each member's renewals depend on the others' ages. |
 | Imperfect repair (Kijima), with or without replacement at the *N*-th failure | Simulated | Yes, in general: a repair does not renew the unit. |
-| Spares of block-replaced or tested components | Simulated (`spares_demand(method="simulate")`) | No: could be numerical (#147). With crews, standby groups, opportunistic maintenance or imperfect repair: yes. |
+| Spares of tested components whose tests or repairs take time, and the stock of block-replaced ones | Simulated (`spares_demand(method="simulate")`); the stock refused (block-replaced components' demand, and tested ones', are numerical) | No: the tests' calendar phase (#159) and the stock over the block calendar (#160) could be numerical. With crews, standby groups, opportunistic maintenance or imperfect repair: yes. |
 
 For your own diagram, `analysis_routes()` says how each analysis will be
 computed (exact, numerical, simulated or refused) and why, without running
