@@ -501,8 +501,22 @@ def test_the_routes_report_the_counts():
                 }
             },
         )
-    route = tested.analysis_routes()["expected_failures"]
+        # Tests that take time are simulated.
+        slow = RepairableRBD(
+            [("s", "c"), ("c", "t")],
+            {
+                "c": {
+                    "reliability": W([500.0, 1.5]),
+                    "repairability": "instant",
+                    "inspection": {"interval": 100.0, "duration": E([2.0])},
+                }
+            },
+        )
+    assert tested.analysis_routes()["expected_failures"].route == (
+        routes.NUMERICAL
+    )
+    route = slow.analysis_routes()["expected_failures"]
     assert route.route == routes.REFUSED
     with pytest.raises(NotImplementedError) as error:
-        tested.expected_failures(100.0)
+        slow.expected_failures(100.0)
     assert str(error.value) == route.reason

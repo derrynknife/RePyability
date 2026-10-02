@@ -203,6 +203,12 @@ def repairable_rbds():
             "tested, Weibull": system(
                 unit(repairability="instant", inspection={"interval": 100.0})
             ),
+            "tested, taking time": system(
+                unit(
+                    repairability="instant",
+                    inspection={"interval": 100.0, "duration": E([2.0])},
+                )
+            ),
             "simulated standby life": system(
                 {
                     "reliability": StandbyModel(
@@ -551,7 +557,7 @@ def test_common_cause_groups_refuse_what_does_not_model_them():
 
 
 def test_the_repairable_report_names_the_refusing_component():
-    report = repairable_rbds()["tested, Weibull"].analysis_routes()
+    report = repairable_rbds()["tested, taking time"].analysis_routes()
     assert report["mean_availability"].route == routes.REFUSED
     assert report["mean_availability"].nodes == ("a",)
     assert report["availability"].route == routes.SIMULATED
@@ -560,7 +566,11 @@ def test_the_repairable_report_names_the_refusing_component():
 
 
 def test_maintenance_makes_the_long_run_numerical():
-    for name in ("age replacement, priced", "block replacement"):
+    for name in (
+        "age replacement, priced",
+        "block replacement",
+        "tested, Weibull",
+    ):
         report = repairable_rbds()[name].analysis_routes()
         assert report["mean_availability"].route == routes.NUMERICAL
         assert report["mean_availability"].nodes == ("a",)
@@ -772,10 +782,24 @@ def test_the_readme_says_what_is_simulated():
         ],
         "Phased missions and networks whose decision diagrams pass a "
         "million nodes": [],
-        "Hidden failures found by tests (a constant failure rate with "
-        "instant tests and repairs is exact, staggered or with tests that "
-        "miss failures too)": [
-            (repairable["tested, Weibull"], "mean_availability", "refused"),
+        "Hidden failures whose tests or repairs take time, or whose tests "
+        "miss failures of a life that is not exponential": [
+            (
+                repairable["tested, taking time"],
+                "mean_availability",
+                "refused",
+            ),
+            (
+                repairable["tested, taking time"],
+                "availability",
+                "simulated",
+            ),
+            (repairable["tested, Weibull"], "mean_availability", "numerical"),
+            (
+                repairable["tested, Weibull"],
+                "point_availability",
+                "numerical",
+            ),
             (
                 repairable["tested, constant rate"],
                 "mean_availability",

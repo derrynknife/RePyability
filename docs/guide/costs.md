@@ -556,10 +556,12 @@ down together, so `mean_availability` and the other long-run methods average
 the system's availability over one period of the inspection schedules (the
 least common multiple of the intervals: components on different intervals
 can be mixed), and the importance measures are ratios of those averages.
-They need a constant failure rate, instant tests and instant repair, and
-raise `NotImplementedError` otherwise: then simulate. Testing both valves at
-once, for example, takes the whole function off-line during the test, which
-here costs far more than the hidden failures:
+They need instant tests and instant repair (in closed form for a constant
+failure rate, and numerically for any other life: see [a life that wears
+out](#a-life-that-wears-out)), and raise `NotImplementedError` otherwise:
+then simulate. Testing both valves at once, for example, takes the whole
+function off-line during the test, which here costs far more than the
+hidden failures:
 
 ```python
 def tested(interval):
@@ -581,6 +583,53 @@ decade = both.availability(t_simulation=10 * 8760.0, mc_samples=20000, seed=0)
 # -> 3.9e-4
 decade.system_planned_outages / decade.n_simulations   # -> 9.0   one per test
 ```
+
+### A life that wears out
+
+The closed forms above need a constant failure rate. With any other life,
+and instant tests and repairs, the values are numerical, exact to rounding.
+A failed unit is found and renewed at the next test, so every renewal falls
+on a test, and a unit renewed `m` intervals before a test is still up with
+probability `R(mτ)`. In the long run a cycle lasts `S = 1 + Σ R(mτ)`
+intervals (over `m ≥ 1`), and the unit is up a time `u` after a test with
+probability `(R(u) + Σ R(mτ + u)) / S`. From new, the chance of a renewal
+at each test follows a renewal equation over the tests, and settles to
+`1/S`. A valve that wears out, with a mean life of about 15 years:
+
+```python
+worn = surv.Weibull.from_params([150_000.0, 2.5])   # wears out; MTTF 133,090 h
+wearing = RepairableRBD(
+    [("s", "v"), ("v", "t")],
+    {"v": {
+        "reliability": worn,
+        "repairability": "instant",
+        "inspection": {"interval": 8760.0},
+    }},
+)
+wearing.mean_unavailability()               # -> 0.03186   about τ / (2 MTTF) = 0.0329
+1 - wearing.mission_availability(87600.0)   # -> 0.01126   its first ten years
+years = np.array([1, 5, 10, 20]) * 8760.0 - 1.0   # just before a test
+1 - wearing.point_availability(years)
+# -> [0.00082 0.01908 0.04983 0.06844]
+```
+
+For a short interval the long-run PFDavg is about `τ / (2 MTTF)`, whatever
+the life's shape. What the wear changes is the PFD over time. A new valve
+rarely fails in its first years, so its first ten years' PFD is a third of
+the long run's, and the PFD just before each test climbs with its age
+before it settles. The values over a window, from new or from the valve's
+current state (its age, and the time since its last test), are exact too:
+`expected_events`, `expected_cost` and the other [analyses over
+time](repairable.md#availability-over-time-exact).
+
+The sums run over the intervals a unit can last. Within an interval, every
+unit but the one renewed at the last test ages smoothly, so their sum is
+worked out once, at Chebyshev points across the interval, and interpolated
+between them, to rounding. A term that bends there (a life with a
+threshold, say) is summed directly instead. A life that lasts more than
+200,000 intervals (the most summed) refuses. Tests that take time, repairs
+that take time, and tests that can miss failures of a life that is not
+exponential are simulated (#159).
 
 ### Common cause, staggered tests and test coverage
 
@@ -630,8 +679,9 @@ partial = RepairableRBD(
 partial.mean_unavailability()       # -> 0.01642    0.9λτ/2 + 0.1λT/2, about
 ```
 
-All three are exact, with the constant failure rates and instant tests and
-repairs the long-run values need: a group's members are a Markov chain of
+All three are exact with constant failure rates and instant tests and
+repairs, and staggered tests with any life too: a group's members are a
+Markov chain of
 which of them are down, with each member found by its own tests, and a
 shared failure found alike by every test (the coverage is the group's).
 The importance measures take the groups in, a member's conditioned on its

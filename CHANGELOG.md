@@ -42,7 +42,9 @@ demonstration test planning (#129). A safety function's PFDavg takes in
 the terms SIL verification asks for: common-cause groups in repairable
 diagrams, staggered tests, and proof tests that miss failures (#136).
 Common-cause groups enter the importance measures, parameter sensitivity
-and uncertainty, and redundancy allocation (#140).
+and uncertainty, and redundancy allocation (#140). Hidden failures are
+numerical for any life, not only a constant failure rate, when tests and
+repairs take no time (#144).
 Meshed diagrams are decided by a binary
 decision diagram, in milliseconds where their path sets took minutes (#102,
 #103). Non-parametric nodes, and the fits to simulated lifetimes behind some
@@ -134,6 +136,28 @@ is required.
   - A `RepairableRBD`'s importance measures take its groups in, a member's
     conditioned on its state at each long-run time, then averaged over the
     times as every node's are.
+- **Hidden failures with any life** (#144). A component with an
+  `"inspection"` and a life that is not exponential, tested and repaired in
+  no time, has numerical values, exact to rounding, where it had only
+  simulated ones. A failed unit is found and renewed at the next test, so
+  renewals fall on the tests: a cycle lasts `S = 1 + Σ R(mτ)` intervals,
+  and the unit is up `u` after a test with probability `(R(u) + Σ R(mτ +
+  u)) / S`. That gives the long-run values (`mean_availability`,
+  `mean_unavailability` (the PFDavg), `system_failure_frequency`, MTBF,
+  MUT, MDT, the importance measures, the cost rate and
+  `capacity_distribution`) and `optimal_inspection_intervals`. Over time,
+  a renewal equation over the tests gives `point_availability`,
+  `mission_availability`, `expected_events`, `expected_cost` and the
+  capacities, from new, from a state (its age and the time since its last
+  test) or from its long run. A wearing valve's PFD over its first ten
+  years is a third of its long-run PFDavg. Within an interval, the units
+  renewed before the last test are interpolated from Chebyshev points, and
+  summed directly where the life bends (at a threshold), so a curve costs
+  little more at many times than at one, and a life of tens of thousands
+  of intervals takes under a second. `analysis_routes()` reports these
+  diagrams as `numerical` rather than refused. Tests or repairs that take
+  time, and tests that miss failures of a life that is not exponential,
+  are still simulated (#159).
 - **Faster compiled simulations of large systems** (#150). Above 20
   components (where the compiled loop has no table of every state), the
   compiled engine keeps whether the system works up to date as components

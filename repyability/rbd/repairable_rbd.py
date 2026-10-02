@@ -56,6 +56,11 @@ from repyability.rbd._block_replacement import (
     block_availability,
     block_cycle,
 )
+from repyability.rbd._hidden_life import (
+    TestedLife,
+    TestedLifeCurve,
+    TestedLifeSteady,
+)
 from repyability.rbd._model_utils import (
     failure_time_scale,
     is_fixed_probability,
@@ -3549,8 +3554,9 @@ class RepairableRBD(RBD):
                 continue
             importance = np.asarray(birnbaum[node])
             if node in self._inspection:
-                rate, _ = self._inspected_rate(node)
-                node_failures: Any = rate * availability[node]
+                node_failures: Any = self._tested_intensity(
+                    node, times[index], availability[node]
+                )
                 node_planned: Any = 0.0
             elif node in blocks:
                 node_failures = self._block_profile(
@@ -4626,8 +4632,8 @@ class RepairableRBD(RBD):
             self._require_no_condition(node)
             # One inspection per interval (none is skipped: repairs are
             # instant, as the exact values require).
-            _, interval = self._inspected_rate(node)
-            rate += _mean_cost(inspection) / interval
+            self._require_tested_exact(node)
+            rate += _mean_cost(inspection) / self._inspection[node].interval
         # Optional cost of *this component* being down, whether or not the
         # system as a whole is.
         downtime_cost = node_costs.get("downtime_cost", 0.0)
@@ -6384,7 +6390,7 @@ class RepairableRBD(RBD):
         min_availability, max_cost_rate = self._interval_targets(
             min_availability, max_cost_rate
         )
-        rates = {node: self._inspected_rate(node)[0] for node in chosen}
+        rates = {node: self._tested_scale(node) for node in chosen}
 
         def evaluate(intervals: dict) -> Tuple[float, float]:
             plan = self._with_intervals(inspection=intervals)
@@ -6937,9 +6943,9 @@ class RepairableRBD(RBD):
 
         Examples
         --------
-        A pump found failed only by monthly tests, with a Weibull life:
-        the exact values need a constant failure rate there, so they are
-        refused, and the simulation is the way:
+        A pump found failed only by monthly tests that take it off-line
+        for about an hour: the exact values need tests in no time, so they
+        are refused, and the simulation is the way:
 
         >>> import surpyval as surv
         >>> from repyability import RepairableRBD
@@ -6949,7 +6955,10 @@ class RepairableRBD(RBD):
         ...         "pump": {
         ...             "reliability": surv.Weibull.from_params([500, 1.5]),
         ...             "repairability": "instant",
-        ...             "inspection": {"interval": 720},
+        ...             "inspection": {
+        ...                 "interval": 720,
+        ...                 "duration": surv.Exponential.from_params([1.0]),
+        ...             },
         ...         }
         ...     },
         ... )
@@ -7163,7 +7172,7 @@ class RepairableRBD(RBD):
                 (
                     message
                     for message in (
-                        r.refusal(partial(self._inspected_rate, node))
+                        r.refusal(partial(self._require_tested_exact, node))
                         for node in self._inspection
                     )
                     if message
@@ -7353,9 +7362,15 @@ class RepairableRBD(RBD):
                 return r.REFUSED, message
             return r.EXACT, "a standby group's Markov chain"
         if node in self._inspection:
-            message = r.refusal(partial(self._inspected_rate, node))
+            message = r.refusal(partial(self._require_tested_exact, node))
             if message:
                 return r.REFUSED, message
+            if _constant_rate(component.reliability) is None:
+                return (
+                    r.NUMERICAL,
+                    "hidden failures, renewed at the tests, summed over the "
+                    "test intervals",
+                )
             return r.EXACT, "hidden failures at a constant rate"
         schedule = self._preventive.get(node)
         if schedule is None:
@@ -7471,7 +7486,7 @@ class RepairableRBD(RBD):
         if not message:
             message = r.refusal(partial(self._require_no_opportunities, node))
         if not message and node in self._inspection:
-            message = r.refusal(partial(self._inspected_rate, node))
+            message = r.refusal(partial(self._require_tested_exact, node))
         schedule = self._preventive.get(node)
         if not message and schedule is not None and schedule.policy == "block":
             message = r.refusal(partial(self._require_block_models, node))
@@ -8695,6 +8710,10 @@ class RepairableRBD(RBD):
             elif node in self._standby:
                 self._no_standby_curve(node)
             elif node in self._inspection:
+                life = self._tested_life(node)
+                if life is not None:
+                    curves[node] = self._tested_life_curve(node, life, start)
+                    continue
                 rate, interval = self._inspected_rate(node)
                 inspection = self._inspection[node]
                 if inspection.partial:
@@ -8737,6 +8756,43 @@ class RepairableRBD(RBD):
                     node, horizon, counts, node in degrading, start
                 )
         return curves
+
+    def _tested_life_curve(self, node, life: TestedLife, start):
+        """A tested component's point availability and events from 0, for
+        a life other than exponential (see ``_hidden_life``): new at 0
+        (first tested at its offset, or after an interval), in its long-run
+        state, or known up at its last test (or since put into service) at
+        the age its state gives."""
+        inspection = self._inspection[node]
+        interval = inspection.interval
+        if start is None:
+            return TestedLifeCurve(life, inspection.offset or interval)
+        # Up: its repairs take no time (see _check_state).
+        phase = start.phase or 0.0
+        if start.stationary:
+            return TestedLifeSteady(life, phase)
+        model = life.model
+        # Last known up at its last test (or when put into service since),
+        # at age ``known_age``; at 0 it is ``start.age`` old.
+        since = min(start.age, phase)
+        known_age = np.array([start.age - since])
+        known_up = float(_sf_values(model.sf, known_age)[0])
+        known_down = float(np.atleast_1d(model.ff(known_age))[0])
+
+        def initial(x):
+            later = start.age + np.asarray(x, dtype=float)
+            return _sf_values(model.sf, later) / known_up
+
+        def initial_down(x):
+            later = start.age + np.asarray(x, dtype=float)
+            if known_down <= 0.5:
+                failed = np.asarray(model.ff(later), dtype=float) - known_down
+            else:
+                failed = known_up - _sf_values(model.sf, later)
+            return np.clip(failed / known_up, 0.0, 1.0)
+
+        first = interval - phase if phase else interval
+        return TestedLifeCurve(life, first, initial, initial_down)
 
     def _states(self, state, forced=frozenset()) -> dict:
         """``state`` checked (see ``point_availability``): each component it
@@ -12086,6 +12142,9 @@ class RepairableRBD(RBD):
         if node in self._standby:
             return self._standby_long_run(node).availability
         if node in self._inspection:
+            life = self._tested_life(node)
+            if life is not None:
+                return life.availability
             rate, interval = self._inspected_rate(node)
             inspection = self._inspection[node]
             if inspection.partial:
@@ -12328,27 +12387,102 @@ class RepairableRBD(RBD):
                 "availability() or cost()."
             )
 
-    def _inspected_rate(self, node) -> Tuple[float, float]:
-        """The constant failure rate and the inspection interval of a
-        component with hidden failures, for the exact long-run values,
-        which cover only a constant failure rate, instant tests and instant
-        repair."""
+    def _require_tested_exact(self, node) -> None:
+        """Raise unless a component with hidden failures has exact values
+        (long-run, or from new over time): with instant tests and instant
+        repair, for any life (#144), and, for tests that can miss a
+        failure, a constant failure rate."""
         component = self.components[node]
-        rate = _constant_rate(component.reliability)
         inspection = self._inspection[node]
         if (
-            rate is None
-            or inspection.duration is not None
+            inspection.duration is not None
             or model_mean(component.time_to_replace) != 0.0
         ):
             raise NotImplementedError(
                 f"Component {node!r} has hidden failures: its exact values "
-                "(long-run, or from new over time) are known only with a "
-                "constant failure rate (an exponential life), instant tests "
-                "and instant repair. "
+                "(long-run, or from new over time) are known only with "
+                "instant tests and instant repair. "
                 "Estimate them by simulation, with availability() or cost()."
             )
-        return rate, inspection.interval
+        if (
+            inspection.partial
+            and _constant_rate(component.reliability) is None
+        ):
+            raise NotImplementedError(
+                f"Component {node!r} has hidden failures, found by tests "
+                "that can miss them: its exact values are known only with a "
+                "constant failure rate (an exponential life). "
+                "Estimate them by simulation, with availability() or cost()."
+            )
+
+    def _inspected_rate(self, node) -> Tuple[float, float]:
+        """The constant failure rate and the inspection interval of a
+        component with hidden failures, for the closed forms of an
+        exponential life (see ``_tested_life`` for any other)."""
+        self._require_tested_exact(node)
+        component = self.components[node]
+        rate = _constant_rate(component.reliability)
+        if rate is None:
+            raise NotImplementedError(
+                f"Component {node!r} has hidden failures and a life that is "
+                "not exponential, which this does not take: estimate it by "
+                "simulation, with availability() or cost()."
+            )
+        return rate, self._inspection[node].interval
+
+    def _tested_life(self, node) -> Optional[TestedLife]:
+        """For a component with hidden failures and a life other than
+        exponential, its long run under its tests (see ``_hidden_life``),
+        worked out once; None for an exponential life, whose values have
+        closed forms."""
+        self._require_tested_exact(node)
+        component = self.components[node]
+        if _constant_rate(component.reliability) is not None:
+            return None
+        interval = float(self._inspection[node].interval)
+        cache = self.__dict__.setdefault("_tested_lives", {})
+        key = (node, id(component.reliability), interval)
+        if key not in cache:
+            cache[key] = TestedLife(component.reliability, interval)
+        return cache[key]
+
+    def _tested_rate(self, node) -> float:
+        """How fast a tested component's long-run availability falls
+        between tests: its failure rate, or for any other life the rate of
+        its profile's mean decay (see ``TestedLife.rate``), for the long-run
+        grid's spacing."""
+        life = self._tested_life(node)
+        return self._inspected_rate(node)[0] if life is None else life.rate
+
+    def _tested_scale(self, node) -> float:
+        """The rate that sets the scale of a tested component's interval:
+        its failure rate, or one over the mean of any other life."""
+        life = self._tested_life(node)
+        if life is None:
+            return self._inspected_rate(node)[0]
+        return 1.0 / float(model_mean(life.model))
+
+    def _tested_phase(self, node, times: np.ndarray) -> np.ndarray:
+        """The time since a tested component's last test at each of
+        ``times`` on its calendar (its tests at its offset and every
+        interval from it)."""
+        inspection = self._inspection[node]
+        position = times - inspection.offset if inspection.offset else times
+        interval = inspection.interval
+        return position - interval * np.floor(position / interval)
+
+    def _tested_intensity(
+        self, node, times: np.ndarray, availability
+    ) -> np.ndarray:
+        """A tested component's long-run rate of failing at each of
+        ``times`` (``availability`` its availability there): its constant
+        rate while it is up, or for any other life the rate of its profile
+        (see ``TestedLife.intensity``)."""
+        life = self._tested_life(node)
+        if life is None:
+            rate, _ = self._inspected_rate(node)
+            return rate * availability
+        return life.intensity(self._tested_phase(node, times))
 
     def _block_nodes(self) -> list:
         """The components under block replacement."""
@@ -12423,7 +12557,8 @@ class RepairableRBD(RBD):
                 ).ravel()
             )
         for node in self._inspection:
-            rate, interval = self._inspected_rate(node)
+            rate = self._tested_rate(node)
+            interval = self._inspection[node].interval
             per_interval = int(np.ceil(256.0 * rate * interval))
             pieces.append(
                 np.linspace(
@@ -12543,7 +12678,10 @@ class RepairableRBD(RBD):
             return self._calendar_grid(blocks)
         if not self._inspection:
             return np.zeros(1), np.ones(1)
-        rates = {node: self._inspected_rate(node) for node in self._inspection}
+        rates = {
+            node: (self._tested_rate(node), self._inspection[node].interval)
+            for node in self._inspection
+        }
         intervals = {interval for _, interval in rates.values()}
         schedules = list(self._inspection.values())
         period = _common_period(intervals | {s.period for s in schedules})
@@ -12553,14 +12691,38 @@ class RepairableRBD(RBD):
             breaks.update(k * interval for k in range(1, count))
         for schedule in schedules:
             breaks.update(_tests_in(schedule, period))
-        edges = np.array(sorted(breaks))
         fastest = max(rate for rate, _ in rates.values())
+        # The tests of components whose lives are not exponential: a unit
+        # renewed there may not age smoothly from it (a Weibull life's
+        # survival, say), so the pieces after it close in on it.
+        graded: set = set()
+        for node, schedule in self._inspection.items():
+            life = self._tested_life(node)
+            if life is None:
+                continue
+            count = int(round(period / schedule.interval))
+            starts = schedule.offset + schedule.interval * np.arange(count)
+            starts = np.where(starts >= period, starts - period, starts)
+            graded.update(round(float(s) / period, 12) for s in starts)
+            # Where its life bends within an interval (a threshold, say).
+            bends = (starts[:, None] + life.bends[None, :]).ravel()
+            breaks.update(float(b) for b in np.mod(bends, period))
+        edges = np.array(sorted(breaks))
         points, weights = np.polynomial.legendre.leggauss(16)
         times, masses = [], []
         for a, b in zip(edges[:-1], edges[1:]):
             pieces = np.linspace(
                 a, b, max(1, math.ceil((b - a) * fastest)) + 1
             )
+            if round(float(a) / period, 12) in graded:
+                width = pieces[1] - pieces[0]
+                pieces = np.concatenate(
+                    [
+                        pieces[:1],
+                        a + width * 2.0 ** -np.arange(48.0, 0.0, -1.0),
+                        pieces[1:],
+                    ]
+                )
             for lo, hi in zip(pieces[:-1], pieces[1:]):
                 half = 0.5 * (hi - lo)
                 times.append(lo + half * (points + 1.0))
@@ -12580,7 +12742,11 @@ class RepairableRBD(RBD):
         probability ``rho ** k``, where ``rho = 1 - (1 - c) * (1 -
         exp(-rate * interval))`` keeps the units that were up or whose
         failure it found; so up with probability ``rho ** k * exp(-rate *
-        u)``. Down is worked out in its own right, by ``expm1``."""
+        u)``. Down is worked out in its own right, by ``expm1``. Any other
+        life's profile is its ``TestedLife``'s (#144)."""
+        life = self._tested_life(node)
+        if life is not None:
+            return life.profile(self._tested_phase(node, times))
         rate, interval = self._inspected_rate(node)
         inspection = self._inspection[node]
         position = times - inspection.offset if inspection.offset else times
@@ -12844,6 +13010,9 @@ class RepairableRBD(RBD):
         if node in self._inspection:
             # At most one failure per inspection interval: the unit, down
             # from its failure, is renewed at the inspection that finds it.
+            life = self._tested_life(node)
+            if life is not None:
+                return life.failures, 0.0, 0.0
             rate, interval = self._inspected_rate(node)
             if self._inspection[node].partial:
                 # It fails at its constant rate while it is up.
@@ -13028,9 +13197,11 @@ class RepairableRBD(RBD):
                 continue
             importance = np.asarray(birnbaum[node])
             if node in self._inspection:
-                # It fails at its constant rate whenever it is up.
-                rate, _ = self._inspected_rate(node)
-                node_failures: Any = rate * availability[node]
+                # It fails at its constant rate whenever it is up (any other
+                # life: at its profile's rate).
+                node_failures: Any = self._tested_intensity(
+                    node, times, availability[node]
+                )
                 node_planned: Any = 0.0
             elif node in blocks:
                 # Its failure intensity varies over its block interval; its

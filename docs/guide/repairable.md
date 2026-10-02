@@ -126,9 +126,10 @@ exactly.
 
 Both take `working_nodes`, `broken_nodes` and `method` as
 `mean_availability` does, and cover what it covers: age and block
-replacement, nested RBDs, and hidden failures with a constant failure rate
-and instant tests and repair. A component with any other hidden failures
-raises `NotImplementedError`; simulate it. Each component's curve is
+replacement, nested RBDs, and hidden failures with instant tests and
+repair, for any life (see [a life that wears
+out](costs.md#a-life-that-wears-out)). A component with any other hidden
+failures raises `NotImplementedError`; simulate it. Each component's curve is
 computed on a grid of 2,000 steps over its typical up time: within one step
 of a time at which its units start or stop on a schedule (at 0, and at its
 scheduled replacements), what happens faster than a step, such as a short
@@ -175,8 +176,8 @@ preventive replacements, tests and downtime.
   another add up; components replaced at the same age or block times, or
   dead on arrival together, take the system down once.
 - **They cover what `point_availability` covers** (age and block
-  replacement, nested RBDs, hidden failures with a constant failure rate and
-  instant tests and repair), take `working_nodes`, `broken_nodes` and
+  replacement, nested RBDs, hidden failures with instant tests and repair),
+  take `working_nodes`, `broken_nodes` and
   `method`, and take an array of windows as well as one. A window of decades
   costs no more than a few years: past the time the components settle, the
   counts grow at their long-run rates.

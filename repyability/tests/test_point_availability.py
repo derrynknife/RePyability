@@ -578,9 +578,13 @@ def test_shapes_and_errors():
 
 
 def test_what_it_does_not_cover():
-    # Hidden failures with a life that wears out, as for the long run.
+    # Hidden failures found by tests that take time, as for the long run.
     inspected = alone(
-        unit(W([60.0, 1.5]), "instant", inspection={"interval": 10.0})
+        unit(
+            W([60.0, 1.5]),
+            "instant",
+            inspection={"interval": 10.0, "duration": E([1.0])},
+        )
     )
     with pytest.raises(NotImplementedError, match="hidden failures"):
         inspected.point_availability(5.0)

@@ -343,12 +343,27 @@ def test_a_forced_node_is_not_inspected():
     assert result.cost.by_category["inspection"] == 0.0
 
 
-def test_exact_values_need_a_constant_rate_and_instant_tests_and_repair():
+def test_exact_values_need_instant_tests_and_repair():
+    # Any life, with instant tests and repairs (see
+    # test_hidden_failures_any_life.py); a repair that takes time, or tests
+    # that miss failures of a life that is not exponential, are simulated.
+    single(
+        {
+            "reliability": W([100, 2]),
+            "repairability": "instant",
+            "inspection": {"interval": 50},
+        }
+    ).mean_availability()
     for spec in (
-        {"reliability": W([100, 2]), "repairability": "instant"},
         {"reliability": E([0.01]), "repairability": E([1.0])},
+        {
+            "reliability": W([100, 2]),
+            "repairability": "instant",
+            "inspection": {"coverage": 0.5, "full_test": 100},
+        },
     ):
-        rbd = single({**spec, "inspection": {"interval": 50}})
+        inspection = {"interval": 50, **spec.pop("inspection", {})}
+        rbd = single({**spec, "inspection": inspection})
         with pytest.raises(NotImplementedError, match="hidden failures"):
             rbd.mean_availability()
     timed = single(

@@ -176,8 +176,11 @@ The nodes can change a route:
   a clock (block replacement, or never failing before an instant age
   replacement): their replacements can share a stop, and `cost()` counts
   that.
-- **Hidden failures.** Their exact values need a constant failure rate, with
-  instant tests and repairs; otherwise the exact methods refuse.
+- **Hidden failures.** Their exact values need instant tests and repairs:
+  in closed form for a constant failure rate, and numerical for any other
+  life (summed over the test intervals). Tests or repairs that take time,
+  and tests that miss failures of a life that is not exponential, make the
+  exact methods refuse.
 - **Standby groups.** A group's long-run values are exact from its own
   Markov chain when its units' lives and repair times are exponential, and
   refused otherwise; its availability over time is simulated.
