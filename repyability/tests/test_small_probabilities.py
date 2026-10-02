@@ -245,7 +245,8 @@ def test_importance_measures(q):
         "birnbaum_importance": birnbaum,
         "improvement_potential": birnbaum * Q,
         "criticality_importance": birnbaum * Q / F,
-        "fussell_vesely": 2 * Q**2 / F,
+        # "a" with "b" or "c": q (2q - q^2).
+        "fussell_vesely": Q**2 * (2 - Q) / F,
         "risk_achievement_worth": (1 - P**2) / F,
         "risk_reduction_worth": F / Q**2,
     }
@@ -253,6 +254,9 @@ def test_importance_measures(q):
         assert getattr(rbd, name)()["a"] == approx(float(value)), name
     success = rbd.criticality_importance(kind="success")["a"]
     assert success == approx(float(birnbaum * P / (1 - F)))
+    # The rare-event form sums the two cut sets with "a".
+    rare = rbd.fussell_vesely(method="rare_event")["a"]
+    assert rare == approx(float(2 * Q**2 / F))
 
 
 @pytest.mark.parametrize("q", QS)

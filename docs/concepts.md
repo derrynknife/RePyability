@@ -208,7 +208,7 @@ forced working/failed.
 | **Risk achievement worth** `risk_achievement_worth` | How much more likely is system failure if this node fails? `Q(0_i) / Q` | Finding components you must *keep working*: surveillance and protection targets. |
 | **Risk reduction worth** `risk_reduction_worth` | By what factor would perfecting this node reduce system unreliability? `Q / Q(1_i)` | Prioritising which single fix removes the most risk. |
 | **Criticality** `criticality_importance` | Given that the system has failed, how likely is it that this node has failed and is critical? `I_B · (1 − R_i) / Q`, its share of the system failures (`kind="success"` gives `I_B · R_i / R`, which is 1 for every node in series) | Ranking the culprits, series nodes included, by how much each contributes to system failure; on a repairable system, its share of the downtime. |
-| **Fussell–Vesely** `fussell_vesely` | What fraction of system-failure probability involves this node? `Σ_{cut sets C ∋ i} Π_{j ∈ C} (1 − R_j) / Q` | A cut-set-based culprit ranking; standard in PRA/PSA. |
+| **Fussell–Vesely** `fussell_vesely` | What fraction of system-failure probability involves this node? `P(some cut set C ∋ i has failed) / Q`, exactly (`method="rare_event"` gives the usual approximation `Σ_{cut sets C ∋ i} Π_{j ∈ C} (1 − R_j) / Q`) | A cut-set-based culprit ranking; standard in PRA/PSA. |
 
 Two more answer *design-time* and *data-targeting* questions rather than
 ranking at an operating point:

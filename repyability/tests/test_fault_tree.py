@@ -221,6 +221,21 @@ def test_single_input_gates_and_events_feeding_the_top_directly():
 # -- random trees against the definition --------------------------------------
 
 
+def cut_set_union(probabilities, cut_sets, event) -> float:
+    """The probability that every event of some minimal cut set containing
+    ``event`` has occurred, over every combination of the events."""
+    events = list(probabilities)
+    total = 0.0
+    for state in itertools.product([False, True], repeat=len(events)):
+        occurred = {x for x, o in zip(events, state) if o}
+        if any(event in c and c <= occurred for c in cut_sets):
+            total += math.prod(
+                probabilities[x] if o else 1 - probabilities[x]
+                for x, o in zip(events, state)
+            )
+    return total
+
+
 @pytest.mark.parametrize("seed", range(150))
 def test_random_trees_match_the_definition(seed):
     rng = np.random.default_rng(seed)
@@ -247,6 +262,7 @@ def test_random_trees_match_the_definition(seed):
     raw = tree.risk_achievement_worth()
     rrw = tree.risk_reduction_worth()
     fv = tree.fussell_vesely()
+    rare = tree.fussell_vesely(method="rare_event")
     for e, q in probabilities.items():
         given, _, _ = enumerated(gates, probabilities, top, {e: True})
         given_not, _, _ = enumerated(gates, probabilities, top, {e: False})
@@ -261,7 +277,11 @@ def test_random_trees_match_the_definition(seed):
                 for c in cut_sets
                 if e in c
             )
-            assert fv[e] == pytest.approx(share / probability, rel=1e-11)
+            assert rare[e] == pytest.approx(share / probability, rel=1e-11)
+            union = cut_set_union(probabilities, cut_sets, e)
+            assert fv[e] == pytest.approx(
+                union / probability, rel=1e-11, abs=1e-15
+            )
         if given_not > 0:
             assert rrw[e] == pytest.approx(probability / given_not, rel=1e-11)
 

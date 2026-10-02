@@ -69,6 +69,7 @@ from repyability.rbd.shannon import (
     _minimal_cut_sets,
     _shannon_plan,
     _shannon_value_and_gradient,
+    _union_plan,
 )
 
 # The kinds of term.
@@ -199,6 +200,10 @@ class Decomposition:
         self._core_plan: Optional[tuple] = plan
         self._core_cut_sets: Optional[List[tuple]] = None
         self._functions: Dict[str, Callable] = {}
+        # The Shannon decomposition of each core term's cut sets less the
+        # term (see ``failed_cut_sets``), and the dual decomposition.
+        self._cut_plan: Optional[tuple] = None
+        self._dual: Optional["Decomposition"] = None
 
     @property
     def core(self) -> Optional[List[tuple]]:
@@ -387,6 +392,113 @@ class Decomposition:
             for c, d in zip(children, partials):
                 adjoint[c] = a * d
         return works, fails, gradient
+
+    def failed_cut_sets(
+        self, p: Dict[Any, Any], q: Dict[Any, Any], shape=None
+    ) -> Dict[Any, Any]:
+        """For the nodes' probabilities of working ``p`` and of failing
+        ``q`` (as for ``value_and_gradient``): for each node, the
+        probability that some minimal cut set containing it has failed
+        (every node in it), the numerator of its exact Fussell-Vesely
+        importance. Nodes in no minimal cut set are missing.
+
+        A module's members share no node, so its minimal cut sets join
+        its members' (see ``_families``): a series module's are its
+        members', so one containing node ``i`` is one of the member's that
+        contains it; a parallel module's join one of each member's, so one
+        containing ``i`` has failed when the member's has and every other
+        member has failed; a k-out-of-n module's join those of
+        ``n - k + 1`` members, so when the member's has and at least
+        ``n - k`` of the others have failed. Down the tree, the probability
+        is the node's probability of failing times such factors, as its
+        Birnbaum importance is a product of the modules' derivatives. In a
+        core, a term's factor is the probability that, for some minimal
+        cut set of the core containing the term, every other term in it has
+        failed: a union, worked out by the Shannon decomposition of those
+        sets, failing for working. Every factor is a product or a sum of
+        products, so a small probability keeps its precision."""
+        if self.always_works:
+            return {}
+        R, Q = self._forward(p, q)
+        # None: a term in no minimal cut set.
+        factor: list = [None] * len(self.terms)
+        if self.root is not None:
+            factor[self.root] = 1.0
+        else:
+            terms, steps, roots = self._core_cut_plan()
+            values: list = [
+                0.0 if shape is None else np.zeros(shape),
+                1.0 if shape is None else np.ones(shape),
+            ]
+            for pivot, failed, works in steps:
+                values.append(
+                    Q[pivot] * values[failed] + R[pivot] * values[works]
+                )
+            for t, root in zip(terms, roots):
+                factor[t] = values[root]
+        out: Dict[Any, Any] = {}
+        for i in range(len(self.terms) - 1, -1, -1):
+            a = factor[i]
+            if a is None:
+                continue
+            term = self.terms[i]
+            if term[0] == NODE:
+                out[term[1]] = a * Q[i]
+                continue
+            children = term[1]
+            if term[0] == SERIES:
+                shares: list = [1.0] * len(children)
+            elif term[0] == PARALLEL:
+                shares = _products_of_others([Q[c] for c in children])
+            else:
+                shares = _koon_cut_shares(
+                    [R[c] for c in children], [Q[c] for c in children], term[2]
+                )
+            for c, d in zip(children, shares):
+                factor[c] = a * d
+        return out
+
+    def _core_cut_plan(self) -> tuple[list, list, list]:
+        """The core's terms in some minimal cut set, and one Shannon
+        decomposition of, for each, the probability that for some minimal
+        cut set of the core containing it every other term in it has
+        failed (a set's terms *satisfied* when failed): ``(terms, steps,
+        roots)``, as :func:`shannon._union_plan` gives them."""
+        if self._cut_plan is None:
+            cuts = [frozenset(cut) for cut in self.core_cut_sets()]
+            terms = sorted({c for cut in cuts for c in cut})
+            steps, roots = _union_plan(
+                [[cut - {t} for cut in cuts if t in cut] for t in terms]
+            )
+            self._cut_plan = (terms, steps, roots)
+        return self._cut_plan
+
+    def dual(self) -> "Decomposition":
+        """The decomposition of the dual structure, which works unless every
+        node of some minimal path set of this one has failed: series and
+        parallel modules swap, a k-out-of-n module needs ``n - k + 1``, and
+        the core's minimal path and cut sets swap. Its minimal cut sets are
+        this structure's minimal path sets. Not for a structure that always
+        works (whose dual never does)."""
+        if self.always_works:
+            raise ValueError("A structure that always works has no dual.")
+        if self._dual is None:
+            terms: list = []
+            for term in self.terms:
+                if term[0] == SERIES:
+                    terms.append((PARALLEL, term[1]))
+                elif term[0] == PARALLEL:
+                    terms.append((SERIES, term[1]))
+                elif term[0] == KOON:
+                    terms.append((KOON, term[1], len(term[1]) - term[2] + 1))
+                else:
+                    terms.append(term)
+            if self.root is not None:
+                self._dual = Decomposition(terms, root=self.root)
+            else:
+                self._dual = Decomposition(terms, core=self.core_cut_sets())
+                self._dual._core_cut_sets = list(self.core or [])
+        return self._dual
 
     # -- the structure function --------------------------------------------
 
@@ -596,10 +708,13 @@ def _products_of_others(values: Sequence[Any]) -> list:
     return [b * a for b, a in zip(before, after)]
 
 
-def _koon_partials(R: Sequence[float], Q: Sequence[float], k: int) -> list:
-    """For each member of a k-out-of-n module, the derivative of the
-    module's probability of working with respect to the member's: the
-    probability that exactly ``k - 1`` of the others work."""
+def _others_working(
+    R: Sequence[Any], Q: Sequence[Any], counts: Iterable[int]
+) -> list:
+    """For each of ``n`` independent members working with probabilities
+    ``R`` (failing with ``Q``): the probabilities that exactly ``j`` of the
+    others work, for each ``j`` in ``counts``, each a sum of products."""
+    counts = list(counts)
     n = len(R)
 
     def distributions(order: Iterable[int]) -> list:
@@ -617,17 +732,34 @@ def _koon_partials(R: Sequence[float], Q: Sequence[float], k: int) -> list:
 
     before = distributions(range(n))
     after = distributions(range(n - 1, -1, -1))
-    partials = []
+    out = []
     for i in range(n):
         b, a = before[i], after[n - 1 - i]
-        partials.append(
-            sum(
-                b[j] * a[k - 1 - j]
-                for j in range(len(b))
-                if 0 <= k - 1 - j < len(a)
-            )
+        out.append(
+            [
+                sum(
+                    b[x] * a[j - x]
+                    for x in range(len(b))
+                    if 0 <= j - x < len(a)
+                )
+                for j in counts
+            ]
         )
-    return partials
+    return out
+
+
+def _koon_partials(R: Sequence[float], Q: Sequence[float], k: int) -> list:
+    """For each member of a k-out-of-n module, the derivative of the
+    module's probability of working with respect to the member's: the
+    probability that exactly ``k - 1`` of the others work."""
+    return [exactly[0] for exactly in _others_working(R, Q, [k - 1])]
+
+
+def _koon_cut_shares(R: Sequence[Any], Q: Sequence[Any], k: int) -> list:
+    """For each member of a k-out-of-n module, the probability that at most
+    ``k - 1`` of the others work (at least ``n - k`` have failed): with a
+    cut set of the member failed, one of the module's has then failed."""
+    return [sum(exactly) for exactly in _others_working(R, Q, range(k))]
 
 
 class _Reduction:

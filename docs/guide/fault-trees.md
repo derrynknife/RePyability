@@ -131,7 +131,7 @@ array), with `Q` the top event probability and `q_e` the event's:
 |---|---|
 | `birnbaum_importance(t)` | `Q(e occurred) − Q(e did not)`: how much `Q` depends on the event. |
 | `criticality_importance(t)` | `I_B(e) · q_e / Q`: the share of the top event the event accounts for. |
-| `fussell_vesely(t)` | The probabilities of the minimal cut sets containing `e`, summed, over `Q`. |
+| `fussell_vesely(t)` | The probability that some minimal cut set containing `e` has occurred, over `Q` (`method="rare_event"`: their probabilities summed, which can pass 1). |
 | `risk_achievement_worth(t)` | `Q(e occurred) / Q`. |
 | `risk_reduction_worth(t)` | `Q / Q(e did not occur)`. |
 

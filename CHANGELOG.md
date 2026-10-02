@@ -59,7 +59,8 @@ failing passes 0.1 (#132); hot standby, warm standby with one unit
 operating, cold standby of identical units and load sharing of identical
 units, and cold standby of different units with two operating, are no
 longer fits to simulated lifetimes, so their reliabilities lose their
-Monte-Carlo error (#135, #138, #139); and surpyval 0.21
+Monte-Carlo error (#135, #138, #139); `fussell_vesely` is exact, with the
+rare-event sum behind `method="rare_event"` (#137); and surpyval 0.21
 is required.
 
 ### Added
@@ -590,6 +591,22 @@ is required.
 
 ### Changed
 
+- **`fussell_vesely` is exact** (#137). The Fussell–Vesely importance was
+  the rare-event sum of the probabilities of the minimal cut sets
+  containing a node, over the system's unreliability: the only importance
+  measure that was not exact, and once failures stop being rare it passes
+  1 (nearly 2 on a bridge near failure). It is now the probability that
+  some minimal cut set containing the node has failed, from the exact
+  engine, so it is between 0 and 1 and keeps its precision however small:
+  down the module tree it is a product of the modules' factors, and the
+  part that is not series-parallel takes one Shannon decomposition of the
+  cut sets through each of its nodes, kept for later calls. Values change
+  where a node is in more than one minimal cut set (a bridge, a vote,
+  parallel chains), most where failures are likely. `method="rare_event"`
+  gives the sum, as many PRA tools report it, on `NonRepairableRBD`,
+  `RepairableRBD` and `FaultTree`; with `fv_type="p"`, the measure takes
+  the union of the minimal path sets' failures (or, with `"rare_event"`,
+  their sum) as before.
 - **A diagram that is not one says what is wrong** (#131). Building an RBD
   that is not a valid diagram raised `ValueError: RBD not correctly
   structured` and nothing more; the message (and the warning, with

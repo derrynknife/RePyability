@@ -6461,10 +6461,22 @@ class RepairableRBD(RBD):
                 "risk_achievement_worth",
                 "risk_reduction_worth",
                 "criticality_importance",
-                "fussell_vesely",
-                "fussel_vesely",
             ),
             r.refused(importance) if importance else long_run,
+        )
+        give(
+            ("fussell_vesely", "fussel_vesely"),
+            (
+                r.refused(importance)
+                if importance
+                else from_long_run(
+                    r.EXACT,
+                    "The exact probability that a minimal cut set containing "
+                    "each node is down, over the system's unavailability, "
+                    "from the exact long-run values (method='rare_event' "
+                    "sums the cut sets' probabilities instead).",
+                )
+            ),
         )
         if self.has_costs:
             setups = r.refusal(self._require_separate_setups)
@@ -12821,31 +12833,35 @@ class RepairableRBD(RBD):
         fv_type: str = "c",
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
+        method: str = "exact",
     ) -> dict[Any, float]:
         """Calculate Fussell-Vesely importance of all nodes, evaluated at the
         nodes' long-run availabilities.
 
-        Briefly, the Fussell-Vesely importance measure for node i =
-        (sum of probabilities of cut-sets including node i occurring, i.e.
-        all their nodes failed) / (the probability of the system failing).
-        Here a node's probability of having failed is its long-run
-        unavailability, ``1 - A_i``, from ``node_availability`` (with
-        ``working_nodes`` and ``broken_nodes`` held at availability 1 and
-        0), and the system's is ``1 - A_sys``; both are exact, with no
-        simulation, and worked out in their own right (see
-        ``mean_unavailability``), so small ones keep their precision. The
-        sum over cut sets is the usual rare-event
-        approximation of the probability that some cut set containing node
-        i has occurred, so with large unavailabilities the measure can
-        exceed 1. If the system never fails, the ratio is ``nan`` or
-        ``inf``, with a numpy warning.
+        The Fussell-Vesely importance of node i is the probability that
+        some minimal cut set containing node i has failed (all its nodes
+        down), over the probability that the system has failed: the share
+        of the system's unavailability that involves node i. Here a node's
+        probability of having failed is its long-run unavailability,
+        ``1 - A_i``, from ``node_availability`` (with ``working_nodes`` and
+        ``broken_nodes`` held at availability 1 and 0), and the system's is
+        ``1 - A_sys``; both are exact, with no simulation, and worked out
+        in their own right (see ``mean_unavailability``), so small ones
+        keep their precision. ``method="exact"`` (the default) works out
+        the probability that some cut set containing node i has failed
+        exactly, from the exact engine, so the measure is between 0 and 1.
+        ``method="rare_event"`` sums the cut sets' probabilities instead,
+        the usual rare-event approximation, which with large
+        unavailabilities can exceed 1. If the system never fails, the ratio
+        is ``nan`` or ``inf``, with a numpy warning.
 
         Typically this measure is implemented using cut-sets as mentioned
         above, although it can be implemented using path-sets. Both are
-        implemented here, selected by ``fv_type``: ``"c"`` sums over the
-        minimal cut sets containing node i, ``"p"`` over the minimal path
-        sets containing it. Either way each set contributes the probability
-        that all of its nodes are failed, and the sum is divided by the
+        implemented here, selected by ``fv_type``: ``"c"`` takes the
+        minimal cut sets containing node i, ``"p"`` the minimal path sets
+        containing it. Either way a set has failed when all of its nodes
+        have, and the probability that one of them has (or, with
+        ``"rare_event"``, the sum of their probabilities) is divided by the
         system's unavailability.
 
         Parameters
@@ -12858,6 +12874,8 @@ class RepairableRBD(RBD):
             None.
         broken_nodes : Collection[Hashable], optional
             Condition on these nodes being failed, by default None.
+        method : str, optional
+            ``"exact"`` (the default) or ``"rare_event"``.
 
         Returns
         -------
@@ -12868,10 +12886,10 @@ class RepairableRBD(RBD):
         Raises
         ------
         ValueError
-            If ``fv_type`` is not 'c' (cut-set) or 'p' (path-set); if a
-            working/broken node is unknown, is the input or output node, or
-            is in both sets; or if a component has a non-parametric
-            reliability model.
+            If ``fv_type`` is not 'c' (cut-set) or 'p' (path-set), or
+            ``method`` not 'exact' or 'rare_event'; if a working/broken node
+            is unknown, is the input or output node, or is in both sets; or
+            if a component has a non-parametric reliability model.
         NotImplementedError
             If a component can wait for a repair crew (see
             ``repair_crews``): the measures assume that the components fail
@@ -12903,6 +12921,7 @@ class RepairableRBD(RBD):
             super()._fussell_vesely(
                 node_probabilities,
                 fv_type,
+                method,
                 weights=weights,
                 node_failures=node_failures,
             )

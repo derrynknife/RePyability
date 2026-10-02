@@ -238,7 +238,12 @@ routes["availability"].engine      # 'python': no compiled engine for tests
   bridges gets expensive. Only `get_min_path_sets()`, `path_set_probabilities`
   and `fussell_vesely(fv_type="p")` list every path set, and
   `get_all_path_sets()` every simple path: avoid them on large redundant
-  diagrams.
+  diagrams. `fussell_vesely` lists the part's minimal cut sets, as
+  `get_min_cut_sets()` does, and on first use decomposes, for each of its
+  nodes, the cut sets through it (all in one plan, kept for later calls):
+  on a densely meshed part (a 4 × 8 grid of nodes, a thousand cut sets)
+  that takes a few seconds, where the rare-event sum
+  (`method="rare_event"`) takes a tenth.
 - **Meshed diagrams: a decision diagram.** A part that does not reduce
   and may have more than a hundred minimal path sets is decided by a
   binary decision diagram built from its graph instead, without listing

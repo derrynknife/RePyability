@@ -3951,8 +3951,6 @@ class NonRepairableRBD(RBD):
                 "risk_achievement_worth",
                 "risk_reduction_worth",
                 "criticality_importance",
-                "fussell_vesely",
-                "fussel_vesely",
             ),
             (
                 r.refused(no_ccf)
@@ -3961,6 +3959,20 @@ class NonRepairableRBD(RBD):
                     r.EXACT,
                     "The exact system reliability, with each node working and "
                     "failed.",
+                )
+            ),
+        )
+        give(
+            ("fussell_vesely", "fussel_vesely"),
+            (
+                r.refused(no_ccf)
+                if no_ccf
+                else built(
+                    r.EXACT,
+                    "The exact probability that a minimal cut set containing "
+                    "each node has failed, over the system's unreliability "
+                    "(method='rare_event' sums the cut sets' probabilities "
+                    "instead).",
                 )
             ),
         )
@@ -6459,29 +6471,40 @@ class NonRepairableRBD(RBD):
         fv_type: str = "c",
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
+        method: str = "exact",
     ) -> dict[Any, Union[float, np.ndarray]]:
         """Fussell-Vesely importance of each node at time/s ``x``.
 
         With ``fv_type="c"`` (the default) this is the usual cut-set
         measure: the probability that a minimal cut set containing node
-        ``i`` has failed, given that the system has failed. The numerator
-        uses the rare-event approximation, summing the probabilities of
-        those cut sets instead of taking their union:
+        ``i`` has failed (every node in it), given that the system has
+        failed, the share of the system's failure probability that involves
+        node ``i``:
+
+            FV_i = P(some minimal cut set containing i has failed)
+                   / (1 - R_sys)
+
+        It is exact (``method="exact"``, the default), from the exact
+        engine, and between 0 and 1. ``method="rare_event"`` gives the
+        rare-event approximation that many PRA tools report, summing the
+        probabilities of those cut sets instead of taking their union:
 
             FV_i = sum over minimal cut sets C containing i of
                    prod over j in C of (1 - R_j), divided by (1 - R_sys)
 
-        The sum over-estimates the union, so values can exceed 1 when the
-        failure probabilities are not small. Each ``1 - R`` is worked out in
-        its own right (a node's from its model's ``ff``, the system's as
-        [`ff`][repyability.NonRepairableRBD.ff] is), so small ones keep
-        their precision.
+        The sum over-estimates the union, so it can exceed 1 when the
+        failure probabilities are not small (up to 2 on a bridge whose
+        system is near failure). Each ``1 - R`` is worked out in its own
+        right (a node's from its model's ``ff``, the system's as
+        [`ff`][repyability.NonRepairableRBD.ff] is), and so is the union, so
+        small ones keep their precision.
 
-        With ``fv_type="p"`` the same formula is applied to the minimal path
-        sets instead: the numerator sums, over the minimal path sets
-        containing ``i``, the probability that every member of the path set
-        has failed. This value is not bounded by 1: for a node in a parallel
-        pair it is ``(1 - R_i) / (1 - R_sys)``.
+        With ``fv_type="p"`` the minimal path sets take the place of the cut
+        sets: the numerator is the probability that every member of some
+        minimal path set containing ``i`` has failed (or, with
+        ``"rare_event"``, the sum of those probabilities). This value is
+        not bounded by 1: for a node in a parallel pair it is
+        ``(1 - R_i) / (1 - R_sys)``.
 
         Parameters
         ----------
@@ -6489,12 +6512,16 @@ class NonRepairableRBD(RBD):
             Time/s as a number or an array. May be omitted only for a
             fixed-probability RBD.
         fv_type : str, optional
-            ``"c"`` (the default) sums over the minimal cut sets and ``"p"``
-            over the minimal path sets.
+            ``"c"`` (the default) for the minimal cut sets and ``"p"`` for
+            the minimal path sets.
         working_nodes : Collection[Hashable], optional
             Nodes to treat as working (reliability 1), by default none.
         broken_nodes : Collection[Hashable], optional
             Nodes to treat as failed (reliability 0), by default none.
+        method : str, optional
+            ``"exact"`` (the default): the probability of the union of the
+            sets' failures; or ``"rare_event"``: the sum of their
+            probabilities.
 
         Returns
         -------
@@ -6505,9 +6532,9 @@ class NonRepairableRBD(RBD):
         Raises
         ------
         ValueError
-            If ``fv_type`` is not "c" or "p", ``x`` is omitted for a
-            time-varying RBD, or a working/broken node is invalid (as for
-            ``sf``).
+            If ``fv_type`` is not "c" or "p", ``method`` is not "exact" or
+            "rare_event", ``x`` is omitted for a time-varying RBD, or a
+            working/broken node is invalid (as for ``sf``).
         NotImplementedError
             If the RBD has common-cause (CCF) groups.
 
@@ -6531,6 +6558,22 @@ class NonRepairableRBD(RBD):
         >>> fv = rbd.fussell_vesely()
         >>> {k: round(v, 4) for k, v in sorted(fv.items())}
         {'p1': 0.1681, 'p2': 0.1681, 'v': 0.8403}
+
+        Here no two cut sets share a node, so the rare-event sum is the
+        same. In a bridge they overlap, and once failures are likely the sum
+        passes 1 while the exact share cannot:
+
+        >>> F = FixedEventProbability.from_params
+        >>> bridge = NonRepairableRBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"),
+        ...      ("a", "d"), ("c", "d"), ("b", "e"), ("c", "e"),
+        ...      ("d", "t"), ("e", "t")],
+        ...     {node: F(0.8) for node in "abcde"},
+        ... )
+        >>> round(bridge.fussell_vesely()["a"], 4)
+        0.8146
+        >>> round(bridge.fussell_vesely(method="rare_event")["a"], 4)
+        1.264
         """
         self._require_no_ccf()
         node_probabilities, node_failures = self._importance_inputs(
@@ -6539,7 +6582,10 @@ class NonRepairableRBD(RBD):
         return cast(
             Dict[Any, Union[float, np.ndarray]],
             super()._fussell_vesely(
-                node_probabilities, fv_type, node_failures=node_failures
+                node_probabilities,
+                fv_type,
+                method,
+                node_failures=node_failures,
             ),
         )
 

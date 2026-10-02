@@ -220,8 +220,9 @@ better.ff()                    # -> 0.00020195
 The approximation always errs on the high side (the sum of the probabilities
 of events is never less than the probability of their union), so it is a
 safe, conservative number, and a good one when the $q_i$ are small. It is
-also the basis of the Fussell–Vesely importance of [Lesson 4](importance.md).
-RePyability does not need it: it computes the exact value.
+also how many tools compute the Fussell–Vesely importance of
+[Lesson 4](importance.md). RePyability does not need it: it computes the
+exact values.
 
 ## Pivotal decomposition: divide and conquer
 

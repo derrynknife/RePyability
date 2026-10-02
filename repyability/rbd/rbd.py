@@ -2906,23 +2906,24 @@ class RBD:
         self,
         node_probabilities: dict[Any, ArrayLike],
         fv_type: str = "c",
-        approx: bool = True,
+        method: str = "exact",
         weights: Optional[np.ndarray] = None,
         node_failures: Optional[dict[Any, ArrayLike]] = None,
     ) -> dict[Any, np.ndarray]:
-        """Calculate Fussell-Vesely importance of all components at time/s x.
+        """The Fussell-Vesely importance of every node: the probability
+        that some minimal cut set containing it has failed (every node in
+        it), over the probability that the system has failed.
 
-        Briefly, the Fussel-Vesely importance measure for node i =
-        (sum of probabilities of cut-sets including node i occuring/failing) /
-        (the probability of the system failing).
+        ``method="exact"`` works out that union exactly, from the exact
+        engine's decomposition (see ``Decomposition.failed_cut_sets``);
+        ``"rare_event"`` sums the probabilities of the cut sets instead,
+        the usual rare-event approximation, which over-estimates the union
+        and can exceed 1 when failures are not rare.
 
-        Typically this measure is implemented using cut-sets as mentioned
-        above, although the measure can be implemented using path-sets. Both
-        are implemented here.
-
-        fv_type dictates the method:
-            "c" - cut-set
-            "p" - path-set
+        ``fv_type="p"`` puts the minimal path sets in place of the cut sets
+        (the union, or the sum, of the probabilities that every node of a
+        path set containing the node has failed): the exact union is the
+        dual structure's (see ``Decomposition.dual``).
 
         Each set's probability is a product of its nodes' probabilities of
         failing, and the system's probability of failing is a sum of
@@ -2934,11 +2935,9 @@ class RBD:
         node_probabilities : Dict
             The probability that each node works (arrays of one length).
         fv_type : str, optional
-            Dictates the method of calculation, 'c' = cut-set and
-            'p' = path-set, by default "c"
-        approx: bool, optional
-            If True uses the sum of failure probabilities as the approximate
-            solution to the (1 - PI(1 - Q)) product, by default True
+            ``"c"`` (cut sets, the default) or ``"p"`` (path sets).
+        method : str, optional
+            ``"exact"`` (the default) or ``"rare_event"``.
         weights, node_failures : optional
             As for ``_birnbaum_importance``.
 
@@ -2951,35 +2950,55 @@ class RBD:
         Raises
         ------
         ValueError
-            If ``fv_type`` is not 'c' (cut-set) or 'p' (path-set), or if the
-            node probability arrays are not all the same length.
+            If ``fv_type`` is not 'c' (cut-set) or 'p' (path-set), or
+            ``method`` not 'exact' or 'rare_event', or if the node
+            probability arrays are not all the same length.
         """
+        if fv_type not in ("c", "p"):
+            raise ValueError(
+                "fv_type must be either 'c' (cut-set) or 'p' (path-set), "
+                f"fv_type={fv_type!r} was given."
+            )
+        if method not in ("exact", "rare_event"):
+            raise ValueError(
+                "method must be 'exact' or 'rare_event', " f"got {method!r}."
+            )
         p, q, size = self._node_pairs(node_probabilities, node_failures)
+
+        # The system unreliability, the denominator for every node.
+        system_ff = _averaged(self._system_unreliability(p, q), weights)
+
+        if method == "exact":
+            decomposition = self._decomposition()
+            if decomposition.always_works:
+                failed: dict = {}
+            else:
+                if fv_type == "p":
+                    decomposition = decomposition.dual()
+                failed = decomposition.failed_cut_sets(p, q, shape=size)
+            zero = np.zeros(size)
+            return {
+                node: _averaged(
+                    np.broadcast_to(failed.get(node, zero), (size,)), weights
+                )
+                / system_ff
+                for node in self.nodes
+            }
 
         # Get node-sets based on what method was requested
         if fv_type == "c":
             node_sets = self.get_min_cut_sets()
-        elif fv_type == "p":
+        else:
             node_sets = {
                 frozenset(path_set)
                 for path_set in self.get_min_path_sets(
                     include_in_out_nodes=False
                 )
             }
-        else:
-            raise ValueError(
-                f"fv_type must be either 'c' (cut-set) or 'p' (path-set), \
-                fv_type={fv_type} was given."
-            )
-
-        # The system unreliability, the denominator for every node.
-        system_ff = _averaged(self._system_unreliability(p, q), weights)
-
         node_importance: dict[Any, np.ndarray] = {}
         for this_node in self.nodes:
-            # The probabilities of the sets containing the node failing:
-            # their sum, or the probability that at least one does,
-            # 1 - PI(1 - Q), as -expm1(sum(log1p(-Q))) to keep a small one.
+            # The sum of the probabilities of the sets containing the node
+            # failing.
             numerator = np.zeros(size)
             for node_set in node_sets:
                 if this_node not in node_set:
@@ -2987,13 +3006,7 @@ class RBD:
                 set_fails = np.ones(size)
                 for other_node in node_set:
                     set_fails = set_fails * q[other_node]
-                if approx:
-                    numerator = numerator + set_fails
-                else:
-                    with np.errstate(divide="ignore"):
-                        numerator = numerator + np.log1p(-set_fails)
-            if not approx:
-                numerator = -np.expm1(numerator)
+                numerator = numerator + set_fails
             node_importance[this_node] = (
                 _averaged(numerator, weights) / system_ff
             )

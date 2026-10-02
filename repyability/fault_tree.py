@@ -857,27 +857,39 @@ class FaultTree:
             out = {e: top / not_occurred[e] for e in self.events}
         return self._out(out, scalar)
 
-    def fussell_vesely(self, t: Optional[ArrayLike] = None) -> dict:
+    def fussell_vesely(
+        self, t: Optional[ArrayLike] = None, method: str = "exact"
+    ) -> dict:
         """Fussell-Vesely importance of each basic event.
 
         The share of the top event probability carried by the minimal cut
-        sets that contain the event: the sum of their probabilities (the
-        rare-event approximation of their union) divided by the top event
-        probability, as ``NonRepairableRBD.fussell_vesely`` computes it.
-        Values can exceed 1 when the events are not rare. ``nan`` where the
-        top event cannot occur.
+        sets that contain the event: the probability that one of them has
+        occurred (every event in it), over the top event probability, as
+        ``NonRepairableRBD.fussell_vesely`` computes it. It is exact, and
+        between 0 and 1, by default; ``method="rare_event"`` sums the cut
+        sets' probabilities instead (the rare-event approximation of their
+        union, as many PRA tools report it), which can exceed 1 when the
+        events are not rare. ``nan`` where the top event cannot occur.
 
         Parameters
         ----------
         t : array_like, optional
             Time/s, a number or an array. May be left out when no event's
             probability depends on time.
+        method : str, optional
+            ``"exact"`` (the default) or ``"rare_event"``.
 
         Returns
         -------
         dict
             ``{event: importance}``: floats for a number ``t``, arrays for
             an array.
+
+        Raises
+        ------
+        ValueError
+            If ``method`` is not "exact" or "rare_event", or ``t`` is left
+            out and an event's probability depends on time.
 
         Examples
         --------
@@ -890,14 +902,25 @@ class FaultTree:
         >>> {e: round(v, 4) for e, v in tree.fussell_vesely().items()}
         {'pump 1': 0.1681, 'pump 2': 0.1681, 'valve': 0.8403}
         """
+        if method not in ("exact", "rare_event"):
+            raise ValueError(
+                f"method must be 'exact' or 'rare_event', got {method!r}."
+            )
         times, scalar = self._times(t)
         p, q = self._event_probabilities(times)
         top = self._top(p, q, len(times))
         share = {e: np.zeros(len(times)) for e in self.events}
-        for cut in self.minimal_cut_sets():
-            probability = np.prod([q[e] for e in cut], axis=0)
-            for e in cut:
+        if method == "exact":
+            failed = self._decomposition.failed_cut_sets(
+                p, q, shape=len(times)
+            )
+            for e, probability in failed.items():
                 share[e] = share[e] + probability
+        else:
+            for cut in self.minimal_cut_sets():
+                probability = np.prod([q[e] for e in cut], axis=0)
+                for e in cut:
+                    share[e] = share[e] + probability
         with np.errstate(divide="ignore", invalid="ignore"):
             out = {e: share[e] / top for e in self.events}
         return self._out(out, scalar)
