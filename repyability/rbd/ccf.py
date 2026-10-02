@@ -399,6 +399,11 @@ class MGL(_Model):
         evaluation time with ``Q``, the probability that the group's first
         member has failed by then.
 
+        By rate, the shocks are the sets of members the causes that have
+        struck fail between them: several causes may strike, and a member
+        fails if any of its causes has, so these are the distinct unions,
+        mutually exclusive as the RBD needs, each with its probability.
+
         Parameters
         ----------
         members : collection of hashable
@@ -407,11 +412,6 @@ class MGL(_Model):
         Q : float or array_like
             Each member's total failure probability (the same for every
             member of a symmetric group), at one or more times.
-
-        By rate, the shocks are the sets of members the causes that have
-        struck fail between them: several causes may strike, and a member
-        fails if any of its causes has, so these are the distinct unions,
-        mutually exclusive as the RBD needs, each with its probability.
 
         Returns
         -------
