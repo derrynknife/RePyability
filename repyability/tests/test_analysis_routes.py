@@ -68,6 +68,11 @@ def nonrepairable_rbds():
             {"a": unit, "b": unit, "c": E([0.002])},
             ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
         ),
+        "common cause by rate": NonRepairableRBD(
+            EDGES,
+            {"a": unit, "b": unit, "c": E([0.002])},
+            ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1, basis="rate"))],
+        ),
         "fixed": NonRepairableRBD(
             EDGES, {"a": FIXED(0.1), "b": FIXED(0.2), "c": FIXED(0.05)}
         ),
@@ -609,8 +614,12 @@ def test_the_readme_says_what_is_simulated():
         "Anything a simulated node is part of": [
             (nonrepairable["nested"], "sf", "simulated"),
         ],
-        "Common-cause groups: MTTF, importance, allocation, and analyses "
-        "given ages": [(ccf, "sf", "exact")]
+        "Common-cause groups: importance, allocation and analyses given "
+        "ages, and the MTTF of a group splitting a failure probability": [
+            (ccf, "sf", "exact"),
+            (nonrepairable["common cause by rate"], "mean", "numerical"),
+            (nonrepairable["common cause by rate"], "random", "simulated"),
+        ]
         + [
             (ccf, name, "refused")
             for name in (

@@ -140,6 +140,7 @@ def test_conditioning_on_nodes():
         rbd.ff(method="x")
 
 
+@pytest.mark.filterwarnings("ignore:Common-cause group:UserWarning")
 @pytest.mark.parametrize("q", QS)
 def test_common_cause_groups(q):
     # A parallel pair fails if the shared cause strikes (beta * Q), or if

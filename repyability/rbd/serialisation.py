@@ -394,6 +394,10 @@ def _ccf_to_list(ccf_groups):
             raise NotImplementedError(
                 f"Cannot serialise CCF model {type(group.model).__name__}."
             )
+        if group.model.basis != "probability":
+            # Saved only when not the default, so older files read as
+            # they always have.
+            model["basis"] = group.model.basis
         out.append({"members": list(group.members), "model": model})
     return out
 
@@ -407,10 +411,11 @@ def _ccf_from_list(ccf_list):
     for entry in ccf_list:
         model_dict = entry["model"]
         kind = model_dict["kind"]
+        basis = model_dict.get("basis", "probability")
         if kind == "beta_factor":
-            model: object = BetaFactor(model_dict["beta"])
+            model: object = BetaFactor(model_dict["beta"], basis=basis)
         elif kind == "mgl":
-            model = MGL(*model_dict["letters"])
+            model = MGL(*model_dict["letters"], basis=basis)
         else:
             raise ValueError(f"Unknown CCF model kind {kind!r}.")
         members = [_node_name(m) for m in entry["members"]]

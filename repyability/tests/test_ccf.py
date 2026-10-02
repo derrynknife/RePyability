@@ -21,6 +21,12 @@ from repyability import (
     PerfectReliability,
 )
 
+# The probability split's arithmetic is checked at large probabilities on
+# purpose; its warning beyond them is tested in test_ccf_lifetime.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:Common-cause group:UserWarning"
+)
+
 PARALLEL = [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")]
 
 

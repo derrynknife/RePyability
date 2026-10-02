@@ -448,6 +448,11 @@ Does the design still meet the target of 0.95?
     0.1 * (1 - p["valve"])             # -> 0.01175  the valve group's floor
     ```
 
+    RePyability warns at the second line: a valve's $q$ of 0.1175 is just
+    past the 0.1 the probability split is meant for. Splitting the rate,
+    `BetaFactor(0.1, basis="rate")`, the floor is $1 - 0.8825^{0.1} =
+    0.0124$ and the line reaches 0.9396: the same lesson.
+
 ## Where next
 
 This is the last lesson. From here:

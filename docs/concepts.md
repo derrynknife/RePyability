@@ -410,29 +410,45 @@ evaluation) and blending the branches by their probabilities. Hence `β = 0`
 reproduces the independent result exactly, and `β = 1` makes a redundant
 group no better than a single unit.
 
-**The model assumes each member's `Q` is small.** "Exact" means the
-evaluation of the model is exact; the model itself is the PRA basic-event
-one, which splits each member's failure *probability* (`βQ` shared,
-`(1 − β)Q` independent) and is a rare-event model. Use it over periods in
-which each member's failure probability stays small, such as a mission or a
-proof-test interval. For a parallel pair with `β = 0.3`, the system
-unreliability is within 0.3% of a rate-based beta-factor treatment (which
-splits each member's failure *rate* instead, making the shared cause a shock
-with reliability `R(t)^β`) at `Q = 0.01`, 3.5% at `Q = 0.1` and about 10% at
-`Q = 0.3`. From about `Q = 0.5` the pair comes out *more* reliable than an
-independent pair. Over a whole life (`Q → 1`) the model stops describing a
-lifetime at all: under the beta factor, each member would only ever fail with
-probability `1 − β(1 − β)` (0.79 at `β = 0.3`).
+**By default the model assumes each member's `Q` is small.** "Exact" means
+the evaluation of the model is exact; the default model is the PRA
+basic-event one, which splits each member's failure *probability* (`βQ`
+shared, `(1 − β)Q` independent) and is a rare-event model. Use it over
+periods in which each member's failure probability stays small, such as a
+mission or a proof-test interval. For a parallel pair with `β = 0.3`, the
+system unreliability is within 0.3% of a rate-based beta-factor treatment at
+`Q = 0.01`, 3.5% at `Q = 0.1` and about 10% at `Q = 0.3`. From about
+`Q = 0.5` the pair comes out *more* reliable than an independent pair. Over
+a whole life (`Q → 1`) the model stops describing a lifetime at all: under
+the beta factor, each member would only ever fail with probability
+`1 − β(1 − β)` (0.79 at `β = 0.3`). So a diagram warns, once for each group,
+when a member's `Q` passes 0.1.
 
-Common cause is currently reflected in `sf()` / `ff()` (and quantities derived
-from them) and persists through serialisation. Groups must be symmetric
-(identical member models) and disjoint. An MTTF integrates over the whole
-life, where `Q` is no longer small, so it is outside this model: the exact
-`mean()` refuses CCF groups, and the Monte-Carlo `random()`,
-`mean(method="simulate")` and MTTF interval sample the members independently,
-leaving the common cause out. The probability-dependent importance/sensitivity and the
-condition-based methods do not yet account for it and raise a clear error on a
-CCF RBD; `structural_importance`, being probability-free, is unaffected.
+**Over a lifetime, split the rate.** With `basis="rate"` the model splits
+each member's failure *rate*: in the members' cumulative hazard
+`H(t) = −log R(t)`, the shared cause is a shock of hazard `β H(t)`, which has
+not struck by `t` with probability `R(t)^β`, and each member's own causes
+have hazard `(1 − β) H(t)`. A member fails at the first of its causes, so
+its reliability is `R(t)^β · R(t)^(1 − β) = R(t)`: every member keeps its own
+life distribution, whatever its shape, and the model holds over the whole
+life. To first order in `Q` the shock strikes with `βQ` and each member fails
+on its own with `(1 − β)Q`, as the probability split has it. Under MGL each
+specific set of `k` members has a cause of its own, of hazard
+`(Q_k / Q) H(t)`, striking independently of the others; several may strike,
+so the outcomes are the sets the struck causes fail between them.
+
+Common cause is reflected in `sf()` / `ff()` (and quantities derived from
+them) and persists through serialisation, basis included. Groups must be
+symmetric (identical member models) and disjoint. An MTTF integrates over the
+whole life: the exact `mean()` integrates a group that splits the rate, and
+refuses one that splits a probability, where `Q` is no longer small. The
+Monte-Carlo `random()`, `mean(method="simulate")` and MTTF interval draw a
+rate-split group's shocks (each cause strikes at an exponential time in
+`H`), and sample the members of a probability-split group independently,
+leaving the common cause out. The probability-dependent
+importance/sensitivity and the condition-based methods do not yet account
+for it and raise a clear error on a CCF RBD; `structural_importance`, being
+probability-free, is unaffected.
 **Alpha-factor**, a data-estimable reparameterisation of the same
 multiplicities, is a planned extension.
 

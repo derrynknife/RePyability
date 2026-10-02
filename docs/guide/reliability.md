@@ -154,8 +154,10 @@ ci.lower, ci.upper   # (93.49, 94.03)
 ci.standard_error    # -> 0.1373   sample std / √mc_samples
 ```
 
-The interval narrows like `1/√mc_samples`. The exact MTTF refuses
-common-cause groups, and the simulation leaves them out (see
+The interval narrows like `1/√mc_samples`. A common-cause group that
+splits the failure rate (`basis="rate"`) is in both the exact MTTF and the
+simulation; one that splits a probability (the default) the exact MTTF
+refuses and the simulation leaves out (see
 [Common-cause failures](common-cause.md#what-honours-a-ccf-group)). A system
 that can outlast its failing nodes has an infinite MTTF: one that needs only
 a node some of whose units never fail (a surpyval model with `p < 1`).

@@ -282,6 +282,9 @@ def test_nested_compositions_match_the_unreduced_engine():
 # -- every public method, reduced or not --------------------------------------
 
 
+# The common-cause diagram is evaluated past the probability split's range,
+# on purpose: both engines must agree there too.
+@pytest.mark.filterwarnings("ignore:Common-cause group:UserWarning")
 @pytest.mark.parametrize("name", sorted(rbds()))
 def test_non_repairable_methods_match_the_unreduced_engine(name):
     rbd, reference = rbds()[name], unreduced(rbds()[name])

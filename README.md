@@ -106,7 +106,8 @@ places, nested diagrams):
   probabilities (non-parametric fits, such as Kaplan–Meier, are
   deprecated and go in 0.12); repeated nodes; cold standby with one unit
   operating (any units); standby and load sharing of identical
-  exponential units; common-cause groups, for the system's reliability;
+  exponential units; common-cause groups, for the system's reliability
+  (and, splitting the failure rate, its MTTF);
 - **non-repairable questions:** reliability, hazard, MTTF, B*X* life and
   importance measures at any time, also given each component's current age;
   the distribution of the system's capacity;
@@ -133,7 +134,7 @@ places, nested diagrams):
 | Warm or hot standby of non-exponential units | Simulated: a fit to simulated lifetimes, deprecated (from 0.12, simulated only in the system's simulations: #149) | No: could be exact (#135). Hot standby is *k*-out-of-*n*: draw the units as parallel nodes for an exact answer now. |
 | Cold standby with two or more units operating, and load sharing, of non-exponential units | Simulated: a fit to simulated lifetimes, deprecated (from 0.12, simulated only in the system's simulations: #149) | No: could be numerical (#138 for two units operating, #139 for load sharing). |
 | Anything a simulated node is part of | Simulated through that node | Only while the node is simulated. |
-| Common-cause groups: MTTF, importance, allocation, and analyses given ages | Refused (a simulated MTTF leaves the groups out) | The MTTF and the analyses given ages need a lifetime model for the groups (#132); importance and allocation could be exact (#140). |
+| Common-cause groups: importance, allocation and analyses given ages, and the MTTF of a group splitting a failure probability | Refused (a simulated MTTF leaves a probability split out) | No: importance and allocation could be exact (#140). A group splitting the failure rate (`basis="rate"`) has an exact MTTF, and the simulations draw its shared shocks; the analyses given ages need a model of members of different ages. |
 | Kaplan–Meier lives in a repairable system | Long run refused; over time numerical | Non-parametric nodes are deprecated and go in 0.12 (#149): fit a parametric distribution in surpyval. |
 | **Architecture and maintenance** | | |
 | Phased missions over 200,000 states, and networks over 100,000 paths | Refused, pointing to `method="simulate"` | No: decision diagrams could keep them exact (#142, #143). |

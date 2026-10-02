@@ -538,12 +538,15 @@ the chance that a shared failure takes a third unit, and so on); see
     periodically, and model its dormant ageing with `dormancy_factor`
     instead of assuming it cold.
 
-!!! warning "Keep the common-cause model to small q"
-    The beta factor splits a probability, so use it over a mission or test
-    interval where each unit's $q$ stays small, not over a whole life.
-    RePyability's `sf` and `ff` include a group, but the Monte-Carlo
-    `mean()` and `random()` ignore it (see
-    [what honours a CCF group](../guide/common-cause.md#what-honours-a-ccf-group)).
+!!! warning "Split a probability only while q is small"
+    By default the beta factor splits a probability, so use it over a
+    mission or test interval where each unit's $q$ stays small; RePyability
+    warns once a unit's $q$ passes 0.1. Over a whole life, split the
+    failure rate, `BetaFactor(beta, basis="rate")`: the shared cause is a
+    shock with reliability $R(t)^\beta$ and each unit's own causes have
+    $R(t)^{1-\beta}$, so every unit keeps its own life, and the MTTF and
+    the simulations include the group (see
+    [Over a lifetime](../guide/common-cause.md#over-a-lifetime)).
 
 ## Summary
 

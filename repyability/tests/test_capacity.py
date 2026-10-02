@@ -355,6 +355,7 @@ def test_positive_capacity_is_the_reliability_over_time():
     assert isinstance(one.mean(), float)
 
 
+@pytest.mark.filterwarnings("ignore:Common-cause group:UserWarning")
 def test_common_cause_groups_are_honoured():
     rbd = NonRepairableRBD(
         [("in", "a"), ("in", "b"), ("a", "out"), ("b", "out")],

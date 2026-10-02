@@ -53,7 +53,9 @@ behind `method="simulate"`, and the exact MTTF refuses common-cause groups
 reliabilities are more accurate, so they move slightly (#128); a cost
 breakdown has a seventh category, `"setup"` (#108); perfect junction
 nodes are left out of the importance measures and allocations, and a
-`RegressionNode` gives a float for a scalar time (#134); and surpyval 0.21
+`RegressionNode` gives a float for a scalar time (#134); a common-cause
+group that splits a probability warns once its members' probability of
+failing passes 0.1 (#132); and surpyval 0.21
 is required.
 
 ### Added
@@ -502,6 +504,24 @@ is required.
   simulated, and which of those simulations must be and which could be made
   exact (with the issues that would do it). A test keeps it in line with
   `analysis_routes()`.
+- **Common-cause groups over a lifetime** (#132): `BetaFactor(beta,
+  basis="rate")` and `MGL(..., basis="rate")` split each member's failure
+  *rate* rather than its probability. The shared cause is a shock that has
+  not struck by `t` with probability `R(t)^β`, and each member survives its
+  own causes with `R(t)^(1 − β)`; under MGL each specific set of members
+  has a cause of its own, striking independently. Every member keeps its
+  own life distribution, whatever it is, and the model holds over the
+  whole life, so the system's reliability falls to 0 with its members'
+  (the probability split leaves a parallel pair at 0.288 for ever with
+  `β = 0.2`). The exact `mean` includes such a group, and `random`,
+  `mean(method="simulate")`, `mean_time_to_failure_interval`, `compare`
+  and `unreliability_interval` draw its shared shocks (through the
+  members' quantile function; members whose model has none are refused).
+  To first order in `Q` the two splits agree, so over a mission or a
+  proof-test interval they give about the same. Small probabilities and
+  long-life survivals keep their precision. The basis is saved with the
+  diagram (only when it is `"rate"`, so files are unchanged). Checked
+  against the closed forms, enumeration of the MGL causes, and simulation.
 
 ### Changed
 
@@ -529,6 +549,16 @@ is required.
   values change: each pump of a 2-out-of-3 vote now has 0.5, not 0.25), and
   the allocations hold it at 1 and leave it out of their results, where
   `equal_allocation` and `simple_allocation` gave it a value below 1.
+- **A common-cause group that splits a probability warns beyond its
+  range** (#132). The default split is a rare-event model, and over a
+  lifetime it gives impossible results: at the members' MTTF a beta-factor
+  pair came out more reliable than an independent one, and 29% of systems
+  never failed. A diagram now warns, once for each group, when its
+  members' probability of failing passes 0.1 (where it is about 3.5% off
+  the rate-based split), naming the group, the `Q` reached and the
+  rate-based model to use. `MGL`'s repr shows one letter as `MGL(0.1)`
+  rather than `MGL(0.1,)`, and a model's repr shows its basis when it is
+  `"rate"`.
 - **`RegressionNode.sf` and `ff` give a float for a scalar time** (#134),
   as every other node does (and surpyval's models), rather than a
   one-element array.

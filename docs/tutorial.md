@@ -276,16 +276,19 @@ The two filters are the same part from the same shelf, so one bad batch, or
 one contamination event upstream, can blind both at once. That is a
 **common-cause failure**, and no amount of *structural* redundancy defends
 against it. Attach a beta-factor group (here 8% of a filter's failures are
-shared) to the otherwise unchanged skid:
+shared) to the otherwise unchanged skid. Over 4000 h a filter fails with
+probability 0.12, more than the small probabilities the textbook beta factor
+splits, so split the failure *rate* (`basis="rate"`): the shared cause is a
+shock, and each filter keeps its own life.
 
 ```python
 from repyability import BetaFactor, CCFGroup
 
 rbd_ccf = NonRepairableRBD(
     edges, reliabilities,
-    ccf_groups=[CCFGroup(["filterA", "filterB"], BetaFactor(0.08))],
+    ccf_groups=[CCFGroup(["filterA", "filterB"], BetaFactor(0.08, basis="rate"))],
 )
-rbd_ccf.sf(4000)   # -> 0.9023   against 0.9091 with independent filters
+rbd_ccf.sf(4000)   # -> 0.9016   against 0.9091 with independent filters
 ```
 
 Modest at the skid level *here*, because the filters are not the weak link,
