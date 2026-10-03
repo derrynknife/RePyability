@@ -648,6 +648,19 @@ def test_without_numba_the_compiled_engine_cannot_be_asked_for(monkeypatch):
         rbd.availability(10.0, mc_samples=2, seed=1, engine="numba")
     # "auto" runs in Python.
     rbd.availability(10.0, mc_samples=2, seed=1)
+    # What it does not simulate is refused as such: installing numba would
+    # not help.
+    imperfect = RepairableRBD(
+        [("s", "a"), ("a", "t")],
+        {
+            "a": {
+                **unit_spec(70, 2.0),
+                "repair": {"model": "kijima1", "q": 0.5},
+            }
+        },
+    )
+    with pytest.raises(NotImplementedError, match="imperfect repair"):
+        imperfect.availability(10.0, mc_samples=2, seed=1, engine="numba")
 
 
 @needs_numba
