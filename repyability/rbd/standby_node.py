@@ -1,15 +1,10 @@
-import warnings
 from queue import PriorityQueue
 
 import numpy as np
-from surpyval import Hypoexponential, KaplanMeier
+from surpyval import Hypoexponential
 
 from repyability.utils.checks import whole_number
-from repyability.utils.deprecation import (
-    REMOVAL,
-    renamed,
-    warn_simulated_fit,
-)
+from repyability.utils.deprecation import ignored
 from repyability.utils.wrappers import numpy_seed
 
 from ._dependent_lifetimes import (
@@ -25,22 +20,6 @@ from .numerical_convolution import (
     is_perfect_switching,
     switch_success_probs,
 )
-
-
-def _kaplan_meier(lifetimes, lower):
-    """The Kaplan-Meier fit of simulated lifetimes. An infinite lifetime (an
-    arrangement that never fails, of units that may never fail) is
-    right-censored at the largest finite one, so ``sf`` stays at the
-    fraction that never fails beyond it. (surpyval takes no infinite exact
-    observations.)"""
-    x = np.asarray(lifetimes, dtype=float)
-    never = ~np.isfinite(x)
-    if not never.any():
-        return KaplanMeier.fit(x, set_lower_limit=lower)
-    last = float(x[~never].max()) if (~never).any() else 1.0
-    return KaplanMeier.fit(
-        np.where(never, last, x), c=never.astype(int), set_lower_limit=lower
-    )
 
 
 def _same_unit(a, b) -> bool:
@@ -147,12 +126,16 @@ class StandbyModel:
        - warm standby with ``k = 1``: a recursion over the spares'
          switch-ins on a time grid (a spare switched in at ``tau`` has
          aged ``dormancy_factor * tau``).
-    4. **Simulation** otherwise (cold standby of different units with
-       ``k >= 3``, and warm standby with ``k >= 2``): ``mc_samples``
-       lifetimes are drawn with ``random`` and ``sf`` is a Kaplan-Meier
-       fit to them, a step function that is reproducible only with
-       ``seed``. The fit is kept in ``model``; it is deprecated and goes
-       in 0.12.
+    4. **None** otherwise (cold standby of different units with
+       ``k >= 3``, and warm standby with ``k >= 2``): ``sf``, ``ff``,
+       ``cs`` and ``mean()`` refuse, and ``is_simulated`` is True. Its
+       lifetimes are still drawn by ``random``, so a diagram with it is
+       simulated: ``random``, ``mean(method="simulate")`` and
+       ``unreliability_interval`` of a ``NonRepairableRBD``, and
+       ``availability`` and ``cost`` of a ``RepairableRBD``.
+       ``mean(mc_samples=..., seed=...)`` estimates its own mean from new
+       draws. (Until 0.12 its ``sf`` was a Kaplan-Meier fit to simulated
+       lifetimes.)
 
     As an RBD node, ``sf``/``ff`` give its reliability, ``random`` its
     lifetimes for Monte-Carlo system simulation and ``mean`` its MTTF.
@@ -167,12 +150,11 @@ class StandbyModel:
         The number of units that must operate for the arrangement to work,
         from 1 to ``len(reliabilities)``, by default 1.
     mc_samples : int, optional
-        The number of simulated lifetimes behind the Kaplan-Meier fit, by
-        default 10_000. Used only when the arrangement is simulated.
+        Deprecated and unused: the number of simulated lifetimes the
+        reliability was fitted to until 0.12. Passing it warns, and 0.13
+        will refuse it.
     lower : float, optional
-        The ``set_lower_limit`` of that Kaplan-Meier fit: a point with
-        survival 1 is added there, so ``sf`` is 1 from ``lower`` up to the
-        first simulated failure. By default -inf. Used only when simulated.
+        Deprecated and unused, as ``mc_samples`` is: that fit's lower limit.
     switching_probability : float or sequence of float, optional
         The probability, in ``[0, 1]``, that switching onto the next spare
         succeeds: a scalar for every switch, or one value per spare
@@ -181,23 +163,15 @@ class StandbyModel:
         default 1.0 (perfect switching). Imperfect switching is supported
         for cold standby only.
     seed : int or None, optional
-        Seed for the simulation, making the fit reproducible: numpy's
-        global RNG is seeded for the draw and restored afterwards. By
-        default None (not reproducible). Used only when simulated.
+        Deprecated and unused, as ``mc_samples`` is: that fit's seed.
     dormancy_factor : float, optional
         The dormant-to-operating aging ratio, in ``[0, 1]``: 0 is cold, 1
         is hot and anything between is warm. By default 0.0.
-    n_sims : int, optional
-        Deprecated: the old name of ``mc_samples``.
 
     Attributes
     ----------
     N : int
         The number of units, ``len(reliabilities)``.
-    model : surpyval NonParametric or None
-        The Kaplan-Meier fit to the simulated lifetimes when the
-        arrangement is simulated; None when ``sf`` is an exact closed form
-        or a numerical convolution.
 
     Raises
     ------
@@ -264,21 +238,25 @@ class StandbyModel:
     # (a DegradingNode needs them for the stage it is in).
     _partial_sums = False
 
+    # The arrangement, when no exact or numerical method gives its
+    # reliability ("warm standby with 2 units operating"), else None.
+    _case = None
+
     def __init__(
         self,
         reliabilities,
         k=1,
         mc_samples=None,
-        lower=-np.inf,
+        lower=None,
         switching_probability=1.0,
         seed=None,
         dormancy_factor=0.0,
-        *,
-        n_sims=None,
     ):
-        mc_samples = renamed("mc_samples", mc_samples, "n_sims", n_sims)
-        if mc_samples is None:
-            mc_samples = 10_000
+        ignored(
+            "StandbyModel()",
+            "its reliability is no longer fitted to simulated lifetimes.",
+            {"mc_samples": mc_samples, "lower": lower, "seed": seed},
+        )
         k = whole_number(k, "k (how many units must operate)")
         if k > len(reliabilities):
             raise ValueError(
@@ -293,7 +271,6 @@ class StandbyModel:
         self.reliabilities = reliabilities
         self.k = k
         self.N = len(reliabilities)
-        self.mc_samples = mc_samples
         self.switching_probability = switching_probability
         self.dormancy_factor = float(dormancy_factor)
 
@@ -330,29 +307,23 @@ class StandbyModel:
                     closed_form = None
             if closed_form is not None:
                 self._sf_model = closed_form
-                self.model = None
             elif self.dormancy_factor == 1.0:
                 # Hot standby is active k-out-of-n redundancy: exact.
                 self._sf_model = KOutOfNSurvival(reliabilities, k)
-                self.model = None
             elif k == 1:
                 # One unit operating and warm spares: a recursion over the
                 # switch-ins (see WarmStandbySurvival).
                 self._sf_model = WarmStandbySurvival(
                     reliabilities, self.dormancy_factor
                 )
-                self.model = None
             else:
-                warn_simulated_fit(
-                    "StandbyModel", f"warm standby with {k} units operating"
-                )
-                self._simulate(mc_samples, seed, lower)
+                self._case = f"warm standby with {k} units operating"
+                self._sf_model = None
         elif rate is not None and is_perfect_switching(switching_probability):
             # Identical exponential units: the cold standby lifetime is exactly
             # Erlang(N-k+1, k*rate) for any k, by the memorylessness of the
             # exponential. Use that closed form directly.
             self._sf_model = _ExponentialStandbySurvival(rate, self.N, k)
-            self.model = None
         elif k == 1:
             # Cold standby (k=1): the lifetime is the sum of the components'
             # lifetimes (or a mixture of partial sums under imperfect
@@ -363,7 +334,6 @@ class StandbyModel:
                 switching_probability=switching_probability,
                 partials=self._partial_sums,
             )
-            self.model = None
         elif identical:
             # Identical units with k operating: each operating position
             # runs a renewal process of the units' lives (see
@@ -371,7 +341,6 @@ class StandbyModel:
             self._sf_model = RenewalStandbySurvival(
                 reliabilities[0], self.N, k, self._switch_probs()
             )
-            self.model = None
         elif k == 2:
             # Two different units operating: a recursion over the switch-ins
             # on the time and the other operating unit's start (see
@@ -379,27 +348,29 @@ class StandbyModel:
             self._sf_model = ColdPairSurvival(
                 reliabilities, self._switch_probs()
             )
-            self.model = None
         else:
             # For k >= 3 different units the lifetime is not a simple sum
             # (which spare goes where depends on the order in which the
-            # operating units fail, with more ages to track), so fall back
-            # to the Monte-Carlo + Kaplan-Meier approximation.
+            # operating units fail, with more ages to track): only
+            # simulations take it.
             self._switch_probs()
-            warn_simulated_fit(
-                "StandbyModel",
-                f"cold standby with {k} different units operating",
-            )
-            self._simulate(mc_samples, seed, lower)
+            self._case = f"cold standby with {k} different units operating"
+            self._sf_model = None
 
-    def _simulate(self, mc_samples, seed, lower) -> None:
-        """Set the survival function up from ``mc_samples`` simulated
-        lifetimes: a Kaplan-Meier fit to them, and their mean for
-        ``mean``."""
-        lifetimes = self.random(mc_samples, seed=seed)
-        self.model = _kaplan_meier(lifetimes, lower)
-        self._sf_model = None
-        self._simulated_mean = float(np.mean(lifetimes))
+    def _no_reliability(self, what: str = "reliability") -> Exception:
+        """The refusal of an arrangement with no exact or numerical
+        ``what`` (see ``is_simulated``)."""
+        own = (
+            " Estimate it with mean(mc_samples=..., seed=...)."
+            if what == "mean life"
+            else ""
+        )
+        return NotImplementedError(
+            f"This StandbyModel ({self._case}) has no exact or numerical "
+            f"{what}.{own} A diagram with it is simulated: random, "
+            "mean(method='simulate') and unreliability_interval of a "
+            "NonRepairableRBD, or availability and cost of a RepairableRBD."
+        )
 
     def _random_warm(self, size):
         """Warm-standby lifetimes by cumulative exposure (virtual age).
@@ -734,37 +705,35 @@ class StandbyModel:
 
         return RowSampler(k + 2 * len(probs), switched_draw)
 
-    def mean(self, mc_samples=None, seed=None, *, N=None):
+    def mean(self, mc_samples=None, seed=None):
         """Mean lifetime (MTTF) of the arrangement.
 
         Exact for the Erlang and hypoexponential closed forms, and
-        deterministic for the numerical convolution (the integral of its
-        survival function). When the arrangement is simulated it is the
-        mean of the ``mc_samples`` lifetimes simulated at construction,
-        which the Kaplan-Meier fit behind ``sf`` is made from: a Monte-Carlo
-        estimate, but the same on every call (and reproducible with the
-        constructor's ``seed``), so the long-run values of an RBD it is a
-        node of are too. Give ``mc_samples`` or ``seed`` for a fresh
-        estimate instead: the mean of ``mc_samples`` new draws of
-        ``random``.
+        deterministic for the numerical methods (the integral of the
+        survival function). An arrangement with neither (see
+        ``is_simulated``) has no exact mean, and refuses, unless asked for
+        an estimate: the mean of ``mc_samples`` new draws of ``random``.
 
         Parameters
         ----------
         mc_samples : int, optional
-            The number of new draws for a fresh Monte-Carlo estimate
-            (10_000 if only ``seed`` is given). By default None: the mean of
-            the lifetimes simulated at construction. Ignored unless the
-            arrangement is simulated.
+            For an arrangement with no exact mean: the number of draws to
+            estimate it from (10_000 if only ``seed`` is given). Ignored
+            otherwise.
         seed : int or None, optional
-            Seed for those new draws (see ``random``), by default None.
-            Ignored unless the arrangement is simulated.
-        N : int, optional
-            Deprecated: the old name of ``mc_samples``.
+            Seed for those draws (see ``random``), by default None.
+            Ignored as ``mc_samples`` is.
 
         Returns
         -------
         float
-            The mean lifetime.
+            The mean lifetime, or its estimate.
+
+        Raises
+        ------
+        NotImplementedError
+            If the arrangement has no exact mean and neither ``mc_samples``
+            nor ``seed`` is given.
 
         Examples
         --------
@@ -777,54 +746,35 @@ class StandbyModel:
         >>> round(float(StandbyModel([w, w, w], k=2).mean()), 2)
         104.44
 
-        Warm standby with two operating is simulated, and its mean is that
-        of the lifetimes simulated when it was built, unless new draws are
-        asked for:
+        Warm standby with two operating has no exact mean, which draws
+        estimate:
 
-        >>> sim = StandbyModel(
-        ...     [w, w, w], k=2, dormancy_factor=0.5, mc_samples=2000, seed=1
-        ... )
-        >>> sim.mean() == sim.mean()
+        >>> sim = StandbyModel([w, w, w], k=2, dormancy_factor=0.5)
+        >>> sim.is_simulated
         True
-        >>> sim.mean(mc_samples=2000, seed=2) != sim.mean()  # new draws
-        True
+        >>> round(sim.mean(mc_samples=20_000, seed=1), 1)
+        95.3
         """
-        # The exact/deterministic mean when an analytic survival model is
-        # available (exponential closed form or convolution); otherwise the
-        # simulated lifetimes' mean, or a fresh Monte-Carlo estimate.
-        mc_samples = renamed("mc_samples", mc_samples, "N", N)
         if self._sf_model is not None:
             return float(np.ravel(self._sf_model.mean())[0])
         if mc_samples is None and seed is None:
-            return self._simulated_mean
+            raise self._no_reliability("mean life")
         count = 10_000 if mc_samples is None else mc_samples
         return float(self.random(count, seed=seed).mean())
 
     @property
     def is_simulated(self) -> bool:
-        """Whether the survival function is simulated: a Kaplan-Meier fit to
-        ``mc_samples`` simulated lifetimes (kept in ``model``), rather than an
-        exact closed form or a numerical convolution."""
-        return self.model is not None
-
-    @property
-    def n_sims(self) -> int:
-        """Deprecated: the old name of ``mc_samples``."""
-        warnings.warn(
-            "n_sims is deprecated: use mc_samples. n_sims will be removed "
-            f"in {REMOVAL}.",
-            FutureWarning,
-            stacklevel=2,
-        )
-        return self.mc_samples
+        """Whether only simulations take the arrangement: no exact or
+        numerical method gives its reliability, so ``sf``, ``ff``, ``cs``
+        and ``mean()`` refuse, and a diagram with it is simulated."""
+        return self._case is not None
 
     def sf(self, x, *args, **kwargs):
         """Survival function (reliability) of the arrangement.
 
         Evaluates the survival function set up at construction: the exact
-        closed form, the numerical convolution (linearly interpolated on
-        its grid) or the Kaplan-Meier fit to simulated lifetimes (a step
-        function). An RBD calls this for the node's reliability.
+        closed form or the numerical method (interpolated on its grid). An
+        RBD calls this for the node's reliability.
 
         Parameters
         ----------
@@ -839,6 +789,12 @@ class StandbyModel:
             The probability of surviving beyond ``x``: an array for an
             array ``x``, and a numpy float for a scalar ``x``.
 
+        Raises
+        ------
+        NotImplementedError
+            If no exact or numerical method gives it (see
+            ``is_simulated``).
+
         Examples
         --------
         >>> import surpyval as surv
@@ -848,9 +804,9 @@ class StandbyModel:
         >>> [round(float(r), 4) for r in standby.sf([50.0, 100.0])]
         [0.9098, 0.7358]
         """
-        if self._sf_model is not None:
-            return self._sf_model.sf(x, *args, **kwargs)
-        return self.model.sf(x, *args, **kwargs)
+        if self._sf_model is None:
+            raise self._no_reliability()
+        return self._sf_model.sf(x, *args, **kwargs)
 
     def ff(self, x, *args, **kwargs):
         """Cumulative failure probability, ``1 - sf(x)``.
@@ -868,10 +824,15 @@ class StandbyModel:
         -------
         float or numpy.ndarray
             The probability of failing by ``x``, shaped as for ``sf``.
+
+        Raises
+        ------
+        NotImplementedError
+            As for ``sf``.
         """
-        if self._sf_model is not None:
-            return self._sf_model.ff(x, *args, **kwargs)
-        return self.model.ff(x, *args, **kwargs)
+        if self._sf_model is None:
+            raise self._no_reliability()
+        return self._sf_model.ff(x, *args, **kwargs)
 
     def cs(self, x, X):
         """Conditional survival ``R(x | X) = sf(X + x) / sf(X)``.

@@ -1,7 +1,6 @@
 import numpy as np
 
-from repyability.utils.checks import whole_number
-from repyability.utils.deprecation import ignored, renamed
+from repyability.utils.checks import simulation_options, whole_number
 from repyability.utils.wrappers import numpy_seed
 
 from ._mean_lifetime import mean_lifetime, model_knots
@@ -118,7 +117,7 @@ class RepeatedNode:
 
         return RowSampler(self.repeats, draw)
 
-    def mean(self, mc_samples=None, seed=None, *, method="exact", N=None):
+    def mean(self, mc_samples=None, seed=None, *, method="exact"):
         """Mean lifetime (MTTF) of the node.
 
         Exact by default: the area under ``sf``, integrated by adaptive
@@ -137,9 +136,6 @@ class RepeatedNode:
             ``random``), by default None.
         method : {"exact", "simulate"}, optional
             How to find the mean, by default ``"exact"``.
-        N : int, optional
-            Deprecated: the old name of ``mc_samples``.
-
         Returns
         -------
         float
@@ -149,12 +145,8 @@ class RepeatedNode:
         ------
         ValueError
             If ``method`` is neither ``"exact"`` nor ``"simulate"``.
-
-        Warns
-        -----
-        FutureWarning
-            If ``N`` is given, or a simulation option without
-            ``method="simulate"`` (it is ignored).
+        TypeError
+            If a simulation option is given without ``method="simulate"``.
 
         Examples
         --------
@@ -167,12 +159,9 @@ class RepeatedNode:
         >>> round(node.mean(method="simulate", mc_samples=10_000, seed=1), 1)
         51.1
         """
-        mc_samples = renamed("mc_samples", mc_samples, "N", N)
         if method == "exact":
-            ignored(
-                "RepeatedNode.mean()",
-                "the mean is exact unless method='simulate'.",
-                {"mc_samples": mc_samples, "seed": seed},
+            simulation_options(
+                "RepeatedNode.mean()", {"mc_samples": mc_samples, "seed": seed}
             )
             return mean_lifetime(self.sf, model_knots(self.model))
         if method != "simulate":

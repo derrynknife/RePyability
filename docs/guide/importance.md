@@ -67,8 +67,7 @@ certain to have failed, it nears 2 while the exact share stays at most 1.
 probability that all the members of some path set containing *i* have
 failed (or, with `method="rare_event"`, the sum over those path sets),
 divided by `Q`. It is not bounded by 1. `fv_type="c"` (cut sets) is the
-default and the standard measure. `fussel_vesely` (misspelled) is a
-deprecated alias that warns.
+default and the standard measure.
 
 ### Failure- or success-oriented criticality
 
@@ -151,7 +150,7 @@ the shape.
   default `1e-5`) that rebuilds the distribution with `from_params`, so it
   works for any surpyval parametric distribution.
 - Composite nodes (nested RBDs, standby, repeated and load-sharing nodes)
-  and non-parametric fits have no parameters and are left out.
+  have no parameters and are left out.
 - A node pinned by `working_nodes`/`broken_nodes` reports zeros.
 
 ## On a repairable system

@@ -256,6 +256,59 @@ other release, fixes included, the minor.
     which runs them on surpyval's development branch, then shows a name
     surpyval will remove while it still works.
 
+
+### Deprecated
+
+- **`StandbyModel`'s and `LoadSharingModel`'s `mc_samples`, `lower` and
+  `seed` (#149).** They set the fit to simulated lifetimes that 0.12
+  removes, so they are ignored: passing them warns, with a `FutureWarning`,
+  and 0.13 will refuse them. A simulated model's mean is estimated with
+  `mean(mc_samples=..., seed=...)`.
+
+### Removed
+
+- **What 0.11 deprecated is gone (#149)**, after its release's notice:
+  - The old simulation-count names: `N` and `max_N`
+    (`RepairableRBD.availability()`, `cost()`, `compare()`), `n_sims`
+    (`StandbyModel`, `LoadSharingModel`), `N` (the node models' `mean()`)
+    and `n_simulations` (`Repairable`'s methods). Use `mc_samples` and
+    `max_samples`: an old name raises `TypeError`.
+  - Ignored arguments, which now raise `TypeError`: simulation options
+    given to `NonRepairableRBD.mean()`, `mean_time_to_failure()` or
+    `RepeatedNode.mean()` without `method="simulate"` (the answer is
+    otherwise exact, and the message says so), `node_mttf()`'s
+    `mc_samples` and `seed`, `RepeatedStandbyNode`'s `N` and `lower` (its
+    `switching_probability` is now keyword-only), and
+    `NonRepairable.find_optimal_replacement()`'s `options`.
+  - The misspelt `fussel_vesely()` alias of `fussell_vesely()`.
+  - **Non-parametric nodes.** A diagram of either kind with a surpyval
+    `KaplanMeier`, `NelsonAalen` or other non-parametric fit as a node's
+    life or repair time, directly or inside a standby, repeated or
+    degrading node or a `NonRepairable`, is refused with a `ValueError`
+    naming the nodes, and so is loading a saved one. Their curves end at
+    the data, so the MTTF, B-lives and long-run values beyond it were
+    artefacts. Fit a parametric distribution in surpyval instead. A
+    standalone `NonRepairable`'s maintenance policies keep them.
+  - **The fit to simulated lifetimes.** Warm standby with two or more units
+    operating, cold standby with three or more different units operating
+    (`StandbyModel`), and load sharing of different units
+    (`LoadSharingModel`) have no exact or numerical reliability. A
+    Kaplan–Meier fit to simulated lifetimes stood in for one, and every
+    exact analysis of a system with such a node inherited its Monte-Carlo
+    error. Their `sf`, `ff`, `cs` and `mean()` now raise
+    `NotImplementedError`, as do the analyses of a diagram that need their
+    reliability (its `sf`, importance measures and `node_mttf`, or a
+    `RepairableRBD`'s long-run and over-time values), naming the
+    simulations that take them: `random`, `mean(method="simulate")` and
+    `unreliability_interval` of a `NonRepairableRBD`, or `availability`
+    and `cost` of a `RepairableRBD`. `analysis_routes()` reports those
+    analyses as refused, with the same reasons. Such a model draws its
+    lifetimes as before, so seeded simulations are unchanged, and
+    `mean(mc_samples=..., seed=...)` estimates its mean from new draws.
+    `allocate_redundancy`, which scored cold standby that needs three or
+    more copies working with such a fit when the copies are of different
+    models, refuses those designs.
+
 ### Fixed
 
 - **`FaultTree.from_rbd` of a diagram with events the logic absorbs

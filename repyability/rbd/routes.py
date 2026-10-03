@@ -84,7 +84,7 @@ def refusal(check: Callable[[], object]) -> Optional[str]:
 def model_route(model) -> Tuple[str, str]:
     """How a node model's reliability (its ``sf``) is obtained: the route,
     and a phrase saying how."""
-    from surpyval import NonParametric, Parametric
+    from surpyval import Parametric
 
     from .helper_classes import PerfectReliability, PerfectUnreliability
     from .load_sharing_node import LoadSharingModel
@@ -98,11 +98,7 @@ def model_route(model) -> Tuple[str, str]:
         return EXACT, "a constant"
     if isinstance(model, (StandbyModel, LoadSharingModel)):
         if model.is_simulated:
-            return (
-                SIMULATED,
-                f"a Kaplan-Meier fit to {model.mc_samples} simulated "
-                "lifetimes",
-            )
+            return REFUSED, str(model._no_reliability())
         if isinstance(model._sf_model, ConvolvedSurvival):
             return NUMERICAL, "a numerical convolution of its units' lives"
         how = getattr(model._sf_model, "how", None)
@@ -116,6 +112,9 @@ def model_route(model) -> Tuple[str, str]:
         return model_route(model.model)
     if isinstance(model, NonRepairableRBD):
         inner = {n: model_route(m) for n, m in model.reliabilities.items()}
+        refusals = [how for route, how in inner.values() if route == REFUSED]
+        if refusals:
+            return REFUSED, refusals[0]
         worst = max(
             (route for route, _ in inner.values()), key=_RANK.__getitem__
         )
@@ -125,8 +124,6 @@ def model_route(model) -> Tuple[str, str]:
         return worst, f"a nested RBD with {worst} nodes {_names(which)}"
     if isinstance(model, Parametric):
         return EXACT, "a closed form"
-    if isinstance(model, NonParametric):
-        return EXACT, "its fitted curve"
     return EXACT, "its own sf"
 
 
@@ -146,6 +143,8 @@ def mean_route(model) -> Tuple[str, str]:
             return REFUSED, message
     if isinstance(model, (NonRepairableRBD, RepeatedNode)):
         route, how = model_route(model)
+        if route == REFUSED:
+            return route, how
         if route == EXACT:
             return NUMERICAL, "the area under its exact reliability"
         return route, f"the area under its reliability, from {how}"
@@ -153,11 +152,7 @@ def mean_route(model) -> Tuple[str, str]:
         return EXACT, "the sum of its stages' mean times"
     if isinstance(model, (StandbyModel, LoadSharingModel)):
         if model.is_simulated:
-            return (
-                SIMULATED,
-                f"the mean of the {model.mc_samples} lifetimes simulated "
-                "when it was built",
-            )
+            return REFUSED, str(model._no_reliability("mean life"))
         sf_model = model._sf_model
         if getattr(sf_model, "route", None) == EXACT:
             return (
@@ -179,7 +174,13 @@ def with_nodes(
 ) -> AnalysisRoute:
     """An analysis computed from the nodes' ``effect`` (their reliabilities,
     say) by a method of ``route``: numerical or simulated too when some
-    nodes' values are, naming them."""
+    nodes' values are, naming them, and refused, as the first such node
+    refuses, when some nodes have none."""
+    refusing = {n: how for n, (r, how) in nodes.items() if r == REFUSED}
+    if refusing:
+        return AnalysisRoute(
+            REFUSED, next(iter(refusing.values())), tuple(refusing)
+        )
     for worse in (SIMULATED, NUMERICAL):
         which = {n: how for n, (r, how) in nodes.items() if r == worse}
         if which and _RANK[worse] > _RANK[route]:

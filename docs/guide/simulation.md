@@ -449,9 +449,8 @@ lifetimes, some 4e10 for `p = 1e-8`. Where the unreliability is exact,
 worked out from the components' own failure probabilities, not as one less
 the reliability); through a numerical node, such as a cold-standby group of
 non-exponential units, only to that node's accuracy, about 1e-6. Where a
-node is simulated, as warm standby with two Weibull pumps operating is (its
-reliability is fitted to 20 000 simulated lifetimes, none of which ends in
-the first 50 hours), the far tail has no exact value, and
+node has no exact or numerical reliability (warm standby with two Weibull
+pumps operating, say), `ff` refuses, and
 `unreliability_interval(x)` estimates `P(T <= x)` by simulation, to a
 relative precision, with methods that find rare failures:
 
@@ -459,9 +458,8 @@ relative precision, with methods that find rare failures:
 from repyability import StandbyModel
 
 pump = surv.Weibull.from_params([1000, 1.5])
-pumps = StandbyModel([pump] * 4, k=2, dormancy_factor=0.3, mc_samples=20_000, seed=1)
+pumps = StandbyModel([pump] * 4, k=2, dormancy_factor=0.3)
 station = NonRepairableRBD([("s", "pumps"), ("pumps", "t")], {"pumps": pumps})
-station.ff(50.0)                         # -> 0.0   from the fitted reliability
 tail = station.unreliability_interval(50.0, seed=1)
 tail.estimate                            # ~> 1.59e-06
 tail.method, tail.n_samples              # ('subset', 570000)
@@ -571,8 +569,9 @@ The exact difference, the integral of the difference in reliability, is
 14.46. The reliabilities themselves need no simulation: compare `sf`.
 
 Both kinds need every component's draws to be replayable, as antithetic
-pairs do. A non-parametric model draws its own random numbers, which the two
-systems would not share, so it raises `NotImplementedError`.
+pairs do. A model whose draws do not follow numpy's uniforms (a class of your
+own that draws its own random numbers, say), which the two systems would not
+share, raises `NotImplementedError`.
 
 ## The compiled engine
 

@@ -33,7 +33,7 @@ signature and docstring, see the [API reference](../api.md).
 
 **Node models.** RePyability consumes *fitted* models; fitting data is
 surpyval's job. A node model is anything that exposes `sf(t)` and `ff(t)`:
-surpyval parametric and non-parametric distributions,
+surpyval parametric distributions,
 `FixedEventProbability`, and the composite models in this package. Methods
 that simulate lifetimes also need the model's `random(size)`.
 
@@ -67,8 +67,8 @@ checked through its minimal path sets or cut sets.)
 **Seeds.** Every Monte-Carlo method takes a `seed`. surpyval samples from
 numpy's global random number generator, so a seed is applied to it for the
 duration of the call and the caller's generator state is restored afterwards.
-See [Saving, reproducibility and performance](saving.md#reproducibility) for
-the one exception (Kaplan–Meier nodes).
+A `RepairableRBD`'s simulations draw from random streams of their own (see
+[Saving, reproducibility and performance](saving.md#reproducibility)).
 
 **Units.** Times are in whatever unit your models use; RePyability never
 converts them.

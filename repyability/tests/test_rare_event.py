@@ -165,12 +165,13 @@ def test_what_cannot_be_simulated_is_refused():
     )
     with pytest.raises(NotImplementedError, match="common-cause"):
         grouped.unreliability_interval(10.0)
-    fitted = NonRepairableRBD(
-        [("s", "a"), ("a", "t")],
-        {"a": surv.KaplanMeier.fit([100.0, 250.0, 400.0, 700.0])},
+    from repyability.tests.test_performance_equivalence import binomial_first
+
+    own_draws = NonRepairableRBD(
+        [("s", "a"), ("a", "t")], {"a": binomial_first([300.0, 2.0])}
     )
     with pytest.raises(NotImplementedError, match="own random numbers"):
-        fitted.unreliability_interval(10.0)
+        own_draws.unreliability_interval(10.0)
 
 
 @pytest.mark.parametrize(

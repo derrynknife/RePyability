@@ -83,7 +83,7 @@ def test_weibull_warm_sits_between_cold_and_hot():
     cold = StandbyModel([W, W]).mean()
     warm = StandbyModel([W, W], dormancy_factor=0.4)
     hot = StandbyModel([W, W], dormancy_factor=1.0)
-    assert warm.model is None and hot.model is None  # not simulated
+    assert not warm.is_simulated and not hot.is_simulated
     assert float(hot.mean()) < float(warm.mean()) < float(cold)
 
 
@@ -133,16 +133,13 @@ def test_warm_with_imperfect_switching_rejected():
         ([[50.0], [150.0]], (2, 1)),
     ],
 )
-@pytest.mark.parametrize("operating", [1, 2])
-def test_warm_standby_gives_the_shape_it_is_given(x, shape, operating):
-    """A warm arrangement, numerical (one operating) or simulated (a
-    Kaplan-Meier fit, two operating), answers in the shape of its query, a
-    float for one time, as the closed forms do (surpyval#381)."""
+def test_warm_standby_gives_the_shape_it_is_given(x, shape):
+    """A warm arrangement with one unit operating (numerical) answers in the
+    shape of its query, a float for one time, as the closed forms do
+    (surpyval#381)."""
     pump = surv.Weibull.from_params([100, 2])
-    warm = StandbyModel(
-        [pump] * (operating + 1), k=operating, dormancy_factor=0.3, seed=0
-    )
-    assert warm.is_simulated is (operating == 2)
+    warm = StandbyModel([pump] * 2, k=1, dormancy_factor=0.3)
+    assert warm.is_simulated is False
     for function in (warm.sf, warm.ff):
         assert np.shape(function(x)) == shape
     assert isinstance(warm.sf(150.0), float)

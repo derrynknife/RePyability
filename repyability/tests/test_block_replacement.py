@@ -260,17 +260,6 @@ def test_models_it_does_not_cover(life, repair, match):
         rbd.mean_availability()
 
 
-def test_a_non_parametric_life():
-    km = surv.KaplanMeier.fit(np.array([30.0, 45.0, 60.0, 80.0, 95.0]))
-    rbd = alone(component(km, E([0.1]), 50.0))
-    with pytest.raises(NotImplementedError, match="parametric"):
-        rbd.mean_availability()
-    # The simulation still covers it.
-    assert (
-        rbd.availability(t_simulation=500.0, mc_samples=5, seed=1) is not None
-    )
-
-
 def test_a_nested_rbd_on_the_same_calendar():
     inner = alone(component(W([100, 2]), E([0.2]), 50.0))
     outer = RepairableRBD(

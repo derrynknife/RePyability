@@ -2622,10 +2622,9 @@ class RBD:
         common-cause groups or the downtime cost rate.
         [`from_dict`][repyability.RBD.from_dict] rebuilds the RBD by calling
         its constructor again, so the round trip is faithful even for
-        repeated nodes. Node models are serialised
-        structurally: surpyval models (parametric and non-parametric) in
-        surpyval's own format, so an offset, ``p``, ``f0`` and a fit's
-        covariance round-trip; the RePyability node models (standby,
+        repeated nodes. Node models are serialised structurally: surpyval's
+        parametric models in its own format, so an offset, ``p``, ``f0`` and
+        a fit's covariance round-trip; the RePyability node models (standby,
         repeated, load-sharing, regression, ``NonRepairable``,
         ``PerfectReliability`` and ``PerfectUnreliability``) and nested RBDs
         recursively. Per-node

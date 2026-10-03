@@ -42,3 +42,19 @@ def structure_method(method) -> str:
             "`method` must be 'p' (or 'paths') or 'c' (or 'cuts'), got "
             f"{method!r}."
         ) from None
+
+
+def simulation_options(method: str, given: dict) -> None:
+    """Refuse the simulation options in ``given`` (those passed: not None
+    or False) to ``method``, whose answer is exact unless
+    ``method="simulate"``: they would do nothing."""
+    passed = [
+        name
+        for name, value in given.items()
+        if value is not None and value is not False
+    ]
+    if passed:
+        raise TypeError(
+            f"{method} takes {', '.join(passed)} only with "
+            "method='simulate': its answer is otherwise exact."
+        )

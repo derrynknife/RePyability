@@ -112,8 +112,9 @@ only when
 places, nested diagrams):
 
 - **components:** surpyval lifetime distributions and fixed
-  probabilities (non-parametric fits, such as Kaplan–Meier, are
-  deprecated and go in 0.12); repeated nodes; cold standby with one or
+  probabilities (a diagram refuses a non-parametric fit, such as
+  Kaplan–Meier: fit a parametric distribution in surpyval); repeated
+  nodes; cold standby with one or
   two units operating (any units) or more (identical units); warm standby
   with one unit operating, and hot standby (any units); load sharing of
   identical units; common-cause groups, for the system's reliability,
@@ -143,13 +144,12 @@ places, nested diagrams):
 | Sampled lifetimes or histories, and distributions or percentiles of an outcome over a window | Simulated (from new, or from the components' current states); each simulation's histories, the system's and its components', kept whole as timelines by `simulate_timelines` (from new) | Yes: the answer is a sample. Its mean over a window (failures, outages, downtime, cost, the capacity delivered) is exact, from new or from a state: `expected_events`, `expected_cost`, `mission_capacity`. |
 | Comparing two designs (`compare`) | Simulated, with common random numbers | No, where both are exact: compare their exact values. |
 | The uncertainty from fitted component parameters (`sf_uncertainty`, `mean_uncertainty`, `bx_life_uncertainty`, `time_to_reliability_uncertainty`) | Sampled over the parameters, each draw exact | Sampling is the method. |
-| Small failure probabilities, with a simulated node | Rare-event simulation (`unreliability_interval`) | Only while the node is simulated: an exact diagram gives `ff` directly, to full precision however small (a numerical node, such as a cold-standby group of non-exponential units, to its own accuracy, about 1e-6). |
+| Small failure probabilities, with a node only simulations take | Rare-event simulation (`unreliability_interval`); `ff` refused | Only while the node has no reliability of its own: an exact diagram gives `ff` directly, to full precision however small (a numerical node, such as a cold-standby group of non-exponential units, to its own accuracy, about 1e-6). |
 | **Components** | | |
-| Warm standby with two or more units operating, of non-exponential units | Simulated: a fit to simulated lifetimes, deprecated (from 0.12, simulated only in the system's simulations: #149) | Yes, in general: which spare is switched in where, and how much each has aged, branch with the order of the failures. With one unit operating it is numerical, and hot standby (k-out-of-*n*) exact. |
-| Cold standby with three or more different units operating, and load sharing of different units | Simulated: a fit to simulated lifetimes, deprecated (from 0.12, simulated only in the system's simulations: #149) | Yes, in general: which spare goes where, and how old the others are, branch with the order of the failures. Identical units are numerical in both, and so are two different units operating. |
-| Anything a simulated node is part of | Simulated through that node | Only while the node is simulated. |
+| Warm standby with two or more units operating, of non-exponential units | Simulated in the system's simulations; the analyses that need the group's reliability refused | Yes, in general: which spare is switched in where, and how much each has aged, branch with the order of the failures. With one unit operating it is numerical, and hot standby (k-out-of-*n*) exact. |
+| Cold standby with three or more different units operating, and load sharing of different units | Simulated in the system's simulations; the analyses that need the group's reliability refused | Yes, in general: which spare goes where, and how old the others are, branch with the order of the failures. Identical units are numerical in both, and so are two different units operating. |
+| Anything such a node is part of | Simulated in the system's simulations; the analyses that need the node's reliability refused | Only while the node has no reliability of its own. |
 | Common-cause groups: analyses given ages, and the MTTF of a group splitting a failure probability | Refused (a simulated MTTF leaves a probability split out) | No: the analyses given ages need a model of members of different ages. A group splitting the failure rate (`basis="rate"`) has an exact MTTF, and the simulations draw its shared shocks. Importance, parameter sensitivity and redundancy allocation are exact with groups (a beta-factor member's copies join its group), and parameter uncertainty is sampled with them. |
-| Kaplan–Meier lives in a repairable system | Long run refused; over time numerical | Non-parametric nodes are deprecated and go in 0.12 (#149): fit a parametric distribution in surpyval. |
 | **Architecture and maintenance** | | |
 | Phased missions and networks too large for their decision diagrams | Refused, pointing to `method="simulate"` | Only in practice: the diagrams grow with the phases' and the network's width rather than their paths, so meshed missions and networks are exact (a network grid of 100 nodes in a second and a half); one of 121 nodes passes the limit, `repyability.network.MAX_STATES`, which can be raised. |
 | Block diagrams too meshed for their decision diagrams | Simulated (lifetimes, availability, cost and timelines, in Python); the exact and numerical analyses refused | Only in practice: the diagram grows with how wide the mesh is rather than with its paths, so most meshes are exact (a 10 × 10 grid in 0.04 seconds, a random mesh of 60 nodes and 345 links in 2); one of 70 nodes and 485 links passes the limit, `repyability.rbd.bdd.STEP_LIMIT`, which can be raised. |

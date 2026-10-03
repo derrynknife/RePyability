@@ -54,7 +54,6 @@ from scipy.special import gammaln
 
 from repyability.maintenance import FailureLimitPolicy, MaintenancePolicy
 from repyability.rbd._model_utils import failure_time_scale
-from repyability.utils.deprecation import renamed
 from repyability.utils.wrappers import numpy_seed
 
 # Simulation draws used to estimate E[N(t)] for a simulation-backed
@@ -65,13 +64,9 @@ _DEFAULT_N_SIMULATIONS = 1000
 _DEFAULT_MAX_FAILURES = 30
 
 
-def _samples(mc_samples: Optional[int], n_simulations: Optional[int]) -> int:
-    """The number of simulations: ``mc_samples``, or its deprecated old
-    name ``n_simulations``, or the default."""
-    count = renamed(
-        "mc_samples", mc_samples, "n_simulations", n_simulations, stacklevel=4
-    )
-    return _DEFAULT_N_SIMULATIONS if count is None else int(count)
+def _samples(mc_samples: Optional[int]) -> int:
+    """The number of simulations: ``mc_samples``, or the default."""
+    return _DEFAULT_N_SIMULATIONS if mc_samples is None else int(mc_samples)
 
 
 def minimal_repair_time_to_nth_failure(
@@ -335,8 +330,6 @@ class Repairable:
         t,
         seed: Optional[int] = None,
         mc_samples: Optional[int] = None,
-        *,
-        n_simulations: Optional[int] = None,
     ) -> Union[float, np.ndarray]:
         """Expected cost of one overhaul/replacement cycle of length ``t``.
 
@@ -355,8 +348,6 @@ class Repairable:
             Number of simulated histories used to estimate ``E[N(t)]``
             (default 1000; ignored for an analytic model).
 
-        n_simulations : int, optional
-            Deprecated: the old name of ``mc_samples``.
         Returns
         -------
         float or numpy.ndarray
@@ -379,7 +370,7 @@ class Repairable:
         >>> round(unit.cost(250.0), 2)
         1039.53
         """
-        n_simulations = _samples(mc_samples, n_simulations)
+        n_simulations = _samples(mc_samples)
 
         self._require_costs()
         scalar_in = np.ndim(t) == 0
@@ -393,8 +384,6 @@ class Repairable:
         t,
         seed: Optional[int] = None,
         mc_samples: Optional[int] = None,
-        *,
-        n_simulations: Optional[int] = None,
     ) -> Union[float, np.ndarray]:
         """Long-run cost per unit time when overhauling every ``t``.
 
@@ -419,8 +408,6 @@ class Repairable:
             Number of simulated histories used to estimate ``E[N(t)]``
             (default 1000; ignored for an analytic model).
 
-        n_simulations : int, optional
-            Deprecated: the old name of ``mc_samples``.
         Returns
         -------
         float or numpy.ndarray
@@ -443,7 +430,7 @@ class Repairable:
         >>> [round(float(g), 4) for g in unit.cost_rate([1000.0, 3420.0])]
         [1.3162, 0.8772]
         """
-        n_simulations = _samples(mc_samples, n_simulations)
+        n_simulations = _samples(mc_samples)
 
         self._require_costs()
         scalar_in = np.ndim(t) == 0
@@ -645,8 +632,6 @@ class Repairable:
         seed: Optional[int] = None,
         mc_samples: Optional[int] = None,
         max_interval: Optional[float] = None,
-        *,
-        n_simulations: Optional[int] = None,
     ) -> float:
         """The overhaul/replacement interval minimising the long-run cost rate.
 
@@ -694,8 +679,6 @@ class Repairable:
             times the mean of the model's baseline lifetime distribution
             (``model.model.mean()``), or 15 if there is none.
 
-        n_simulations : int, optional
-            Deprecated: the old name of ``mc_samples``.
         Returns
         -------
         float
@@ -743,7 +726,7 @@ class Repairable:
         >>> bool(abs(t - 223.6) < 25)  # a flat minimum: within about 10%
         True
         """
-        n_simulations = _samples(mc_samples, n_simulations)
+        n_simulations = _samples(mc_samples)
 
         return self._optimise(seed, n_simulations, max_interval)[0]
 
@@ -752,8 +735,6 @@ class Repairable:
         seed: Optional[int] = None,
         mc_samples: Optional[int] = None,
         max_interval: Optional[float] = None,
-        *,
-        n_simulations: Optional[int] = None,
     ) -> MaintenancePolicy:
         """The optimal overhaul/replacement policy as a typed result.
 
@@ -774,8 +755,6 @@ class Repairable:
             the simulation cannot resolve it; see
             ``find_optimal_overhaul_interval()``.
 
-        n_simulations : int, optional
-            Deprecated: the old name of ``mc_samples``.
         Returns
         -------
         MaintenancePolicy
@@ -817,7 +796,7 @@ class Repairable:
         >>> policy.interval, round(policy.cost_rate, 3)
         (inf, 0.02)
         """
-        n_simulations = _samples(mc_samples, n_simulations)
+        n_simulations = _samples(mc_samples)
 
         interval, rate = self._optimise(seed, n_simulations, max_interval)
         return MaintenancePolicy(interval=interval, cost_rate=rate)
@@ -894,8 +873,6 @@ class Repairable:
         n: int,
         seed: Optional[int] = None,
         mc_samples: Optional[int] = None,
-        *,
-        n_simulations: Optional[int] = None,
     ) -> float:
         """Expected time to the ``n``-th failure, ``E[T_n]``.
 
@@ -923,8 +900,6 @@ class Repairable:
         mc_samples : int, optional
             Number of simulated histories (default 1000).
 
-        n_simulations : int, optional
-            Deprecated: the old name of ``mc_samples``.
         Returns
         -------
         float
@@ -958,7 +933,7 @@ class Repairable:
         >>> round(minimal_repair_time_to_nth_failure(100.0, 2.0, 3), 1)
         166.2
         """
-        n_simulations = _samples(mc_samples, n_simulations)
+        n_simulations = _samples(mc_samples)
 
         if n < 1:
             raise ValueError("n must be a positive integer.")
@@ -990,8 +965,6 @@ class Repairable:
         seed: Optional[int] = None,
         mc_samples: Optional[int] = None,
         max_failures: int = _DEFAULT_MAX_FAILURES,
-        *,
-        n_simulations: Optional[int] = None,
     ) -> int:
         """The failure count at which to replace, minimising the cost rate.
 
@@ -1023,8 +996,6 @@ class Repairable:
         max_failures : int, optional
             The largest failure count searched (default 30).
 
-        n_simulations : int, optional
-            Deprecated: the old name of ``mc_samples``.
         Returns
         -------
         int
@@ -1052,7 +1023,7 @@ class Repairable:
         ... )
         7
         """
-        n_simulations = _samples(mc_samples, n_simulations)
+        n_simulations = _samples(mc_samples)
 
         return self._optimise_failure_limit(seed, n_simulations, max_failures)[
             0
@@ -1063,8 +1034,6 @@ class Repairable:
         seed: Optional[int] = None,
         mc_samples: Optional[int] = None,
         max_failures: int = _DEFAULT_MAX_FAILURES,
-        *,
-        n_simulations: Optional[int] = None,
     ) -> FailureLimitPolicy:
         """The optimal replace-at-N-th-failure policy as a typed result.
 
@@ -1084,8 +1053,6 @@ class Repairable:
         max_failures : int, optional
             The largest failure count searched (default 30).
 
-        n_simulations : int, optional
-            Deprecated: the old name of ``mc_samples``.
         Returns
         -------
         FailureLimitPolicy
@@ -1116,7 +1083,7 @@ class Repairable:
         >>> policy.failure_count, round(policy.cost_rate, 3)
         (7, 0.031)
         """
-        n_simulations = _samples(mc_samples, n_simulations)
+        n_simulations = _samples(mc_samples)
 
         count, rate = self._optimise_failure_limit(
             seed, n_simulations, max_failures

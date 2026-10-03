@@ -7,8 +7,8 @@ integrating it gives the system's mean time to failure without simulating
 (#122).
 
 ``mean_lifetime`` splits ``[0, inf)`` into pieces at ``knots``: the times at
-which the curve changes character, such as quantiles of the node models, the
-steps of non-parametric fits and the grid points of numerical curves
+which the curve changes character, such as quantiles of the node models and
+the grid points of numerical curves
 (``model_knots`` finds them). The integral ends where the survival function
 has fallen below ``_ENDED`` and what lies beyond is negligible, which a
 heavy tail can put far out; a tail that falls too slowly for that before
@@ -157,9 +157,9 @@ def _integrate(f: Callable, edges: np.ndarray) -> float:
 
 def model_knots(model) -> np.ndarray:
     """The times at which to split the integral of a node model's survival
-    function: the quantiles of each distribution within it, the steps of
-    its non-parametric fits and the grid points of its numerical curves,
-    through nested RBDs and composite nodes."""
+    function: the quantiles of each distribution within it and the grid
+    points of its numerical curves, through nested RBDs and composite
+    nodes."""
     found: List[np.ndarray] = []
     _collect(model, found, set())
     if not found:
@@ -169,8 +169,6 @@ def model_knots(model) -> np.ndarray:
 
 
 def _collect(model, found: List[np.ndarray], seen: Set[int]) -> None:
-    from surpyval import NonParametric
-
     from .load_sharing_node import LoadSharingModel
     from .non_repairable_rbd import NonRepairableRBD
     from .numerical_convolution import ConvolvedSurvival
@@ -183,18 +181,15 @@ def _collect(model, found: List[np.ndarray], seen: Set[int]) -> None:
         return
     seen.add(id(model))
     inner: list = []
-    if isinstance(model, NonParametric):
-        found.append(np.asarray(model.x, dtype=float))
-        return
     if isinstance(model, ConvolvedSurvival):
         found.append(_thinned(model._t))
         return
     if isinstance(model, NonRepairableRBD):
         inner = list(model.reliabilities.values())
     elif isinstance(model, StandbyModel):
-        inner = [*model.reliabilities, model.model, model._sf_model]
+        inner = [*model.reliabilities, model._sf_model]
     elif isinstance(model, LoadSharingModel):
-        inner = [*model.models, model.model, model._sf_model]
+        inner = [*model.models, model._sf_model]
     elif isinstance(model, (RepeatedNode, RepeatedStandbyNode)):
         inner = [model.model, getattr(model, "_sf_model", None)]
     elif isinstance(model, RegressionNode):

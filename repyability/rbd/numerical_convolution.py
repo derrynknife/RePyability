@@ -6,9 +6,8 @@ A cold-standby arrangement fails after the *sum* of its components' lifetimes
 the convolution of the components' distributions. With imperfect switching it
 is a mixture of partial sums, weighted by how many switches succeed. This
 module computes that survival function numerically -- deterministically and
-quickly, from the components' cumulative distribution functions -- as a
-robust alternative to estimating it from Monte-Carlo samples with a
-Kaplan-Meier fit.
+quickly, from the components' cumulative distribution functions, rather
+than estimating it from Monte-Carlo samples.
 """
 
 from typing import cast

@@ -45,9 +45,8 @@ What is saved:
   distributions and acquisition costs, preventive and inspection schedules,
   maintenance groups and their set-up costs, `"instant"` repairs and
   `NonRepairable` components;
-- the node models: surpyval models, parametric (including
-  `FixedEventProbability`) and non-parametric (Kaplan–Meier and friends), in
-  surpyval's own format (`model.to_dict()`, loaded with `surpyval.from_dict`),
+- the node models: surpyval's parametric models (including
+  `FixedEventProbability`), in surpyval's own format (`model.to_dict()`, loaded with `surpyval.from_dict`),
   so everything surpyval keeps round-trips: an offset, a
   limited-failure-population or zero-inflation parameter, and a fit's
   covariance, so parameter uncertainty can still be propagated after
@@ -61,16 +60,12 @@ into a list, and loading turns it back). Loading with the wrong class
 (`NonRepairableRBD.from_dict` on a `RepairableRBD` document) raises
 `ValueError`; `RBD.from_dict` and `RBD.from_json` always pick the right one.
 
-!!! note "Two limits"
-    - **Models surpyval does not know** (your own class with an `sf`) cannot
-      be saved: `to_dict` raises `NotImplementedError`.
-    - **Simulation-backed standby and load-sharing nodes** are saved by their
-      inputs (`mc_samples`, `dormancy_factor`, ...) but not their `seed`, and are
-      re-simulated when loaded. A reloaded simulated node's reliability can
-      therefore differ from the original within Monte-Carlo error. Nodes with
-      an exact or numerical reliability (cold standby with one or two units
-      operating, or more identical ones; warm standby with one operating;
-      hot standby; load sharing of identical units) reload exactly.
+!!! note "One limit"
+    **Models surpyval does not know** (your own class with an `sf`) cannot
+    be saved: `to_dict` raises `NotImplementedError`. Standby and
+    load-sharing nodes are saved by their inputs (units, `k`,
+    `dormancy_factor`, switching, load) and reload exactly, those only a
+    simulation works out included: they hold no fitted curve.
 
 Condition-based state (`NodeState`) is not part of the RBD and is not saved.
 
@@ -82,7 +77,7 @@ Every Monte-Carlo method takes a `seed`:
 |---|---|
 | `NonRepairableRBD` | `random`, `mean` and `mean_time_to_failure` with `method="simulate"`, `mean_time_to_failure_interval`, `compare` |
 | `RepairableRBD` | `availability`, `cost`, `compare`, `spares_demand` with `method="simulate"` |
-| Node models | `StandbyModel(seed=...)`, `LoadSharingModel(seed=...)`, `RepeatedNode.random`, `RepeatedNode.mean` with `method="simulate"`, `RepeatedStandbyNode.random`, `StandbyModel.random`, `LoadSharingModel.random` |
+| Node models | `RepeatedNode.random`, `RepeatedNode.mean` with `method="simulate"`, `RepeatedStandbyNode.random`, `StandbyModel.random`, `LoadSharingModel.random`, and the `mean(mc_samples=..., seed=...)` of a simulated `StandbyModel` or `LoadSharingModel` |
 | `PhasedMission` | `reliability`, `unreliability` and `phase_failure_probabilities` with `method="simulate"`, `reliability_interval` |
 | `Network` | `sf`, `ff` and `mean` with `method="simulate"`, `random` |
 | `Repairable` | every simulation-backed method |
@@ -106,19 +101,9 @@ processors. So on another machine, the same seed can give times that differ
 in their last digits, and rarely a different count, where two events
 nearly coincide.
 
-Simulations involving non-parametric nodes (Kaplan–Meier and the other
-surpyval non-parametric fits) are reproducible too: surpyval seeds their
-draws from the global generator
-([surpyval issue #361](https://github.com/derrynknife/SurPyval/issues/361)).
-Non-parametric nodes are deprecated, though, and go in 0.12.
-
 The simulations draw the same random numbers in the same order however they
 are computed internally (in blocks for speed, or one at a time), so seeded
-results do not depend on which internal path a model takes. Non-parametric
-nodes are the exception: surpyval takes one seed from the global generator
-for each call rather than one random number for each draw, so a block of
-their draws differs from the same draws made one at a time. Their results
-are still reproducible. A parallel run of a `NonRepairableRBD` (`n_jobs`)
+results do not depend on which internal path a model takes. A parallel run of a `NonRepairableRBD` (`n_jobs`)
 seeds each block of simulations in turn from `seed`, so its results do not
 depend on the number of processes; they differ from a run without
 `n_jobs`. A `RepairableRBD`'s results are the same with `n_jobs` or

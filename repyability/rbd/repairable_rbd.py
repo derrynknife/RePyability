@@ -78,6 +78,7 @@ from repyability.rbd._model_utils import (
     failure_time_scale,
     is_fixed_probability,
     model_mean,
+    refuse_nonparametric,
 )
 from repyability.rbd._point_availability import (
     Atoms,
@@ -95,6 +96,7 @@ from repyability.rbd._point_availability import unit_curve
 from repyability.rbd._sampling import inverse_sampler
 from repyability.rbd.degrading_node import DegradingNode
 from repyability.rbd.helper_classes import PerfectReliability
+from repyability.rbd.load_sharing_node import LoadSharingModel
 from repyability.rbd.node_state import NodeState
 from repyability.rbd.rbd import RBD, _check_on_infeasible_rbd
 from repyability.rbd.redundancy_allocation import (
@@ -120,18 +122,13 @@ from repyability.rbd.results import (
     TotalCostAllocation,
     UpDownImportance,
 )
+from repyability.rbd.standby_node import StandbyModel
 
 if TYPE_CHECKING:
     from repyability.rbd.chunks import SimulationChunk
 
 from repyability.rbd.routes import AnalysisRoute
 from repyability.utils.checks import structure_method
-from repyability.utils.deprecation import (
-    REMOVAL,
-    nonparametric_nodes,
-    renamed,
-    warn_nonparametric,
-)
 
 
 class _StreamedRBD:
@@ -2649,13 +2646,9 @@ _UNSTREAMED = (
 )
 
 
-def _failed_by(component: NonRepairable, age: float, survives: float) -> float:
+def _failed_by(component: NonRepairable, age: float) -> float:
     """The probability that a component's unit fails before ``age``: from
-    its model's own ``ff``, which keeps a small one's precision, or one less
-    ``survives`` (its survival there) for a non-parametric model, whose
-    survival the component interpolates."""
-    if component.model_parameterization == "non-parametric":
-        return 1.0 - survives
+    its model's own ``ff``, which keeps a small one's precision."""
     return float(np.ravel(component.reliability.ff(age))[0])
 
 
@@ -3561,7 +3554,8 @@ class RepairableRBD(RBD):
         ``units`` above ``k`` of at least 1, and a ``dormancy_factor`` and
         ``switching_probability`` in [0, 1], or its component has a
         schedule or instant repair; if a reliability model is not a
-        surpyval parametric or non-parametric model or a ``StandbyModel``;
+        surpyval parametric model or a ``StandbyModel``, or is a surpyval
+        non-parametric one (fit a parametric distribution in surpyval);
         if ``input_node`` or ``output_node`` is not in the diagram, or is
         not its source or sink;
         if ``on_infeasible_rbd`` is not ``"raise"``, ``"warn"`` or
@@ -3877,14 +3871,12 @@ class RepairableRBD(RBD):
                 repairability[name] = component.time_to_replace
             else:
                 raise TypeError(self._unknown_component(name, component))
-        warn_nonparametric(
-            nonparametric_nodes(
-                {
-                    name: spec
-                    for name, spec in self._init_args["components"].items()
-                    if not isinstance(spec, RepairableRBD)
-                }
-            )
+        refuse_nonparametric(
+            {
+                name: spec
+                for name, spec in self._init_args["components"].items()
+                if not isinstance(spec, RepairableRBD)
+            }
         )
 
         super().__init__(
@@ -5204,9 +5196,8 @@ class RepairableRBD(RBD):
         ------
         ValueError
             If something is priced and a working/broken node is unknown, is
-            the input or output node, or is in both sets, or a component
-            has a non-parametric reliability model. (With nothing priced
-            this returns 0.0 without any checks.)
+            the input or output node, or is in both sets. (With nothing
+            priced this returns 0.0 without any checks.)
         NotImplementedError
             If something is priced and a component is under block
             replacement with models its exact values do not cover (see
@@ -5548,6 +5539,7 @@ class RepairableRBD(RBD):
         simulate = (
             "count its spares by simulation: spares_demand(method='simulate')."
         )
+        self._require_reliabilities(node)
         if node in self._standby:
             raise NotImplementedError(
                 f"Component {node!r} is a standby group, whose units' "
@@ -6144,8 +6136,7 @@ class RepairableRBD(RBD):
             no component has an acquisition cost and neither ``nodes`` nor
             ``trains`` is given;
             if a node's or train's copies cost nothing and are not capped;
-            if ``min_availability`` cannot be reached; if a component has a
-            non-parametric reliability model; or if the exact search
+            if ``min_availability`` cannot be reached; or if the exact search
             examines more than 500,000 designs.
         NotImplementedError
             If a component is under block replacement with models its exact
@@ -6612,8 +6603,8 @@ class RepairableRBD(RBD):
             ``fixed`` or an option names a node that is not a component, or
             an option names a component that keeps its availability; if no
             component can be allocated an availability; if
-            ``"minimum_effort"`` is asked of a system that is not a series;
-            or if a component has a non-parametric reliability model.
+            or if ``"minimum_effort"`` is asked of a system that is not a
+            series.
         KeyError
             If ``weights`` has no entry for a component allocated an
             availability.
@@ -6801,9 +6792,8 @@ class RepairableRBD(RBD):
             ever-growing cost); if ``levers`` is unknown; if ``fixed`` or an
             option names a node that is not a component, or an option names
             one that keeps its availability; if a limit is on the wrong side
-            of the current value, or a feasibility is outside [0, 1); if no
-            lever can change; or if a component has a non-parametric
-            reliability model.
+            of the current value, or a feasibility is outside [0, 1); or if
+            no lever can change.
         NotImplementedError
             As for ``mean_availability``, or if a component can wait for a
             repair crew (see ``repair_crews``): the allocation assumes
@@ -8377,11 +8367,12 @@ class RepairableRBD(RBD):
         cover (hidden failures at a rate that is not constant, say); the
         availability over time solves each component's renewal equation on
         a grid; ``availability``, ``cost`` and ``compare`` always simulate.
-        A component whose life is simulated (a ``StandbyModel`` fitted to
-        simulated lifetimes) makes the exact values it enters simulated
-        too. A refusal is found by the check the method itself runs, and its
-        reason is the message it would raise; limits that only computing
-        shows (a grid grown too large) are not foreseen.
+        A component whose life has no exact or numerical reliability (a
+        ``StandbyModel`` or ``LoadSharingModel`` that only simulations take)
+        makes the values it enters refuse, as it does. A refusal is found by
+        the check the method itself runs, and its reason is the message it
+        would raise; limits that only computing shows (a grid grown too
+        large) are not foreseen.
 
         A method that takes nodes, targets or intervals is described for
         its defaults: ``optimal_replacement_intervals`` choosing for every
@@ -8505,7 +8496,7 @@ class RepairableRBD(RBD):
             conditioned,
         )
         give(
-            ("fussell_vesely", "fussel_vesely"),
+            ("fussell_vesely",),
             from_long_run(
                 r.EXACT,
                 "The exact probability that a minimal cut set containing "
@@ -9049,9 +9040,6 @@ class RepairableRBD(RBD):
             message = r.refusal(partial(self._require_block_models, node))
         if message:
             return r.REFUSED, message
-        life, how = r.model_route(component.reliability)
-        if life == r.SIMULATED:
-            return life, f"a life from {how}"
         return r.NUMERICAL, "its renewal equation, solved on a grid"
 
     def _over_time(
@@ -9249,12 +9237,12 @@ class RepairableRBD(RBD):
         ------
         ValueError
             If a working/broken node is unknown, is the input or output
-            node, or is in both sets; or if a component has a
-            non-parametric reliability model, whose MTTF this cannot
-            compute.
+            node, or is in both sets.
         NotImplementedError
-            If a component is under block replacement with models its exact
-            values do not cover (see ``node_availability``), or has hidden
+            If a component's life has no exact or numerical mean (a
+            ``StandbyModel`` or ``LoadSharingModel`` that only simulations
+            take), is under block replacement with models its exact values
+            do not cover (see ``node_availability``), or has hidden
             failures whose tests or repairs take time, or whose tests can
             miss a failure of a life that is not exponential; or, while a
             component can wait for a repair crew, if the Markov chain does
@@ -11072,12 +11060,8 @@ class RepairableRBD(RBD):
         age = None if schedule is None else float(schedule.interval)
         duration = None if schedule is None else schedule.duration
         life = component.reliability
-        if component.model_parameterization == "non-parametric":
-            up_sf = component.reliability_function
-            up_splits = np.asarray(component._knots, dtype=float)
-        else:
-            up_sf = life.sf
-            up_splits = point_knots(life)
+        up_sf = life.sf
+        up_splits = point_knots(life)
         repair = component.time_to_replace
 
         def up_cdf(x):
@@ -12533,8 +12517,6 @@ class RepairableRBD(RBD):
         shard_map: Optional[Callable] = None,
         shard_size: Optional[int] = None,
         control_variate: bool = False,
-        N: Optional[int] = None,
-        max_N: Optional[int] = None,
     ) -> AvailabilityResult:
         """Simulate the system's availability over ``[0, t_simulation]``.
 
@@ -12613,8 +12595,7 @@ class RepairableRBD(RBD):
             left as it was. Models whose draws cannot be streamed (other
             than surpyval's parametric ones, and the component classes'
             subclasses) draw from the global RNG, seeded afresh for each
-            simulation; surpyval's non-parametric models are not
-            reproducible either way.
+            simulation.
         tolerance : float, optional
             Simulate until the mean availability over the window (the
             fraction of it the system is up) is known to within
@@ -12746,10 +12727,6 @@ class RepairableRBD(RBD):
             ``shard_map``. See
             [An exact twin](guide/simulation.md#an-exact-twin).
 
-        N : int, optional
-            Deprecated: the old name of ``mc_samples``.
-        max_N : int, optional
-            Deprecated: the old name of ``max_samples``.
         Returns
         -------
         AvailabilityResult
@@ -12821,9 +12798,7 @@ class RepairableRBD(RBD):
         >>> {node: round(float(v), 4) for node, v in oci.up.items()}
         {'a': 1.0, 'b': 1.0}
         """
-        mc_samples = renamed("mc_samples", mc_samples, "N", N)
         N = 10_000 if mc_samples is None else mc_samples
-        max_N = renamed("max_samples", max_samples, "max_N", max_N)
 
         return self._simulated(
             t_simulation,
@@ -12835,7 +12810,7 @@ class RepairableRBD(RBD):
             seed,
             tolerance=tolerance,
             confidence=confidence,
-            max_N=max_N,
+            max_N=max_samples,
             antithetic=antithetic,
             n_jobs=n_jobs,
             target="availability",
@@ -13556,7 +13531,6 @@ class RepairableRBD(RBD):
         n_jobs: Optional[int] = None,
         engine: str = "auto",
         state=None,
-        N: Optional[int] = None,
     ) -> ConfidenceInterval:
         """How much better (or worse) this system is than ``other``, by
         simulation with common random numbers.
@@ -13604,8 +13578,6 @@ class RepairableRBD(RBD):
             in both systems: each must have the components it names. By
             default None: new.
 
-        N : int, optional
-            Deprecated: the old name of ``mc_samples``.
         Returns
         -------
         ConfidenceInterval
@@ -13622,7 +13594,7 @@ class RepairableRBD(RBD):
             costs.
         NotImplementedError
             If a component's draws cannot be replayed from a stream of its
-            own (a non-parametric model, for example), or, with
+            own (a model sampled its own way), or, with
             ``engine="numba"``, the compiled engine does not simulate a
             system.
         ImportError
@@ -13657,7 +13629,6 @@ class RepairableRBD(RBD):
         runs of 2000 simulations would estimate it with a standard error of
         about 0.00058.
         """
-        mc_samples = renamed("mc_samples", mc_samples, "N", N)
         N = 10_000 if mc_samples is None else mc_samples
         t_simulation = _check_window(t_simulation)
 
@@ -14884,8 +14855,6 @@ class RepairableRBD(RBD):
         shard_map: Optional[Callable] = None,
         shard_size: Optional[int] = None,
         control_variate: bool = False,
-        N: Optional[int] = None,
-        max_N: Optional[int] = None,
     ) -> Optional[CostResult]:
         """Simulate the cost of running the system for ``t_simulation``.
 
@@ -14975,10 +14944,6 @@ class RepairableRBD(RBD):
             controlled estimate, from the twin's exact ``expected_cost``,
             and a ``tolerance`` is judged on it. By default False.
 
-        N : int, optional
-            Deprecated: the old name of ``mc_samples``.
-        max_N : int, optional
-            Deprecated: the old name of ``max_samples``.
         Returns
         -------
         CostResult or None
@@ -15020,9 +14985,7 @@ class RepairableRBD(RBD):
         >>> round(result.cost_rate, 2), round(rbd.expected_cost_rate(), 2)
         (13.55, 13.64)
         """
-        mc_samples = renamed("mc_samples", mc_samples, "N", N)
         N = 10_000 if mc_samples is None else mc_samples
-        max_N = renamed("max_samples", max_samples, "max_N", max_N)
         t_simulation = _check_window(t_simulation)
 
         if not self.has_costs:
@@ -15037,7 +15000,7 @@ class RepairableRBD(RBD):
             seed,
             tolerance=tolerance,
             confidence=confidence,
-            max_N=max_N,
+            max_N=max_samples,
             antithetic=antithetic,
             n_jobs=n_jobs,
             target="cost",
@@ -15098,9 +15061,6 @@ class RepairableRBD(RBD):
 
         Raises
         ------
-        ValueError
-            If a component has a non-parametric reliability model, whose
-            MTTF this cannot compute.
         NotImplementedError
             If a component is under block replacement with models its exact
             values do not cover (a lifetime that is not a surpyval
@@ -15226,10 +15186,27 @@ class RepairableRBD(RBD):
                 "long run."
             )
 
+    def _require_reliabilities(self, node) -> None:
+        """Raise, as the model itself does, if a component's life or repair
+        model has no exact or numerical reliability: a ``StandbyModel`` or
+        ``LoadSharingModel`` that only simulations take (#149)."""
+        component = self.components[node]
+        for model in (
+            getattr(component, "reliability", None),
+            getattr(component, "time_to_replace", None),
+        ):
+            if (
+                isinstance(model, (StandbyModel, LoadSharingModel))
+                and model.is_simulated
+            ):
+                raise model._no_reliability()
+
     def _require_time_models(self, node) -> None:
         """Raise if a component's life or repair model is a probability,
         not a distribution of times: its availability over time then has
-        no exact value."""
+        no exact value. (First, if one has no reliability: see
+        ``_require_reliabilities``.)"""
+        self._require_reliabilities(node)
         component = self.components[node]
         for what, model in [
             ("reliability", component.reliability),
@@ -16122,7 +16099,7 @@ class RepairableRBD(RBD):
         survives = float(
             np.ravel(component.reliability_function(schedule.interval))[0]
         )
-        fails = _failed_by(component, schedule.interval, survives)
+        fails = _failed_by(component, schedule.interval)
         maintenance = (
             0.0 if schedule.duration is None else model_mean(schedule.duration)
         )
@@ -16188,8 +16165,7 @@ class RepairableRBD(RBD):
         ------
         ValueError
             If a working/broken node is unknown, is the input or output
-            node, or is in both sets; or if a component has a
-            non-parametric reliability model.
+            node, or is in both sets.
         NotImplementedError
             If a component is under block replacement with models its exact
             values do not cover (see ``node_availability``); or, while a
@@ -16307,8 +16283,7 @@ class RepairableRBD(RBD):
         ------
         ValueError
             If a working/broken node is unknown, is the input or output
-            node, or is in both sets; or if a component has a
-            non-parametric reliability model.
+            node, or is in both sets.
         NotImplementedError
             As for ``mean_availability``.
 
@@ -16368,8 +16343,7 @@ class RepairableRBD(RBD):
         ------
         ValueError
             If a working/broken node is unknown, is the input or output
-            node, or is in both sets; or if a component has a
-            non-parametric reliability model.
+            node, or is in both sets.
         NotImplementedError
             As for ``mean_availability``.
 
@@ -16431,8 +16405,7 @@ class RepairableRBD(RBD):
         ------
         ValueError
             If a working/broken node is unknown, is the input or output
-            node, or is in both sets; or if a component has a
-            non-parametric reliability model.
+            node, or is in both sets.
         NotImplementedError
             As for ``mean_availability``.
 
@@ -16521,8 +16494,7 @@ class RepairableRBD(RBD):
         ------
         ValueError
             If a working/broken node is unknown, is the input or output
-            node, or is in both sets; or if a component has a
-            non-parametric reliability model.
+            node, or is in both sets.
         NotImplementedError
             As for ``mean_availability``.
 
@@ -16601,8 +16573,7 @@ class RepairableRBD(RBD):
         ------
         ValueError
             If a working/broken node is unknown, is the input or output
-            node, or is in both sets; or if a component has a
-            non-parametric reliability model.
+            node, or is in both sets.
         NotImplementedError
             As for ``mean_availability``.
 
@@ -16680,8 +16651,7 @@ class RepairableRBD(RBD):
         ------
         ValueError
             If a working/broken node is unknown, is the input or output
-            node, or is in both sets; or if a component has a
-            non-parametric reliability model.
+            node, or is in both sets.
         NotImplementedError
             As for ``mean_availability``.
 
@@ -16763,8 +16733,7 @@ class RepairableRBD(RBD):
         ------
         ValueError
             If a working/broken node is unknown, is the input or output
-            node, or is in both sets; or if a component has a
-            non-parametric reliability model.
+            node, or is in both sets.
         NotImplementedError
             As for ``mean_availability``.
 
@@ -16856,9 +16825,8 @@ class RepairableRBD(RBD):
         ------
         ValueError
             If a working/broken node is unknown, is the input or output
-            node, or is in both sets; if a component has a non-parametric
-            reliability model; or if ``kind`` is neither ``"failure"`` nor
-            ``"success"``.
+            node, or is in both sets; or if ``kind`` is neither
+            ``"failure"`` nor ``"success"``.
         NotImplementedError
             As for ``mean_availability``.
 
@@ -16975,8 +16943,7 @@ class RepairableRBD(RBD):
         ValueError
             If ``fv_type`` is not 'c' (cut-set) or 'p' (path-set), or
             ``method`` not 'exact' or 'rare_event'; if a working/broken node
-            is unknown, is the input or output node, or is in both sets; or
-            if a component has a non-parametric reliability model.
+            is unknown, is the input or output node, or is in both sets.
         NotImplementedError
             As for ``mean_availability``.
 
@@ -17011,39 +16978,3 @@ class RepairableRBD(RBD):
                 node_failures=node_failures,
             )
         )
-
-    def fussel_vesely(self, fv_type: str = "c") -> dict[Any, float]:
-        """Deprecated alias for ``fussell_vesely`` (corrected spelling).
-
-        Deprecated: use ``fussell_vesely`` instead; this alias will be
-        removed in 0.12. It returns ``fussell_vesely(fv_type)``
-        and, unlike it, takes no ``working_nodes`` or ``broken_nodes``.
-
-        Parameters
-        ----------
-        fv_type : str, optional
-            "c" = cut-set and "p" = path-set, by default "c".
-
-        Returns
-        -------
-        dict[Any, float]
-            Dictionary with node names as keys and Fussell-Vesely importances
-            as values.
-
-        Raises
-        ------
-        ValueError
-            As for ``fussell_vesely``.
-
-        Warns
-        -----
-        FutureWarning
-            On every call.
-        """
-        warnings.warn(
-            "fussel_vesely() is deprecated; use fussell_vesely() "
-            f"(Fussell-Vesely). This alias will be removed in {REMOVAL}.",
-            FutureWarning,
-            stacklevel=2,
-        )
-        return self.fussell_vesely(fv_type)

@@ -139,19 +139,19 @@
 - **One name for the number of simulations**: `mc_samples`, and `max_samples`
   for its cap in a run to a `tolerance`, in every method and constructor
   that simulates; `seed` seeds it (#105). The old names (`N`, `max_N`,
-  `n_sims`, `n_simulations`) warn in 0.11 and go in 0.12, through
-  `repyability/utils/deprecation.py`. Use these names in new code.
+  `n_sims`, `n_simulations`) went in 0.12. Use these names in new code.
 - **A deprecation gives one minor release's notice.** It warns in one
   minor release and the next removes it, with a `FutureWarning` (always
-  shown) through `repyability/utils/deprecation.py`. Everything deprecated
-  by 0.11 goes in 0.12 (#149): the old simulation-count names, ignored
-  arguments, the `fussel_vesely` alias, `find_optimal_replacement`'s
-  `options`, non-parametric RBD nodes, and the standby and load-sharing
-  models' fits to simulated lifetimes.
-  `test_the_removal_is_the_next_minor_release` fails once the version
-  reaches `REMOVAL`, until they are removed. What 0.12 deprecates (calling
-  `SparesDemand.mean()`/`std()`, now properties, #184) goes in 0.13
-  (`NEXT_REMOVAL`, through `deprecation.called`), and
+  shown) through `repyability/utils/deprecation.py`. What 0.11 deprecated
+  went in 0.12 (#149), and `test_removed_in_0_12.py` keeps it gone: the
+  old names and ignored arguments raise `TypeError`, a diagram refuses a
+  non-parametric node, and a standby or load-sharing model with no exact
+  or numerical reliability refuses one (`is_simulated`), where a fit to
+  simulated lifetimes stood in, and is left to the simulations. What 0.12
+  deprecates goes in 0.13 (`NEXT_REMOVAL`): calling
+  `SparesDemand.mean()`/`std()`, now properties (#184, through
+  `deprecation.called`), and those models' `mc_samples`, `lower` and
+  `seed`, which set the fit (through `deprecation.ignored`).
   `test_the_calls_go_in_the_release_after_next` fails once the version
   reaches it.
 - **Exact by default, simulation on request.** Where an analysis can be

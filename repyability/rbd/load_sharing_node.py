@@ -28,20 +28,14 @@ Engine (per Monte-Carlo replicate) -- a cumulative-exposure event loop::
 For identical units with an Exponential baseline the group lifetime has an
 exact closed form (a hypoexponential distribution); for other identical
 units it is numerical (``_dependent_lifetimes.LoadSharingSurvival``); for
-different units the survival function is a Kaplan-Meier fit to simulated
-lifetimes (like ``StandbyModel``).
+different units only the simulations take it (like some ``StandbyModel``
+arrangements).
 """
 
-import warnings
-
 import numpy as np
-from surpyval import Hypoexponential, KaplanMeier
+from surpyval import Hypoexponential
 
-from repyability.utils.deprecation import (
-    REMOVAL,
-    renamed,
-    warn_simulated_fit,
-)
+from repyability.utils.deprecation import ignored
 from repyability.utils.wrappers import conditional_survival, numpy_seed
 
 from ._dependent_lifetimes import LoadSharingSurvival
@@ -118,11 +112,14 @@ class LoadSharingModel:
       of their exposures to failure, and a recursion over the failures on
       a grid of exposure and time gives the lifetime's distribution, to
       about ``1e-4`` of a probability.
-    - **Simulated** for different units: a Kaplan-Meier fit to
-      ``mc_samples`` lifetimes drawn with ``random`` (deprecated: it goes
-      in 0.12).
-
-    ``is_simulated`` tells which applies.
+    - **None** for different units: ``sf``, ``ff``, ``cs`` and ``mean()``
+      refuse, and ``is_simulated`` is True. Its lifetimes are still drawn
+      by ``random``, so a diagram with it is simulated: ``random``,
+      ``mean(method="simulate")`` and ``unreliability_interval`` of a
+      ``NonRepairableRBD``, and ``availability`` and ``cost`` of a
+      ``RepairableRBD``. ``mean(mc_samples=..., seed=...)`` estimates its
+      own mean from new draws. (Until 0.12 its ``sf`` was a Kaplan-Meier
+      fit to simulated lifetimes.)
 
     As an RBD node, ``sf``/``ff`` give its reliability, ``random`` its
     lifetimes for Monte-Carlo system simulation and ``mean`` its MTTF.
@@ -143,24 +140,18 @@ class LoadSharingModel:
         The minimum number of surviving units for the group to work, from
         1 to ``len(models)``, by default 1.
     mc_samples : int, optional
-        The number of simulated lifetimes behind the Kaplan-Meier fit when
-        no closed form applies, by default 10_000.
+        Deprecated and unused: the number of simulated lifetimes the
+        reliability of different units was fitted to until 0.12. Passing
+        it warns, and 0.13 will refuse it.
     lower : float, optional
-        The ``set_lower_limit`` of that Kaplan-Meier fit: a point with
-        survival 1 is added there. By default -inf.
+        Deprecated and unused, as ``mc_samples`` is: that fit's lower limit.
     seed : int or None, optional
-        Seed for the simulation, making the fit reproducible: numpy's
-        global RNG is seeded for the draw and restored afterwards. By
-        default None (not reproducible).
-    n_sims : int, optional
-        Deprecated: the old name of ``mc_samples``.
+        Deprecated and unused, as ``mc_samples`` is: that fit's seed.
 
     Attributes
     ----------
     N : int
         The number of units, ``len(models)``.
-    model : surpyval NonParametric or None
-        The Kaplan-Meier fit when the group is simulated, else None.
 
     Raises
     ------
@@ -215,14 +206,14 @@ class LoadSharingModel:
         load,
         k=1,
         mc_samples=None,
-        lower=-np.inf,
+        lower=None,
         seed=None,
-        *,
-        n_sims=None,
     ):
-        mc_samples = renamed("mc_samples", mc_samples, "n_sims", n_sims)
-        if mc_samples is None:
-            mc_samples = 10_000
+        ignored(
+            "LoadSharingModel()",
+            "its reliability is no longer fitted to simulated lifetimes.",
+            {"mc_samples": mc_samples, "lower": lower, "seed": seed},
+        )
         models = list(models)
         if len(models) == 0:
             raise ValueError("LoadSharingModel needs at least one unit.")
@@ -244,7 +235,6 @@ class LoadSharingModel:
         self.load = float(load)
         self.k = int(k)
         self.N = len(models)
-        self.mc_samples = mc_samples
 
         self._baselines = [_baseline(m) for m in models]
         # phi_table[i, s-1] = unit i's aging rate when s units share the load.
@@ -280,14 +270,6 @@ class LoadSharingModel:
                 self.N,
                 self.k,
             )
-        if self._sf_model is not None:
-            self.model = None
-        else:
-            warn_simulated_fit("LoadSharingModel", "units that are different")
-            x_random = self.random(mc_samples, seed=seed)
-            self.model = KaplanMeier.fit(x_random, set_lower_limit=lower)
-            # The simulated lifetimes' mean, for mean().
-            self._simulated_mean = float(np.mean(x_random))
 
     def _identical(self) -> bool:
         """Whether the units are identical: one baseline (the same
@@ -412,50 +394,48 @@ class LoadSharingModel:
             out[j] = t
         return out
 
-    def mean(self, mc_samples=None, seed=None, *, N=None):
+    def mean(self, mc_samples=None, seed=None):
         """Mean lifetime (MTTF) of the group.
 
         Exact (the hypoexponential mean, the sum of the stage means) when
-        the closed form applies. When the group is simulated it is the mean
-        of the ``mc_samples`` lifetimes simulated at construction, which
-        the Kaplan-Meier fit behind ``sf`` is made from: a Monte-Carlo
-        estimate, but the same on every call (and reproducible with the
-        constructor's ``seed``). Give ``mc_samples`` or ``seed`` for a fresh
-        estimate instead: the mean of ``mc_samples`` new draws of
-        ``random``.
+        the closed form applies, and numerical for identical units (the
+        integral of the survival function). A group of different units has
+        neither (see ``is_simulated``), and refuses, unless asked for an
+        estimate: the mean of ``mc_samples`` new draws of ``random``.
 
         Parameters
         ----------
         mc_samples : int, optional
-            The number of new draws for a fresh Monte-Carlo estimate
-            (10_000 if only ``seed`` is given). By default None: the mean of
-            the lifetimes simulated at construction. Ignored when the closed
-            form applies.
+            For a group with no exact mean: the number of draws to estimate
+            it from (10_000 if only ``seed`` is given). Ignored otherwise.
         seed : int or None, optional
-            Seed for those new draws (see ``random``), by default None.
-            Ignored when the closed form applies.
-        N : int, optional
-            Deprecated: the old name of ``mc_samples``.
+            Seed for those draws (see ``random``), by default None.
+            Ignored as ``mc_samples`` is.
 
         Returns
         -------
         float
-            The mean lifetime.
+            The mean lifetime, or its estimate.
+
+        Raises
+        ------
+        NotImplementedError
+            If the group has no exact mean and neither ``mc_samples`` nor
+            ``seed`` is given.
         """
-        mc_samples = renamed("mc_samples", mc_samples, "N", N)
         if self._sf_model is not None:
             return float(np.ravel(self._sf_model.mean())[0])
         if mc_samples is None and seed is None:
-            return self._simulated_mean
+            raise self._no_reliability("mean life")
         count = 10_000 if mc_samples is None else mc_samples
         return float(self.random(count, seed=seed).mean())
 
     def sf(self, x, *args, **kwargs):
         """Survival function (reliability) of the group.
 
-        Evaluates the exact hypoexponential closed form or, when the group
-        is simulated, the Kaplan-Meier fit (a step function). An RBD calls
-        this for the node's reliability.
+        Evaluates the exact hypoexponential closed form, or the numerical
+        recursion for identical units. An RBD calls this for the node's
+        reliability.
 
         Parameters
         ----------
@@ -469,10 +449,15 @@ class LoadSharingModel:
         float or numpy.ndarray
             The probability that the group survives beyond ``x``: an array
             for an array ``x``, and a numpy float for a scalar ``x``.
+
+        Raises
+        ------
+        NotImplementedError
+            For different units (see ``is_simulated``).
         """
-        if self._sf_model is not None:
-            return self._sf_model.sf(x, *args, **kwargs)
-        return self.model.sf(x, *args, **kwargs)
+        if self._sf_model is None:
+            raise self._no_reliability()
+        return self._sf_model.sf(x, *args, **kwargs)
 
     def ff(self, x, *args, **kwargs):
         """Cumulative failure probability, ``1 - sf(x)``.
@@ -491,10 +476,15 @@ class LoadSharingModel:
         float or numpy.ndarray
             The probability that the group has failed by ``x``, shaped as
             for ``sf``.
+
+        Raises
+        ------
+        NotImplementedError
+            As for ``sf``.
         """
-        if self._sf_model is not None:
-            return self._sf_model.ff(x, *args, **kwargs)
-        return self.model.ff(x, *args, **kwargs)
+        if self._sf_model is None:
+            raise self._no_reliability()
+        return self._sf_model.ff(x, *args, **kwargs)
 
     def cs(self, x, X):
         """Conditional survival ``R(x | X) = sf(X + x) / sf(X)``.
@@ -520,23 +510,26 @@ class LoadSharingModel:
 
     @property
     def is_simulated(self) -> bool:
-        """Whether the survival function is simulated.
-
-        True if ``sf``/``ff`` come from a Monte-Carlo (Kaplan-Meier) fit,
-        False if they are the exact hypoexponential closed form.
-        """
+        """Whether only simulations take the group: its units are
+        different, so no exact or numerical method gives its reliability,
+        ``sf``, ``ff``, ``cs`` and ``mean()`` refuse, and a diagram with it
+        is simulated."""
         return self._sf_model is None
 
-    @property
-    def n_sims(self) -> int:
-        """Deprecated: the old name of ``mc_samples``."""
-        warnings.warn(
-            "n_sims is deprecated: use mc_samples. n_sims will be removed "
-            f"in {REMOVAL}.",
-            FutureWarning,
-            stacklevel=2,
+    def _no_reliability(self, what: str = "reliability") -> Exception:
+        """The refusal of a group with no exact or numerical ``what`` (see
+        ``is_simulated``)."""
+        own = (
+            " Estimate it with mean(mc_samples=..., seed=...)."
+            if what == "mean life"
+            else ""
         )
-        return self.mc_samples
+        return NotImplementedError(
+            "This LoadSharingModel (units that are different) has no exact "
+            f"or numerical {what}.{own} A diagram with it is simulated: "
+            "random, mean(method='simulate') and unreliability_interval of a "
+            "NonRepairableRBD, or availability and cost of a RepairableRBD."
+        )
 
 
 def _all_distinct(rates, rtol=1e-6):

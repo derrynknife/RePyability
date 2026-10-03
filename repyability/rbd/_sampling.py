@@ -26,7 +26,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 import numpy as np
-from surpyval import NonParametric, Parametric
+from surpyval import Parametric
 
 from .helper_classes import PerfectReliability, PerfectUnreliability
 
@@ -66,17 +66,6 @@ def row_sampler(model) -> Optional[RowSampler]:
     sampler = inverse_sampler(model)
     if sampler is not None:
         return RowSampler(1, lambda u: column(u, 0, sampler))
-    if (
-        isinstance(model, NonParametric)
-        and type(model).random is NonParametric.random
-    ):
-        # surpyval draws these from a generator it seeds from numpy's global
-        # RNG, once per call: not one global uniform per draw. A batch takes
-        # one seed for all its draws, so it uses the global stream
-        # reproducibly, but not as draws made one at a time would.
-        return RowSampler(
-            0, lambda u: np.asarray(model.random(len(u)), dtype=float)
-        )
     # Composite nodes describe their own draws.
     own = getattr(model, "_row_sampler", None)
     return own() if callable(own) else None

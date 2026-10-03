@@ -79,13 +79,7 @@ def nonrepairable_rbds():
         "simulated standby": NonRepairableRBD(
             EDGES,
             {
-                "a": StandbyModel(
-                    [unit] * 3,
-                    k=2,
-                    dormancy_factor=0.5,
-                    mc_samples=2000,
-                    seed=1,
-                ),
+                "a": StandbyModel([unit] * 3, k=2, dormancy_factor=0.5),
                 **rest,
             },
         ),
@@ -121,15 +115,7 @@ def nonrepairable_rbds():
             {
                 "a": NonRepairableRBD(
                     [("s", "x"), ("x", "t")],
-                    {
-                        "x": StandbyModel(
-                            [unit] * 3,
-                            k=2,
-                            dormancy_factor=0.5,
-                            mc_samples=500,
-                            seed=2,
-                        )
-                    },
+                    {"x": StandbyModel([unit] * 3, k=2, dormancy_factor=0.5)},
                 ),
                 **rest,
             },
@@ -250,19 +236,7 @@ def repairable_rbds():
             "simulated standby life": system(
                 {
                     "reliability": StandbyModel(
-                        [life] * 3,
-                        k=2,
-                        dormancy_factor=0.5,
-                        mc_samples=2000,
-                        seed=1,
-                    ),
-                    "repairability": repair,
-                }
-            ),
-            "non-parametric life": system(
-                {
-                    "reliability": surv.KaplanMeier.fit(
-                        [100.0, 250.0, 400.0, 700.0, 900.0]
+                        [life] * 3, k=2, dormancy_factor=0.5
                     ),
                     "repairability": repair,
                 }
@@ -567,18 +541,12 @@ def test_nodes_are_routed_by_how_their_reliability_is_found():
     unit = W([100, 2])
     cases = [
         (unit, routes.EXACT),
-        (surv.KaplanMeier.fit([1.0, 2.0, 3.0]), routes.EXACT),
         (StandbyModel([E([0.01])] * 3, k=2), routes.EXACT),
         (StandbyModel([unit, unit]), routes.NUMERICAL),
         (StandbyModel([unit] * 3, k=2), routes.NUMERICAL),
         (StandbyModel([unit] * 2, dormancy_factor=0.5), routes.NUMERICAL),
         (StandbyModel([unit] * 3, k=2, dormancy_factor=1.0), routes.EXACT),
-        (
-            StandbyModel(
-                [unit] * 3, k=2, dormancy_factor=0.5, mc_samples=500, seed=1
-            ),
-            routes.SIMULATED,
-        ),
+        (StandbyModel([unit] * 3, k=2, dormancy_factor=0.5), routes.REFUSED),
         (RepeatedStandbyNode(unit, 3), routes.NUMERICAL),
         (RepeatedNode(unit, 3, "series"), routes.EXACT),
         (DegradingNode([(1.0, unit), (0.5, unit)]), routes.NUMERICAL),
@@ -587,12 +555,14 @@ def test_nodes_are_routed_by_how_their_reliability_is_found():
         assert routes.model_route(model)[0] == expected, model
 
 
-def test_a_simulated_node_is_named_and_the_rest_stay_exact():
+def test_a_node_with_no_reliability_is_named_and_the_rest_stay_exact():
     rbd = nonrepairable_rbds()["simulated standby"]
     report = rbd.analysis_routes()
-    assert report["sf"].route == routes.SIMULATED
+    assert report["sf"].route == routes.REFUSED
     assert report["sf"].nodes == ("a",)
-    assert "2000 simulated lifetimes" in report["sf"].reason
+    assert "no exact or numerical reliability" in report["sf"].reason
+    assert report["random"].route == routes.SIMULATED
+    assert report["unreliability_interval"].route == routes.SIMULATED
     assert report["structural_importance"].route == routes.EXACT
     assert rbd.get_non_analytic_nodes() == {"a": "StandbyModel"}
     exact = nonrepairable_rbds()["convolved standby"]
@@ -642,10 +612,14 @@ def test_maintenance_makes_the_long_run_numerical():
     assert report["mean_availability"].route == routes.EXACT
 
 
-def test_a_simulated_life_makes_the_exact_values_simulated():
+def test_a_life_with_no_mean_refuses_the_long_run():
     report = repairable_rbds()["simulated standby life"].analysis_routes()
-    assert report["mean_availability"].route == routes.SIMULATED
+    assert report["mean_availability"].route == routes.REFUSED
     assert report["mean_availability"].nodes == ("a",)
+    assert (
+        "mean(mc_samples=..., seed=...)" in report["mean_availability"].reason
+    )
+    assert report["availability"].route == routes.SIMULATED
 
 
 def test_the_engine_is_the_one_auto_would_run(monkeypatch):
@@ -675,12 +649,10 @@ def test_a_load_sharing_group_is_simulated_only_with_different_units():
     )
     closed = LoadSharingModel([exponential] * 2, load=2.0)
     identical = LoadSharingModel([weibull] * 2, load=2.0)
-    different = LoadSharingModel(
-        [weibull, exponential], load=2.0, mc_samples=500, seed=3
-    )
+    different = LoadSharingModel([weibull, exponential], load=2.0)
     assert routes.model_route(closed)[0] == routes.EXACT
     assert routes.model_route(identical)[0] == routes.NUMERICAL
-    assert routes.model_route(different)[0] == routes.SIMULATED
+    assert routes.model_route(different)[0] == routes.REFUSED
 
 
 def test_a_route_reads_as_a_sentence():
@@ -740,9 +712,7 @@ def test_the_readme_says_what_is_simulated():
     )
     x = rng.exponential(scale=100.0 / np.exp(0.6 * (load - 1.0)), size=400)
     exponential = surv.ExponentialAFT.fit(x + 1e-3, Z=load.reshape(-1, 1))
-    sharing = LoadSharingModel(
-        [weibull, exponential], load=2.0, mc_samples=500, seed=3
-    )
+    sharing = LoadSharingModel([weibull, exponential], load=2.0)
     plain, ccf = nonrepairable["plain"], nonrepairable["common cause"]
     crew = repairable["one repair crew, exponential"]
     group = repairable["standby group"]
@@ -772,13 +742,19 @@ def test_the_readme_says_what_is_simulated():
                 "time_to_reliability_uncertainty",
             )
         ],
-        "Small failure probabilities, with a simulated node": [
-            (nonrepairable["simulated standby"], "ff", "simulated"),
+        "Small failure probabilities, with a node only simulations take": [
+            (nonrepairable["simulated standby"], "ff", "refused"),
+            (
+                nonrepairable["simulated standby"],
+                "unreliability_interval",
+                "simulated",
+            ),
             (plain, "ff", "exact"),
         ],
         "Warm standby with two or more units operating, of "
         "non-exponential units": [
-            (nonrepairable["simulated standby"], "sf", "simulated"),
+            (nonrepairable["simulated standby"], "sf", "refused"),
+            (nonrepairable["simulated standby"], "random", "simulated"),
             (
                 alone(StandbyModel([unit] * 2, dormancy_factor=0.5)),
                 "sf",
@@ -794,15 +770,10 @@ def test_the_readme_says_what_is_simulated():
         "load sharing of different units": [
             (
                 alone(
-                    StandbyModel(
-                        [unit, W([80, 1.5]), unit, W([90, 3])],
-                        k=3,
-                        mc_samples=500,
-                        seed=1,
-                    )
+                    StandbyModel([unit, W([80, 1.5]), unit, W([90, 3])], k=3)
                 ),
                 "sf",
-                "simulated",
+                "refused",
             ),
             (alone(StandbyModel([unit] * 3, k=2)), "sf", "numerical"),
             (
@@ -810,10 +781,12 @@ def test_the_readme_says_what_is_simulated():
                 "sf",
                 "numerical",
             ),
-            (alone(sharing), "sf", "simulated"),
+            (alone(sharing), "sf", "refused"),
+            (alone(sharing), "random", "simulated"),
         ],
-        "Anything a simulated node is part of": [
-            (nonrepairable["nested"], "sf", "simulated"),
+        "Anything such a node is part of": [
+            (nonrepairable["nested"], "sf", "refused"),
+            (nonrepairable["nested"], "random", "simulated"),
         ],
         "Common-cause groups: analyses given ages, and the MTTF of a group "
         "splitting a failure probability": [
@@ -834,18 +807,6 @@ def test_the_readme_says_what_is_simulated():
         + [
             (ccf, name, "refused")
             for name in ("mean", "mean_uncertainty", "sf_given_state")
-        ],
-        "Kaplan–Meier lives in a repairable system": [
-            (
-                repairable["non-parametric life"],
-                "mean_availability",
-                "refused",
-            ),
-            (
-                repairable["non-parametric life"],
-                "point_availability",
-                "numerical",
-            ),
         ],
         "Phased missions and networks too large for their decision "
         "diagrams": [],

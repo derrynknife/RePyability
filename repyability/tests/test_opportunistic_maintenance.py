@@ -408,7 +408,7 @@ def test_the_exact_methods_refuse_early_renewals():
     assert report["availability"].route == r.SIMULATED
     assert report["availability"].engine == "python"
     used = rbd.spares_demand(500.0, method="simulate", mc_samples=50, seed=1)
-    assert used["a"].mean() > 0.0
+    assert used["a"].mean > 0.0
 
 
 @pytest.mark.parametrize(

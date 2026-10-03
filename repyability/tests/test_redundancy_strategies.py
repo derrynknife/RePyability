@@ -128,7 +128,7 @@ def test_weibull_cold_standby_uses_the_standby_model():
     result = rbd.allocate_redundancy(
         {"a": 1.0}, budget=3, t=MISSION, strategy="cold"
     )
-    direct = float(np.ravel(StandbyModel([model] * 3, seed=0).sf(MISSION))[0])
+    direct = float(np.ravel(StandbyModel([model] * 3).sf(MISSION))[0])
     assert result.reliability == pytest.approx(direct, rel=1e-12)
 
 

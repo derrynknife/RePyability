@@ -14,8 +14,8 @@ Design notes
   serialised, so ``from_dict(rbd.to_dict())`` simply reconstructs the RBD by
   calling its constructor again — faithful even for repeated nodes (whose
   graph is collapsed after construction).
-- Node models are serialised structurally: surpyval models (parametric and
-  non-parametric) in surpyval's own format, ``model.to_dict()``, loaded with
+- Node models are serialised structurally: surpyval's parametric models in
+  its own format, ``model.to_dict()``, loaded with
   ``surpyval.from_dict``, so everything surpyval keeps (an offset, ``p``,
   ``f0``, a fit's covariance) round-trips; the RePyability wrappers
   (standby, degrading, repeated, NonRepairable) recursively; nested RBDs via
@@ -28,8 +28,6 @@ import json
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any
-
-from surpyval import NonParametric
 
 from repyability._version import __version__
 from repyability.non_repairable import NonRepairable
@@ -132,7 +130,6 @@ def _serialise_model(model: Any) -> dict:
             "kind": "standby",
             "reliabilities": [serialise_model(m) for m in model.reliabilities],
             "k": model.k,
-            "mc_samples": model.mc_samples,
             "switching_probability": model.switching_probability,
             "dormancy_factor": model.dormancy_factor,
         }
@@ -166,17 +163,14 @@ def _serialise_model(model: Any) -> dict:
             "models": [m.to_dict() for m in model.models],
             "load": model.load,
             "k": model.k,
-            "mc_samples": model.mc_samples,
         }
-    if distribution_name(model) is not None or isinstance(
-        model, NonParametric
-    ):
+    if distribution_name(model) is not None:
         # surpyval's own format: everything surpyval keeps (an offset, p,
         # f0, a fit's covariance) round-trips, whatever it adds later.
         return {"kind": "surpyval", "model": model.to_dict()}
     raise NotImplementedError(
         f"Cannot serialise a node model of type {type(model).__name__}. "
-        "Only surpyval models (parametric and non-parametric), the "
+        "Only surpyval's parametric models, the "
         "RePyability node wrappers (standby, degrading, repeated, "
         "NonRepairable, load-sharing, regression), perfect "
         "reliability/unreliability and nested RBDs are supported."
@@ -212,7 +206,6 @@ def deserialise_model(d: dict) -> Any:
         return StandbyModel(
             [deserialise_model(m) for m in d["reliabilities"]],
             k=d["k"],
-            mc_samples=d.get("mc_samples", d.get("n_sims", 10_000)),
             switching_probability=d.get("switching_probability", 1.0),
             dormancy_factor=d.get("dormancy_factor", 0.0),
         )
@@ -240,7 +233,6 @@ def deserialise_model(d: dict) -> Any:
             [surpyval.from_dict(md) for md in d["models"]],
             load=d["load"],
             k=d["k"],
-            mc_samples=d.get("mc_samples", d.get("n_sims", 10_000)),
         )
     raise ValueError(f"Unknown model kind {kind!r}.")
 

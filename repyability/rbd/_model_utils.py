@@ -9,7 +9,7 @@ small helpers keeps that coupling in one place (easy to audit and to cover
 with a compatibility test) and gives the call sites intention-revealing names.
 """
 
-from typing import Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -127,3 +127,55 @@ def parametric_spec(model):
     if not names or len(list(names)) != len(params):
         names = [f"param{i}" for i in range(len(params))]
     return cls, params, list(names), dict(getattr(model, "extras", {}))
+
+
+def nonparametric(model) -> bool:
+    """Whether a node's model is, or is built from, a surpyval
+    non-parametric fit (a nested RBD refuses one when it is built)."""
+    from surpyval import NonParametric
+
+    from repyability.non_repairable import NonRepairable
+    from repyability.rbd.degrading_node import DegradingNode
+    from repyability.rbd.repeated_node import RepeatedNode
+    from repyability.rbd.repeated_standby_node import RepeatedStandbyNode
+    from repyability.rbd.standby_node import StandbyModel
+
+    if isinstance(model, NonParametric):
+        return True
+    if isinstance(model, StandbyModel):
+        return any(nonparametric(unit) for unit in model.reliabilities)
+    if isinstance(model, (RepeatedNode, RepeatedStandbyNode)):
+        return nonparametric(model.model)
+    if isinstance(model, DegradingNode):
+        return any(nonparametric(stage) for _, stage in model.stages)
+    if isinstance(model, NonRepairable):
+        return nonparametric(model.reliability) or nonparametric(
+            model.time_to_replace
+        )
+    if isinstance(model, dict):  # a RepairableRBD component spec
+        return any(nonparametric(value) for value in model.values())
+    if isinstance(model, (list, tuple)):
+        return any(nonparametric(value) for value in model)
+    return False
+
+
+def nonparametric_nodes(models: Dict[Any, Any]) -> List[Any]:
+    """The nodes whose models (or component specs) hold a surpyval
+    non-parametric fit, in order."""
+    return [node for node, model in models.items() if nonparametric(model)]
+
+
+def refuse_nonparametric(models) -> None:
+    """Refuse the nodes whose models (or component specs) hold a surpyval
+    non-parametric fit (#149)."""
+    nodes = nonparametric_nodes(models)
+    if nodes:
+        raise ValueError(
+            f"Node(s) {nodes} use a non-parametric fit (Kaplan-Meier or "
+            "similar) as a lifetime or repair time, which a diagram does "
+            "not take: its curve ends at the data, so the MTTF, B-lives and "
+            "long-run values beyond it would be artefacts, and its draws "
+            "cannot be paired or streamed in simulations. Fit a parametric "
+            "distribution in surpyval (e.g. surpyval.Weibull.fit(times)) and "
+            "use that."
+        )

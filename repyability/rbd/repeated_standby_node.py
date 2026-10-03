@@ -1,7 +1,6 @@
 import numpy as np
 
 from repyability.utils.checks import whole_number
-from repyability.utils.deprecation import ignored
 from repyability.utils.wrappers import numpy_seed
 
 from ._sampling import RowSampler, column, inverse_sampler
@@ -43,11 +42,6 @@ class RepeatedStandbyNode:
         ``random`` (for sampling).
     repeats : int
         The number of copies, at least 1.
-    N : int, optional
-        Ignored and deprecated: a Kaplan-Meier fit to ``N`` simulated
-        lifetimes used to be made here.
-    lower : float, optional
-        Ignored and deprecated.
     switching_probability : float or sequence of float, optional
         The probability, in ``[0, 1]``, that switching onto the next copy
         succeeds: a scalar for every switch, or one value per switch
@@ -81,22 +75,7 @@ class RepeatedStandbyNode:
     240.2
     """
 
-    def __init__(
-        self,
-        model,
-        repeats,
-        N=None,
-        lower=None,
-        switching_probability=1.0,
-    ):
-        # N and lower are kept so old calls still work (a Kaplan-Meier fit
-        # used to be made here); they are no longer used.
-        ignored(
-            "RepeatedStandbyNode()",
-            "its reliability is a numerical convolution, not a fit to "
-            "simulated lifetimes.",
-            {"N": N, "lower": lower},
-        )
+    def __init__(self, model, repeats, *, switching_probability=1.0):
         self.model = model
         self.repeats = whole_number(repeats, "repeats")
         self.switching_probability = switching_probability

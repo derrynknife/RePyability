@@ -8,7 +8,6 @@ uses (``check_x`` and the ``NodeFailure`` simulation event).
 import functools
 import math
 import pickle
-import warnings
 import zlib
 from copy import copy
 from dataclasses import dataclass, field
@@ -33,22 +32,20 @@ from typing import (
 import numpy as np
 from numpy.typing import ArrayLike
 from scipy.optimize import brentq
-from surpyval import NonParametric
 
-from repyability.utils.checks import structure_method
-from repyability.utils.deprecation import (
-    REMOVAL,
-    ignored,
-    nonparametric_nodes,
-    warn_nonparametric,
-)
+from repyability.utils.checks import simulation_options, structure_method
 from repyability.utils.wrappers import conditional_survival, numpy_seed
 
 from . import _montecarlo as montecarlo
 from . import capacity as _capacity
 from . import redundancy_allocation
 from ._mean_lifetime import mean_lifetime, model_knots
-from ._model_utils import is_fixed_probability, model_mean, parametric_spec
+from ._model_utils import (
+    is_fixed_probability,
+    model_mean,
+    parametric_spec,
+    refuse_nonparametric,
+)
 from ._sampling import RowSampler, column, inverse_sampler, row_sampler
 from .ccf import VALIDITY, BetaFactor, CCFGroup
 from .ccf import parameters as ccf_parameters
@@ -317,9 +314,10 @@ class NonRepairableRBD(RBD):
     A node model can be:
 
     - a surpyval distribution: parametric (e.g.
-      ``surpyval.Weibull.from_params([100, 2])`` or a fitted model),
-      non-parametric (e.g. a ``surpyval.KaplanMeier`` fit) or a fixed
-      per-demand probability (``surpyval.FixedEventProbability``);
+      ``surpyval.Weibull.from_params([100, 2])`` or a fitted model) or a
+      fixed per-demand probability (``surpyval.FixedEventProbability``);
+      not a non-parametric fit (e.g. a ``surpyval.KaplanMeier`` fit),
+      which is refused: fit a parametric distribution in surpyval;
     - a composite node: a [`StandbyModel`][repyability.StandbyModel],
       [`LoadSharingModel`][repyability.LoadSharingModel],
       [`RepeatedNode`][repyability.RepeatedNode],
@@ -601,7 +599,7 @@ class NonRepairableRBD(RBD):
         )
 
         self.reliabilities = reliabilities
-        warn_nonparametric(nonparametric_nodes(reliabilities))
+        refuse_nonparametric(reliabilities)
         self.repeated = repeated
         self.ccf_groups = self._validate_ccf_groups(ccf_groups)
         # The groups warned of splitting a probability beyond VALIDITY.
@@ -1476,6 +1474,7 @@ class NonRepairableRBD(RBD):
         working_nodes = set() if working_nodes is None else set(working_nodes)
         broken_nodes = set() if broken_nodes is None else set(broken_nodes)
         self._validate_node_overrides(working_nodes, broken_nodes)
+        self._require_capacity()
         own = {}
         for node, model in self._capacity_models().items():
             distribution = model.capacity_distribution(x)
@@ -2853,17 +2852,18 @@ class NonRepairableRBD(RBD):
                         for model, n in zip(models[i], counts)
                         for _ in range(n)
                     ]
-                    with warnings.catch_warnings():
-                        # Scoring a candidate, not the user's model:
-                        # its fit's deprecation is not theirs to act on.
-                        warnings.filterwarnings(
-                            "ignore", "This StandbyModel", FutureWarning
-                        )
-                        standby = StandbyModel(
-                            units,
-                            k=fewest[i],
-                            switching_probability=switching[i],
-                            seed=0,
+                    standby = StandbyModel(
+                        units,
+                        k=fewest[i],
+                        switching_probability=switching[i],
+                    )
+                    if standby.is_simulated:
+                        raise NotImplementedError(
+                            f"Node {nodes[i]!r}: cold standby of different "
+                            f"units with {fewest[i]} operating has no exact "
+                            "or numerical reliability, so its designs "
+                            "cannot be scored: give its copies one model, "
+                            "or need fewer of them working."
                         )
                     known[counts] = float(np.ravel(standby.ff(x))[0])
                 return known[counts]
@@ -4012,8 +4012,8 @@ class NonRepairableRBD(RBD):
         would be lost to rounding. The lower point is clipped at 0, so the
         step never crosses into negative time (the difference is one-sided
         near 0), and negative results (numerical noise) are clipped to 0.
-        It assumes ``R`` is smooth near ``x``, which does not hold for
-        step-function node models such as a Kaplan-Meier fit.
+        It assumes ``R`` is smooth near ``x``, which does not hold where a
+        node model's reliability has a kink or a step.
 
         Parameters
         ----------
@@ -4223,8 +4223,8 @@ class NonRepairableRBD(RBD):
         ``surpyval.FixedEventProbability``, a
         [`RepeatedNode`][repyability.RepeatedNode] of one, or a nested
         fixed-probability RBD; perfect nodes do not count either way. Any
-        other model (a lifetime distribution, a non-parametric fit, a
-        standby or load-sharing node, ...) makes the RBD time-varying.
+        other model (a lifetime distribution, a standby or load-sharing
+        node, ...) makes the RBD time-varying.
 
         For a fixed-probability RBD the time argument ``x`` of the
         reliability and importance methods may be omitted, and the
@@ -4237,8 +4237,6 @@ class NonRepairableRBD(RBD):
     @staticmethod
     def _model_is_fixed(model) -> bool:
         """Whether a node model's reliability does not vary with time."""
-        if isinstance(model, NonParametric):
-            return False
         if isinstance(model, NonRepairableRBD):
             return model.is_fixed
         if model is PerfectReliability or model is PerfectUnreliability:
@@ -4263,27 +4261,25 @@ class NonRepairableRBD(RBD):
     def _node_is_analytic(self, model) -> bool:
         """Whether a node's reliability is computed without simulation:
         exactly or numerically (see ``repyability.rbd.routes``)."""
-        from repyability.rbd.routes import SIMULATED, model_route
+        from repyability.rbd.routes import EXACT, NUMERICAL, model_route
 
-        return model_route(model)[0] != SIMULATED
+        return model_route(model)[0] in (EXACT, NUMERICAL)
 
     def get_non_analytic_nodes(self) -> dict[Any, str]:
-        """The nodes whose reliability is simulated.
+        """The nodes with no exact or numerical reliability.
 
-        A node's reliability is simulated when it is a Kaplan-Meier fit to
-        simulated lifetimes: a [`StandbyModel`][repyability.StandbyModel]
-        or [`LoadSharingModel`][repyability.LoadSharingModel] with no
-        closed form or convolution (see their ``is_simulated``), or a
-        repeated node or nested RBD of one. A closed form or a numerical
-        convolution is not simulated. ``analysis_routes`` says how each
-        analysis of the RBD is computed.
+        Such a node is a [`StandbyModel`][repyability.StandbyModel] or
+        [`LoadSharingModel`][repyability.LoadSharingModel] with no closed
+        form or numerical method (see their ``is_simulated``), or a repeated
+        node or nested RBD of one: only the simulations take it, and the
+        analyses that need its reliability refuse. ``analysis_routes`` says
+        how each analysis of the RBD is computed.
 
         Returns
         -------
         dict[Any, str]
-            ``{node: type name of its model}`` for every node whose
-            reliability is simulated, e.g. ``{"a": "StandbyModel"}``. Empty
-            if none is.
+            ``{node: type name of its model}`` for every such node, e.g.
+            ``{"a": "StandbyModel"}``. Empty if there is none.
         """
         non_analytic: dict[Any, str] = {}
         for node_name, model in self.reliabilities.items():
@@ -4292,19 +4288,17 @@ class NonRepairableRBD(RBD):
         return non_analytic
 
     def is_analytically_solvable(self) -> bool:
-        """Whether every node's reliability is computed without simulation.
+        """Whether every node has an exact or numerical reliability.
 
         The exact system reliability (``sf`` and the methods built on it)
-        is only as accurate as each node's own ``sf(t)``. That is a closed
-        form or data for surpyval distributions, for
+        is worked out from each node's own ``sf(t)``: a closed form for
+        surpyval distributions, for
         [`RegressionNode`][repyability.RegressionNode] and the perfect
-        nodes; a closed form or a numerical convolution for most standby
-        and load-sharing arrangements; and a Kaplan-Meier fit to simulated
-        lifetimes for the rest (see ``get_non_analytic_nodes``), which
-        makes this False. ``sf`` still returns a value either way, carrying
-        those nodes' Monte-Carlo error. ``analysis_routes`` says how each
-        analysis is computed, including those that always simulate
-        (``random``, ``mean``).
+        nodes, and a closed form or a numerical method for most standby
+        and load-sharing arrangements. The rest have none (see
+        ``get_non_analytic_nodes``), which makes this False: the analyses
+        that need their reliability refuse, and the simulations take them.
+        ``analysis_routes`` says how each analysis is computed.
 
         The result is also stored at construction in
         ``structure_check["is_analytically_solvable"]``.
@@ -4318,7 +4312,8 @@ class NonRepairableRBD(RBD):
         Examples
         --------
         One cold spare for one unit is a numerical convolution; two units
-        of three needed working, with one warm spare, is simulated:
+        of three needed working, with one warm spare, has no reliability
+        but the simulations':
 
         >>> import surpyval as surv
         >>> from repyability import NonRepairableRBD, StandbyModel
@@ -4331,13 +4326,7 @@ class NonRepairableRBD(RBD):
         >>> trio = NonRepairableRBD(
         ...     [("s", "a"), ("a", "t")],
         ...     {
-        ...         "a": StandbyModel(
-        ...             [unit] * 3,
-        ...             k=2,
-        ...             dormancy_factor=0.5,
-        ...             mc_samples=2000,
-        ...             seed=1,
-        ...         )
+        ...         "a": StandbyModel([unit] * 3, k=2, dormancy_factor=0.5)
         ...     },
         ... )
         >>> trio.is_analytically_solvable()
@@ -4355,10 +4344,10 @@ class NonRepairableRBD(RBD):
         the structure is always evaluated exactly, whatever the diagram, but
         a system value is only as exact as the node values it is made of.
         So a node whose reliability is a numerical convolution makes the
-        analyses built on it numerical, and one whose reliability is fitted
-        to simulated lifetimes makes them simulated (see
-        ``get_non_analytic_nodes``). A refusal is found by the check the
-        method itself runs, and its reason is the message it would raise.
+        analyses built on it numerical, and one with no reliability makes
+        them refuse, as it does (see ``get_non_analytic_nodes``). A refusal
+        is found by the check the method itself runs, and its reason is the
+        message it would raise.
 
         Returns
         -------
@@ -4370,9 +4359,9 @@ class NonRepairableRBD(RBD):
 
         Examples
         --------
-        Two units needed of three, with the third a cold spare, have no
-        closed form, so the node's reliability is simulated, and so is
-        everything built on it:
+        Two units needed of three, with the third a warm spare, have no
+        exact or numerical reliability, so what is built on it is refused,
+        and the simulations take the diagram:
 
         >>> import surpyval as surv
         >>> from repyability import NonRepairableRBD, StandbyModel
@@ -4380,22 +4369,16 @@ class NonRepairableRBD(RBD):
         >>> rbd = NonRepairableRBD(
         ...     [("s", "a"), ("a", "b"), ("b", "t")],
         ...     {
-        ...         "a": StandbyModel(
-        ...             [unit] * 3,
-        ...             k=2,
-        ...             dormancy_factor=0.5,
-        ...             mc_samples=2000,
-        ...             seed=1,
-        ...         ),
+        ...         "a": StandbyModel([unit] * 3, k=2, dormancy_factor=0.5),
         ...         "b": unit,
         ...     },
         ... )
         >>> routes = rbd.analysis_routes()
         >>> routes["sf"].route, routes["sf"].nodes
-        ('simulated', ('a',))
+        ('refused', ('a',))
         >>> routes["structural_importance"].route
         'exact'
-        >>> routes["mean"].route
+        >>> routes["mean_time_to_failure_interval"].route
         'simulated'
         """
         from repyability.rbd import routes as r
@@ -4474,7 +4457,7 @@ class NonRepairableRBD(RBD):
             ),
         )
         give(
-            ("fussell_vesely", "fussel_vesely"),
+            ("fussell_vesely",),
             built(
                 r.EXACT,
                 "The exact probability that a minimal cut set containing "
@@ -4491,8 +4474,7 @@ class NonRepairableRBD(RBD):
         out["parameter_sensitivity"] = built(
             r.NUMERICAL,
             "The exact Birnbaum importance times each parameter's "
-            "derivative, by differences (composite and non-parametric "
-            "nodes are left out)."
+            "derivative, by differences (composite nodes are left out)."
             + (
                 " A common-cause group's parameters, and its model's, by "
                 "differences of the exact system reliability."
@@ -4800,9 +4782,7 @@ class NonRepairableRBD(RBD):
             If given, seeds numpy's global RNG for the duration of the draw so
             the result is reproducible (surpyval's ``.random`` uses the global
             RNG); the caller's RNG state is restored afterwards. By default
-            None (non-reproducible). It cannot make surpyval non-parametric
-            node models (e.g. a Kaplan-Meier fit) reproducible: surpyval
-            draws those from a fresh, OS-seeded generator on every call.
+            None (non-reproducible).
         antithetic : bool, optional
             Draw the lifetimes in antithetic pairs, by default False: the
             second of each pair (samples ``2i`` and ``2i + 1``) is drawn
@@ -5302,12 +5282,8 @@ class NonRepairableRBD(RBD):
             failure rate (``basis="rate"``) is included. With
             ``method="simulate"``, if a group splitting the failure rate
             cannot be drawn (see ``random``).
-
-        Warns
-        -----
-        FutureWarning
-            If a simulation option is given without ``method="simulate"``:
-            it is ignored.
+        TypeError
+            If a simulation option is given without ``method="simulate"``.
 
         Examples
         --------
@@ -5336,9 +5312,8 @@ class NonRepairableRBD(RBD):
         150.0
         """
         if method == "exact":
-            ignored(
+            simulation_options(
                 "mean()",
-                "the MTTF is exact unless method='simulate'.",
                 {
                     "mc_samples": mc_samples,
                     "seed": seed,
@@ -5457,18 +5432,12 @@ class NonRepairableRBD(RBD):
 
         Raises
         ------
-        ValueError, NotImplementedError
-            As for ``mean``.
-
-        Warns
-        -----
-        FutureWarning
+        ValueError, NotImplementedError, TypeError
             As for ``mean``.
         """
         if method == "exact":
-            ignored(
+            simulation_options(
                 "mean_time_to_failure()",
-                "the MTTF is exact unless method='simulate'.",
                 {
                     "mc_samples": mc_samples,
                     "seed": seed,
@@ -5909,9 +5878,8 @@ class NonRepairableRBD(RBD):
             If ``mc_samples`` or ``confidence`` is invalid.
         NotImplementedError
             If a node's draws cannot be replayed from uniforms (a node
-            model sampled its own way). A non-parametric model (a
-            Kaplan-Meier fit, say) draws its own random numbers, which the
-            two systems do not share.
+            model sampled its own way, whose random numbers the two systems
+            would not share).
 
         Examples
         --------
@@ -6587,9 +6555,7 @@ class NonRepairableRBD(RBD):
             "criticality": _squeeze(criticality),
         }
 
-    def node_mttf(
-        self, mc_samples: Optional[int] = None, seed=None
-    ) -> dict[Any, float]:
+    def node_mttf(self) -> dict[Any, float]:
         """Mean time to failure (MTTF) of each component node.
 
         Each node's MTTF comes from its own model, without simulating:
@@ -6611,13 +6577,6 @@ class NonRepairableRBD(RBD):
 
         Common-cause groups do not affect a node's own MTTF.
 
-        Parameters
-        ----------
-        mc_samples : int, optional
-            Ignored and deprecated: no node's MTTF is simulated.
-        seed : int or None, optional
-            Ignored and deprecated.
-
         Returns
         -------
         dict[Any, float]
@@ -6633,11 +6592,6 @@ class NonRepairableRBD(RBD):
             If a nested RBD has common-cause groups that split a
             probability (see ``mean``).
 
-        Warns
-        -----
-        FutureWarning
-            If ``mc_samples`` or ``seed`` is given.
-
         Examples
         --------
         >>> import surpyval as surv
@@ -6652,11 +6606,6 @@ class NonRepairableRBD(RBD):
         >>> {k: round(v, 2) for k, v in sorted(rbd.node_mttf().items())}
         {'a': 100.0, 'b': 0.0}
         """
-        ignored(
-            "node_mttf()",
-            "no node's MTTF is simulated.",
-            {"mc_samples": mc_samples, "seed": seed},
-        )
         out: dict[Any, float] = {}
         for node in self.nodes:
             model = self.reliabilities[node]
@@ -7232,51 +7181,6 @@ class NonRepairableRBD(RBD):
             ),
         )
 
-    def fussel_vesely(
-        self, x: Optional[ArrayLike] = None, fv_type: str = "c"
-    ) -> dict[Any, Union[float, np.ndarray]]:
-        """Deprecated misspelt alias of ``fussell_vesely``.
-
-        Deprecated: use
-        [`fussell_vesely`][repyability.NonRepairableRBD.fussell_vesely]
-        instead; this alias will be removed in 0.12. It returns
-        ``fussell_vesely(x, fv_type)`` and, unlike it, takes no
-        ``working_nodes``/``broken_nodes``.
-
-        Parameters
-        ----------
-        x : array_like, optional
-            Time/s as a number or an array. May be omitted only for a
-            fixed-probability RBD.
-        fv_type : str, optional
-            ``"c"`` (the default) sums over the minimal cut sets and ``"p"``
-            over the minimal path sets.
-
-        Returns
-        -------
-        dict[Any, float | numpy.ndarray]
-            As for ``fussell_vesely``.
-
-        Warns
-        -----
-        FutureWarning
-            On every call.
-
-        Raises
-        ------
-        ValueError
-            As for ``fussell_vesely``.
-        NotImplementedError
-            If a common-cause group's member is held working or broken.
-        """
-        warnings.warn(
-            "fussel_vesely() is deprecated; use fussell_vesely() "
-            f"(Fussell-Vesely). This alias will be removed in {REMOVAL}.",
-            FutureWarning,
-            stacklevel=2,
-        )
-        return self.fussell_vesely(x, fv_type)
-
     def parameter_sensitivity(
         self,
         x: Optional[ArrayLike] = None,
@@ -7309,9 +7213,9 @@ class NonRepairableRBD(RBD):
         Only nodes with reconstructable surpyval distribution parameters
         are included, fixed-probability nodes among them (their parameter
         is the failure probability). Composite nodes (a nested RBD, a
-        standby, load-sharing or repeated node, a regression node), fitted
-        non-parametric models and the input and output nodes have no
-        parameters to perturb and are omitted. A node forced via
+        standby, load-sharing or repeated node, a regression node) and the
+        input and output nodes have no parameters to perturb and are
+        omitted. A node forced via
         ``working_nodes``/``broken_nodes`` is pinned independently of its
         parameters, so its sensitivities are reported as zero.
 
@@ -7428,7 +7332,7 @@ class NonRepairableRBD(RBD):
                 continue
             spec = parametric_spec(model)
             if spec is None:
-                # Composite / non-parametric node: no parameters to perturb.
+                # A composite node: no parameters to perturb.
                 continue
             cls, params, names, extras = spec
             node_out: Dict[str, Union[float, np.ndarray]] = {}

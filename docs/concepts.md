@@ -83,12 +83,11 @@ The identity that drives the decomposition, and the importance measures, is
 R_sys = R_A · R_sys(A working) + (1 − R_A) · R_sys(A failed)
 ```
 
-The engine is exact *given the node reliabilities*. When a node's reliability
-is itself an estimate (a simulated standby or load-sharing arrangement, or a
-Kaplan–Meier fit), the system value inherits that estimate's error, and
-`is_analytically_solvable()` flags the simulation-backed nodes. Both kinds
-of estimate are deprecated and go in 0.12: the analyses that need such a
-node's reliability will refuse, and the system's simulations simulate it.
+The engine is exact *given the node reliabilities*. A node with no exact or
+numerical reliability (a standby or load-sharing arrangement only a
+simulation works out) has none to give it: the analyses that need it
+refuse, the system's simulations draw its lifetimes, and
+`is_analytically_solvable()` flags it.
 `analysis_routes()` says how each analysis is computed, and why.
 
 The other time functions follow from the reliability: `F = 1 − R`, the
@@ -372,16 +371,20 @@ least `k` of the `n` units survive. This is the **cumulative-exposure** model:
 a unit's *virtual age* is the integral of `φ(load(t))` over real time, and it
 fails when that virtual age reaches its baseline failure age.
 
-Two regimes:
+Three regimes:
 
 - **Closed form.** Identical units with an **Exponential** baseline give a
   group lifetime that is a sum of exponential stages (each stage the time for
   the next unit to fail at the current shared load), i.e. a
   **hypoexponential** distribution, evaluated exactly with no simulation
   (`is_simulated == False`).
-- **Simulation.** Otherwise the survival curve is a Kaplan–Meier fit to
-  lifetimes drawn from the cumulative-exposure event loop (seeded;
-  `is_simulated == True`).
+- **Numerical.** Other identical units all age alike, so they fail in the
+  order of their exposures to failure, and a recursion over the failures
+  gives the lifetime's distribution (`is_simulated == False`).
+- **Simulation only.** Different units have no survival curve: the group
+  draws lifetimes from the cumulative-exposure event loop for the system's
+  simulations, and the analyses that need its reliability refuse
+  (`is_simulated == True`).
 
 As a check, with no load effect (`φ ≡ 1`) the survivors do not accelerate and
 the group reduces *exactly* to the ordinary *k*-out-of-*n* parallel result.
