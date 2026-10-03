@@ -5787,7 +5787,7 @@ class RepairableRBD(RBD):
             )
             counts = {node: _fractions(runs[node]) for node in chosen}
             pooled = {
-                part: _fractions(sum(runs[m] for m in members))
+                part: _fractions(np.sum([runs[m] for m in members], axis=0))
                 for part, members in pools.items()
             }
         else:

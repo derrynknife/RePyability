@@ -994,12 +994,12 @@ def _frontier_plan(
             shapes.append(None)
             front.append(name)
             continue
-        grown = front + list(entering)
-        keep = tuple(j for j, w in enumerate(grown) if w not in leaving)
+        widened = front + list(entering)
+        keep = tuple(j for j, w in enumerate(widened) if w not in leaving)
         shapes.append(
-            (entering, grown.index(ends[0]), grown.index(ends[1]), keep)
+            (entering, widened.index(ends[0]), widened.index(ends[1]), keep)
         )
-        front = [w for w in grown if w not in leaving]
+        front = [w for w in widened if w not in leaving]
 
     # The states before the next decision; each decision's outcomes, as
     # the index of the state after (or _NONE_FAIL, _NONE_WORK).
