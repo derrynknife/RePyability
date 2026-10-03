@@ -323,3 +323,197 @@ def test_imperfect_repair_is_saved():
     a = rbd.cost(500.0, mc_samples=50, seed=2)
     b = loaded.cost(500.0, mc_samples=50, seed=2)
     assert np.array_equal(a.samples, b.samples)
+
+
+# -- minimal repair in no time: exact over a window (#179) -------------------
+
+
+def minimal(life, model="kijima1", **more):
+    """A unit minimally repaired (q = 1) in no time."""
+    return {
+        "reliability": life,
+        "repairability": "instant",
+        **kijima(model, 1.0),
+        **more,
+    }
+
+
+@pytest.mark.parametrize("model", ["kijima1", "kijima2"])
+@pytest.mark.parametrize(
+    "life",
+    [
+        W([100.0, 2.0]),
+        W([100.0, 0.7]),
+        W([100.0, 2.0], p=0.9),
+        W([100.0, 2.0], gamma=10.0),
+        E([0.01]),
+        L([4.0, 0.5]),
+    ],
+    ids=[
+        "wearing out",
+        "wearing in",
+        "limited population",
+        "offset",
+        "exponential",
+        "lognormal",
+    ],
+)
+def test_minimal_repair_in_no_time_fails_as_its_cumulative_hazard(life, model):
+    # Each repair leaves the unit as old as it was and takes no time, so it
+    # is up throughout, and its failures are a Poisson process whose rate is
+    # its hazard at its age: H(t) of them by t.
+    rbd = single(minimal(life, model, repair_cost=2.0, replace_cost=50.0))
+    t = np.array([5.0, 60.0, 250.0])
+    hazard = np.asarray(life.Hf(t), dtype=float)
+    np.testing.assert_allclose(rbd.expected_failures(t), hazard, rtol=1e-9)
+    events = rbd.expected_events(t)
+    np.testing.assert_allclose(events.node_failures["c"], hazard, rtol=1e-9)
+    np.testing.assert_allclose(events.node_corrective["c"], hazard, rtol=1e-9)
+    assert np.all(events.node_downtime["c"] == 0.0)
+    assert np.all(events.node_preventive["c"] == 0.0)
+    assert np.all(rbd.point_availability(t) == 1.0)
+    assert rbd.mission_availability(250.0) == pytest.approx(1.0, abs=1e-12)
+    # Never replaced, it is charged only its repairs, as in the simulation.
+    cost = rbd.expected_cost(t)
+    np.testing.assert_allclose(
+        cost.by_category["repair"], 2.0 * hazard, rtol=1e-9
+    )
+    assert np.all(cost.by_category["replace"] == 0.0)
+
+
+def pump_line(pump, **options):
+    """A pump and its spare in parallel, in series with a valve."""
+    return RepairableRBD(
+        [
+            ("s", "pump"),
+            ("pump", "valve"),
+            ("s", "spare"),
+            ("spare", "valve"),
+            ("valve", "t"),
+        ],
+        {
+            "pump": pump,
+            "spare": {
+                "reliability": W([150.0, 1.5]),
+                "repairability": E([0.2]),
+            },
+            "valve": {
+                "reliability": W([400.0, 1.2]),
+                "repairability": E([0.5]),
+            },
+        },
+        **options,
+    )
+
+
+def test_with_an_exponential_life_minimal_repair_is_renewal():
+    # A memoryless unit is as good as new after any repair, so minimal
+    # repair and renewal are the same system, worked out two ways: by the
+    # cumulative hazard, and by the renewal equation on a grid.
+    def line(**repair):
+        return pump_line(
+            {
+                "reliability": E([0.02]),
+                "repairability": "instant",
+                "repair_cost": 3.0,
+                **repair,
+            },
+            downtime_cost_rate=5.0,
+        )
+
+    minimally, renewed = line(**kijima("kijima2", 1.0)), line()
+    t = np.array([10.0, 100.0, 400.0])
+    np.testing.assert_allclose(
+        minimally.expected_failures(t), renewed.expected_failures(t), rtol=1e-6
+    )
+    np.testing.assert_allclose(
+        minimally.mission_availability(t),
+        renewed.mission_availability(t),
+        rtol=1e-8,
+    )
+    one, other = minimally.expected_cost(t), renewed.expected_cost(t)
+    np.testing.assert_allclose(one.mean, other.mean, rtol=1e-6)
+
+    # And nested, as one node of a larger system.
+    def outer(inner):
+        return RepairableRBD([("s", "line"), ("line", "t")], {"line": inner})
+
+    np.testing.assert_allclose(
+        outer(minimally).expected_failures(t),
+        outer(renewed).expected_failures(t),
+        rtol=1e-6,
+    )
+
+
+def test_minimal_repair_in_a_system_agrees_with_the_simulation():
+    pump = minimal(W([100.0, 2.5]), "kijima2", repair_cost=1.0)
+    rbd = pump_line(pump)
+    exact = rbd.expected_events(300.0)
+    assert exact.node_failures["pump"] == pytest.approx(3.0**2.5, rel=1e-9)
+    sim = rbd.availability(300.0, mc_samples=10_000, seed=3)
+    n = sim.n_simulations
+    # Only the pump's repairs are priced, at 1 each: a run's cost counts
+    # its failures.
+    error = float(np.std(sim.cost.samples)) / math.sqrt(n)
+    assert abs(sim.cost.mean - exact.node_failures["pump"]) < 4.0 * error
+    assert sim.system_failures / n == pytest.approx(
+        exact.system_failures, rel=0.03
+    )
+    assert sim.system_uptime / (n * 300.0) == pytest.approx(
+        rbd.mission_availability(300.0), abs=1e-3
+    )
+
+
+@pytest.mark.parametrize(
+    "spec, blocker",
+    [
+        (
+            minimal(W([100.0, 2.0]), repair={"model": "kijima1", "q": 0.9}),
+            "q below 1",
+        ),
+        (
+            minimal(W([100.0, 2.0]), replace_after=3),
+            "replaced at its failure 3",
+        ),
+        (
+            dict(minimal(W([100.0, 2.0])), repairability=E([0.5])),
+            "repairs take time",
+        ),
+        (
+            minimal(W([100.0, 2.0]), preventive={"interval": 50.0}),
+            "preventive maintenance",
+        ),
+        (minimal(W([100.0, 2.0], f0=0.1)), "dead on arrival"),
+    ],
+    ids=[
+        "q below 1",
+        "replaced",
+        "timed repairs",
+        "maintained",
+        "dead on arrival",
+    ],
+)
+def test_other_imperfect_repair_is_simulated_over_time(spec, blocker):
+    rbd = single(spec)
+    for call in (
+        lambda: rbd.expected_failures(50.0),
+        lambda: rbd.point_availability([50.0]),
+    ):
+        with pytest.raises(NotImplementedError, match=blocker):
+            call()
+    report = rbd.analysis_routes()
+    assert report["expected_failures"].route == r.REFUSED
+    assert blocker in report["expected_failures"].reason
+    assert report["availability"].route == r.SIMULATED
+
+
+def test_minimal_repair_has_no_long_run():
+    # Its hazard grows without end, and so does its rate of failures.
+    rbd = single(minimal(W([100.0, 2.0])))
+    with pytest.raises(
+        NotImplementedError, match="values over a window from new are exact"
+    ):
+        rbd.mean_availability()
+    report = rbd.analysis_routes()
+    assert report["mean_availability"].route == r.REFUSED
+    assert report["expected_failures"].route == r.NUMERICAL

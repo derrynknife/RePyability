@@ -115,6 +115,19 @@ other release, fixes included, the minor.
   remaining life given the components' states, the area under
   `sf_given_state` from now: `remaining_life` gives a percentile of it (the
   time to a reliability target), and this its mean.
+- **Minimal repair in no time is exact over a window (#179).** A
+  component repaired imperfectly (Kijima) was refused by every exact
+  method. Minimally repaired (`q = 1`) and instantly, with no
+  `replace_after`, preventive maintenance or tests, it is up throughout and
+  its failures are a Poisson process whose rate is its life's hazard at its
+  age, so it fails `H(t)` times by `t` on average, `H` its life's
+  cumulative hazard. `point_availability`, `mission_availability`,
+  `expected_failures`, `expected_events` and `expected_cost` take it in,
+  its repairs charged their `repair_cost` alone, as the simulation charges
+  them; `analysis_routes()` and the README's table say so. Its long-run
+  values still refuse, as its rate of failures need not settle, and other
+  imperfect repair is still simulated, the refusal naming what stands in
+  the way.
 - **Smaller API additions (#179, #184).** `"paths"` and `"cuts"` name the
   structure methods wherever `"p"` and `"c"` do. A `Network` takes a number
   as a link's or node's probability of failing, as a `FaultTree` takes an

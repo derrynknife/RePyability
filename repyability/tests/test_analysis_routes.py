@@ -209,6 +209,15 @@ def repairable_rbds():
                     replace_cost=10.0,
                 )
             ),
+            "minimal repair in no time": system(
+                {
+                    "reliability": life,
+                    "repairability": "instant",
+                    "repair": {"model": "kijima1", "q": 1.0},
+                    "repair_cost": 1.0,
+                    "replace_cost": 10.0,
+                }
+            ),
             "imperfect repair, replaced and maintained": system(
                 unit(
                     repair={"model": "kijima2", "q": 0.8},
@@ -716,6 +725,7 @@ def test_the_readme_says_what_is_simulated():
     plain, ccf = nonrepairable["plain"], nonrepairable["common cause"]
     crew = repairable["one repair crew, exponential"]
     group = repairable["standby group"]
+    minimal = repairable["minimal repair in no time"]
     claims = {
         "Sampled lifetimes or histories, and distributions or percentiles "
         "of an outcome over a window": [
@@ -924,11 +934,16 @@ def test_the_readme_says_what_is_simulated():
         "Imperfect repair (Kijima), with or without replacement at the "
         "*N*-th failure": [
             (repairable["imperfect repair"], "mean_availability", "refused"),
+            (repairable["imperfect repair"], "expected_failures", "refused"),
             (
                 repairable["imperfect repair, replaced and maintained"],
                 "mean_availability",
                 "refused",
             ),
+            (minimal, "expected_failures", "numerical"),
+            (minimal, "point_availability", "numerical"),
+            (minimal, "expected_cost", "numerical"),
+            (minimal, "mean_availability", "refused"),
         ],
         "Spares of tested components whose tests or repairs take time, and "
         "the stock of block-replaced ones": [

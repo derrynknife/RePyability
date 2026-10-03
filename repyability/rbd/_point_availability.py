@@ -51,8 +51,10 @@ maintenance that follows a failure falls at times spread over the lives,
 which the grid holds.
 
 A unit under block replacement is followed interval by interval instead
-(``_block_replacement.block_availability``, a ``BlockCurve``), and a unit
-with hidden failures by its closed form (an ``InspectionCurve``). Every
+(``_block_replacement.block_availability``, a ``BlockCurve``), a unit
+with hidden failures by its closed form (an ``InspectionCurve``), and a
+unit minimally repaired in no time by its life's cumulative hazard (a
+``MinimalRepairCurve``). Every
 curve is constant (``period`` None) or repeats with ``period`` after
 ``settle``, which is what lets a mission average over many years integrate
 one period and repeat it.
@@ -1640,6 +1642,68 @@ class SteadyCurve:
     def stages_at(self, x: np.ndarray) -> np.ndarray:
         assert self.fractions is not None, "the unit has no stages"
         return self.fractions[:, None] * self.at(np.atleast_1d(x))[None, :]
+
+
+class MinimalRepairCurve:
+    """A unit minimally repaired in no time (Kijima's models with ``q = 1``
+    and an instant repair): up throughout, and its failures a
+    non-homogeneous Poisson process whose intensity is its life's hazard at
+    its age, so that it fails ``H(x)`` times before ``x`` on average, ``H``
+    the life's cumulative hazard, exactly.
+
+    Its counts never settle (with a wearing-out life they grow ever faster),
+    so it is followed to the horizon; for the integrals of its counts it
+    declares a grid of ``steps`` steps over its first ``scale`` past the
+    life's ``offset``, whose step doubles each time that span does
+    (``grids``): a piece then spans the same share of the time it starts at
+    however far on it is, as many pieces for each doubling of the window.
+    The offset, before which the unit cannot fail, is a break. ``counts``
+    False, only its availability is asked for, which is 1 from the start.
+    """
+
+    period = None
+
+    def __init__(self, life, scale: float, steps: int, counts: bool):
+        self.life = life
+        self.offset = max(float(getattr(life, "gamma", 0.0) or 0.0), 0.0)
+        self.scale = float(scale)
+        self.steps = int(steps)
+        self.counts = counts
+        self.settle = np.inf if counts else 0.0
+
+    def at(self, x: np.ndarray) -> np.ndarray:
+        return np.ones(np.shape(x))
+
+    def knots(self, start: float, stop: float) -> np.ndarray:
+        return self.breaks(start, stop)
+
+    def breaks(self, start: float, stop: float) -> np.ndarray:
+        times = np.array([self.offset]) if self.offset > 0.0 else np.empty(0)
+        return times[(times >= start) & (times <= stop)]
+
+    def grids(self) -> list:
+        """Its grids (see ``curve_grids``): to the offset plus ``scale``
+        doubled ``k`` times, a step of that time over ``steps``."""
+        if not self.counts:
+            return []
+        ends = self.offset + self.scale * 2.0 ** np.arange(64)
+        return [(float(end) / self.steps, float(end)) for end in ends]
+
+    def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
+        """The unit's expected failures before each time ``x``: its life's
+        cumulative hazard there (from its survival function where the
+        model gives no hazard, or a NaN one), each a repair."""
+        x = np.asarray(x, dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+            hazard = np.asarray(self.life.Hf(x), dtype=float).reshape(x.shape)
+            missing = np.isnan(hazard)
+            if missing.any():
+                survival = np.asarray(self.life.sf(x[missing]), dtype=float)
+                hazard[missing] = -np.log(np.clip(survival, 0.0, 1.0))
+        return _events(np.maximum(hazard, 0.0))
+
+    def atoms(self, stop: float) -> Atoms:
+        return Atoms.none()
 
 
 class ShiftedCurve:

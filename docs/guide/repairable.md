@@ -627,6 +627,27 @@ every few failures (or on a preventive schedule) bounds it.
   Python, with its own streams (seeds, antithetic pairs and common random
   numbers work as for any component). `q = 0`, and `replace_after=1`
   whatever `q`, are the component renewed at every failure, draw for draw.
+- **Minimal repair in no time is exact over a window.** Repaired minimally
+  (`q = 1`) and instantly, with no `"replace_after"`, preventive maintenance
+  or tests, the unit is up throughout, and its failures are a Poisson
+  process whose rate is its life's hazard at its age: it fails `H(t)` times
+  by `t` on average, `H` the life's cumulative hazard, exactly. The values
+  over a window from new (`point_availability`, `mission_availability`,
+  `expected_failures`, `expected_events`, `expected_cost`) take it in, as
+  numerical as any component's; its long-run values still refuse, as its
+  rate of failures need not settle.
+
+```python
+patched = RepairableRBD(
+    [("s", "p"), ("p", "t")],
+    {"p": {"reliability": surv.Weibull.from_params([1000, 2.5]),
+           "repairability": "instant",
+           "repair": {"model": "kijima1", "q": 1.0},
+           "repair_cost": 500.0}},
+)
+patched.expected_failures(8760.0)     # -> 227.12   = (8760 / 1000) ** 2.5
+patched.expected_cost(8760.0).mean    # -> 113561   500 a repair
+```
 
 ## Instantly repaired components
 

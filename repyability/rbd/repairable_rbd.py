@@ -85,6 +85,7 @@ from repyability.rbd._point_availability import (
     BlockCurve,
     First,
     InspectionCurve,
+    MinimalRepairCurve,
     PartialTestCurve,
     ShiftedCurve,
     StartedBlockCurve,
@@ -3344,8 +3345,12 @@ class RepairableRBD(RBD):
           its ``"repair_cost"`` and ``"replace_cost"``, and it uses a spare.
           A preventive replacement renews the unit, and age replacement
           counts its operating time since it was renewed. The exact
-          methods refuse such a component; the simulations follow it, in
-          Python.
+          methods refuse such a component, and the simulations follow it,
+          in Python; but minimally repaired (``q = 1``) in no time, with no
+          ``"replace_after"``, maintenance or tests, it is up throughout
+          and fails ``H(t)`` times by ``t`` on average (``H`` its life's
+          cumulative hazard), which the values over a window from new
+          (``expected_failures`` and the others) take in exactly.
           ``"standby"`` makes the node a standby group of identical units,
           each failing and repaired as ``"reliability"`` and
           ``"repairability"`` say: a dict of ``"units"`` (by default 2),
@@ -9030,9 +9035,16 @@ class RepairableRBD(RBD):
         if not message:
             message = r.refusal(partial(self._require_no_condition, node))
         if not message:
-            message = r.refusal(partial(self._require_perfect_repair, node))
-        if not message:
             message = r.refusal(partial(self._require_no_opportunities, node))
+        if not message and node in self._imperfect:
+            message = r.refusal(partial(self._require_minimal_repair, node))
+            if message:
+                return r.REFUSED, message
+            return (
+                r.EXACT,
+                "minimal repair in no time: up throughout, failing as often "
+                "as its life's cumulative hazard",
+            )
         if not message and node in self._inspection:
             message = r.refusal(partial(self._require_tested_exact, node))
         schedule = self._preventive.get(node)
@@ -9998,6 +10010,12 @@ class RepairableRBD(RBD):
                     ("preventive_cost", "preventive", "preventive"),
                     ("inspection_cost", "inspection", "inspections"),
                 ):
+                    if category == "replace" and node in self._imperfect:
+                        # Minimally repaired (the only imperfect repair
+                        # with exact values), it is never replaced: its
+                        # repairs are charged only as repairs, as the
+                        # simulation charges them.
+                        continue
                     if key in node_costs:
                         charges.append(
                             (
@@ -11052,8 +11070,15 @@ class RepairableRBD(RBD):
         self._require_time_models(node)
         self._require_no_condition(node)
         self._require_no_opportunities(node)
-        self._require_perfect_repair(node)
         component = self.components[node]
+        if node in self._imperfect:
+            self._require_minimal_repair(node)
+            scale = _up_scale(component.reliability, None)
+            if not (np.isfinite(scale) and scale > 0.0):
+                scale = horizon if horizon > 0.0 else 1.0
+            return MinimalRepairCurve(
+                component.reliability, scale, _POINT_STEPS, counts
+            )
         schedule = None if unscheduled else self._preventive.get(node)
         if schedule is not None and schedule.policy == "block":
             return self._block_curve(node, horizon, start)
@@ -15262,13 +15287,67 @@ class RepairableRBD(RBD):
     def _require_perfect_repair(self, node) -> None:
         """Raise if a component is repaired imperfectly (a spec's
         ``"repair"``): a repair does not renew it, so its long-run values
-        and its availability over time are known only by simulation."""
+        are known only by simulation (its values over time, only by
+        simulation too, but for minimal repair in no time: see
+        ``_require_minimal_repair``)."""
         if node in self._imperfect:
+            over_time = (
+                "its values over a window from new are exact, as it fails "
+                "as often as its life's cumulative hazard"
+                if self._minimal_repair_blocker(node) is None
+                else "nor its values over time"
+            )
             raise NotImplementedError(
                 f"Component {node!r} is repaired imperfectly "
                 f"({self._imperfect_phrase(node)}), so a repair does not "
-                "renew it: its long-run values and its availability over "
-                "time have no exact value here. Estimate them by "
+                f"renew it: its long-run values have no exact value here "
+                f"({over_time}). Estimate them by simulation, with "
+                "availability() or cost()."
+            )
+
+    def _minimal_repair_blocker(self, node) -> Optional[str]:
+        """Why an imperfectly repaired component's values over time have no
+        exact value, or None if they have: when it is minimally repaired
+        (Kijima, ``q = 1``) in no time, with no ``replace_after``,
+        preventive maintenance or tests, and a life that works at 0. Its
+        failures are then a non-homogeneous Poisson process whose intensity
+        is its life's hazard at its age (its age is its operating time,
+        which is all the time), so that it is up throughout and fails
+        ``H(t)`` times by ``t`` on average, ``H`` the life's cumulative
+        hazard (see ``MinimalRepairCurve``)."""
+        imperfect = self._imperfect[node]
+        component = self.components[node]
+        if imperfect.q < 1.0:
+            return "its repairs take away some of its age (q below 1)"
+        if imperfect.replace_after is not None:
+            return (
+                f"it is replaced at its failure {imperfect.replace_after} "
+                "since it was renewed"
+            )
+        repair = component.time_to_replace
+        if float(np.ravel(_sf_values(repair.sf, np.zeros(1)))[0]) > 0.0:
+            return "its repairs take time"
+        if node in self._preventive:
+            return "it has preventive maintenance"
+        if node in self._inspection:
+            return "its failures are found only by its tests"
+        life = component.reliability
+        if float(np.ravel(_sf_values(life.sf, np.zeros(1)))[0]) < 1.0:
+            return "its life may end at 0 (dead on arrival)"
+        return None
+
+    def _require_minimal_repair(self, node) -> None:
+        """Raise unless an imperfectly repaired component's values over time
+        are exact: minimal repair in no time (see
+        ``_minimal_repair_blocker``)."""
+        blocker = self._minimal_repair_blocker(node)
+        if blocker is not None:
+            raise NotImplementedError(
+                f"Component {node!r} is repaired imperfectly "
+                f"({self._imperfect_phrase(node)}), and {blocker}: its "
+                "availability over time has no exact value here (it has "
+                "for minimal repair, q = 1, in no time, with no "
+                "replace_after, maintenance or tests). Estimate it by "
                 "simulation, with availability() or cost()."
             )
 
