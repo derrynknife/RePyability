@@ -49,6 +49,7 @@ from repyability.rbd.shannon import (
     _minimal_cut_sets,
     _shannon_plan,
 )
+from repyability.utils.checks import is_whole
 from repyability.utils.wrappers import check_probability
 
 _ON_INFEASIBLE_RBD = ("raise", "warn", "ignore")
@@ -122,8 +123,18 @@ def structure_problems(check: dict) -> List[str]:
         lines.append(line)
     for cycle in check.get("cycles", ()):
         lines.append(f"there is a cycle through {_names(cycle)}")
+    if check.get("is_empty"):
+        return lines + [
+            "the diagram has no edges: give them, from the input node to the "
+            "output node"
+        ]
     sources = check.get("nodes_with_no_predecessors", ())
-    if not check.get("has_unique_input_node", True):
+    if not check.get("has_unique_input_node", True) and not sources:
+        lines.append(
+            "every node has an incoming edge, so there is no input node (a "
+            "node with none)"
+        )
+    elif not check.get("has_unique_input_node", True):
         lines.append(
             "more than one node has no incoming edges, so the input node is "
             f"not clear: {_names(sources)} (only the input node has none)"
@@ -134,7 +145,12 @@ def structure_problems(check: dict) -> List[str]:
             f"the input node, {check['input_node']!r}, may have"
         )
     sinks = check.get("nodes_with_no_successors", ())
-    if not check.get("has_unique_output_node", True):
+    if not check.get("has_unique_output_node", True) and not sinks:
+        lines.append(
+            "every node has an outgoing edge, so there is no output node (a "
+            "node with none)"
+        )
+    elif not check.get("has_unique_output_node", True):
         lines.append(
             "more than one node has no outgoing edges, so the output node is "
             f"not clear: {_names(sinks)} (every node but the output needs an "
@@ -669,6 +685,13 @@ class RBD:
         valid_rbd = True
         if k is not None:
             for node, k_val in k.items():
+                # (Below 1 is refused with the structure, which says why.)
+                if not is_whole(k_val):
+                    raise ValueError(
+                        f"k for node {node!r} must be a whole number (how "
+                        f"many of its inputs must work), got {k_val!r}."
+                    )
+                k_val = int(k_val)
                 if node in self.G.nodes:
                     self.G.nodes[node]["k"] = k_val
                 else:
@@ -1418,6 +1441,16 @@ class RBD:
         not a valid RBD is not reduced: its core is the whole diagram, with
         the path sets the memoised search finds."""
         if not hasattr(self, "_modules"):
+            if self.structure_check.get("has_cycles"):
+                # Built anyway (on_infeasible_rbd), but not to be evaluated:
+                # a path around a cycle never ends.
+                cycles = self.structure_check.get("cycles", ())
+                raise ValueError(
+                    "The diagram has a cycle (through "
+                    + "; ".join(_names(cycle) for cycle in cycles)
+                    + "), so it cannot be evaluated: every path must lead "
+                    "from the input node to the output node."
+                )
             reducible = self.structure_check["is_valid"] and all(
                 self.G.nodes[node]["k"] >= 1 for node in self.G.nodes
             )

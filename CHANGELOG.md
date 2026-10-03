@@ -30,8 +30,34 @@ other release, fixes included, the minor.
   before. The mission availability moves by a few parts in 10^9 at most,
   and the expected events within the curves' accuracy, but for the fixes
   below.
+- **`availability_from_chunks` refuses chunks with simulations missing
+  between or before them (#176).** Chunks of simulations 0 to 499 and 600
+  to 999 gave a run of 900 simulations without a word, so a shard that never
+  came back passed unnoticed. They must now hold simulations `0` to `N - 1`,
+  none missing (with `mc_samples=N`, as before, also the last), and
+  `allow_gaps=True` takes the result of whichever simulations they hold, as
+  before.
 
 ### Fixed
+
+- **A simulation over a window that is not positive and finite is refused
+  (#174).** `availability`, `cost`, `simulate_timelines`, `simulate_chunk`,
+  `shards` and `compare` took a negative window (and gave negative uptimes),
+  a zero one (and an availability of nan), and an infinite one; they now
+  raise a `ValueError`, as the exact analyses over a window do. A simulated
+  `spares_demand` over no time is no spares, as the exact one says.
+- **Bad counts and structures are refused with a message that says what to
+  give (#168, #169, #178).** A `RepeatedNode` (and `RepeatedStandbyNode`)
+  takes a whole number of copies, at least 1: -1 gave a reliability of
+  -0.58, and 2.5 two and a half units. A repeated node that repeats another
+  repeat (`{"a": W, "b": "a", "c": "b"}`) is refused when the diagram is
+  built, naming the component to repeat, where `sf` crashed with a
+  `KeyError`. A node's `k` and a `StandbyModel`'s `k` must be whole numbers
+  from 1, rather than failing inside the evaluation (`k=1.5`, `"2"`, `-1`;
+  `StandbyModel(k=0)` divided by zero). An empty diagram says it has no
+  edges, a diagram with no input or output node says so, and a diagram with
+  a cycle built with `on_infeasible_rbd="ignore"` says it has a cycle when
+  evaluated, rather than recursing until Python stopped it.
 
 - **Planned outages after age replacement were overcounted, by about one
   in 10^4 (#164).** The chained maintenance of units that each reach their

@@ -435,7 +435,7 @@ REPAIRABLE_CALLS = {
     "simulate_chunk": lambda rbd: rbd.simulate_chunk(200.0, 10, 30, seed=1),
     "shards": lambda rbd: rbd.shards(200.0, 40, seed=1, size=8),
     "availability_from_chunks": lambda rbd: rbd.availability_from_chunks(
-        rbd.simulate_chunk(200.0, 10, 30, seed=1)
+        rbd.simulate_chunk(200.0, 10, 30, seed=1), allow_gaps=True
     ),
     "simulate_timelines": lambda rbd: rbd.simulate_timelines(
         200.0, mc_samples=20, seed=1

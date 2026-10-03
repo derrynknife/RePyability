@@ -2826,6 +2826,21 @@ _POINT_MAX = 2**22
 _MISSION_POINTS = 5_000_000
 
 
+def _check_window(t_simulation) -> float:
+    """A simulation's window, ``t_simulation``, as a float: a positive and
+    finite time."""
+    if (
+        isinstance(t_simulation, bool)
+        or not isinstance(t_simulation, (int, float, np.integer, np.floating))
+        or not (math.isfinite(t_simulation) and t_simulation > 0.0)
+    ):
+        raise ValueError(
+            f"t_simulation must be a positive, finite time, got "
+            f"{t_simulation!r}."
+        )
+    return float(t_simulation)
+
+
 def _check_times(x) -> np.ndarray:
     """``x`` as a 1-d float array of times, all finite and non-negative."""
     times = np.atleast_1d(np.asarray(x, dtype=float))
@@ -5545,6 +5560,9 @@ class RepairableRBD(RBD):
         """The fractions of ``mc_samples`` simulations of ``[0, horizon)``
         in which each of ``nodes`` was replaced ``0, 1, 2, ...`` times."""
         montecarlo.check_count(mc_samples, False, "mc_samples")
+        if horizon == 0.0:
+            # Nothing is replaced in no time (as the exact count says).
+            return {node: np.ones(1) for node in nodes}
         tally = self._run(
             horizon,
             set(),
@@ -12421,6 +12439,7 @@ class RepairableRBD(RBD):
         states = self._simulation_states(state, working | broken)
         capacity = self._chunk_capacity(broken, method, demand)
         self._require_no_ccf("the simulation", nested=True)
+        t_simulation = _check_window(t_simulation)
         entropy = _streams.entropy_of(seed)
         template = self._shard_template(
             t_simulation,
@@ -12528,7 +12547,11 @@ class RepairableRBD(RBD):
         return int(-(-int(wanted) // widest) * widest)
 
     def availability_from_chunks(
-        self, chunks, mc_samples: Optional[int] = None
+        self,
+        chunks,
+        mc_samples: Optional[int] = None,
+        *,
+        allow_gaps: bool = False,
     ) -> AvailabilityResult:
         """The result of the simulations of ``chunks`` (see
         ``simulate_chunk``, and the partials ``run_shard`` gives back from
@@ -12541,9 +12564,12 @@ class RepairableRBD(RBD):
         timeline, and the same totals, to the last bit: every total is kept
         exactly and rounded once, so it does not depend on how the run was
         cut (#151).
-        Chunks with gaps between them give the result of the simulations
-        they hold. With costs, the result's ``cost`` is the simulated cost
-        distribution, as ``cost`` gives it.
+        The chunks must hold simulations ``0`` to ``N - 1`` with none
+        missing, so a lost chunk (a shard that never came back) is not
+        taken for a smaller run (#176); with ``allow_gaps=True`` they give
+        the result of whichever simulations they hold. With costs, the
+        result's ``cost`` is the simulated cost distribution, as ``cost``
+        gives it.
 
         Parameters
         ----------
@@ -12554,7 +12580,11 @@ class RepairableRBD(RBD):
         mc_samples : int, optional
             The run's number of simulations: the chunks must then hold
             simulations ``0`` to ``mc_samples - 1``, all of them, which
-            refuses a missing chunk. By default None: whatever they hold.
+            also refuses a missing last chunk. By default None: simulations
+            ``0`` to however many they hold.
+        allow_gaps : bool, optional
+            Take chunks with simulations missing between or before them,
+            for the result of those they hold. By default False.
 
         Returns
         -------
@@ -12566,8 +12596,10 @@ class RepairableRBD(RBD):
         ValueError
             If the chunks are of different runs, of another system (or of
             it saved by another RePyability version), or their simulations
-            overlap or interleave; or, with ``mc_samples``, they do not
-            hold simulations ``0`` to ``mc_samples - 1``.
+            overlap or interleave; or, unless ``allow_gaps``, some
+            simulations are missing between or before them; or, with
+            ``mc_samples``, they do not hold simulations ``0`` to
+            ``mc_samples - 1``.
 
         Examples
         --------
@@ -12593,6 +12625,14 @@ class RepairableRBD(RBD):
                 f"The chunks hold simulations {chunk.ranges} (as "
                 "(start, stop) ranges), not all of simulations 0 to "
                 f"{int(mc_samples) - 1}: some are missing."
+            )
+        if not allow_gaps and chunk.ranges != [(0, chunk.n_simulations)]:
+            held = ", ".join(f"{a} to {b - 1}" for a, b in chunk.ranges)
+            raise ValueError(
+                f"The chunks hold simulations {held}: those between or "
+                "before them are missing (a chunk that never came back?). "
+                "Give them all, or pass allow_gaps=True for the result of "
+                "the simulations held."
             )
         settings = chunk.settings
         fingerprint = self._fingerprint()
@@ -12748,6 +12788,7 @@ class RepairableRBD(RBD):
         """
         mc_samples = renamed("mc_samples", mc_samples, "N", N)
         N = 10_000 if mc_samples is None else mc_samples
+        t_simulation = _check_window(t_simulation)
 
         if quantity not in ("availability", "cost"):
             raise ValueError(
@@ -13278,6 +13319,7 @@ class RepairableRBD(RBD):
         or numba's.
         """
         self._require_no_ccf("the simulation", nested=True)
+        t_simulation = _check_window(t_simulation)
         from tqdm import tqdm
 
         state = np.random.get_state()
@@ -14105,6 +14147,7 @@ class RepairableRBD(RBD):
         mc_samples = renamed("mc_samples", mc_samples, "N", N)
         N = 10_000 if mc_samples is None else mc_samples
         max_N = renamed("max_samples", max_samples, "max_N", max_N)
+        t_simulation = _check_window(t_simulation)
 
         if not self.has_costs:
             return None

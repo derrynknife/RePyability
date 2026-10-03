@@ -98,11 +98,12 @@ def test_a_chunk_is_the_same_however_it_is_run():
     )
     whole = rbd.availability(100.0, mc_samples=500, seed=9)
     assert np.array_equal(
-        rbd.availability_from_chunks(alone).uptimes, whole.uptimes[300:]
+        rbd.availability_from_chunks(alone, allow_gaps=True).uptimes,
+        whole.uptimes[300:],
     )
     assert same_result(
-        rbd.availability_from_chunks(parallel),
-        rbd.availability_from_chunks(alone),
+        rbd.availability_from_chunks(parallel, allow_gaps=True),
+        rbd.availability_from_chunks(alone, allow_gaps=True),
     )
 
 
@@ -114,7 +115,15 @@ def test_chunks_with_gaps_and_out_of_order():
     gappy = SimulationChunk.merge([b, a])
     assert gappy.ranges == [(0, 100), (200, 300)]
     assert gappy.n_simulations == 200
-    result = rbd.availability_from_chunks(gappy)
+    # A missing chunk is not taken for a smaller run (#176) ...
+    with pytest.raises(ValueError, match="between or before them are missing"):
+        rbd.availability_from_chunks(gappy)
+    with pytest.raises(ValueError, match="0 to 99, 200 to 299"):
+        rbd.availability_from_chunks([b, a])
+    with pytest.raises(ValueError, match="allow_gaps"):
+        rbd.availability_from_chunks(b)
+    # ... unless asked for: the result of the simulations held.
+    result = rbd.availability_from_chunks(gappy, allow_gaps=True)
     whole = rbd.availability(100.0, mc_samples=300, seed=1)
     assert np.array_equal(
         result.uptimes,

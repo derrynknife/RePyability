@@ -1,5 +1,6 @@
 import numpy as np
 
+from repyability.utils.checks import whole_number
 from repyability.utils.deprecation import ignored
 from repyability.utils.wrappers import numpy_seed
 
@@ -97,7 +98,7 @@ class RepeatedStandbyNode:
             {"N": N, "lower": lower},
         )
         self.model = model
-        self.repeats = repeats
+        self.repeats = whole_number(repeats, "repeats")
         self.switching_probability = switching_probability
 
         # Repeated cold standby: the lifetime is the sum of `repeats`
@@ -105,7 +106,8 @@ class RepeatedStandbyNode:
         # imperfect switching). Its survival function is computed
         # deterministically by numerical convolution.
         self._sf_model = ConvolvedSurvival(
-            [model] * repeats, switching_probability=switching_probability
+            [model] * self.repeats,
+            switching_probability=switching_probability,
         )
 
     def random(self, size, seed=None):

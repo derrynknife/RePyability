@@ -362,8 +362,10 @@ merged.system_uptime == whole.system_uptime          # True: the totals too
   (`uptimes`, the cost `samples`) and timeline, and the same totals, to
   the last bit: every total is kept exactly and rounded once, so it does
   not depend on how the run is cut. With costs, the result's `cost` is the
-  cost distribution. Chunks may leave gaps; the result is then that of the
-  simulations they hold.
+  cost distribution. The chunks must hold simulations `0` to `N - 1`, none
+  missing, so a chunk that never came back is not taken for a smaller run;
+  `allow_gaps=True` takes the result of whichever simulations they hold.
+  (Only `mc_samples=N` can say that the last chunk is missing.)
 - **Checked.** Chunks merge only with chunks of the same run: the same
   system (a hash of it saved as JSON, which a chunk carries, so a worker
   can rebuild the system with `RepairableRBD.from_json`), window, seed,

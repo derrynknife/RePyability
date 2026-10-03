@@ -515,6 +515,25 @@ class NonRepairableRBD(RBD):
         repeated = {
             k: v for k, v in reliabilities.items() if v in reliabilities.keys()
         }
+        for node, target in repeated.items():
+            if target not in repeated:
+                continue
+            # A repeat names the component it repeats, not another repeat.
+            seen, root = [node, target], repeated[target]
+            while root in repeated and root not in seen:
+                seen.append(root)
+                root = repeated[root]
+            if root in repeated:
+                raise ValueError(
+                    f"Nodes {', '.join(repr(n) for n in seen)} repeat each "
+                    "other, and none of them names a model: a repeated node "
+                    "names the component (with a model) it repeats."
+                )
+            raise ValueError(
+                f"Node {node!r} repeats {target!r}, which is itself a repeat "
+                f"of {repeated[target]!r}: a repeated node names the "
+                f"component it repeats, so point {node!r} at {root!r}."
+            )
 
         reliabilities = {
             k: v

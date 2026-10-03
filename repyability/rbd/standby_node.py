@@ -4,6 +4,7 @@ from queue import PriorityQueue
 import numpy as np
 from surpyval import Hypoexponential, KaplanMeier
 
+from repyability.utils.checks import whole_number
 from repyability.utils.deprecation import (
     REMOVAL,
     renamed,
@@ -278,6 +279,7 @@ class StandbyModel:
         mc_samples = renamed("mc_samples", mc_samples, "n_sims", n_sims)
         if mc_samples is None:
             mc_samples = 10_000
+        k = whole_number(k, "k (how many units must operate)")
         if k > len(reliabilities):
             raise ValueError(
                 "Must be more nodes in the standby arrangement"

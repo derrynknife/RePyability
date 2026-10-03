@@ -1,5 +1,6 @@
 import numpy as np
 
+from repyability.utils.checks import whole_number
 from repyability.utils.deprecation import ignored, renamed
 from repyability.utils.wrappers import numpy_seed
 
@@ -42,7 +43,8 @@ class RepeatedNode:
     Raises
     ------
     ValueError
-        If ``kind`` is neither ``'series'`` nor ``'parallel'``.
+        If ``kind`` is neither ``'series'`` nor ``'parallel'``, or
+        ``repeats`` is not a whole number of at least 1.
 
     Examples
     --------
@@ -66,7 +68,7 @@ class RepeatedNode:
             self.kind = PARALLEL
         else:
             self.kind = SERIES
-        self.repeats = repeats
+        self.repeats = whole_number(repeats, "repeats")
 
     def random(self, size, seed=None):
         """Draw random lifetimes of the node.

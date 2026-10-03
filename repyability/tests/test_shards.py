@@ -178,9 +178,15 @@ def test_a_missing_or_doubled_partial_is_refused():
         )
     with pytest.raises(ValueError, match="overlap"):
         rbd.availability_from_chunks(partials + partials[:1])
-    # Without mc_samples, the simulations they hold.
+    # Without mc_samples, a missing first or middle partial is refused
+    # too (#176), unless gaps are allowed.
+    with pytest.raises(ValueError, match="allow_gaps"):
+        rbd.availability_from_chunks([partials[0], partials[2]])
+    with pytest.raises(ValueError, match="allow_gaps"):
+        rbd.availability_from_chunks(partials[1:])
     held = 3000 - spans(shards)[0][1]
-    assert rbd.availability_from_chunks(partials[1:]).n_simulations == held
+    gappy = rbd.availability_from_chunks(partials[1:], allow_gaps=True)
+    assert gappy.n_simulations == held
 
 
 def test_a_map_that_gives_back_other_partials_is_refused():
