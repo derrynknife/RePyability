@@ -918,7 +918,9 @@ class RBD:
         exponentially with redundancy (``n`` stages of duplicated units in
         series have ``2 ** n``), but nothing else needs them: the system
         probability, the importance measures and the cut sets are found
-        without listing them.
+        without listing them. A junction (a node given
+        ``PerfectReliability``, such as a k-out-of-n vote point) always
+        works, so no path set needs it, and none lists it (#198).
 
         Parameters
         ----------
@@ -958,7 +960,7 @@ class RBD:
         """
         if not hasattr(self, "_min_path_sets"):
             self._min_path_sets: set[frozenset[Hashable]] = (
-                self._decomposition().path_sets()
+                self._set_structure().path_sets()
             )
         if not include_in_out_nodes:
             return set(self._min_path_sets)
@@ -1156,7 +1158,9 @@ class RBD:
         bridge) has its own read off the exact engine's Shannon
         decomposition (see ``minimal_cut_sets_from_path_sets`` in this
         module). They are worked out on first use and cached; each call
-        returns a new set.
+        returns a new set. A junction (a node given ``PerfectReliability``,
+        such as a k-out-of-n vote point) never fails, so a cut set with one
+        never happens, and none is listed (#198).
 
         Parameters
         ----------
@@ -1195,7 +1199,7 @@ class RBD:
         # once per RBD; each call gets its own copy of the set.
         if not hasattr(self, "_min_cut_sets"):
             self._min_cut_sets: set[frozenset[Hashable]] = (
-                self._decomposition().cut_sets()
+                self._set_structure().cut_sets()
             )
         if not include_in_out_nodes:
             return set(self._min_cut_sets)
@@ -1484,6 +1488,23 @@ class RBD:
                 )
             self._modules = self._decompose_graph(self.G)
         return self._modules
+
+    def _set_structure(self) -> Decomposition:
+        """The structure the path and cut sets are read from: the
+        decomposition, with the junctions (see ``_junctions``) folded in as
+        always working (#198). A junction never fails, so a cut set with
+        one never happens, and a path set needs nothing of it; a diagram
+        that folds them out of its structure (a ``RepairableRBD``) has
+        none left, and one too meshed to work out lists no sets."""
+        decomposition = self._decomposition()
+        junctions = self._junctions()
+        if (
+            self._FOLDS_JUNCTIONS
+            or not junctions
+            or isinstance(decomposition, GraphStructure)
+        ):
+            return decomposition
+        return fold(decomposition, junctions)
 
     def _decompose_graph(self, graph) -> Decomposition:
         """``graph`` reduced to modules as the diagram's own is (see
@@ -2276,7 +2297,12 @@ class RBD:
         minimum-effort algorithm needs: in series, every node alone is a cut
         set (and so is in the only path set)."""
         cut_sets = self.get_min_cut_sets()
-        if any(frozenset([node]) not in cut_sets for node in self.nodes):
+        junctions = self._junctions()
+        if any(
+            frozenset([node]) not in cut_sets
+            for node in self.nodes
+            if node not in junctions
+        ):
             raise ValueError(
                 "the minimum-effort algorithm applies to a series system (a "
                 "single path through every intermediate node); use "
@@ -3179,7 +3205,9 @@ class RBD:
         sets' probabilities."""
         zero = np.zeros(size)
         if method == "exact":
-            decomposition = self._decomposition()
+            # The sets are those with the junctions folded in (#198): a
+            # path set with one, which never fails, would never fail.
+            decomposition = self._set_structure()
             if decomposition.always_works:
                 failed: dict = {}
             else:

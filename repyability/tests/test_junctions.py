@@ -1,7 +1,9 @@
 """Junctions in a RepairableRBD (#175, #182): nodes given
 ``PerfectReliability``, which never fail, such as a k-out-of-n vote point.
 They are folded out of the structure (``modular.fold``), so every analysis
-and both simulation engines see the components alone."""
+and both simulation engines see the components alone. A NonRepairableRBD
+keeps them as nodes that never fail, and its cut and path sets fold them in
+(#198)."""
 
 import dataclasses
 import itertools
@@ -13,6 +15,7 @@ import pytest
 import surpyval as surv
 
 from repyability import (
+    FaultTree,
     NonRepairable,
     NonRepairableRBD,
     PerfectReliability,
@@ -326,3 +329,116 @@ def test_folding_keeps_the_structure_function(core, reduce):
         assert folded.probabilities(p)[0] == pytest.approx(
             whole.probabilities(p | {v: 1.0 for v in perfect})[0], abs=1e-12
         )
+
+
+def _brute_sets(edges, k, nodes, perfect):
+    """The minimal cut and path sets of the components (``nodes`` less
+    the ``perfect`` ones, which always work), by trying every state."""
+    rest = [v for v in nodes if v not in perfect]
+    works = {}
+    for bits in itertools.product([False, True], repeat=len(rest)):
+        state = dict(zip(rest, bits))
+        works[frozenset(v for v in rest if state[v])] = _reached(
+            edges, k, perfect, state
+        )
+    every = frozenset(rest)
+    cuts = {every - up for up, ok in works.items() if not ok}
+    paths = {up for up, ok in works.items() if ok}
+
+    def minimal(sets):
+        return {s for s in sets if not any(o < s for o in sets)}
+
+    return minimal(cuts), minimal(paths)
+
+
+def _vote(junction):
+    """The issue's (#198) pump station: a 2-of-3 vote, then the MCC."""
+    edges = [("s", x) for x in TRAINS] + [(x, "k") for x in TRAINS]
+    edges += [("k", "mcc"), ("mcc", "t")]
+    return edges, {"k": 2}, TRAINS + ["mcc"], "k"
+
+
+@pytest.mark.parametrize(
+    "drawn",
+    [
+        _vote,
+        # A junction in series, and one in parallel with a component.
+        lambda j: (
+            [("s", "a"), ("a", j), (j, "b"), ("b", "t")],
+            {},
+            ["a", "b"],
+            j,
+        ),
+        lambda j: (
+            [("s", "a"), ("s", j), ("a", "b"), (j, "b"), ("b", "t")],
+            {},
+            ["a", "b"],
+            j,
+        ),
+    ],
+    ids=["vote", "series", "parallel"],
+)
+def test_a_junction_is_in_no_cut_or_path_set(drawn):
+    # A junction never fails (#198): no cut set holds one, and no path set
+    # needs one, whether the diagram keeps it as a node that never fails (a
+    # NonRepairableRBD) or folds it out (a RepairableRBD).
+    edges, k, components, junction = drawn("j")
+    cuts, paths = _brute_sets(edges, k, components + [junction], {junction})
+    lives = {v: E([1e-3]) for v in components}
+    plain = NonRepairableRBD(
+        edges, {**lives, junction: PerfectReliability}, k=k
+    )
+    repairable = RepairableRBD(
+        edges,
+        {**{v: unit() for v in components}, junction: PerfectReliability},
+        k=k,
+    )
+    for rbd in (plain, repairable):
+        assert set(rbd.minimal_cut_sets()) == cuts
+        assert set(rbd.minimal_path_sets()) == paths
+        assert rbd.get_min_cut_sets(include_in_out_nodes=True) == cuts | {
+            frozenset(["s"]),
+            frozenset(["t"]),
+        }
+        assert rbd.get_min_path_sets() == {p | {"s", "t"} for p in paths}
+    assert set(FaultTree.from_rbd(plain).minimal_cut_sets()) == cuts
+    # The importance measures, as before, leave the junction out; a path
+    # set with it in would never fail, nor would the path-set measure.
+    assert junction not in plain.fussell_vesely(100.0)
+    by_paths = plain.fussell_vesely(100.0, fv_type="p")
+    assert junction not in by_paths
+    for node, value in by_paths.items():
+        assert (value > 0.0) == any(node in path for path in paths)
+
+
+def test_a_series_junction_leaves_a_series_system():
+    rbd = NonRepairableRBD(
+        [("s", "a"), ("a", "j"), ("j", "b"), ("b", "t")],
+        {"a": E([1e-3]), "b": E([2e-3]), "j": PerfectReliability},
+    )
+    allocation = rbd.minimum_effort_allocation(0.81, {"a": 0.8, "b": 0.85})
+    assert set(allocation) == {"a", "b"}
+
+
+@pytest.mark.parametrize("core", ["paths", "bdd"])
+def test_random_junctions_in_no_set(core, monkeypatch):
+    monkeypatch.setattr(modular, "CORE_METHOD", core)
+    rng = np.random.default_rng(198)
+    checked = 0
+    for _ in range(120):
+        n = int(rng.integers(2, 8))
+        edges, k = random_diagram(rng, n)
+        nodes = sorted({v for e in edges for v in e} - {"s", "t"})
+        perfect = {v for v in nodes if rng.random() < 0.35}
+        models = {
+            v: PerfectReliability if v in perfect else E([1e-3]) for v in nodes
+        }
+        try:
+            rbd = NonRepairableRBD(edges, models, k=k)
+            found = (rbd.get_min_cut_sets(), rbd.get_min_path_sets(False))
+        except ValueError:  # not a valid diagram, or nothing reaches t
+            continue
+        expected = _brute_sets(edges, k, nodes, perfect)
+        assert found == expected
+        checked += 1
+    assert checked > 60

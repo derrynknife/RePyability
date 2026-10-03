@@ -254,8 +254,14 @@ def test_exact_engine_matches_the_original_recursion(name, method):
     rbd = rbds()[name]
     rng = np.random.default_rng(0)
     # The recorded plan is reused across calls with different probabilities.
+    # A junction never fails: the sets are the system's with it working
+    # (#198).
+    junctions = rbd._junctions()
     for shape in (1, 7):
-        probs = {n: rng.uniform(0.0, 1.0, shape) for n in rbd.nodes}
+        probs = {
+            n: np.ones(shape) if n in junctions else rng.uniform(0, 1, shape)
+            for n in rbd.nodes
+        }
         if method == "p":
             sets = rbd.get_min_path_sets(include_in_out_nodes=False)
             expected = reference_probability_any_set_satisfied(
@@ -294,8 +300,11 @@ def test_structure_function_matches_its_definition(name):
     rbd = rbds()[name]
     path_sets = rbd.get_min_path_sets(include_in_out_nodes=False)
     rng = np.random.default_rng(2)
+    junctions = rbd._junctions()  # which always work (#198)
     for _ in range(200):
-        status = {n: bool(rng.random() < 0.6) for n in rbd.nodes}
+        status = {
+            n: n in junctions or bool(rng.random() < 0.6) for n in rbd.nodes
+        }
         expected = any(all(status[c] for c in p) for p in path_sets)
         assert rbd.is_system_working(status, "p") is expected
         assert rbd.is_system_working(status, "c") is expected

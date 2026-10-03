@@ -505,6 +505,20 @@ other release, fixes included, the minor.
 
 ### Fixed
 
+- **A junction is in no cut set or path set (#198).** A
+  `NonRepairableRBD` keeps a node given `PerfectReliability` (a k-out-of-n
+  vote point, or any junction drawn for the layout) as a node that never
+  fails, and its minimal cut sets listed it: a 2-out-of-3 vote showed as a
+  single-point cut set beside the controller it fed, and was in every path
+  set, though `sf` held it perfect. The sets are now read from the
+  structure with the junctions folded in as always working, as a
+  `RepairableRBD`'s are and `FaultTree.from_rbd` already gave them: a cut
+  set with a junction never happens, and a path set needs nothing of one.
+  So the path-set Fussell–Vesely importance (`fv_type="p"`), which was 0
+  for every node of a diagram with a junction (each path set needed the
+  junction to fail), is now worked out on those path sets; and
+  `minimum_effort_allocation` no longer refuses a series diagram drawn
+  with a junction in it.
 - **Long renewal sums no longer wait on BLAS threads.** OpenBLAS splits a
   dot product of more than about 10,000 terms across its threads, which
   here cost about 5 milliseconds a call against 2 microseconds on one, and
