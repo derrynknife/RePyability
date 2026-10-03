@@ -12,15 +12,19 @@ The core is acyclic, so its vertices are decided in a topological order. A
 vertex is *reached* when it works and at least ``k`` of its predecessors
 are reached (the input always is), and the system works when the output's
 ``k`` predecessors are. After the first ``i`` vertices of the order, the
-rest of the decision depends only on which of the decided vertices that
-still feed undecided ones (the *frontier*) are reached, and on the value of
-any component drawn in several places (a repeated node) whose other
-appearances are still to come. So each such state is solved once: a vertex
-is branched on only when enough of its predecessors are reached for it to
-matter, a branch whose two outcomes agree is dropped, and equal branches
-are shared. The size of the diagram grows with the frontier's width, not
-with the number of paths, so the order is chosen to keep the frontier
-narrow (``order``).
+rest of the decision depends only on how many reached predecessors each
+undecided vertex (and the output) already has, up to its ``k``, and on the
+value of any component drawn in several places (a repeated node) whose
+other appearances are still to come. So each such state is solved once: a
+vertex is branched on only when enough of its predecessors are reached for
+it to matter, a branch whose two outcomes agree is dropped, and equal
+branches are shared. Counting reached predecessors, rather than listing
+which of the decided vertices that still feed undecided ones (the
+*frontier*) are reached, makes the decided vertices that feed the same
+ones one state (#172): a meshed diagram of 35 nodes and 129 edges took 44
+seconds rather than a fraction of one. The states still grow with the
+frontier's width, not with the number of paths, so the order is chosen to
+keep the frontier narrow (``order``).
 
 The plan has the format of ``shannon._shannon_plan``'s: step ``i`` fills
 value slot ``i + 2`` from its pivot's active and inactive branches, slots 0
@@ -44,6 +48,20 @@ import numpy as np
 
 # Value slots 0 and 1 of a plan: the system fails, the system works.
 FAIL, WORK = 0, 1
+
+#: The most work ``build`` does before it gives up (#172), in steps: each
+#: vertex decided and each count it changes, and each state's counts and
+#: decided variables copied, a step, a fifth of a microsecond or so, so
+#: about five seconds (a meshed diagram of 60 nodes and 345 edges takes
+#: ten million). A core that needs more is too meshed to work out
+#: exactly, and is simulated (see ``modular.GraphStructure``). Raise it to
+#: try harder.
+STEP_LIMIT = 25_000_000
+
+
+class TooLarge(NotImplementedError):
+    """A core whose decision diagram needs more than ``STEP_LIMIT``
+    steps."""
 
 
 def order(
@@ -169,10 +187,14 @@ def build(
     """
     n = len(sequence)
     position = {v: i for i, v in enumerate(sequence)}
-    last: Dict[int, int] = {}
-    for u in [source, *sequence]:
-        ends = [n if w == sink else position[w] for w in succ.get(u, ())]
-        last[u] = max(ends, default=-1)
+    position[sink] = n
+    # Each vertex's successors, as positions (the output's is n), and the k
+    # of each position's vertex.
+    later = {
+        u: tuple(position[w] for w in succ.get(u, ()))
+        for u in [source, *sequence]
+    }
+    needs = [k[v] for v in sequence] + [k[sink]]
     # Where each variable appears first, and last: a variable drawn in
     # several places is decided at its first appearance, so that every
     # variable is decided at the same point on every branch (the diagram
@@ -183,60 +205,83 @@ def build(
     for i, v in enumerate(sequence):
         first.setdefault(variable[v], i)
         final[variable[v]] = i
-    preds = [tuple(pred[v]) for v in sequence]
-    needs = [k[v] for v in sequence]
-    sink_preds, sink_k = tuple(pred[sink]), k[sink]
+    # The variables drawn in several places whose last appearance each
+    # position is: only those are forgotten there.
+    expiring: Dict[int, set] = {}
+    for name, i in final.items():
+        if first[name] < i:
+            expiring.setdefault(i, set()).add(name)
 
-    def settle(i: int, reached: frozenset, decided: frozenset):
+    # A state's ``counts``: for each undecided position with a reached
+    # predecessor, how many, up to its k, as sorted (position, count)
+    # pairs. Each settling works on counts of its own, changed in place.
+    def reach(u, counts: dict) -> None:
+        """Count vertex ``u`` reached, in ``counts``."""
+        taken[0] += len(later[u])
+        for w in later[u]:
+            counts[w] = min(counts.get(w, 0) + 1, needs[w])
+
+    # The steps taken (see STEP_LIMIT).
+    taken = [0]
+
+    def settle(i: int, counts: dict, decided: frozenset):
         """Decide vertices from the ``i``-th while no branch is needed: the
         terminal reached (FAIL or WORK), or the state at which the next
-        vertex must be branched on, as ``(i, reached, decided)``."""
+        vertex must be branched on, as ``(i, counts, decided)``. ``counts``
+        is changed."""
         while True:
-            if sum(1 for u in sink_preds if u in reached) >= sink_k:
+            taken[0] += 1
+            if counts.get(n, 0) >= needs[n]:
                 return WORK
-            if not reached or i == n:
+            if not counts or i == n:
                 return FAIL
             v = sequence[i]
             name = variable[v]
             if first[name] == i and final[name] > i:
-                return (i, reached, decided)  # decided here, used later
-            reaching = sum(1 for u in preds[i] if u in reached)
-            if reaching >= needs[i]:
-                value = _decided(decided, name)
-                if value is None:
-                    return (i, reached, decided)
-                works = value
+                # Decided here, used later.
+                return (i, tuple(sorted(counts.items())), decided)
+            if counts.get(i, 0) >= needs[i]:
+                if (name, True) in decided:
+                    works = True
+                elif (name, False) in decided:
+                    works = False
+                else:
+                    return (i, tuple(sorted(counts.items())), decided)
             else:
                 works = False
-            reached, decided = _step(i, v, works, reached, decided)
+            decided = _step(i, v, works, counts, decided)
             i += 1
 
-    def _step(i, v, works, reached, decided):
-        kept = {u for u in reached if last[u] > i}
-        if works and last[v] > i:
-            kept.add(v)
-        if decided:
+    def _step(i, v, works, counts, decided) -> frozenset:
+        """Decide the ``i``-th vertex, ``v``: ``counts`` changed, and the
+        variables drawn in several places still to come kept."""
+        if works:
+            reach(v, counts)
+        counts.pop(i, None)
+        gone = expiring.get(i)
+        if decided and gone:
+            taken[0] += len(decided)
             decided = frozenset(
-                (name, value) for name, value in decided if final[name] > i
+                (name, value) for name, value in decided if name not in gone
             )
-        return frozenset(kept), decided
+        return decided
 
     def branches(state) -> list:
         """The states after the ``i``-th vertex's variable works, and
         fails (the vertex is reached only if enough predecessors are)."""
-        i, reached, decided = state
+        i, pairs, decided = state
+        taken[0] += 3 * len(pairs) + 3 * len(decided)
         v = sequence[i]
         name = variable[v]
-        enough = sum(1 for u in preds[i] if u in reached) >= needs[i]
+        enough = dict(pairs).get(i, 0) >= needs[i]
         out = []
         for value in (True, False):
+            counts = dict(pairs)
             remembered = decided
             if final[name] > i:
                 remembered = decided | {(name, value)}
-            after, remembered = _step(
-                i, v, value and enough, reached, remembered
-            )
-            out.append(settle(i + 1, after, remembered))
+            remembered = _step(i, v, value and enough, counts, remembered)
+            out.append(settle(i + 1, counts, remembered))
         return out
 
     slots: Dict[Any, int] = {}
@@ -248,11 +293,9 @@ def build(
             return state
         return slots.get(state)
 
-    start = settle(
-        0,
-        frozenset([source]) if last[source] >= 0 else frozenset(),
-        frozenset(),
-    )
+    counts: Dict[int, int] = {}
+    reach(source, counts)
+    start = settle(0, counts, frozenset())
     root = known(start)
     stack: list = []
     if root is None:
@@ -279,19 +322,18 @@ def build(
                 steps.append(key)
                 slot = unique[key] = len(steps) + 1
         slots[state] = slot
+        if taken[0] > STEP_LIMIT:
+            raise TooLarge(
+                "The diagram is too meshed to work out exactly: its "
+                f"decision diagram takes more than {STEP_LIMIT:,} steps "
+                "(repyability.rbd.bdd.STEP_LIMIT)."
+            )
         if stack:
             stack[-1][2].append(slot)
         else:
             root = slot
     assert root is not None
     return steps, root
-
-
-def _decided(decided: frozenset, name) -> Optional[bool]:
-    for known_name, value in decided:
-        if known_name == name:
-            return value
-    return None
 
 
 def pivots(plan: tuple) -> List[Hashable]:
@@ -312,14 +354,13 @@ def path_sets(plan: tuple) -> set:
     bit = {v: 1 << i for i, v in enumerate(variables)}
     sets: List[List[int]] = [[], [0]]
     for pivot, active, inactive in steps:
+        # The structure is coherent, so a path set with the pivot failed is
+        # one with it working: a minimal one with it working holds one with
+        # it failed only by being it, which a lookup finds (#172).
         without = sets[inactive]
+        known = set(without)
         sets.append(
-            without
-            + [
-                s | bit[pivot]
-                for s in sets[active]
-                if not any(other & s == other for other in without)
-            ]
+            without + [s | bit[pivot] for s in sets[active] if s not in known]
         )
     return {
         frozenset(v for v in variables if mask & bit[v]) for mask in sets[root]

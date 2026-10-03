@@ -3834,6 +3834,9 @@ class RepairableRBD(RBD):
 
     #: The junctions are folded out of the structure (see ``RBD``).
     _FOLDS_JUNCTIONS = True
+    _SIMULATE_INSTEAD = (
+        "availability, cost and simulate_timelines simulate it (in Python)."
+    )
 
     def _junctions(self) -> frozenset:
         """The junctions: nodes given ``PerfectReliability``, which never
@@ -8042,7 +8045,27 @@ class RepairableRBD(RBD):
                 "probabilities given (not the component models).",
             ),
         )
-        return dict(sorted(out.items()))
+        # Each component's own values, and the long-run costs but the
+        # system's downtime, need no structure; nor the expected cost when
+        # nothing is priced.
+        free = {"node_availability", "spares_demand", "spares_stock"}
+        if not self.downtime_cost_rate:
+            free |= {"expected_cost_rate", "total_cost"}
+        if not self.has_costs:
+            free.add("expected_cost")
+        meshed = self._too_meshed()
+        if meshed is not None and self._has_capacity():
+            # The simulations that follow the system's capacity do so
+            # through its reduced diagram, which a structure too meshed has
+            # not.
+            for name in (
+                "availability",
+                "simulate_chunk",
+                "availability_from_chunks",
+                "shards",
+            ):
+                out[name] = r.refused(meshed)
+        return self._meshed_routes(out, free)
 
     def _capacity_refusal(self) -> Optional[Tuple[str, tuple]]:
         """What ``capacity_distribution`` refuses beyond the long-run

@@ -117,9 +117,16 @@ Multiplying the channels' probabilities as if they were independent,
 out both channels at once. The tree is evaluated exactly, repeated events
 included. Every gate below which nothing is shared with the rest of the tree
 is a module with a closed form (an OR gate is `1 − ∏(1 − q_i)`, an AND gate
-`∏ q_i`), and what the repeated events tie together is worked out by the
-pivotal (Shannon) decomposition, as for the core of a block diagram (see
-[Concepts](../concepts.md#how-the-system-quantity-is-computed)). There is no
+`∏ q_i`), and what the repeated events tie together is worked out by a
+binary decision diagram built from the gates themselves, which branches on
+one event at a time (the pivotal, or Shannon, decomposition, as for the core
+of a block diagram: see
+[Concepts](../concepts.md#how-the-system-quantity-is-computed)). The cut and
+path sets are not listed to build it, as they multiply with the shared
+events: an OR of fifty AND gates over twenty-five shared events is built and
+evaluated in a fraction of a second. A tree whose diagram would pass two
+million nodes (`repyability.fault_tree.DIAGRAM_LIMIT`) is refused, with the
+advice to convert it with `to_rbd()` and simulate the diagram. There is no
 rare-event or min-cut upper-bound approximation.
 
 ## Importance measures

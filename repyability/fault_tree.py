@@ -20,14 +20,14 @@ parallel, and a VOTE gate needing ``k`` of ``n`` failures a block needing
 ``n - k + 1`` of ``n`` working. So the tree is evaluated by the exact engine
 behind the diagrams (see ``rbd/modular.py``): every gate below which nothing
 is shared with the rest of the tree is a module with a closed form, and what
-the repeated events tie together is left as a core, worked out by the
-Shannon decomposition over its minimal path sets. Nothing is approximated:
-the top event probability and the importance measures are exact, repeated
-events included.
+the repeated events tie together is left as a core: its binary decision
+diagram, built from the gates (#171), so that the minimal path and cut sets,
+which multiply with the shared events, are found from it only when asked
+for. Nothing is approximated: the top event probability and the importance
+measures are exact, repeated events included.
 """
 
 import json
-from itertools import combinations
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -46,6 +46,7 @@ from typing import (
 import numpy as np
 from numpy.typing import ArrayLike
 
+from repyability.rbd._ordered_bdd import OrderedBDD
 from repyability.rbd.modular import (
     KOON,
     NODE,
@@ -60,9 +61,9 @@ if TYPE_CHECKING:  # pragma: no cover
 #: The kinds of gate.
 GATE_KINDS = ("or", "and", "vote")
 
-#: Working out the core's minimal path sets gives up, with guidance, beyond
-#: this many sets for one gate.
-PATH_SET_LIMIT = 200_000
+#: Building the core's decision diagram gives up, with guidance, beyond
+#: this many nodes.
+DIAGRAM_LIMIT = 2_000_000
 
 
 class _Gate(NamedTuple):
@@ -133,28 +134,6 @@ def _parse_event(name, model):
             f"sf and ff (e.g. a surpyval distribution), got {model!r}."
         )
     return model
-
-
-def _minimal(sets: List[frozenset]) -> List[frozenset]:
-    """The sets that contain no other, smallest first."""
-    kept: List[frozenset] = []
-    for s in sorted(set(sets), key=len):
-        if not any(k <= s for k in kept):
-            kept.append(s)
-    return kept
-
-
-def _joined(families: Sequence[List[frozenset]]) -> List[frozenset]:
-    """One set from each family, joined, in every combination; minimal."""
-    out: List[frozenset] = [frozenset()]
-    for family in families:
-        out = _minimal([a | b for a in out for b in family])
-        if len(out) > PATH_SET_LIMIT:
-            raise ValueError(
-                "The repeated events tie together too much of the tree to "
-                f"list its minimal path sets (more than {PATH_SET_LIMIT:,})."
-            )
-    return out
 
 
 def _sort_key(s: frozenset) -> tuple:
@@ -339,7 +318,8 @@ class FaultTree:
         """The tree as the exact engine's decomposition, over the system
         *working* (no event occurring): each gate below which nothing is
         shared with the rest of the tree is a module; the rest, if any, is
-        a core given by its minimal path sets."""
+        a core given by its decision diagram, built from the gates over the
+        terms they share (see ``_core``)."""
         gates, events = self._gates, self.events
         # A gate is self-contained when everything below it has one parent.
         own: Dict[Hashable, bool] = {}
@@ -374,26 +354,65 @@ class FaultTree:
         # Terms of self-contained gates below a shared one stay unused: drop
         # them, keeping the order (children before parents).
         if own[self.top]:
-            return _pruned(terms, [position[self.top]], None)
-        paths: Dict[Hashable, List[frozenset]] = {}
-        for x in order:
+            return _pruned(terms, [position[self.top]])
+        steps, root = self._core(position)
+        return _pruned(
+            terms, sorted({pivot for pivot, _, _ in steps}), (steps, root)
+        )
+
+    def _core(self, position: Dict[Hashable, int]) -> Tuple[list, int]:
+        """The decision diagram of the top event not occurring, over the
+        terms of the events and self-contained gates the shared gates are
+        built from (``position``), as a plan (see ``modular``): a gate does
+        not occur while at least ``n - k + 1`` of its ``n`` inputs do not.
+        The terms are decided in the order a walk down the tree from the
+        top first meets them, which keeps a shared event's gates together.
+        Listing the core's minimal path sets instead (before #171) took
+        minutes for an OR of fifty ANDs over twenty-five shared events, as
+        they multiply with the shared events; the diagram is found in a
+        fraction of a second."""
+        gates = self._gates
+        variable: Dict[int, int] = {}
+        stack, seen = [self.top], set()
+        while stack:
+            x = stack.pop()
+            if x in seen:
+                continue
+            seen.add(x)
             if x in position:
-                paths[x] = [frozenset([position[x]])]
+                variable.setdefault(position[x], len(variable))
+                continue
+            stack.extend(reversed(gates[x].inputs))
+        term_of = {v: term for term, v in variable.items()}
+        diagrams = OrderedBDD(
+            limit=DIAGRAM_LIMIT,
+            message=(
+                "The repeated events tie together too much of the fault tree "
+                f"to work it out exactly (its decision diagram has more than "
+                f"{DIAGRAM_LIMIT:,} nodes): convert it with to_rbd() and "
+                "simulate the diagram, NonRepairableRBD.random or "
+                "mean(method='simulate')."
+            ),
+        )
+        works: Dict[Hashable, int] = {}
+        for x in self._post_order():
+            if x in position:
+                if position[x] in variable:
+                    works[x] = diagrams.node(variable[position[x]], 0, 1)
+                continue
+            if x not in seen:
                 continue
             gate = gates[x]
-            families = [paths[c] for c in gate.inputs]
-            working = len(families) - gate.k + 1
-            if working == len(families):
-                paths[x] = _joined(families)
-            elif working == 1:
-                paths[x] = _minimal([s for f in families for s in f])
+            inputs = [works[c] for c in gate.inputs]
+            needed = len(inputs) - gate.k + 1
+            if needed == len(inputs):
+                works[x] = diagrams.conjunction(inputs)
+            elif needed == 1:
+                works[x] = diagrams.disjunction(inputs)
             else:
-                found: List[frozenset] = []
-                for chosen in combinations(families, working):
-                    found.extend(_joined(chosen))
-                paths[x] = _minimal(found)
-        core = paths[self.top]
-        return _pruned(terms, sorted(set().union(*core)), core)
+                works[x] = diagrams.at_least(inputs, needed)
+        steps, (root,) = diagrams.plan([works[self.top]], lambda v: term_of[v])
+        return steps, root
 
     # -- evaluation --------------------------------------------------------
 
@@ -1308,10 +1327,11 @@ class FaultTree:
 
 
 def _pruned(
-    terms: list, roots: List[int], core: Optional[List[frozenset]]
+    terms: list, roots: List[int], plan: Optional[Tuple[list, int]] = None
 ) -> Decomposition:
     """The decomposition over the terms under ``roots`` (renumbered, kept in
-    order), with the ``core``'s path sets renumbered too."""
+    order): the one root's, or the core's decision diagram, ``plan``, its
+    pivots renumbered too."""
     keep: set = set()
     stack = list(roots)
     while stack:
@@ -1332,10 +1352,13 @@ def _pruned(
         else:
             children = tuple(position[c] for c in term[1])
             tree.append((term[0], children, *term[2:]))
-    if core is None:
+    if plan is None:
         return Decomposition(tree, root=position[roots[0]])
+    steps, root = plan
+    if root == 1:  # the top never occurs
+        return Decomposition([])
     return Decomposition(
-        tree, core=[sorted(position[c] for c in ps) for ps in core]
+        tree, plan=([(position[p], a, b) for p, a, b in steps], root)
     )
 
 

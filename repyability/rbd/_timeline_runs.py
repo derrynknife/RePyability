@@ -368,12 +368,14 @@ def _named(rbd, data: _Data) -> _Data:
 def independent(rbd, plan: _streams.Plan, prefix: tuple = ()) -> bool:
     """Whether each component's history follows from its own draws alone:
     plain units with streamed lives and repairs, and nested RBDs of them,
-    with no crew a job can wait for and nothing scheduled."""
+    with no crew a job can wait for and nothing scheduled; and a structure
+    worked out (one too meshed is followed in the loop)."""
     from repyability.non_repairable import NonRepairable
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     if (
-        rbd._preventive
+        rbd._too_meshed() is not None
+        or rbd._preventive
         or rbd._inspection
         or rbd._standby
         or rbd._imperfect

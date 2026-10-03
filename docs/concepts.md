@@ -52,9 +52,11 @@ Given each node's reliability, the system reliability is computed
    direct edge is dropped, as it is irrelevant. This repeats until nothing
    more reduces; a series-parallel diagram becomes a single module.
 2. **Pivotal decomposition.** Whatever is left, the *core* (a bridge, a
-   shared node), is evaluated from its minimal path sets by a pivotal
-   (Shannon) decomposition, over its modules and nodes. Only the core pays
-   the combinatorial price.
+   shared node), is evaluated by a pivotal (Shannon) decomposition over its
+   modules and nodes: from its minimal path sets when it has few, and
+   otherwise from a binary decision diagram built from its graph, whose
+   size grows with how wide the mesh is rather than with how many paths it
+   has. Only the core pays the combinatorial price.
 
 Both stages depend only on the structure, so they are worked out once per
 RBD and replayed for every evaluation: repeated evaluations (arrays of times,
@@ -65,6 +67,14 @@ evaluated in milliseconds. With `method="c"` the probability that the system
 fails is computed instead, and its complement returned; the two methods give
 the same value. Every step is a sum of products of node probabilities and
 their complements, so both keep their full relative precision.
+
+A core so meshed that even its decision diagram would take more than
+`repyability.rbd.bdd.STEP_LIMIT` steps to build (25 million, a few seconds)
+is not worked out. The RBD is still built, with
+`structure_check["is_too_meshed"]` set: its simulations follow the graph
+itself (a node works when it has not failed and enough of its inputs work),
+and the exact analyses refuse, saying why, as `analysis_routes()` reports.
+Raise the limit to try harder.
 
 The identity that drives the decomposition, and the importance measures, is
 **pivotal decomposition** around any node *A*:
@@ -159,7 +169,8 @@ block, and a VOTE gate on `k` of `n` failures a block needing `n − k + 1` of
 evaluated by the same engine: each gate below which no event or gate is
 shared with the rest of the tree is a module with a closed form, and what the
 repeated events tie together is a core, solved exactly by the pivotal
-decomposition over its minimal path sets. The measures of importance are the
+decomposition, on a binary decision diagram built from its gates (its cut
+sets are listed only when asked for). The measures of importance are the
 diagram's, with the top event as the system failing.
 
 ### Parameter uncertainty

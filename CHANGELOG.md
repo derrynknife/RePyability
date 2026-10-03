@@ -55,6 +55,51 @@ other release, fixes included, the minor.
   none missing (with `mc_samples=N`, as before, also the last), and
   `allow_gaps=True` takes the result of whichever simulations they hold, as
   before.
+- **A meshed diagram's core is worked out in a fraction of the time
+  (#172).** A core that does not reduce, decided by its binary decision
+  diagram, knew each sub-problem by which of the decided nodes that still
+  feed undecided ones had been reached; it is now known by how many reached
+  inputs each node still to come has, up to its `k`, which makes one of the
+  sub-problems that differ only in which inputs were reached, and gives the
+  same diagram. A random mesh of 35 nodes and 129 links took 44 seconds to
+  build, and one of 40 nodes did not finish; they take a twentieth and a
+  tenth of a second, one of 50 nodes and 250 links a second, and one of 60
+  nodes and 345 links two. The exact
+  `fussell_vesely` no longer lists the core's minimal cut sets and works
+  out, for each node, the union of those through it: it builds that union's
+  decision diagram from the core's (the node's critical states, closed
+  upwards), so a ladder of thirty bridges takes a fifth of a second rather
+  than 19 seconds, and one of a hundred, which took more than a minute, 1.7.
+  And the minimal cut and path sets are read off the core's plan with one
+  lookup each, rather than each checked against all the others (the
+  structure being coherent, a set with the pivot working that holds one
+  with it failed is that one): a ladder of a hundred bridges' 40,000 cut
+  sets take 0.7 seconds rather than three minutes. Every result is as it
+  was.
+- **A core too meshed to work out is simulated, where building the diagram
+  ran on without end (#172).** Building a core's decision diagram stops
+  after `repyability.rbd.bdd.STEP_LIMIT` steps (25 million, a few seconds:
+  a random mesh of 70 nodes and 485 links needs more). The RBD is then
+  still built, with `structure_check["is_too_meshed"]` set, and its
+  simulations follow the graph itself (`modular.GraphStructure`: a node
+  works while it has not failed and enough of its inputs work), giving what
+  the structure worked out gives, to the last bit: a `NonRepairableRBD`'s
+  `random`, `mean(method="simulate")` and the other simulations, and a
+  `RepairableRBD`'s `availability`, `cost` and `simulate_timelines`, on the
+  Python engine. The exact and numerical analyses refuse, saying why, as
+  `analysis_routes()` reports, and so does the compiled engine. Raise the
+  limit to try harder.
+- **A fault tree with shared events is built from its gates (#171).** The
+  core that the repeated events tie together was given by its minimal path
+  sets, listed as the tree was built, and they multiply with the shared
+  events: an OR of fifty AND gates over twenty-five shared events took 18
+  seconds to build and four more for `ff`, and one of 300 AND gates three
+  and a half minutes. The core is now the binary decision diagram of the
+  gates themselves, built in a twentieth of a second and 0.7 seconds, and
+  the cut and path sets are found from it only when asked for.
+  A tree whose diagram passes `repyability.fault_tree.DIAGRAM_LIMIT` (two
+  million nodes) is refused, with the advice to simulate it as a diagram;
+  `PATH_SET_LIMIT`, which limited the listing, is gone.
 
 ### Fixed
 
@@ -98,7 +143,6 @@ other release, fixes included, the minor.
   639), which building needs setuptools 77 for, and the wheel is marked as
   typed (`py.typed`). SciPy's floor is 1.13, the first built for NumPy 2,
   which RePyability already required.
-
 - **Planned outages after age replacement were overcounted, by about one
   in 10^4 (#164).** The chained maintenance of units that each reach their
   age, when it takes a random time, was counted from running sums that

@@ -40,8 +40,14 @@ from scipy.sparse import diags
 from scipy.special import expit as sigmoid
 from scipy.special import logit, logsumexp, softmax
 
+from repyability.rbd import bdd
 from repyability.rbd import capacity as _capacity
-from repyability.rbd.modular import Decomposition, decompose, fold
+from repyability.rbd.modular import (
+    Decomposition,
+    GraphStructure,
+    decompose,
+    fold,
+)
 from repyability.rbd.rbd_graph import RBDGraph
 from repyability.rbd.results import CapacityDistribution
 from repyability.rbd.shannon import (
@@ -583,8 +589,11 @@ class RBD:
         levels and their probabilities (in increasing order of level).
     structure_check : dict
         The validation report, e.g. ``"is_valid"``, ``"has_cycles"``,
-        ``"cycles"``, ``"koon_errors"``, ``"koon_warnings"`` and
-        ``"irrelevant_nodes"``. The subclasses add their own entries.
+        ``"cycles"``, ``"koon_errors"``, ``"koon_warnings"``,
+        ``"irrelevant_nodes"`` and ``"is_too_meshed"``: whether the core
+        is too meshed to work out exactly, so that only the simulations run
+        (its irrelevant nodes are then not known). The subclasses add their
+        own entries.
 
     Raises
     ------
@@ -645,6 +654,8 @@ class RBD:
     # structure (``modular.fold``): a ``RepairableRBD``'s are no components,
     # while a ``NonRepairableRBD``'s have a model that never fails.
     _FOLDS_JUNCTIONS = False
+    # What simulates a diagram too meshed to work out exactly.
+    _SIMULATE_INSTEAD = "Simulate it instead."
 
     def __init__(
         self,
@@ -776,6 +787,7 @@ class RBD:
         self.capacity = self._validated_capacity(capacity)
         self.structure_check["has_irrelevant_nodes"] = False
         self.structure_check["irrelevant_nodes"] = set()
+        self.structure_check["is_too_meshed"] = False
 
         if (
             not structure_check["has_cycles"]
@@ -783,12 +795,15 @@ class RBD:
             and not structure_check["has_koon_errors"]
         ):
             # Reduces the diagram, and raises if nothing reaches the output.
-            self._decomposition()
-            irrelevant_nodes = self.find_irrelevant_components()
-            if len(irrelevant_nodes) != 0:
-                self.structure_check["has_irrelevant_nodes"] = True
-
-            self.structure_check["irrelevant_nodes"] = irrelevant_nodes
+            # A core too meshed to work out leaves which nodes are
+            # irrelevant unknown.
+            if self._too_meshed() is not None:
+                self.structure_check["is_too_meshed"] = True
+            else:
+                irrelevant_nodes = self.find_irrelevant_components()
+                if len(irrelevant_nodes) != 0:
+                    self.structure_check["has_irrelevant_nodes"] = True
+                self.structure_check["irrelevant_nodes"] = irrelevant_nodes
 
     def __repr__(self) -> str:
         """A short summary: the nodes, the input and output nodes, any
@@ -855,8 +870,10 @@ class RBD:
         >>> rbd.find_irrelevant_components()
         {'b'}
         """
-        relevant = self._decomposition().nodes
-        return set(self.nodes) - relevant
+        decomposition = self._decomposition()
+        if isinstance(decomposition, GraphStructure):
+            raise NotImplementedError(decomposition.reason)
+        return set(self.nodes) - decomposition.nodes
 
     def get_all_path_sets(self) -> Iterator[list[Hashable]]:
         """Iterate over every path from the input node to the output node.
@@ -1469,16 +1486,55 @@ class RBD:
             reducible = self.structure_check["is_valid"] and all(
                 self.G.nodes[node]["k"] >= 1 for node in self.G.nodes
             )
-            self._modules = decompose(
-                self.G,
-                self.input_node,
-                self.output_node,
-                reduce=reducible,
-                aliases=self._component_aliases(),
+            folded = (
+                self._junctions() if self._FOLDS_JUNCTIONS else frozenset()
             )
-            if self._FOLDS_JUNCTIONS:
-                self._modules = fold(self._modules, self._junctions())
+            try:
+                self._modules = decompose(
+                    self.G,
+                    self.input_node,
+                    self.output_node,
+                    reduce=reducible,
+                    aliases=self._component_aliases(),
+                )
+            except bdd.TooLarge as error:
+                # Too meshed to work out exactly (#172): the simulations
+                # follow the graph itself, and the rest refuses.
+                self._modules = GraphStructure(
+                    self.G,
+                    self.input_node,
+                    self.output_node,
+                    self._component_aliases(),
+                    folded,
+                    f"{error} {self._SIMULATE_INSTEAD}",
+                )
+                return self._modules
+            if folded:
+                self._modules = fold(self._modules, folded)
         return self._modules
+
+    def _meshed_routes(self, out: dict, free: Iterable[str]) -> dict:
+        """A route report (see ``analysis_routes``), sorted, with every
+        exact or numerical analysis but those in ``free``, which need no
+        structure, refused when the core is too meshed to work out (see
+        ``_too_meshed``): the simulations alone run."""
+        from repyability.rbd import routes as r
+
+        meshed = self._too_meshed()
+        if meshed is not None:
+            free = set(free)
+            for name, route in out.items():
+                if route.route in (r.EXACT, r.NUMERICAL) and name not in free:
+                    out[name] = r.refused(meshed)
+        return dict(sorted(out.items()))
+
+    def _too_meshed(self) -> Optional[str]:
+        """Why the diagram cannot be worked out exactly, if its core is too
+        meshed (see ``modular.GraphStructure``); None if it can."""
+        decomposition = self._decomposition()
+        if isinstance(decomposition, GraphStructure):
+            return decomposition.reason
+        return None
 
     def _junctions(self) -> frozenset:
         """The nodes that are only drawing devices: perfectly reliable
@@ -1647,11 +1703,15 @@ class RBD:
         them."""
         own = own or {}
         self._require_capacity()
-        flow = (
-            self._decomposition().flow
-            if self.structure_check["is_valid"]
-            else None
-        )
+        if not self.structure_check["is_valid"]:
+            raise ValueError(
+                "The capacity analysis needs a valid diagram: this one "
+                "failed the structure check (see structure_check)."
+            )
+        meshed = self._too_meshed()
+        if meshed is not None:
+            raise NotImplementedError(meshed)
+        flow = self._decomposition().flow
         if flow is None:
             raise ValueError(
                 "The capacity analysis needs a valid diagram: this one "

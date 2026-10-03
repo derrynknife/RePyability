@@ -63,13 +63,13 @@ from typing import (
 import numpy as np
 
 from repyability.rbd import bdd
+from repyability.rbd._ordered_bdd import FALSE, TRUE, OrderedBDD
 from repyability.rbd.min_path_sets import min_path_sets as find_min_path_sets
 from repyability.rbd.rbd_graph import RBDGraph
 from repyability.rbd.shannon import (
     _minimal_cut_sets,
     _shannon_plan,
     _shannon_value_and_gradient,
-    _union_plan,
 )
 
 # The kinds of term.
@@ -459,18 +459,23 @@ class Decomposition:
         return out
 
     def _core_cut_plan(self) -> tuple[list, list, list]:
-        """The core's terms in some minimal cut set, and one Shannon
-        decomposition of, for each, the probability that for some minimal
-        cut set of the core containing it every other term in it has
-        failed (a set's terms *satisfied* when failed): ``(terms, steps,
-        roots)``, as :func:`shannon._union_plan` gives them."""
+        """The core's terms in some minimal cut set, and one decision
+        diagram of, for each, the probability that for some minimal cut set
+        of the core containing it every other term in it has failed:
+        ``(terms, steps, roots)``, each step ``(term, slot if it failed,
+        slot if it works)``.
+
+        Such a cut set exists when the term is critical (the core works
+        with it and fails without it) with some of the failed terms
+        working again: the term's *critical* function, ``φ(t works) and
+        not φ(t fails)``, closed upward (``ψ(x) = 1`` when ``ψ(x') = 1`` for
+        some ``x'`` with every working term of ``x`` working). Both are
+        worked out on the core's ordered decision diagram (see
+        ``_ordered_bdd``), which stays small where the cut sets multiply:
+        thirty rungs of a ladder of bridges took 19 seconds through the
+        union of each term's cut sets (before #172)."""
         if self._cut_plan is None:
-            cuts = [frozenset(cut) for cut in self.core_cut_sets()]
-            terms = sorted({c for cut in cuts for c in cut})
-            steps, roots = _union_plan(
-                [[cut - {t} for cut in cuts if t in cut] for t in terms]
-            )
-            self._cut_plan = (terms, steps, roots)
+            self._cut_plan = _critical_closures(self.core_plan())
         return self._cut_plan
 
     def dual(self) -> "Decomposition":
@@ -681,6 +686,108 @@ class Decomposition:
         return self._sets(False)
 
 
+def _critical_closures(plan: tuple) -> tuple[list, list, list]:
+    """For the structure a plan decides (``core_plan``'s format), each
+    variable it depends on, and one plan, in ``failed_cut_sets``' format
+    (``(variable, slot if failed, slot if working)``), of the probability
+    that some minimal cut set holding it has every other member failed:
+    ``(variables, steps, roots)``. See ``Decomposition._core_cut_plan``."""
+    from collections import deque
+
+    steps, top = plan
+    # The variables in the order a walk from the root first meets them:
+    # a plan built from the graph is ordered so, and stays as small.
+    order: Dict[Any, int] = {}
+    queue, seen = deque([top]), {0, 1}
+    while queue:
+        slot = queue.popleft()
+        if slot in seen:
+            continue
+        seen.add(slot)
+        pivot, active, inactive = steps[slot - 2]
+        order.setdefault(pivot, len(order))
+        queue.extend((active, inactive))
+    named = {i: v for v, i in order.items()}
+    d = OrderedBDD()
+    made = [FALSE, TRUE]
+    for pivot, active, inactive in steps:
+        made.append(
+            d.ite(
+                d.node(order[pivot], FALSE, TRUE), made[active], made[inactive]
+            )
+        )
+    structure = made[top]
+
+    def mapped(f: int, rule: Callable[[int, int, int], int], memo: dict):
+        """``f``'s diagram rebuilt bottom up, each node by ``rule(node,
+        new low, new high)``, constants kept."""
+        stack = [f]
+        while stack:
+            n = stack[-1]
+            if n in memo:
+                stack.pop()
+                continue
+            if n <= TRUE:
+                memo[n] = n
+                stack.pop()
+                continue
+            pending = [c for c in (d.low[n], d.high[n]) if c not in memo]
+            if pending:
+                stack.extend(pending)
+                continue
+            stack.pop()
+            memo[n] = rule(n, memo[d.low[n]], memo[d.high[n]])
+        return memo[f]
+
+    def cofactor(f: int, v: int, works: bool) -> int:
+        def rule(n, low, high):
+            if d.var[n] == v:
+                return high if works else low
+            return d.node(int(d.var[n]), low, high)
+
+        return mapped(f, rule, {})
+
+    closed: dict = {}
+
+    def closure(f: int) -> int:
+        # Upward: a variable failed may as well have worked.
+        def rule(n, low, high):
+            return d.node(int(d.var[n]), d.ite(low, TRUE, high), high)
+
+        return mapped(f, rule, closed)
+
+    variables = sorted(
+        {int(d.var[n]) for n in _reachable(d, structure)},
+    )
+    roots = []
+    for v in variables:
+        critical = d.ite(
+            cofactor(structure, v, True),
+            d.ite(cofactor(structure, v, False), FALSE, TRUE),
+            FALSE,
+        )
+        roots.append(closure(critical))
+    plan_steps, slots = d.plan(roots, named.__getitem__)
+    return (
+        [named[v] for v in variables],
+        [(p, inactive, active) for p, active, inactive in plan_steps],
+        slots,
+    )
+
+
+def _reachable(d: OrderedBDD, f: int) -> List[int]:
+    """The nodes of ``f``'s diagram, constants left out."""
+    out, stack, seen = [], [f], set()
+    while stack:
+        n = stack.pop()
+        if n <= TRUE or n in seen:
+            continue
+        seen.add(n)
+        out.append(n)
+        stack.extend((d.low[n], d.high[n]))
+    return out
+
+
 def _minimal_sets(sets: Iterable[frozenset]) -> list:
     """The distinct sets that contain no other."""
     kept: list = []
@@ -760,6 +867,112 @@ def _koon_cut_shares(R: Sequence[Any], Q: Sequence[Any], k: int) -> list:
     ``k - 1`` of the others work (at least ``n - k`` have failed): with a
     cut set of the member failed, one of the module's has then failed."""
     return [sum(exactly) for exactly in _others_working(R, Q, range(k))]
+
+
+class GraphStructure(Decomposition):
+    """The structure of a diagram whose core is too meshed to work out
+    exactly (its decision diagram needs more than ``bdd.STEP_LIMIT``
+    states, #172), from its graph alone: whether the system works, and
+    how long it lasts, by following the diagram from the input (a node is
+    reached while it works and at least ``k`` of its predecessors are),
+    which is all the simulations need. Everything exact (the
+    probabilities, the importance measures, the path and cut sets, the
+    capacity) refuses, with ``reason``.
+
+    ``aliases`` maps a repeated node to the component it stands for, and
+    the ``perfect`` nodes (a ``RepairableRBD``'s junctions) always work.
+    It stands in for a ``Decomposition``, every method of which that needs
+    the structure worked out refusing.
+    """
+
+    always_works = False
+    root = None
+    from_graph = False
+    flow = None
+
+    def __init__(
+        self,
+        graph: RBDGraph,
+        input_node,
+        output_node,
+        aliases: Optional[Dict[Hashable, Hashable]],
+        perfect: Iterable[Hashable],
+        reason: str,
+    ):
+        import networkx as nx
+
+        aliases = aliases or {}
+        always = frozenset(perfect) | {output_node}
+        self.reason = reason
+        self.terms: list = []
+        self._input, self._output = input_node, output_node
+        self._order = [
+            v for v in nx.topological_sort(graph) if v != input_node
+        ]
+        self._preds = [tuple(graph.predecessors(v)) for v in self._order]
+        self._k = [graph.nodes[v]["k"] for v in self._order]
+        # The component each vertex stands for; None for one always working.
+        self._of = [
+            (
+                None
+                if v in always or aliases.get(v, v) in always
+                else aliases.get(v, v)
+            )
+            for v in self._order
+        ]
+        self.nodes = frozenset(c for c in self._of if c is not None)
+
+    def _refuse(self, *args, **kwargs):
+        raise NotImplementedError(self.reason)
+
+    probabilities = value_and_gradient = failed_cut_sets = _refuse
+    path_sets = cut_sets = core_plan = core_cut_sets = dual = _refuse
+
+    @property
+    def core(self):
+        raise NotImplementedError(self.reason)
+
+    def works(self, status, method: str = "p") -> bool:
+        """Whether the system works, given whether each node works."""
+        return self.structure_function(method)(status)
+
+    def structure_function(self, method: str = "p") -> Callable:
+        """``function(status)``, whether the system works given whether
+        each node works (``method`` changes nothing here)."""
+        steps = list(zip(self._order, self._preds, self._k, self._of))
+        source, output = self._input, self._output
+
+        def works(s) -> bool:
+            reached = {source: True}
+            for v, preds, k, component in steps:
+                reached[v] = sum(1 for u in preds if reached[u]) >= k and (
+                    component is None or bool(s[component])
+                )
+            return reached[output]
+
+        return works
+
+    def lifetime(self, lifetimes: Dict, size: int) -> np.ndarray:
+        """The system's lifetime in each sample, from each node's: a node
+        is reached until it fails or fewer than ``k`` of its predecessors
+        are, the ``k``-th latest of their times."""
+        reach: Dict[Hashable, np.ndarray] = {
+            self._input: np.full(size, np.inf)
+        }
+        for v, preds, k, component in zip(
+            self._order, self._preds, self._k, self._of
+        ):
+            times = [reach[u] for u in preds]
+            if len(times) == 1:
+                kth = times[0]
+            else:
+                kth = np.sort(times, axis=0)[len(times) - k]
+            reach[v] = (
+                kth
+                if component is None
+                else np.minimum(kth, lifetimes[component])
+            )
+        return np.asarray(reach[self._output], dtype=float)
 
 
 class _Reduction:

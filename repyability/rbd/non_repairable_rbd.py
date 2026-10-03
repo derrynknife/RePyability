@@ -619,6 +619,11 @@ class NonRepairableRBD(RBD):
         )
         self.structure_check["non_analytic_nodes"] = non_analytic_nodes
 
+    _SIMULATE_INSTEAD = (
+        "random, mean(method='simulate'), mean_time_to_failure_interval and "
+        "unreliability_interval simulate it."
+    )
+
     def _repr_details(self) -> List[str]:
         """Repeated nodes, perfect junctions and common-cause groups, for
         ``repr``."""
@@ -4724,7 +4729,8 @@ class NonRepairableRBD(RBD):
                 else ""
             ),
         )
-        return dict(sorted(out.items()))
+        # Each node's own values need no structure.
+        return self._meshed_routes(out, ("node_sf", "node_ff", "node_mttf"))
 
     def random(
         self,

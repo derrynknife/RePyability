@@ -242,28 +242,46 @@ routes["availability"].engine      # 'numba' with numba installed, else 'python'
   reduce to a single module, and their path sets are never listed. Thirty
   duplicated stages in series have `2**30` minimal path sets, yet `sf` over
   400 times takes milliseconds. The cost is in the part that does not reduce
-  (bridges, cross-ties, shared nodes): it grows with that part's number of
-  minimal path sets, which multiplies with meshing, so a long chain of
-  bridges gets expensive. Only `get_min_path_sets()`, `path_set_probabilities`
-  and `fussell_vesely(fv_type="p")` list every path set, and
-  `get_all_path_sets()` every simple path: avoid them on large redundant
-  diagrams. `fussell_vesely` lists the part's minimal cut sets, as
-  `get_min_cut_sets()` does, and on first use decomposes, for each of its
-  nodes, the cut sets through it (all in one plan, kept for later calls):
-  on a densely meshed part (a 4 × 8 grid of nodes, a thousand cut sets)
-  that takes a few seconds, where the rare-event sum
-  (`method="rare_event"`) takes a tenth.
+  (bridges, cross-ties, shared nodes), the *core*: a core with few minimal
+  path sets is pivoted on them, and one with more is decided by a decision
+  diagram (below). Its minimal path and cut sets multiply with meshing, and
+  only `get_min_path_sets()`, `path_set_probabilities` and
+  `fussell_vesely(fv_type="p")` list every path set, and
+  `get_min_cut_sets()` and `fussell_vesely(method="rare_event")` every cut
+  set. They are read off the core's plan, one lookup each, so the 40,000
+  minimal cut sets of a ladder of a hundred bridges take under a second.
+  `get_all_path_sets()` lists every simple path: avoid it on large
+  redundant diagrams. The exact `fussell_vesely` lists no cut sets: on
+  first use it builds from the core's plan, for each node, the decision
+  diagram of some minimal cut set through the node having failed (kept for
+  later calls), so a ladder of thirty bridges, with 3,600 minimal cut sets,
+  takes a fifth of a second, and a 4 × 8 grid of nodes about as long as the
+  rare-event sum.
 - **Meshed diagrams: a decision diagram.** A part that does not reduce
   and may have more than a hundred minimal path sets is decided by a
   binary decision diagram built from its graph instead, without listing
-  them. Its size grows with how wide the mesh is, not with how many paths
-  it has. Six bridges in series (4,096 minimal path sets) take about 9
-  seconds by their path sets and 0.06 seconds this way; eight or more, or
-  a grid of 5 × 12 nodes, take longer than 40 seconds by path sets, while
-  fifty bridges take 0.01 seconds and a 10 × 10 grid 0.2. Every result is
-  the same to rounding either way (the whole test suite passes with
-  either forced). To force one, set `repyability.rbd.modular.CORE_METHOD`
-  to `"paths"` or `"bdd"` (by default `"auto"`) before building the RBD.
+  them: its nodes are decided one at a time, in an order that keeps the
+  mesh's frontier narrow, and each sub-problem is known by how many
+  working inputs each node still to come already has. Its size grows with
+  how wide the mesh is, not with how many paths it has. Six bridges in
+  series (4,096 minimal path sets) take 1.5 seconds by their path sets and
+  0.003 seconds this way, and seven 25 seconds by path sets, while fifty
+  bridges take 0.02 seconds, a 10 × 10 grid of nodes 0.04, and a random
+  mesh of 60 nodes and 345 links 2. Every result is the same to rounding
+  either way (the whole test suite passes with either forced). To force
+  one, set `repyability.rbd.modular.CORE_METHOD` to `"paths"` or `"bdd"`
+  (by default `"auto"`) before building the RBD.
+- **Too meshed to work out.** A core whose decision diagram would take
+  more than `repyability.rbd.bdd.STEP_LIMIT` steps to build (25 million,
+  about five seconds: a random mesh of 70 nodes and 485 links needs more)
+  is not worked out. The RBD is still built, with
+  `structure_check["is_too_meshed"]` set, and its simulations follow the
+  graph itself, a node working while it has not failed and enough of its
+  inputs work: a `NonRepairableRBD`'s `random`, `mean(method="simulate")`
+  and `unreliability_interval`, and a `RepairableRBD`'s `availability`,
+  `cost` and `simulate_timelines`, on the Python engine. The exact and
+  numerical analyses refuse, saying why (`analysis_routes()` lists them).
+  Raise the limit to try harder: the mesh of 70 nodes takes 45 seconds.
 - **Simulations** are vectorised where the models allow it: `mean()` of a
   system of parametric components draws 100 000 lifetimes in well under a
   second. Availability simulations step through events, so their cost grows
@@ -288,6 +306,6 @@ routes["availability"].engine      # 'numba' with numba installed, else 'python'
     `sys.setrecursionlimit(10_000)` handles paths of several thousand nodes.
     A mesh with more than a hundred minimal path sets is decided by its
     decision diagram (above), which builds without recursion: four hundred
-    bridges in series, 2,000 nodes, take 0.13 seconds. Series chains and
+    bridges in series, 2,000 nodes, take 0.16 seconds. Series chains and
     parallel groups are reduced first, so long chains and wide systems are
     not affected.

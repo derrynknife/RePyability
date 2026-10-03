@@ -28,7 +28,7 @@ from repyability import (
     StandbyModel,
     network,
 )
-from repyability.rbd import phased_mission, routes
+from repyability.rbd import bdd, modular, phased_mission, routes
 from repyability.tests.repository import source
 from repyability.tests.test_performance_equivalence import binomial_first
 from repyability.tests.test_simulation_engines import (
@@ -41,6 +41,31 @@ E = surv.Exponential.from_params
 L = surv.LogNormal.from_params
 FIXED = surv.FixedEventProbability.from_params
 EDGES = [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")]
+BRIDGE = [
+    ("s", "a"),
+    ("s", "b"),
+    ("a", "c"),
+    ("b", "c"),
+    ("a", "d"),
+    ("c", "d"),
+    ("b", "e"),
+    ("c", "e"),
+    ("d", "t"),
+    ("e", "t"),
+]
+
+
+def too_meshed(build):
+    """``build()``, its core given up on as too meshed to work out (see
+    ``modular.GraphStructure``), as a far larger one would be (#172)."""
+    limit, method = bdd.STEP_LIMIT, modular.CORE_METHOD
+    bdd.STEP_LIMIT, modular.CORE_METHOD = 2, "bdd"
+    try:
+        rbd = build()
+    finally:
+        bdd.STEP_LIMIT, modular.CORE_METHOD = limit, method
+    assert rbd.structure_check["is_too_meshed"]
+    return rbd
 
 
 def nonrepairable_rbds():
@@ -108,6 +133,19 @@ def nonrepairable_rbds():
                 ),
                 **rest,
             },
+        ),
+        "too meshed": too_meshed(
+            lambda: NonRepairableRBD(
+                BRIDGE,
+                {"a": unit, "b": unit, "c": E([0.002]), "d": unit, "e": unit},
+            )
+        ),
+        "too meshed, with capacities": too_meshed(
+            lambda: NonRepairableRBD(
+                BRIDGE,
+                {"a": unit, "b": unit, "c": E([0.002]), "d": unit, "e": unit},
+                capacity={"a": 5.0, "b": 5.0, "c": 5.0, "d": 5.0, "e": 5.0},
+            )
         ),
     }
 
@@ -245,6 +283,19 @@ def repairable_rbds():
                 unit(priority=1), repair_crews=1, downtime_cost_rate=5.0
             ),
             "enough repair crews": system(unit(), repair_crews=3),
+            "too meshed": too_meshed(
+                lambda: RepairableRBD(
+                    BRIDGE, {n: unit(repair_cost=2.0) for n in "abcde"}
+                )
+            ),
+            "too meshed, downtime priced": too_meshed(
+                lambda: RepairableRBD(
+                    BRIDGE,
+                    {n: unit(repair_cost=2.0) for n in "abcde"},
+                    downtime_cost_rate=5.0,
+                    capacity={n: 5.0 for n in "abcde"},
+                )
+            ),
             "standby group": system(
                 {
                     "reliability": E([0.002]),
@@ -796,6 +847,20 @@ def test_the_readme_says_what_is_simulated():
         ],
         "Phased missions and networks whose decision diagrams pass a "
         "million nodes": [],
+        "Block diagrams too meshed for their decision diagrams": [
+            (nonrepairable["too meshed"], "random", "simulated"),
+            (
+                nonrepairable["too meshed"],
+                "mean_time_to_failure_interval",
+                "simulated",
+            ),
+            (nonrepairable["too meshed"], "sf", "refused"),
+            (repairable["too meshed"], "availability", "simulated"),
+            (repairable["too meshed"], "cost", "simulated"),
+            (repairable["too meshed"], "simulate_timelines", "simulated"),
+            (repairable["too meshed"], "mean_availability", "refused"),
+            (repairable["too meshed"], "point_availability", "refused"),
+        ],
         "Hidden failures whose tests or repairs take time, or whose tests "
         "miss failures of a life that is not exponential": [
             (

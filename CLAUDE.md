@@ -111,6 +111,18 @@
   simulated and whether it must be (or could be exact, with the issue).
   `test_the_readme_says_what_is_simulated` checks each row against
   `analysis_routes()`: when an analysis is made exact, update its row.
+- **A diagram too meshed to work out keeps only its graph (#172).** When a
+  core's decision diagram passes `bdd.STEP_LIMIT`, `RBD._decomposition()`
+  is a `modular.GraphStructure`, which works out a state and a lifetime
+  from the graph, for the simulations, and refuses the rest with the
+  reason. Both classes' `analysis_routes` end with `_meshed_routes(out,
+  free)`, which refuses every exact or numerical analysis but those in
+  `free`, which need no structure: a new method that needs none (a node's
+  own values) goes in `free`. The compiled engine and the timelines'
+  streams (`_compiled.unsupported`, `_timeline_runs.independent`) leave such
+  a diagram to the Python loop. `test_meshed_structures.py` checks the
+  stand-in against the structure worked out, and `test_analysis_routes.py`
+  the routes of diagrams too meshed.
 - **The integrals over a window are summed on coarse pieces**
   (`repyability/rbd/_quadrature.py`, #164): the curves' breaks, cut to a
   few steps of the finest grid still changing, and halved until their

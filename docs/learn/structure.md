@@ -350,14 +350,18 @@ plant.sf()                    # -> 0.7397
 
 !!! note "What exactness costs"
     Reducing is cheap, so series-parallel diagrams of any size are
-    evaluated at once. The work is in the core: it grows with the number of
-    the core's minimal path sets and how they overlap, not with $2^n$.
-    Densely meshed structures are the hard case, because nothing in them
-    reduces and their path sets multiply. A chain of $k$ bridges in series
-    has $4^k$ minimal path sets (4, 16, 64, ...), so long chains of meshes
-    become expensive to evaluate exactly. The
-    [performance notes](../guide/saving.md#performance) in the guide say
-    more.
+    evaluated at once. The work is in the core. Pivoting on path sets, as
+    above, grows with the number of the core's minimal path sets and how
+    they overlap, not with $2^n$, but densely meshed structures multiply
+    them: a chain of $k$ bridges in series has $4^k$ (4, 16, 64, ...). So
+    a core with many path sets is pivoted on differently: block by block,
+    in an order that follows the graph, each sub-problem known by how many
+    working inputs each block still to come already has, not by its path
+    sets. This *binary decision diagram* grows with how wide the mesh is,
+    not with how many paths it has, and fifty bridges in series take a
+    hundredth of a second. A mesh too wide even for that is left to the
+    simulations. The [performance notes](../guide/saving.md#performance)
+    in the guide say more.
 
 ## The same logic, upside down: fault trees
 
@@ -499,8 +503,9 @@ time, ranking the cut sets, importance measures and the conversions.
       $R = p_i R(i \text{ works}) + q_i R(i \text{ failed})$, splits any
       system into two simpler ones.
     - RePyability first reduces every series, parallel and $k$-out-of-$n$
-      group to one block, then applies the pivotal decomposition to the
-      path sets of whatever is left, reusing repeated sub-problems. Every
+      group to one block, then applies the pivotal decomposition to
+      whatever is left (through its path sets, or a decision diagram built
+      from its graph when it has many), reusing repeated sub-problems. Every
       system reliability is exact, and series-parallel diagrams of any size
       are fast.
     - A fault tree describes the same logic from the side of failure: an OR
@@ -580,8 +585,9 @@ components? Why is the exact engine not limited in the same way?
 ??? success "Answer"
     $2^{40} \approx 1.1 \times 10^{12}$ states. The engine never lists
     states: it reduces the series and parallel parts to single blocks, and
-    pivots only on what is left, working on its path sets, whose number
-    depends on the structure. A series or parallel system of 40 components
+    pivots only on what is left, working on its path sets (or, when they
+    are many, a decision diagram whose size depends on how wide the mesh
+    is). A series or parallel system of 40 components
     reduces to one block, and is solved instantly.
 
     ```python
