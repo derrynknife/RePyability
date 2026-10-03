@@ -171,6 +171,29 @@ other release, fixes included, the minor.
   last as long as its interval stays simulated (the refusal says how
   likely it is to), as do a common-cause group's members whose tests or
   repairs take time (#158).
+- **Parameter sensitivity of a repairable diagram (#192).**
+  `RepairableRBD.parameter_sensitivity()` gives the derivative of the
+  long-run availability in each lever: each component's life and repair
+  models' parameters (`"reliability.<name>"`, `"repairability.<name>"`), its
+  preventive maintenance (`"preventive.interval"`, `"threshold"`,
+  `"opportunity"`, its duration's parameters), its tests
+  (`"inspection.interval"`, `"coverage"`, `"offset"`, their duration's), its
+  standby group's (`"dormancy_factor"`, `"switching_probability"`, and one
+  more unit), its imperfect repair's `"repair.q"`, a common-cause group's
+  (its members' parameters together, under the tuple of their names, and
+  `"ccf_beta"`, ...), and one more repair crew (under the key None). Each
+  continuous lever is a central difference of the system's own value, the
+  diagram rebuilt with the lever moved (one-sided at a bound, NaN where
+  neither side is valid). `x` (times, from new or `state=`) and `window`
+  give the sensitivities over time, where with independent components a
+  component's lever is its Birnbaum importance times its own curve's
+  difference, exact and a fraction of the cost; `of="cost_rate"` (or a
+  tuple of both) the cost rate's; `unit_costs` ranks levers by
+  availability per unit spent. The step defaults to `1e-5` in the long run
+  and `1e-2` over time, whose curves are numerical. In the long run an
+  interval of a component sharing a calendar with others' tests or block
+  replacements would move it off their common calendar, where the value
+  jumps: its derivative takes its schedule apart from theirs.
 - **A repairable diagram's importance measures over time (#191).**
   `birnbaum_importance`, `improvement_potential`, `risk_achievement_worth`,
   `risk_reduction_worth`, `criticality_importance` and `fussell_vesely` of a
@@ -523,6 +546,13 @@ other release, fixes included, the minor.
 
 ### Fixed
 
+- **Schedules that repeat together only after a very long time are refused
+  rather than exhausting memory.** The long-run values with block
+  replacements or tests average over their schedules' common period, on a
+  grid of every block-replaced profile across it, whose size was checked
+  only once it was built: a block interval of 99.999 against tests every 50
+  asked for 7.5 GB. The grid's size is now worked out first, and such a
+  calendar refused with the reason, as before for larger ones.
 - **A junction is in no cut set or path set (#198).** A
   `NonRepairableRBD` keeps a node given `PerfectReliability` (a k-out-of-n
   vote point, or any junction drawn for the layout) as a node that never

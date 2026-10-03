@@ -226,6 +226,59 @@ by the groups' joint states then. A component whose curve over time is not
 worked out (one repaired imperfectly, say) is refused, as by
 `point_availability`.
 
+### Levers of a repairable system
+
+On a `RepairableRBD`, `parameter_sensitivity()` gives the derivative of the
+long-run availability in each lever: each component's life and repair
+models' parameters (`"reliability.<name>"`, `"repairability.<name>"`), its
+preventive maintenance and tests (`"preventive.interval"`,
+`"inspection.coverage"`, ...), a standby group's, a common-cause group's
+(under its members together), and the change one more standby unit or
+repair crew makes:
+
+```python
+levers = plant.parameter_sensitivity()
+levers["C"]["reliability.failure_rate"]     # -> -0.9532
+levers["C"]["repairability.failure_rate"]   # -> 0.01906
+levers["A"]["repairability.failure_rate"]   # -> 0.00737
+```
+
+Per unit of repair rate, C's repairs are worth 2.6 times A's. Given what a
+unit change of each costs, `unit_costs` ranks them by availability per unit
+spent instead:
+
+```python
+costs = {
+    ("C", "repairability.failure_rate"): 1000.0,
+    ("A", "repairability.failure_rate"): 200.0,
+}
+ranked = plant.parameter_sensitivity(unit_costs=costs)
+1e5 * ranked["A"]["repairability.failure_rate"]   # -> 3.683
+1e5 * ranked["C"]["repairability.failure_rate"]   # -> 1.906
+```
+
+Faster repairs of A buy about twice the availability per unit spent. With
+limited repair crews, the key None holds one more crew's gain:
+
+```python
+crewed = RepairableRBD(
+    [("s", "A"), ("s", "B"), ("A", "C"), ("B", "C"), ("C", "t")],
+    {"A": unit(0.1), "B": unit(0.1), "C": unit(0.02)},
+    repair_crews=1,
+)
+crewed.parameter_sensitivity()[None]["repair_crews"]   # -> 0.0116
+```
+
+`x` (times) or `window` gives the sensitivity of the availability over
+time, and `of="cost_rate"` (or both, as a tuple) the cost rate's. Each
+continuous lever is a central difference of the system's own value with the
+diagram rebuilt; with independent components, over time, a component's is
+its Birnbaum importance times its own curve's difference, as exact and much
+faster. In the long run, an interval of a component whose block
+replacements or tests share a calendar with others' would move it off their
+common calendar, where the long-run value jumps: its derivative takes its
+schedule apart from theirs.
+
 ## Limits
 
 - A perfect junction node (`PerfectReliability`, such as the vote of a

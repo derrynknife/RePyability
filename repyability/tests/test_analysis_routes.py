@@ -470,6 +470,7 @@ REPAIRABLE_CALLS = {
             "risk_reduction_worth",
             "criticality_importance",
             "fussell_vesely",
+            "parameter_sensitivity",
             "expected_cost_rate",
             "capacity_distribution",
             "optimal_replacement_intervals",

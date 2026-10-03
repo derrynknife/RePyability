@@ -134,7 +134,7 @@ maintenance or hidden failures):
 | `sf`, `ff`, `Hf`, `cs`, `birnbaum_importance` and the other importance measures, `sf_given_state`, `structural_importance` | exact | From the node reliabilities. |
 | `df`, `hf` | numerical | The exact reliability, differentiated numerically. |
 | `time_to_reliability`, `bx_life`, `remaining_life` | numerical | The exact reliability, inverted by root-finding. |
-| `parameter_sensitivity` | numerical | The exact Birnbaum importance times a numerical parameter derivative. |
+| `parameter_sensitivity` | numerical | The exact Birnbaum importance times a numerical parameter derivative; a repairable diagram's, central differences of its long-run values in each lever. |
 | `mean`, `mean_time_to_failure` | numerical | The exact reliability, integrated over time by quadrature (to about `1e-10`). |
 | `random`, `mean_time_to_failure_interval` | simulated | Monte Carlo. |
 | `mean_availability`, `system_failure_frequency`, `mean_up_time`, `mean_down_time`, `mean_time_between_failures`, `expected_cost_rate`, `total_cost`, and the repairable importance measures | exact | From the long-run node availabilities. |

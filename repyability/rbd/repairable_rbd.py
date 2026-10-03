@@ -59,6 +59,7 @@ from repyability.rbd import (
 from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd import (
     _quadrature,
+    _sensitivity,
     _spares,
     _standby_chain,
     _streams,
@@ -9294,6 +9295,15 @@ class RepairableRBD(RBD):
                 "sets' probabilities instead).",
             ),
         )
+        give(
+            ("parameter_sensitivity",),
+            from_long_run(
+                r.NUMERICAL,
+                "Central differences of the long-run availability (or cost "
+                "rate) in each lever, the diagram rebuilt with the lever "
+                "moved; at times or over a window, of the values over time.",
+            ),
+        )
         if self.has_costs:
             setups = r.refusal(self._require_separate_setups)
             give(
@@ -17540,6 +17550,31 @@ class RepairableRBD(RBD):
         }
         schedules = list(self._inspection.values())
         period = _common_period(intervals | {s.period for s in schedules})
+
+        def too_long() -> NoReturn:
+            raise NotImplementedError(
+                f"The block-replacement and inspection intervals "
+                f"{sorted(intervals)} repeat together only after too long a "
+                "time to average over finely enough: estimate the long-run "
+                "values by simulation, with availability() or cost()."
+            )
+
+        # The grid's size, before it is built: a common period of many
+        # repeats of the profiles (near-equal intervals, say) would not fit
+        # in memory.
+        size = 0
+        for node in blocks:
+            phase = self._block_cycle(node).phase
+            size += int(round(period / phase[-1])) * len(phase)
+        for node in units or ():
+            unit = self._tested_unit(node).long_run  # type: ignore
+            size += int(round(period / unit.period)) * len(unit.edges())
+        for node in self._inspection:
+            interval = self._inspection[node].interval
+            per_interval = np.ceil(256.0 * self._tested_rate(node) * interval)
+            size += int(per_interval) * int(round(period / interval))
+        if size > 4_000_000:
+            too_long()
         pieces = [np.array([0.0, period])]
         for interval in intervals:
             pieces.append(interval * np.arange(int(round(period / interval))))
@@ -17575,12 +17610,7 @@ class RepairableRBD(RBD):
             )
         edges = np.concatenate(pieces)
         if len(edges) > 4_000_000:
-            raise NotImplementedError(
-                f"The block-replacement and inspection intervals "
-                f"{sorted(intervals)} repeat together only after too long a "
-                "time to average over finely enough: estimate the long-run "
-                "values by simulation, with availability() or cost()."
-            )
+            too_long()
         # Edges closer than rounding are one.
         edges = np.unique(np.round(edges / period, 12)) * period
         middle, width = 0.5 * (edges[1:] + edges[:-1]), np.diff(edges)
@@ -19267,4 +19297,153 @@ class RepairableRBD(RBD):
                 weights=weights,
                 node_failures=node_failures,
             )
+        )
+
+    def parameter_sensitivity(
+        self,
+        x=None,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        rel_step: Optional[float] = None,
+        *,
+        window=None,
+        state=None,
+        of="availability",
+        unit_costs: Optional[dict] = None,
+    ) -> dict:
+        """How the system's availability (or its cost rate) moves with each
+        lever: the derivative in each of its components' parameters, and
+        the change one more standby unit or repair crew makes (#192).
+
+        The levers are each component's life and repair models'
+        parameters (``"reliability.alpha"``, ``"repairability.beta"``,
+        ... with surpyval's names), its preventive maintenance's
+        (``"preventive.interval"``, ``"preventive.threshold"``,
+        ``"preventive.opportunity"`` and ``"preventive.duration.<name>"``),
+        its tests' (``"inspection.interval"``, ``"inspection.coverage"``,
+        ``"inspection.offset"`` and ``"inspection.duration.<name>"``), its
+        standby group's (``"standby.dormancy_factor"``,
+        ``"standby.switching_probability"``, and ``"standby.units"``, one
+        more unit), its imperfect repair's (``"repair.q"``), a common-cause
+        group's (its members' parameters, moved together, and its model's
+        ``"ccf_beta"``, ``"ccf_gamma"``, ...), and the repair crews
+        (``"repair_crews"``, one more, under the key None).
+
+        A continuous lever's derivative is a central difference of the
+        system's own value with the lever moved by ``rel_step`` of its
+        value either way, the diagram rebuilt with the changed spec:
+        one-sided where one side is not a valid value (a coverage past 1,
+        say), NaN where neither is. In the long run (the default) that is
+        a difference of the exact long-run values, worked out as
+        unavailabilities so that a small one keeps its precision. At times
+        ``x`` (from new, or from ``state``) or over ``[0, window)``, with
+        independent components, a component's lever moves its own curve
+        alone, and the system's availability is linear in each
+        component's: the derivative is the component's Birnbaum importance
+        at each time (see ``birnbaum_importance``) times the difference of
+        its own point availability, worked out on the component alone,
+        and over a window the same averaged on the window's quadrature
+        points (but for a lever that moves its curve's breaks, an interval
+        or offset, differenced on the system). With limited repair crews
+        or common-cause groups the system itself is differenced.
+
+        In the long run, a block replacement's or a test's interval of a
+        component whose schedule shares a calendar with others' (other
+        block replacements or tests) would move it off their common
+        calendar, where the long-run values jump (they are averages over
+        the schedules' common period, and the components' outages fall
+        together or apart): its derivative takes the component's schedule
+        as apart from the others', its long-run Birnbaum importance times
+        the change in its own long-run availability (and its own cost
+        rate). A test interval moves the full tests with it, every so many
+        tests as before. A common-cause group's interval there is NaN.
+
+        Parameters
+        ----------
+        x : float or array-like, optional
+            Times from new (or from ``state``) to take the point
+            availability's sensitivity at, by default None: the long-run
+            availability's.
+        working_nodes : Collection[Hashable], optional
+            Nodes held working, as for ``mean_availability``: a held node's
+            levers report 0.
+        broken_nodes : Collection[Hashable], optional
+            Nodes held failed, likewise.
+        rel_step : float, optional
+            The step of a continuous lever's difference, relative to its
+            value (absolute where the value is 0), by default ``1e-5`` in
+            the long run and ``1e-2`` over time, whose curves are
+            numerical (to about ``1e-7``): a smaller step there would
+            difference their error. The derivatives over time are then
+            good to about ``1e-4`` of their size (``1e-3`` early on, where
+            the curves change fastest).
+        window : float, optional
+            Take the sensitivity of the mean availability over
+            ``[0, window)`` (``mission_availability``) instead. Not with
+            ``x``.
+        state : dict or str, optional
+            With ``x`` or ``window``, the components' current states to
+            start from, as for ``point_availability``.
+        of : str or tuple of str, optional
+            ``"availability"`` (the default), ``"cost_rate"`` (the long-run
+            ``expected_cost_rate``, or over a window the expected cost per
+            unit time, ``expected_cost(window).mean / window``; not at
+            times), or a tuple of both, for both from the same rebuilt
+            diagrams.
+        unit_costs : dict, optional
+            The cost of a unit change of each lever to rank, by ``(key,
+            lever)`` (the key as the result has it): only those levers are
+            reported, each as its sensitivity per unit of that cost (the
+            availability gained per unit spent, say).
+
+        Returns
+        -------
+        dict
+            ``{key: {lever: sensitivity}}``, the key a node, a
+            common-cause group's tuple of members, or None for the repair
+            crews; floats, but for an array ``x`` arrays in its shape.
+            With a tuple ``of``, a dict of these by quantity.
+
+        Raises
+        ------
+        ValueError
+            For both ``x`` and ``window``, a cost at times, ``state``
+            without either, a ``rel_step`` outside ``(0, 0.5)``, an
+            unknown ``of``, or a ``unit_costs`` key that is no lever.
+        NotImplementedError
+            As the value differenced refuses (``mean_unavailability``,
+            ``point_availability``, ``mission_availability``,
+            ``expected_cost_rate`` or ``expected_cost``).
+
+        Examples
+        --------
+        A component that fails at the rate 0.01 and is repaired at the
+        rate 0.1 is up ``0.1 / 0.11`` of the time in the long run: its
+        availability falls by ``0.1 / 0.11 ** 2`` per unit of the failure
+        rate, about 8.264, and rises by ``0.01 / 0.11 ** 2``, about
+        0.8264, per unit of the repair rate:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> E = surv.Exponential.from_params
+        >>> rbd = RepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {"c": {"reliability": E([0.01]), "repairability": E([0.1])}},
+        ... )
+        >>> sensitivity = rbd.parameter_sensitivity()["c"]
+        >>> round(sensitivity["reliability.failure_rate"], 3)
+        -8.264
+        >>> round(sensitivity["repairability.failure_rate"], 4)
+        0.8264
+        """
+        return _sensitivity.sensitivity(
+            self,
+            x=x,
+            window=window,
+            state=state,
+            working_nodes=working_nodes,
+            broken_nodes=broken_nodes,
+            rel_step=rel_step,
+            of=of,
+            unit_costs=unit_costs,
         )
