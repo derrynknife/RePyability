@@ -22,6 +22,7 @@ from typing import (
     Iterable,
     Iterator,
     List,
+    Mapping,
     Optional,
     Sequence,
     Tuple,
@@ -4471,6 +4472,16 @@ class NonRepairableRBD(RBD):
                 ),
             ),
         )
+        give(
+            ("differential_importance",),
+            built(
+                r.EXACT,
+                "The exact Birnbaum importance of each node (or, for a "
+                "proportional change, its criticality importance), shared "
+                "out; over='parameters', parameter_sensitivity's "
+                "derivatives." + through,
+            ),
+        )
         out["parameter_sensitivity"] = built(
             r.NUMERICAL,
             "The exact Birnbaum importance times each parameter's "
@@ -7349,3 +7360,174 @@ class NonRepairableRBD(RBD):
                 node_out[name] = _out(b_i * dsf)
             sensitivities[node_name] = node_out
         return sensitivities
+
+    def _parameter_values(self) -> Dict[Any, float]:
+        """``{(key, parameter): value}`` for ``parameter_sensitivity``'s
+        parameters: each node's model's, and a common-cause group's (its
+        members' one model's, and its own ``ccf_...``), under the tuple of
+        its members."""
+        out: Dict[Any, float] = {}
+        group_of = {m: g for g in self.ccf_groups for m in g.members}
+        for node, model in self.reliabilities.items():
+            group = group_of.get(node)
+            if group is not None and node != group.members[0]:
+                continue
+            spec = parametric_spec(model)
+            key = tuple(group.members) if group is not None else node
+            if spec is not None:
+                _, params, names, _ = spec
+                for name, value in zip(names, params):
+                    out[(key, name)] = float(value)
+            if group is not None:
+                for name, value in ccf_parameters(group.model).items():
+                    out[(key, f"ccf_{name}")] = float(value)
+        return out
+
+    def differential_importance(
+        self,
+        x: Optional[ArrayLike] = None,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        *,
+        over: str = "components",
+        change: str = "uniform",
+        kind: str = "failure",
+        improving: bool = False,
+        groups: Optional[Mapping[Hashable, Collection[Hashable]]] = None,
+        rel_step: float = 1e-5,
+    ) -> Dict[Any, Union[float, np.ndarray]]:
+        """Each node's (or parameter's) share of the change in the system
+        reliability when they all change together: the differential
+        importance measure (DIM, Borgonovo & Apostolakis, 2001; #193).
+
+        ``DIM_i = dR/dtheta_i dtheta_i / sum_j dR/dtheta_j dtheta_j``, so
+        the shares add up to 1, and a group's share is the sum of its
+        members' (``groups``): what share of a possible gain lies in the
+        valves, say, or in all the shape parameters. ``change="uniform"``
+        moves every ``theta`` by as much; ``"proportional"`` each by the
+        same fraction of itself.
+
+        Over the nodes (``over="components"``), ``theta`` is each node's
+        probability of failing (``kind="failure"``) or of working
+        (``kind="success"``). A uniform change shares out the Birnbaum
+        importance, either way; a proportional one the criticality
+        importance of that ``kind`` (the failure-oriented one is the
+        improvement potential over the system's unreliability). A node
+        held working or failed takes no part (its share is 0).
+
+        Over the parameters (``over="parameters"``), the derivatives are
+        ``parameter_sensitivity``'s, keyed ``(node, parameter)`` (a
+        common-cause group's under the tuple of its members), and a
+        proportional change moves each parameter by the same fraction of
+        its value.
+
+        Effects that oppose (parameters that lower the reliability and
+        others that raise it) give shares of either sign, and some beyond
+        1; where they cancel, there is nothing to share out, and the
+        shares are NaN. ``improving=True`` moves each parameter instead
+        the way that raises the reliability (a scale up, a probability of
+        failing down), so that every share is of a gain, between 0 and 1.
+        A uniform change adds the same amount to parameters of different
+        units (a scale in hours, a shape with none): over parameters, the
+        proportional change is usually the one to ask for.
+
+        Parameters
+        ----------
+        x : array_like, optional
+            Time/s, as for ``birnbaum_importance`` (needed unless every
+            node's probability is fixed).
+        working_nodes : Collection[Hashable], optional
+            Nodes held working, as for ``birnbaum_importance``.
+        broken_nodes : Collection[Hashable], optional
+            Nodes held failed, likewise.
+        over : str, optional
+            ``"components"`` (the default) or ``"parameters"``.
+        change : str, optional
+            ``"uniform"`` (the default) or ``"proportional"``.
+        kind : str, optional
+            Over the nodes, with a proportional change, which of each
+            node's probabilities moves in proportion: ``"failure"`` (the
+            default), of failing, or ``"success"``, of working.
+        improving : bool, optional
+            Move each parameter the way that raises the reliability, so
+            that the shares are of a gain (each one's size, shared out),
+            instead of every one up together (the default, the measure as
+            defined). The nodes' shares are the same either way.
+        groups : dict, optional
+            ``{name: keys}``: each group's share, the sum of its keys'
+            (nodes, or ``(node, parameter)`` pairs), instead of each key's.
+        rel_step : float, optional
+            The parameters' finite-difference step, as for
+            ``parameter_sensitivity``.
+
+        Returns
+        -------
+        dict
+            The shares, by node, ``(node, parameter)`` or group name:
+            floats for a single time, else arrays (NaN where the total is
+            0).
+
+        Raises
+        ------
+        ValueError
+            For an unknown ``over``, ``change`` or ``kind``, a group naming
+            an unknown key, or as ``birnbaum_importance`` and
+            ``parameter_sensitivity`` do.
+
+        Examples
+        --------
+        Two nodes in series, failing with probabilities 0.1 and 0.2: a
+        uniform change moves the reliability by ``0.8 dq_a + 0.9 dq_b``
+        (the Birnbaum importances), so ``a`` holds ``0.8 / 1.7`` of it:
+
+        >>> from surpyval import FixedEventProbability
+        >>> from repyability import NonRepairableRBD
+        >>> F = FixedEventProbability.from_params
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "a"), ("a", "b"), ("b", "t")],
+        ...     {"a": F(0.1), "b": F(0.2)},
+        ... )
+        >>> shares = rbd.differential_importance()
+        >>> {node: round(share, 4) for node, share in shares.items()}
+        {'a': 0.4706, 'b': 0.5294}
+
+        A proportional change weighs each by its probability of failing,
+        ``0.1 * 0.8`` against ``0.2 * 0.9``:
+
+        >>> shares = rbd.differential_importance(change="proportional")
+        >>> round(shares["b"], 4)
+        0.6923
+        """
+        from ._differential import check, flattened, shares
+
+        check(over, change, kind)
+        held = set(working_nodes or ()) | set(broken_nodes or ())
+        if over == "components":
+            if change == "uniform":
+                values = self.birnbaum_importance(
+                    x, working_nodes, broken_nodes
+                )
+            else:
+                values = self.criticality_importance(
+                    x, working_nodes, broken_nodes, kind
+                )
+            contributions = {
+                node: (0.0 * np.asarray(v) if node in held else v)
+                for node, v in values.items()
+            }
+        else:
+            derivatives = flattened(
+                self.parameter_sensitivity(
+                    x, working_nodes, broken_nodes, rel_step=rel_step
+                )
+            )
+            if change == "uniform":
+                contributions = derivatives
+            else:
+                scale = self._parameter_values()
+                contributions = {
+                    key: np.asarray(d, dtype=float) * scale[key]
+                    for key, d in derivatives.items()
+                }
+        scalar = x is None or np.ndim(x) == 0
+        return shares(contributions, groups, scalar, improving)

@@ -232,6 +232,14 @@ ranking at an operating point:
   `∂R/∂θ = I_B · ∂R_i/∂θ`, computed numerically. Where Birnbaum says *which
   component* matters, this says *which fitted parameter* matters, so you know
   where more data would most change the answer.
+- **Differential importance** `differential_importance` (DIM): each node's
+  or parameter's share of the change in the system when they all change
+  together, `I_i dθ_i / Σ_j I_j dθ_j`. The other measures do not add up; the
+  shares do, so a group's share is the sum of its members': what share of a
+  possible gain lies in the pumps, or in the repair times against the
+  maintenance intervals. A uniform change (every `dθ` equal) shares out the
+  Birnbaum importance, a proportional one (every `dθ / θ` equal) the
+  criticality.
 
 A rule of thumb: **Birnbaum** for "where does an improvement help most",
 **risk achievement worth** for "what must not be allowed to fail",

@@ -171,6 +171,27 @@ other release, fixes included, the minor.
   last as long as its interval stays simulated (the refusal says how
   likely it is to), as do a common-cause group's members whose tests or
   repairs take time (#158).
+- **Differential importance: shares that add up (#193).**
+  `differential_importance` (on `NonRepairableRBD`, `RepairableRBD` and
+  `FaultTree`) gives each node's (or basic event's) share of the change in
+  the system when they all change together: the differential importance
+  measure of Borgonovo & Apostolakis,
+  `I_i dθ_i / Σ_j I_j dθ_j`. Unlike the other measures, the shares add up,
+  so `groups` (`{name: keys}`) gives a group's share as the sum of its
+  members': what share lies in the pumps, or in the repair times against
+  the maintenance intervals. `change="uniform"` (every `dθ` equal) shares
+  out the Birnbaum importance, `"proportional"` (every `dθ / θ` equal) the
+  criticality importance (of either `kind`, the probabilities of failing or
+  of working moved in proportion). `over="parameters"` shares out
+  `parameter_sensitivity`'s derivatives instead, keyed `(node, parameter)`
+  (a repairable diagram's continuous levers: one more standby unit or
+  crew takes no part), and `improving=True` moves each the way that
+  improves the system, so that every share is of a gain: by default the
+  parameters move together, as the measure is defined, and opposing
+  effects give shares of either sign, NaN where they cancel (an
+  exponential unit's two rates, moved in proportion). A repairable
+  diagram's shares are long-run, or over time with `x`, `window` and
+  `state`.
 - **Parameter sensitivity of a repairable diagram (#192).**
   `RepairableRBD.parameter_sensitivity()` gives the derivative of the
   long-run availability in each lever: each component's life and repair

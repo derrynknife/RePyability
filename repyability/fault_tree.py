@@ -1111,6 +1111,81 @@ class FaultTree:
             out = {e: share[e] / top for e in self.events}
         return self._out(out, scalar)
 
+    def differential_importance(
+        self,
+        t: Optional[ArrayLike] = None,
+        *,
+        change: str = "uniform",
+        groups: Optional[Mapping[Hashable, Collection[Hashable]]] = None,
+    ) -> dict:
+        """Each basic event's share of the change in the top event
+        probability when they all change together: the differential
+        importance measure (DIM, Borgonovo & Apostolakis, 2001).
+
+        ``DIM_e = dP/dq_e dq_e / sum_f dP/dq_f dq_f``, with ``q_e`` the
+        events' probabilities, so the shares add up to 1, and a group's
+        share is the sum of its members' (``groups``): what share of a
+        possible gain lies in the pumps, say. ``change="uniform"`` moves
+        every probability by as much, which shares out the Birnbaum
+        importance; ``"proportional"`` each by the same fraction of
+        itself, which shares out the criticality importance. With
+        common-cause groups, a member's measures are conditioned through
+        the groups' outcomes, as ``birnbaum_importance`` and
+        ``criticality_importance`` work them out. NaN where the shares'
+        total is 0 (the top event cannot occur, or cannot be helped).
+
+        Parameters
+        ----------
+        t : array_like, optional
+            Time/s, a number or an array. May be left out when no event's
+            probability depends on time.
+        change : str, optional
+            ``"uniform"`` (the default) or ``"proportional"``.
+        groups : dict, optional
+            ``{name: events}``: each group's share, the sum of its events',
+            instead of each event's.
+
+        Returns
+        -------
+        dict
+            ``{event: share}``, or ``{group: share}`` with ``groups``:
+            floats for a number ``t``, arrays for an array.
+
+        Raises
+        ------
+        ValueError
+            If ``change`` is not "uniform" or "proportional", a group names
+            an unknown event, or ``t`` is left out and an event's
+            probability depends on time.
+
+        Examples
+        --------
+        >>> from repyability import FaultTree
+        >>> tree = FaultTree(
+        ...     {"top": ("or", ["valve", "flow"]),
+        ...      "flow": ("and", ["pump 1", "pump 2"])},
+        ...     {"pump 1": 0.1, "pump 2": 0.1, "valve": 0.05},
+        ... )
+        >>> shares = tree.differential_importance(
+        ...     groups={"pumps": ["pump 1", "pump 2"], "valve": ["valve"]}
+        ... )
+        >>> {g: round(v, 4) for g, v in shares.items()}
+        {'pumps': 0.161, 'valve': 0.839}
+        """
+        from repyability.rbd._differential import CHANGES, shares
+
+        if change not in CHANGES:
+            raise ValueError(
+                f"change must be 'uniform' (every event's probability moved "
+                f"by as much) or 'proportional' (each by the same fraction "
+                f"of itself), got {change!r}."
+            )
+        if change == "uniform":
+            values = self.birnbaum_importance(t)
+        else:
+            values = self.criticality_importance(t)
+        return shares(values, groups, scalar=t is None or np.ndim(t) == 0)
+
     # -- conversion --------------------------------------------------------
 
     def to_rbd(self) -> "NonRepairableRBD":

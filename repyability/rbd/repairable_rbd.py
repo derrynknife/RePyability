@@ -9286,6 +9286,20 @@ class RepairableRBD(RBD):
             conditioned,
         )
         give(
+            ("differential_importance",),
+            (
+                conditioned
+                if conditioned.route == r.REFUSED
+                else dataclasses.replace(
+                    conditioned,
+                    reason="Birnbaum's measure (or, for a proportional "
+                    "change, the criticality importance), shared out; "
+                    "over='parameters', parameter_sensitivity's "
+                    "derivatives. " + conditioned.reason,
+                )
+            ),
+        )
+        give(
             ("fussell_vesely",),
             from_long_run(
                 r.EXACT,
@@ -19447,3 +19461,182 @@ class RepairableRBD(RBD):
             of=of,
             unit_costs=unit_costs,
         )
+
+    def differential_importance(
+        self,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        *,
+        x=None,
+        window=None,
+        state=None,
+        over: str = "components",
+        change: str = "uniform",
+        kind: str = "failure",
+        improving: bool = False,
+        groups: Optional[Mapping[Hashable, Collection[Hashable]]] = None,
+        rel_step: Optional[float] = None,
+    ) -> dict:
+        """Each node's (or lever's) share of the change in the system's
+        availability when they all change together: the differential
+        importance measure (DIM, Borgonovo & Apostolakis, 2001; #193), in
+        the long run, at times ``x`` or over a window.
+
+        ``DIM_i = dA/dtheta_i dtheta_i / sum_j dA/dtheta_j dtheta_j``, so
+        the shares add up to 1, and a group's share is the sum of its
+        members' (``groups``): what share of a possible gain lies in the
+        repair times, say, or in the maintenance intervals.
+        ``change="uniform"`` moves every ``theta`` by as much;
+        ``"proportional"`` each by the same fraction of itself.
+
+        Over the nodes (``over="components"``), ``theta`` is each node's
+        unavailability (``kind="failure"``) or availability
+        (``kind="success"``). A uniform change shares out the Birnbaum
+        importance, either way; a proportional one the criticality
+        importance of that ``kind`` (the failure-oriented one is the
+        improvement potential over the system's unavailability). Each is
+        as ``birnbaum_importance`` and ``criticality_importance`` work it
+        out, with ``x``, ``window`` and ``state``. A node held working or
+        failed takes no part (its share is 0).
+
+        Over the levers (``over="parameters"``), the derivatives are
+        ``parameter_sensitivity``'s, keyed ``(key, lever)``, and a
+        proportional change moves each lever by the same fraction of its
+        value. One more standby unit or repair crew is no derivative, and
+        takes no part.
+
+        Effects that oppose (a failure rate that lowers the
+        availability, a repair rate that raises it) give shares of either
+        sign, and some beyond 1; where they cancel (an exponential unit's
+        failure and repair rates, moved in proportion), there is nothing
+        to share out, and the shares are NaN. ``improving=True`` moves
+        each lever instead the way that raises the availability (a
+        failure rate down, a repair rate up), so that every share is of a
+        gain, between 0 and 1: what share of the gain from improving
+        every lever by the same fraction lies in each. A uniform change
+        adds the same amount to levers of different units (an interval in
+        hours, a rate per hour): over levers, the proportional change is
+        usually the one to ask for.
+
+        Parameters
+        ----------
+        working_nodes : Collection[Hashable], optional
+            Nodes held working, as for ``birnbaum_importance``.
+        broken_nodes : Collection[Hashable], optional
+            Nodes held failed, likewise.
+        x : float or array-like, optional
+            Times from new (or from ``state``), as for
+            ``birnbaum_importance``; by default the long run.
+        window : float, optional
+            Over ``[0, window)`` instead, as for ``birnbaum_importance``.
+        state : dict or str, optional
+            With ``x`` or ``window``, the components' current states.
+        over : str, optional
+            ``"components"`` (the default) or ``"parameters"``.
+        change : str, optional
+            ``"uniform"`` (the default) or ``"proportional"``.
+        kind : str, optional
+            Over the nodes, with a proportional change, which of each
+            node's probabilities moves in proportion: ``"failure"`` (the
+            default), of being down, or ``"success"``, of being up.
+        improving : bool, optional
+            Move each lever the way that raises the availability, so that
+            the shares are of a gain (each one's size, shared out),
+            instead of every one up together (the default, the measure as
+            defined). The nodes' shares are the same either way.
+        groups : dict, optional
+            ``{name: keys}``: each group's share, the sum of its keys'
+            (nodes, or ``(key, lever)`` pairs), instead of each key's.
+        rel_step : float, optional
+            The levers' step, as for ``parameter_sensitivity``.
+
+        Returns
+        -------
+        dict
+            The shares, by node, ``(key, lever)`` or group name: floats
+            but for an array ``x`` (NaN where the total is 0).
+
+        Raises
+        ------
+        ValueError
+            For an unknown ``over``, ``change`` or ``kind``, a group naming
+            an unknown key, or as ``birnbaum_importance`` and
+            ``parameter_sensitivity`` do.
+        NotImplementedError
+            As they do.
+
+        Examples
+        --------
+        Two units in series, up 10/11 and 4/5 of the time: a uniform change
+        of their unavailabilities moves the system's by ``0.8 dU_a +
+        (10/11) dU_b`` (the Birnbaum importances):
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> E = surv.Exponential.from_params
+        >>> rbd = RepairableRBD(
+        ...     [("s", "a"), ("a", "b"), ("b", "t")],
+        ...     {
+        ...         "a": {"reliability": E([0.1]), "repairability": E([1.0])},
+        ...         "b": {"reliability": E([0.25]), "repairability": E([1.0])},
+        ...     },
+        ... )
+        >>> shares = rbd.differential_importance()
+        >>> {node: round(share, 4) for node, share in shares.items()}
+        {'a': 0.4681, 'b': 0.5319}
+
+        A proportional change weighs each by its unavailability, ``0.8 /
+        11`` against ``(10/11) / 5``:
+
+        >>> shares = rbd.differential_importance(change="proportional")
+        >>> round(shares["b"], 4)
+        0.7143
+        """
+        from ._differential import check, flattened, shares
+
+        check(over, change, kind)
+        held = set(working_nodes or ()) | set(broken_nodes or ())
+        timed = {
+            key: value
+            for key, value in (("x", x), ("window", window), ("state", state))
+            if value is not None
+        }
+        if over == "components":
+            if change == "uniform":
+                values = self.birnbaum_importance(
+                    working_nodes, broken_nodes, **timed
+                )
+            else:
+                values = self.criticality_importance(
+                    working_nodes, broken_nodes, kind, **timed
+                )
+            contributions = {
+                node: (0.0 * np.asarray(v) if node in held else v)
+                for node, v in values.items()
+            }
+        else:
+            derivatives = flattened(
+                self.parameter_sensitivity(
+                    x,
+                    working_nodes,
+                    broken_nodes,
+                    rel_step,
+                    window=window,
+                    state=state,
+                )
+            )
+            continuous = {
+                (lever.key, lever.name): lever.value
+                for lever in _sensitivity.levers(self)
+                if not lever.discrete
+            }
+            contributions = {
+                key: (
+                    np.asarray(d, dtype=float)
+                    * (continuous[key] if change == "proportional" else 1.0)
+                )
+                for key, d in derivatives.items()
+                if key in continuous
+            }
+        scalar = x is None or np.ndim(x) == 0
+        return shares(contributions, groups, scalar, improving)

@@ -279,6 +279,105 @@ replacements or tests share a calendar with others' would move it off their
 common calendar, where the long-run value jumps: its derivative takes its
 schedule apart from theirs.
 
+## Shares of a change: differential importance
+
+The measures above rank the nodes, but they do not add up: the two pumps'
+Birnbaum importances, summed, are not the pumps' importance together.
+`differential_importance` (DIM; Borgonovo & Apostolakis, 2001) gives each
+node's share of the change in the system when every node changes together,
+so the shares add up to 1, and a group's share (`groups`) is the sum of its
+members':
+
+```python
+rbd.differential_importance(50)
+# {'pump1': 0.1455, 'pump2': 0.1455, 'valve': 0.709}
+both = {"pumps": ["pump1", "pump2"]}
+rbd.differential_importance(50, groups=both)["pumps"]   # -> 0.291
+rbd.differential_importance(50, change="proportional", groups=both)["pumps"]   # -> 0.4359
+```
+
+What changes together matters. `change="uniform"` (the default) moves every
+node's probability of failing by as much, and shares out the Birnbaum
+importance; `change="proportional"` moves each by the same fraction of
+itself, and shares out the criticality importance (`kind="success"` moves
+the probabilities of working in proportion instead, and shares out the
+success-oriented form). By t = 50 the pumps are likelier than the valve to
+have failed, so a fraction off each moves them more: they hold 44% of a
+proportional change, against 29% of a uniform one.
+
+`over="parameters"` shares out `parameter_sensitivity`'s derivatives
+instead, keyed `(node, parameter)`. A uniform change adds the same amount
+to parameters of different units (a scale in hours, a shape with none), so
+over parameters the proportional change is the one to ask for:
+
+```python
+by_kind = {
+    "scales": [("pump1", "alpha"), ("pump2", "alpha"), ("valve", "alpha")],
+    "shapes": [("pump1", "beta"), ("pump2", "beta"), ("valve", "beta")],
+}
+rbd.differential_importance(
+    50, over="parameters", change="proportional", groups=by_kind
+)["shapes"]   # -> 0.5112
+```
+
+Half of the change from moving every parameter by the same fraction lies in
+the shapes.
+
+A `RepairableRBD` shares out its availability's change, in the long run, or
+with `x`, `window` and `state` as its other measures take them; over its
+levers, each lever's (one more standby unit or repair crew is no
+derivative, and takes no part). Levers can pull against each other: a
+failure rate lowers the availability, a repair rate raises it. Moved
+together in proportion, an exponential unit's two rates cancel, since its
+availability depends on their ratio alone, and there is no change to share
+out: the shares are NaN. `improving=True` moves each lever the way that
+raises the availability instead, so that every share is of a gain: what
+share of the gain from improving every lever by the same fraction lies in
+the lives, the repairs, or the maintenance:
+
+```python
+def wearing(alpha, beta, **more):
+    return {
+        "reliability": surv.Weibull.from_params([alpha, beta]),
+        "repairability": surv.Exponential.from_params([1.0]),
+        **more,
+    }
+
+maintained = RepairableRBD(
+    [("s", "A"), ("s", "B"), ("A", "C"), ("B", "C"), ("C", "t")],
+    {
+        "A": wearing(10, 2.0),
+        "B": wearing(10, 2.0),
+        "C": wearing(
+            50,
+            3.0,
+            preventive={
+                "policy": "age",
+                "interval": 20.0,
+                "duration": surv.Exponential.from_params([4.0]),
+            },
+        ),
+    },
+)
+kinds = {
+    "lives": [(n, f"reliability.{p}") for n in "ABC" for p in ("alpha", "beta")],
+    "repairs": [(n, "repairability.failure_rate") for n in "ABC"],
+    "maintenance": [
+        ("C", "preventive.interval"),
+        ("C", "preventive.duration.failure_rate"),
+    ],
+}
+gain = maintained.differential_importance(
+    over="parameters", change="proportional", improving=True, groups=kinds
+)
+gain["lives"]         # -> 0.4502
+gain["repairs"]       # -> 0.2928
+gain["maintenance"]   # -> 0.2571
+```
+
+A `FaultTree` shares out its top event's change over its basic events, in
+the same way (`change` and `groups`).
+
 ## Limits
 
 - A perfect junction node (`PerfectReliability`, such as the vote of a

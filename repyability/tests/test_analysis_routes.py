@@ -419,6 +419,7 @@ NONREPAIRABLE_CALLS = {
             "risk_reduction_worth",
             "criticality_importance",
             "fussell_vesely",
+            "differential_importance",
             "parameter_sensitivity",
             "capacity_distribution",
         )
@@ -470,6 +471,7 @@ REPAIRABLE_CALLS = {
             "risk_reduction_worth",
             "criticality_importance",
             "fussell_vesely",
+            "differential_importance",
             "parameter_sensitivity",
             "expected_cost_rate",
             "capacity_distribution",
