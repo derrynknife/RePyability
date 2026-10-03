@@ -44,6 +44,13 @@
   system's own events (`_simulate`) and a nested RBD's (`_advance`, which
   copies `RepairableRBD.next_event`) are written out separately, for speed:
   a change to one goes into the other too.
+- **CI's plain test jobs have no numba.** A test that asks for
+  `engine="numba"` skips without it (`pytest.importorskip("numba")`, or
+  `needs_numba`), unless what it checks comes before numba is needed: a
+  compiled engine refuses what it does not simulate first. A machine with
+  numba installed runs neither way, so run such tests with numba hidden
+  too, `importlib.util.find_spec("numba")` returning None and `import
+  numba` raising `ModuleNotFoundError` (which `importorskip` needs).
 - **`simulate_timelines`' histories are the event loop's, on every
   engine.** Both loops record them as they run (`_replicate` with
   `_Context.history`; `_kernel._simulate` when given room to record, the
