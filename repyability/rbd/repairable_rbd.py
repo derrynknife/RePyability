@@ -16294,20 +16294,22 @@ class RepairableRBD(RBD):
         if engine == "python":
             return engine
         if engine != "auto":
+            # What the engine does not simulate is refused first: installing
+            # it would not help.
             reason = _compiled.unsupported(
                 self, plan, capacity, numba=engine == "numba", states=states
             )
-            if here and engine == "numba":
-                _compiled.require()
-            elif here and not added[engine].available():
-                raise ImportError(
-                    f"The {engine!r} simulation engine cannot run here."
-                )
             if reason is not None:
                 raise NotImplementedError(
                     f"The compiled engine does not simulate {reason}: use "
                     "engine='python', or 'auto', which chooses the engine "
                     "that can."
+                )
+            if here and engine == "numba":
+                _compiled.require()
+            elif here and not added[engine].available():
+                raise ImportError(
+                    f"The {engine!r} simulation engine cannot run here."
                 )
             return _compiled.ready(engine, auto=False) if here else engine
         if not here:

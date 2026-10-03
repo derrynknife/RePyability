@@ -635,6 +635,13 @@ other release, fixes included, the minor.
 
 ### Fixed
 
+- **Asking a compiled engine for what it does not simulate says so,
+  installed or not.** `engine="numba"` (or another package's engine) on a
+  diagram that engine does not simulate (common-cause groups, imperfect
+  repair, a run from a state, ...) asked for numba to be installed when it
+  was not, though installing it would not have helped. The refusal, which
+  names what is not simulated and that `engine="python"` or `"auto"` runs
+  it, now comes first.
 - **An age-replaced unit's later maintenance from new starts a piece of its
   integrals.** A unit replaced on age from new is maintained again, unit
   after unit, at nearly fixed times, which its curve follows on a grid of
