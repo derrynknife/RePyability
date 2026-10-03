@@ -101,6 +101,16 @@
   simulated and whether it must be (or could be exact, with the issue).
   `test_the_readme_says_what_is_simulated` checks each row against
   `analysis_routes()`: when an analysis is made exact, update its row.
+- **The integrals over a window are summed on coarse pieces**
+  (`repyability/rbd/_quadrature.py`, #164): the curves' breaks, cut to a
+  few steps of the finest grid still changing, and halved until their
+  quadrature agrees with their halves'. A curve class that is linear on a
+  grid says so with `grids()`, and where else it bends with `breaks()`;
+  one that has neither has every knot taken as a break, which is right but
+  makes every knot a piece. Never clip a piece's integral: a count that
+  dips integrates out, where clipping made the total depend on the pieces.
+  `test_quadrature.py` checks the pieces against summing between every
+  knot.
 
 ## API conventions
 

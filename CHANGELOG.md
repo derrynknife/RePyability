@@ -9,6 +9,51 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+### Changed
+
+- **The analyses over a window cost little more than the point curve
+  (#164).** `mission_availability`, `mission_capacity`, `expected_failures`,
+  `expected_events` and `expected_cost` summed their integrals between every
+  point of every component's grid: two million pieces for 80 components over
+  ten years, and four times the time the curves themselves take. They are now
+  summed over pieces cut where the curves bend (a scheduled replacement, a
+  test, a down time from a known instant) and a few steps long of the grid
+  of the finest curve still changing, each halved until its 4-point
+  Gauss-Legendre quadrature agrees with its halves' (`_quadrature`); a
+  component's expected events, against the Birnbaum importance taken as a
+  cubic on each piece. On 80 components over ten years,
+  `mission_availability` takes 4.4 s rather than 20.5 s, about as long as
+  `point_availability` at 200 times, and `expected_failures` 5.8 s rather
+  than 35 s; on 36, 1.9 s and 2.5 s rather than 3.9 s and 6.9 s; and
+  `mission_capacity` on six components over a year 0.07 s rather than
+  0.48 s. A system that took a second or less takes about as long as
+  before. The mission availability moves by a few parts in 10^9 at most,
+  and the expected events within the curves' accuracy, but for the fixes
+  below.
+
+### Fixed
+
+- **Planned outages after age replacement were overcounted, by about one
+  in 10^4 (#164).** The chained maintenance of units that each reach their
+  age, when it takes a random time, was counted from running sums that
+  overshot below 0 where the time's density jumps (at 0, for an exponential
+  time), and from a cubic between them that undershot there too: the counts
+  dipped just before each maintenance and rose again. The window's sums,
+  which clipped each piece's count at 0, counted each dip's rise again: 3.9e-4
+  too many of 3.44 planned outages by 1,000 hours in the tests. The running
+  sums and the cubic are held within 0 and their total, and a piece's count
+  is no longer clipped, so that the totals no longer depend on the pieces.
+  `expected_events`' `system_planned_outages` are about 1e-4 lower for such
+  components; the costs, which count each component's own maintenance, are
+  as they were.
+- **The expected system failures of components with hidden failures of any
+  life were off by up to about 2 in 10^4 (#164).** Each piece's failures
+  were weighed by the components' mean importance over it, which is exact
+  only to the square of the pieces' length, and their tests' pieces are
+  long: two tested pumps' 1.8242 failures in 500 hours are 1.8238, which
+  the old sum reaches as its pieces are cut finer. The importance is now
+  taken as a cubic on each piece (see above).
+
 ## [0.11] - 2026-10-02
 
 How much a system can deliver, and exact answers where there were estimates.

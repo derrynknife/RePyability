@@ -48,9 +48,19 @@ from surpyval import ExactEventTime
 
 from repyability._version import __version__
 from repyability.non_repairable import NonRepairable
-from repyability.rbd import _ccf_chain, _chain_transient, _crew_chain
+from repyability.rbd import (
+    _ccf_chain,
+    _chain_transient,
+    _crew_chain,
+)
 from repyability.rbd import _montecarlo as montecarlo
-from repyability.rbd import _spares, _standby_chain, _streams, _timeline_runs
+from repyability.rbd import (
+    _quadrature,
+    _spares,
+    _standby_chain,
+    _streams,
+    _timeline_runs,
+)
 from repyability.rbd import capacity as _capacity
 from repyability.rbd._block_replacement import (
     BlockHead,
@@ -8547,10 +8557,15 @@ class RepairableRBD(RBD):
 
         It is the mean of
         [`point_availability`][repyability.RepairableRBD.point_availability]
-        over the window, integrated by Gauss-Legendre quadrature between the
-        points where the components' curves bend, up to the time when they
-        have all settled at their long-run values (or into repeating with
-        their inspections and block replacements); past it, the integral is
+        over the window, integrated by 4-point Gauss-Legendre quadrature on
+        pieces that end where the components' curves bend (a scheduled
+        replacement, a test, a down time from a known instant) and are at
+        most a few steps of the finest grid the curves are worked out on,
+        each halved until the quadrature on it agrees with that on its
+        halves, to about 1e-8: it takes little longer than the point
+        availability. That runs up to the time when the curves have all
+        settled at their long-run values (or into repeating with their
+        inspections and block replacements); past it, the integral is
         extended exactly, so a mission of decades costs no more than one of
         a few years. It is what
         [`availability`][repyability.RepairableRBD.availability] estimates
@@ -8652,31 +8667,40 @@ class RepairableRBD(RBD):
         self, system_at, curves: list, ends: np.ndarray, horizon: float
     ) -> np.ndarray:
         """The integral from 0 to each of ``ends`` of the system's point
-        availability, ``system_at``, from its nodes' ``curves`` (whose
-        knots it is integrated between, and which settle into a constant
-        or a period it is extended over: see ``mission_availability``)."""
+        availability, ``system_at``, from its nodes' ``curves`` (over the
+        pieces of ``_quadrature``, and settling into a constant or a period
+        it is extended over: see ``mission_availability``)."""
         # After ``settle`` the system's availability is constant, or repeats
         # with ``period``: it is integrated up to ``reach``, and extended.
         settle, period = _settling(curves)
         reach = min(horizon, settle if period is None else settle + period)
         beyond = ends > reach
-        parts = [np.array([0.0, reach]), ends[~beyond]]
-        parts += [curve.knots(0.0, reach) for curve in curves]
+        fixed = [ends[~beyond]]
         if period is not None and beyond.any():
             cycles = np.floor((ends[beyond] - settle) / period)
             rest = ends[beyond] - settle - cycles * period
             rest = np.clip(rest, 0.0, period)
-            parts += [np.array([settle]), settle + rest]
-        edges = np.unique(np.concatenate(parts))
-        edges = edges[(edges >= 0.0) & (edges <= reach)]
-        if len(edges) > _MISSION_POINTS:
+            fixed += [np.array([settle]), settle + rest]
+
+        def estimate(a, b):
+            x, half = _quadrature.points(a, b)
+            return {"up": _quadrature.summed(system_at(x), half)}
+
+        try:
+            edges, finest = _quadrature.pieces(
+                curves, np.concatenate(fixed), reach, _MISSION_POINTS
+            )
+            edges, integrals = _quadrature.refined(
+                estimate, edges, finest, _MISSION_POINTS
+            )
+        except _quadrature.TooMany as error:
             raise NotImplementedError(
                 f"Integrating the availability over [0, {reach}] takes "
-                f"{len(edges)} pieces (the components' curves bend that "
+                f"{error.count} pieces (the components' curves bend that "
                 "often), more than the limit: estimate it by simulation, "
                 "with availability()."
-            )
-        running = self._running_integral(system_at, edges)
+            ) from None
+        running = _quadrature.running(integrals.get("up"), len(edges) - 1)
 
         def uptime(x):
             return running[np.searchsorted(edges, x)]
@@ -8767,8 +8791,10 @@ class RepairableRBD(RBD):
         rate is ``system_failure_frequency``. Each ``M_i`` follows from the
         component's renewal equation, solved on the same grid as its point
         availability (see ``point_availability``), to about 1e-7; the
-        integral is summed between the points where the curves bend, and
-        extended exactly past the time they have settled. Failures at exact
+        integral is summed over the pieces ``mission_availability``
+        integrates over, on each with the importance taken as the cubic
+        through its values at the quadrature points, and extended exactly
+        past the time the curves have settled. Failures at exact
         times (units dead on arrival, an exact lifetime) are taken together
         when several fall at once. It is what ``availability`` estimates as
         ``system_failures / n_simulations``: every system failure counts,
@@ -9145,26 +9171,6 @@ class RepairableRBD(RBD):
             acquisition_cost=self.acquisition_cost,
         )
 
-    @staticmethod
-    def _running_integral(system_at, edges) -> np.ndarray:
-        """The integral of the system's point availability (``system_at``,
-        at an array of times) from 0 to each of ``edges``, which start at 0
-        and increase: 4-point Gauss-Legendre quadrature on each piece
-        between them, a block of pieces at a time."""
-        nodes, weights = np.polynomial.legendre.leggauss(4)
-        integrals = np.zeros(len(edges) - 1)
-        block = 100_000
-        for start in range(0, len(edges) - 1, block):
-            stop = min(start + block, len(edges) - 1)
-            a, b = edges[start:stop], edges[start + 1 : stop + 1]  # noqa: E203
-            middle, half = 0.5 * (a + b), 0.5 * (b - a)
-            points = (middle[:, None] + half[:, None] * nodes).ravel()
-            values = system_at(points)
-            integrals[start:stop] = (
-                values.reshape(-1, len(nodes)) @ weights
-            ) * half
-        return np.concatenate([[0.0], np.cumsum(integrals)])
-
     def _filled(
         self, probabilities: dict, size: int, working_nodes, broken_nodes
     ) -> dict:
@@ -9267,14 +9273,16 @@ class RepairableRBD(RBD):
         Birnbaum importance at the nodes' availabilities then: the system's
         failures are ``integral of sum_i I_B^i(t) dM_i(t)``, ``M_i(t)`` the
         node's expected failures by ``t``, and its planned outages likewise.
-        It is summed over the pieces between the nodes' knots, each node's
-        expected failures in a piece times its mean importance over the
-        piece (by Gauss-Legendre quadrature, at the points the up time is
-        integrated at), which is exact to the square of the pieces' length
-        where both vary; the events at exact times are kept apart and taken
-        together (see ``_atom_groups``). Past the time the nodes have all
-        settled, every count is extended exactly: at its long-run rate, or
-        a period at a time.
+        It is summed over the pieces of ``_quadrature``, on each with the
+        importance taken as the cubic through its values at the points the
+        up time is integrated at (see ``_quadrature.stieltjes``); the events
+        at exact times are kept apart and taken together (see
+        ``_atom_groups``), and start pieces. The ends do not: a total at
+        an end within a piece adds the integral from the piece's start,
+        by the same quadrature, so that counting at many times (a nested
+        RBD's, for the RBD it is in) costs no more pieces. Past the time the
+        nodes have all settled, every count is extended exactly: at its
+        long-run rate, or a period at a time.
         """
         ends = np.asarray(ends, dtype=float).ravel()
         horizon = float(ends.max()) if ends.size else 0.0
@@ -9283,97 +9291,137 @@ class RepairableRBD(RBD):
         beyond = ends > reach
         atoms = {node: curve.atoms(reach) for node, curve in curves.items()}
         jumps = self._atom_groups(curves, atoms, working_nodes, broken_nodes)
-        parts = [np.array([0.0, reach]), ends[~beyond], jumps.times]
-        parts += [curve.knots(0.0, reach) for curve in curves.values()]
+        # The events at exact times start pieces; the ends need not (see
+        # ``totals_at``), so that a nested RBD counted at many times costs
+        # no more pieces.
+        fixed = [jumps.times] + [own.times for own in atoms.values()]
         cycles = rest = np.empty(0)
         if period is not None and beyond.any():
             cycles = np.floor((ends[beyond] - settle) / period)
             rest = np.clip(
                 ends[beyond] - settle - cycles * period, 0.0, period
             )
-            parts += [np.array([settle]), settle + rest]
-        edges = np.unique(np.concatenate(parts))
-        edges = edges[(edges >= 0.0) & (edges <= reach)]
-        if len(edges) > _MISSION_POINTS:
-            raise NotImplementedError(
-                f"Counting the expected events over [0, {reach}] takes "
-                f"{len(edges)} pieces (the components' curves bend that "
-                "often), more than the limit: estimate them by simulation, "
-                "with availability() or cost()."
+            fixed += [np.array([settle]), settle + rest]
+
+        # Each node's events at exact times, kept apart (taken together,
+        # below): their running totals, by time.
+        exact = {}
+        for node, own in atoms.items():
+            order = np.argsort(own.times, kind="stable")
+            exact[node] = (
+                own.times[order],
+                _quadrature.running(own.failure[order], len(order)),
+                _quadrature.running(own.planned[order], len(order)),
             )
-        pieces = len(edges) - 1
 
-        # Each node's expected failures and planned outages in each piece,
-        # less those at exact times (taken together, below).
-        spread_failures, spread_planned = {}, {}
-        for node, curve in curves.items():
-            events = curve.events(edges)
-            failures = np.diff(events["failures"])
-            planned = np.diff(events["planned"])
-            own = atoms[node]
-            if own.times.size:
-                piece = np.searchsorted(edges, own.times, side="right") - 1
-                keep = (piece >= 0) & (piece < pieces)
-                failures -= np.bincount(piece[keep], own.failure[keep], pieces)
-                planned -= np.bincount(piece[keep], own.planned[keep], pieces)
-            spread_failures[node] = np.maximum(failures, 0.0)
-            spread_planned[node] = np.maximum(planned, 0.0)
+        def spread(node, x: np.ndarray):
+            """The node's expected failures and planned outages before
+            each time ``x``, less those at exact times."""
+            events = curves[node].events(x)
+            times, failures, planned = exact[node]
+            before = np.searchsorted(times, x, side="left")
+            return (
+                events["failures"] - failures[before],
+                events["planned"] - planned[before],
+            )
 
-        gauss, weights = np.polynomial.legendre.leggauss(4)
-        uptime = np.zeros(pieces)
-        failures = np.zeros(pieces)
-        planned = np.zeros(pieces)
-        downtime = {node: np.zeros(pieces) for node in curves} if nodes else {}
-        block = 25_000
-        for start in range(0, pieces, block):
-            stop = min(start + block, pieces)
-            a, b = edges[start:stop], edges[start + 1 : stop + 1]  # noqa: E203
-            middle, half = 0.5 * (a + b), 0.5 * (b - a)
-            points = (middle[:, None] + half[:, None] * gauss).ravel()
-            at_points = {
-                node: curve.at(points) for node, curve in curves.items()
-            }
+        def estimate(a: np.ndarray, b: np.ndarray) -> dict:
+            x, half = _quadrature.points(a, b)
+            at_points = {node: curve.at(x) for node, curve in curves.items()}
             # The system's availability and every node's importance at each
             # point, in one pass.
             importance, works, fails, _, _ = self._importances(
-                self._filled(
-                    at_points, len(points), working_nodes, broken_nodes
-                )
+                self._filled(at_points, len(x), working_nodes, broken_nodes)
             )
             up = works if method == "p" else 1.0 - fails
-            uptime[start:stop] = (up.reshape(-1, 4) @ weights) * half
-            for node in downtime:
-                down = 1.0 - at_points[node]
-                downtime[node][start:stop] = (
-                    down.reshape(-1, 4) @ weights
-                ) * half
-            # A node's events in a piece, weighed by its mean importance
-            # over the piece.
+            out: Dict[Hashable, np.ndarray] = {
+                "uptime": _quadrature.summed(up, half)
+            }
+            if nodes:
+                for node, values in at_points.items():
+                    out[("downtime", node)] = _quadrature.summed(
+                        1.0 - values, half
+                    )
+            n = len(a)
+            failures, planned = np.zeros(n), np.zeros(n)
             for node in curves:
-                mean = (importance[node].reshape(-1, 4) @ weights) / 2.0
-                failures[start:stop] += (
-                    mean * spread_failures[node][start:stop]
-                )
-                planned[start:stop] += mean * spread_planned[node][start:stop]
+                counted = spread(node, np.concatenate([a, b, x]))
+                for total, values in zip((failures, planned), counted):
+                    total += _quadrature.stieltjes(
+                        importance[node],
+                        values[:n],
+                        values[n : 2 * n],  # noqa: E203
+                        values[2 * n :],  # noqa: E203
+                    )
+            out["failures"], out["planned"] = failures, planned
+            return out
+
+        try:
+            edges, finest = _quadrature.pieces(
+                curves.values(), np.concatenate(fixed), reach, _MISSION_POINTS
+            )
+            edges, integrals = _quadrature.refined(
+                estimate,
+                edges,
+                finest,
+                _MISSION_POINTS,
+                relative={"failures", "planned"},
+            )
+        except _quadrature.TooMany as error:
+            raise NotImplementedError(
+                f"Counting the expected events over [0, {reach}] takes "
+                f"{error.count} pieces (the components' curves bend that "
+                "often), more than the limit: estimate them by simulation, "
+                "with availability() or cost()."
+            ) from None
+        pieces = len(edges) - 1
+        # The events at exact times, at the start of the piece they fall
+        # in (each is at an edge).
+        starting: Dict[Any, np.ndarray] = {
+            "failures": np.zeros(pieces),
+            "planned": np.zeros(pieces),
+        }
         if jumps.times.size:
             piece = np.searchsorted(edges, jumps.times, side="right") - 1
-            np.add.at(failures, piece, jumps.failures)
-            np.add.at(planned, piece, jumps.planned)
-
-        def running(values: np.ndarray) -> np.ndarray:
-            return np.concatenate([[0.0], np.cumsum(values)])
-
-        series: Dict[Any, np.ndarray] = {
-            "uptime": running(uptime),
-            "failures": running(failures),
-            "planned": running(planned),
-        }
-        for node, values in downtime.items():
-            series[("downtime", node)] = running(values)
+            np.add.at(starting["failures"], piece, jumps.failures)
+            np.add.at(starting["planned"], piece, jumps.planned)
         for name, members in (groups or {}).items():
-            series[("overlaps", name)] = running(
-                self._overlaps(atoms, members, edges)
+            starting[("overlaps", name)] = self._overlaps(
+                atoms, members, edges
             )
+        keys: List[Any] = ["uptime", "failures", "planned"]
+        if nodes:
+            keys += [("downtime", node) for node in curves]
+        keys += [("overlaps", name) for name in groups or {}]
+        series: Dict[Any, np.ndarray] = {
+            key: _quadrature.running(
+                integrals.get(key, np.zeros(pieces))
+                + starting.get(key, np.zeros(pieces)),
+                pieces,
+            )
+            for key in keys
+        }
+
+        def totals_at(x: np.ndarray) -> Dict[Any, np.ndarray]:
+            """Each series before each time ``x`` (within ``[0, reach]``):
+            at an edge, its running total; within a piece, the running
+            total at its start, the events there, and its integral from
+            there, by the quadrature of the piece's start to ``x``."""
+            at = np.minimum(np.searchsorted(edges, x), len(edges) - 1)
+            on_edge = edges[at] == x
+            out = {key: series[key][at] for key in keys}
+            if pieces and not on_edge.all():
+                inside = ~on_edge
+                k = np.searchsorted(edges, x[inside], side="right") - 1
+                k = np.clip(k, 0, pieces - 1)
+                partial = _quadrature.in_blocks(estimate, edges[k], x[inside])
+                for key in keys:
+                    out[key][inside] = (
+                        series[key][k]
+                        + starting.get(key, np.zeros(pieces))[k]
+                        + partial.get(key, 0.0)
+                    )
+            return out
 
         # Past ``reach``: constant rates, or a period at a time.
         rates: dict = {}
@@ -9382,10 +9430,10 @@ class RepairableRBD(RBD):
                 curves, reach, horizon, working_nodes, broken_nodes, method
             )
         out: dict = {"downtime": {}, "overlaps": {}}
-        inside = np.searchsorted(edges, ends[~beyond])
+        inside = totals_at(ends[~beyond])
         for key, values in series.items():
             totals = np.empty(len(ends))
-            totals[~beyond] = values[inside]
+            totals[~beyond] = inside[key]
             if beyond.any():
                 if period is None:
                     rate = rates.get(key, 0.0)
@@ -10680,8 +10728,8 @@ class RepairableRBD(RBD):
 
         It is the mean of ``point_capacity`` over the window, integrated as
         ``mission_availability`` integrates the availability: by
-        Gauss-Legendre quadrature between the points where the components'
-        curves bend, and extended exactly past the time they have settled.
+        Gauss-Legendre quadrature on pieces cut where the components' curves
+        bend, and extended exactly past the time they have settled.
         Its ``delivered_fraction(demand)`` is the expected fraction of the
         demand delivered over the window, the production availability of a
         contract period from new, which ``availability(demand=...)``
@@ -10772,27 +10820,46 @@ class RepairableRBD(RBD):
         settle, period = _settling(curves.values())
         reach = min(horizon, settle if period is None else settle + period)
         beyond = ends > reach
-        parts = [np.array([0.0, reach]), ends[~beyond]]
-        parts += [curve.knots(0.0, reach) for curve in curves.values()]
+        fixed = [ends[~beyond]]
         cycles = rest = np.empty(0)
         if period is not None and beyond.any():
             cycles = np.floor((ends[beyond] - settle) / period)
             rest = np.clip(
                 ends[beyond] - settle - cycles * period, 0.0, period
             )
-            parts += [np.array([settle]), settle + rest]
-        edges = np.unique(np.concatenate(parts))
-        edges = edges[(edges >= 0.0) & (edges <= reach)]
-        if len(edges) > _MISSION_POINTS:
+            fixed += [np.array([settle]), settle + rest]
+
+        def estimate(a: np.ndarray, b: np.ndarray) -> dict:
+            # The probability of each capacity level, integrated.
+            x, half = _quadrature.points(a, b)
+            levels, rows = self._capacity_rows(
+                curves, x, working_nodes, broken_nodes
+            )
+            return {
+                float(level): _quadrature.summed(row, half)
+                for level, row in zip(levels, rows)
+            }
+
+        try:
+            edges, finest = _quadrature.pieces(
+                curves.values(), np.concatenate(fixed), reach, _MISSION_POINTS
+            )
+            edges, integrals = _quadrature.refined(
+                estimate, edges, finest, _MISSION_POINTS
+            )
+        except _quadrature.TooMany as error:
             raise NotImplementedError(
                 f"Integrating the capacity over [0, {reach}] takes "
-                f"{len(edges)} pieces (the components' curves bend that "
+                f"{error.count} pieces (the components' curves bend that "
                 "often), more than the limit: estimate it by simulation, "
                 "with availability(demand=...)."
-            )
-        running = self._running_capacity(
-            curves, edges, working_nodes, broken_nodes
-        )
+            ) from None
+        # The levels, as ``estimate`` keyed them.
+        running: Dict[float, np.ndarray] = {
+            float(level): _quadrature.running(values, len(edges) - 1)
+            for level, values in integrals.items()
+            if isinstance(level, float)
+        }
         settled: Dict[float, float] = {}
         if period is None and beyond.any():
             levels, rows = self._capacity_rows(
@@ -10836,35 +10903,6 @@ class RepairableRBD(RBD):
         return CapacityDistribution(
             levels, rows[:, 0] if np.ndim(t) == 0 else rows
         )
-
-    def _running_capacity(
-        self, curves: dict, edges, working_nodes, broken_nodes
-    ) -> Dict[float, np.ndarray]:
-        """The integral from 0 to each of ``edges`` of the probability of
-        each capacity level (see ``_capacity_rows``), by level: 4-point
-        Gauss-Legendre quadrature on each piece between them, a block of
-        pieces at a time."""
-        gauss, weights = np.polynomial.legendre.leggauss(4)
-        pieces = len(edges) - 1
-        integrals: Dict[float, np.ndarray] = {}
-        block = 25_000
-        for start in range(0, pieces, block):
-            stop = min(start + block, pieces)
-            a, b = edges[start:stop], edges[start + 1 : stop + 1]  # noqa: E203
-            middle, half = 0.5 * (a + b), 0.5 * (b - a)
-            points = (middle[:, None] + half[:, None] * gauss).ravel()
-            levels, rows = self._capacity_rows(
-                curves, points, working_nodes, broken_nodes
-            )
-            parts = (rows.reshape(len(levels), -1, 4) @ weights) * half
-            for level, part in zip(levels, parts):
-                integrals.setdefault(float(level), np.zeros(pieces))[
-                    start:stop
-                ] += part
-        return {
-            level: np.concatenate([[0.0], np.cumsum(values)])
-            for level, values in integrals.items()
-        }
 
     def _capacity_models(self) -> dict:
         """``{node: model}`` for the nodes with no capacity entry whose model

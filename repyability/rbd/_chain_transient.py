@@ -45,7 +45,7 @@ from typing import Dict, List, Sequence
 
 import numpy as np
 
-from ._point_availability import Atoms, _events
+from ._point_availability import Atoms, _events, curve_breaks, curve_grids
 
 #: How close (in total variation) the chain must come to its long run to be
 #: taken to have reached it; or, if rounding in its steps keeps it further
@@ -350,6 +350,16 @@ class CrewCurve:
         parts = [self.chain.knots(start, stop)]
         parts += [curve.knots(start, stop) for curve in self.nested.values()]
         return np.concatenate(parts)
+
+    def breaks(self, start: float, stop: float) -> np.ndarray:
+        parts = [self.chain.knots(start, stop)]
+        parts += [curve_breaks(c, start, stop) for c in self.nested.values()]
+        return np.concatenate(parts)
+
+    def grids(self) -> list:
+        return [
+            g for curve in self.nested.values() for g in curve_grids(curve)
+        ]
 
 
 class CrewNodeEvents:
