@@ -66,6 +66,7 @@ from .results import (
     RateBreakdown,
     RedundancyAllocation,
     ReliabilityRedundancyAllocation,
+    UncertaintyImportance,
     UncertaintyResult,
 )
 from .routes import AnalysisRoute
@@ -1664,30 +1665,9 @@ class NonRepairableRBD(RBD):
             x = 1.0
         scalar = np.ndim(x) == 0
         times = np.atleast_1d(np.asarray(x, dtype=float))
-        probabilities: dict = {}
-        for node in self.nodes:
-            if node in drawn:
-                rows = [
-                    np.broadcast_to(
-                        np.asarray(m.sf(times), dtype=float), times.shape
-                    )
-                    for m in drawn[node]
-                ]
-                probabilities[node] = np.concatenate(rows)
-            else:
-                values = np.broadcast_to(
-                    np.asarray(self.reliabilities[node].sf(times), float),
-                    times.shape,
-                )
-                probabilities[node] = np.tile(values, n_draws)
-        if self.ccf_groups:
-            samples = self._drawn_ccf_samples(
-                probabilities, drawn_groups, n_draws, len(times)
-            )
-        else:
-            samples = np.asarray(
-                self.system_probability(probabilities), dtype=float
-            ).reshape(n_draws, len(times))
+        samples = self._quantity_samples(
+            "sf", times, drawn, drawn_groups, n_draws
+        )
         nominal = np.asarray(self.sf(times), dtype=float)
         if scalar:
             return UncertaintyResult(
@@ -1697,6 +1677,68 @@ class NonRepairableRBD(RBD):
             )
         return UncertaintyResult(
             samples=samples, nominal=nominal, n_draws=n_draws
+        )
+
+    def _quantity_samples(
+        self,
+        of: str,
+        value,
+        drawn: Dict[Hashable, list],
+        drawn_groups: list,
+        n: int,
+        upper_bound: Optional[float] = None,
+    ) -> np.ndarray:
+        """A quantity for each of ``n`` draws of the uncertain models
+        (``drawn`` by node, and ``drawn_groups``, as ``_uncertain_draws``
+        gives them), the others as they are: ``"sf"``, the system
+        reliability at the times ``value`` (a row for each draw);
+        ``"mean"``, the MTTF; ``"time_to_reliability"``, the time the
+        reliability falls to ``value``; ``"bx_life"``, the time by which
+        ``value`` percent have failed."""
+        if of == "sf":
+            times = np.atleast_1d(np.asarray(value, dtype=float))
+            probabilities: dict = {}
+            for node in self.nodes:
+                if node in drawn:
+                    rows = [
+                        np.broadcast_to(
+                            np.asarray(m.sf(times), dtype=float), times.shape
+                        )
+                        for m in drawn[node]
+                    ]
+                    probabilities[node] = np.concatenate(rows)
+                else:
+                    values = np.broadcast_to(
+                        np.asarray(self.reliabilities[node].sf(times), float),
+                        times.shape,
+                    )
+                    probabilities[node] = np.tile(values, n)
+            if self.ccf_groups:
+                return self._drawn_ccf_samples(
+                    probabilities, drawn_groups, n, len(times)
+                )
+            return np.asarray(
+                self.system_probability(probabilities), dtype=float
+            ).reshape(n, len(times))
+        if of == "mean":
+            samples = np.empty(n)
+            for i in range(n):
+                sf, models = self._drawn_sf(drawn, i, drawn_groups)
+                knots = [model_knots(model) for model in models.values()]
+                samples[i] = mean_lifetime(
+                    sf, np.concatenate([np.empty(0), *knots])
+                )
+            return samples
+        target = value if of == "time_to_reliability" else 1.0 - value / 100.0
+        return np.array(
+            [
+                self._invert_reliability(
+                    self._drawn_sf(drawn, i, drawn_groups)[0],
+                    target,
+                    upper_bound,
+                )
+                for i in range(n)
+            ]
         )
 
     def _drawn_ccf_samples(
@@ -1805,13 +1847,9 @@ class NonRepairableRBD(RBD):
         """
         self._require_lifetimes()
         drawn, drawn_groups = self._uncertain_draws(uncertainty, n_draws, seed)
-        samples = np.empty(n_draws)
-        for i in range(n_draws):
-            sf, models = self._drawn_sf(drawn, i, drawn_groups)
-            knots = [model_knots(model) for model in models.values()]
-            samples[i] = mean_lifetime(
-                sf, np.concatenate([np.empty(0), *knots])
-            )
+        samples = self._quantity_samples(
+            "mean", None, drawn, drawn_groups, n_draws
+        )
         return UncertaintyResult(
             samples=samples, nominal=self._exact_mean(), n_draws=n_draws
         )
@@ -1891,15 +1929,13 @@ class NonRepairableRBD(RBD):
         if not 0.0 < target < 1.0:
             raise ValueError("target reliability must be in (0, 1).")
         drawn, drawn_groups = self._uncertain_draws(uncertainty, n_draws, seed)
-        samples = np.array(
-            [
-                self._invert_reliability(
-                    self._drawn_sf(drawn, i, drawn_groups)[0],
-                    target,
-                    upper_bound,
-                )
-                for i in range(n_draws)
-            ]
+        samples = self._quantity_samples(
+            "time_to_reliability",
+            target,
+            drawn,
+            drawn_groups,
+            n_draws,
+            upper_bound,
         )
         nominal = self.time_to_reliability(target, upper_bound=upper_bound)
         return UncertaintyResult(
@@ -1976,6 +2012,352 @@ class NonRepairableRBD(RBD):
             upper_bound=upper_bound,
         )
 
+    def uncertainty_importance(
+        self,
+        x: Optional[ArrayLike] = None,
+        uncertainty: Optional[Dict[Hashable, Any]] = None,
+        *,
+        of: str = "sf",
+        method: str = "delta",
+        n_draws: int = 1000,
+        seed=None,
+        rel_step: float = 1e-4,
+        upper_bound: Optional[float] = None,
+    ) -> UncertaintyImportance:
+        """Which input's parameter uncertainty makes a system quantity
+        uncertain: each uncertain input's share of the quantity's variance
+        (#196), the inputs as for ``sf_uncertainty``.
+
+        ``of`` is the quantity: ``"sf"``, the reliability at the time/s
+        ``x`` (as ``sf_uncertainty``); ``"mean"``, the MTTF (as
+        ``mean_uncertainty``; no ``x``); ``"bx_life"``, the time by which
+        ``x`` percent have failed; ``"time_to_reliability"``, the time the
+        reliability falls to ``x``.
+
+        ``method="delta"`` (the default) linearises the quantity in the
+        inputs' parameters: ``Var(Q) ~ sum_k g_k^T Sigma_k g_k``, ``g_k``
+        its gradient in input ``k``'s parameters (central differences of
+        the exact quantity, with the parameters moved by ``rel_step`` of
+        themselves) and ``Sigma_k`` their covariance: a fit's (surpyval's
+        ``hess_inv``) for ``"fit"``, or the variances of the distributions
+        given. The inputs are independent, so each one's part is its own
+        term and the shares add up to 1. A list of models has no
+        parameters to move: it needs ``method="sobol"``.
+
+        ``method="sobol"`` draws the inputs as ``sf_uncertainty`` does and
+        estimates the variance-based (Sobol) indices: ``n_draws`` draws of
+        two independent sets, and one more set for each input with it
+        taken from the second (Jansen's estimators), ``n_draws * (inputs +
+        2)`` evaluations in all. It
+        takes the nonlinearity and the inputs' interactions in, at the
+        cost of sampling error, which shrinks as ``1/sqrt(n_draws)`` (with
+        few draws, a first-order estimate can even pass its total).
+
+        Parameters
+        ----------
+        x : array_like, optional
+            What the quantity takes: the time/s for ``"sf"``, the
+            percentage for ``"bx_life"``, the reliability for
+            ``"time_to_reliability"``; none for ``"mean"``.
+        uncertainty : dict, optional
+            ``{node or tuple of nodes: uncertainty}``, and ``{CCFGroup:
+            uncertainty}``, as for ``sf_uncertainty``: by default, every
+            fitted node.
+        of : str, optional
+            ``"sf"`` (the default), ``"mean"``, ``"bx_life"`` or
+            ``"time_to_reliability"``.
+        method : str, optional
+            ``"delta"`` (the default) or ``"sobol"``.
+        n_draws : int, optional
+            With ``method="sobol"``, the draws of each set, by default
+            1000.
+        seed : int, optional
+            With ``method="sobol"``, the seed of the draws.
+        rel_step : float, optional
+            With ``method="delta"``, the parameters' step, as a fraction of
+            each (one-sided at a bound of its range), by default ``1e-4``.
+        upper_bound : float, optional
+            For ``"bx_life"`` and ``"time_to_reliability"``, as for
+            ``time_to_reliability``.
+
+        Returns
+        -------
+        UncertaintyImportance
+            The ``method``, the quantity's ``variance``, and each input's
+            ``first_order`` and ``total`` shares, by the key it was given
+            under: floats, or arrays for an array of times.
+
+        Raises
+        ------
+        ValueError
+            For an unknown ``of`` or ``method``, an ``x`` the quantity
+            does not take, a list of models with the delta method, or as
+            ``sf_uncertainty`` and the quantity's own method do.
+
+        Examples
+        --------
+        A pump, fitted to 10 failures, in series with a valve fitted to 40:
+        the pump's estimate is the vaguer, and most of the system's
+        uncertainty is its.
+
+        >>> import numpy as np
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> def fitted(scale, n):
+        ...     u = (np.arange(n) + 0.5) / n
+        ...     return surv.Weibull.fit(scale * (-np.log(1 - u)) ** 0.5)
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "pump"), ("pump", "valve"), ("valve", "t")],
+        ...     {"pump": fitted(100, 10), "valve": fitted(120, 40)},
+        ... )
+        >>> parts = rbd.uncertainty_importance(50)
+        >>> {n: round(share, 2) for n, share in parts.first_order.items()}
+        {'pump': 0.86, 'valve': 0.14}
+        """
+        from .uncertainty import varied_ccf_parameters, varied_parameters
+
+        quantities = ("sf", "mean", "bx_life", "time_to_reliability")
+        if of not in quantities:
+            raise ValueError(
+                f"of must be one of {list(quantities)}, got {of!r}."
+            )
+        if method not in ("delta", "sobol"):
+            raise ValueError(
+                f"method must be 'delta' or 'sobol', got {method!r}."
+            )
+        value = self._uncertain_quantity(of, x)
+        sources, ccf_specs = self._uncertainty_sources(uncertainty)
+        keys = [key for key, _, _ in sources] + [
+            ccf_specs[i][0] for i in sorted(ccf_specs)
+        ]
+        if method == "delta":
+            parts = []
+            configurations: List[Tuple[int, Any]] = [(-1, None)]
+            varied = []
+            for key, members, spec in sources:
+                label = (
+                    f"Node {members[0]!r}"
+                    if len(members) == 1
+                    else f"Nodes {list(members)!r}"
+                )
+                model = self.reliabilities[members[0]]
+                varied.append(varied_parameters(model, spec, label))
+            for i in sorted(ccf_specs):
+                varied.append(
+                    varied_ccf_parameters(self.ccf_groups[i], ccf_specs[i][1])
+                )
+            # Each input's parameters, each moved up and down (or one way
+            # at a bound): one configuration of the models for each.
+            steps = []
+            for k, (positions, values, _, bounds) in enumerate(varied):
+                for j, (centre, (lower, upper)) in enumerate(
+                    zip(values, bounds)
+                ):
+                    h = rel_step * max(abs(float(centre)), 1e-8)
+                    up, down = centre + h, centre - h
+                    if upper is not None and up >= upper:
+                        up = centre
+                    if lower is not None and down <= lower:
+                        down = centre
+                    steps.append((k, j, up, down))
+                    configurations += [(k, (j, up)), (k, (j, down))]
+            drawn, drawn_groups = self._configured_models(
+                sources, ccf_specs, varied, configurations
+            )
+            samples = self._quantity_samples(
+                of,
+                value,
+                drawn,
+                drawn_groups,
+                len(configurations),
+                upper_bound,
+            )
+            samples = samples.reshape(len(configurations), -1)
+            gradients = [
+                np.zeros((len(values), samples.shape[1]))
+                for _, values, _, _ in varied
+            ]
+            for s, (k, j, up, down) in enumerate(steps):
+                rise = samples[1 + 2 * s] - samples[2 + 2 * s]
+                gradients[k][j] = rise / (up - down)
+            for (_, _, covariance, _), g in zip(varied, gradients):
+                parts.append(np.einsum("it,ij,jt->t", g, covariance, g))
+            variance = np.sum(parts, axis=0)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                shares = [
+                    np.where(variance > 0.0, part / variance, np.nan)
+                    for part in parts
+                ]
+            first = total = dict(zip(keys, shares))
+        else:
+            first, total, variance = self._sobol_indices(
+                of,
+                value,
+                uncertainty,
+                sources,
+                ccf_specs,
+                n_draws,
+                seed,
+                upper_bound,
+                keys,
+            )
+        scalar = of != "sf" or x is None or np.ndim(x) == 0
+
+        def shaped(values):
+            values = np.asarray(values, dtype=float).reshape(-1)
+            if scalar:
+                return float(values[0])
+            return values.reshape(np.shape(x))
+
+        return UncertaintyImportance(
+            method=method,
+            variance=shaped(variance),
+            first_order={key: shaped(v) for key, v in first.items()},
+            total={key: shaped(v) for key, v in total.items()},
+        )
+
+    def _uncertain_quantity(self, of: str, x):
+        """``uncertainty_importance``'s ``x`` for the quantity ``of``,
+        checked: the times for ``"sf"`` (1 for a fixed-probability RBD left
+        without), none for ``"mean"``, a target reliability for the
+        others."""
+        if of == "sf":
+            if x is None:
+                if not self.is_fixed:
+                    raise ValueError(
+                        "x is required: a node model's probability depends "
+                        "on time."
+                    )
+                return np.ones(1)
+            return np.atleast_1d(np.asarray(x, dtype=float))
+        if of == "mean":
+            if x is not None:
+                raise ValueError("x is not taken for the MTTF (of='mean').")
+            self._require_lifetimes()
+            return None
+        self._require_time_varying()
+        if x is None or np.ndim(x) != 0:
+            raise ValueError(
+                f"of={of!r} needs a number x: the "
+                + ("percentage failed." if of == "bx_life" else "reliability.")
+            )
+        if of == "bx_life":
+            if not 0.0 < float(x) < 100.0:
+                raise ValueError("x must be a percentage in (0, 100).")
+            return float(x)
+        if not 0.0 < float(x) < 1.0:
+            raise ValueError("target reliability must be in (0, 1).")
+        return float(x)
+
+    def _configured_models(self, sources, ccf_specs, varied, configurations):
+        """The models of each configuration of the delta method: all
+        nominal (``(-1, None)``), or input ``k``'s parameter ``j`` moved to
+        a value (``(k, (j, value))``), as ``_quantity_samples`` takes
+        them."""
+        from .ccf import with_parameters as with_ccf_parameters
+
+        groups = sorted(ccf_specs)
+        drawn: Dict[Hashable, list] = {}
+        for k, (_, members, _) in enumerate(sources):
+            model = self.reliabilities[members[0]]
+            positions = varied[k][0]
+            params = np.atleast_1d(np.asarray(model.params, dtype=float))
+            models = []
+            for which, move in configurations:
+                if which != k:
+                    models.append(model)
+                    continue
+                j, moved = move
+                changed = params.copy()
+                changed[positions[j]] = moved
+                models.append(model.with_params(list(changed)))
+            for node in members:
+                drawn[node] = models
+        drawn_groups: list = [None] * len(self.ccf_groups)
+        for offset, i in enumerate(groups):
+            k = len(sources) + offset
+            group = self.ccf_groups[i]
+            names = varied[k][0]
+            models = []
+            for which, move in configurations:
+                if which != k:
+                    models.append(group.model)
+                    continue
+                j, moved = move
+                models.append(
+                    with_ccf_parameters(group.model, {names[j]: moved})
+                )
+            drawn_groups[i] = models
+        return drawn, drawn_groups
+
+    def _sobol_indices(
+        self,
+        of,
+        value,
+        uncertainty,
+        sources,
+        ccf_specs,
+        n_draws,
+        seed,
+        upper_bound,
+        keys,
+    ):
+        """The first-order and total Sobol indices of each input (Jansen's
+        estimators, 1999), and the quantity's variance, from two
+        independent sets of ``n_draws`` draws and one more set for each
+        input with it taken from the second (see
+        ``uncertainty_importance``)."""
+        drawn, drawn_groups = self._uncertain_draws(
+            uncertainty, 2 * n_draws, seed
+        )
+        n = n_draws
+
+        def half(models, second: bool):
+            return (
+                None
+                if models is None
+                else models[n:] if second else (models[:n])
+            )
+
+        a = {node: half(models, False) for node, models in drawn.items()}
+        b = {node: half(models, True) for node, models in drawn.items()}
+        a_groups = [half(models, False) for models in drawn_groups]
+        b_groups = [half(models, True) for models in drawn_groups]
+
+        def quantity(models, groups):
+            return self._quantity_samples(
+                of, value, models, groups, n, upper_bound
+            ).reshape(n, -1)
+
+        y_a, y_b = quantity(a, a_groups), quantity(b, b_groups)
+        variance = np.var(np.concatenate([y_a, y_b]), axis=0, ddof=1)
+        first, total = {}, {}
+        inputs = [("nodes", members) for _, members, _ in sources] + [
+            ("group", i) for i in sorted(ccf_specs)
+        ]
+        for key, (kind, which) in zip(keys, inputs):
+            mixed, mixed_groups = dict(a), list(a_groups)
+            if kind == "nodes":
+                for node in which:
+                    mixed[node] = b[node]
+            else:
+                mixed_groups[which] = b_groups[which]
+            y_ab = quantity(mixed, mixed_groups)
+            # Jansen's: the second set and the mixed one share only this
+            # input, the first and the mixed one all but it.
+            with np.errstate(divide="ignore", invalid="ignore"):
+                first[key] = np.where(
+                    variance > 0.0,
+                    1.0 - 0.5 * np.mean((y_b - y_ab) ** 2, axis=0) / variance,
+                    np.nan,
+                )
+                total[key] = np.where(
+                    variance > 0.0,
+                    0.5 * np.mean((y_a - y_ab) ** 2, axis=0) / variance,
+                    np.nan,
+                )
+        return first, total, variance
+
     def _uncertain_draws(
         self, uncertainty, n_draws: int, seed
     ) -> Tuple[Dict[Hashable, list], list]:
@@ -1990,6 +2372,40 @@ class NonRepairableRBD(RBD):
             raise ValueError(f"n_draws must be an integer, got {n_draws!r}.")
         if n_draws < 1:
             raise ValueError(f"n_draws must be at least 1, got {n_draws}.")
+        sources, ccf_specs = self._uncertainty_sources(uncertainty)
+        rng = np.random.default_rng(seed)
+        drawn: Dict[Hashable, list] = {}
+        for _, members, spec in sources:
+            label = (
+                f"Node {members[0]!r}"
+                if len(members) == 1
+                else f"Nodes {list(members)!r}"
+            )
+            models = draw_models(
+                self.reliabilities[members[0]], spec, n_draws, rng, label
+            )
+            for node in members:
+                drawn[node] = models
+        # The common-cause models after the nodes', so that the nodes'
+        # draws are the same whether or not they are uncertain.
+        drawn_groups: list = [
+            (
+                draw_ccf_models(group, ccf_specs[i][1], n_draws, rng)
+                if i in ccf_specs
+                else None
+            )
+            for i, group in enumerate(self.ccf_groups)
+        ]
+        return drawn, drawn_groups
+
+    def _uncertainty_sources(
+        self, uncertainty
+    ) -> Tuple[List[Tuple[Any, tuple, Any]], Dict[int, Tuple[Any, Any]]]:
+        """The uncertain inputs, checked (see ``sf_uncertainty``): for each
+        node or tuple of nodes given, its key, its nodes and its
+        uncertainty; and for each common-cause group whose model is
+        uncertain, by its index, its key and its uncertainty. By default,
+        every fitted node (``_fitted_uncertainty``)."""
         if uncertainty is None:
             uncertainty = self._fitted_uncertainty()
             if not uncertainty:
@@ -2006,15 +2422,15 @@ class NonRepairableRBD(RBD):
                 "example."
             )
         components = set(self.nodes)
-        groups = []
+        sources: List[Tuple[Any, tuple, Any]] = []
         seen: set = set()
-        ccf_specs: Dict[int, Any] = {}
+        ccf_specs: Dict[int, Tuple[Any, Any]] = {}
         for key, spec in uncertainty.items():
             index = next(
                 (i for i, g in enumerate(self.ccf_groups) if key is g), None
             )
             if index is not None:
-                ccf_specs[index] = spec
+                ccf_specs[index] = (key, spec)
                 continue
             if key in components or not isinstance(key, tuple):
                 members = (key,)
@@ -2042,13 +2458,13 @@ class NonRepairableRBD(RBD):
                         f"Nodes {list(members)!r} share their uncertainty, "
                         "so they must have the same model."
                     )
-            groups.append((members, spec))
+            sources.append((key, tuple(members), spec))
         # A common-cause group's members carry one model, so they share
         # their draws.
         for group in self.ccf_groups:
             holders = [
                 members
-                for members, _ in groups
+                for _, members, _ in sources
                 if set(members) & set(group.members)
             ]
             if holders and (
@@ -2060,31 +2476,7 @@ class NonRepairableRBD(RBD):
                     "uncertainty together, in one tuple of nodes (e.g. "
                     f"{{{tuple(group.members)!r}: 'fit'}})."
                 )
-
-        rng = np.random.default_rng(seed)
-        drawn: Dict[Hashable, list] = {}
-        for members, spec in groups:
-            label = (
-                f"Node {members[0]!r}"
-                if len(members) == 1
-                else f"Nodes {list(members)!r}"
-            )
-            models = draw_models(
-                self.reliabilities[members[0]], spec, n_draws, rng, label
-            )
-            for node in members:
-                drawn[node] = models
-        # The common-cause models after the nodes', so that the nodes'
-        # draws are the same whether or not they are uncertain.
-        drawn_groups: list = [
-            (
-                draw_ccf_models(group, ccf_specs[i], n_draws, rng)
-                if i in ccf_specs
-                else None
-            )
-            for i, group in enumerate(self.ccf_groups)
-        ]
-        return drawn, drawn_groups
+        return sources, ccf_specs
 
     def _fitted_uncertainty(self) -> Dict[Hashable, str]:
         """The uncertainty drawn when none is given (#184): ``"fit"`` for
@@ -4643,6 +5035,13 @@ class NonRepairableRBD(RBD):
             r.SIMULATED,
             "The node parameters drawn from their uncertainty, and the exact "
             "system reliability for each draw." + groups_drawn,
+        )
+        out["uncertainty_importance"] = r.AnalysisRoute(
+            r.NUMERICAL,
+            "The delta method: the exact quantity's derivative in each "
+            "uncertain parameter, by central differences, with their "
+            "covariance (method='sobol' estimates Sobol indices from draws "
+            "instead)." + groups_drawn,
         )
         no_lifetimes = r.refusal(self._require_lifetimes)
         out["mean_uncertainty"] = (

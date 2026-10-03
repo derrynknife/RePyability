@@ -240,6 +240,11 @@ ranking at an operating point:
   maintenance intervals. A uniform change (every `dθ` equal) shares out the
   Birnbaum importance, a proportional one (every `dθ / θ` equal) the
   criticality.
+- **Uncertainty importance** `uncertainty_importance`: each uncertain
+  input's share of the variance of a system quantity (the reliability, the
+  MTTF, a B-life) over the fitted models' parameter uncertainty, by the
+  delta method or as Sobol indices: where more data would narrow the answer
+  most.
 - **Joint importance** `joint_importance`: the second-order Birnbaum
   measure, `∂²R/∂R_i ∂R_j`, for each pair. Positive for complements
   (series: improving one makes improving the other worth more), negative

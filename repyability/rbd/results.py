@@ -1088,6 +1088,65 @@ class RateBreakdown(_ResultMapping):
 
 
 @dataclass
+class UncertaintyImportance(_ResultMapping):
+    """Each uncertain input's part in the uncertainty of a system quantity
+    (#196): returned by ``NonRepairableRBD.uncertainty_importance``.
+
+    The inputs are the uncertainties given (a node, a tuple of nodes of one
+    population, a common-cause group's model), by the keys they were given
+    under. Which input's uncertainty widens the interval most is where more
+    data would narrow it most.
+
+    Attributes
+    ----------
+    method : str
+        ``"delta"`` (the delta method) or ``"sobol"`` (variance-based, from
+        draws).
+    variance : float or numpy.ndarray
+        The quantity's variance over the inputs' uncertainty: the delta
+        method's approximation, the sum of its parts, or the draws'.
+    first_order : dict
+        Each input's first-order share of the variance. The delta method's
+        part, ``g^T Sigma g`` over the variance, ``g`` the quantity's
+        gradient in the input's parameters and ``Sigma`` their covariance:
+        the shares add up to 1. Sobol's first-order index,
+        ``Var(E[Q | input]) / Var(Q)``: the share of the variance that
+        knowing the input exactly would remove.
+    total : dict
+        Each input's total share: Sobol's total index,
+        ``E[Var(Q | the others)] / Var(Q)``, which counts its interactions
+        with the others too (a total well above the first-order share says
+        the input matters through them). The delta method's, its part again
+        (a linear approximation has no interactions).
+
+    Examples
+    --------
+    >>> import surpyval as surv
+    >>> import scipy.stats as st
+    >>> from repyability import NonRepairableRBD
+    >>> rbd = NonRepairableRBD(
+    ...     [("s", "a"), ("a", "b"), ("b", "t")],
+    ...     {
+    ...         "a": surv.Exponential.from_params([0.01]),
+    ...         "b": surv.Exponential.from_params([0.01]),
+    ...     },
+    ... )
+    >>> rates = {
+    ...     "a": {"failure_rate": st.uniform(0.005, 0.01)},
+    ...     "b": {"failure_rate": st.uniform(0.008, 0.004)},
+    ... }
+    >>> parts = rbd.uncertainty_importance(10.0, rates)
+    >>> {node: round(share, 3) for node, share in parts.first_order.items()}
+    {'a': 0.862, 'b': 0.138}
+    """
+
+    method: str
+    variance: Any
+    first_order: Dict[Hashable, Any]
+    total: Dict[Hashable, Any]
+
+
+@dataclass
 class ExpectedCost(_ResultMapping):
     """The expected cost of running a system over a window from new:
     returned by ``RepairableRBD.expected_cost``.

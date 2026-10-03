@@ -285,3 +285,44 @@ together, in one tuple, and the group's own model can be uncertain too (see
 failures](common-cause.md#importance-sensitivity-uncertainty-and-allocation)).
 A node whose model is not a parametric distribution (a standby
 arrangement, a nested diagram) can only be given a list of models.
+
+### Whose uncertainty widens the interval
+
+`uncertainty_importance(x, uncertainty)` says which input's uncertainty
+makes the answer uncertain: each one's share of the quantity's variance,
+and so where more failure data would narrow the interval most. Here the
+valve's scale is known only to lie between 150 and 250 h:
+
+```python
+both = {("pump1", "pump2"): "fit", "valve": {"alpha": st.uniform(150, 100)}}
+parts = fitted.uncertainty_importance(50, both)
+parts.first_order[("pump1", "pump2")]   # -> 0.6004
+parts.first_order["valve"]              # -> 0.3996
+fitted.uncertainty_importance(None, both, of="mean").first_order["valve"]   # -> 0.1877
+```
+
+The pumps' fit accounts for 60% of the reliability's variance at 50 h, but
+81% of the MTTF's. `of` picks the quantity: `"sf"` (at the times `x`),
+`"mean"`, `"bx_life"` (`x` the percentage) or `"time_to_reliability"` (`x`
+the reliability). By default it is worked out by the delta method: the
+quantity's derivative in each input's parameters (central differences of the
+exact value) with their covariance (the fit's `hess_inv`, or the variances
+of the distributions given). The inputs are independent, so each input's
+part is its own term, and the shares add up to 1.
+
+`method="sobol"` draws the inputs as `sf_uncertainty` does and estimates the
+variance-based (Sobol) indices instead. The first-order index is the share
+of the variance that knowing the input exactly would remove. The total index
+counts the input's interactions with the others too. Both take the
+quantity's nonlinearity in, at the cost of sampling error and of
+`n_draws × (inputs + 2)` evaluations:
+
+```python
+sobol = fitted.uncertainty_importance(50, both, method="sobol", n_draws=5000, seed=0)
+sobol.first_order["valve"]   # -> 0.395
+sobol.total["valve"]         # -> 0.409
+```
+
+Close to the delta method's 0.40: at this spread the reliability is nearly
+linear in the parameters. A list of models has no parameters for the delta
+method to move, so it needs `method="sobol"`.

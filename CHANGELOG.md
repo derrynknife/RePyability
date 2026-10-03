@@ -171,6 +171,21 @@ other release, fixes included, the minor.
   last as long as its interval stays simulated (the refusal says how
   likely it is to), as do a common-cause group's members whose tests or
   repairs take time (#158).
+- **Uncertainty importance: whose uncertainty widens the answer (#196).**
+  `NonRepairableRBD.uncertainty_importance(x, uncertainty)` gives each
+  uncertain input's share of a system quantity's variance over the
+  parameter uncertainty `sf_uncertainty` and the like propagate: the
+  reliability at `x`, the MTTF, a B-life or the time to a reliability
+  (`of=`), the inputs as those methods take them (a node, a population of
+  nodes, a common-cause model). By default by the delta method, the
+  quantity's derivative in each input's parameters (central differences
+  of the exact value) with their covariance (a fit's `hess_inv`, or the
+  variances of the distributions given), whose parts add up to the
+  variance; `method="sobol"` estimates the first-order and total Sobol
+  indices from draws (Jansen's estimators), which take nonlinearity and
+  interactions in. An `UncertaintyImportance` holds the variance and the
+  shares. A `RepairableRBD` does not propagate parameter uncertainty yet,
+  so it has none.
 - **Joint importance: complements and substitutes (#194).**
   `joint_importance` (on `NonRepairableRBD`, `RepairableRBD` and
   `FaultTree`) gives the second-order Birnbaum measure of each pair,

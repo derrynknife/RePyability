@@ -87,7 +87,9 @@ class _Scale:
         return a + (b - a) / (1.0 + np.exp(-z))
 
 
-def _fit_draws(model, n: int, rng: np.random.Generator, label: str) -> list:
+def _fit_covariance(model, label: str):
+    """The fitted model's distribution, parameters, parameter covariance
+    (surpyval's ``hess_inv``) and the parameters' bounds, checked."""
     dist = _parametric(model, label)
     covariance = getattr(model, "hess_inv", None)
     params = np.atleast_1d(np.asarray(model.params, dtype=float))
@@ -107,7 +109,6 @@ def _fit_draws(model, n: int, rng: np.random.Generator, label: str) -> list:
             "parameters or a list of models instead."
         )
     bounds = list(getattr(dist, "bounds", [(None, None)] * k))[:k]
-    scales = [_Scale(lower, upper) for lower, upper in bounds]
     for (lower, upper), value in zip(bounds, params):
         if (lower is not None and value <= lower) or (
             upper is not None and value >= upper
@@ -118,6 +119,13 @@ def _fit_draws(model, n: int, rng: np.random.Generator, label: str) -> list:
                 "approximation there; give distributions over its "
                 "parameters or a list of models instead."
             )
+    return dist, params, covariance, bounds
+
+
+def _fit_draws(model, n: int, rng: np.random.Generator, label: str) -> list:
+    _, params, covariance, bounds = _fit_covariance(model, label)
+    k = len(params)
+    scales = [_Scale(lower, upper) for lower, upper in bounds]
     # The delta method: the covariance on the unbounded scale.
     slopes = np.array([sc.slope(v) for sc, v in zip(scales, params)])
     centre = np.array([sc.forward(v) for sc, v in zip(scales, params)])
@@ -288,4 +296,119 @@ def draw_ccf_models(
     raise ValueError(
         f"{label}: its uncertainty must be a dict of distributions over its "
         f"model's parameters ({names}) or a list of models, got {spec!r}."
+    )
+
+
+def _variance(prior, label: str, name) -> float:
+    """The variance of a parameter's distribution: its own (``var``), or
+    from its quantile function on a fine grid of probabilities."""
+    own = getattr(prior, "var", None)
+    if callable(own):
+        try:
+            value = float(np.ravel(own())[0])
+        except (TypeError, ValueError, AttributeError):
+            value = float("nan")
+        if np.isfinite(value) and value >= 0.0:
+            return value
+    u = (np.arange(4096) + 0.5) / 4096
+    values = _quantiles_at(prior, u, label, name)
+    return float(np.var(values))
+
+
+def _quantiles_at(prior, u: np.ndarray, label: str, name) -> np.ndarray:
+    if hasattr(prior, "qf"):
+        values = prior.qf(u)
+    elif hasattr(prior, "ppf"):
+        values = prior.ppf(u)
+    else:
+        raise ValueError(
+            f"{label}: the distribution for {name!r} needs a quantile "
+            "function (qf, as surpyval's, or ppf, as scipy.stats')."
+        )
+    return np.asarray(values, dtype=float).reshape(-1)
+
+
+def varied_parameters(model, spec: Any, label: str):
+    """For the delta method (#196): the parameters a node's uncertainty
+    varies, as their positions among the model's parameters, their values,
+    their covariance (a fit's ``hess_inv``, or the variances of the
+    distributions given) and their bounds. A list of models has no
+    parameters to vary."""
+    if isinstance(spec, str):
+        if spec != FIT:
+            raise ValueError(
+                f"{label}: unknown uncertainty {spec!r}; give 'fit', a dict "
+                "of parameter distributions or a list of models."
+            )
+        _, params, covariance, bounds = _fit_covariance(model, label)
+        return list(range(len(params))), params, covariance, bounds
+    if isinstance(spec, Mapping):
+        if not spec:
+            raise ValueError(f"{label}: no parameter distributions given.")
+        dist = _parametric(model, label)
+        names = list(getattr(dist, "parameter_names", []))
+        unknown = [p for p in spec if p not in names]
+        if unknown:
+            raise ValueError(
+                f"{label}: {sorted(map(str, unknown))} are not parameters of "
+                f"its {getattr(dist, 'name', 'model')} model, whose "
+                f"parameters are {names}."
+            )
+        params = np.atleast_1d(np.asarray(model.params, dtype=float))
+        bounds = list(getattr(dist, "bounds", [(None, None)] * len(names)))
+        positions = [names.index(name) for name in spec]
+        covariance = np.diag(
+            [_variance(prior, label, name) for name, prior in spec.items()]
+        )
+        return (
+            positions,
+            params[positions],
+            covariance,
+            [
+                bounds[j] if j < len(bounds) else (None, None)
+                for j in positions
+            ],
+        )
+    if isinstance(spec, Sequence):
+        raise ValueError(
+            f"{label}: a list of models has no parameters for the delta "
+            "method to vary; method='sobol' draws from the list."
+        )
+    raise ValueError(
+        f"{label}: the uncertainty must be 'fit', a dict of parameter "
+        f"distributions or a list of models, got {spec!r}."
+    )
+
+
+def varied_ccf_parameters(group, spec: Any):
+    """``varied_parameters`` for a common-cause group's model: the names
+    of the parameters its uncertainty varies, their values, their
+    covariance (the distributions' variances) and their bounds, [0, 1]."""
+    from .ccf import parameters
+
+    model = group.model
+    label = f"Common-cause group {list(group.members)!r}"
+    names = list(parameters(model))
+    if not isinstance(spec, Mapping):
+        raise ValueError(
+            f"{label}: a list of models has no parameters for the delta "
+            "method to vary; method='sobol' draws from the list."
+        )
+    if not spec:
+        raise ValueError(f"{label}: no parameter distributions given.")
+    unknown = [p for p in spec if p not in names]
+    if unknown:
+        raise ValueError(
+            f"{label}: {sorted(map(str, unknown))} are not parameters of its "
+            f"model, {model!r}, whose parameters are {names}."
+        )
+    values = parameters(model)
+    chosen = list(spec)
+    return (
+        chosen,
+        np.array([float(values[name]) for name in chosen]),
+        np.diag(
+            [_variance(prior, label, name) for name, prior in spec.items()]
+        ),
+        [(0.0, 1.0)] * len(chosen),
     )

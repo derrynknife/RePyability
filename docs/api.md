@@ -133,6 +133,8 @@ Up/down histories over a window (see the
 
 ::: repyability.UncertaintyResult
 
+::: repyability.UncertaintyImportance
+
 ::: repyability.RedundancyAllocation
 
 ::: repyability.ReliabilityRedundancyAllocation

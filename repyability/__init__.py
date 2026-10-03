@@ -61,6 +61,7 @@ from repyability.rbd.results import (
     SparesStock,
     TimelineSimulation,
     TotalCostAllocation,
+    UncertaintyImportance,
     UncertaintyResult,
     UpDownImportance,
 )
@@ -127,6 +128,7 @@ __all__ = [
     "ReliabilityRedundancyAllocation",
     "TotalCostAllocation",
     "UncertaintyResult",
+    "UncertaintyImportance",
     "Criticalities",
     "DemonstrationPlan",
     "UpDownImportance",
