@@ -376,11 +376,25 @@ would simulate.
   `expected_events` does, per state met, whatever the number of
   simulations.
 - **What it needs.** The other nodes must be independent of the modules,
-  and exact: not with limited repair crews that tie the components
-  together, or a maintenance group that stops at every outage of the
-  system (`"system_down"`), either of which would make them all modules;
-  and not from a `state`, with capacities, `shard_map` or
-  `control_variate`, as yet.
+  and exact. Limited repair crews make every node they serve a module,
+  simulated with the crews (a nested RBD, with crews of its own, stays
+  exact); a system of crew-served components alone leaves none to take
+  exactly, and is refused, as is a maintenance group that stops at every
+  outage of the system (`"system_down"`), which ties its members to every
+  component.
+- **States, capacities, shards and a control variate.** From the
+  components' `state`, the modules start from theirs and the rest is taken
+  exactly from theirs. With capacities, each simulation's expected time at
+  each level and its delivered fraction (against `demand`, as in a plain
+  run) come from the exact capacity over time with the modules held, a
+  module up at its levels by their probabilities, as a plain run weighs
+  them. `shard_map` runs the modules' simulations as shards wherever it
+  sends them, to the last bit the run's. `control_variate=True` simulates
+  the exact twin's stand-ins for the modules alongside them, with common
+  random numbers: each simulation's expected values given the stand-ins'
+  histories, whose mean is the twin's exact one, control the means (by as
+  much as the stand-ins follow the modules: little for a unit repaired
+  imperfectly, whose stand-in, repaired as new, drifts from it).
 
 What it gains depends on how much of the error the independent part makes.
 On the line above, most: 43 times. On 150 units in a line with a standby

@@ -326,17 +326,23 @@ def with_costs(
     rbd,
     t_simulation: float,
     N: int,
-    seed: int,
+    seed: Optional[int],
     antithetic: bool,
     engine: str,
     n_jobs,
     start: int,
+    states: Optional[dict] = None,
+    entropy: Optional[int] = None,
+    widths: Optional[dict] = None,
 ):
     """Simulations ``start`` to ``start + N - 1`` of the run ``seed``
-    seeds, from new, in the event loop: each component's histories (as
-    ``simulate`` has them) and the run's tally, which keeps each
-    simulation's cost beside them (for a conditional run's modules, see
-    ``RepairableRBD._conditional_run``)."""
+    seeds (or of the run of ``entropy``, a shard's), from new or from the
+    components' checked ``states``, in the event loop: each component's
+    histories (as ``simulate`` has them) and the run's tally, which keeps
+    each simulation's cost beside them (for a conditional run's modules,
+    see ``RepairableRBD._conditional_run``). With ``widths``, its streams
+    take those widths, to draw what another system's take (common random
+    numbers, see ``RepairableRBD._common_widths``)."""
     from repyability.rbd.repairable_rbd import _UNSTREAMED
 
     if engine not in ("auto", "python", "numba"):
@@ -345,8 +351,12 @@ def with_costs(
             f"record histories) for a conditional run, got {engine!r}."
         )
     jobs = None if n_jobs is None else montecarlo.jobs(n_jobs)
-    entropy = _streams.entropy_of(seed)
-    plan, complete = rbd._stream_plan(t_simulation, entropy, antithetic)
+    if entropy is None:
+        entropy = _streams.entropy_of(seed)
+    states = states or {}
+    plan, complete = rbd._stream_plan(
+        t_simulation, entropy, antithetic, widths, states
+    )
     if antithetic and not complete:
         raise NotImplementedError(_UNSTREAMED)
     tally = rbd._run(
@@ -359,9 +369,12 @@ def with_costs(
         seed,
         antithetic,
         jobs=jobs,
-        engine=_engine(rbd, plan, engine, N),
+        engine=_engine(rbd, plan, engine, N, states=states),
         entropy=entropy,
+        widths=widths,
+        common=widths is not None,
         first=start,
+        states=states,
         histories=True,
     )
     parts, _ = tally.histories.data(t_simulation)

@@ -324,10 +324,17 @@ other release, fixes included, the minor.
   `cost` when a conditional run applies. Changes at one instant are taken
   as the event loop takes them: a module's before the other nodes' (a
   scheduled replacement shared with one, a unit dead on arrival), and a
-  failure before the opportunistic stop it opens. Not with limited repair
-  crews that tie the components together, a maintenance group that stops
-  at every outage of the system (`system_down`), a `state`, capacities,
-  `shard_map` or `control_variate`, as yet.
+  failure before the opportunistic stop it opens. Limited repair crews make
+  every node they serve a module, simulated with the crews (a nested RBD,
+  with crews of its own, stays exact). A run can start from the components'
+  states (`state=`), follow capacities (each level's expected time and the
+  delivered fraction, from the exact capacity over time with the modules
+  held), run its modules as shards (`shard_map`, the run's result to the
+  last bit), and be controlled (`control_variate=True`) by the exact twin's
+  stand-ins for the modules, simulated alongside them with common random
+  numbers. Refused when the modules would be every component (crews
+  serving them all) or a maintenance group stops at every outage of the
+  system (`system_down`).
 - **Common-cause groups in a repairable diagram over time, in the
   simulations and in the allocations (#158).** A `RepairableRBD` with
   `ccf_groups` had exact long-run values and importance, but refused the

@@ -36,9 +36,10 @@ cubic through its values and slopes (the point availability) at the ends of
 the step a time falls in, the counts linearly.
 """
 
+import io
 import math
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 import numpy as np
 
@@ -271,7 +272,6 @@ def values(p: Paths, given: Dict[int, Given], curve_x: np.ndarray) -> Values:
     planned, ending = np.zeros(n), np.zeros(n)
     curve = np.zeros(curve_x.size)
     square = np.zeros(curve_x.size)
-    points = curve_x.size
     for m, state in given.items():
         inside = p.segment_state == m
         sims = p.segment_sim[inside]
@@ -307,17 +307,8 @@ def values(p: Paths, given: Dict[int, Given], curve_x: np.ndarray) -> Values:
         closing = inside & p.last
         ending[p.segment_sim[closing]] = 1.0 - state.before(p.end)
         # How many simulations are in the state at each of the curve's
-        # times (from just after a change there), each up with ``up``.
-        low = np.searchsorted(curve_x, a, side="left")
-        high = np.where(
-            p.last[inside],
-            points,
-            np.searchsorted(curve_x, b, side="left"),
-        )
-        occupied = np.bincount(low, minlength=points + 1) - np.bincount(
-            high, minlength=points + 1
-        )
-        count = np.cumsum(occupied)[:-1].astype(float)
+        # times, each up with ``up``.
+        count = _occupancy(p, inside, curve_x)
         up = state.at("up", curve_x)
         curve += count * up
         square += count * up * up
@@ -325,6 +316,129 @@ def values(p: Paths, given: Dict[int, Given], curve_x: np.ndarray) -> Values:
     return Values(
         uptime, failures, planned, restorations, curve / n, square / n
     )
+
+
+def _occupancy(
+    p: Paths, inside: np.ndarray, curve_x: np.ndarray
+) -> np.ndarray:
+    """How many simulations are in the stretches ``inside`` at each of the
+    curve's times (from just after a change there)."""
+    points = curve_x.size
+    low = np.searchsorted(curve_x, p.segment_start[inside], side="left")
+    high = np.where(
+        p.last[inside],
+        points,
+        np.searchsorted(curve_x, p.segment_end[inside], side="left"),
+    )
+    occupied = np.bincount(low, minlength=points + 1) - np.bincount(
+        high, minlength=points + 1
+    )
+    return np.cumsum(occupied)[:-1].astype(float)
+
+
+@dataclass
+class CapacityGiven:
+    """The system's capacity given one joint state of the modules, on the
+    grid ``x`` (see ``capacity_given``): its ``levels``, the time at each
+    before each time (one row per level), the amount delivered before each
+    time (of ``min(capacity, demand)``, None without a demand), the mean
+    of its finite levels at each time and the chance it is unlimited."""
+
+    x: np.ndarray
+    levels: np.ndarray
+    time: np.ndarray
+    delivered: Optional[np.ndarray]
+    mean: np.ndarray
+    unlimited: np.ndarray
+
+
+def capacity_given(
+    x: np.ndarray,
+    levels: np.ndarray,
+    probabilities: np.ndarray,
+    demand: Optional[float],
+) -> CapacityGiven:
+    """The system's capacity given a joint state of the modules (see
+    ``CapacityGiven``), from its distribution at each time of the grid
+    ``x`` (``levels``, and one row of ``probabilities`` per level): the
+    integrals by the trapezium rule between the grid's times, which hold
+    the instants either side of each break."""
+    levels = np.asarray(levels, dtype=float)
+    probabilities = np.asarray(probabilities, dtype=float)
+    step = np.diff(x)
+
+    def cumulative(rate: np.ndarray) -> np.ndarray:
+        pieces = 0.5 * (rate[..., 1:] + rate[..., :-1]) * step
+        return np.concatenate(
+            [np.zeros(rate.shape[:-1] + (1,)), np.cumsum(pieces, axis=-1)],
+            axis=-1,
+        )
+
+    finite = np.isfinite(levels)
+    delivered = None
+    if demand is not None:
+        served = np.where(finite, np.minimum(levels, demand), demand)
+        delivered = cumulative(served @ probabilities)
+    finite_levels = np.where(finite, levels, 0.0)
+    return CapacityGiven(
+        x,
+        levels,
+        cumulative(probabilities),
+        delivered,
+        finite_levels @ probabilities,
+        probabilities[~finite].sum(axis=0),
+    )
+
+
+@dataclass
+class CapacityValues:
+    """A round's capacities (see ``capacity_values``): the time at each
+    level summed over its simulations, each simulation's delivered amount
+    (None without a demand), and on the curve's times the sum over the
+    simulations of each one's expected capacity and how many may carry an
+    unlimited amount."""
+
+    time_at: Dict[float, float]
+    delivered: Optional[np.ndarray]
+    curve: np.ndarray
+    unlimited: np.ndarray
+
+
+def capacity_values(
+    p: Paths, given: Dict[int, CapacityGiven], curve_x: np.ndarray
+) -> CapacityValues:
+    """Each simulation's expected capacities given its modules' histories
+    (see ``CapacityValues``), from the system's capacity ``given`` each
+    joint state its modules meet."""
+    n = p.n
+    time_at: Dict[float, float] = {}
+    delivered: Optional[np.ndarray] = None
+    curve = np.zeros(curve_x.size)
+    unlimited = np.zeros(curve_x.size)
+    for m, state in given.items():
+        inside = p.segment_state == m
+        sims = p.segment_sim[inside]
+        a, b = p.segment_start[inside], p.segment_end[inside]
+        for row, level in zip(state.time, state.levels):
+            spent = np.interp(b, state.x, row) - np.interp(a, state.x, row)
+            time_at[float(level)] = time_at.get(float(level), 0.0) + math.fsum(
+                spent
+            )
+        if state.delivered is not None:
+            if delivered is None:
+                delivered = np.zeros(n)
+            delivered += np.bincount(
+                sims,
+                weights=np.interp(b, state.x, state.delivered)
+                - np.interp(a, state.x, state.delivered),
+                minlength=n,
+            )
+        count = _occupancy(p, inside, curve_x)
+        curve += count * np.interp(curve_x, state.x, state.mean)
+        unlimited += count * (
+            np.interp(curve_x, state.x, state.unlimited) > 0.0
+        )
+    return CapacityValues(time_at, delivered, curve, unlimited)
 
 
 def module_totals(
@@ -363,3 +477,125 @@ def steps(curve_points: Optional[int], end: float) -> np.ndarray:
     """The curve's times: ``curve_points`` steps (by default ``CURVE``)."""
     points = CURVE if curve_points is None else int(curve_points)
     return end * np.arange(points + 1) / points
+
+
+class History(NamedTuple):
+    """A module's histories in a shard's simulations (what ``paths`` and
+    ``module_totals`` read of a ``repyability.timelines._Data``): whether
+    each starts up, where its changes start, their times, and which are
+    planned."""
+
+    start: np.ndarray
+    offsets: np.ndarray
+    times: np.ndarray
+    planned: np.ndarray
+
+
+#: What a module shard's partial says it is (see ``partial_bytes``).
+_PARTIAL = "RePyabilityModulePartial"
+
+
+def partial_bytes(
+    histories: List[Any],
+    tally,
+    start: int,
+    stop: int,
+    nodes: List[Any],
+    priced: bool,
+) -> bytes:
+    """A module shard's partial (#189): the modules' histories in its
+    simulations ``start`` to ``stop - 1``, each simulation's own cost (if
+    ``priced``), and the costs by category and by module (in the order of
+    ``nodes``), as the bytes of a NumPy ``.npz`` file, read without
+    pickle."""
+    arrays: Dict[str, Any] = {
+        "kind": np.array([_PARTIAL]),
+        "range": np.array([start, stop], dtype=np.int64),
+    }
+    for j, data in enumerate(histories):
+        arrays[f"start_{j}"] = np.asarray(data.start, dtype=np.int8)
+        arrays[f"offsets_{j}"] = np.asarray(data.offsets, dtype=np.int64)
+        arrays[f"times_{j}"] = np.asarray(data.times, dtype=float)
+        arrays[f"planned_{j}"] = np.asarray(data.planned, dtype=bool)
+    costs = np.zeros(stop - start)
+    names: List[str] = []
+    spent: List[float] = []
+    by_node = np.zeros(len(nodes))
+    costed = np.zeros(len(nodes), dtype=bool)
+    if priced:
+        tally._fold()
+        costs = np.asarray(tally.cost_samples, dtype=float)
+        for key, value in tally.cost_by_category.items():
+            names.append(str(key))
+            spent.append(float(value))
+        for j, node in enumerate(nodes):
+            if node in tally.cost_by_component:
+                by_node[j] = float(tally.cost_by_component[node])
+                costed[j] = True
+    arrays["costs"] = costs
+    arrays["category_names"] = np.array(names, dtype=str)
+    arrays["category_costs"] = np.array(spent, dtype=float)
+    arrays["module_costs"] = by_node
+    arrays["module_costed"] = costed
+    buffer = io.BytesIO()
+    np.savez(buffer, **arrays)
+    return buffer.getvalue()
+
+
+def from_partial(saved: bytes, modules: int):
+    """A module shard's partial (see ``partial_bytes``): its range, the
+    ``modules`` histories, each simulation's own cost, the costs by
+    category and by module, and which modules the costs by module hold."""
+    with np.load(io.BytesIO(saved), allow_pickle=False) as data:
+        if str(data["kind"][0]) != _PARTIAL:
+            raise ValueError(
+                "This is not a module shard's partial: shard_map must give "
+                "back what run_shard returns."
+            )
+        start, stop = (int(v) for v in data["range"])
+        histories = [
+            History(
+                data[f"start_{j}"].copy(),
+                data[f"offsets_{j}"].copy(),
+                data[f"times_{j}"].copy(),
+                data[f"planned_{j}"].copy(),
+            )
+            for j in range(modules)
+        ]
+        categories = dict(
+            zip(
+                (str(name) for name in data["category_names"]),
+                (float(value) for value in data["category_costs"]),
+            )
+        )
+        return (
+            (start, stop),
+            histories,
+            data["costs"].copy(),
+            categories,
+            data["module_costs"].copy(),
+            data["module_costed"].copy(),
+        )
+
+
+def joined(parts: List[List[History]]) -> List[History]:
+    """Each module's histories over consecutive shards, in order."""
+    if len(parts) == 1:
+        return parts[0]
+    out = []
+    for j in range(len(parts[0])):
+        pieces = [part[j] for part in parts]
+        offsets = [np.zeros(1, np.int64)]
+        base = 0
+        for piece in pieces:
+            offsets.append(piece.offsets[1:] + base)
+            base += int(piece.offsets[-1])
+        out.append(
+            History(
+                np.concatenate([piece.start for piece in pieces]),
+                np.concatenate(offsets),
+                np.concatenate([piece.times for piece in pieces]),
+                np.concatenate([piece.planned for piece in pieces]),
+            )
+        )
+    return out

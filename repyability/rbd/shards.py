@@ -76,6 +76,8 @@ def run_shard(shard) -> bytes:
     rbd = RepairableRBD.from_dict(data["system"])
     if not isinstance(rbd, RepairableRBD):
         raise ValueError("This shard's system is not a RepairableRBD.")
+    if data.get("histories"):
+        return _modules_partial(rbd, data)
     working = {_node_name(node) for node in data["working_nodes"]}
     broken = {_node_name(node) for node in data["broken_nodes"]}
     chunk = rbd._chunk(
@@ -95,6 +97,38 @@ def run_shard(shard) -> bytes:
         data["curve_points"],
     )
     return chunk.to_npz()
+
+
+def _modules_partial(rbd, data: Dict[str, Any]) -> bytes:
+    """A conditional run's shard of its modules (#189): their histories
+    and costs in the shard's simulations (see
+    ``_conditional.partial_bytes``), ``rbd`` being the modules' own
+    diagram (``RepairableRBD._modules_rbd``)."""
+    from repyability.rbd import _conditional, _timeline_runs
+    from repyability.rbd.repairable_rbd import _states_from_key
+
+    start, stop = int(data["start"]), int(data["stop"])
+    histories, tally = _timeline_runs.with_costs(
+        rbd,
+        float(data["t_simulation"]),
+        stop - start,
+        None,
+        bool(data["antithetic"]),
+        data["engine"],
+        None,
+        start,
+        _states_from_key(rbd, data["state"]),
+        entropy=int(data["entropy"]),
+    )
+    nodes = list(rbd.components)
+    return _conditional.partial_bytes(
+        [histories[node] for node in nodes],
+        tally,
+        start,
+        stop,
+        nodes,
+        rbd.has_costs,
+    )
 
 
 def _shard(shard) -> Dict[str, Any]:

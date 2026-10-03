@@ -460,33 +460,26 @@ def test_the_modules():
 
 def test_what_a_conditional_run_refuses():
     rbd = plant()
-    with pytest.raises(ValueError, match="not both"):
-        rbd.availability(
-            10.0, mc_samples=5, conditional=True, control_variate=True
-        )
-    with pytest.raises(ValueError, match="shard_map"):
-        rbd.availability(10.0, mc_samples=5, conditional=True, shard_map=map)
     with pytest.raises(ValueError, match="True or False"):
         rbd.availability(10.0, mc_samples=5, conditional="yes")
     with pytest.raises(ValueError, match="record histories"):
         rbd.availability(10.0, mc_samples=5, conditional=True, engine="other")
-    with pytest.raises(NotImplementedError, match="new"):
+    # The twin is simulated here, alongside the modules.
+    with pytest.raises(ValueError, match="shard_map"):
         rbd.availability(
             10.0,
             mc_samples=5,
             conditional=True,
-            state={"u0": NodeState(alive=True, age=10.0)},
+            control_variate=True,
+            shard_map=map,
         )
-    crewed = RepairableRBD(
-        [("s", "a"), ("a", "b"), ("b", "t")],
-        {v: {**exponential(), "reliability": W([100.0, 2.0])} for v in "ab"},
-        repair_crews=1,
-    )
-    with pytest.raises(NotImplementedError, match="repair crew"):
-        crewed.availability(10.0, mc_samples=5, conditional=True)
-    capacities = plant(capacity={"u0": 1.0})
-    with pytest.raises(NotImplementedError, match="capacities"):
-        capacities.availability(10.0, mc_samples=5, conditional=True)
+    with pytest.raises(ValueError, match="no node has one"):
+        rbd.availability(10.0, mc_samples=5, conditional=True, demand=2.0)
+    # Crews tie every component together, leaving none to take exactly.
+    with pytest.raises(NotImplementedError, match="every component"):
+        x_then_y(repair_crews=1).availability(
+            10.0, mc_samples=5, conditional=True
+        )
     # A group stopping at every outage of the system is tied to it all.
     stopping = RepairableRBD(
         [("s", "a"), ("a", "b"), ("b", "t")],
@@ -506,6 +499,204 @@ def test_what_a_conditional_run_refuses():
     assert "conditional=True" not in (
         stopping.analysis_routes()["availability"].reason
     )
+
+
+def uptimes_given(timelines, inner_integral, n):
+    """Each simulation's expected up time: the integral of the exactly
+    taken part's availability over the stretches the modules' structure
+    (``timelines``, one per simulation) is up."""
+    out = []
+    for k in range(n):
+        up = timelines[k].up_intervals
+        out.append(
+            math.fsum(inner_integral(b) - inner_integral(a) for a, b in up)
+        )
+    return np.array(out)
+
+
+def test_crews_tie_the_components_into_one_module():
+    # One crew for the two pumps: every node it serves is a module, and
+    # the nested RBD, with crews of its own, is taken exactly.
+    inner = RepairableRBD(
+        [("s", "p"), ("s", "q"), ("p", "t"), ("q", "t")],
+        {"p": exponential(0.01, 0.5), "q": exponential(0.01, 0.5)},
+    )
+
+    def pump():
+        return {"reliability": W([100.0, 2.0]), "repairability": W([5.0, 1.5])}
+
+    rbd = RepairableRBD(
+        [("s", "a"), ("s", "b"), ("a", "n"), ("b", "n"), ("n", "t")],
+        {"a": pump(), "b": pump(), "n": inner},
+        repair_crews=1,
+    )
+    T, n = 500.0, 120
+    run = rbd.availability(T, mc_samples=n, seed=3, conditional=True)
+    assert run.conditional.modules == ("a", "b")
+    # The pumps' histories, as the plain run with the seed has them.
+    runs = rbd.simulate_timelines(T, mc_samples=n, seed=3).components
+    either = runs["a"] | runs["b"]
+
+    def integral(t):
+        return 0.0 if t <= 0.0 else t * inner.mission_availability(t)
+
+    np.testing.assert_allclose(
+        run.uptimes, uptimes_given(either, integral, n), atol=1e-6 * T
+    )
+    plain = rbd.availability(T, mc_samples=4000, seed=4)
+    a, b = run.mean_availability_interval(), plain.mean_availability_interval()
+    assert (
+        abs(z(a.estimate, b.estimate, a.standard_error, b.standard_error)) < 4
+    )
+
+
+def crewed_pair_then_y(**more):
+    """A nested pair of Weibull units sharing one crew (a module), in
+    series with y, taken exactly."""
+
+    def unit():
+        return {
+            "reliability": W([150.0, 2.0]),
+            "repairability": W([8.0, 1.5]),
+            "repair_cost": 7.0,
+        }
+
+    inner = RepairableRBD(
+        [("s", "p"), ("s", "q"), ("p", "t"), ("q", "t")],
+        {"p": unit(), "q": unit()},
+        repair_crews=1,
+    )
+    return RepairableRBD(
+        [("s", "n"), ("n", "y"), ("y", "t")],
+        {"n": inner, "y": exponential(repair_cost=3.0)},
+        downtime_cost_rate=10.0,
+        **more,
+    )
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {"n": {"p": NodeState(alive=False)}},
+        {"y": NodeState(alive=False)},
+        {
+            "n": {"p": NodeState(age=100.0), "q": NodeState(alive=False)},
+            "y": NodeState(alive=False),
+        },
+    ],
+    ids=["module down", "exact node down", "both"],
+)
+def test_from_the_components_states(state):
+    rbd = crewed_pair_then_y()
+    T, n = 600.0, 200
+    run = rbd.availability(
+        T, mc_samples=n, seed=5, conditional=True, state=state
+    )
+    # The module's histories, as the plain run from the states has them.
+    module = rbd.simulate_timelines(
+        T, mc_samples=n, seed=5, state=state
+    ).components["n"]
+    # y from its state: up, or down in a repair.
+    total = LIFE + REPAIR
+    start = 0.0 if "y" in state else 1.0
+    steady = REPAIR / total
+
+    def integral(t):
+        return steady * t + (start - steady) / total * (
+            1.0 - math.exp(-total * t)
+        )
+
+    np.testing.assert_allclose(
+        run.uptimes, uptimes_given(module, integral, n), atol=1e-6 * T
+    )
+    plain = rbd.availability(T, mc_samples=4000, seed=11, state=state)
+    a, b = run.mean_availability_interval(), plain.mean_availability_interval()
+    assert (
+        abs(z(a.estimate, b.estimate, a.standard_error, b.standard_error)) < 4
+    )
+    c, d = run.cost.mean_interval(), plain.cost.mean_interval()
+    assert (
+        abs(z(c.estimate, d.estimate, c.standard_error, d.standard_error)) < 4
+    )
+
+
+@pytest.mark.parametrize(
+    "state", [None, {"n": {"p": NodeState(alive=False)}}], ids=["new", "state"]
+)
+def test_shards_are_the_run(state):
+    rbd = crewed_pair_then_y()
+    whole = rbd.availability(
+        600.0, mc_samples=150, seed=5, conditional=True, state=state
+    )
+    sharded = rbd.availability(
+        600.0,
+        mc_samples=150,
+        seed=5,
+        conditional=True,
+        state=state,
+        shard_map=map,
+        shard_size=64,
+    )
+    assert np.array_equal(whole.uptimes, sharded.uptimes)
+    assert whole.system_failures == sharded.system_failures
+    assert np.array_equal(whole.cost.samples, sharded.cost.samples)
+    assert whole.cost.by_category == sharded.cost.by_category
+    assert whole.cost.by_component == sharded.cost.by_component
+    assert whole.node_downtime == sharded.node_downtime
+
+
+def test_capacities_given_the_modules():
+    # x (a module) beside y, then z: the capacity has several levels.
+    rbd = RepairableRBD(
+        [("s", "x"), ("s", "y"), ("x", "z"), ("y", "z"), ("z", "t")],
+        {"x": imperfect(), "y": exponential(), "z": exponential(0.003, 0.2)},
+        capacity={"x": 60.0, "y": {40.0: 0.5, 30.0: 0.5}, "z": 100.0},
+    )
+    T = 2000.0
+    run = rbd.availability(
+        T, mc_samples=600, seed=4, conditional=True, demand=50.0
+    )
+    plain = rbd.availability(T, mc_samples=6000, seed=9, demand=50.0)
+    assert sorted(run.capacity_time) == sorted(plain.capacity_time)
+    for level, spent in plain.capacity_time.items():
+        mine = run.capacity_time[level] / (run.n_simulations * T)
+        assert mine == pytest.approx(
+            spent / (plain.n_simulations * T), abs=0.005
+        )
+    # The time at a capacity above 0 is the time up.
+    working = math.fsum(v for c, v in run.capacity_time.items() if c > 0)
+    assert working == pytest.approx(run.system_uptime, rel=1e-6)
+    m, s = run.delivered.mean(), run.delivered.std() / math.sqrt(600)
+    pm = plain.delivered.mean()
+    ps = plain.delivered.std() / math.sqrt(6000)
+    assert abs(z(m, pm, s, ps)) < 4
+    assert run.demand == 50.0
+    assert run.capacity_timeline.size == run.capacity.size
+
+
+def test_a_control_variate_on_the_modules():
+    rbd = x_then_y()
+    T = 3000.0
+    run = rbd.availability(
+        T, mc_samples=400, seed=5, conditional=True, control_variate=True
+    )
+    assert run.control_variate is not None
+    assert run.control_variate.variance_reduction >= 1.0
+    assert run.cost.control_variate is not None
+    plain = rbd.availability(T, mc_samples=10000, seed=8)
+    a, b = run.mean_availability_interval(), plain.mean_availability_interval()
+    assert (
+        abs(z(a.estimate, b.estimate, a.standard_error, b.standard_error)) < 4
+    )
+    c, d = run.cost.mean_interval(), plain.cost.mean_interval()
+    assert (
+        abs(z(c.estimate, d.estimate, c.standard_error, d.standard_error)) < 4
+    )
+    # The simulations are the same; only the mean is controlled.
+    uncontrolled = rbd.availability(
+        T, mc_samples=400, seed=5, conditional=True
+    )
+    assert uncontrolled.control_variate is None
 
 
 def test_the_routes_say_when_it_applies():
