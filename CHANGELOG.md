@@ -9,6 +9,61 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+## [0.12] - 2026-10-04
+
+Exact where there were estimates, and the sensitivities as one family. A
+simulation run's expected availability and cost are exact by default where
+the exact methods give them, and otherwise taken given its dependent
+modules' histories, which a conditional run simulates alone, the rest exact
+(#187, #189); a run controlled by the system itself is exact (#186).
+Common-cause groups in a repairable diagram are followed over time, in the
+simulations and in the allocations (#158); hidden failures whose tests or
+repairs take time, or whose tests miss them, are numerical for any life
+(#159); replacement on condition (#161) and repair crews around nested RBDs
+(#162) are exact over time, and so is minimal repair in no time over a
+window (#179); the spares of block-replaced components are counted, also
+when their repairs or replacements take time (#160), and interchangeable
+parts share one shelf (#183). The sensitivity measures read as one family,
+the Greeks (#197): a repairable diagram's importance over time (delta,
+#191), the sensitivity of its availability and cost to each lever (#192),
+the shares of a change (#193), complements and substitutes (gamma, #194),
+which component is moving the availability now and which caused the
+failures (theta and Barlow–Proschan, #195, #199), and whose parameter
+uncertainty widens the answer (vega, #196), with parameter uncertainty in a
+repairable system and quasi-random parameter draws (#200). A repairable
+diagram takes junctions, which are in no cut or path set (#175, #182,
+#198); simulated timelines start from the plant as it is (#163); fault
+trees take common-cause groups, demonstration plans keep both risks,
+intervals are chosen for limited crews and staggered tests, total costs are
+discounted and redundancy is allocated a train at a time (#184). Meshed
+diagrams, networks and fault trees are worked out in a fraction of the
+time, and a core too meshed to work out is simulated rather than built
+without end (#171, #172, #173); the analyses over a window cost little more
+than the point curve (#164); and a capacity run's curve follows
+`curve_points` (#190) and is built in linear passes (#201). Everything 0.11
+deprecated is gone (#149).
+
+Behaviour changes: what 0.11 deprecated is removed (#149): the old
+simulation-count names and ignored arguments raise `TypeError`, a diagram
+refuses a non-parametric node, and a standby or load-sharing model with no
+exact or numerical reliability refuses `sf`, `ff`, `cs` and `mean()`,
+leaving it to the simulations, where a fit to simulated lifetimes stood in;
+`availability()` and `cost()` give the exact or conditional mean by default
+(`method="exact"` or `"conditional"` in their mean intervals), and
+`control_variate=False` keeps the simulations' own (#187, #189, #186);
+`availability_from_chunks` refuses chunks with simulations missing, unless
+`allow_gaps=True` (#176); a simulation over a window that is not positive
+and finite is refused (#174), and so are bad counts and structures (#168,
+#169, #178) and a count of `True` in the demonstration functions (#179); an
+MGL group splitting a probability takes PRA's independent shocks, which
+moves its results by O(Q²) (#180); junctions leave the minimal cut and path
+sets (#198); the window analyses move by a few parts in 10^9, and the fixed
+planned outages after age replacement and expected failures of hidden
+failures by up to a few in 10^4 (#164); `SparesDemand.mean` and `std` are
+properties, and calling them, like `StandbyModel`'s and
+`LoadSharingModel`'s `mc_samples`, `lower` and `seed`, warns until 0.13
+(#184, #149); and surpyval 0.22 is required.
+
 ### Added
 
 - **Junctions in a `RepairableRBD` (#182, #175).** A node given
