@@ -544,6 +544,7 @@ def test_the_report_covers_every_public_analysis(cls):
         "is_system_working",
         "node_names",
         "system_timeline",
+        "with_intervals",
     }
     public = {
         name

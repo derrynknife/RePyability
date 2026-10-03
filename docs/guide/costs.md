@@ -302,6 +302,28 @@ no intervals can meet raises `ValueError`, with the best they can do. The
 cost rate is usually flat near its minimum, so an interval some way from the
 one found costs almost the same.
 
+With limited `repair_crews` a component can wait for a crew, and the exact
+long-run values the search uses no longer hold, so the choice is refused.
+`assume_unlimited_crews=True` (#184) chooses the intervals as if every repair
+started at once, and `with_intervals(plan)` gives the diagram with them, to
+simulate with its crews and see what the waiting costs:
+
+```python
+crewed = RepairableRBD(
+    [("s", "a"), ("a", "b1"), ("a", "b2"), ("b1", "t"), ("b2", "t")],
+    {n: pump(1000) for n in ("a", "b1", "b2")},
+    downtime_cost_rate=500.0, repair_crews=1,
+)
+plan = crewed.optimal_replacement_intervals(assume_unlimited_crews=True)
+planned = crewed.with_intervals(plan)    # the same crew, the plan's intervals
+planned.cost(100_000.0, mc_samples=100, seed=1).mean / 100_000.0   # ~> 20.6   simulated
+plan.cost_rate          # -> 20.12   with a crew for every job
+```
+
+`with_intervals` takes a plan or a dict of intervals (and of test offsets),
+and builds the copy as the diagram was built; `compare()` then sets the plan
+against the schedules the diagram has.
+
 `expected_cost_rate` prices an age-replaced component through its renewal
 cycle: it ends at a failure or a preventive replacement, whichever comes
 first, with mean length `C = ∫₀ᵀ R + F(T)·MTTR + R(T)·MTTP` (`MTTP` the mean

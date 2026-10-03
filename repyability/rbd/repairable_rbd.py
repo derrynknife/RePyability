@@ -2306,6 +2306,18 @@ _SPARES_CREWS = (
 #: The most nested RBDs the crews' chain is followed over time with: it
 #: is solved for each pattern of them up and down.
 _MAX_CREW_NESTED = 10
+#: What the interval choices say when a component can wait for a crew
+#: (#184): see ``_require_interval_crews``.
+_INTERVAL_CREWS = (
+    "the exact long-run values the intervals are chosen by assume (the "
+    "Markov chain of the repair queue has no place for scheduled "
+    "maintenance or tests)",
+    "Choose them as if every repair started at once, with "
+    "assume_unlimited_crews=True, then simulate the plan with the crews: "
+    "with_intervals(plan).cost() or .availability(), or compare() it with "
+    "the schedules you have.",
+)
+
 _ALLOCATION_CREWS = (
     "the allocations assume",
     "Compare designs by their long-run values, or simulate them with "
@@ -7289,6 +7301,7 @@ class RepairableRBD(RBD):
         *,
         min_availability: Optional[float] = None,
         max_cost_rate: Optional[float] = None,
+        assume_unlimited_crews: bool = False,
     ) -> MaintenancePlan:
         """Choose the age-replacement intervals for the system as a whole.
 
@@ -7317,6 +7330,12 @@ class RepairableRBD(RBD):
         usually flat near its minimum, so intervals some way from the ones
         found cost almost the same.
 
+        With limited ``repair_crews`` a component can wait for a crew, and
+        the exact long-run values do not hold: the choice is refused unless
+        ``assume_unlimited_crews`` (#184), which chooses the intervals as if
+        every repair started at once. Simulate that plan with the crews,
+        ``with_intervals(plan).cost()``, to see what the waiting costs.
+
         Parameters
         ----------
         nodes : Collection[Hashable], optional
@@ -7330,6 +7349,10 @@ class RepairableRBD(RBD):
         max_cost_rate : float, optional
             The highest long-run cost rate allowed: the intervals then give
             the highest availability within it.
+        assume_unlimited_crews : bool, optional
+            With limited ``repair_crews``, choose the intervals as if every
+            repair started at once (the plan's cost rate and availability
+            are then those without waiting), by default False: refused.
 
         Returns
         -------
@@ -7346,7 +7369,8 @@ class RepairableRBD(RBD):
             they can do).
         NotImplementedError
             If the long-run values are not known exactly (see
-            ``expected_cost_rate``).
+            ``expected_cost_rate``), or a component can wait for a repair
+            crew and ``assume_unlimited_crews`` is not given.
 
         Examples
         --------
@@ -7386,6 +7410,14 @@ class RepairableRBD(RBD):
         min_availability, max_cost_rate = self._interval_targets(
             min_availability, max_cost_rate
         )
+        if self._crews_couple():
+            if not assume_unlimited_crews:
+                self._require_interval_crews()
+            return self._unlimited_crews().optimal_replacement_intervals(
+                chosen,
+                min_availability=min_availability,
+                max_cost_rate=max_cost_rate,
+            )
         scale = {}
         for node in chosen:
             life = failure_time_scale(self.components[node].reliability)
@@ -7441,6 +7473,7 @@ class RepairableRBD(RBD):
         min_availability: Optional[float] = None,
         max_cost_rate: Optional[float] = None,
         offsets=None,
+        assume_unlimited_crews: bool = False,
     ) -> MaintenancePlan:
         """Choose the proof-test intervals of components with hidden
         failures, for the system as a whole.
@@ -7504,6 +7537,10 @@ class RepairableRBD(RBD):
             nodes are all the components with hidden failures, the first
             one's tests stay from 0. Needs ``allowed``. By default each
             offset keeps its share of the interval.
+        assume_unlimited_crews : bool, optional
+            With limited ``repair_crews``, choose as if every repair started
+            at once, as ``optimal_replacement_intervals`` does, by default
+            False: refused.
 
         Returns
         -------
@@ -7524,8 +7561,9 @@ class RepairableRBD(RBD):
             message gives the best they can do).
         NotImplementedError
             If a component's hidden failures have no exact long-run values
-            (see ``node_availability``), or the intervals repeat together
-            only after too many tests to average over.
+            (see ``node_availability``), the intervals repeat together only
+            after too many tests to average over, or a component can wait
+            for a repair crew and ``assume_unlimited_crews`` is not given.
 
         Examples
         --------
@@ -7592,6 +7630,16 @@ class RepairableRBD(RBD):
         min_availability, max_cost_rate = self._interval_targets(
             min_availability, max_cost_rate
         )
+        if self._crews_couple():
+            if not assume_unlimited_crews:
+                self._require_interval_crews()
+            return self._unlimited_crews().optimal_inspection_intervals(
+                chosen,
+                allowed=allowed,
+                min_availability=min_availability,
+                max_cost_rate=max_cost_rate,
+                offsets=offsets,
+            )
         rates = {node: self._tested_scale(node) for node in chosen}
 
         def evaluate(intervals: dict) -> Tuple[float, float]:
@@ -7645,6 +7693,120 @@ class RepairableRBD(RBD):
         return MaintenancePlan(
             {node: float(best[node]) for node in chosen}, cost, availability
         )
+
+    def _require_interval_crews(self) -> None:
+        """Raise if a component can wait for a repair crew, for the interval
+        choices (see ``_INTERVAL_CREWS``)."""
+        self._require_unlimited_crews(*_INTERVAL_CREWS)
+
+    def _unlimited_crews(self) -> "RepairableRBD":
+        """This RBD with as many repair crews as jobs, built as it was."""
+        return RepairableRBD(**{**self._init_args, "repair_crews": None})
+
+    def with_intervals(self, intervals, offsets=None) -> "RepairableRBD":
+        """A copy of this RBD with some maintenance or test intervals
+        changed (#184).
+
+        To simulate a plan that ``optimal_replacement_intervals`` or
+        ``optimal_inspection_intervals`` chose, with the repair crews it was
+        chosen without (``assume_unlimited_crews``), or to ``compare`` it
+        with the schedules this RBD has. The copy is built as this RBD was,
+        with each named component's schedule given the new interval.
+
+        Parameters
+        ----------
+        intervals : MaintenancePlan or dict
+            A plan (its ``intervals``, and its ``offsets`` if it has them),
+            or ``{node: interval}``: a positive interval, or for a
+            component under age replacement ``inf``, to replace it only when
+            it fails.
+        offsets : dict, optional
+            ``{node: time of the first test}`` for components with hidden
+            failures, each from 0 to less than its interval. By default a
+            plan's own; otherwise each keeps its share of the interval.
+
+        Returns
+        -------
+        RepairableRBD
+            The new RBD.
+
+        Raises
+        ------
+        ValueError
+            If a node has no maintenance or test schedule (or an offset no
+            test schedule), a block-replaced component is given ``inf``, or
+            an interval or offset is invalid (as the constructor checks
+            them).
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> pump = {
+        ...     "reliability": surv.Weibull.from_params([1000, 2.5]),
+        ...     "repairability": surv.Exponential.from_params([0.05]),
+        ...     "replace_cost": 5000.0,
+        ...     "preventive": {"interval": 1000.0, "cost": 1000.0},
+        ... }
+        >>> rbd = RepairableRBD([("s", "p"), ("p", "t")], {"p": pump})
+        >>> plan = rbd.optimal_replacement_intervals()
+        >>> rbd.with_intervals(plan).expected_cost_rate() == plan.cost_rate
+        True
+        """
+        if isinstance(intervals, MaintenancePlan):
+            if offsets is None:
+                offsets = intervals.offsets
+            intervals = intervals.intervals
+        offsets = dict(offsets or {})
+        components = dict(self._init_args["components"])
+        for node, interval in dict(intervals).items():
+            spec = components.get(node)
+            # A component has one schedule at most (see the constructor).
+            kinds = [
+                kind
+                for kind in ("preventive", "inspection")
+                if isinstance(spec, dict) and spec.get(kind) is not None
+            ]
+            if not kinds:
+                raise ValueError(
+                    f"Node {node!r} has no maintenance or test schedule to "
+                    "give an interval."
+                )
+            (kind,) = kinds
+            assert isinstance(spec, dict)
+            old = dict(spec[kind])
+            interval = float(interval)
+            new = {**old, "interval": interval}
+            if kind == "inspection":
+                if node in offsets:
+                    new["offset"] = float(offsets[node])
+                elif old.get("offset"):
+                    share = float(old["offset"]) / float(old["interval"])
+                    new["offset"] = share * interval
+            spec = {**spec, kind: new}
+            if kind == "preventive" and math.isinf(interval):
+                if old.get("policy", "age") != "age":
+                    raise ValueError(
+                        f"Node {node!r}: only age replacement can be left to "
+                        "failures (an interval of inf)."
+                    )
+                spec = {k: v for k, v in spec.items() if k != "preventive"}
+            components[node] = spec
+        unknown = set(offsets) - set(dict(intervals))
+        for node in unknown:
+            spec = components.get(node)
+            if not (isinstance(spec, dict) and spec.get("inspection")):
+                raise ValueError(
+                    f"Node {node!r} has an offset but no test schedule."
+                )
+            components[node] = {
+                **spec,
+                "inspection": {
+                    **spec["inspection"],
+                    "offset": float(offsets[node]),
+                },
+            }
+        return RepairableRBD(**{**self._init_args, "components": components})
 
     def _choose_tests(
         self,
@@ -8457,7 +8619,12 @@ class RepairableRBD(RBD):
         )
         # The optimisers, called for every node they can choose for.
         targets = r.refusal(partial(self._interval_targets, None, None))
-        refusal = r.refusal(partial(self._maintained, None)) or targets
+        interval_crews = r.refusal(self._require_interval_crews)
+        refusal = (
+            r.refusal(partial(self._maintained, None))
+            or targets
+            or interval_crews
+        )
         out["optimal_replacement_intervals"] = (
             r.refused(refusal)
             if refusal
@@ -8470,6 +8637,7 @@ class RepairableRBD(RBD):
         refusal = (
             r.refusal(partial(self._inspected, None))
             or targets
+            or interval_crews
             or next(
                 (
                     message

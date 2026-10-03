@@ -40,6 +40,15 @@ other release, fixes included, the minor.
   a 95% fill rate, and 17 on one. Members of one common-cause group, which
   their shared causes replace together, are refused; the results say which
   `members` a part holds.
+- **Intervals with limited repair crews, and plans applied (#184).**
+  `optimal_replacement_intervals` and `optimal_inspection_intervals`
+  failed with limited `repair_crews`, saying only to simulate, though
+  crew-limited plants are the norm. They now refuse with the way through,
+  and `assume_unlimited_crews=True` chooses the intervals as if every
+  repair started at once. `RepairableRBD.with_intervals(plan)` gives the
+  diagram with a plan's intervals (and test offsets), built as the
+  diagram was, to simulate with its crews (`cost()`, `availability()`)
+  or `compare()` with the schedules it has.
 - **Staggered tests chosen with their intervals (#184).**
   `optimal_inspection_intervals` chose intervals but tested every
   component from its offset as given (usually 0), where testing redundant
