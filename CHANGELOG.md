@@ -138,6 +138,39 @@ other release, fixes included, the minor.
   and its cause can be read off today's plant. The event loop records
   them, in Python, as the compiled engine starts no component part way
   through a life.
+- **Hidden failures whose tests or repairs take time, or whose tests miss
+  them, for any life (#159).** A component with hidden failures had exact
+  values only with tests and repairs in no time, and with tests that can
+  miss a failure only for an exponential life; otherwise every exact
+  method refused, and a proof test of hours on a valve tested yearly was
+  simulated. Now a test of a working unit takes it off line (a planned
+  outage) without ageing it, a failure is repaired once its test is over,
+  the tests in the repair are not done, and a missed failure waits for the
+  next full test, as in the simulation, numerically: the tests that find
+  failures are the unit's regeneration points, and the cycle from one to
+  the next is followed test by test, the unit's age at its tests a random
+  walk on a grid (`_hidden_tests`), or, for an exponential life, its chain
+  of states from test to test. The long run follows by renewal-reward over
+  the cycle (with tests that miss, a Markov renewal over where the cycle
+  starts in the full tests' period), and from new or from a state (up at
+  an age, in a repair, or in its long-run state) the tests that find
+  failures are a renewal process on the tests. So the long-run values, the
+  frequencies and the planned outages at the tests, the cost rate (each
+  test done charged), the importance measures, the availability over time,
+  the expected events and costs of a window and
+  `optimal_inspection_intervals` are numerical, to about 1e-8 (when a test
+  is over, and a unit back in service, exactly). They agree with the
+  closed forms and the sums of #144 where those apply, and with the
+  simulation. Two valves of a 1oo2 pair proof-tested together for about
+  3.6 hours a year have a PFDavg of 4.28e-4, the tests taking the function
+  off line; tested half a year apart, 7.12e-5. `spares_demand` and
+  `spares_stock` count such a component's spares too: its replacements
+  still fall on the tests that find failures, a renewal process on the
+  tests, or with tests that can miss a failure, a Markov renewal process
+  over where each cycle starts between the full tests. A test that can
+  last as long as its interval stays simulated (the refusal says how
+  likely it is to), as do a common-cause group's members whose tests or
+  repairs take time (#158).
 - **Repair crews around nested RBDs, over time (#162).** With limited
   repair crews, the expected events and cost and the capacity over time
   refused a nested RBD, though its availability over time was worked out.

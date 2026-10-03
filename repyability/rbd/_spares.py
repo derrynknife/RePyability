@@ -69,13 +69,30 @@ Two kinds of component are counted otherwise (#147):
   replacement, ``C``; over ``M(T) + 1`` replacements an interval. The
   life's sums are kept as the bands of grid points that hold their mass,
   as a block interval may hold many lives.
-- **With hidden failures, tested and renewed in no time** (``Tested``), a
-  unit is replaced at the test that finds it failed, so the replacements
-  fall on the tests, and their count is that of a discrete renewal process
-  on them: exactly, with no grid. In a lead time from a random time, the
-  next replacement is ``j`` tests on with probability ``R((j - 1) T) / S``
-  (``S`` the mean cycle, in tests); and before a replacement, the ones
-  before it are whole cycles back.
+- **With hidden failures** (``Tested``), a unit is replaced at the test
+  that finds it failed, however long the test and the repair then take, so
+  the replacements fall on the tests, and their count is that of a
+  discrete renewal process on them, from the chances of each cycle's
+  length in tests: exactly, tested and renewed in no time, and from the
+  cycle followed on a grid otherwise (#159). In a lead time from a random
+  time, the next replacement is ``j`` tests on with probability ``P(C >=
+  j) / S`` (``C`` a cycle, ``S`` its mean, in tests); and before a
+  replacement, the ones before it are whole cycles back.
+
+  With tests that can miss a failure, but for every ``per``-th, which
+  finds every one, a cycle depends on where the test that starts it falls
+  in the full tests' period (its place, ``q``): the replacements are a
+  Markov renewal process over the places, counted the same way, with each
+  test's place known from the first's. From a random time, whose next test
+  is at each place as often, the next replacement is ``j`` tests on if the
+  cycle in progress started ``a`` tests before the next test and lasts ``a
+  + j - 1``: with probability the sum over ``a`` of ``r_q P(C_q = a + j -
+  1)``, ``r_q`` the long-run chance that a test at the place ``a`` tests
+  back finds a failure. Before a replacement, at each place in proportion
+  to its share of them, the cycles back are the reversed process's: one of
+  ``l`` tests back from a place ``q`` with probability ``pi_q' P(C_q' =
+  l) / pi_q``, ``q'`` the place ``l`` tests before and ``pi`` the long-run
+  shares of the places.
 """
 
 import math
@@ -122,16 +139,20 @@ class Block(NamedTuple):
 
 
 class Tested(NamedTuple):
-    """What a component with hidden failures, tested and renewed in no
-    time, replaces on: its tests, at ``first`` and every ``interval`` after;
-    ``found(n)``, the chances that the unit in service at 0 is found failed
-    at each of the first ``n`` tests; and ``cycle``, the chances that a unit
-    renewed at a test is found failed ``1, 2, ...`` tests later."""
+    """What a component with hidden failures replaces on: its tests, at
+    ``first`` and every ``interval`` after; ``found(n)``, the chances that
+    the unit in service at 0 is found failed at each of the first ``n``
+    tests; and ``cycle``, the chances that a unit renewed at a test is
+    found failed ``1, 2, ...`` tests later. With tests that can miss a
+    failure, ``cycle`` has a row for each place in the full tests' period
+    of the test that renews the unit (see the module docstring), and
+    ``position`` is the first test's place."""
 
     first: float
     interval: float
     found: Callable[[int], np.ndarray]
     cycle: np.ndarray
+    position: int = 0
 
 
 class _Dist(NamedTuple):
@@ -853,35 +874,161 @@ def _assembled(
     return np.array(out)
 
 
-def _lattice_tails(first: np.ndarray, cycle: np.ndarray, last: int) -> list:
-    """``P(J_s <= last)``, ``s = 1, 2, ...``, until it is below ``_TAIL``:
-    ``J_1`` has the distribution ``first`` (over ``0, 1, 2, ...`` tests),
-    and each next one is a ``cycle`` (over ``0, 1, 2, ...``) more."""
+def _convolved(a: np.ndarray, b: np.ndarray, last: int) -> np.ndarray:
+    """The convolution of ``a`` and ``b`` to index ``last``."""
     from scipy.signal import fftconvolve
 
+    if len(a) * len(b) <= 4_000_000:
+        return np.convolve(a, b)[: last + 1]
+    return np.maximum(fftconvolve(a, b)[: last + 1], 0.0)
+
+
+def _lattice_tails(
+    first: np.ndarray,
+    cycle: np.ndarray,
+    last: int,
+    places: Optional[np.ndarray] = None,
+) -> list:
+    """``P(J_s <= last)``, ``s = 1, 2, ...``, until it is below ``_TAIL``:
+    ``J_1`` has the distribution ``first`` (over ``0, 1, 2, ...`` tests),
+    and each next one is a ``cycle`` (over ``0, 1, 2, ...``) more; or, with
+    ``places``, the place of each test ``0, 1, ..., last``, a ``cycle[q]``
+    more from one at the place ``q``."""
     tails: List[float] = []
     if last < 0:
         return [0.0]
     head = np.asarray(first, dtype=float)[: last + 1]
-    step = np.asarray(cycle, dtype=float)[: last + 1]
+    step = np.asarray(cycle, dtype=float)[..., : last + 1]
     while len(tails) < MAX_COUNT:
         tail = float(head.sum())
         tails.append(min(tail, 1.0))
         if tail < _TAIL:
             return tails
-        if len(head) * len(step) <= 4_000_000:
-            head = np.convolve(head, step)[: last + 1]
-        else:
-            head = np.maximum(fftconvolve(head, step)[: last + 1], 0.0)
+        if places is None:
+            head = _convolved(head, step, last)
+            continue
+        after = np.zeros(last + 1)
+        at = places[: len(head)]
+        for q in range(len(step)):
+            part = np.where(at == q, head, 0.0)
+            if part.any():
+                moved = _convolved(part, step[q], last)
+                after[: len(moved)] += moved
+        head = after
     raise NotImplementedError(
         f"More than {MAX_COUNT} replacements are likely in the time: count "
         "them by simulation instead."
     )
 
 
+def _cycles(model: Tested) -> np.ndarray:
+    """A ``Tested`` model's cycles over ``0, 1, 2, ...`` tests, a row for
+    each place (one, with tests that find every failure)."""
+    cycle = np.atleast_2d(np.asarray(model.cycle, dtype=float))
+    return np.concatenate([np.zeros((len(cycle), 1)), cycle], axis=1)
+
+
+def _shares(cycles: np.ndarray) -> np.ndarray:
+    """The long-run share of the replacements at each place: the
+    stationary distribution of the places the cycles move between."""
+    per, n = cycles.shape
+    if per == 1:
+        return np.ones(1)
+    moves = np.array(
+        [
+            np.bincount((q + np.arange(n)) % per, cycles[q], per)
+            for q in range(per)
+        ]
+    )
+    moves = moves / moves.sum(axis=1, keepdims=True)
+    system = np.vstack([moves.T - np.eye(per), np.ones(per)])
+    rhs = np.concatenate([np.zeros(per), [1.0]])
+    shares = np.maximum(np.linalg.lstsq(system, rhs, rcond=None)[0], 0.0)
+    return shares / shares.sum()
+
+
+def _places_tails(model: Tested, end: float, kind: str) -> np.ndarray:
+    """``_tested_tails`` for tests that can miss a failure: the
+    replacements a Markov renewal process over the places of the tests in
+    the full tests' period (see the module docstring)."""
+    T = model.interval
+    cycles = _cycles(model)
+    per, n = cycles.shape
+    shares = _shares(cycles)
+    if kind == "new":
+        tests = 0
+        if end > model.first:
+            tests = int(math.ceil((end - model.first) / T - 1e-12))
+        if tests == 0:
+            return np.zeros(1)
+        first = np.concatenate([[0.0], model.found(tests)])
+        places = (model.position + np.arange(tests + 1) - 1) % per
+        return np.array(_lattice_tails(first, cycles, tests, places))
+
+    def mixed(parts: list, weights) -> np.ndarray:
+        size = max(len(part) for part in parts)
+        return sum(
+            w * np.pad(part, (0, size - len(part)))
+            for w, part in zip(weights, parts)
+        )
+
+    if kind == "arrival":
+        # Back from a replacement at each place, in proportion to its share
+        # of them: the cycles back are the reversed process's, over the
+        # tests in the lead time.
+        last = int(math.ceil(end / T - 1e-12)) - 1
+        if last < 1:
+            return np.zeros(1)
+        lags = np.arange(min(n, last + 1))
+        back = np.zeros((per, len(lags)))
+        for q in range(per):
+            if shares[q] > 0.0:
+                before = (q - lags) % per
+                back[q] = shares[before] * cycles[before, lags] / shares[q]
+        parts = []
+        for q in range(per):
+            places = (q - np.arange(last + 1)) % per
+            parts.append(np.array(_lattice_tails(back[q], back, last, places)))
+        return mixed(parts, shares)
+    # From a random time, its next test at each place as often: the next
+    # replacement j tests on ends the cycle in progress, started a tests
+    # before that test (see the module docstring), j up to the tests in the
+    # lead time.
+    lengths = cycles @ np.arange(n)
+    rates = per * shares / float(shares @ lengths)
+    whole = int(math.floor(end / T + 1e-12))
+    share = end / T - whole
+    if share < 1e-12:
+        share = 0.0
+    reach = whole + 1
+    rows = -(-(n + reach) // per) + 1
+    suffix = np.zeros((per, rows * per))
+    for q in range(per):
+        padded = np.zeros(rows * per)
+        padded[:n] = cycles[q]
+        # Each lag's sum with those whole periods beyond it.
+        folded = padded.reshape(rows, per)[::-1].cumsum(axis=0)[::-1]
+        suffix[q] = folded.ravel()
+    parts = []
+    for p in range(per):
+        delay = np.zeros(reach + 1)
+        for q in range(per):
+            a0 = (p - q) % per or per
+            delay[1:] += rates[q] * suffix[q, a0 : a0 + reach]  # noqa: E203
+        places = (p + np.arange(reach + 1) - 1) % per
+        fewer = np.array(_lattice_tails(delay, cycles, whole, places))
+        if share:
+            more = np.array(_lattice_tails(delay, cycles, reach, places))
+            fewer = mixed([fewer, more], [1.0 - share, share])
+        parts.append(fewer)
+    return mixed(parts, np.full(per, 1.0 / per))
+
+
 def _tested_tails(model: Tested, end: float, kind: str) -> np.ndarray:
     """``P(N >= s)``, ``s = 1, 2, ...``, for a component whose replacements
     fall on its tests (see the module docstring for ``kind``)."""
+    if np.ndim(model.cycle) > 1:
+        return _places_tails(model, end, kind)
     T = model.interval
     cycle = np.concatenate([[0.0], model.cycle])
     if kind == "new":
@@ -924,7 +1071,8 @@ def rate(model) -> float:
     replacements in no time, the block replacement and the failures in a
     block interval, ``M(T) + 1``, over ``T``)."""
     if isinstance(model, Tested):
-        tests = float(np.arange(1, len(model.cycle) + 1) @ model.cycle)
+        cycles = _cycles(model)
+        tests = float(_shares(cycles) @ (cycles @ np.arange(cycles.shape[1])))
         return 1.0 / (model.interval * tests)
     if isinstance(model, Block):
         counts = count(model, model.interval, "new")

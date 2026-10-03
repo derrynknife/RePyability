@@ -499,14 +499,14 @@ def test_the_routes_report_the_counts():
                 }
             },
         )
-        # Tests that take time are simulated.
+        # Tests that can last as long as their interval are simulated.
         slow = RepairableRBD(
             [("s", "c"), ("c", "t")],
             {
                 "c": {
                     "reliability": W([500.0, 1.5]),
                     "repairability": "instant",
-                    "inspection": {"interval": 100.0, "duration": E([2.0])},
+                    "inspection": {"interval": 100.0, "duration": E([0.01])},
                 }
             },
         )

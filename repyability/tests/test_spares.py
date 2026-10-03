@@ -171,8 +171,9 @@ def test_a_replacement_at_the_horizon_falls_after_it():
 
 
 def test_components_the_renewal_count_does_not_cover_are_simulated():
-    # Block-replaced and tested components are counted too (#147: see
-    # test_spares_block_and_tested.py), but not tests that take time.
+    # Block-replaced and tested components are counted too (#147, #159:
+    # see test_spares_block_and_tested.py), but not tests that can last as
+    # long as their interval.
     group = {
         "reliability": E([0.01]),
         "repairability": E([0.5]),
@@ -181,11 +182,11 @@ def test_components_the_renewal_count_does_not_cover_are_simulated():
     tested = {
         "reliability": E([0.01]),
         "repairability": "instant",
-        "inspection": {"interval": 50.0, "duration": E([1.0])},
+        "inspection": {"interval": 50.0, "duration": E([0.02])},
     }
     for spec, why in (
         (group, "standby group"),
-        (tested, "tests and repairs take no time"),
+        (tested, "within its test interval"),
     ):
         rbd = single(spec)
         with pytest.raises(NotImplementedError, match=why) as error:

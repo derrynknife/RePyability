@@ -248,6 +248,21 @@ def repairable_rbds():
                     inspection={"interval": 100.0, "duration": E([2.0])},
                 )
             ),
+            "tested, missing": system(
+                unit(
+                    inspection={
+                        "interval": 100.0,
+                        "coverage": 0.6,
+                        "full_test": 300.0,
+                    },
+                )
+            ),
+            "tested, as long as the interval": system(
+                unit(
+                    repairability="instant",
+                    inspection={"interval": 100.0, "duration": E([0.01])},
+                )
+            ),
             "simulated standby life": system(
                 {
                     "reliability": StandbyModel(
@@ -603,7 +618,9 @@ def test_the_repairable_report_names_the_refusing_component(monkeypatch):
     from repyability.rbd import _compiled
 
     monkeypatch.setattr(_compiled, "available", lambda: True)
-    report = repairable_rbds()["tested, taking time"].analysis_routes()
+    report = repairable_rbds()[
+        "tested, as long as the interval"
+    ].analysis_routes()
     assert report["mean_availability"].route == routes.REFUSED
     assert report["mean_availability"].nodes == ("a",)
     assert report["availability"].route == routes.SIMULATED
@@ -840,30 +857,6 @@ def test_the_readme_says_what_is_simulated():
             (repairable["too meshed"], "mean_availability", "refused"),
             (repairable["too meshed"], "point_availability", "refused"),
         ],
-        "Hidden failures whose tests or repairs take time, or whose tests "
-        "miss failures of a life that is not exponential": [
-            (
-                repairable["tested, taking time"],
-                "mean_availability",
-                "refused",
-            ),
-            (
-                repairable["tested, taking time"],
-                "availability",
-                "simulated",
-            ),
-            (repairable["tested, Weibull"], "mean_availability", "numerical"),
-            (
-                repairable["tested, Weibull"],
-                "point_availability",
-                "numerical",
-            ),
-            (
-                repairable["tested, constant rate"],
-                "mean_availability",
-                "exact",
-            ),
-        ],
         "Common-cause groups in a repairable diagram": [
             (
                 repairable["common cause, tested"],
@@ -938,11 +931,13 @@ def test_the_readme_says_what_is_simulated():
             (minimal, "expected_cost", "numerical"),
             (minimal, "mean_availability", "refused"),
         ],
-        "Spares of tested components whose tests or repairs take time, and "
-        "the stock of block-replaced ones whose repairs or block replacements "
-        "take time": [
-            (repairable["tested, taking time"], "spares_demand", "refused"),
+        "The stock of block-replaced components whose repairs or block "
+        "replacements take time": [
             (repairable["block replacement"], "spares_stock", "refused"),
+            (repairable["tested, missing"], "spares_demand", "numerical"),
+            (repairable["tested, missing"], "spares_stock", "numerical"),
+            (repairable["tested, taking time"], "spares_demand", "numerical"),
+            (repairable["tested, taking time"], "spares_stock", "numerical"),
             (repairable["block replacement"], "spares_demand", "numerical"),
             (
                 repairable["block replacement, in no time"],

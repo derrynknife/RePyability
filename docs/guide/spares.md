@@ -187,9 +187,10 @@ at the two block times in the 12 weeks before it. A fleet's systems are
 taken as on block schedules of their own, out of step with each other; two
 block-replaced components in one part are refused, as their block times
 keep step. Repairs or block replacements that take time are refused (#160),
-as one still going on at a block time carries over into the next interval;
-so are proof tests that take time, repairs of tested components that take
-time, and tests that can miss a failure (#159).
+as one still going on at a block time carries over into the next interval.
+A tested component's spares are counted whatever its tests and repairs
+take, and whether or not its tests can miss a failure: the replacements
+still fall on the tests that find failures (#159).
 
 ## How it is computed
 
@@ -229,19 +230,32 @@ started), this needs only sums over one grid of the interval. Before a
 replacement the count is that after one, as the times between replacements
 are stationary from one: after a failure, at the renewal density, or after
 a block replacement. With proof tests, every replacement falls on
-a test, and the count is that of a discrete renewal process on the tests:
-exact, with no grid. A unit renewed at a test is renewed again `k` tests
-later with probability `R((k − 1)τ) − R(kτ)`. From a random time, the next
-replacement is `j` tests on with probability `R((j − 1)τ) / S`, `S` being
-the mean cycle in tests.
+a test, and the count is that of a discrete renewal process on the tests.
+Tested and repaired in no time, it is exact, with no grid: a unit renewed
+at a test is renewed again `k` tests later with probability `R((k − 1)τ) −
+R(kτ)`. With tests or repairs that take time, the chances of each cycle's
+length in tests come from the cycle followed test by test on a grid (see
+[tests and repairs that take
+time](costs.md#tests-and-repairs-that-take-time)). From a random time, the
+next replacement is `j` tests on with probability `P(C ≥ j) / S`, `C` being
+a cycle's length in tests and `S` its mean.
+
+With tests that can miss a failure, but a full test every so often that
+finds every one, a cycle's length depends on where the test that starts it
+falls between the full tests: the replacements are a Markov renewal
+process over those places, counted the same way, each test's place known
+from the first's. From a random time, its next test at each place as
+often, the next replacement ends the cycle then in progress; before a
+replacement, the cycles back are those of the process reversed, from each
+place in proportion to its share of the replacements.
 
 Some components' replacements are not counted this way, and the counts
 refuse, with the reason:
 
-- a component with **hidden failures** whose tests or repairs take time, or
-  whose tests can miss a failure (#159), and the stock of one under
-  **block replacement** whose repairs or block replacements take time
-  (#160);
+- the stock of a component under **block replacement** whose repairs or
+  block replacements take time (#160);
+- a component with **hidden failures** whose tests can last as long as
+  their interval;
 - a **standby group**, whose units' failures depend on each other;
 - any component while **repair crews** can keep components waiting.
 

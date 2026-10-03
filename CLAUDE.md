@@ -84,6 +84,13 @@
   simulation. Likewise a standby group's chain (`_standby_chain.py`) copies
   `_StandbyGroup`'s rules (switching, spares, repairs), checked by
   `test_repairable_standby.py`.
+- **A tested unit's numerical model (`repyability/rbd/_hidden_tests.py`,
+  #159) copies the simulation's inspections** (`_inspected_follow_up`,
+  `_inspected_next`): a test takes a working unit off line without ageing
+  it, a failure is repaired once its test is over, the tests in a repair
+  are not done, and a failure a test misses waits for the next full test.
+  A change to one goes into the other; `test_hidden_failures_timed.py`
+  checks the model against the simulation.
 
 ## How each analysis is computed
 

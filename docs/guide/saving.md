@@ -162,10 +162,12 @@ The nodes can change a route:
   a clock (block replacement, or never failing before an instant age
   replacement): their replacements can share a stop, and `cost()` counts
   that.
-- **Hidden failures.** Their exact values need instant tests and repairs:
-  in closed form for a constant failure rate, and numerical for any other
-  life (summed over the test intervals). Tests or repairs that take time,
-  and tests that miss failures of a life that is not exponential, make the
+- **Hidden failures.** Their values are exact in closed form for a
+  constant failure rate and tests and repairs in no time, and numerical
+  otherwise: summed over the test intervals for any other life, and, with
+  tests or repairs that take time or tests that miss failures, the cycle
+  from one test that finds a failure to the next followed test by test on
+  a grid (#159). A test that can last as long as its interval makes the
   exact methods refuse.
 - **Standby groups.** A group's long-run values are exact from its own
   Markov chain when its units' lives and repair times are exponential, and
@@ -182,10 +184,11 @@ The nodes can change a route:
   renewal process, or to fall on a calendar: under block replacement they
   are counted block interval by block interval (the stock too, with repairs
   and block replacements in no time, #160),
-  and with hidden failures on the tests, when the tests and repairs take no
-  time. Standby groups, renewals at a maintenance group's stops, waiting for
-  repair crews, and tests or repairs that take time make them refuse, and
-  `spares_demand(method="simulate")` counts them instead.
+  and with hidden failures on the tests that find them, whatever the tests
+  and repairs take (with tests that can miss a failure, over where each
+  cycle starts between the full tests). Standby groups, renewals at a
+  maintenance group's stops and waiting for repair crews make them refuse,
+  and `spares_demand(method="simulate")` counts them instead.
 - **Imperfect repair.** `Repairable` policies are analytic for a power-law
   process and simulated for imperfect repair.
 
@@ -204,12 +207,15 @@ tested = RepairableRBD(
         "pump": {
             "reliability": surv.Weibull.from_params([500, 1.5]),
             "repairability": "instant",
-            "inspection": {"interval": 720},
+            "inspection": {
+                "interval": 720,
+                "duration": surv.Exponential.from_params([0.001]),  # 1,000 h on average
+            },
         }
     },
 )
 routes = tested.analysis_routes()
-routes["mean_availability"].route  # 'refused': a Weibull life, found by tests
+routes["mean_availability"].route  # 'refused': a test can outlast its interval
 routes["mean_availability"].nodes  # ('pump',)
 routes["availability"].route       # 'simulated'
 routes["availability"].engine      # 'numba' with numba installed, else 'python'

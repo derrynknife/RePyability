@@ -1,8 +1,10 @@
 """Spares of block-replaced and tested components (#147): a block-replaced
 component's replacements counted block interval by block interval, and a
-tested one's on the lattice of its tests; checked against counts built from
-the plain renewal count, binomial closed forms for a constant failure rate,
-a Monte Carlo of the replacements, and the RBD's own simulation."""
+tested one's on the lattice of its tests (whatever its tests and repairs
+take, and over the places in the full tests' period when its tests can miss
+a failure, #159); checked against counts built from the plain renewal
+count, binomial closed forms for a constant failure rate, a Monte Carlo of
+the replacements, and the RBD's own simulation."""
 
 import numpy as np
 import pytest
@@ -372,19 +374,139 @@ def test_the_simulation_agrees_for_a_tested_component():
     assert exact.method == "exact"
 
 
-def test_tests_that_take_time_or_miss_failures_are_refused():
-    life = W([100.0, 2.0])
-    for spec in (
-        inspected(life, 20.0, duration=E([1.0])),
-        inspected(life, 20.0, coverage=0.5, full_test=100.0),
-        {**inspected(life, 20.0), "repairability": E([1.0])},
-    ):
-        rbd = single(spec)
-        with pytest.raises(NotImplementedError, match="#159") as error:
-            rbd.spares_demand(100.0)
-        assert rbd.analysis_routes()["spares_demand"].reason == str(
-            error.value
+def missing(life, interval, first, per, coverage, size, rng, place):
+    """Replacement times of a unit tested in no time by tests that find a
+    failure with probability ``coverage``, but every ``per``-th (at place
+    0, the first test at ``place``), which finds every one: a failure the
+    first test after it misses waits for the next full test."""
+    times, start, k_next = [], 0.0, 0
+    lives = life.qf(rng.uniform(size=size))
+    for life_k, coin in zip(lives, rng.uniform(size=size)):
+        failure = start + life_k
+        k = max(k_next, int(np.ceil((failure - first) / interval - 1e-12)))
+        at = (place + k) % per
+        if at and coin >= coverage:
+            k += -at % per
+        start = first + k * interval
+        times.append(start)
+        k_next = k + 1
+    return np.array(times)
+
+
+@pytest.mark.parametrize(
+    "life, offset, coverage, full",
+    [
+        (W([100.0, 2.0]), 0.0, 0.5, 100.0),
+        (W([100.0, 2.0]), 7.0, 0.6, 60.0),
+        (E([0.02]), 0.0, 0.3, 80.0),
+        (W([60.0, 3.0]), 5.0, 0.0, 40.0),
+    ],
+)
+def test_tests_that_miss_against_a_monte_carlo_of_the_replacements(
+    life, offset, coverage, full
+):
+    # A cycle depends on where the test that starts it falls in the full
+    # tests' period: the replacements are a Markov renewal process over the
+    # places (#159).
+    interval = 20.0
+    per = int(round(full / interval))
+    spec = inspected(life, interval, coverage=coverage, full_test=full)
+    if offset:
+        spec["inspection"]["offset"] = offset
+    rbd = single(spec)
+    first, place = (offset, 0) if offset else (interval, 1 % per)
+    rng = np.random.default_rng(6)
+    counts = [
+        int(
+            np.sum(
+                missing(life, interval, first, per, coverage, 15, rng, place)
+                < 250.0
+            )
         )
-    routes = single(inspected(life, 20.0)).analysis_routes()
+        for _ in range(20_000)
+    ]
+    got, want = padded(
+        rbd.spares_demand(250.0)["c"].probabilities,
+        np.bincount(counts) / len(counts),
+    )
+    np.testing.assert_allclose(got, want, atol=0.012)
+    # In the long run: one long history.
+    times = missing(life, interval, first, per, coverage, 200_000, rng, place)
+    starts = rng.uniform(times[100], times[-100], 200_000)
+    on_order = np.searchsorted(times, starts + 45.0) - np.searchsorted(
+        times, starts
+    )
+    stock = rbd.spares_stock(45.0, fill_rate=0.9)["c"]
+    got, want = padded(stock.on_order, np.bincount(on_order) / len(on_order))
+    np.testing.assert_allclose(got, want, atol=0.005)
+    inner = times[100:-100]
+    before = np.arange(100, len(times) - 100) - np.searchsorted(
+        times, inner - 45.0, side="right"
+    )
+    got, want = padded(
+        stock.on_order_at_demand, np.bincount(before) / len(before)
+    )
+    np.testing.assert_allclose(got, want, atol=0.005)
+    rate = (len(inner) - 1) / (inner[-1] - inner[0])
+    mean = np.arange(len(stock.on_order)) @ stock.on_order
+    assert mean == pytest.approx(45.0 * rate, rel=0.01)
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        {
+            "reliability": W([100.0, 2.0]),
+            "repairability": surv.LogNormal.from_params([1.0, 0.5]),
+            "inspection": {
+                "interval": 20.0,
+                "coverage": 0.5,
+                "full_test": 60.0,
+                "duration": surv.ExactEventTime.from_params([1.5]),
+            },
+        },
+        {
+            "reliability": E([0.02]),
+            "repairability": E([0.2]),
+            "inspection": {
+                "interval": 20.0,
+                "coverage": 0.4,
+                "full_test": 80.0,
+                "offset": 7.0,
+                "duration": surv.LogNormal.from_params([0.0, 0.3]),
+            },
+        },
+        {**inspected(W([100.0, 2.0]), 20.0), "repairability": E([1.0])},
+    ],
+)
+def test_tests_and_repairs_that_take_time_against_the_simulation(spec):
+    # The replacements still fall on the tests that find failures, whatever
+    # the tests and repairs take (#159).
+    rbd = single(spec)
+    routes = rbd.analysis_routes()
+    assert routes["spares_demand"].route == r.NUMERICAL
+    assert routes["spares_stock"].route == r.NUMERICAL
+    exact = rbd.spares_demand(300.0)["c"]
+    simulated = rbd.spares_demand(
+        300.0, method="simulate", mc_samples=40_000, seed=7
+    )["c"]
+    got, want = padded(exact.probabilities, simulated.probabilities)
+    np.testing.assert_allclose(got, want, atol=0.01)
+    assert exact.mean == pytest.approx(
+        simulated.mean, abs=4 * exact.std / np.sqrt(40_000)
+    )
+
+
+def test_tests_that_can_last_as_long_as_their_interval_are_refused():
+    rbd = single(inspected(W([100.0, 2.0]), 20.0, duration=E([0.05])))
+    with pytest.raises(
+        NotImplementedError, match="within its test interval"
+    ) as error:
+        rbd.spares_demand(100.0)
+    assert "spares_demand(method='simulate')" in str(error.value)
+    routes = rbd.analysis_routes()
+    assert routes["spares_demand"].reason == str(error.value)
+    assert routes["spares_stock"].route == r.REFUSED
+    routes = single(inspected(W([100.0, 2.0]), 20.0)).analysis_routes()
     assert routes["spares_demand"].route == r.NUMERICAL
     assert routes["spares_stock"].route == r.NUMERICAL

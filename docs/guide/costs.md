@@ -606,33 +606,37 @@ down together, so `mean_availability` and the other long-run methods average
 the system's availability over one period of the inspection schedules (the
 least common multiple of the intervals: components on different intervals
 can be mixed), and the importance measures are ratios of those averages.
-They need instant tests and instant repair (in closed form for a constant
-failure rate, and numerically for any other life: see [a life that wears
-out](#a-life-that-wears-out)), and raise `NotImplementedError` otherwise:
-then simulate. Testing both valves at once, for example, takes the whole
-function off-line during the test, which here costs far more than the
-hidden failures:
+With instant tests and repairs they are in closed form for a constant
+failure rate, and numerical for any other life (see [a life that wears
+out](#a-life-that-wears-out)); tests and repairs that take time are
+numerical too (see [tests and repairs that take
+time](#tests-and-repairs-that-take-time)). Testing both valves at once, for
+example, takes the whole function off-line during the test, which here
+costs far more than the hidden failures:
 
 ```python
-def tested(interval):
+def tested(interval, offset=0.0):
     return {
         "reliability": surv.Exponential.from_params([2e-6]),
         "repairability": surv.LogNormal.from_params([np.log(24), 0.5]),   # about a day
         "inspection": {
             "interval": interval,
             "duration": surv.Weibull.from_params([4, 3]),                  # about 3.6 h
+            "offset": offset,
         },
     }
 
-both = RepairableRBD(
-    [("s", "v1"), ("s", "v2"), ("v1", "t"), ("v2", "t")],
-    {"v1": tested(8760.0), "v2": tested(8760.0)},
-)
-decade = both.availability(t_simulation=10 * 8760.0, mc_samples=20000, seed=0)
-1 - decade.system_uptime / (decade.n_simulations * decade.time_simulated_to)
-# -> 3.9e-4
-decade.system_planned_outages / decade.n_simulations   # -> 9.0   one per test
+pair = [("s", "v1"), ("s", "v2"), ("v1", "t"), ("v2", "t")]
+both = RepairableRBD(pair, {"v1": tested(8760.0), "v2": tested(8760.0)})
+both.mean_unavailability()                          # -> 4.28e-4
+1 - both.mission_availability(10 * 8760.0)          # -> 3.95e-4   its first ten years
+both.expected_events(10 * 8760.0).system_planned_outages   # -> 9.0   one per test
+apart = RepairableRBD(pair, {"v1": tested(8760.0), "v2": tested(8760.0, 4380.0)})
+apart.mean_unavailability()                         # -> 7.12e-5
 ```
+
+Tested half a year apart, a test takes one valve off-line while the other
+holds the function, and the PFDavg falls six-fold.
 
 ### A life that wears out
 
@@ -677,9 +681,56 @@ unit but the one renewed at the last test ages smoothly, so their sum is
 worked out once, at Chebyshev points across the interval, and interpolated
 between them, to rounding. A term that bends there (a life with a
 threshold, say) is summed directly instead. A life that lasts more than
-200,000 intervals (the most summed) refuses. Tests that take time, repairs
-that take time, and tests that can miss failures of a life that is not
-exponential are simulated (#159).
+200,000 intervals (the most summed) refuses.
+
+### Tests and repairs that take time
+
+A test of a working unit takes it off-line (a planned outage) for the
+test's time, during which it does not age; a failure found by a test is
+repaired once the test is over, and the tests that fall in the repair are
+not done. Then renewals no longer fall on the tests, and a test that can
+miss a failure (see [test coverage](#common-cause-staggered-tests-and-test-coverage))
+leaves the failure for a later one. The values are still numerical, for
+any life (#159). The tests that find failures are the unit's regeneration
+points: from one, a new unit is put into service the test's time plus the
+repair's later, and its age at its later tests is a random walk (each test
+holds it back by the test's time), followed test by test on a grid of
+2,000 steps or more an interval. The long run follows by renewal-reward
+over that cycle (over the cycles from each place in the full tests'
+period, with tests that miss), and from new, or from a state, the tests
+that find failures are a renewal process on the tests. When a test is
+over, and when a unit is back in service, are kept out of the grid, exact
+at any time; the rest is exact to the square of the grid's step, about
+1e-8. An exponential life needs no ages: its chain of states from test to
+test (working, failed, missed, in a repair) is followed instead.
+
+```python
+def valve(coverage=1.0):
+    inspection = {
+        "interval": 8760.0,
+        "duration": surv.ExactEventTime.from_params([8.0]),     # 8 h off-line
+    }
+    if coverage < 1.0:
+        inspection.update(coverage=coverage, full_test=5 * 8760.0)
+    return RepairableRBD(
+        [("s", "v"), ("v", "t")],
+        {"v": {
+            "reliability": surv.Weibull.from_params([150_000.0, 2.5]),
+            "repairability": surv.ExactEventTime.from_params([24.0]),   # a day
+            "inspection": inspection,
+        }},
+    )
+
+valve().mean_unavailability()       # -> 0.03289   0.03186 with tests and repairs in no time
+valve(0.7).mean_unavailability()    # -> 0.06845   70% coverage, a full test every 5 years
+valve(0.7).expected_events(10 * 8760.0).system_planned_outages   # -> 8.750
+```
+
+`spares_demand` and `spares_stock` count such a valve's spares on the
+tests that find its failures (see [how spares are
+counted](spares.md#how-it-is-computed)). Only a test that can last as long
+as its interval stays simulated, and a common-cause group's members need
+tests and repairs in no time (#158).
 
 ### Common cause, staggered tests and test coverage
 
@@ -730,8 +781,10 @@ partial.mean_unavailability()       # -> 0.01642    0.9λτ/2 + 0.1λT/2, about
 ```
 
 All three are exact with constant failure rates and instant tests and
-repairs, and staggered tests with any life too: a group's members are a
-Markov chain of
+repairs, and staggered tests and test coverage are numerical with any life
+too, and with tests and repairs that take time (see [tests and repairs that
+take time](#tests-and-repairs-that-take-time)). With common causes, a
+group's members, tested and repaired in no time, are a Markov chain of
 which of them are down, with each member found by its own tests, and a
 shared failure found alike by every test (the coverage is the group's).
 The importance measures take the groups in, a member's conditioned on its
