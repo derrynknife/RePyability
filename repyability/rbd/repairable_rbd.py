@@ -3087,6 +3087,130 @@ def _settling(curves) -> Tuple[float, Optional[float]]:
         return np.inf, None
 
 
+#: The most patterns of nested RBDs' capacity levels the capacity over time
+#: with limited repair crews follows the crews' chain for (#162).
+_MAX_CREW_LEVELS = 4096
+
+
+class _CrewCapacity:
+    """The capacity over time of a system whose components wait for repair
+    crews, around nested RBDs (#162). The nested RBDs have crews of their
+    own, so they are independent of the chain and of each other: at a time
+    the system is at a level with probability ``sum_c w_c(t) p(t) v_c``,
+    over each combination ``c`` of the nested RBDs' levels (up or down, or
+    their own capacities), ``w_c(t)`` its probability from their own
+    curves, and ``v_c`` whether the system is at the level in each of the
+    chain's states with the nested RBDs at ``c``. The chain is followed
+    over time (see ``_chain_transient.Uniformized``) for each combination
+    as it first has a probability, and kept."""
+
+    def __init__(self, rbd, chain, start, nested: dict, working, broken):
+        self.rbd, self.chain, self.start = rbd, chain, start
+        self.nested = nested
+        size = len(chain.probabilities)
+        own = {
+            node: chain.up[:, k].astype(float)
+            for k, node in enumerate(chain.nodes)
+        }
+        # The nested RBDs' places, which each combination of their levels
+        # takes (see ``_chain_for``).
+        own.update({node: np.ones(size) for node in nested})
+        self.arrays, _ = rbd._node_arrays(
+            rbd._filled(own, size, working, broken)
+        )
+        self.size = size
+        self.followed: Dict[tuple, tuple] = {}
+        timing = rbd._uniformized(
+            "The repair crews'",
+            chain.generator,
+            start,
+            chain.probabilities,
+            np.ones((size, 1)),
+        )
+        #: For the pieces of the integrals: the chain's and the nested
+        #: RBDs' curves.
+        self.curves = [_chain_transient.ChainCurve(timing), *nested.values()]
+
+    def _chain_for(self, levels: tuple):
+        """The system's levels with the nested RBDs at ``levels``, and the
+        chain followed over time with whether it is at each, in each
+        state."""
+        if levels not in self.followed:
+            own = {
+                node: (np.array([level]), np.ones((1, self.size)))
+                for node, level in zip(self.nested, levels)
+            }
+            values, rows = self.rbd._capacity_arrays(
+                self.arrays, self.size, own
+            )
+            self.followed[levels] = (
+                values,
+                self.rbd._uniformized(
+                    "The repair crews'",
+                    self.chain.generator,
+                    self.start,
+                    self.chain.probabilities,
+                    rows.T,
+                ),
+            )
+        return self.followed[levels]
+
+    def _distributions(self, x: np.ndarray) -> list:
+        """Each nested RBD's capacity distribution at the times ``x``: its
+        own, if it has capacities, else up (at its capacity here) or down,
+        with its point availability."""
+        out = []
+        models = self.rbd._capacity_models()
+        for node, curve in self.nested.items():
+            if node in models:
+                out.append(self.rbd.components[node]._capacity_at(curve, x))
+            else:
+                up = np.clip(np.asarray(curve.at(x), dtype=float), 0.0, 1.0)
+                out.append(
+                    _capacity.node_distribution(
+                        self.rbd.capacity.get(node, np.inf), up, 1.0 - up
+                    )
+                )
+        return out
+
+    def rows(self, x) -> Tuple[np.ndarray, np.ndarray]:
+        """The system's capacity levels and their probabilities at the times
+        ``x`` (one row per level)."""
+        x = np.asarray(x, dtype=float).ravel()
+        distributions = self._distributions(x)
+        count = int(np.prod([len(levels) for levels, _ in distributions]))
+        if count > _MAX_CREW_LEVELS:
+            raise NotImplementedError(
+                f"With {self.rbd.repair_crews} repair crew(s), the capacity "
+                "over time is worked out for each combination of the nested "
+                f"RBDs' levels: {count} are more than the {_MAX_CREW_LEVELS} "
+                "it takes. Simulate it with availability(demand=...)."
+            )
+        totals: Dict[float, np.ndarray] = {}
+        for choice in itertools.product(
+            *[range(len(levels)) for levels, _ in distributions]
+        ):
+            weight = np.ones(len(x))
+            for (_, chances), i in zip(distributions, choice):
+                weight = weight * chances[i]
+            if not weight.any():
+                continue
+            key = tuple(
+                float(levels[i])
+                for (levels, _), i in zip(distributions, choice)
+            )
+            values, chain = self._chain_for(key)
+            at = np.clip(chain.values(x), 0.0, 1.0)
+            for level, column in zip(values, at.T):
+                level = float(level)
+                totals[level] = totals.get(level, 0.0) + weight * column
+        levels = np.array(sorted(totals), dtype=float)
+        rows = np.array([totals[level] for level in levels]).reshape(
+            len(levels), len(x)
+        )
+        return levels, rows
+
+
 class _Jumps(NamedTuple):
     """What the system does at the times its nodes fail or are taken down
     at exact times (see ``RepairableRBD._atom_groups``): the times, the
@@ -9275,11 +9399,26 @@ class RepairableRBD(RBD):
             "uniformization (to about 1e-13): "
         )
         nested = self._crew_nested(frozenset())
-        if kind == "window":
+        if kind == "window" and nested:
+            reason = chain + (
+                "the system's expected failures are those of its "
+                "components, at their rates in each state, and of each "
+                "nested RBD, independent of the chain, at its importance "
+                "over the chain and the other nested RBDs' patterns, "
+                "integrated by quadrature."
+            )
+        elif kind == "window":
             reason = chain + (
                 "the system's expected failures, and each component's "
                 "failures and down time, are the integrals of their rates "
                 "over its states."
+            )
+        elif kind == "capacity" and nested:
+            reason = chain + (
+                "the capacity distribution is the probability of the states "
+                "at each level, for each combination of the nested RBDs' "
+                "levels, weighted by their own distributions, and over a "
+                "mission its integral, by quadrature."
             )
         elif kind == "capacity":
             reason = chain + (
@@ -9312,22 +9451,12 @@ class RepairableRBD(RBD):
     ) -> list:
         """Raise what the crews' chain over time refuses, in the order the
         methods check it: common-cause groups, what the chain does not
-        cover (see ``_require_crew_chain``), too many nested RBDs, and,
-        for the expected events and the capacity, any nested RBD (#162).
-        Return the nested RBDs, less those in ``forced``."""
+        cover (see ``_require_crew_chain``), and too many nested RBDs (see
+        ``_crew_nested``). Return the nested RBDs, less those in
+        ``forced``."""
         self._require_no_ccf("the values over time")
         self._require_crew_chain()
-        nested = self._crew_nested(forced)
-        if nested and kind != "availability":
-            self._no_crew_window(
-                nested[0],
-                (
-                    "the expected events"
-                    if kind == "window"
-                    else "the capacities"
-                ),
-            )
-        return nested
+        return self._crew_nested(forced)
 
     def _engine_choice(self, capacity: bool) -> Tuple[str, str]:
         """The engine ``engine="auto"`` runs a long simulation on, and why
@@ -10251,7 +10380,7 @@ class RepairableRBD(RBD):
         )
 
     def _atom_groups(
-        self, curves: dict, atoms: dict, working_nodes, broken_nodes
+        self, curves: dict, atoms: dict, working_nodes, broken_nodes, crew=None
     ) -> _Jumps:
         """The system at the times its nodes fail or are taken down at
         exact times (their ``atoms``): a unit dead on arrival at 0, an exact
@@ -10267,7 +10396,10 @@ class RepairableRBD(RBD):
         (the failures are taken to come first). The others are at their
         point availability there: tests and restorations due then are
         done. One node alone fails the system with the probability of its
-        failure times its Birnbaum importance there."""
+        failure times its Birnbaum importance there. With limited repair
+        crews (``crew``, see ``_chain_transient.CrewSystem``), the nodes are
+        the nested RBDs, and the system is worked out over the crews' chain
+        at those times."""
         down = [
             a.times[(a.failure > 0.0) | (a.planned > 0.0)]
             for a in atoms.values()
@@ -10289,6 +10421,8 @@ class RepairableRBD(RBD):
             planned[node] = np.clip(failed[node] - stopping, 0.0, 1.0)
 
         def unreliability(values: dict) -> np.ndarray:
+            if crew is not None:
+                return crew.evaluate(values, times)[2]
             return self._system_unreliability(
                 self._filled(values, len(times), working_nodes, broken_nodes)
             )
@@ -10302,12 +10436,12 @@ class RepairableRBD(RBD):
             np.maximum(now - first, 0.0),
         )
 
-    def _system_atoms(self, curves: dict, stop: float) -> Atoms:
+    def _system_atoms(self, curves: dict, stop: float, crew=None) -> Atoms:
         """This RBD's own failures and planned outages at exact times before
-        ``stop``, from its nodes' ``curves``, as a node of another (see
-        ``Atoms``)."""
+        ``stop``, from its nodes' ``curves`` (and its crews' chain,
+        ``crew``), as a node of another (see ``Atoms``)."""
         atoms = {node: curve.atoms(stop) for node, curve in curves.items()}
-        jumps = self._atom_groups(curves, atoms, set(), set())
+        jumps = self._atom_groups(curves, atoms, set(), set(), crew)
         return Atoms(
             jumps.times,
             jumps.failures,
@@ -10325,6 +10459,7 @@ class RepairableRBD(RBD):
         method: str,
         nodes: bool = False,
         groups: Optional[dict] = None,
+        crew=None,
     ) -> dict:
         """The system's expected up time, failures and planned outages in
         ``[0, end)`` for each of ``ends``, from its nodes' ``curves`` (which
@@ -10332,6 +10467,11 @@ class RepairableRBD(RBD):
         too; and for each of ``groups`` (a name and members), the expected
         number of its members' failures and replacements that fall at one
         instant with another's (each stop of a maintenance group is one).
+        With limited repair crews (``crew``, a
+        ``_chain_transient.CrewSystem``, #162), the ``curves`` are the nested
+        RBDs', independent of the crews' chain: the system is worked out
+        over the chain at each time, and the chain's own components'
+        failures, at their rate in each state, add to its failures.
 
         The up time integrates the system's point availability as
         ``mission_availability`` does. A node's failure takes the system
@@ -10353,11 +10493,14 @@ class RepairableRBD(RBD):
         """
         ends = np.asarray(ends, dtype=float).ravel()
         horizon = float(ends.max()) if ends.size else 0.0
-        settle, period = _settling(curves.values())
+        followed = list(curves.values()) + ([crew.curve] if crew else [])
+        settle, period = _settling(followed)
         reach = min(horizon, settle if period is None else settle + period)
         beyond = ends > reach
         atoms = {node: curve.atoms(reach) for node, curve in curves.items()}
-        jumps = self._atom_groups(curves, atoms, working_nodes, broken_nodes)
+        jumps = self._atom_groups(
+            curves, atoms, working_nodes, broken_nodes, crew
+        )
         # The events at exact times start pieces; the ends need not (see
         # ``totals_at``), so that a nested RBD counted at many times costs
         # no more pieces.
@@ -10397,20 +10540,30 @@ class RepairableRBD(RBD):
             at_points = {node: curve.at(x) for node, curve in curves.items()}
             # The system's availability and every node's importance at each
             # point, in one pass.
-            importance, works, fails, _, _ = self._importances(
-                self._filled(at_points, len(x), working_nodes, broken_nodes)
-            )
-            up = works if structure_method(method) == "p" else 1.0 - fails
+            own: dict = {}
+            if crew is not None:
+                importance, up, _, rate, own = crew.evaluate(at_points, x)
+            else:
+                importance, works, fails, _, _ = self._importances(
+                    self._filled(
+                        at_points, len(x), working_nodes, broken_nodes
+                    )
+                )
+                up = works if structure_method(method) == "p" else 1.0 - fails
             out: Dict[Hashable, np.ndarray] = {
                 "uptime": _quadrature.summed(up, half)
             }
             if nodes:
-                for node, values in at_points.items():
+                for node, values in [*at_points.items(), *own.items()]:
                     out[("downtime", node)] = _quadrature.summed(
                         1.0 - values, half
                     )
             n = len(a)
             failures, planned = np.zeros(n), np.zeros(n)
+            if crew is not None:
+                # The chain's components' failures, at their rate in each
+                # state, where they take the system down.
+                failures += _quadrature.summed(rate, half)
             for node in curves:
                 counted = spread(node, np.concatenate([a, b, x]))
                 for total, values in zip((failures, planned), counted):
@@ -10459,6 +10612,8 @@ class RepairableRBD(RBD):
         keys: List[Any] = ["uptime", "failures", "planned"]
         if nodes:
             keys += [("downtime", node) for node in curves]
+            if crew is not None:
+                keys += [("downtime", node) for node in crew.served]
         keys += [("overlaps", name) for name in groups or {}]
         series: Dict[Any, np.ndarray] = {
             key: _quadrature.running(
@@ -10494,7 +10649,13 @@ class RepairableRBD(RBD):
         rates: dict = {}
         if period is None and beyond.any():
             rates = self._settled_rates(
-                curves, reach, horizon, working_nodes, broken_nodes, method
+                curves,
+                reach,
+                horizon,
+                working_nodes,
+                broken_nodes,
+                method,
+                crew,
             )
         out: dict = {"downtime": {}, "overlaps": {}}
         inside = totals_at(ends[~beyond])
@@ -10518,23 +10679,39 @@ class RepairableRBD(RBD):
         return out
 
     def _settled_rates(
-        self, curves: dict, reach, horizon, working_nodes, broken_nodes, method
+        self,
+        curves: dict,
+        reach,
+        horizon,
+        working_nodes,
+        broken_nodes,
+        method,
+        crew=None,
     ) -> dict:
         """What ``_window_counts`` counts, per unit time, once every node's
         curve is constant: the system's availability, its failures and
         planned outages (each node's rates, from its counts' slope then,
-        times its Birnbaum importance), and each node's unavailability."""
+        times its Birnbaum importance), and each node's unavailability;
+        with the crews' chain (``crew``), its own components' failures
+        too."""
         x = np.array([horizon])
         values = {node: curve.at(x) for node, curve in curves.items()}
-        filled = self._filled(values, 1, working_nodes, broken_nodes)
-        rates: dict = {
-            "uptime": float(
-                np.ravel(self.system_probability(filled, method=method))[0]
-            )
-        }
-        importance = self._importances(filled)[0]
-        span = np.array([reach, reach + max(reach, 1.0)])
         failures = planned = 0.0
+        if crew is not None:
+            importance, up, _, rate, own = crew.evaluate(values, x)
+            rates: dict = {"uptime": float(up[0])}
+            failures += float(rate[0])
+            for node, value in own.items():
+                rates[("downtime", node)] = 1.0 - float(value[0])
+        else:
+            filled = self._filled(values, 1, working_nodes, broken_nodes)
+            rates = {
+                "uptime": float(
+                    np.ravel(self.system_probability(filled, method=method))[0]
+                )
+            }
+            importance = self._importances(filled)[0]
+        span = np.array([reach, reach + max(reach, 1.0)])
         for node, curve in curves.items():
             events = curve.events(span)
             width = span[1] - span[0]
@@ -11020,11 +11197,11 @@ class RepairableRBD(RBD):
                 horizon, set(), counts, stages, start
             )
             return SystemCurve(self, inner, *_settling(inner.values()))
+        curve = self._crew_curve(horizon, states=start or {}, counts=counts)
         if stages and self._has_capacity():
-            self._no_crew_window(None, "the capacities")
-        curve = self._crew_curve(horizon, states=start or {})
-        if counts and curve.nested:
-            self._no_crew_window(next(iter(curve.nested)))
+            curve.capacity = self._crew_capacity_over(
+                horizon, set(), set(), start or {}
+            )
         return curve
 
     def _crew_nested(self, forced) -> list:
@@ -11117,19 +11294,45 @@ class RepairableRBD(RBD):
         broken_nodes=frozenset(),
         method: str = "p",
         states: Optional[dict] = None,
+        counts: bool = False,
     ) -> "_chain_transient.CrewCurve":
         """The system over time with limited repair crews (see
         ``_chain_transient.CrewCurve``): the crews' chain, without the
         nodes held working or broken, from the components' ``states``
         (see ``_crew_start``), with the nested RBDs' own curves (each from
-        its own state in ``states``) to ``horizon``."""
+        its own state in ``states``) to ``horizon``, counting their events
+        with ``counts``."""
         states = states or {}
         working, broken = set(working_nodes), set(broken_nodes)
         forced = working | broken
         nested = self._require_crew_over_time(frozenset(forced))
         chain = self._crew_chain(frozenset(forced))
+        vectors = self._crew_patterns(chain, nested, working, broken, method)
+        uniformized = self._uniformized(
+            "The repair crews'",
+            chain.generator,
+            self._crew_start(chain, states),
+            chain.probabilities,
+            np.column_stack(vectors),
+        )
+        curves = {
+            node: self.components[node]._nested_curve(
+                horizon, counts=counts, start=states.get(node)
+            )
+            for node in nested
+        }
+        return _chain_transient.CrewCurve(self, uniformized, curves)
+
+    def _crew_patterns(
+        self, chain, nested: list, working, broken, method: str
+    ) -> list:
+        """The crews' chain's vectors for each pattern of the ``nested``
+        RBDs up and down (see ``_chain_transient.pattern_weights``): whether
+        the system is up in each state, for every pattern, then the rate of
+        its failures by the chain's components, for every pattern (see
+        ``_chain_transient.CrewSystem``)."""
         size = len(chain.probabilities)
-        vectors = []
+        ups, failing = [], []
         for pattern in range(2 ** len(nested)):
             up, importance = self._crew_vectors(
                 chain,
@@ -11141,25 +11344,9 @@ class RepairableRBD(RBD):
                 broken,
                 method,
             )
-            vectors.append(up)
-        if not nested:
-            # With no nested RBDs, the only pattern's importance gives the
-            # rate of the system's failures, which the chain then counts.
-            vectors.append(self._crew_failing(chain, importance))
-        uniformized = self._uniformized(
-            "The repair crews'",
-            chain.generator,
-            self._crew_start(chain, states),
-            chain.probabilities,
-            np.column_stack(vectors),
-        )
-        curves = {
-            node: self.components[node]._nested_curve(
-                horizon, start=states.get(node)
-            )
-            for node in nested
-        }
-        return _chain_transient.CrewCurve(self, uniformized, curves)
+            ups.append(up)
+            failing.append(self._crew_failing(chain, importance))
+        return ups + failing
 
     def _no_crew_window(
         self, node=None, what: str = "the expected events"
@@ -11202,9 +11389,48 @@ class RepairableRBD(RBD):
         same instant as another."""
         working, broken = set(working_nodes), set(broken_nodes)
         forced = working | broken
-        self._require_crew_over_time(frozenset(forced), "window")
+        nested = self._require_crew_over_time(frozenset(forced), "window")
         chain = self._crew_chain(frozenset(forced))
         rates = self._crew_chain_rates()
+        if nested:
+            # The nested RBDs, independent of the chain, counted as nodes,
+            # with the system worked out over the chain (#162).
+            uniformized = self._uniformized(
+                "The repair crews'",
+                chain.generator,
+                self._crew_start(chain, states),
+                chain.probabilities,
+                np.column_stack(
+                    self._crew_patterns(chain, nested, working, broken, method)
+                    + [chain.up.astype(float)]
+                ),
+            )
+            system = _chain_transient.CrewSystem(
+                uniformized, nested, chain.nodes
+            )
+            horizon = float(np.max(ends)) if len(ends) else 0.0
+            curves = {
+                node: self.components[node]._nested_curve(
+                    horizon, counts=True, start=states.get(node)
+                )
+                for node in nested
+            }
+            totals = self._window_counts(
+                curves,
+                ends,
+                working,
+                broken,
+                method,
+                nodes=nodes,
+                groups=groups,
+                crew=system,
+            )
+            column = 2 * system.patterns
+            for k, node in enumerate(chain.nodes):
+                curves[node] = _chain_transient.CrewNodeEvents(
+                    uniformized, column + k, rates[node][0]
+                )
+            return curves, totals
         up, importance = self._crew_vectors(chain, {}, working, broken, method)
         failing = self._crew_failing(chain, importance)
         uniformized = self._uniformized(
@@ -11237,9 +11463,9 @@ class RepairableRBD(RBD):
     def _crew_capacity(
         self, working_nodes, broken_nodes, states: dict
     ) -> Tuple[np.ndarray, "_chain_transient.Uniformized"]:
-        """The capacity over time with limited repair crews: its levels,
-        and the crews' chain followed over time with, as its vectors,
-        whether the system is at each level in each state (as
+        """The capacity over time with limited repair crews and no nested
+        RBDs: its levels, and the crews' chain followed over time with, as
+        its vectors, whether the system is at each level in each state (as
         ``capacity_distribution`` averages them in the long run)."""
         working, broken = set(working_nodes), set(broken_nodes)
         forced = working | broken
@@ -11260,6 +11486,44 @@ class RepairableRBD(RBD):
             rows.T,
         )
         return levels, uniformized
+
+    def _crew_capacity_over(
+        self, horizon: float, working_nodes, broken_nodes, states: dict
+    ) -> "_CrewCapacity":
+        """The capacity over time with limited repair crews around nested
+        RBDs (#162): see ``_CrewCapacity``."""
+        working, broken = set(working_nodes), set(broken_nodes)
+        forced = working | broken
+        nested = self._require_crew_over_time(frozenset(forced))
+        chain = self._crew_chain(frozenset(forced))
+        curves = {
+            node: self.components[node]._nested_curve(
+                horizon,
+                stages=node in self._capacity_models(),
+                start=states.get(node),
+            )
+            for node in nested
+        }
+        return _CrewCapacity(
+            self,
+            chain,
+            self._crew_start(chain, states),
+            curves,
+            working,
+            broken,
+        )
+
+    def _capacity_at(
+        self, curve, x: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """This RBD's capacity distribution at the times ``x``, as a node of
+        another, from its curve over time (see ``_nested_curve``, with
+        ``stages``): from its nodes' curves, or with limited repair crews
+        from their chain (#162)."""
+        capacity = getattr(curve, "capacity", None)
+        if capacity is not None:
+            return capacity.rows(x)
+        return self._capacity_rows(curve.curves, x, set(), set())
 
     def _unit_curve(
         self,
@@ -11704,9 +11968,7 @@ class RepairableRBD(RBD):
                 continue
             curve = curves[node]
             if isinstance(model, RepairableRBD):
-                distribution = model._capacity_rows(
-                    curve.curves, x, set(), set()
-                )
+                distribution = model._capacity_at(curve, x)
             else:
                 distribution = _capacity.merged(
                     np.array((0.0,) + model.capacities),
@@ -11816,7 +12078,16 @@ class RepairableRBD(RBD):
         self._require_capacity_models()
         ends = times.ravel()
         horizon = float(ends.max()) if ends.size else 0.0
-        if self._crews_couple():
+        forced = working_nodes | broken_nodes
+        if self._crews_couple() and self._crew_nested(forced):
+            capacity = self._crew_capacity_over(
+                horizon,
+                working_nodes,
+                broken_nodes,
+                self._states(state, forced),
+            )
+            levels, rows = capacity.rows(ends)
+        elif self._crews_couple():
             levels, chain = self._crew_capacity(
                 working_nodes,
                 broken_nodes,
@@ -11916,6 +12187,20 @@ class RepairableRBD(RBD):
         self._require_capacity_models()
         ends = windows.ravel()
         horizon = float(ends.max()) if ends.size else 0.0
+        forced = working_nodes | broken_nodes
+        if self._crews_couple() and self._crew_nested(forced):
+            capacity = self._crew_capacity_over(
+                horizon,
+                working_nodes,
+                broken_nodes,
+                self._states(state, forced),
+            )
+            levels, rows = self._mission_rows(
+                capacity.curves, capacity.rows, ends, horizon
+            )
+            return CapacityDistribution(
+                levels, rows[:, 0] if np.ndim(t) == 0 else rows
+            )
         if self._crews_couple():
             levels, chain = self._crew_capacity(
                 working_nodes,
@@ -11936,7 +12221,27 @@ class RepairableRBD(RBD):
         curves = self._capacity_curves(
             horizon, working_nodes, broken_nodes, state
         )
-        settle, period = _settling(curves.values())
+        levels, rows = self._mission_rows(
+            list(curves.values()),
+            lambda x: self._capacity_rows(
+                curves, x, working_nodes, broken_nodes
+            ),
+            ends,
+            horizon,
+        )
+        return CapacityDistribution(
+            levels, rows[:, 0] if np.ndim(t) == 0 else rows
+        )
+
+    def _mission_rows(
+        self, followed: list, rows_at, ends: np.ndarray, horizon: float
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """The capacity distribution averaged over each window ``[0, end)``
+        (see ``mission_capacity``): ``rows_at(x)`` its levels and their
+        probabilities at the times ``x``, integrated on pieces cut where
+        the ``followed`` curves bend, and extended exactly past the time
+        they have settled. Returns the levels and one row per level."""
+        settle, period = _settling(followed)
         reach = min(horizon, settle if period is None else settle + period)
         beyond = ends > reach
         fixed = [ends[~beyond]]
@@ -11951,9 +12256,7 @@ class RepairableRBD(RBD):
         def estimate(a: np.ndarray, b: np.ndarray) -> dict:
             # The probability of each capacity level, integrated.
             x, half = _quadrature.points(a, b)
-            levels, rows = self._capacity_rows(
-                curves, x, working_nodes, broken_nodes
-            )
+            levels, rows = rows_at(x)
             return {
                 float(level): _quadrature.summed(row, half)
                 for level, row in zip(levels, rows)
@@ -11961,7 +12264,7 @@ class RepairableRBD(RBD):
 
         try:
             edges, finest = _quadrature.pieces(
-                curves.values(), np.concatenate(fixed), reach, _MISSION_POINTS
+                followed, np.concatenate(fixed), reach, _MISSION_POINTS
             )
             edges, integrals = _quadrature.refined(
                 estimate, edges, finest, _MISSION_POINTS
@@ -11981,17 +12284,13 @@ class RepairableRBD(RBD):
         }
         settled: Dict[float, float] = {}
         if period is None and beyond.any():
-            levels, rows = self._capacity_rows(
-                curves, np.array([horizon]), working_nodes, broken_nodes
-            )
+            levels, rows = rows_at(np.array([horizon]))
             settled = {float(v): float(r) for v, r in zip(levels, rows[:, 0])}
         inside = np.searchsorted(edges, ends[~beyond])
         positive = ends > 0.0
         at_zero: Dict[float, float] = {}
         if not positive.all():
-            levels, rows = self._capacity_rows(
-                curves, np.zeros(1), working_nodes, broken_nodes
-            )
+            levels, rows = rows_at(np.zeros(1))
             at_zero = {float(v): float(r) for v, r in zip(levels, rows[:, 0])}
         averages = {}
         for level in sorted(set(running) | set(settled) | set(at_zero)):
@@ -12018,10 +12317,7 @@ class RepairableRBD(RBD):
             len(levels), len(ends)
         )
         keep = np.any(rows != 0.0, axis=1)
-        levels, rows = levels[keep], rows[keep]
-        return CapacityDistribution(
-            levels, rows[:, 0] if np.ndim(t) == 0 else rows
-        )
+        return levels[keep], rows[keep]
 
     def _capacity_models(self) -> dict:
         """``{node: model}`` for the nodes with no capacity entry whose model

@@ -456,20 +456,43 @@ def test_a_nested_rbd_beside_the_crews():
     assert "each pattern of the nested RBDs" in (
         report["point_availability"].reason
     )
-    # The expected events and the capacity take no nested RBD in, as yet.
-    with pytest.raises(NotImplementedError, match="#162") as error:
-        rbd.expected_failures(10.0)
-    assert report["expected_failures"].route == r.REFUSED
-    assert report["expected_failures"].reason == str(error.value)
+    # The expected events (#162): in series and independent, the pair's
+    # failures while the nested RBD is up, and its failures while the pair
+    # is up.
+    assert report["expected_failures"].route == r.NUMERICAL
+    grids = [np.linspace(0.0, w, 2001) for w in windows]
+    s = np.concatenate(grids)
+    middle = np.concatenate([0.5 * (g[1:] + g[:-1]) for g in grids])
+    counted = [alone.expected_failures(s), inner().expected_failures(s)]
+    steps = [
+        np.concatenate([np.diff(part) for part in np.split(c, 3)])
+        for c in counted
+    ]
+    products = inner().point_availability(middle) * steps[0]
+    products += alone.point_availability(middle) * steps[1]
+    want = [part.sum() for part in np.split(products, 3)]
+    np.testing.assert_allclose(rbd.expected_failures(windows), want, rtol=1e-5)
+    # And the capacity: the pair's, when the nested RBD carries it.
     rated = RepairableRBD(
         [("s", "a"), ("s", "b"), ("a", "n"), ("b", "n"), ("n", "t")],
         {"a": unit(LA, MA), "b": unit(LB, MB), "n": inner()},
         repair_crews=1,
         capacity={"a": 1.0, "b": 1.0, "n": 2.0},
     )
-    with pytest.raises(NotImplementedError, match="#162") as error:
-        rated.point_capacity(10.0)
-    assert rated.analysis_routes()["point_capacity"].reason == str(error.value)
+    pair_rated = RepairableRBD(
+        PARALLEL,
+        {"a": unit(LA, MA), "b": unit(LB, MB)},
+        repair_crews=1,
+        capacity={"a": 1.0, "b": 1.0},
+    )
+    capacity = rated.point_capacity(T)
+    carried = pair_rated.point_capacity(T)
+    up = inner().point_availability(T)
+    assert capacity.levels.tolist() == [0.0, 1.0, 2.0]
+    np.testing.assert_allclose(
+        capacity.probabilities[1:], carried.probabilities[1:] * up, atol=1e-12
+    )
+    assert rated.analysis_routes()["point_capacity"].route == r.NUMERICAL
 
 
 def test_a_crew_rbd_nested_in_another():
@@ -491,17 +514,63 @@ def test_a_crew_rbd_nested_in_another():
     failures = outer.expected_failures(window)
     spread = np.sqrt(result.system_failures) / samples
     assert abs(result.system_failures / samples - failures) < 4 * spread
-    # A crew RBD with nested RBDs of its own gives no events to another.
+    # A crew RBD with nested RBDs of its own gives its events to another
+    # (#162): in series with u, its failures while u is up, and u's while
+    # it is up.
     deeper = RepairableRBD(
         [("s", "w"), ("w", "u"), ("u", "t")],
         {"w": with_nested(), "u": unit(0.01, 0.5)},
     )
-    deeper.point_availability(T)
-    with pytest.raises(NotImplementedError, match="#162") as error:
-        deeper.expected_failures(10.0)
-    assert deeper.analysis_routes()["expected_failures"].reason == str(
-        error.value
+    s = np.linspace(0.0, window, 4001)
+    middle = 0.5 * (s[1:] + s[:-1])
+    own = np.diff(with_nested().expected_failures(s))
+    want = closed(middle, 0.01, 0.5) @ own + 0.01 * (
+        with_nested().point_availability(middle) * closed(middle, 0.01, 0.5)
+    ) @ np.diff(s)
+    assert deeper.expected_failures(window) == pytest.approx(want, rel=2e-6)
+    assert deeper.analysis_routes()["expected_failures"].route == r.NUMERICAL
+    result = deeper.availability(window, mc_samples=samples, seed=9)
+    spread = np.sqrt(result.system_failures) / samples
+    assert abs(result.system_failures / samples - want) < 4 * spread
+
+
+def test_ample_crews_through_the_chain_are_the_independent_values():
+    # With a crew for every component nothing waits, so the crews' chain
+    # around a nested RBD (#162) gives what the independent nodes do.
+    def plant(crews):
+        return RepairableRBD(
+            [("s", "a"), ("s", "b"), ("a", "n"), ("b", "n"), ("n", "t")],
+            {
+                "a": unit(LA, MA, repair_cost=7.0),
+                "b": unit(LB, MB, repair_cost=3.0),
+                "n": inner(),
+            },
+            repair_crews=crews,
+            capacity={"a": 1.0, "b": 1.0, "n": 2.0},
+        )
+
+    independent, chained = plant(2), plant(2)
+    chained._crews_couple = lambda: True  # type: ignore[method-assign]
+    windows = np.array([5.0, 60.0, 400.0])
+    for name in ("system_failures", "system_downtime"):
+        np.testing.assert_allclose(
+            chained.expected_events(windows)[name],
+            independent.expected_events(windows)[name],
+            rtol=1e-6,
+            atol=1e-10,
+        )
+    np.testing.assert_allclose(
+        chained.expected_cost(windows).total,
+        independent.expected_cost(windows).total,
+        rtol=1e-6,
     )
+    for method in ("point_capacity", "mission_capacity"):
+        ours = getattr(chained, method)(windows)
+        theirs = getattr(independent, method)(windows)
+        assert ours.levels.tolist() == theirs.levels.tolist()
+        np.testing.assert_allclose(
+            ours.probabilities, theirs.probabilities, atol=1e-6
+        )
 
 
 # -- standby groups -----------------------------------------------------------

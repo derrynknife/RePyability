@@ -175,13 +175,13 @@ The nodes can change a route:
   for each other. With exponential lives and repairs, the long-run values
   and the importance measures are then exact from a Markov chain of the
   components' states and the repair queue (up to 15,000 states), and the
-  values over time numerical, the chain followed by uniformization (around
-  a nested RBD, the expected events and the capacity over time refuse, as
-  yet: #162); otherwise they refuse. The allocations refuse, and the
-  simulations follow the queue, in Python.
+  values over time numerical, the chain followed by uniformization, around
+  nested RBDs too (#162); otherwise they refuse. The allocations refuse,
+  and the simulations follow the queue, in Python.
 - **Spares.** The spares counts need each component's replacements to be a
   renewal process, or to fall on a calendar: under block replacement they
-  are counted block interval by block interval (the stock refuses, #160),
+  are counted block interval by block interval (the stock too, with repairs
+  and block replacements in no time, #160),
   and with hidden failures on the tests, when the tests and repairs take no
   time. Standby groups, renewals at a maintenance group's stops, waiting for
   repair crews, and tests or repairs that take time make them refuse, and

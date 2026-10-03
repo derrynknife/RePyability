@@ -138,6 +138,19 @@ other release, fixes included, the minor.
   and its cause can be read off today's plant. The event loop records
   them, in Python, as the compiled engine starts no component part way
   through a life.
+- **Repair crews around nested RBDs, over time (#162).** With limited
+  repair crews, the expected events and cost and the capacity over time
+  refused a nested RBD, though its availability over time was worked out.
+  A nested RBD has crews of its own, so it is independent of the crews'
+  chain. Its failures now count as another node's would, at its
+  importance over the chain and the other nested RBDs' patterns, beside
+  the chain's own components' failures at their rates in each state.
+  The capacity is worked out for each combination of the nested RBDs'
+  levels, weighted by their own distributions. A crew RBD with nested
+  RBDs gives its events to an RBD it is nested in, and one with
+  capacities its capacity. With a crew for every component, the chain
+  gives the independent values (to 1e-7); otherwise they agree with the
+  simulation.
 - **Replacement on condition over time (#161).** The availability over
   time and the expected events, cost and capacity of a window refused a
   component replaced on condition, simulated only, though its long run was

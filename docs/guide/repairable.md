@@ -469,8 +469,10 @@ birth-death chain, and the system is down when all three are.)
   and `mission_capacity` come from it. A nested RBD, with crews of its own,
   is independent of the chain: the availability over time is worked out for
   each pattern of the nested RBDs up and down, weighted by their own
-  availabilities, though the expected events and the capacity over time
-  refuse a nested RBD, as yet (#162).
+  availabilities. Their failures count as another node's would, each at
+  its importance over the chain and the other nested RBDs' patterns, and
+  the capacity is worked out for each combination of their levels, the
+  integrals by quadrature (#162).
 - **Importance.** Under dependence the textbook formulas, products of the
   components' availabilities, no longer hold, so the measures are taken
   from their definitions: Birnbaum's is the system's long-run availability
