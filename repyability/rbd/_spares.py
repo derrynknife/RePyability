@@ -100,6 +100,8 @@ from typing import Any, Callable, List, NamedTuple, Optional, Tuple
 
 import numpy as np
 
+from repyability.utils.vectors import dot
+
 #: How closely the counts' probabilities are computed.
 TOLERANCE = 1e-6
 #: The grid's first and largest number of steps up to the time.
@@ -732,7 +734,7 @@ def _from_a_random_time(
         for read in sums:
             lo, hi = read.span()
             start, stop = np.searchsorted(-ends, [-hi, -lo], side="right")
-            inside = dM[start:stop] @ read.integral(ends[start:stop])
+            inside = dot(dM[start:stop], read.integral(ends[start:stop]))
             past = read.total * moments[start] - read.moment[-1] * (
                 weights[start]
             )
@@ -766,7 +768,7 @@ def _from_a_random_time(
     def column(at_b: float, at_v: np.ndarray) -> np.ndarray:
         return np.array(
             [
-                at_T[k] * at_b - values @ at_v[start:stop]
+                at_T[k] * at_b - dot(values, at_v[start:stop])
                 for k, (start, stop, values) in enumerate(bands)
             ]
         )
@@ -828,7 +830,7 @@ def _before_a_replacement(
         sums_to = np.concatenate([[0.0], np.cumsum(weighted)])
         return np.array(
             [
-                total * sums_to[start] + values @ weighted[start:stop]
+                total * sums_to[start] + dot(values, weighted[start:stop])
                 for start, stop, values, total in bands
             ]
         )
@@ -841,7 +843,7 @@ def _before_a_replacement(
         read = _Read(run.step, 0, up.rest, down.rest, (up.atoms, down.atoms))
         cdf = read.below(z)
         columns.append(column(previous - cdf))
-        reached.append(float(dMc @ cdf))
+        reached.append(dot(dMc, cdf))
         psi.append(tail)
         previous = cdf
     columns.append(column(previous))

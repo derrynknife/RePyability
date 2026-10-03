@@ -442,6 +442,17 @@ other release, fixes included, the minor.
 
 ### Fixed
 
+- **Long renewal sums no longer wait on BLAS threads.** OpenBLAS splits a
+  dot product of more than about 10,000 terms across its threads, which
+  here cost about 5 milliseconds a call against 2 microseconds on one, and
+  several loops make thousands of them: the from-new curve of a component
+  tested often against its life (#144), the stock of one under block
+  replacement with a long interval (#160) and the long run of replacement
+  on condition. They now sum their products in numpy's own loop
+  (`repyability.utils.vectors.dot`): a weekly test of a 20-year life went
+  from about a minute to 10 seconds, a block-replaced stock from about 10
+  to 2, and the test suite from 310 seconds to 240. The values agree to
+  rounding.
 - **`FaultTree.from_rbd` of a diagram with events the logic absorbs
   (#170).** A module of nodes that cannot affect the system (in an AND of
   `e4`, `e6` and a vote that, given them, needs only `e5`, the `e1 AND e2`

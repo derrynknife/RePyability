@@ -52,10 +52,18 @@ def sf(model, x):
 
 def cycle(model, interval):
     """The mean number of intervals in a cycle: a unit that fails in ``((k
-    - 1) T, k T]`` (or at once) is found and renewed at the k-th test."""
-    k = np.arange(1, 200_001)
-    found = np.diff(np.concatenate([[0.0], model.ff(interval * k)]))
-    return float(k @ found)
+    - 1) T, k T]`` (or at once) is found and renewed at the k-th test, so
+    the cycle lasts ``k`` or more tests with chance ``R((k - 1) T)`` (and
+    surely one): ``1 + sum_{k >= 1} R(k T)``, summed until ``R`` is
+    nothing."""
+    total, start = 1.0, 1
+    while start <= 200_000:
+        survive = sf(model, interval * np.arange(start, start + 4096))
+        total += float(survive.sum())
+        if survive[-1] < 1e-300:
+            break
+        start += 4096
+    return total
 
 
 def renewal_reward(model, interval):

@@ -165,6 +165,14 @@
   computed exactly or numerically, that is the default, and the Monte-Carlo
   estimate is a `method="simulate"` away (as for `NonRepairableRBD.mean`).
 
+## Performance
+
+- **In a loop, a dot product of long vectors goes through
+  `repyability.utils.vectors.dot`, not `@`.** OpenBLAS threads one of more
+  than about 10,000 terms, at milliseconds a call; a loop of thousands of
+  them (a renewal sum, a band of a grid) then runs hundreds of times
+  slower. Matrix products are left to BLAS.
+
 ## Releasing
 
 Releases are cut from master by `.github/workflows/release.yml`, which this

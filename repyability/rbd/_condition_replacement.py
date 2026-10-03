@@ -45,6 +45,8 @@ from typing import Callable, NamedTuple, Optional, Tuple
 
 import numpy as np
 
+from repyability.utils.vectors import dot
+
 from ._block_replacement import (
     _MAX_INTERVALS,
     _MAX_VALUES,
@@ -256,12 +258,10 @@ def condition_cycle(
                 ages.F[lo : lo + n + steps], backwards, mode="valid"
             )
             fail_cells = np.maximum(np.diff(failed), 0.0)
-            up += float(
-                weight
-                @ (
-                    ages.up[lo + steps : lo + n + steps]  # noqa: E203
-                    - ages.up[lo : lo + n]  # noqa: E203
-                )
+            up += dot(
+                weight,
+                ages.up[lo + steps : lo + n + steps]  # noqa: E203
+                - ages.up[lo : lo + n],  # noqa: E203
             )
             failures += float(fail_cells.sum())
             up_at += 0.5 * (up_ends[1:] + up_ends[:-1])
