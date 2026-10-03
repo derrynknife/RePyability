@@ -55,7 +55,7 @@ from repyability.rbd.shannon import (
     _minimal_cut_sets,
     _shannon_plan,
 )
-from repyability.utils.checks import is_whole
+from repyability.utils.checks import is_whole, structure_method
 from repyability.utils.wrappers import check_probability
 
 _ON_INFEASIBLE_RBD = ("raise", "warn", "ignore")
@@ -1017,8 +1017,7 @@ class RBD:
         >>> rbd.is_system_working({"a": True, "b": True, "c": False}, "c")
         False
         """
-        if method not in ("p", "c"):
-            raise ValueError("`method` must be either 'p' or 'c'")
+        method = structure_method(method)
         return self._decomposition().works(component_status, method)
 
     def system_timeline(self, timelines: Mapping) -> Any:
@@ -1300,8 +1299,9 @@ class RBD:
             input and output nodes, and any other keys, are not used. The
             dict is not modified.
         method : str, optional
-            ``"p"`` (the default) or ``"c"``: whether to compute the
-            probability that the system works or that it fails.
+            ``"p"`` or ``"paths"`` (the default), or ``"c"`` or
+            ``"cuts"``: whether to compute the probability that the system
+            works or that it fails.
 
         Returns
         -------
@@ -1344,8 +1344,7 @@ class RBD:
         >>> [round(float(v), 4) for v in p]
         [0.931, 0.375]
         """
-        if method not in ("p", "c"):
-            raise ValueError("`method` must be either 'p' or 'c'")
+        method = structure_method(method)
 
         arrays, size = self._node_arrays(node_probabilities)
         works, fails = self._decomposition().probabilities(

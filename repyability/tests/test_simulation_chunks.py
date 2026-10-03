@@ -276,7 +276,10 @@ def test_capacity_changes_at_one_time_add_up_exactly():
         (dict(start=0.5, stop=10, seed=1), "whole number"),
         (dict(start=0, stop=True, seed=1), "whole number"),
         (dict(start=0, stop=10, seed=1, demand=5.0), "capacities"),
-        (dict(start=0, stop=10, seed=1, method="x"), "'p' or 'c'"),
+        (
+            dict(start=0, stop=10, seed=1, method="x"),
+            r"'p' \(or 'paths'\) or 'c'",
+        ),
     ],
 )
 def test_the_chunk_is_checked(kwargs, message):

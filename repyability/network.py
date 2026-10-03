@@ -95,16 +95,18 @@ class Network:
     links : dict
         Each link's name, mapped to ``(node, node, model)``: the two nodes
         it joins, which must differ, and its lifetime model (anything with
-        ``sf`` and ``ff``, such as a fitted surpyval distribution, or a
-        ``FixedEventProbability`` for a probability). Two links may join
-        the same two nodes.
+        ``sf`` and ``ff``, such as a fitted surpyval distribution), or the
+        probability that it has failed (a number, taken as a
+        ``FixedEventProbability``). Two links may join the same two
+        nodes.
     source : Hashable
         One terminal: a node of the network.
     target : Hashable
         The other terminal, another node.
     nodes : dict, optional
-        The nodes that can fail, each mapped to its model, by default none.
-        Their names must differ from the links'.
+        The nodes that can fail, each mapped to its model (or the
+        probability that it has failed), by default none. Their names must
+        differ from the links'.
 
     Attributes
     ----------
@@ -176,7 +178,7 @@ class Network:
             u, v, model = link
             if u == v:
                 raise ValueError(f"Link {name!r} joins node {u!r} to itself.")
-            self._check_model(f"Link {name!r}", model)
+            model = self._model(f"Link {name!r}", model)
             self.links[name] = (u, v)
             self.models[name] = model
             adjacent.setdefault(u, []).append((name, v))
@@ -196,8 +198,8 @@ class Network:
                 raise ValueError(
                     f"Node {node!r} has the name of a link: name them apart."
                 )
-            self._check_model(f"Node {node!r}", model)
-            self.models[node] = model
+            model = self._model(f"Node {node!r}", model)
+            self.nodes[node] = self.models[node] = model
         self.source, self.target = source, target
         self._adjacent = adjacent
         self.is_fixed = all(
@@ -207,12 +209,28 @@ class Network:
         self._plan: Optional[_Plan] = None
 
     @staticmethod
-    def _check_model(what: str, model) -> None:
+    def _model(what: str, model):
+        """An element's model, checked: anything with ``sf`` and ``ff``,
+        or a number, the probability that the element has failed, as a
+        ``FixedEventProbability`` (as a fault tree takes it, #179)."""
+        if isinstance(
+            model, (int, float, np.integer, np.floating)
+        ) and not isinstance(model, (bool, np.bool_)):
+            if not 0.0 <= float(model) <= 1.0:
+                raise ValueError(
+                    f"{what}: a probability of failing must be in [0, 1], "
+                    f"got {model!r}."
+                )
+            from surpyval import FixedEventProbability
+
+            return FixedEventProbability.from_params(float(model))
         if not (hasattr(model, "sf") and hasattr(model, "ff")):
             raise ValueError(
                 f"{what}: the model must have sf and ff (a lifetime "
-                f"distribution or a FixedEventProbability), got {model!r}."
+                "distribution or a FixedEventProbability), or be the "
+                f"probability that it has failed, got {model!r}."
             )
+        return model
 
     # ------------------------------------------------------------------
     # Structure

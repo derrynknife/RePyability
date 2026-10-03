@@ -11,6 +11,15 @@ previous dict-style access keeps working: ``result["availability"]``,
 iteration all still do what they used to. (They are ``collections.abc.Mapping``
 instances, not ``dict`` subclasses, so ``isinstance(result, dict)`` is now
 False; use ``isinstance(result, Mapping)`` if you need such a check.)
+
+A result's values are attributes or properties, read without a call
+(``mean``, ``std``, ``failure_frequency``), and what takes an argument is a
+method (``mean_availability_interval(confidence)``, ``percentile(q)``,
+``stock(probability)``), as on the RBDs, where what is given is an
+attribute (``acquisition_cost``) and what is worked out from arguments a
+method (``total_cost(t)``). ``SparesDemand``'s ``mean`` and ``std`` were
+methods until 0.12 (#184): calling them still works, with a
+``FutureWarning``, until 0.13.
 """
 
 import dataclasses
@@ -22,6 +31,7 @@ import numpy as np
 from scipy.special import ndtri
 
 from repyability.rbd import _montecarlo as montecarlo
+from repyability.utils.deprecation import called
 
 
 class _ResultMapping(Mapping):
@@ -78,7 +88,9 @@ class ConfidenceInterval(_ResultMapping):
         The number of Monte-Carlo samples the estimate was computed from.
     method : str, optional
         How the estimate was simulated, where the method chooses
-        (``NonRepairableRBD.unreliability_interval``); None otherwise.
+        (``NonRepairableRBD.unreliability_interval``); ``"exact"`` for a
+        run controlled by an exact twin that is the system itself, whose
+        estimate is then its exact value (#179); None otherwise.
 
     Examples
     --------
@@ -145,6 +157,10 @@ class ControlVariate(_ResultMapping):
     correlation : float
         The correlation of the system's values with the twin's, over the
         same.
+    itself : bool
+        Whether the twin is the system itself (nothing ties its components
+        together, and the exact methods take all of it): its exact value
+        is then the system's, which the intervals give, with no error.
 
     Examples
     --------
@@ -169,10 +185,16 @@ class ControlVariate(_ResultMapping):
     exact: float
     coefficient: float
     correlation: float
+    itself: bool = False
 
     @classmethod
     def of(
-        cls, values, twin, exact: float, antithetic: bool = False
+        cls,
+        values,
+        twin,
+        exact: float,
+        antithetic: bool = False,
+        itself: bool = False,
     ) -> "ControlVariate":
         """The control of a run whose simulations gave ``values``, by a
         twin that gave ``twin`` (in the same order) and whose exact mean is
@@ -190,6 +212,8 @@ class ControlVariate(_ResultMapping):
             Whether the simulations come in antithetic pairs, by default
             False: the coefficient is then worked out from the pairs'
             means.
+        itself : bool, optional
+            Whether the twin is the system itself, by default False.
 
         Returns
         -------
@@ -219,6 +243,20 @@ class ControlVariate(_ResultMapping):
             exact=float(exact),
             coefficient=coefficient,
             correlation=correlation,
+            itself=bool(itself),
+        )
+
+    def _exactly(self, confidence: float, samples: int):
+        """The interval of a run controlled by the system itself (see
+        ``itself``): its exact value, with no error."""
+        return ConfidenceInterval(
+            estimate=self.exact,
+            lower=self.exact,
+            upper=self.exact,
+            confidence=confidence,
+            standard_error=0.0,
+            n_samples=samples,
+            method="exact",
         )
 
     def controlled(self, values) -> np.ndarray:
@@ -267,6 +305,9 @@ class UncertaintyResult(_ResultMapping):
     the aleatory variability that the models themselves describe. Their
     percentiles give uncertainty (credible) intervals; they do not narrow
     as ``n_draws`` grows, which only makes them more precise.
+
+    Its repr summarises the draws: the nominal value, the median and the
+    90% interval.
 
     Attributes
     ----------
@@ -379,6 +420,27 @@ class UncertaintyResult(_ResultMapping):
 
     def _per_time(self, values: np.ndarray) -> Any:
         return float(values) if np.ndim(values) == 0 else values
+
+    def __repr__(self) -> str:
+        # A summary (#184): the samples are in ``samples``.
+        lower, upper = self.interval(0.9)
+
+        def shown(value) -> str:
+            if np.ndim(value) == 0:
+                return f"{float(value):.6g}"
+            return np.array2string(
+                np.asarray(value, dtype=float),
+                precision=6,
+                threshold=8,
+                separator=", ",
+            )
+
+        return (
+            f"{type(self).__name__}(nominal={shown(self.nominal)}, "
+            f"median={shown(self.median)}, "
+            f"interval_90=({shown(lower)}, {shown(upper)}), "
+            f"n_draws={self.n_draws})"
+        )
 
 
 @dataclass
@@ -769,6 +831,8 @@ class CostResult(_ResultMapping):
         if self.control_variate is None:
             estimate = self.mean
             standard_error = self.mean_se
+        elif self.control_variate.itself:
+            return self.control_variate._exactly(confidence, len(self.samples))
         else:
             values = self.control_variate.controlled(self.samples)
             estimate = float(np.mean(values))
@@ -1688,6 +1752,10 @@ class AvailabilityResult(_ResultMapping):
             self.time_simulated_to
         )
         if self.control_variate is not None:
+            if self.control_variate.itself:
+                return self.control_variate._exactly(
+                    confidence, len(fractions)
+                )
             fractions = self.control_variate.controlled(fractions)
         estimate = float(np.mean(fractions))
         se = montecarlo.standard_error(fractions, self.antithetic)
@@ -1862,7 +1930,7 @@ class SparesDemand(_ResultMapping):
     ...     },
     ... )
     >>> demand = rbd.spares_demand(1000.0)["pump"]
-    >>> round(demand.mean(), 4)
+    >>> round(demand.mean, 4)
     10.0
     >>> demand.stock(0.95)  # covers the 1,000 hours 95% of the time
     15
@@ -1873,15 +1941,40 @@ class SparesDemand(_ResultMapping):
     fleet: int
     method: str
 
+    @property
     def mean(self) -> float:
-        """The expected number of spares used."""
-        return float(self.probabilities @ np.arange(len(self.probabilities)))
+        """The expected number of spares used.
 
+        A property, as the other results' values are (#184): calling it,
+        ``mean()``, as before 0.12, still gives it, with a
+        ``FutureWarning``, until 0.13.
+
+        Returns
+        -------
+        float
+            The mean number of replacements.
+        """
+        return called(
+            float(self.probabilities @ np.arange(len(self.probabilities))),
+            "SparesDemand.mean",
+        )
+
+    @property
     def std(self) -> float:
-        """The standard deviation of the number of spares used."""
+        """The standard deviation of the number of spares used (a
+        property, as ``mean`` is).
+
+        Returns
+        -------
+        float
+            The standard deviation of the number of replacements.
+        """
         counts = np.arange(len(self.probabilities))
-        mean = self.mean()
-        return float(np.sqrt(self.probabilities @ (counts - mean) ** 2))
+        mean = float(self.mean)
+        return called(
+            float(np.sqrt(self.probabilities @ (counts - mean) ** 2)),
+            "SparesDemand.std",
+        )
 
     def covered(self, stock: int) -> float:
         """The probability that ``stock`` spares cover the horizon's

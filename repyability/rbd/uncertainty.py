@@ -132,6 +132,16 @@ def _fit_draws(model, n: int, rng: np.random.Generator, label: str) -> list:
     return [model.with_params(list(row)) for row in drawn]
 
 
+def is_fit(model) -> bool:
+    """Whether ``"fit"`` can draw ``model``: a surpyval parametric fit with
+    a finite parameter covariance, its parameters inside their ranges."""
+    try:
+        _fit_draws(model, 0, np.random.default_rng(0), "")
+    except (ValueError, TypeError, AttributeError):
+        return False
+    return True
+
+
 def _quantiles(
     prior, n: int, rng: np.random.Generator, label: str, name
 ) -> np.ndarray:
@@ -266,12 +276,13 @@ def draw_ccf_models(
                 not isinstance(m, (BetaFactor, MGL))
                 or size not in (None, len(group.members))
                 or m.basis != model.basis
+                or m.shocks != model.shocks
             ):
                 raise ValueError(
                     f"{label}: every alternative model must be a "
                     f"BetaFactor or an MGL model for {len(group.members)} "
                     f"members, splitting the {model.basis} as its model "
-                    f"does; got {m!r}."
+                    f"does, with {model.shocks} shocks; got {m!r}."
                 )
         return [spec[i] for i in rng.integers(len(spec), size=n)]
     raise ValueError(

@@ -212,7 +212,7 @@ def test_a_replacement_due_at_the_window_s_end_falls_after_it():
     assert simulated @ np.arange(len(simulated)) == pytest.approx(
         exact, abs=0.04
     )
-    assert rbd.spares_demand(1000.0)["c"].mean() == pytest.approx(
+    assert rbd.spares_demand(1000.0)["c"].mean == pytest.approx(
         exact, rel=1e-5
     )
 
@@ -465,7 +465,7 @@ def test_the_window_and_method_are_checked():
     rbd = RepairableRBD([("s", "c"), ("c", "t")], {"c": unit(0.1, 1.0)})
     with pytest.raises(ValueError):
         rbd.expected_failures(-1.0)
-    with pytest.raises(ValueError, match="'p' or 'c'"):
+    with pytest.raises(ValueError, match=r"'p' \(or 'paths'\) or 'c'"):
         rbd.expected_failures(1.0, method="x")
     assert rbd.expected_failures(10.0, method="c") == pytest.approx(
         rbd.expected_failures(10.0), rel=1e-12

@@ -82,7 +82,7 @@ def test_repairs_and_replacements_that_take_time_against_the_simulation():
     )["c"]
     got, want = padded(exact.probabilities, simulated.probabilities)
     np.testing.assert_allclose(got, want, atol=0.01)
-    assert exact.mean() == pytest.approx(simulated.mean(), rel=0.01)
+    assert exact.mean == pytest.approx(simulated.mean, rel=0.01)
     assert exact.probabilities.sum() == pytest.approx(1.0, abs=1e-9)
 
 

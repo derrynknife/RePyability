@@ -309,4 +309,10 @@ def test_a_control_of_values_that_do_not_vary():
     assert control.coefficient == 0.0 and control.correlation == 0.0
     np.testing.assert_array_equal(control.controlled([0.9, 0.9, 0.9]), 0.9)
     assert control.variance_reduction == 1.0
-    assert set(control) == {"twin", "exact", "coefficient", "correlation"}
+    assert set(control) == {
+        "twin",
+        "exact",
+        "coefficient",
+        "correlation",
+        "itself",
+    }

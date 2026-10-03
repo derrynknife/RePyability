@@ -109,6 +109,32 @@ q_independent        # array([0.009])
 `required_group_size()` is the group size a model needs (`None` for
 `BetaFactor`, which fits any group of two or more).
 
+### Exclusive or independent shocks
+
+By default the shocks are mutually exclusive, as `decompose` gives them:
+one shared cause strikes the group at most, so each member fails with
+probability `Q` exactly. PRA codes (SAPHIRE, CAFTA, RiskSpectrum) take each
+shock's `Q_k` as a basic event of its own instead, independent of the
+others, so several can strike at once. The two differ at second order in
+`Q`, so to check a result against such a tool, give
+`MGL(..., shocks="independent")`:
+
+```python
+W = surv.Weibull.from_params([1000, 1.5])          # Q = 0.031 at t = 100
+parallel = [("s", x) for x in "abc"] + [(x, "t") for x in "abc"]
+
+def vote(model):
+    return NonRepairableRBD(parallel, {x: W for x in "abc"}, k={"t": 2},
+                            ccf_groups=[CCFGroup(list("abc"), model)])
+
+vote(MGL(0.2, 0.3)).ff(100.0)                         # -> 0.010219   exclusive
+vote(MGL(0.2, 0.3, shocks="independent")).ff(100.0)   # -> 0.010192   as PRA codes
+```
+
+A `BetaFactor`, or an `MGL` group with one shared cause, has a single shock,
+and both conventions agree. By rate (`basis="rate"`, below) the causes
+always strike independently.
+
 ## Rules for groups
 
 - **Symmetric.** Every member must carry an identical model (the standard CCF

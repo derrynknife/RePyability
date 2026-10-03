@@ -24,17 +24,60 @@ what a finished test demonstrated:
   most ``failures`` failures. ``mtbf_test_time`` gives the total time that
   demonstrates an MTBF, ``demonstrated_mtbf`` what a test demonstrated, and
   ``mtbf_pass_probability`` the chance a design of a given true MTBF passes.
+  A test is time-terminated (it stops at its time) unless
+  ``failure_terminated`` says it stops at its ``failures``-th failure.
 
 The functions plan tests from targets and results; they fit nothing (surpyval
-does that).
+does that). Each takes arrays for its numbers too, and answers for each
+element, broadcast together (#179).
 """
 
-from typing import Optional
+import functools
+import inspect
+from typing import Callable, Optional, TypeVar
 
 import numpy as np
 from scipy import stats
 
+from repyability.utils.checks import is_whole
 
+_Function = TypeVar("_Function", bound=Callable)
+
+
+def _elementwise(function: _Function) -> _Function:
+    """``function``, of numbers, answering for each element of the
+    arguments given as arrays, broadcast together: an array of its answers,
+    or its answer when every argument is a number."""
+    signature = inspect.signature(function)
+
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        bound = signature.bind(*args, **kwargs)
+        bound.apply_defaults()
+        arrays = {
+            name: np.asarray(value)
+            for name, value in bound.arguments.items()
+            if value is not None and np.ndim(value) > 0
+        }
+        if not arrays:
+            return function(*bound.args, **bound.kwargs)
+        shaped = dict(zip(arrays, np.broadcast_arrays(*arrays.values())))
+        shape = next(iter(shaped.values())).shape
+        answers = [
+            function(
+                **{
+                    **bound.arguments,
+                    **{name: a[index].item() for name, a in shaped.items()},
+                }
+            )
+            for index in np.ndindex(shape)
+        ]
+        return np.array(answers).reshape(shape)
+
+    return wrapper  # type: ignore[return-value]
+
+
+@_elementwise
 def demonstration_sample_size(
     reliability: float,
     confidence: float = 0.95,
@@ -117,6 +160,7 @@ def demonstration_sample_size(
     return int(low)
 
 
+@_elementwise
 def demonstrated_reliability(
     n: int,
     confidence: float = 0.95,
@@ -181,6 +225,7 @@ def demonstrated_reliability(
     return float((1.0 - upper) ** (1.0 / exponent))
 
 
+@_elementwise
 def demonstration_test_multiple(
     reliability: float,
     n: int,
@@ -243,6 +288,7 @@ def demonstration_test_multiple(
     return float((np.log(per_test) / np.log(reliability)) ** (1.0 / shape))
 
 
+@_elementwise
 def demonstration_pass_probability(
     reliability: float,
     n: int,
@@ -303,8 +349,13 @@ def demonstration_pass_probability(
     return float(stats.binom.cdf(failures, n, 1.0 - per_test))
 
 
+@_elementwise
 def mtbf_test_time(
-    mtbf: float, confidence: float = 0.95, failures: int = 0
+    mtbf: float,
+    confidence: float = 0.95,
+    failures: int = 0,
+    *,
+    failure_terminated: bool = False,
 ) -> float:
     """The total test time that demonstrates an MTBF, at a constant
     failure rate.
@@ -312,7 +363,11 @@ def mtbf_test_time(
     The unit time (summed over the units, failed ones repaired or replaced)
     a time-terminated test needs, with at most ``failures`` failures, to
     demonstrate ``mtbf`` at ``confidence``:
-    ``mtbf * chi2.ppf(confidence, 2 * failures + 2) / 2``.
+    ``mtbf * chi2.ppf(confidence, 2 * failures + 2) / 2``. A
+    failure-terminated test, which runs until its ``failures``-th failure,
+    demonstrates ``mtbf`` if that failure comes after
+    ``mtbf * chi2.ppf(confidence, 2 * failures) / 2``: the time of a
+    time-terminated test that allows one failure fewer.
 
     Parameters
     ----------
@@ -321,7 +376,11 @@ def mtbf_test_time(
     confidence : float, optional
         The confidence level, in (0, 1), by default 0.95.
     failures : int, optional
-        The failures the test allows, by default 0.
+        The failures the test allows, by default 0; with
+        ``failure_terminated``, the failure it stops at, from 1.
+    failure_terminated : bool, optional
+        Whether the test stops at its ``failures``-th failure rather than
+        at a time, by default False.
 
     Returns
     -------
@@ -343,31 +402,46 @@ def mtbf_test_time(
     2995.7
     >>> round(mtbf_test_time(1000.0, failures=2), 1)
     6295.8
+    >>> round(mtbf_test_time(1000.0, failures=3, failure_terminated=True), 1)
+    6295.8
     """
     _check_positive(mtbf, "mtbf")
     _check_probability(confidence, "confidence")
     failures = _check_failures(failures)
-    return float(mtbf * stats.chi2.ppf(confidence, 2 * failures + 2) / 2.0)
+    freedom = _degrees_of_freedom(failures, failure_terminated)
+    return float(mtbf * stats.chi2.ppf(confidence, freedom) / 2.0)
 
 
+@_elementwise
 def demonstrated_mtbf(
-    test_time: float, confidence: float = 0.95, failures: int = 0
+    test_time: float,
+    confidence: float = 0.95,
+    failures: int = 0,
+    *,
+    failure_terminated: bool = False,
 ) -> float:
-    """The MTBF a finished time-terminated test demonstrated, at a constant
-    failure rate.
+    """The MTBF a finished test demonstrated, at a constant failure rate.
 
     The lower one-sided confidence bound on the MTBF from a total test time
-    with ``failures`` failures: ``2 * test_time / chi2.ppf(confidence,
-    2 * failures + 2)``.
+    with ``failures`` failures. A test stopped at its time
+    (time-terminated) gives ``2 * test_time / chi2.ppf(confidence,
+    2 * failures + 2)``; one stopped at its ``failures``-th failure
+    (``failure_terminated``), with ``2 * failures`` degrees of freedom
+    instead.
 
     Parameters
     ----------
     test_time : float
-        The total unit time tested, positive.
+        The total unit time tested, positive: with ``failure_terminated``,
+        up to the last failure.
     confidence : float, optional
         The confidence level, in (0, 1), by default 0.95.
     failures : int, optional
-        The failures seen, by default 0.
+        The failures seen, by default 0 (at least 1 with
+        ``failure_terminated``).
+    failure_terminated : bool, optional
+        Whether the test stopped at its last failure rather than at a
+        time, by default False.
 
     Returns
     -------
@@ -384,33 +458,50 @@ def demonstrated_mtbf(
     >>> from repyability import demonstrated_mtbf
     >>> round(demonstrated_mtbf(2995.7), 1)
     1000.0
+
+    Three failures, the test stopped at the third, 6,295.8 hours in all:
+
+    >>> mtbf = demonstrated_mtbf(6295.8, failures=3, failure_terminated=True)
+    >>> round(mtbf, 1)
+    1000.0
     """
     _check_positive(test_time, "test_time")
     _check_probability(confidence, "confidence")
     failures = _check_failures(failures)
-    return float(
-        2.0 * test_time / stats.chi2.ppf(confidence, 2 * failures + 2)
-    )
+    freedom = _degrees_of_freedom(failures, failure_terminated)
+    return float(2.0 * test_time / stats.chi2.ppf(confidence, freedom))
 
 
+@_elementwise
 def mtbf_pass_probability(
-    mtbf: float, test_time: float, failures: int = 0
+    mtbf: float,
+    test_time: float,
+    failures: int = 0,
+    *,
+    failure_terminated: bool = False,
 ) -> float:
-    """The chance that a design of a given true MTBF passes a
-    time-terminated test, at a constant failure rate.
+    """The chance that a design of a given true MTBF passes a test, at a
+    constant failure rate.
 
     The probability of at most ``failures`` failures in ``test_time`` when
     failures come at rate ``1 / mtbf``: the Poisson distribution's, the
-    test's operating characteristic.
+    test's operating characteristic. A failure-terminated test passes if
+    its ``failures``-th failure comes after ``test_time``: at most one
+    fewer by then.
 
     Parameters
     ----------
     mtbf : float
         The design's true mean time between failures, positive.
     test_time : float
-        The total unit time tested, positive.
+        The total unit time tested, positive: with ``failure_terminated``,
+        the time the last failure must come after.
     failures : int, optional
-        The failures the test allows, by default 0.
+        The failures the test allows, by default 0; with
+        ``failure_terminated``, the failure it stops at, from 1.
+    failure_terminated : bool, optional
+        Whether the test stops at its ``failures``-th failure, by default
+        False.
 
     Returns
     -------
@@ -438,7 +529,8 @@ def mtbf_pass_probability(
     _check_positive(mtbf, "mtbf")
     _check_positive(test_time, "test_time")
     failures = _check_failures(failures)
-    return float(stats.poisson.cdf(failures, test_time / mtbf))
+    allowed = _degrees_of_freedom(failures, failure_terminated) // 2 - 1
+    return float(stats.poisson.cdf(allowed, test_time / mtbf))
 
 
 def _test_reliability(
@@ -482,14 +574,33 @@ def _check_shape(shape: float) -> None:
 
 
 def _check_count(n) -> int:
-    if int(n) != n or n < 1:
+    if not is_whole(n) or n < 1:
         raise ValueError(f"n must be a positive whole number, got {n!r}.")
     return int(n)
 
 
 def _check_failures(failures) -> int:
-    if int(failures) != failures or failures < 0:
+    if not is_whole(failures) or failures < 0:
         raise ValueError(
             f"failures must be a whole number, 0 or more, got {failures!r}."
         )
     return int(failures)
+
+
+def _degrees_of_freedom(failures: int, failure_terminated) -> int:
+    """The chi-squared degrees of freedom of a test with ``failures``
+    failures: ``2 * failures + 2`` if it stopped at its time, ``2 *
+    failures`` at its last failure."""
+    if not isinstance(failure_terminated, (bool, np.bool_)):
+        raise ValueError(
+            "failure_terminated must be True or False, got "
+            f"{failure_terminated!r}."
+        )
+    if not failure_terminated:
+        return 2 * failures + 2
+    if failures < 1:
+        raise ValueError(
+            "A failure-terminated test stops at a failure: failures must be "
+            "at least 1."
+        )
+    return 2 * failures

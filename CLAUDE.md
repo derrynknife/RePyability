@@ -149,7 +149,11 @@
   `options`, non-parametric RBD nodes, and the standby and load-sharing
   models' fits to simulated lifetimes.
   `test_the_removal_is_the_next_minor_release` fails once the version
-  reaches `REMOVAL`, until they are removed.
+  reaches `REMOVAL`, until they are removed. What 0.12 deprecates (calling
+  `SparesDemand.mean()`/`std()`, now properties, #184) goes in 0.13
+  (`NEXT_REMOVAL`, through `deprecation.called`), and
+  `test_the_calls_go_in_the_release_after_next` fails once the version
+  reaches it.
 - **Exact by default, simulation on request.** Where an analysis can be
   computed exactly or numerically, that is the default, and the Monte-Carlo
   estimate is a `method="simulate"` away (as for `NonRepairableRBD.mean`).

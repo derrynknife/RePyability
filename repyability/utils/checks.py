@@ -24,3 +24,21 @@ def whole_number(value, name: str, minimum: int = 1) -> int:
             f"{value!r}."
         )
     return int(value)
+
+
+#: The ways the structure is evaluated: through the minimal path sets or the
+#: minimal cut sets (both give the same values).
+_STRUCTURE_METHODS = {"p": "p", "paths": "p", "c": "c", "cuts": "c"}
+
+
+def structure_method(method) -> str:
+    """``"p"`` or ``"c"``, from a structure ``method``: ``"p"`` or
+    ``"paths"`` for the minimal path sets, ``"c"`` or ``"cuts"`` for the
+    minimal cut sets (#179); else a ``ValueError``."""
+    try:
+        return _STRUCTURE_METHODS[method]
+    except (KeyError, TypeError):
+        raise ValueError(
+            "`method` must be 'p' (or 'paths') or 'c' (or 'cuts'), got "
+            f"{method!r}."
+        ) from None

@@ -125,6 +125,7 @@ if TYPE_CHECKING:
     from repyability.rbd.chunks import SimulationChunk
 
 from repyability.rbd.routes import AnalysisRoute
+from repyability.utils.checks import structure_method
 from repyability.utils.deprecation import (
     REMOVAL,
     nonparametric_nodes,
@@ -5590,7 +5591,7 @@ class RepairableRBD(RBD):
         ...     },
         ... )
         >>> demand = rbd.spares_demand(1000.0, fleet=5)["pump"]
-        >>> round(demand.mean(), 4)
+        >>> round(demand.mean, 4)
         50.0
         >>> demand.stock(0.95)
         62
@@ -7246,9 +7247,9 @@ class RepairableRBD(RBD):
         broken_nodes : Collection[Hashable], optional
             Nodes held failed for the whole window, by default None.
         method : str, optional
-            Evaluate the system state from the minimal path sets (``"p"``,
-            the default) or the minimal cut sets (``"c"``); both give the
-            same state.
+            Evaluate the system state from the minimal path sets (``"p"``
+            or ``"paths"``, the default) or the minimal cut sets (``"c"``
+            or ``"cuts"``); both give the same state.
         sources : dict, optional
             Internal: node name -> the object each component's events are
             drawn from, which ``availability`` passes so that the
@@ -7579,8 +7580,7 @@ class RepairableRBD(RBD):
         >>> f"{rbd.mean_unavailability():.6e}"
         '9.999980e-13'
         """
-        if method not in ("p", "c"):
-            raise ValueError("`method` must be either 'p' or 'c'")
+        method = structure_method(method)
         working_nodes = set() if working_nodes is None else set(working_nodes)
         broken_nodes = set() if broken_nodes is None else set(broken_nodes)
         self._validate_node_overrides(working_nodes, broken_nodes)
@@ -8454,7 +8454,8 @@ class RepairableRBD(RBD):
             default None.
         method : str, optional
             Evaluate the structure function from the minimal path sets
-            (``"p"``, the default) or the minimal cut sets (``"c"``); both
+            (``"p"`` or ``"paths"``, the default) or the minimal cut sets
+            (``"c"`` or ``"cuts"``); both
             give the same exact result.
 
         Returns
@@ -8574,7 +8575,8 @@ class RepairableRBD(RBD):
             Nodes that are always failed (availability 0), by default None.
         method : str, optional
             Evaluate the structure function from the minimal path sets
-            (``"p"``, the default) or the cut sets (``"c"``); both give the
+            (``"p"`` or ``"paths"``, the default) or the cut sets (``"c"``
+            or ``"cuts"``); both give the
             same result.
         state : dict or str, optional
             Start from the components' current states rather than new:
@@ -8689,7 +8691,8 @@ class RepairableRBD(RBD):
             Nodes that are always failed (availability 0), by default None.
         method : str, optional
             Evaluate the structure function from the minimal path sets
-            (``"p"``, the default) or the cut sets (``"c"``); both give the
+            (``"p"`` or ``"paths"``, the default) or the cut sets (``"c"``
+            or ``"cuts"``); both give the
             same result.
         state : dict or str, optional
             Start from the components' current states rather than new:
@@ -8836,8 +8839,7 @@ class RepairableRBD(RBD):
         system's expected events over them (see ``_window_counts``): the
         forced nodes have no curves. With ``setups``, the stops of each
         maintenance group with a set-up cost are counted too."""
-        if method not in ("p", "c"):
-            raise ValueError("`method` must be either 'p' or 'c'")
+        method = structure_method(method)
         windows = _check_times(t)
         working = set() if working_nodes is None else set(working_nodes)
         broken = set() if broken_nodes is None else set(broken_nodes)
@@ -8920,7 +8922,8 @@ class RepairableRBD(RBD):
             Nodes that are always failed, by default None.
         method : str, optional
             Evaluate the structure function from the minimal path sets
-            (``"p"``, the default) or the cut sets (``"c"``); both give the
+            (``"p"`` or ``"paths"``, the default) or the cut sets (``"c"``
+            or ``"cuts"``); both give the
             same result.
         state : dict or str, optional
             Start from the components' current states rather than new:
@@ -9009,7 +9012,8 @@ class RepairableRBD(RBD):
             Nodes that are always failed, by default None.
         method : str, optional
             Evaluate the structure function from the minimal path sets
-            (``"p"``, the default) or the cut sets (``"c"``); both give the
+            (``"p"`` or ``"paths"``, the default) or the cut sets (``"c"``
+            or ``"cuts"``); both give the
             same result.
         state : dict or str, optional
             Start from the components' current states rather than new:
@@ -9139,7 +9143,8 @@ class RepairableRBD(RBD):
             their own downtime cost throughout, by default None.
         method : str, optional
             Evaluate the structure function from the minimal path sets
-            (``"p"``, the default) or the cut sets (``"c"``); both give the
+            (``"p"`` or ``"paths"``, the default) or the cut sets (``"c"``
+            or ``"cuts"``); both give the
             same result.
         state : dict or str, optional
             Start from the components' current states rather than new:
@@ -9435,7 +9440,7 @@ class RepairableRBD(RBD):
             importance, works, fails, _, _ = self._importances(
                 self._filled(at_points, len(x), working_nodes, broken_nodes)
             )
-            up = works if method == "p" else 1.0 - fails
+            up = works if structure_method(method) == "p" else 1.0 - fails
             out: Dict[Hashable, np.ndarray] = {
                 "uptime": _quadrature.summed(up, half)
             }
@@ -10050,7 +10055,7 @@ class RepairableRBD(RBD):
         importance, works, fails, _, _ = self._importances(
             self._filled(own, size, working_nodes, broken_nodes)
         )
-        up = works if method == "p" else 1.0 - fails
+        up = works if structure_method(method) == "p" else 1.0 - fails
         return np.asarray(up, dtype=float), importance
 
     def _crew_failing(self, chain, importance: dict) -> np.ndarray:
@@ -11591,9 +11596,9 @@ class RepairableRBD(RBD):
         Parameters
         ----------
         method : str, optional
-            Evaluate the system state from the minimal path sets (``"p"``,
-            the default) or the minimal cut sets (``"c"``); both give the
-            same state.
+            Evaluate the system state from the minimal path sets (``"p"``
+            or ``"paths"``, the default) or the minimal cut sets (``"c"``
+            or ``"cuts"``); both give the same state.
         sources : dict, optional
             Internal: the same ``sources`` given to
             ``initialize_event_queue``. By default None: the components
@@ -11803,9 +11808,9 @@ class RepairableRBD(RBD):
             Nodes held failed for the whole window: they are down from time
             0 and never repaired. By default None.
         method : str, optional
-            Evaluate the system state from the minimal path sets (``"p"``,
-            the default) or the minimal cut sets (``"c"``); the results are
-            identical.
+            Evaluate the system state from the minimal path sets (``"p"``
+            or ``"paths"``, the default) or the minimal cut sets (``"c"``
+            or ``"cuts"``); the results are identical.
         mc_samples : int, optional
             Number of simulations, by default 10_000.
         verbose : bool, optional
@@ -13142,13 +13147,14 @@ class RepairableRBD(RBD):
                 f"{control_variate!r}."
             )
         twin = None
+        changes: List[str] = []
         if control_variate:
             if shard_map is not None:
                 raise ValueError(
                     "A run with control_variate simulates the system's twin "
                     "alongside it, here: leave out shard_map."
                 )
-            twin, _ = self._twin()
+            twin, changes = self._twin()
         capacity = None
         # Shards follow the capacities whatever the target, as chunks do.
         if (
@@ -13202,6 +13208,7 @@ class RepairableRBD(RBD):
                 states=states,
                 curve_points=curve_points,
                 target=target,
+                itself=not changes,
             )
         else:
             tally = self._run(
@@ -13246,13 +13253,14 @@ class RepairableRBD(RBD):
         states: dict,
         curve_points: Optional[int],
         target: str,
+        itself: bool = False,
     ) -> Tuple["_Tally", Tuple[Optional[ControlVariate], ...]]:
         """Run this system and its exact ``twin`` (see ``_twin``) with
         common random numbers, as ``compare`` does, in rounds while
         ``stop`` asks for more, judged by the controlled values; return
         this system's totals and the controls of its fractions up and of
         its costs (None without costs) by the twin's (see
-        ``ControlVariate``)."""
+        ``ControlVariate``), ``itself`` if the twin is this system."""
         twin_states = twin._simulation_states(state, working | broken)
         exact = float(
             np.ravel(
@@ -13327,6 +13335,7 @@ class RepairableRBD(RBD):
                 np.asarray(twin_tally.uptimes, dtype=float) / t_simulation,
                 exact,
                 antithetic,
+                itself=itself,
             )
             cost_control = None
             if exact_cost is not None:
@@ -13335,6 +13344,7 @@ class RepairableRBD(RBD):
                     twin_tally.cost_samples,
                     exact_cost,
                     antithetic,
+                    itself=itself,
                 )
             if stop is None:
                 break
@@ -14128,9 +14138,9 @@ class RepairableRBD(RBD):
         broken_nodes : Collection[Hashable], optional
             Nodes held failed for the whole window, by default None.
         method : str, optional
-            Evaluate the system state from the minimal path sets (``"p"``,
-            the default) or the minimal cut sets (``"c"``); the results are
-            identical.
+            Evaluate the system state from the minimal path sets (``"p"``
+            or ``"paths"``, the default) or the minimal cut sets (``"c"``
+            or ``"cuts"``); the results are identical.
         mc_samples : int, optional
             Number of simulations, each giving one sample of the window's
             total cost, by default 10_000.

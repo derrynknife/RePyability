@@ -423,6 +423,7 @@ NONREPAIRABLE_CALLS = {
     "time_to_reliability": lambda rbd: rbd.time_to_reliability(0.5),
     "bx_life": lambda rbd: rbd.bx_life(10),
     "remaining_life": lambda rbd: rbd.remaining_life(0.5, state={}),
+    "mean_residual_life": lambda rbd: rbd.mean_residual_life(state={}),
     "sf_given_state": lambda rbd: rbd.sf_given_state(X, state={}),
     "importances_given_state": lambda rbd: rbd.importances_given_state(
         X, state={}

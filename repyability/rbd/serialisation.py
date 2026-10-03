@@ -468,6 +468,8 @@ def _ccf_to_list(ccf_groups):
             # Saved only when not the default, so older files read as
             # they always have.
             model["basis"] = group.model.basis
+        elif group.model.shocks == "independent":
+            model["shocks"] = "independent"
         out.append({"members": list(group.members), "model": model})
     return out
 
@@ -485,7 +487,11 @@ def _ccf_from_list(ccf_list):
         if kind == "beta_factor":
             model: object = BetaFactor(model_dict["beta"], basis=basis)
         elif kind == "mgl":
-            model = MGL(*model_dict["letters"], basis=basis)
+            model = MGL(
+                *model_dict["letters"],
+                basis=basis,
+                shocks=model_dict.get("shocks"),
+            )
         else:
             raise ValueError(f"Unknown CCF model kind {kind!r}.")
         members = [_node_name(m) for m in entry["members"]]

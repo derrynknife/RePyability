@@ -1,13 +1,16 @@
 """Deprecated names, arguments and models.
 
-Everything deprecated here goes in 0.12 (``REMOVAL``): a deprecation
-gives one minor release's notice. Each warns with a ``FutureWarning``, which
-Python always shows, as the notice is short:
+A deprecation gives one minor release's notice: what 0.11 deprecates goes
+in 0.12 (``REMOVAL``), and what 0.12 deprecates in 0.13
+(``NEXT_REMOVAL``). Each warns with a ``FutureWarning``, which Python always
+shows, as the notice is short:
 
 - old argument names (``N``, ``max_N``, ``n_sims``, ``n_simulations``:
   ``mc_samples`` and ``max_samples`` now, #105) and ignored arguments;
 - non-parametric RBD nodes, and the fits to simulated lifetimes that stand
-  in for some standby and load-sharing models' reliability (#149).
+  in for some standby and load-sharing models' reliability (#149);
+- from 0.12, calling a result's value that is now a property, such as
+  ``SparesDemand.mean()`` (``called``, #184).
 """
 
 import warnings
@@ -15,6 +18,43 @@ from typing import Any, Dict, List
 
 #: The release that removes what 0.11 deprecates.
 REMOVAL = "0.12"
+
+#: The release that removes what 0.12 deprecates.
+NEXT_REMOVAL = "0.13"
+
+
+class CalledValue(float):
+    """A number that a result gave by a method and now gives as a property:
+    it is the number, and calling it (the old way) gives the number too,
+    with a ``FutureWarning`` (see ``called``)."""
+
+    _name: str
+
+    def __new__(cls, value: float, name: str):
+        number = super().__new__(cls, value)
+        number._name = name
+        return number
+
+    def __call__(self) -> float:
+        warnings.warn(
+            f"{self._name} is a property now, as the other results' values "
+            f"are: write {self._name.split('.')[-1]}, not "
+            f"{self._name.split('.')[-1]}(). Calling it is deprecated and "
+            f"will be refused in {NEXT_REMOVAL}.",
+            FutureWarning,
+            stacklevel=2,
+        )
+        return float(self)
+
+    def __reduce__(self):
+        return (float, (float(self),))
+
+
+def called(value: float, name: str) -> CalledValue:
+    """``value``, a result's property ``name`` (``"Class.attribute"``) that
+    used to be a method: still callable, with a ``FutureWarning``, until
+    ``NEXT_REMOVAL``."""
+    return CalledValue(value, name)
 
 
 def renamed(

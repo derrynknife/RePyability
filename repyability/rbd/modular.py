@@ -71,6 +71,7 @@ from repyability.rbd.shannon import (
     _shannon_plan,
     _shannon_value_and_gradient,
 )
+from repyability.utils.checks import structure_method
 
 # The kinds of term.
 NODE, SERIES, PARALLEL, KOON = 0, 1, 2, 3
@@ -517,6 +518,7 @@ class Decomposition:
         """The compiled structure function behind :meth:`works`, for callers
         (the simulations) that evaluate it at every event: ``function(status)``
         is ``works(status, method)``."""
+        method = structure_method(method)
         function = self._functions.get(method)
         if function is None:
             function = self._functions[method] = self._structure_function(

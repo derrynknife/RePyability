@@ -37,8 +37,8 @@ def test_constant_rates_and_instant_repair_give_poisson_demand(horizon, fleet):
     np.testing.assert_allclose(
         demand.probabilities, poisson.pmf(counts, mean), atol=2e-6
     )
-    assert demand.mean() == pytest.approx(mean, rel=1e-5)
-    assert demand.std() == pytest.approx(np.sqrt(mean), rel=1e-4)
+    assert demand.mean == pytest.approx(mean, rel=1e-5)
+    assert demand.std == pytest.approx(np.sqrt(mean), rel=1e-4)
     for probability in (0.5, 0.9, 0.99):
         assert demand.stock(probability) == poisson.ppf(probability, mean)
     assert demand.covered(demand.stock(0.9)) >= 0.9
@@ -132,7 +132,7 @@ def test_the_exact_demand_agrees_with_the_rbd_s_simulation():
     for node in "ab":
         e, s = exact[node], simulated[node]
         assert s.method == "simulate"
-        assert abs(e.mean() - s.mean()) < 4 * e.std() / np.sqrt(10_000)
+        assert abs(e.mean - s.mean) < 4 * e.std / np.sqrt(10_000)
         size = min(len(e.probabilities), len(s.probabilities))
         np.testing.assert_allclose(
             s.probabilities[:size], e.probabilities[:size], atol=0.015
@@ -197,13 +197,13 @@ def test_components_the_renewal_count_does_not_cover_are_simulated():
         simulated = rbd.spares_demand(
             500.0, method="simulate", mc_samples=2_000, seed=1
         )["c"]
-        assert simulated.mean() > 0.0
+        assert simulated.mean > 0.0
     # A standby group's units fail at 0.01 an hour while operating: about
     # five spares in 500 hours (a little less while the group is down).
     simulated = single(group).spares_demand(
         500.0, method="simulate", mc_samples=4_000, seed=2
     )["c"]
-    assert simulated.mean() == pytest.approx(5.0, abs=0.15)
+    assert simulated.mean == pytest.approx(5.0, abs=0.15)
 
 
 def test_what_is_refused_and_checked():

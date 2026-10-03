@@ -23,10 +23,10 @@ seal = {"reliability": surv.Exponential.from_params([1 / 4000.0]),   # MTTF 4,00
 edges = [("s", "pump"), ("pump", "seal"), ("seal", "t")]
 rbd = RepairableRBD(edges, {"pump": pump, "seal": seal})
 demand = rbd.spares_demand(8760.0, fleet=20)    # a year, from new
-demand["pump"].mean()          # -> 90.17
-demand["pump"].std()           # -> 4.47
+demand["pump"].mean            # -> 90.17
+demand["pump"].std             # -> 4.47
 demand["pump"].stock(0.95)     # -> 98   pumps last the year with probability 0.95
-demand["seal"].mean()          # -> 43.80   Poisson: 20 x 8,760 / 4,000
+demand["seal"].mean            # -> 43.80   Poisson: 20 x 8,760 / 4,000
 demand["seal"].stock(0.95)     # -> 55
 ```
 
@@ -56,7 +56,7 @@ of age nearly doubles the pumps used (see
 renewed = dict(pump, preventive={"interval": 1000.0,
                                  "duration": surv.Exponential.from_params([1 / 4.0])})
 maintained = RepairableRBD(edges, {"pump": renewed, "seal": seal})
-maintained.spares_demand(8760.0, fleet=20, nodes=["pump"])["pump"].mean()   # -> 172.34
+maintained.spares_demand(8760.0, fleet=20, nodes=["pump"])["pump"].mean   # -> 172.34
 ```
 
 ## Stock with a lead time
@@ -114,7 +114,7 @@ Two kinds of component replace on a calendar, and are counted their own way
   blocked = dict(pump, preventive={"interval": 1000.0, "policy": "block",
                                    "duration": surv.Exponential.from_params([1 / 4.0])})
   calendar = RepairableRBD(edges, {"pump": blocked, "seal": seal})
-  calendar.spares_demand(8760.0, fleet=20, nodes=["pump"])["pump"].mean()   # -> 187.32
+  calendar.spares_demand(8760.0, fleet=20, nodes=["pump"])["pump"].mean   # -> 187.32
   ```
 
 - **Hidden failures found by proof tests**, tested and repaired in no time,
@@ -128,7 +128,7 @@ Two kinds of component replace on a calendar, and are counted their own way
            "inspection": {"interval": 8760.0}}
   valves = RepairableRBD([("s", "v"), ("v", "t")], {"v": valve})
   used = valves.spares_demand(20 * 8760.0, fleet=50)["v"]
-  used.mean()       # -> 41.21
+  used.mean         # -> 41.21
   used.stock(0.95)  # -> 48
   valves.spares_stock(26 * 7 * 24.0, fill_rate=0.95, fleet=50)["v"].stock   # -> 5
   ```
@@ -190,7 +190,7 @@ takes over at once:
 ```python
 paired = RepairableRBD(edges, {"pump": dict(pump, standby={"units": 2}), "seal": seal})
 used = paired.spares_demand(8760.0, fleet=20, method="simulate", seed=1)
-used["pump"].mean()    # -> 90.38   simulated
+used["pump"].mean      # -> 90.38   simulated
 ```
 
 The stock needs the long run, which the simulations from new do not reach,

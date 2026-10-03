@@ -27,6 +27,40 @@ other release, fixes included, the minor.
   with no model is now told that a junction takes `PerfectReliability`, and
   `NonRepairable(PerfectReliability)` says to give it as the node itself.
 
+- **PRA's independent shocks for MGL groups (#180).** Splitting the
+  probability, an MGL group's shocks were mutually exclusive (one shared
+  cause at most), where PRA codes (SAPHIRE, CAFTA, RiskSpectrum) take each
+  specific set's `Q_k` as an independent basic event: the two differ at
+  second order in `Q` (a 2-out-of-3 group of `MGL(0.2, 0.3)` at `Q = 0.031`
+  fails with probability 0.010219 one way and 0.010192 the other).
+  `MGL(..., shocks="independent")` combines them as PRA codes do (exact,
+  over the unions of the causes that strike), to check a result against
+  one; the default is as before. It is saved, kept by parameter changes
+  and draws, and a `BetaFactor` or a single-shock MGL agrees either way.
+  The guide and `MGL`'s docstring say so where the model is described.
+- **`mean_residual_life(state)` on `NonRepairableRBD` (#179).** The mean
+  remaining life given the components' states, the area under
+  `sf_given_state` from now: `remaining_life` gives a percentile of it (the
+  time to a reliability target), and this its mean.
+- **Smaller API additions (#179, #184).** `"paths"` and `"cuts"` name the
+  structure methods wherever `"p"` and `"c"` do. A `Network` takes a number
+  as a link's or node's probability of failing, as a `FaultTree` takes an
+  event's. The demonstration functions answer for each element of arrays
+  given for their numbers, and `time_to_reliability`, `bx_life` and
+  `remaining_life` for each of several targets. `demonstrated_mtbf`,
+  `mtbf_test_time` and `mtbf_pass_probability` take
+  `failure_terminated=True` for a test that stops at its last failure
+  (`2r` degrees of freedom). `PhasedMission` has `sf` and `ff`, the names
+  the diagrams use, beside `reliability` and `unreliability`.
+  `Timeline.from_outages(merge=True)` joins records that overlap or touch
+  (two work orders on one outage) into one outage, which is otherwise
+  refused, or counted as two failures when they touch. The uncertainty
+  methods draw, when no `uncertainty` is given, every node whose model is
+  a surpyval fit with a parameter covariance, those sharing a model object
+  (or a common-cause group) together, where `None` was refused, and an
+  `UncertaintyResult` shows a summary (the nominal value, the median, the
+  90% interval) rather than its thousand samples.
+
 ### Changed
 
 - **The analyses over a window cost little more than the point curve
@@ -55,6 +89,19 @@ other release, fixes included, the minor.
   none missing (with `mc_samples=N`, as before, also the last), and
   `allow_gaps=True` takes the result of whichever simulations they hold, as
   before.
+- **`SparesDemand.mean` and `std` are properties (#184)**, as the other
+  results' values are (`UncertaintyResult.mean`, `CostResult.mean`): what
+  takes an argument is a method (`stock(probability)`), and a value a
+  property. Calling them, `demand.mean()`, still gives the value, with a
+  `FutureWarning`, and goes in 0.13 (`deprecation.NEXT_REMOVAL`).
+- **A count given as `True` is refused by the demonstration functions
+  (#179)**, as elsewhere (a fault tree's vote), where it was taken as 1.
+- **A run controlled by the system itself is exact (#179).** With
+  `control_variate=True`, a system whose exact twin is itself (nothing ties
+  its components together, and the exact methods take all of it) gave an
+  interval of width 1e-17 around its exact value;
+  `mean_availability_interval` and the cost's `mean_interval` now give
+  that value, with no error and `method="exact"`.
 - **A meshed diagram's core is worked out in a fraction of the time
   (#172).** A core that does not reduce, decided by its binary decision
   diagram, knew each sub-problem by which of the decided nodes that still
@@ -118,6 +165,12 @@ other release, fixes included, the minor.
 
 ### Fixed
 
+- **A phased mission with an equal standby group in each phase (#179).**
+  A component must keep one model through a mission, and two separately
+  built but equal `StandbyModel`s (or other node models of RePyability's)
+  were taken as different, so the mission was refused; models that save
+  the same way are now the same model, as equal surpyval distributions
+  were.
 - **A simulation over a window that is not positive and finite is refused
   (#174).** `availability`, `cost`, `simulate_timelines`, `simulate_chunk`,
   `shards` and `compare` took a negative window (and gave negative uptimes),

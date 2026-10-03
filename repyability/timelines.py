@@ -656,6 +656,26 @@ def k_out_of_n(k: int, *timelines, name: Optional[Hashable] = None):
     return _combine(timelines, need, name, "k_out_of_n")
 
 
+def _merged_outages(outages: list, flags: list, end: float):
+    """``outages`` (with their ``planned`` flags) sorted by start, each run
+    that overlaps or touches joined into one: planned only if all of it
+    was. An end of None runs to ``end``."""
+    order = sorted(range(len(outages)), key=lambda i: float(outages[i][0]))
+    merged: list = []
+    marks: list = []
+    for i in order:
+        start, stop = outages[i]
+        start = float(start)
+        stop = end if stop is None else float(stop)
+        if merged and start <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], stop)
+            marks[-1] = marks[-1] and flags[i]
+        else:
+            merged.append([start, stop])
+            marks.append(flags[i])
+    return [tuple(pair) for pair in merged], marks
+
+
 class Timeline:
     """A unit's up/down history over a window ``[0, end]``: whether it is
     up at 0, and the times it changes state, alternately going down and
@@ -736,23 +756,36 @@ class Timeline:
         *,
         planned=None,
         name: Optional[Hashable] = None,
+        merge: bool = False,
     ) -> "Timeline":
         """The timeline of a unit that is up but for ``outages``: an
         outage log.
+
+        Two outages that touch, one ending as the next starts, are two
+        changes at one time: the unit is down throughout, but restored and
+        failed again at that instant, so they count as two failures. Real
+        logs often hold one outage as several records, overlapping or
+        touching (two work orders on one outage): ``merge=True`` makes each
+        run of them one outage (#179).
 
         Parameters
         ----------
         outages : iterable of (float, float or None)
             Each outage's start and end, in order of start; one ends no
-            later than the next starts. An end of None, or at or after the
-            window's end, runs to the end.
+            later than the next starts (in any order, and overlapping, with
+            ``merge``). An end of None, or at or after the window's end,
+            runs to the end.
         end : float
             The window's end, positive.
         planned : iterable of bool, optional
             For each outage, whether it was planned (maintenance) rather
-            than a failure. By default none was.
+            than a failure. By default none was. Outages merged into one
+            are planned only if all of them were.
         name : hashable, optional
             The timeline's name. By default None.
+        merge : bool, optional
+            Whether to join outages that overlap or touch into one, after
+            sorting them by start. By default False: they must not overlap.
 
         Returns
         -------
@@ -763,8 +796,8 @@ class Timeline:
         ------
         ValueError
             If an outage ends before it starts, starts before the one before
-            it ends, or starts outside ``[0, end]``, or ``planned`` does not
-            have one flag per outage.
+            it ends (without ``merge``), or starts outside ``[0, end]``, or
+            ``planned`` does not have one flag per outage.
 
         Examples
         --------
@@ -772,6 +805,17 @@ class Timeline:
         >>> log = Timeline.from_outages([(100, 104), (900, None)], end=1000)
         >>> log.downtime, log.restorations
         (104.0, 1)
+
+        Two work orders on one outage, and two records of another:
+
+        >>> records = [(100, 104), (102, 110), (500, 520), (520, 530)]
+        >>> Timeline.from_outages(records, end=1000)  # doctest: +ELLIPSIS
+        Traceback (most recent call last):
+            ...
+        ValueError: Outage (102.0, 110.0) is out of order: ... merge=True ...
+        >>> joined = Timeline.from_outages(records, end=1000, merge=True)
+        >>> joined.failures, joined.downtime
+        (2, 40.0)
         """
         end = _check_end(end)
         outages = list(outages)
@@ -785,6 +829,8 @@ class Timeline:
                 f"planned has {len(flags)} flags for {len(outages)} "
                 "outages: give one for each outage."
             )
+        if merge:
+            outages, flags = _merged_outages(outages, flags, end)
         changes: list = []
         marks: list = []
         last = 0.0
@@ -801,6 +847,12 @@ class Timeline:
                     f"Outage ({start}, {stop}) is out of order: each starts "
                     "no earlier than the one before ends, and ends no "
                     "earlier than it starts."
+                    + (
+                        " Give merge=True to join outages that overlap or "
+                        "touch."
+                        if math.isfinite(start) and stop >= start
+                        else ""
+                    )
                 )
             changes += [start, stop]
             marks += [flag, False]
@@ -970,6 +1022,12 @@ class Timeline:
 
     def failures_by_cause(self) -> Dict[Hashable, int]:
         """How many failures (unplanned changes down) each cause made.
+
+        Inputs that fail at one instant are taken one after another, in
+        the order the inputs come (see the module docstring): of two
+        series inputs failing together, the first takes the timeline down
+        and is the cause, ``(x & y)`` giving it to ``x`` and ``(y & x)`` to
+        ``y``.
 
         Returns
         -------
