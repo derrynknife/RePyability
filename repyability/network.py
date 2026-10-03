@@ -11,15 +11,18 @@ network itself (#143), after Hardy, Lucet & Limnios (2007): the links are
 decided in an order, and after each, what is left to decide depends only on
 how the *frontier* (the nodes with links decided and links to come) is
 joined up by the working links so far, and on which parts hold the
-terminals. Equal states are solved once, so the diagram grows with the
-frontier's width, not with the number of paths, which multiply in a meshed
-network: a grid of 64 nodes, with billions of paths, takes about a second.
-A node that can fail is decided as its first link is, and a failed one
-takes its links out. The diagram has the format of ``shannon.py``'s plans,
-so the probability, its complement, the gradient and the cut sets replay
-it. ``METHOD = "paths"`` decides the network from its minimal paths
-instead, as before: each simple path between the terminals, as the set of
-its links and of the nodes on it that can fail, by the Shannon
+terminals. The states before each decision are worked out together, as
+the rows of an array, and equal ones merged (#173), so the diagram grows
+with the frontier's width, not with the number of paths, which multiply in
+a meshed network: a grid of 100 nodes, corner to corner, takes a second and
+a half (its widest decision has 42,000 states, of 1.9 million in all). A
+node that can fail is decided as its first link is, and a failed one takes
+its links out. The diagram is held as arrays, a level (one decision) at a
+time, along which the probability, its complement and the gradient are
+worked out; its steps are those of ``shannon.py``'s plans, which the cut
+sets replay. ``METHOD = "paths"`` decides the network from its minimal
+paths instead, as before: each simple path between the terminals, as the
+set of its links and of the nodes on it that can fail, by the Shannon
 decomposition of ``shannon.py``.
 
 The simulation draws each element's lifetime and finds, in each sample,
@@ -27,7 +30,17 @@ the path that lasts longest: its lifetime is the network's.
 """
 
 from collections import deque
-from typing import Any, Dict, Hashable, List, Optional, Sequence, Set, Tuple
+from typing import (
+    Any,
+    Dict,
+    Hashable,
+    List,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Set,
+    Tuple,
+)
 
 import numpy as np
 
@@ -35,11 +48,7 @@ from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd._model_utils import is_fixed_probability
 from repyability.rbd._sampling import lifetime_sampler
 from repyability.rbd.non_repairable_rbd import check_x
-from repyability.rbd.shannon import (
-    _minimal_cut_sets,
-    _shannon_plan,
-    _shannon_value_and_gradient,
-)
+from repyability.rbd.shannon import _minimal_cut_sets, _shannon_plan
 from repyability.utils.wrappers import numpy_seed
 
 #: How the exact values are worked out: ``"bdd"`` (the default), by the
@@ -53,13 +62,16 @@ METHOD = "bdd"
 MAX_PATHS = 100_000
 
 #: The most states the decision diagram is built from (each a way the
-#: frontier can be joined up): beyond, the exact values refuse, pointing to
-#: the simulation. A square grid of 81 nodes has about 400,000; one of 100,
-#: 1.7 million.
-MAX_STATES = 1_000_000
+#: frontier can be joined up before a decision), about a second's work per
+#: million: beyond, the exact values refuse, pointing to the simulation. A
+#: square grid of 100 nodes has 1.9 million; one of 121, 7.7 million.
+MAX_STATES = 5_000_000
 
 # Value slots 0 and 1 of a plan: the terminals are parted, joined.
 _FAIL, _WORK = 0, 1
+
+# A decision's outcome that is no state: the terminals parted, joined.
+_NONE_FAIL, _NONE_WORK = -1, -2
 
 
 class Network:
@@ -74,8 +86,9 @@ class Network:
     The exact values come from a binary decision diagram built from the
     network, link by link, whose size grows with the network's width
     rather than with its number of paths (see the module docstring): a
-    grid of 64 nodes takes about a second. One of more than
-    ``MAX_STATES`` states refuses, pointing to the simulation.
+    grid of 100 nodes takes a second and a half. One of more than
+    ``MAX_STATES`` (5,000,000) states refuses, pointing to the
+    simulation.
 
     Parameters
     ----------
@@ -191,7 +204,7 @@ class Network:
             is_fixed_probability(m) for m in self.models.values()
         )
         self._paths: Optional[List[frozenset]] = None
-        self._plan: Optional[tuple] = None
+        self._plan: Optional[_Plan] = None
 
     @staticmethod
     def _check_model(what: str, model) -> None:
@@ -282,13 +295,13 @@ class Network:
             ``MAX_STATES`` states (with ``METHOD = "paths"``, if there are
             more than ``MAX_PATHS`` paths).
         """
-        return set(_minimal_cut_sets(self._decomposition()))
+        return set(_minimal_cut_sets(self._decomposition().steps()))
 
-    def _decomposition(self) -> tuple:
+    def _decomposition(self) -> "_Plan":
         """The plan of the probability that the terminals are joined (see
-        ``shannon.py``): the decision diagram built from the network, or
-        with ``METHOD = "paths"`` the Shannon decomposition of its simple
-        paths."""
+        ``shannon.py``), as a ``_Plan``: the decision diagram built from the
+        network, or with ``METHOD = "paths"`` the Shannon decomposition of
+        its simple paths."""
         if self._plan is None:
             if METHOD not in ("bdd", "paths"):
                 raise ValueError(
@@ -298,7 +311,11 @@ class Network:
             if METHOD == "paths":
                 paths = self._simple_paths()
                 # Nothing joins the terminals: they are always parted.
-                self._plan = _shannon_plan(paths) if paths else ([], _FAIL)
+                self._plan = (
+                    _plan_from_steps(*_shannon_plan(paths))
+                    if paths
+                    else _constant(_FAIL)
+                )
             else:
                 order = _link_order(
                     self.links, self._adjacent, self.source, self.target
@@ -328,30 +345,13 @@ class Network:
                 q[name] = np.asarray(model.ff(x), dtype=float).reshape(x.shape)
         return p, q
 
-    def _values(self, x: np.ndarray, forced: Optional[tuple] = None):
-        """The probabilities that the terminals are connected and that they
-        are not at times ``x``, each a sum of products (so a small one keeps
-        its precision); ``forced`` holds one element as working (True) or
-        failed (False)."""
-        steps, root = self._decomposition()
-        p, q = self._probabilities(x, {pivot for pivot, _, _ in steps})
-        if forced is not None:
-            name, works = forced
-            if name in p:
-                p[name] = np.full(x.shape, 1.0 if works else 0.0)
-                q[name] = 1.0 - p[name]
-        out = []
-        for terminals in ((0.0, 1.0), (1.0, 0.0)):
-            values = [
-                np.full(x.shape, terminals[0]),
-                np.full(x.shape, terminals[1]),
-            ]
-            for pivot, active, inactive in steps:
-                values.append(
-                    p[pivot] * values[active] + q[pivot] * values[inactive]
-                )
-            out.append(values[root])
-        return out[0], out[1]
+    def _value(self, x: np.ndarray, terminals=(0.0, 1.0)) -> np.ndarray:
+        """The probability that the terminals are connected at times ``x``,
+        or with ``terminals`` ``(1.0, 0.0)`` that they are not: a sum of
+        products, so that a small one keeps its precision."""
+        plan = self._decomposition()
+        p, q = self._probabilities(x, plan.names)
+        return _evaluate(plan, p, q, x.shape, terminals)
 
     def _method(self, method: str, mc_samples) -> str:
         if method not in ("exact", "simulate"):
@@ -409,7 +409,7 @@ class Network:
                 10_000 if mc_samples is None else mc_samples, seed
             )
             return np.mean(lives[:, None] > x[None, :], axis=0)
-        return self._values(x)[0]
+        return self._value(x)
 
     @check_x
     def ff(
@@ -445,7 +445,7 @@ class Network:
                 10_000 if mc_samples is None else mc_samples, seed
             )
             return np.mean(~(lives[:, None] > x[None, :]), axis=0)
-        return self._values(x)[1]
+        return self._value(x, (1.0, 0.0))
 
     @check_x
     def birnbaum_importance(self, x=None) -> Dict[Hashable, Any]:
@@ -469,9 +469,9 @@ class Network:
             that is in no path).
         """
         plan = self._decomposition()
-        p, q = self._probabilities(x, {pivot for pivot, _, _ in plan[0]})
-        works, up = _shannon_value_and_gradient(plan, p, q)
-        fails, down = _shannon_value_and_gradient(plan, p, q, (1.0, 0.0))
+        p, q = self._probabilities(x, plan.names)
+        works, up = _value_and_gradient(plan, p, q, x.shape)
+        fails, down = _value_and_gradient(plan, p, q, x.shape, (1.0, 0.0))
         zero = np.zeros(x.shape)
         out: Dict[Hashable, Any] = {}
         for name in self.models:
@@ -529,7 +529,7 @@ class Network:
 
         knots = np.concatenate([model_knots(m) for m in self.models.values()])
         return mean_lifetime(
-            lambda t: self._values(np.asarray(t, float))[0], knots
+            lambda t: self._value(np.asarray(t, float)), knots
         )
 
     # ------------------------------------------------------------------
@@ -682,24 +682,265 @@ def _order_cost(order: Sequence[Hashable], links) -> float:
     return cost
 
 
+class _Plan(NamedTuple):
+    """A decision diagram (a plan in the format of ``shannon.py``'s) held
+    as arrays, level by level, so that it is evaluated a level at a time:
+    the steps ``bounds[j]`` to ``bounds[j + 1]`` all branch on variable
+    ``names[pivots[j]]``, step ``i`` filling value slot ``i + 2`` from its
+    ``active`` and ``inactive`` slots, which earlier levels fill (or are
+    slots 0 and 1, the terminals parted and joined). ``root`` is the slot
+    of the whole."""
+
+    names: List[Hashable]
+    pivots: np.ndarray
+    bounds: np.ndarray
+    active: np.ndarray
+    inactive: np.ndarray
+    root: int
+
+    def steps(self) -> tuple:
+        """The plan in ``shannon.py``'s format, ``(steps, root)``, step
+        ``i`` a ``(pivot, active, inactive)`` filling slot ``i + 2``."""
+        steps: List[tuple] = []
+        for j, pivot in enumerate(self.pivots.tolist()):
+            start, end = self.bounds[j], self.bounds[j + 1]
+            steps.extend(
+                zip(
+                    [self.names[pivot]] * int(end - start),
+                    self.active[start:end].tolist(),
+                    self.inactive[start:end].tolist(),
+                )
+            )
+        return steps, self.root
+
+
+def _constant(slot: int) -> _Plan:
+    """The plan of a constant: the terminals always parted, or joined."""
+    empty = np.zeros(0, dtype=np.int64)
+    return _Plan([], empty, np.zeros(1, dtype=np.int64), empty, empty, slot)
+
+
+def _plan_from_steps(steps: list, root: int) -> _Plan:
+    """A plan in ``shannon.py``'s format, as a ``_Plan``: its steps grouped
+    by their depth (the longest way down to a terminal) and pivot, so that
+    each level's branches lead to earlier ones."""
+    if not steps:
+        return _constant(root)
+    names = list(dict.fromkeys(pivot for pivot, _, _ in steps))
+    index = {name: i for i, name in enumerate(names)}
+    depth = [0, 0]
+    for _, active, inactive in steps:
+        depth.append(1 + max(depth[active], depth[inactive]))
+    keys = [
+        (depth[i + 2], index[pivot]) for i, (pivot, _, _) in enumerate(steps)
+    ]
+    order = sorted(range(len(steps)), key=keys.__getitem__)
+    slot = np.arange(len(steps) + 2)
+    slot[np.asarray(order) + 2] = np.arange(len(steps)) + 2
+    active = np.array([slot[steps[i][1]] for i in order], dtype=np.int64)
+    inactive = np.array([slot[steps[i][2]] for i in order], dtype=np.int64)
+    pivots, bounds = [], []
+    for position, i in enumerate(order):
+        if not position or keys[i] != keys[order[position - 1]]:
+            pivots.append(keys[i][1])
+            bounds.append(position)
+    bounds.append(len(order))
+    return _Plan(
+        names,
+        np.array(pivots, dtype=np.int64),
+        np.array(bounds, dtype=np.int64),
+        active,
+        inactive,
+        int(slot[root]),
+    )
+
+
+#: The most values a plan's evaluation holds at once (its slots, times the
+#: times evaluated together): more times are evaluated in turn.
+_EVALUATION_SIZE = 4_000_000
+
+
+def _rows(plan: _Plan, values: dict, size: int) -> np.ndarray:
+    """Each of the plan's variables' ``values`` (of ``size`` elements once
+    broadcast), as the rows of one array."""
+    out = np.empty((len(plan.names), size))
+    for i, name in enumerate(plan.names):
+        out[i] = np.broadcast_to(np.asarray(values[name], float), (size,))
+    return out
+
+
+def _forward(
+    plan: _Plan, p: np.ndarray, q: np.ndarray, terminals
+) -> np.ndarray:
+    """Every slot's value, a row each, for the variables' probabilities
+    ``p`` and complements ``q`` (a row per variable, a column per
+    evaluation): a sum of products, so a small value keeps its precision."""
+    values = np.empty((2 + len(plan.active), p.shape[1]))
+    values[0], values[1] = terminals
+    for j, pivot in enumerate(plan.pivots.tolist()):
+        start, end = plan.bounds[j], plan.bounds[j + 1]
+        values[2 + start : 2 + end] = (
+            p[pivot] * values[plan.active[start:end]]
+            + q[pivot] * values[plan.inactive[start:end]]
+        )
+    return values
+
+
+def _chunks(plan: _Plan, size: int):
+    """The ranges of evaluations worked out together."""
+    step = max(1, _EVALUATION_SIZE // (2 + len(plan.active)))
+    for start in range(0, size, step):
+        yield start, min(size, start + step)
+
+
+def _evaluate(
+    plan: _Plan, p: dict, q: dict, shape: tuple, terminals=(0.0, 1.0)
+) -> np.ndarray:
+    """The plan's value for each element's probability ``p`` and its
+    complement ``q`` (by name, each of ``shape``), level by level: the
+    probability that the terminals are joined, or with ``terminals``
+    ``(1.0, 0.0)`` that they are parted, each to its own precision."""
+    size = int(np.prod(shape, dtype=np.int64))
+    if plan.root < 2:
+        return np.full(shape, terminals[plan.root], dtype=float)
+    p_rows, q_rows = _rows(plan, p, size), _rows(plan, q, size)
+    out = np.empty(size)
+    for start, end in _chunks(plan, size):
+        values = _forward(
+            plan, p_rows[:, start:end], q_rows[:, start:end], terminals
+        )
+        out[start:end] = values[plan.root]
+    return out.reshape(shape)
+
+
+def _value_and_gradient(
+    plan: _Plan, p: dict, q: dict, shape: tuple, terminals=(0.0, 1.0)
+) -> Tuple[np.ndarray, Dict[Hashable, np.ndarray]]:
+    """``_evaluate``'s value and its derivative with respect to each of the
+    plan's variables' probabilities (its Birnbaum importance), by one pass
+    up the levels and one back down."""
+    size = int(np.prod(shape, dtype=np.int64))
+    if plan.root < 2:
+        return np.full(shape, terminals[plan.root], dtype=float), {}
+    p_rows, q_rows = _rows(plan, p, size), _rows(plan, q, size)
+    value = np.empty(size)
+    gradient = np.zeros((len(plan.names), size))
+    for start, end in _chunks(plan, size):
+        p_, q_ = p_rows[:, start:end], q_rows[:, start:end]
+        values = _forward(plan, p_, q_, terminals)
+        adjoints = np.zeros_like(values)
+        adjoints[plan.root] = 1.0
+        for j in range(len(plan.pivots) - 1, -1, -1):
+            pivot = int(plan.pivots[j])
+            first, last = plan.bounds[j], plan.bounds[j + 1]
+            adjoint = adjoints[2 + first : 2 + last]
+            active = plan.active[first:last]
+            inactive = plan.inactive[first:last]
+            # Each evaluation's sum along a row of its own, so that it is
+            # the same however many are worked out together.
+            change = adjoint * (values[active] - values[inactive])
+            gradient[pivot, start:end] += np.ascontiguousarray(change.T).sum(
+                axis=1
+            )
+            np.add.at(adjoints, active, adjoint * p_[pivot])
+            np.add.at(adjoints, inactive, adjoint * q_[pivot])
+        value[start:end] = values[plan.root]
+    return value.reshape(shape), {
+        name: gradient[i].reshape(shape) for i, name in enumerate(plan.names)
+    }
+
+
+def _canonical(
+    labels: np.ndarray, source: np.ndarray, target: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Frontier states (a row of labels each, -1 for a failed node, and the
+    labels of the terminals' parts, -1 for one yet to enter) with their
+    labels renumbered in order of first appearance, so that equal states
+    are equal rows."""
+    count, width = labels.shape
+    if not count or not width:
+        return labels, source, target
+    size = int(labels.max()) + 1
+    if size <= 0:
+        return labels, source, target
+    rows = np.arange(count)
+    # Each row's new number for each label, given as the labels come.
+    rank = np.full((count, size), -1, dtype=labels.dtype)
+    seen = np.zeros(count, dtype=labels.dtype)
+    for column in range(width):
+        label = labels[:, column]
+        at = rows[label >= 0]
+        label = label[at]
+        fresh = rank[at, label] < 0
+        at, label = at[fresh], label[fresh]
+        rank[at, label] = seen[at]
+        seen[at] += 1
+
+    def renamed(label: np.ndarray) -> np.ndarray:
+        return np.where(
+            label >= 0,
+            rank[
+                rows.reshape((-1,) + (1,) * (label.ndim - 1)),
+                np.maximum(label, 0),
+            ],
+            label,
+        ).astype(labels.dtype)
+
+    return renamed(labels), renamed(source), renamed(target)
+
+
+def _unique_rows(rows: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    """The distinct rows of an array of small integers (none below -1),
+    and each row's index among them: the rows are packed into 64-bit words
+    first, which sort far faster than rows."""
+    count, width = rows.shape
+    if not count or not width:
+        return rows[:1], np.zeros(count, dtype=np.int64)
+    values = rows.astype(np.uint64) + np.uint64(1)
+    bits = max(1, int(values.max()).bit_length())
+    per_word = 64 // bits
+    words = []
+    for start in range(0, width, per_word):
+        word = np.zeros(count, dtype=np.uint64)
+        for column in range(start, min(width, start + per_word)):
+            word = (word << np.uint64(bits)) | values[:, column]
+        words.append(word)
+    if len(words) == 1:
+        _, first, inverse = np.unique(
+            words[0], return_index=True, return_inverse=True
+        )
+        return rows[first], inverse.reshape(-1)
+    order = np.lexsort(words[::-1])
+    new = np.ones(count, dtype=bool)
+    for word in words:
+        ordered = word[order]
+        new[1:] |= ordered[1:] != ordered[:-1]
+    inverse = np.empty(count, dtype=np.int64)
+    inverse[order] = np.cumsum(new) - 1
+    return rows[order[new]], inverse
+
+
 def _frontier_plan(
     order: Sequence[Hashable],
     links: Dict[Hashable, Tuple[Hashable, Hashable]],
     failing: Set[Hashable],
     source: Hashable,
     target: Hashable,
-) -> tuple:
+) -> _Plan:
     """The decision diagram of whether ``source`` and ``target`` are
     joined, its links decided in ``order`` (see the module docstring), as
-    a plan: ``(steps, root)``, step ``i`` filling value slot ``i + 2`` from
-    its pivot's active and inactive slots, slots 0 and 1 being the
-    terminals parted and joined.
+    a ``_Plan``.
 
-    A state is the decision to make next, the frontier's parts (a label
-    for each frontier node, in the order they entered: the same label for
-    nodes joined by working links, -1 for a failed node) and the parts
-    that hold the source and the target (None for a terminal yet to
-    enter). A node that can fail is decided before its first link.
+    The states before each decision are worked out together, as rows of
+    an array (#173): each is the frontier's parts (a label for each
+    frontier node, in the order they entered: the same label for nodes
+    joined by working links, -1 for a failed node) and the parts that hold
+    the source and the target (-1 for a terminal yet to enter). A node
+    that can fail is decided before its first link. Each state's two
+    outcomes are found at once, equal ones merged, and the diagram is then
+    reduced from the last decision up (a state whose outcomes agree is
+    dropped, and equal ones shared), which gives the same diagram as
+    deciding the states one by one.
 
     Raises
     ------
@@ -713,7 +954,7 @@ def _frontier_plan(
             first.setdefault(w, i)
             last[w] = i
     if source not in first or target not in first:
-        return [], _FAIL  # no link joins the terminals' parts
+        return _constant(_FAIL)  # no link joins the terminals' parts
     # The decisions: (variable, entering nodes, link ends, leaving nodes),
     # the ends None for a node's decision.
     decisions: List[tuple] = []
@@ -741,147 +982,148 @@ def _frontier_plan(
             (entering, grown.index(ends[0]), grown.index(ends[1]), keep)
         )
         front = [w for w in grown if w not in leaving]
-    count = len(decisions)
 
-    def canonical(labels, s, t) -> tuple:
-        # The labels renumbered in order of first appearance.
-        relabel: Dict[int, int] = {}
-        out = []
-        for label in labels:
-            if label >= 0:
-                label = relabel.setdefault(label, len(relabel))
-            out.append(label)
-        return (
-            tuple(out),
-            None if s is None else relabel[s],
-            None if t is None else relabel[t],
-        )
-
-    def after_link(k: int, labels, s, t, works: bool):
-        """The frontier after link decision ``k``'s outcome: as
-        ``(labels, s, t)``, or ``_WORK`` or ``_FAIL`` once decided."""
-        entering, iu, iv, keep = shapes[k]  # type: ignore[misc]
-        labels = list(labels)
-        new = max(labels, default=-1) + 1
-        for w in entering:
-            labels.append(new)
-            if w == source:
-                s = new
-            if w == target:
-                t = new
-            new += 1
-        a, b = labels[iu], labels[iv]
-        if works and a >= 0 and b >= 0 and a != b:
-            labels = [a if label == b else label for label in labels]
-            s = a if s == b else s
-            t = a if t == b else t
-            if s is not None and s == t:
-                return _WORK
-        kept = [labels[j] for j in keep]
-        # A terminal's part with no node left on the frontier is closed.
-        if (s is not None and s not in kept) or (
-            t is not None and t not in kept
-        ):
-            return _FAIL
-        return canonical(kept, s, t)
-
-    def settle(k: int, labels, s, t):
-        """Decide from the ``k``-th decision on while no branch is needed:
-        an outcome, or the state at which one is."""
-        while True:
-            if k == count:
-                return _FAIL
-            if shapes[k] is None:
-                return (k, labels, s, t)
-            entering, iu, iv, keep = shapes[k]  # type: ignore[misc]
-            m = len(labels)
-            a = labels[iu] if iu < m else None
-            b = labels[iv] if iv < m else None
-            dead = (a is not None and a < 0) or (b is not None and b < 0)
-            joined = a is not None and a == b
-            if not (dead or joined):
-                return (k, labels, s, t)
-            # The link cannot change anything: an end has failed, or its
-            # ends are joined already.
-            after = after_link(k, labels, s, t, False)
-            if after == _FAIL or after == _WORK:
-                return after
-            labels, s, t = after
-            k += 1
-
-    def branches(state) -> list:
-        k, labels, s, t = state
-        name = decisions[k][0]
-        out = []
-        if shapes[k] is None:
+    # The states before the next decision; each decision's outcomes, as
+    # the index of the state after (or _NONE_FAIL, _NONE_WORK).
+    labels = np.zeros((1, 0), dtype=np.int16)
+    src = np.full(1, -1, dtype=np.int16)
+    dst = np.full(1, -1, dtype=np.int16)
+    outcomes: List[Tuple[np.ndarray, np.ndarray]] = []
+    states = 1
+    for k, (name, entering, ends, leaving) in enumerate(decisions):
+        count = len(src)
+        parts = (labels.max(axis=1, initial=-1) + 1).astype(np.int16)
+        if ends is None:
             # A node that can fail, entering the frontier.
-            label = max(labels, default=-1) + 1
-            out.append(
-                settle(
-                    k + 1,
-                    labels + (label,),
-                    label if name == source else s,
-                    label if name == target else t,
-                )
+            works = (
+                np.hstack([labels, parts[:, None]]),
+                parts if name == source else src,
+                parts if name == target else dst,
+                None,
             )
             if name == source or name == target:
-                out.append(_FAIL)
+                fails = None  # the terminals are parted
             else:
-                out.append(settle(k + 1, labels + (-1,), s, t))
-            return out
-        for works in (True, False):
-            after = after_link(k, labels, s, t, works)
-            if after == _FAIL or after == _WORK:
-                out.append(after)
-            else:
-                out.append(settle(k + 1, *after))
-        return out
-
-    slots: Dict[tuple, int] = {}
-    unique: Dict[tuple, int] = {}
-    steps: List[tuple] = []
-    start = settle(0, (), None, None)
-    if start == _FAIL or start == _WORK:
-        return steps, start
-    stack: list = [[start, branches(start), []]]
-    states = 1
-    root = _FAIL
-    while stack:
-        top = stack[-1]
-        solved = top[2]
-        if len(solved) < 2:
-            child = top[1][len(solved)]
-            if child == _FAIL or child == _WORK:
-                solved.append(child)
+                fails = (
+                    np.hstack([labels, np.full((count, 1), -1, np.int16)]),
+                    src,
+                    dst,
+                    None,
+                )
+            sides = [works, fails]
+        else:
+            _, iu, iv, keep = shapes[k]  # type: ignore[misc]
+            grown, s, t = labels, src, dst
+            for j, w in enumerate(entering):
+                new = (parts + j).astype(np.int16)
+                grown = np.hstack([grown, new[:, None]])
+                if w == source:
+                    s = new
+                if w == target:
+                    t = new
+            a, b = grown[:, iu], grown[:, iv]
+            merge = (a >= 0) & (b >= 0) & (a != b)
+            joined = np.where(
+                merge[:, None] & (grown == b[:, None]), a[:, None], grown
+            )
+            s_works = np.where(merge & (s == b), a, s)
+            t_works = np.where(merge & (t == b), a, t)
+            sides = [
+                (
+                    joined[:, list(keep)],
+                    s_works,
+                    t_works,
+                    (s_works >= 0) & (s_works == t_works),
+                ),
+                (grown[:, list(keep)], s, t, None),
+            ]
+        # Each outcome: joined, parted (a terminal's part closed), or a
+        # state after, renumbered.
+        codes: List[np.ndarray] = []
+        kept: List[Optional[tuple]] = []
+        for side in sides:
+            code = np.full(count, _NONE_FAIL, dtype=np.int32)
+            if side is None:
+                codes.append(code)
+                kept.append(None)
                 continue
-            slot = slots.get(child)
-            if slot is None:
-                states += 1
-                if states > MAX_STATES:
-                    raise NotImplementedError(
-                        "The network's decision diagram has more than "
-                        f"{MAX_STATES:,} states (ways its frontier can be "
-                        "joined up), too many to work out exactly. Simulate "
-                        "it: method='simulate'."
-                    )
-                stack.append([child, branches(child), []])
+            rows, s, t, work = side
+            closed = ((s >= 0) & ~(rows == s[:, None]).any(axis=1)) | (
+                (t >= 0) & ~(rows == t[:, None]).any(axis=1)
+            )
+            if work is not None:
+                code[work] = _NONE_WORK
+                closed &= ~work
+                alive = ~closed & ~work
             else:
-                solved.append(slot)
-            continue
-        stack.pop()
-        state = top[0]
-        active, inactive = solved
-        if active == inactive:
-            slot = active  # the variable cannot change the outcome here
-        else:
-            key = (decisions[state[0]][0], active, inactive)
-            slot = unique.get(key)
-            if slot is None:
-                steps.append(key)
-                slot = unique[key] = len(steps) + 1
-        slots[state] = slot
-        if stack:
-            stack[-1][2].append(slot)
-        else:
-            root = slot
-    return steps, root
+                alive = ~closed
+            codes.append(code)
+            kept.append((alive, *_canonical(rows[alive], s[alive], t[alive])))
+        stacked = [
+            np.hstack([rows, s[:, None], t[:, None]])
+            for _, rows, s, t in filter(None, kept)
+        ]
+        unique, inverse = _unique_rows(np.vstack(stacked))
+        offset = 0
+        for code, side in zip(codes, kept):
+            if side is None:
+                continue
+            alive = side[0]
+            number = int(alive.sum())
+            code[alive] = inverse[offset : offset + number]
+            offset += number
+        outcomes.append((codes[0], codes[1]))
+        states += len(unique)
+        if states > MAX_STATES:
+            raise NotImplementedError(
+                "The network's decision diagram has more than "
+                f"{MAX_STATES:,} states (ways its frontier can be joined "
+                "up), too many to work out exactly. Simulate it: "
+                "method='simulate'."
+            )
+        width = unique.shape[1] - 2
+        labels = unique[:, :width]
+        src, dst = unique[:, width], unique[:, width + 1]
+
+    # Reduce from the last decision up: each state's slot, the states after
+    # the last decision all parted.
+    names = [name for name, _, _, _ in decisions]
+    slot = np.full(len(src), _FAIL, dtype=np.int64)
+    pivots: List[int] = []
+    sizes: List[int] = []
+    actives: List[np.ndarray] = []
+    inactives: List[np.ndarray] = []
+    filled = 2
+    for k in range(len(decisions) - 1, -1, -1):
+        branches = []
+        for code in outcomes[k]:
+            branches.append(
+                np.where(
+                    code >= 0,
+                    slot[np.maximum(code, 0)] if len(slot) else 0,
+                    np.where(code == _NONE_WORK, _WORK, _FAIL),
+                )
+            )
+        active, inactive = branches
+        same = active == inactive
+        out = np.empty(len(active), dtype=np.int64)
+        out[same] = active[same]
+        pairs = (active[~same] << 32) | inactive[~same]
+        if len(pairs):
+            unique_pairs, inverse = np.unique(pairs, return_inverse=True)
+            out[~same] = filled + inverse.reshape(-1)
+            pivots.append(k)
+            sizes.append(len(unique_pairs))
+            actives.append(unique_pairs >> 32)
+            inactives.append(unique_pairs & 0xFFFFFFFF)
+            filled += len(unique_pairs)
+        slot = out
+    bounds = np.concatenate([[0], np.cumsum(sizes, dtype=np.int64)])
+    return _Plan(
+        names,
+        np.array(pivots, dtype=np.int64),
+        bounds.astype(np.int64),
+        np.concatenate(actives) if actives else np.zeros(0, np.int64),
+        np.concatenate(inactives) if inactives else np.zeros(0, np.int64),
+        int(slot[0]),
+    )

@@ -89,6 +89,21 @@ other release, fixes included, the minor.
   Python engine. The exact and numerical analyses refuse, saying why, as
   `analysis_routes()` reports, and so does the compiled engine. Raise the
   limit to try harder.
+- **A network's decision diagram is worked out a decision at a time, so a
+  10 × 10 grid is exact (#173).** The states before each decision (each a
+  way the frontier can be joined up) were found one by one; they are now
+  worked out together, as the rows of an array, equal ones merged, and the
+  diagram is reduced from the last decision up. It is the same diagram,
+  and its values are as they were, to the last bit (the importance to
+  rounding). Its size was not a merging fault: a 10 × 10 grid, corner to
+  corner, has 1.9 million states in all, though 42,000 at most before any
+  one decision, so it passed the limit of a million and was refused after
+  about ten seconds. It now takes a second and a half, a 9 × 9 grid 0.4
+  seconds rather than 3.6, and an 8 × 8 one 0.12 rather than 0.9. The
+  diagram is held, and evaluated, a decision at a time, so `sf` of the 10
+  × 10 grid takes 0.02 seconds. The limit, `network.MAX_STATES`, is five
+  million, which an 11 × 11 grid (7.7 million, eight seconds) passes; a
+  network beyond it is refused in about five seconds.
 - **A fault tree with shared events is built from its gates (#171).** The
   core that the repeated events tie together was given by its minimal path
   sets, listed as the tree was built, and they multiply with the shared

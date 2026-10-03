@@ -10,6 +10,7 @@ from surpyval import FixedEventProbability
 
 from repyability import Network, NonRepairableRBD
 from repyability import network as network_module
+from repyability.rbd.shannon import _shannon_value_and_gradient
 
 E, W = surv.Exponential.from_params, surv.Weibull.from_params
 F = FixedEventProbability.from_params
@@ -416,13 +417,13 @@ def test_a_grid_beyond_the_paths_is_exact():
     )
     # Each link's importance, against its definition.
     importance = net.birnbaum_importance(10.0)
-    plan = net._decomposition()
+    plan = net._decomposition().steps()
     p, q = net._probabilities(np.array([10.0]), net.models)
     for name in ("h0.0", "v3.3", "h6.5"):
-        works = network_module._shannon_value_and_gradient(
+        works = _shannon_value_and_gradient(
             plan, {**p, name: 1.0}, {**q, name: 0.0}
         )[0]
-        fails = network_module._shannon_value_and_gradient(
+        fails = _shannon_value_and_gradient(
             plan, {**p, name: 0.0}, {**q, name: 1.0}
         )[0]
         assert importance[name] == pytest.approx(
@@ -430,6 +431,109 @@ def test_a_grid_beyond_the_paths_is_exact():
         )
     with pytest.raises(NotImplementedError, match="too many to list"):
         net.path_sets()
+
+
+def random_network(rng):
+    """A random network of a few nodes, some of which fail, and its
+    elements' probabilities of working (some very near 1)."""
+    size = int(rng.integers(3, 9))
+    links = {}
+    for j in range(int(rng.integers(2, 16))):
+        u, v = rng.choice(size, 2, replace=False)
+        links[f"L{j}"] = (int(u), int(v))
+    touched = {n for link in links.values() for n in link}
+    failing = {n for n in touched if rng.random() < 0.3}
+    p = {name: float(rng.uniform(0.01, 0.99)) for name in [*links, *failing]}
+    for name in p:
+        if rng.random() < 0.1:
+            p[name] = 1.0 - 10.0 ** -float(rng.integers(6, 14))
+    return links, failing, p
+
+
+def test_the_levels_are_evaluated_as_the_steps_are():
+    # The diagram is built and evaluated a level at a time (#173): its
+    # value is, to the last bit, that of evaluating its steps one by one,
+    # and its gradient the same to rounding; it is reduced (no step
+    # repeats another, or has its two branches equal).
+    rng = np.random.default_rng(11)
+    checked = 0
+    for _ in range(300):
+        links, failing, p = random_network(rng)
+        touched = {n for link in links.values() for n in link}
+        if not {0, 1} <= touched:
+            continue
+        net = Network(
+            {name: (u, v, F(1.0 - p[name])) for name, (u, v) in links.items()},
+            0,
+            1,
+            nodes={n: F(1.0 - p[n]) for n in failing},
+        )
+        plan = net._decomposition()
+        steps = plan.steps()
+        q = {name: 1.0 - value for name, value in p.items()}
+        for terminals in ((0.0, 1.0), (1.0, 0.0)):
+            value, gradient = _shannon_value_and_gradient(
+                steps, p, q, terminals
+            )
+            assert network_module._evaluate(plan, p, q, (), terminals) == value
+            levels, by_levels = network_module._value_and_gradient(
+                plan, p, q, (), terminals
+            )
+            assert levels == value
+            for name, change in gradient.items():
+                assert by_levels[name] == pytest.approx(
+                    change, rel=1e-12, abs=1e-300
+                )
+        assert len(set(steps[0])) == len(steps[0])
+        assert all(active != inactive for _, active, inactive in steps[0])
+        checked += 1
+    assert checked > 200
+
+
+def test_the_paths_plan_is_evaluated_by_levels(monkeypatch):
+    monkeypatch.setattr(network_module, "METHOD", "paths")
+    rng = np.random.default_rng(12)
+    for _ in range(100):
+        links, failing, p = random_network(rng)
+        touched = {n for link in links.values() for n in link}
+        if not {0, 1} <= touched:
+            continue
+        net = Network(
+            {name: (u, v, F(1.0 - p[name])) for name, (u, v) in links.items()},
+            0,
+            1,
+            nodes={n: F(1.0 - p[n]) for n in failing},
+        )
+        q = {name: 1.0 - value for name, value in p.items()}
+        steps = network_module._shannon_plan(net._simple_paths())
+        if not steps[0]:
+            continue
+        expected = _shannon_value_and_gradient(steps, p, q)[0]
+        plan = net._decomposition()
+        assert network_module._evaluate(plan, p, q, ()) == expected
+
+
+def test_times_are_evaluated_in_turn(monkeypatch):
+    # The values of many times are worked out a few at a time, when the
+    # diagram is large: the same values.
+    net = built(lattice(5, 5), lambda name: W([100.0, 1.5]))
+    t = np.linspace(1.0, 200.0, 37)
+    whole = net.sf(t), net.ff(t), net.birnbaum_importance(t)
+    monkeypatch.setattr(network_module, "_EVALUATION_SIZE", 1)
+    np.testing.assert_array_equal(net.sf(t), whole[0])
+    np.testing.assert_array_equal(net.ff(t), whole[1])
+    for name, value in net.birnbaum_importance(t).items():
+        np.testing.assert_array_equal(value, whole[2][name])
+
+
+def test_a_ten_by_ten_grid_is_exact():
+    # Corner to corner, 1.9 million states before its decisions: refused
+    # before #173, when its states were worked out one by one.
+    net = built(lattice(10, 10), lambda name: F(0.1))
+    reliability = net.sf()
+    simulated = net.sf(method="simulate", mc_samples=20_000, seed=4)
+    assert reliability == pytest.approx(simulated, abs=0.005)
+    assert net.ff() == pytest.approx(1.0 - reliability, rel=1e-12)
 
 
 def test_terminals_that_cannot_meet():

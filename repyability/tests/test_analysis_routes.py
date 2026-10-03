@@ -845,8 +845,8 @@ def test_the_readme_says_what_is_simulated():
                 "numerical",
             ),
         ],
-        "Phased missions and networks whose decision diagrams pass a "
-        "million nodes": [],
+        "Phased missions and networks too large for their decision "
+        "diagrams": [],
         "Block diagrams too meshed for their decision diagrams": [
             (nonrepairable["too meshed"], "random", "simulated"),
             (
@@ -994,3 +994,4 @@ def test_the_readme_says_what_is_simulated():
             assert found == route, (situation, analysis, found)
     assert phased_mission.MAX_STATES == 200_000
     assert network.MAX_PATHS == 100_000
+    assert network.MAX_STATES == 5_000_000
