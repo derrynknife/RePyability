@@ -213,6 +213,7 @@ def simulate(
     engine: str,
     n_jobs,
     start: int,
+    state=None,
 ):
     """``simulate_timelines``: validated, run, and returned as a
     ``TimelineSimulation``."""
@@ -258,17 +259,23 @@ def simulate(
     working = set() if working_nodes is None else set(working_nodes)
     broken = set() if broken_nodes is None else set(broken_nodes)
     rbd._validate_node_overrides(working, broken)
-    state = np.random.get_state()
-    after = state
+    # The components' states at 0, as availability takes them (#163).
+    states = rbd._simulation_states(state, working | broken)
+    rng = np.random.get_state()
+    after = rng
     try:
         entropy = _streams.entropy_of(seed)
         if seed is None:
             after = np.random.get_state()
-        plan, complete = rbd._stream_plan(t_simulation, entropy, antithetic)
+        plan, complete = rbd._stream_plan(
+            t_simulation, entropy, antithetic, states=states
+        )
         if antithetic and not complete:
             raise NotImplementedError(_UNSTREAMED)
-        chosen = _engine(rbd, plan, engine, N)
-        if chosen == "python" and independent(rbd, plan):
+        chosen = _engine(rbd, plan, engine, N, states)
+        # The streams draw new units' histories; a run from states is the
+        # loop's.
+        if chosen == "python" and not states and independent(rbd, plan):
             method = "streams"
             data, system = _streamed(
                 rbd,
@@ -293,6 +300,7 @@ def simulate(
                 engine=chosen,
                 entropy=entropy,
                 first=start,
+                states=states,
                 histories=True,
             )
             parts, recorded = tally.histories.data(t_simulation)
@@ -314,19 +322,21 @@ def simulate(
     )
 
 
-def _engine(rbd, plan: _streams.Plan, engine: str, N: int) -> str:
+def _engine(rbd, plan: _streams.Plan, engine: str, N: int, states=None) -> str:
     """The engine that records the run: ``"python"`` or ``"numba"``, as
-    ``availability`` would choose between them (another package's engine
-    records no histories)."""
+    ``availability`` would choose between them for a run from the
+    components' ``states`` (another package's engine records no
+    histories)."""
     from repyability.rbd import _compiled
 
     if engine == "python":
         return engine
     if engine == "numba":
-        return rbd._simulation_engine("numba", plan, None, N)
+        return rbd._simulation_engine("numba", plan, None, N, states=states)
     if (
         _compiled.available()
-        and _compiled.unsupported(rbd, plan, None, numba=True) is None
+        and _compiled.unsupported(rbd, plan, None, numba=True, states=states)
+        is None
         and _compiled.worthwhile(plan, N, "numba")
     ):
         return _compiled.ready("numba", auto=True)

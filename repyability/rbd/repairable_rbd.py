@@ -13021,6 +13021,7 @@ class RepairableRBD(RBD):
         engine: str = "auto",
         n_jobs: Optional[int] = None,
         start: int = 0,
+        state=None,
     ) -> "TimelineSimulation":
         """Simulate the system over ``[0, t_simulation]`` and keep each
         simulation's up/down histories as timelines: every component's and
@@ -13077,6 +13078,16 @@ class RepairableRBD(RBD):
             ``start + mc_samples - 1`` of the run ``seed`` seeds (so parts
             of one run, made apart, join with ``TimelineSimulation.join``).
             Even with ``antithetic``. By default 0.
+        state : dict, optional
+            Start from the components' current states rather than new, as
+            for ``availability``: ``{node: NodeState}`` (see
+            [`NodeState`][repyability.NodeState]), a nested RBD's own such
+            dict for a nested RBD. A component down at 0 starts its history
+            down, and the system its own in its state then, with no change
+            at 0. These are the simulations ``availability(state=...)``
+            runs; a component started from a state draws its first life,
+            repair or maintenance from a stream of its own, which the event
+            loop follows, in Python. By default None: every component new.
 
         Returns
         -------
@@ -13092,8 +13103,9 @@ class RepairableRBD(RBD):
             ``mc_samples`` is not a positive integer (even with
             ``antithetic``), a working or broken node is unknown, the input
             or output node, or in both, ``engine`` is not one of those,
-            ``start`` is negative (or odd with ``antithetic``), or ``start``
-            is given without a ``seed``.
+            ``start`` is negative (or odd with ``antithetic``), ``start``
+            is given without a ``seed``, or a state is not one a
+            simulation can start from (see ``availability``).
         NotImplementedError
             If the RBD has common-cause groups, which the simulation does
             not take in, as yet; with ``antithetic``, if a component's draws
@@ -13140,6 +13152,7 @@ class RepairableRBD(RBD):
             engine,
             n_jobs,
             start,
+            state,
         )
 
     def simulate_chunk(

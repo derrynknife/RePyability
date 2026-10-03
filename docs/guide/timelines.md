@@ -209,8 +209,30 @@ bool(TimelineSimulation.join(halves).system == year)   # True
 
 Each history keeps every change, about 25 bytes of memory each: for a
 summary of a long run, `availability` keeps less. A diagram with
-common-cause groups is refused, as the simulations refuse it, and the
-components start new.
+common-cause groups is refused, as the simulations refuse it.
+
+### From the plant as it is now
+
+By default the components start new. `state` starts them as they are now,
+as `availability(state=...)` does (see [From the plant as it is
+now](repairable.md#from-the-plant-as-it-is-now)): their ages, a repair under
+way, where they are in their calendars. A component down at 0 starts its
+history down, and the system its own in its state then, with no change at
+0. Pump `a` ten hours into a repair and pump `b` 1,500 hours old, the next
+quarter:
+
+```python
+from repyability import NodeState
+
+now = {"a": NodeState(alive=False, down_for=10.0), "b": NodeState(age=1500.0)}
+quarter = plant.simulate_timelines(2190.0, mc_samples=2000, seed=1, state=now)
+np.mean(quarter.system.failures == 0)            # -> 0.867   0.881 from new
+quarter.system.failures_by_cause()["b"].mean()   # -> 0.020   the worn pump's
+```
+
+These are `availability(state=now)`'s simulations, each history its own. A
+component started part way through a life or repair draws it from a stream
+of its own, which the event loop follows, in Python.
 
 ## Many histories at once
 

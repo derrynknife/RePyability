@@ -1120,3 +1120,70 @@ def test_numba_records_more_changes_than_it_first_has_room_for(monkeypatch):
         300.0, mc_samples=30, seed=4, engine="numba"
     )
     assert same_runs(again, plain)
+
+
+def test_a_run_from_the_components_states():
+    # #163: the simulations availability(state=...) runs, from the plant as
+    # it is now, their histories kept whole.
+    from repyability import NodeState
+
+    unit = {"reliability": W([100, 1.5]), "repairability": E([0.5])}
+    inner = RepairableRBD(
+        [("s", "x"), ("s", "y"), ("x", "t"), ("y", "t")],
+        {"x": unit, "y": unit},
+    )
+    rbd = RepairableRBD(
+        [("s", "a"), ("a", "m"), ("m", "t"), ("s", "b"), ("b", "m")],
+        {"a": unit, "b": unit, "m": inner},
+    )
+    nested = {"m": {"x": NodeState(alive=False, down_for=0.2)}}
+    state = {**nested, "a": NodeState(alive=False), "b": NodeState(age=80.0)}
+    for given, options in [
+        (state, {}),
+        (nested, {"working_nodes": ["a"]}),
+        (state, {"antithetic": True}),
+    ]:
+        runs = rbd.simulate_timelines(
+            200.0, mc_samples=100, seed=5, state=given, **options
+        )
+        result = rbd.availability(
+            200.0, mc_samples=100, seed=5, state=given, **options
+        )
+        assert runs.engine == "python" and runs.method == "event loop"
+        np.testing.assert_array_equal(runs.system.uptime, result.uptimes)
+        assert runs.system.failures.sum() == result.system_failures
+        timeline, curve = runs.system.availability_curve()
+        np.testing.assert_array_equal(timeline, result.timeline)
+        np.testing.assert_array_equal(curve, result.availability)
+    # A component down at 0 starts its history down; with both of a pair
+    # down, the system starts its own down, with no failure at 0.
+    runs = rbd.simulate_timelines(200.0, mc_samples=50, seed=5, state=state)
+    assert np.all(runs.components["a"].point_availability([0.0]) == 0.0)
+    assert np.all(runs.system.point_availability([0.0]) == 1.0)
+    down = {"a": NodeState(alive=False), "b": NodeState(alive=False)}
+    runs = rbd.simulate_timelines(200.0, mc_samples=50, seed=5, state=down)
+    assert np.all(runs.system.point_availability([0.0]) == 0.0)
+    result = rbd.availability(200.0, mc_samples=50, seed=5, state=down)
+    assert runs.system.failures.sum() == result.system_failures
+    np.testing.assert_array_equal(runs.system.uptime, result.uptimes)
+    # Made in parts, it joins into the run.
+    whole = rbd.simulate_timelines(200.0, mc_samples=60, seed=5, state=state)
+    parts = [
+        rbd.simulate_timelines(
+            200.0, mc_samples=30, seed=5, state=state, start=first
+        )
+        for first in (0, 30)
+    ]
+    joined = TimelineSimulation.join(parts)
+    np.testing.assert_array_equal(joined.system.uptime, whole.system.uptime)
+    # The compiled engine starts no component part way through.
+    with pytest.raises(
+        (NotImplementedError, ImportError), match="started from a state|numba"
+    ):
+        rbd.simulate_timelines(
+            200.0, mc_samples=10, seed=5, state=state, engine="numba"
+        )
+    with pytest.raises(ValueError, match="held working or broken"):
+        rbd.simulate_timelines(
+            200.0, mc_samples=10, seed=5, state=state, working_nodes=["a"]
+        )

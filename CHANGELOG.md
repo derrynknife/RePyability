@@ -128,6 +128,16 @@ other release, fixes included, the minor.
   values still refuse, as its rate of failures need not settle, and other
   imperfect repair is still simulated, the refusal naming what stands in
   the way.
+- **Simulated timelines from the plant as it is now (#163).**
+  `simulate_timelines` always started the components new.
+  `state={node: NodeState}` now starts them as `availability(state=...)`
+  does: their ages, a repair or maintenance under way, a nested RBD's own
+  states. The histories are that run's simulations, each kept whole: a
+  component down at 0 starts its history down, and the system its own in
+  its state then, with no change at 0, so the time to the next failure
+  and its cause can be read off today's plant. The event loop records
+  them, in Python, as the compiled engine starts no component part way
+  through a life.
 - **Smaller API additions (#179, #184).** `"paths"` and `"cuts"` name the
   structure methods wherever `"p"` and `"c"` do. A `Network` takes a number
   as a link's or node's probability of failing, as a `FaultTree` takes an
