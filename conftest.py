@@ -2,8 +2,11 @@
 
 import importlib.util
 
-# The compiled simulation loop imports numba, an optional dependency: without
-# it the module cannot be imported, so its docstrings are not collected.
+# The compiled simulation loop and decision diagram import numba, an
+# optional dependency: without it the modules cannot be imported, so their
+# docstrings are not collected.
 collect_ignore = (
-    [] if importlib.util.find_spec("numba") else ["repyability/rbd/_kernel.py"]
+    []
+    if importlib.util.find_spec("numba")
+    else ["repyability/rbd/_kernel.py", "repyability/rbd/_bdd_kernel.py"]
 )
