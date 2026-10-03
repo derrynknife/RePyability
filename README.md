@@ -133,8 +133,8 @@ places, nested diagrams):
   ages, the repairs going on, where they are in their calendars, or the
   long run); the capacity distribution in the long run and over time, with
   the production availability of a window; and the spares used over a
-  horizon, and the stock to hold for a lead time (but under block
-  replacement).
+  horizon, and the stock to hold for a lead time (under block replacement,
+  with repairs and block replacements in no time).
 
 **Simulated**, or refused with the simulation to run instead:
 
@@ -160,7 +160,7 @@ places, nested diagrams):
 | Standby groups (a duty unit and its spares, repaired) | For exponential units, the long run and importance exact, and the values over time numerical (the units' Markov chain, followed by uniformization); other units simulated | Other units: yes, in general. |
 | Opportunistic maintenance (renewals at a group's stops) | Simulated | Yes: each member's renewals depend on the others' ages. |
 | Imperfect repair (Kijima), with or without replacement at the *N*-th failure | Simulated; but minimal repair (`q = 1`) in no time is numerical over a window from new (it fails `H(t)` times by `t`), its long run refused | Yes, in general: a repair does not renew the unit. |
-| Spares of tested components whose tests or repairs take time, and the stock of block-replaced ones | Simulated (`spares_demand(method="simulate")`); the stock refused (block-replaced components' demand, and tested ones', are numerical) | No: the tests' calendar phase (#159) and the stock over the block calendar (#160) could be numerical. With crews, standby groups, opportunistic maintenance or imperfect repair: yes. |
+| Spares of tested components whose tests or repairs take time, and the stock of block-replaced ones whose repairs or block replacements take time | Simulated (`spares_demand(method="simulate")`); the stock refused (block-replaced components' demand, and tested ones', are numerical, and so is the stock of block-replaced ones repaired and replaced in no time) | No: the tests' calendar phase (#159) and the work carried over a block time (#160) could be numerical. With crews, standby groups, opportunistic maintenance or imperfect repair: yes. |
 
 For your own diagram, `analysis_routes()` says how each analysis will be
 computed (exact, numerical, simulated or refused) and why, without running

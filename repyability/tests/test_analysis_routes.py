@@ -156,6 +156,12 @@ def repairable_rbds():
             "block replacement": system(
                 unit(preventive={"interval": 300.0, "policy": "block"})
             ),
+            "block replacement, in no time": system(
+                unit(
+                    repairability="instant",
+                    preventive={"interval": 300.0, "policy": "block"},
+                )
+            ),
             "replaced on condition": system(
                 unit(
                     preventive={
@@ -946,10 +952,16 @@ def test_the_readme_says_what_is_simulated():
             (minimal, "mean_availability", "refused"),
         ],
         "Spares of tested components whose tests or repairs take time, and "
-        "the stock of block-replaced ones": [
+        "the stock of block-replaced ones whose repairs or block replacements "
+        "take time": [
             (repairable["tested, taking time"], "spares_demand", "refused"),
             (repairable["block replacement"], "spares_stock", "refused"),
             (repairable["block replacement"], "spares_demand", "numerical"),
+            (
+                repairable["block replacement, in no time"],
+                "spares_stock",
+                "numerical",
+            ),
             (
                 repairable["tested, constant rate"],
                 "spares_demand",

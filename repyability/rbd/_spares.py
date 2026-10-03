@@ -41,6 +41,34 @@ Two kinds of component are counted otherwise (#147):
   block interval by block interval, on the grid with the block times on it;
   a repair or replacement still going on at a block time carries the next
   unit's start past it, as it does in the simulation.
+  An end on a block time is read just before it, where the replacements'
+  distributions start afresh: each rounding's own continuous part before
+  it (rounded up onto it, a value came before it; rounded down onto it,
+  after it), not the half-step reading, which would take in part of the
+  new unit's first step.
+
+  In a lead time ``tau`` in the long run (#160), with repairs and block
+  replacements in no time, every block interval starts with a new unit,
+  independent of the others, so the demand repeats every interval, from
+  a phase ``phi`` uniform on ``[0, T)``. Within an interval, the failures
+  are a renewal process from new: with ``F^{*k}`` the ``k``-th life sum's
+  CDF, ``p_j = F^{*j} - F^{*(j+1)}`` the chance of exactly ``j`` failures
+  by a time and ``M`` the renewal function, the failures in ``[phi, c)``
+  number ``k`` or more with probability ``F^{*k}(c) - integral over y in
+  [0, phi) of p_{k-1}(c - y) dM(y)`` (by where the unit in service at
+  ``phi`` started). A lead time past the interval's end adds the block
+  replacement there and the replacements from new over what is left of
+  it, ``C(z)`` (counted as from new above). Averaged over the phase, in
+  exchanged order, this needs only 1-D sums over where the unit started:
+  of the integrals of ``F^{*k}`` within the interval, and of those of the
+  from-new count's replacement times past it. A replacement finds ``s``
+  before it within ``tau`` as often as one finds ``s`` after it (the
+  times between replacements are stationary from one): after a failure
+  at ``y`` (rate ``dM``), its new unit's failures up to the interval's
+  end, the block replacement there and ``C`` past it; after a block
+  replacement, ``C``; over ``M(T) + 1`` replacements an interval. The
+  life's sums are kept as the bands of grid points that hold their mass,
+  as a block interval may hold many lives.
 - **With hidden failures, tested and renewed in no time** (``Tested``), a
   unit is replaced at the test that finds it failed, so the replacements
   fall on the tests, and their count is that of a discrete renewal process
@@ -51,7 +79,7 @@ Two kinds of component are counted otherwise (#147):
 """
 
 import math
-from typing import Callable, List, NamedTuple, Optional, Tuple
+from typing import Any, Callable, List, NamedTuple, Optional, Tuple
 
 import numpy as np
 
@@ -191,16 +219,24 @@ class _Grid:
             rest[:] = cells
         return _Dist(rest, np.zeros(self.size))
 
-    def at_most(self, up: _Dist, down: _Dist) -> float:
+    def at_most(self, up: _Dist, down: _Dist, left: bool = False) -> float:
         """``P(X < end)`` from ``X`` rounded up and down: its atoms before
         the end (one at the end itself falls after it, as in the
         simulation; the mean of the two roundings', which differ where an
         atom's mass depends on what was rounded, as at a block time), and
         the mean of its roundings' continuous parts, which from a grid
         point is the probability half a step later, read half a step
-        before the end."""
+        before the end. ``left``, for an end on a block time, where the
+        distribution starts afresh: the continuous parts before it, each
+        rounding's own (rounded up onto the end, a value came before it;
+        rounded down onto it, after it)."""
         reach = int(math.ceil(self.end / self.step * (1.0 - 1e-12) - 1e-9))
         atoms = 0.5 * float(up.atoms[:reach].sum() + down.atoms[:reach].sum())
+        if left:
+            rest = 0.5 * float(
+                up.rest[: reach + 1].sum() + down.rest[:reach].sum()
+            )
+            return min(atoms + rest, 1.0)
         cumulative = 0.5 * (np.cumsum(up.rest) + np.cumsum(down.rest))
         position = self.end / self.step - 0.5
         if position < 0.0:
@@ -400,12 +436,19 @@ def _block_starts(
     return start, before
 
 
-def _block_tails(model: Block, end: float, steps: int) -> np.ndarray:
-    """``P(N >= s)``, ``s = 1, 2, ...``, for a component under block
-    replacement, from new, by ``end``, on a grid of about ``steps`` steps
-    with the block times on it (see the module docstring)."""
+def _block_runs(model: Block, end: float, steps: int):
+    """The distributions of a component's replacement times under block
+    replacement, from new, one after another: ``(grid, up, down, tail)``,
+    rounded up and down on a grid of about ``steps`` steps up to ``end``
+    with the block times on it, and ``tail`` the chance of each before
+    ``end`` (see the module docstring), until it is below ``_TAIL``."""
     grid = _Grid(end, model.interval, steps)
     period = grid.index(model.interval)
+    # An end on a block time is read before it, where the replacements'
+    # distributions start afresh.
+    left = end >= model.interval and (
+        abs(end / model.interval - round(end / model.interval)) < 1e-9
+    )
     pieces = []
     for up in (True, False):
         life = grid.from_cdf(model.life, up)
@@ -417,19 +460,17 @@ def _block_tails(model: Block, end: float, steps: int) -> np.ndarray:
         )
         pieces.append((life, repair, maintenance, up))
     starts = [(grid.unit(), np.zeros(grid.size)) for _ in range(2)]
-    tails: List[float] = []
-    while len(tails) < MAX_COUNT:
+    for _ in range(MAX_COUNT):
         steps_out = [
             _block_step(start, before, life, period, up)
             for (start, before), (life, _, _, up) in zip(starts, pieces)
         ]
-        tail = grid.at_most(
-            steps_out[0][0] + steps_out[0][1],
-            steps_out[1][0] + steps_out[1][1],
-        )
-        tails.append(tail)
+        up_time = steps_out[0][0] + steps_out[0][1]
+        down_time = steps_out[1][0] + steps_out[1][1]
+        tail = grid.at_most(up_time, down_time, left)
+        yield grid, up_time, down_time, tail
         if tail < _TAIL:
-            return np.array(tails)
+            return
         starts = [
             _block_starts(failed, blocks, repair, maintenance, period, up)
             for (failed, blocks), (_, repair, maintenance, up) in zip(
@@ -440,6 +481,376 @@ def _block_tails(model: Block, end: float, steps: int) -> np.ndarray:
         f"More than {MAX_COUNT} replacements are likely in the time: count "
         "them by simulation instead."
     )
+
+
+def _block_tails(model: Block, end: float, steps: int) -> np.ndarray:
+    """``P(N >= s)``, ``s = 1, 2, ...``, for a component under block
+    replacement, from new, by ``end``, on a grid of about ``steps`` steps
+    with the block times on it (see the module docstring)."""
+    return np.array([tail for *_, tail in _block_runs(model, end, steps)])
+
+
+class _Read:
+    """A distribution on a grid, rounded up and down, read at any times:
+    ``P(X < x)``, as ``_Grid.at_most`` reads it at the grid's end, and its
+    integral over ``[0, x)``, ``E[(x - X)^+]``. Its masses are those from
+    grid point ``offset`` on (none before), with atoms or without."""
+
+    def __init__(
+        self,
+        step: float,
+        offset: int,
+        up: np.ndarray,
+        down: np.ndarray,
+        atoms: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+    ):
+        self.step, self.offset = step, offset
+        self.rest = 0.5 * (np.cumsum(up) + np.cumsum(down))
+        mass = 0.5 * (up + down)
+        self.atoms = None
+        if atoms is not None:
+            held = 0.5 * (atoms[0] + atoms[1])
+            self.atoms = np.concatenate([[0.0], np.cumsum(held)])
+            mass = mass + held
+        points = step * (offset + np.arange(len(mass)))
+        self.mass = np.cumsum(mass)
+        self.moment = np.cumsum(mass * points)
+        self.total = float(self.mass[-1]) if len(mass) else 0.0
+
+    def span(self) -> Tuple[float, float]:
+        """The times before which ``below`` is 0, and from which it is its
+        total (with no atoms)."""
+        return (
+            (self.offset - 0.5) * self.step,
+            (self.offset + len(self.rest) - 0.5) * self.step,
+        )
+
+    def below(self, x) -> np.ndarray:
+        """``P(X < x)``: its atoms before ``x`` and the mean of its
+        roundings' continuous parts half a step earlier."""
+        x = np.asarray(x, dtype=float)
+        position = x / self.step - 0.5
+        floor = np.floor(position)
+        share = position - floor
+        low = floor.astype(int) - self.offset
+        last = len(self.rest) - 1
+        if last < 0:
+            rest = np.zeros(x.shape)
+        else:
+
+            def at(i):
+                return np.where(i < 0, 0.0, self.rest[np.clip(i, 0, last)])
+
+            rest = (1.0 - share) * at(low) + share * at(low + 1)
+            rest = np.where(position < 0.0, 0.0, rest)
+        if self.atoms is not None:
+            reach = np.ceil(x / self.step * (1.0 - 1e-12) - 1e-9).astype(int)
+            reach = np.clip(reach - self.offset, 0, len(self.atoms) - 1)
+            rest = rest + self.atoms[reach]
+        return np.minimum(rest, 1.0)
+
+    def integral(self, x) -> np.ndarray:
+        """``E[(x - X)^+]``, the integral of ``P(X < z)`` over ``z`` in
+        ``[0, x)``: from the roundings' mean, which takes a cell's mass at
+        its middle."""
+        x = np.asarray(x, dtype=float)
+        if not len(self.mass):
+            return np.zeros(x.shape)
+        at = np.floor(x / self.step * (1.0 + 1e-12) + 1e-9).astype(int)
+        at -= self.offset
+        index = np.clip(at, 0, len(self.mass) - 1)
+        out = np.where(at >= 0, x * self.mass[index] - self.moment[index], 0.0)
+        return np.maximum(out, 0.0)
+
+
+#: The mass left out at each end of a sum of lives kept as a band.
+_TRIM = 1e-16
+
+
+def _band(
+    offset: int, up: np.ndarray, down: np.ndarray, size: int
+) -> Tuple[int, np.ndarray, np.ndarray]:
+    """Masses from grid point ``offset``, rounded up and down: cut at the
+    grid's ``size``, and their negligible ends (``_TRIM``) left out."""
+    keep = max(0, min(len(up), size - offset))
+    up, down = up[:keep], down[:keep]
+    cumulative = np.cumsum(up + down)
+    if not keep or cumulative[-1] <= 2.0 * _TRIM:
+        return offset, up[:0], down[:0]
+    lo = int(np.searchsorted(cumulative, _TRIM, side="right"))
+    hi = int(np.searchsorted(cumulative, cumulative[-1] - _TRIM)) + 1
+    return offset + lo, up[lo:hi], down[lo:hi]
+
+
+def _convolve(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    from scipy.signal import fftconvolve
+
+    if len(a) * len(b) <= 250_000:
+        return np.convolve(a, b)
+    return np.maximum(fftconvolve(a, b), 0.0)
+
+
+def _interval_sums(model: Block, steps: int) -> Tuple[_Grid, List[_Read]]:
+    """A block interval from its new unit (#160): the sums of its lives,
+    ``S_1, S_2, ...``, on a grid of the interval, each kept as the band
+    that holds its mass there, until the chance of the next before the
+    interval's end is below ``_TAIL``."""
+    T = model.interval
+    grid = _Grid(T, T, steps)
+    up, down = (
+        grid.from_cdf(model.life, rounded) for rounded in (True, False)
+    )
+    life = _band(0, up.rest, down.rest, grid.size)
+    band = life
+    reads: List[_Read] = []
+    while True:
+        read = _Read(grid.step, *band)
+        reads.append(read)
+        if float(read.below(T)) < _TAIL:
+            return grid, reads
+        if len(reads) >= MAX_COUNT:
+            raise NotImplementedError(
+                f"More than {MAX_COUNT} failures are likely in a block "
+                "interval: count the spares by simulation instead."
+            )
+        offset = band[0] + life[0]
+        band = _band(
+            offset,
+            _convolve(band[1], life[1]),
+            _convolve(band[2], life[2]),
+            grid.size,
+        )
+
+
+def _cells(first: Any, second: _Read, x: np.ndarray) -> Tuple[int, int]:
+    """For ``x`` falling: the range of its points outside which
+    ``P(first < x) - P(second < x)`` is 0, both being 0 or both their
+    totals, with ``first`` the earlier of two sums."""
+    lo = first.span()[0]
+    hi = second.span()[1]
+    start = int(np.searchsorted(-x, -hi, side="left"))
+    stop = int(np.searchsorted(-x, -lo, side="right"))
+    return max(start - 1, 0), min(stop + 1, len(x))
+
+
+class _Always:
+    """``S_0 = 0``: ``P(S_0 < x)`` is 1 for any ``x > 0``."""
+
+    total = 1.0
+
+    @staticmethod
+    def span() -> Tuple[float, float]:
+        return 0.0, 0.0
+
+    @staticmethod
+    def below(x) -> np.ndarray:
+        return (np.asarray(x, dtype=float) > 0.0).astype(float)
+
+    @staticmethod
+    def integral(x) -> np.ndarray:
+        return np.maximum(np.asarray(x, dtype=float), 0.0)
+
+
+def _block_lead_tails(
+    model: Block, tau: float, kind: str, steps: int
+) -> np.ndarray:
+    """``P(N >= s)``, ``s = 1, 2, ...``, for a component under block
+    replacement every ``T``, its repairs and block replacements in no time,
+    in a lead time ``tau`` in the long run, from a random time
+    (``"random"``) or before a replacement (``"arrival"``), on grids of
+    about ``steps`` steps (see the module docstring)."""
+    T = model.interval
+    grid, sums = _interval_sums(model, steps)
+    # The cells of the interval for the integrals over where a unit started
+    # (dM, at their middles); before a replacement, cut where a lead time
+    # from there first takes in a block time.
+    edges = grid.step * np.arange(int(round(T / grid.step)) + 1)
+    edges[-1] = T
+    cut = T - math.fmod(tau, T)
+    if kind == "arrival" and 0.0 < cut < T:
+        if np.abs(edges - cut).min() > 1e-9 * grid.step:
+            edges = np.sort(np.append(edges, cut))
+    # M at the edges: each sum's CDF, 0 before its band and its total after.
+    renewals = np.zeros(len(edges))
+    after = np.zeros(len(edges) + 1)
+    for read in sums:
+        lo, hi = read.span()
+        start, stop = np.searchsorted(edges, [lo, hi])
+        renewals[start:stop] += read.below(edges[start:stop])
+        after[stop] += read.total
+    renewals += np.cumsum(after)[:-1]
+    cells = (np.diff(renewals), 0.5 * (edges[:-1] + edges[1:]))
+    if kind == "random":
+        return _from_a_random_time(model, tau, steps, sums, *cells)
+    return _before_a_replacement(model, tau, steps, sums, *cells)
+
+
+def _from_a_random_time(
+    model: Block,
+    tau: float,
+    steps: int,
+    sums: List[_Read],
+    dM: np.ndarray,
+    y: np.ndarray,
+) -> np.ndarray:
+    """From a phase ``phi`` uniform on ``[0, T)``: within the interval
+    (``phi < b``), and past its end (``phi >= b``), integrated over the
+    phase in exchanged order, over where the unit in service at ``phi``
+    started (``dM`` on the cells with middles ``y``)."""
+    T = model.interval
+    K = len(sums)
+    b = max(T - tau, 0.0)
+    within = np.zeros(K + 2)
+    if b > 0.0:
+        # The integrals of dM E[(end - S_k)^+], over the cells' ends: 0
+        # before the sum's band, and linear in the end after it.
+        ends = T - np.minimum(y, b)
+        weights = np.concatenate([[0.0], np.cumsum(dM)])
+        moments = np.concatenate([[0.0], np.cumsum(dM * ends)])
+        ints = [(T, tau, float(dM @ ends))]
+        for read in sums:
+            lo, hi = read.span()
+            start, stop = np.searchsorted(-ends, [-hi, -lo], side="right")
+            inside = dM[start:stop] @ read.integral(ends[start:stop])
+            past = read.total * moments[start] - read.moment[-1] * (
+                weights[start]
+            )
+            ints.append(
+                (
+                    float(read.integral(T)),
+                    float(read.integral(tau)),
+                    float(inside + past),
+                )
+            )
+        ints.append((0.0, 0.0, 0.0))
+        mass = float(weights[-1])
+        for s in range(1, K + 2):
+            (_, tau0, Q0), (T1, tau1, Q1) = ints[s - 1], ints[s]
+            within[s] = (T1 - tau1) - (Q0 - Q1) + mass * (tau0 - tau1)
+    # B, the failures from phi to the interval's end, and C(z), the
+    # replacements from new over what is left past it: their integrals
+    # I[k, j] over the phase, from Lambda_j(v), the integral of P(C(z) =
+    # j) over phi in [v, T), and the failures' dM p_{k-1}(T - y) by bands.
+    left = T - y
+    bands = []
+    previous: Any = _Always
+    for read in sums:
+        start, stop = _cells(previous, read, left)
+        part = left[start:stop]
+        gap = previous.below(part) - read.below(part)
+        bands.append((start, stop, dM[start:stop] * gap))
+        previous = read
+    at_T = np.array([float(read.below(T)) for read in sums])
+
+    def column(at_b: float, at_v: np.ndarray) -> np.ndarray:
+        return np.array(
+            [
+                at_T[k] * at_b - values @ at_v[start:stop]
+                for k, (start, stop, values) in enumerate(bands)
+            ]
+        )
+
+    v = np.maximum(y, b)
+    before_b, before_v = T - b, T - v
+    lambdas = [before_b]
+    columns = []
+    for run, up, down, _ in _block_runs(model, tau, steps):
+        read = _Read(run.step, 0, up.rest, down.rest, (up.atoms, down.atoms))
+        whole = float(read.integral(tau))
+        at_b = whole - float(read.integral(b + tau - T))
+        at_v = whole - read.integral(v + tau - T)
+        columns.append(column(before_b - at_b, before_v - at_v))
+        lambdas.append(at_b)
+        before_b, before_v = at_b, at_v
+    columns.append(column(before_b, before_v))
+
+    def alone(s: int) -> float:
+        return (within[s] if s < len(within) else 0.0) + (
+            lambdas[s - 1] if s - 1 < len(lambdas) else 0.0
+        )
+
+    return _assembled(alone, np.array(columns).T, T)
+
+
+def _before_a_replacement(
+    model: Block,
+    tau: float,
+    steps: int,
+    sums: List[_Read],
+    dM: np.ndarray,
+    y: np.ndarray,
+) -> np.ndarray:
+    """After a replacement, by the stationarity of the times between them:
+    after a failure at ``y`` (``dM``), its new unit's own failures up to
+    the interval's end (``B'``), the block replacement there and the
+    replacements from new past it (``C``); or after a block replacement,
+    ``C``; over the ``M(T) + 1`` replacements of an interval."""
+    T = model.interval
+    K = len(sums)
+    crossing = y > T - tau
+    early = float(dM[~crossing].sum())
+    w = T - y[crossing]
+    z = tau - w
+    dMc = dM[crossing]
+    at_tau = np.array([float(read.below(tau)) for read in sums])
+    # F^{*i}(w) for falling w: its total before ``start``, its band to
+    # ``stop``, and 0 after.
+    bands = []
+    for read in sums:
+        lo, hi = read.span()
+        start = int(np.searchsorted(-w, -hi, side="right"))
+        stop = int(np.searchsorted(-w, -lo, side="right"))
+        bands.append((start, stop, read.below(w[start:stop]), read.total))
+
+    def column(chance: np.ndarray) -> np.ndarray:
+        weighted = dMc * chance
+        sums_to = np.concatenate([[0.0], np.cumsum(weighted)])
+        return np.array(
+            [
+                total * sums_to[start] + values @ weighted[start:stop]
+                for start, stop, values, total in bands
+            ]
+        )
+
+    previous = np.ones_like(z)
+    reached = [float(dMc.sum())]
+    psi = [1.0]
+    columns = []
+    for run, up, down, tail in _block_runs(model, tau, steps):
+        read = _Read(run.step, 0, up.rest, down.rest, (up.atoms, down.atoms))
+        cdf = read.below(z)
+        columns.append(column(previous - cdf))
+        reached.append(float(dMc @ cdf))
+        psi.append(tail)
+        previous = cdf
+    columns.append(column(previous))
+
+    def alone(s: int) -> float:
+        total = early * at_tau[s - 1] if (tau < T and s <= K) else 0.0
+        total += reached[s - 1] if s - 1 < len(reached) else 0.0
+        return total + (psi[s] if s < len(psi) else 0.0)
+
+    return _assembled(alone, np.array(columns).T, float(dM.sum()) + 1.0)
+
+
+def _assembled(
+    alone: Callable[[int], float], joint: np.ndarray, scale: float
+) -> np.ndarray:
+    """``P(N >= s)``, ``s = 1, 2, ...``, until below ``_TAIL``: the terms of
+    one part of the count alone, ``alone(s)``, and those of two, the sum
+    of ``joint[s - 2 - j, j]`` over ``j`` (rows for ``k = 1, 2, ...``), over
+    ``scale``."""
+    K, J = joint.shape
+    out: List[float] = []
+    for s in range(1, K + J + 2):
+        total = alone(s)
+        for j in range(max(0, s - 1 - K), min(s - 1, J)):
+            total += joint[s - 2 - j, j]
+        tail = total / scale
+        out.append(min(max(tail, 0.0), 1.0))
+        if tail < _TAIL:
+            break
+    return np.array(out)
 
 
 def _lattice_tails(first: np.ndarray, cycle: np.ndarray, last: int) -> list:
@@ -509,10 +920,16 @@ def _tested_tails(model: Tested, end: float, kind: str) -> np.ndarray:
 def rate(model) -> float:
     """A component's replacements per unit time in the long run: one over
     its mean cycle (for a ``Tested`` one, its mean cycle in tests times
-    the test interval)."""
+    the test interval; for a ``Block`` one, with repairs and block
+    replacements in no time, the block replacement and the failures in a
+    block interval, ``M(T) + 1``, over ``T``)."""
     if isinstance(model, Tested):
         tests = float(np.arange(1, len(model.cycle) + 1) @ model.cycle)
         return 1.0 / (model.interval * tests)
+    if isinstance(model, Block):
+        counts = count(model, model.interval, "new")
+        failures = float(np.arange(len(counts)) @ counts)
+        return (failures + 1.0) / model.interval
     return 1.0 / model.mean_cycle
 
 
@@ -520,7 +937,8 @@ def count(model, end: float, kind: str) -> np.ndarray:
     """The distribution of a component's replacements (see
     ``_count_tails`` for ``kind``): their probabilities for ``0, 1, 2,
     ...``, from grids refined until they agree to ``TOLERANCE`` (a
-    ``Block`` from new only; a ``Tested`` exactly, with no grid).
+    ``Block`` in a lead time with its repairs and block replacements in no
+    time; a ``Tested`` exactly, with no grid).
 
     Raises
     ------
@@ -537,7 +955,9 @@ def count(model, end: float, kind: str) -> np.ndarray:
 
     def tails_on(steps: int) -> np.ndarray:
         if isinstance(model, Block):
-            return _block_tails(model, end, steps)
+            if kind == "new":
+                return _block_tails(model, end, steps)
+            return _block_lead_tails(model, end, kind, steps)
         return _count_tails(model, end, kind, steps)
 
     steps = FIRST_STEPS

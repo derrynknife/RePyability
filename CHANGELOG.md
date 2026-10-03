@@ -138,6 +138,21 @@ other release, fixes included, the minor.
   and its cause can be read off today's plant. The event loop records
   them, in Python, as the compiled engine starts no component part way
   through a life.
+- **The stock of a block-replaced component (#160).** `spares_stock`
+  refused a component under block replacement, whose demand in a lead time
+  depends on where in the block interval the lead time falls. With its
+  repairs and block replacements in no time, each interval starts with a
+  new unit and the demand repeats every interval: from a random time it is
+  averaged over the phase, and before a replacement over where the
+  replacements fall (a failure, at the renewal density, or a block
+  replacement), which by exchanging the order of the integrals takes 1-D
+  sums on one grid of the interval, to about 1e-6. Twenty pumps swapped
+  in no time every 1,000 hours need 52 on the shelf for a 95% fill rate
+  with 12 weeks to restock, against 46 swapped at 1,000 hours of their
+  age. A fleet's systems are taken as out of step; two block-replaced
+  components in one part, whose block times keep step, are refused, and
+  so are repairs or block replacements that take time, which carry work
+  over a block time.
 - **Smaller API additions (#179, #184).** `"paths"` and `"cuts"` name the
   structure methods wherever `"p"` and `"c"` do. A `Network` takes a number
   as a link's or node's probability of failing, as a `FaultTree` takes an
@@ -440,6 +455,14 @@ other release, fixes included, the minor.
   long: two tested pumps' 1.8242 failures in 500 hours are 1.8238, which
   the old sum reaches as its pieces are cut finer. The importance is now
   taken as a cubic on each piece (see above).
+- **A block-replaced component's spares to a horizon on a block time
+  (#160).** `spares_demand` read the count there as at any time, half a
+  step on, taking in part of the first step of the unit put in at that
+  block time, which fails in it often for a falling hazard: a unit with a
+  Weibull shape of 0.5 was counted 0.6379 failures in a block interval of
+  30 hours where it has 0.6371, and the error shrank only as the square
+  root of the step (as the step for other lives). It is now read just
+  before the block time.
 
 ## [0.11] - 2026-10-02
 

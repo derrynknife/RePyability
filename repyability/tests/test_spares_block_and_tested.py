@@ -7,7 +7,7 @@ a Monte Carlo of the replacements, and the RBD's own simulation."""
 import numpy as np
 import pytest
 import surpyval as surv
-from scipy.stats import binom
+from scipy.stats import binom, poisson
 
 from repyability import RepairableRBD
 from repyability.rbd import routes as r
@@ -86,14 +86,189 @@ def test_repairs_and_replacements_that_take_time_against_the_simulation():
     assert exact.probabilities.sum() == pytest.approx(1.0, abs=1e-9)
 
 
-def test_the_stock_of_a_block_replaced_component_is_refused():
-    rbd = single(block(W([100.0, 2.0]), 60.0))
+def test_a_horizon_on_a_block_time_counts_what_comes_before_it():
+    # The new unit put in at the horizon fails in its first step with a
+    # large chance for a falling hazard; none of that is before the horizon
+    # (the count read there took in part of it before #160).
+    life, interval = W([100.0, 0.5]), 30.0
+    demand = single(block(life, interval)).spares_demand(3 * interval)["c"]
+    plain = single({"reliability": life, "repairability": "instant"})
+    whole = plain.spares_demand(interval)["c"].probabilities
+    # Three whole intervals' failures, and the block replacements at T, 2T.
+    want = np.concatenate(
+        [np.zeros(2), np.convolve(np.convolve(whole, whole), whole)]
+    )
+    got, want = padded(demand.probabilities, want)
+    np.testing.assert_allclose(got, want, atol=3e-6)
+
+
+# -- block replacement: the stock (#160) --------------------------------------
+
+
+def poisson_with_blocks(rate, interval, lead):
+    """A constant failure rate under block replacement: its failures are
+    Poisson whatever the block times, which a lead time takes in ``m`` or
+    ``m + 1`` of (``lead = m T + rho``, one more with chance ``rho / T``)
+    from a random time and from a failure; and ``m`` from a block
+    replacement (``m - 1`` if the lead time ends on a block time)."""
+    m, rho = divmod(lead, interval)
+    m = int(m)
+    failures = poisson.pmf(np.arange(80), rate * lead)
+    blocks = np.zeros(m + 2)
+    blocks[m] += 1.0 - rho / interval
+    blocks[m + 1] += rho / interval
+    random = np.convolve(failures, blocks)
+    after_block = np.concatenate([np.zeros(m if rho else m - 1), failures])
+    random, after_block = padded(random, after_block)
+    # A replacement is a failure with its share of the rate, rate + 1 / T.
+    share = rate * interval / (rate * interval + 1.0)
+    return random, share * random + (1.0 - share) * after_block
+
+
+@pytest.mark.parametrize("lead", [30.0, 100.0, 120.0])
+def test_a_constant_rate_under_block_replacement_stocks_in_closed_form(lead):
+    rate, interval = 0.02, 60.0
+    stock = single(block(E([rate]), interval)).spares_stock(
+        lead, fill_rate=0.95
+    )["c"]
+    random, arrival = poisson_with_blocks(rate, interval, lead)
+    got, want = padded(stock.on_order, random)
+    np.testing.assert_allclose(got, want, atol=2e-6)
+    got, want = padded(stock.on_order_at_demand, arrival)
+    np.testing.assert_allclose(got, want, atol=2e-6)
+
+
+def block_history(life, interval, periods, rng, width=24):
+    """The replacement times of a unit under block replacement, repaired
+    and replaced in no time: in each interval, a new unit's failures, and
+    the block replacement at its end."""
+    ends = np.cumsum(life.qf(rng.uniform(size=(periods, width))), axis=1)
+    assert (ends[:, -1] >= interval).all()
+    starts = interval * np.arange(periods)[:, None]
+    failures = (starts + ends)[ends < interval]
+    blocks = interval * np.arange(1, periods + 1)
+    return np.sort(np.concatenate([failures, blocks]))
+
+
+@pytest.mark.parametrize(
+    "life, lead",
+    [(W([100.0, 2.0]), 45.0), (W([100.0, 0.7]), 150.0)],
+    ids=["wearing, within an interval", "falling hazard, over intervals"],
+)
+def test_a_block_replaced_stock_against_a_long_history(life, lead):
+    interval = 60.0
+    stock = single(block(life, interval)).spares_stock(lead, fill_rate=0.9)[
+        "c"
+    ]
+    rng = np.random.default_rng(6)
+    times = block_history(life, interval, 400_000, rng)
+    inner = times[
+        (times > 10 * interval) & (times < times[-1] - lead - 10 * interval)
+    ]
+    # From a random time, the replacements in the lead time after it.
+    starts = rng.uniform(inner[0], inner[-1], 400_000)
+    on_order = np.searchsorted(times, starts + lead) - np.searchsorted(
+        times, starts
+    )
+    got, want = padded(stock.on_order, np.bincount(on_order) / len(on_order))
+    np.testing.assert_allclose(got, want, atol=0.005)
+    # At a replacement, those in the lead time before it.
+    before = np.searchsorted(times, inner) - np.searchsorted(
+        times, inner - lead, side="right"
+    )
+    got, want = padded(
+        stock.on_order_at_demand, np.bincount(before) / len(before)
+    )
+    np.testing.assert_allclose(got, want, atol=0.005)
+
+
+@pytest.mark.parametrize("beta", [2.0, 0.5])
+def test_the_mean_on_order_is_the_long_run_rate_times_the_lead_time(beta):
+    # Each block interval has its block replacement and M(T) failures, M(T)
+    # the mean count over one interval from new.
+    rbd = single(block(W([100.0, beta]), 30.0))
+    failures = rbd.spares_demand(30.0)["c"].mean
+    stock = rbd.spares_stock(70.0, fill_rate=0.9)["c"]
+    mean = np.arange(len(stock.on_order)) @ stock.on_order
+    assert mean == pytest.approx((failures + 1.0) / 30.0 * 70.0, rel=3e-6)
+
+
+def test_a_long_block_interval_stocks_as_a_renewal_process():
+    # Many lives to an interval, and a lead time much shorter: mostly a
+    # settled renewal process, which needs the same stock.
+    life = W([10.0, 2.0])
+    blocked = single(block(life, 400.0)).spares_stock(
+        20.0, fill_rate=0.95, stockout_probability=0.01
+    )["c"]
+    plain = single({"reliability": life, "repairability": "instant"})
+    renewal = plain.spares_stock(
+        20.0, fill_rate=0.95, stockout_probability=0.01
+    )["c"]
+    assert blocked.stock == renewal.stock
+    got, want = padded(blocked.on_order, renewal.on_order)
+    np.testing.assert_allclose(got, want, atol=0.01)
+
+
+def test_a_part_with_one_block_replaced_member():
+    # Pooled with a pump replaced at a constant rate of 0.01: the shelf's
+    # demands come from the block-replaced one with its share of the
+    # long-run rates, 0.02 + 1 / 60 against 0.01.
+    rbd = RepairableRBD(
+        [("s", "a"), ("a", "b"), ("b", "t")],
+        {
+            "a": block(E([0.02]), 60.0),
+            "b": {"reliability": E([0.01]), "repairability": "instant"},
+        },
+    )
+    stock = rbd.spares_stock(30.0, fill_rate=0.9, parts={"p": ["a", "b"]})["p"]
+    random, arrival = poisson_with_blocks(0.02, 60.0, 30.0)
+    other = poisson.pmf(np.arange(40), 0.3)
+    share = (0.02 + 1 / 60) / (0.02 + 1 / 60 + 0.01)
+    got, want = padded(stock.on_order, np.convolve(random, other))
+    np.testing.assert_allclose(got, want, atol=2e-6)
+    at_a, at_b = padded(
+        np.convolve(arrival, other), np.convolve(random, other)
+    )
+    got, want = padded(
+        stock.on_order_at_demand, share * at_a + (1 - share) * at_b
+    )
+    np.testing.assert_allclose(got, want, atol=2e-6)
+    # Two on block schedules keep step: their demands are not independent.
+    both = RepairableRBD(
+        [("s", "a"), ("a", "b"), ("b", "t")],
+        {"a": block(E([0.02]), 60.0), "b": block(E([0.01]), 90.0)},
+    )
+    with pytest.raises(NotImplementedError, match="keep step"):
+        both.spares_stock(30.0, fill_rate=0.9, parts={"p": ["a", "b"]})
+
+
+@pytest.mark.parametrize(
+    "spec, reason",
+    [
+        (
+            block(W([100.0, 2.0]), 60.0, repair=E([0.5])),
+            "its repairs take time",
+        ),
+        (
+            block(W([100.0, 2.0]), 60.0, duration=E([0.5])),
+            "its block replacements take time",
+        ),
+        (block(W([100.0, 2.0], f0=0.1), 60.0), "dead on arrival"),
+    ],
+    ids=["repairs", "block replacements", "dead on arrival"],
+)
+def test_block_schedules_that_carry_work_over_are_refused(spec, reason):
+    rbd = single(spec)
     with pytest.raises(NotImplementedError, match="#160") as error:
         rbd.spares_stock(30.0, fill_rate=0.9)
+    assert reason in str(error.value)
     report = rbd.analysis_routes()
     assert report["spares_stock"].route == r.REFUSED
     assert report["spares_stock"].reason == str(error.value)
     assert report["spares_demand"].route == r.NUMERICAL
+    routes = single(block(W([100.0, 2.0]), 60.0)).analysis_routes()
+    assert routes["spares_stock"].route == r.NUMERICAL
+    assert "where the lead time falls" in routes["spares_stock"].reason
 
 
 # -- hidden failures found by tests -------------------------------------------

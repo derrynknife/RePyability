@@ -5644,13 +5644,15 @@ class RepairableRBD(RBD):
             return self._tested_replacements(node, simulate)
         schedule = self._preventive.get(node)
         if schedule is not None and schedule.policy == "block":
-            if long_run:
+            blocker = self._block_lead_time_blocker(node) if long_run else None
+            if blocker is not None:
                 raise NotImplementedError(
-                    f"Component {node!r} is replaced on a block schedule: "
-                    "its demand in a lead time depends on where the lead "
-                    "time falls in the block interval, which the stock "
-                    "levels do not take yet (#160). spares_demand counts "
-                    "its spares over a horizon."
+                    f"Component {node!r} is replaced on a block schedule, "
+                    f"and {blocker}: its demand in a lead time is worked "
+                    "out only when its repairs and block replacements take "
+                    "no time and its units work at 0, so that each block "
+                    "interval starts with a new unit (#160). spares_demand "
+                    "counts its spares over a horizon."
                 )
             component = self.components[node]
             duration = schedule.duration
@@ -5703,6 +5705,26 @@ class RepairableRBD(RBD):
             age,
             mean_cycle,
         )
+
+    def _block_lead_time_blocker(self, node) -> Optional[str]:
+        """Why a block-replaced component's demand in a lead time is not
+        worked out (None if it is): it is when its repairs and block
+        replacements take no time and its units work at 0, so that each
+        block interval starts with a new unit (see ``_spares``)."""
+        component = self.components[node]
+
+        def takes_time(model) -> bool:
+            return float(np.ravel(_sf_values(model.sf, np.zeros(1)))[0]) > 0.0
+
+        if takes_time(component.time_to_replace):
+            return "its repairs take time"
+        duration = self._preventive[node].duration
+        if duration is not None and takes_time(duration):
+            return "its block replacements take time"
+        life = component.reliability
+        if float(np.ravel(_sf_values(life.sf, np.zeros(1)))[0]) < 1.0:
+            return "its life may end at 0 (dead on arrival)"
+        return None
 
     def _tested_replacements(self, node, simulate: str) -> "_spares.Tested":
         """A component with hidden failures: its replacements fall on its
@@ -5956,6 +5978,16 @@ class RepairableRBD(RBD):
         ``j`` tests on with probability ``R((j - 1) T) / S``, ``S`` the
         mean cycle in tests).
 
+        Under block replacement every ``T`` (#160), with repairs and block
+        replacements in no time, each block interval starts with a new
+        unit, so the demand repeats every interval, and a lead time's
+        depends on where in the interval it starts: it is averaged over
+        that, uniform on ``[0, T)`` from a random time, and as the
+        replacements fall from a replacement (a failure, at the renewal
+        density, or a block replacement), on a grid of the interval, to
+        about 1e-6. A fleet's systems are taken as on block schedules of
+        their own, out of step with each other.
+
         A part's components draw on one shelf (#183), which needs fewer
         spares than a shelf each: its spares on order are the sum of its
         components' independent ones, and a demand comes from component
@@ -5998,12 +6030,14 @@ class RepairableRBD(RBD):
             not a component, or a nested RBD, or ``parts`` is not as for
             ``spares_demand``.
         NotImplementedError
-            For a part with two members in one common-cause group, a
-            component under block replacement (#160), with hidden
-            failures whose tests or repairs take time or whose tests can
-            miss a failure, a standby group or a life that may never end,
-            or while a component can wait for a repair crew, or if more
-            than 2,000 replacements are likely in a lead time.
+            For a part with two members in one common-cause group, or two
+            under block replacement, a component under block replacement
+            whose repairs or block replacements take time or whose life
+            may end at 0 (#160), with hidden failures whose tests or
+            repairs take time or whose tests can miss a failure, a standby
+            group or a life that may never end, or while a component can
+            wait for a repair crew, or if more than 2,000 replacements are
+            likely in a lead time.
 
         Examples
         --------
@@ -6043,6 +6077,17 @@ class RepairableRBD(RBD):
         chosen, pools, counted = self._spares_counted(nodes, parts)
         self._require_unlimited_crews(*_SPARES_CREWS)
         models = {node: self._replacements(node, True) for node in counted}
+        for part, members in pools.items():
+            blocks = [
+                m for m in members if isinstance(models[m], _spares.Block)
+            ]
+            if len(blocks) > 1:
+                raise NotImplementedError(
+                    f"Part {part!r}: {blocks} are replaced on block "
+                    "schedules, which keep step with each other, so their "
+                    "demands in a lead time are not independent: count "
+                    "them apart."
+                )
         random = {
             node: _spares.count(model, tau, "random")
             for node, model in models.items()
@@ -8771,8 +8816,14 @@ class RepairableRBD(RBD):
                     r.NUMERICAL,
                     "Each component's replacements, a renewal process, "
                     "counted on a grid (to about 1e-6): under block "
-                    "replacement, from one block interval to the next; with "
-                    "hidden failures, exactly, on its tests.",
+                    + (
+                        "replacement, averaged over where the lead time "
+                        "falls in the block interval"
+                        if long_run_count
+                        else "replacement, from one block interval to the "
+                        "next"
+                    )
+                    + "; with hidden failures, exactly, on its tests.",
                 )
             )
         plan, streamed = self._stream_plan(1.0, 0, False)

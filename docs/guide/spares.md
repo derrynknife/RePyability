@@ -166,10 +166,30 @@ Two kinds of component replace on a calendar, and are counted their own way
   valves.spares_stock(26 * 7 * 24.0, fill_rate=0.95, fleet=50)["v"].stock   # -> 5
   ```
 
-A block-replaced component's stock is refused as yet (#160): its demand in a
-lead time depends on where in the block interval the lead time falls. Proof
-tests that take time, repairs that take time, and tests that can miss a
-failure are refused too (#159).
+A block-replaced component's stock is worked out when its repairs and block
+replacements take no time (#160). Each block interval then starts with a
+new unit, so the demand repeats every interval, and a lead time's is
+averaged over where in the interval it starts. Pumps swapped in no time
+every 1,000 hours of the calendar need more on the shelf than the 46 for
+pumps swapped at 1,000 hours of their age, as young pumps are swapped too:
+
+```python
+swapped = dict(pump, repairability="instant",
+               preventive={"interval": 1000.0, "policy": "block"})
+shelf = RepairableRBD(edges, {"pump": swapped, "seal": seal})
+stock = shelf.spares_stock(2016.0, fill_rate=0.95, fleet=20, nodes=["pump"])["pump"]
+stock.stock       # -> 52
+stock.fill_rate   # -> 0.9596
+```
+
+A demand finds at least two pumps of its own system on order: those swapped
+at the two block times in the 12 weeks before it. A fleet's systems are
+taken as on block schedules of their own, out of step with each other; two
+block-replaced components in one part are refused, as their block times
+keep step. Repairs or block replacements that take time are refused (#160),
+as one still going on at a block time carries over into the next interval;
+so are proof tests that take time, repairs of tested components that take
+time, and tests that can miss a failure (#159).
 
 ## How it is computed
 
@@ -198,7 +218,17 @@ if that comes before the next block time, and at the block time otherwise.
 So each replacement's time follows from the one before, block interval by
 block interval, on a grid with the block times on it. A repair or
 replacement still going on at a block time carries the next unit's start
-past it, as in the simulation. With proof tests, every replacement falls on
+past it, as in the simulation. A horizon on a block time is read just
+before it, where the replacements' distributions start afresh. In a lead
+time in the long run, with repairs and block replacements in no time, the
+failures within an interval are a renewal process from new; a lead time
+that runs past the interval's end adds the block replacement there and the
+count from new past it. Averaged over where the lead time starts, in
+exchanged order (over the phase, and over where the unit then in service
+started), this needs only sums over one grid of the interval. Before a
+replacement the count is that after one, as the times between replacements
+are stationary from one: after a failure, at the renewal density, or after
+a block replacement. With proof tests, every replacement falls on
 a test, and the count is that of a discrete renewal process on the tests:
 exact, with no grid. A unit renewed at a test is renewed again `k` tests
 later with probability `R((k − 1)τ) − R(kτ)`. From a random time, the next
@@ -210,7 +240,8 @@ refuse, with the reason:
 
 - a component with **hidden failures** whose tests or repairs take time, or
   whose tests can miss a failure (#159), and the stock of one under
-  **block replacement** (#160);
+  **block replacement** whose repairs or block replacements take time
+  (#160);
 - a **standby group**, whose units' failures depend on each other;
 - any component while **repair crews** can keep components waiting.
 
