@@ -1863,15 +1863,14 @@ class _PythonRunner:
         self._context: Optional[_Context] = None
         self._executor: Any = None
         if jobs is not None and jobs > 1:
-            run = pickle.dumps(
+            run = montecarlo.dumps(
                 (
                     rbd,
                     args,
                     tally.curve_points,
                     tally.replacements is not None,
                     tally.histories is not None,
-                ),
-                protocol=pickle.HIGHEST_PROTOCOL,
+                )
             )
             self._executor = montecarlo.process_pool(
                 jobs, initializer=_start_worker, initargs=(run,)

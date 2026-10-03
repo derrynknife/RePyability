@@ -175,6 +175,14 @@ major.minor.
   `test_direct_quantiles_are_surpyvals` checks that they stay identical.
   Remove it once the minimum surpyval computes them directly.
 
+- **Fitted models in worker processes** (surpyval #573). A surpyval fit
+  holds a closure, so pickle cannot take it. `_montecarlo.dumps`, which
+  pickles a run for `n_jobs`' worker processes, sends a surpyval model that
+  pickle refuses in its saved form (`to_dict`), rebuilt in the worker;
+  `test_fitted_models_in_parallel.py` checks the results are a single
+  process's. Remove the override once the minimum surpyval's fits pickle
+  (keep `dumps`' message for what still cannot be sent).
+
 List each new workaround here with its surpyval issue and where it lives,
 so it can go once the minimum surpyval in `pyproject.toml` includes the
 fix.

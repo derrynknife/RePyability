@@ -76,6 +76,16 @@ other release, fixes included, the minor.
   edges, a diagram with no input or output node says so, and a diagram with
   a cycle built with `on_infeasible_rbd="ignore"` says it has a cycle when
   evaluated, rather than recursing until Python stopped it.
+- **A system of models fitted in surpyval runs with `n_jobs` (#181).** A
+  surpyval fit (Weibull, Gamma, Gumbel, Logistic, LogLogistic, ExpoWeibull,
+  Beta) holds a closure, so pickle cannot send it to a worker process
+  (SurPyval#573), and `random`, `mean(method="simulate")`, `availability`,
+  `cost` and `simulate_timelines` with `n_jobs` failed with an error from
+  inside surpyval. A model that pickle refuses is now sent in its saved
+  form (`to_dict`) and rebuilt in the worker, so the results are those of a
+  run in one process, to the last bit; whatever else cannot be sent is
+  refused with a message that says to run without `n_jobs` or with
+  `shard_map`.
 - **The tests run from an installed copy (#167).** The wheel holds the tests
   but not the recorded results 13 of their modules read, which errored on
   collection: they are package data now, and `test_packaging` checks that

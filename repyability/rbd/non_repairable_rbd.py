@@ -7,6 +7,7 @@ uses (``check_x`` and the ``NodeFailure`` simulation event).
 
 import functools
 import math
+import pickle
 import warnings
 import zlib
 from copy import copy
@@ -82,9 +83,23 @@ RANDOM_BLOCK = 10_000
 DRAW_UNIFORMS = 2**20
 
 
+#: What a worker process of a parallel draw holds (see
+#: ``_start_worker``).
+_WORKER: Dict[str, Any] = {}
+
+
+def _start_worker(saved: bytes) -> None:
+    """Start a worker process of a parallel draw: unpickle the system, once
+    for every block the worker draws (see ``montecarlo.dumps``)."""
+    _WORKER["rbd"] = pickle.loads(saved)
+
+
 def _random_block(task) -> np.ndarray:
-    """One block of a parallel draw (in its own process)."""
+    """One block of a parallel draw: of ``rbd``, or in a worker process
+    (``rbd`` None) of the system it was started with."""
     rbd, size, seed, antithetic = task
+    if rbd is None:
+        rbd = _WORKER["rbd"]
     with numpy_seed(seed):
         return rbd._draw(size, antithetic)
 
@@ -4929,7 +4944,11 @@ class NonRepairableRBD(RBD):
         in blocks of that run's first ``n``."""
         seeds = np.random.SeedSequence(seed) if jobs is not None else None
         executor = (
-            montecarlo.process_pool(jobs)
+            montecarlo.process_pool(
+                jobs,
+                initializer=_start_worker,
+                initargs=(montecarlo.dumps(self),),
+            )
             if jobs is not None and jobs > 1
             else None
         )
@@ -4943,7 +4962,7 @@ class NonRepairableRBD(RBD):
                     else:
                         tasks = [
                             (
-                                self,
+                                None if executor is not None else self,
                                 size,
                                 montecarlo.block_seed(seeds),
                                 antithetic,
