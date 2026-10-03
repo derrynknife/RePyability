@@ -2565,11 +2565,14 @@ def _choose_from(
     """The intervals, each from its node's ``options``, that minimise the
     cost rate, or with a cost cap the unavailability, subject to the target:
     every combination when there are at most 2000, a local search (one
-    interval changed at a time, from several starts) otherwise. A
-    ValueError if none meets the target, giving the best any does."""
+    interval changed at a time, from several starts) otherwise. Of plans
+    that cost the same, the most available is chosen (and of those as
+    available, the cheapest): tests' offsets change no cost. A ValueError
+    if none meets the target, giving the best any does."""
 
-    def merit(intervals: dict) -> Tuple[float, float]:
-        """(How far from the target, the objective): lower is better."""
+    def merit(intervals: dict) -> Tuple[float, float, float]:
+        """(How far from the target, the objective, the other one): lower
+        is better."""
         cost, availability = evaluate(intervals)
         if min_availability is not None:
             short = max(0.0, min_availability - availability)
@@ -2577,7 +2580,8 @@ def _choose_from(
             short = max(0.0, cost - max_cost_rate)
         else:
             short = 0.0
-        return short, _objective(cost, availability, max_cost_rate)
+        other = 1.0 - availability if max_cost_rate is None else cost
+        return short, _objective(cost, availability, max_cost_rate), other
 
     count = math.prod(len(options[node]) for node in nodes)
     if count <= _MAX_COMBINATIONS:
@@ -7217,12 +7221,13 @@ class RepairableRBD(RBD):
         )
 
     def _with_intervals(
-        self, preventive=None, inspection=None
+        self, preventive=None, inspection=None, offsets=None
     ) -> "RepairableRBD":
         """This RBD with the intervals of some of its preventive or
         inspection schedules changed, for the exact long-run values: a
         shallow copy, sharing everything else, including the renewal cycles
-        already worked out (kept by interval)."""
+        already worked out (kept by interval). ``offsets`` gives some
+        inspected components' first tests as shares of their intervals."""
         self.__dict__.setdefault("_age_cycles", {})
         self.__dict__.setdefault("_block_cycles", {})
         plan = copy(self)
@@ -7241,6 +7246,13 @@ class RepairableRBD(RBD):
                 share = schedule.offset / schedule.interval
                 plan._inspection[node] = schedule._replace(
                     interval=float(interval), offset=share * float(interval)
+                )
+        if offsets:
+            plan._inspection = dict(plan._inspection)
+            for node, share in offsets.items():
+                schedule = plan._inspection[node]
+                plan._inspection[node] = schedule._replace(
+                    offset=float(share) * schedule.interval
                 )
         return plan
 
@@ -7428,6 +7440,7 @@ class RepairableRBD(RBD):
         allowed=None,
         min_availability: Optional[float] = None,
         max_cost_rate: Optional[float] = None,
+        offsets=None,
     ) -> MaintenancePlan:
         """Choose the proof-test intervals of components with hidden
         failures, for the system as a whole.
@@ -7457,6 +7470,12 @@ class RepairableRBD(RBD):
         is then searched continuously, as by
         ``optimal_replacement_intervals``.
 
+        When redundant components are tested matters as well: two tested
+        at once are down together for as long as a failure of both stays
+        hidden, where tests half an interval apart find a common-cause
+        failure twice as soon. ``offsets`` chooses the times of the first
+        tests with the intervals (#184).
+
         The exact long-run values need a constant failure rate, instant
         tests and instant repair (see ``node_availability``).
 
@@ -7475,22 +7494,34 @@ class RepairableRBD(RBD):
         max_cost_rate : float, optional
             The highest long-run cost rate allowed: the intervals then give
             the highest availability within it.
+        offsets : sequence of float, dict or str, optional
+            Choose each node's offset, the time of its first test, as well:
+            as a share of its interval, in [0, 1), from these, one sequence
+            for every node or a dict of one per node. ``"stagger"`` with
+            ``n`` nodes is the shares ``0, 1/n, ..., (n - 1)/n``, among
+            which are tests of one interval spread evenly over it. Shifting
+            every test by one time changes no long-run value, so when the
+            nodes are all the components with hidden failures, the first
+            one's tests stay from 0. Needs ``allowed``. By default each
+            offset keeps its share of the interval.
 
         Returns
         -------
         MaintenancePlan
             The interval of each component in ``nodes``, and the system's
-            cost rate and availability (1 - PFDavg) with them.
+            cost rate and availability (1 - PFDavg) with them; with
+            ``offsets``, the chosen ``offsets`` too.
 
         Raises
         ------
         ValueError
             If a node has no hidden failures; if ``allowed`` is left out
-            with more than one component with hidden failures, or holds
-            something other than positive, finite intervals; if nothing is
-            priced; if both targets are given, or one is out of range; or if
-            no intervals meet the target (the message gives the best they
-            can do).
+            with more than one component with hidden failures (or with
+            ``offsets``), or holds something other than positive, finite
+            intervals; if ``offsets`` holds something other than shares in
+            [0, 1); if nothing is priced; if both targets are given, or
+            one is out of range; or if no intervals meet the target (the
+            message gives the best they can do).
         NotImplementedError
             If a component's hidden failures have no exact long-run values
             (see ``node_availability``), or the intervals repeat together
@@ -7531,7 +7562,31 @@ class RepairableRBD(RBD):
         0.000399
 
         The redundant pair meets the target with tests every two years; the
-        single valve needs them monthly.
+        single valve needs them monthly. With a 10% common cause between
+        the two, and a PFDavg of at most ``5e-4``, testing them at
+        different times as well finds a common-cause failure sooner, and
+        meets the target with yearly tests six months apart, for a third
+        less:
+
+        >>> from repyability import BetaFactor, CCFGroup
+        >>> common = RepairableRBD(
+        ...     [("s", "v1"), ("s", "v2"), ("v1", "t"), ("v2", "t")],
+        ...     {"v1": valve(), "v2": valve()},
+        ...     ccf_groups=[CCFGroup(["v1", "v2"], BetaFactor(0.1))],
+        ... )
+        >>> target = 1 - 5e-4
+        >>> plan = common.optimal_inspection_intervals(
+        ...     allowed=calendar, min_availability=target
+        ... )
+        >>> plan.intervals, round(plan.cost_rate, 4)
+        ({'v1': 4380.0, 'v2': 8760.0}, 0.1712)
+        >>> staggered = common.optimal_inspection_intervals(
+        ...     allowed=calendar, min_availability=target, offsets="stagger"
+        ... )
+        >>> staggered.intervals, staggered.offsets
+        ({'v1': 8760.0, 'v2': 8760.0}, {'v1': 0.0, 'v2': 4380.0})
+        >>> round(staggered.cost_rate, 4), round(1 - staggered.availability, 7)
+        (0.1142, 0.0004925)
         """
         chosen = self._inspected(nodes)
         min_availability, max_cost_rate = self._interval_targets(
@@ -7543,6 +7598,20 @@ class RepairableRBD(RBD):
             plan = self._with_intervals(inspection=intervals)
             return plan.expected_cost_rate(), plan.mean_availability()
 
+        if offsets is not None:
+            if allowed is None:
+                raise ValueError(
+                    "offsets are chosen with intervals from allowed: give "
+                    "allowed (when a lone component is tested changes "
+                    "nothing in the long run)."
+                )
+            return self._choose_tests(
+                chosen,
+                self._allowed_intervals(allowed, chosen),
+                self._allowed_shares(offsets, chosen),
+                min_availability,
+                max_cost_rate,
+            )
         if allowed is None:
             self._require_one_inspected()
             (node,) = chosen
@@ -7576,6 +7645,89 @@ class RepairableRBD(RBD):
         return MaintenancePlan(
             {node: float(best[node]) for node in chosen}, cost, availability
         )
+
+    def _choose_tests(
+        self,
+        chosen: list,
+        intervals: dict,
+        shares: dict,
+        min_availability: Optional[float],
+        max_cost_rate: Optional[float],
+    ) -> MaintenancePlan:
+        """``optimal_inspection_intervals`` with the offsets chosen too: each
+        node's interval from ``intervals`` and its first test's share of it
+        from ``shares``, searched together as ``_choose_from`` searches
+        intervals."""
+        if set(chosen) == set(self._inspection):
+            # Shifting every test by one time changes nothing in the long
+            # run: the first node's tests are kept from 0.
+            shares = {**shares, chosen[0]: (0.0,)}
+        options = {("interval", n): intervals[n] for n in chosen}
+        options.update({("offset", n): shares[n] for n in chosen})
+
+        def evaluate(choice: dict) -> Tuple[float, float]:
+            plan = self._with_intervals(
+                inspection={n: choice[("interval", n)] for n in chosen},
+                offsets={n: choice[("offset", n)] for n in chosen},
+            )
+            return plan.expected_cost_rate(), plan.mean_availability()
+
+        best = _choose_from(
+            list(options), options, evaluate, min_availability, max_cost_rate
+        )
+        cost, availability = evaluate(best)
+        return MaintenancePlan(
+            {n: float(best[("interval", n)]) for n in chosen},
+            cost,
+            availability,
+            offsets={
+                n: float(best[("offset", n)] * best[("interval", n)])
+                for n in chosen
+            },
+        )
+
+    @staticmethod
+    def _allowed_shares(offsets, chosen: list) -> dict:
+        """``offsets`` (see ``optimal_inspection_intervals``) as a sorted
+        tuple of shares of the interval per chosen node."""
+        if isinstance(offsets, str):
+            if offsets != "stagger":
+                raise ValueError(
+                    "offsets must be shares of the interval in [0, 1), a "
+                    f"dict of them per node, or 'stagger', got {offsets!r}."
+                )
+            n = len(chosen)
+            return {node: tuple(k / n for k in range(n)) for node in chosen}
+        per_node = (
+            offsets
+            if isinstance(offsets, dict)
+            else {node: offsets for node in chosen}
+        )
+        out = {}
+        for node in chosen:
+            if node not in per_node:
+                raise ValueError(f"offsets gives no shares for node {node!r}.")
+            given = per_node[node]
+            if isinstance(given, (str, bytes)) or not isinstance(
+                given, Collection
+            ):
+                given = [given]
+            values = []
+            for value in given:
+                number = isinstance(
+                    value, (int, float, np.integer, np.floating)
+                ) and not isinstance(value, bool)
+                share = float(value) if number else float("nan")
+                if not 0.0 <= share < 1.0:
+                    raise ValueError(
+                        "offsets are shares of the interval, in [0, 1), got "
+                        f"{value!r} for node {node!r}."
+                    )
+                values.append(share)
+            if not values:
+                raise ValueError(f"offsets gives no shares for node {node!r}.")
+            out[node] = tuple(sorted(set(values)))
+        return out
 
     def _inspected(self, nodes) -> list:
         """The components with hidden failures named by ``nodes`` (all of

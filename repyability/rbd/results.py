@@ -1272,11 +1272,16 @@ class MaintenancePlan(_ResultMapping):
         The system's long-run availability with them: its
         ``mean_availability``. For a safety system, ``1 - availability`` is
         its average probability of failure on demand, PFDavg.
+    offsets : dict or None
+        Node name -> the time of its first test, when
+        ``optimal_inspection_intervals`` chose the offsets too; None
+        otherwise.
     """
 
     intervals: Dict[Hashable, float]
     cost_rate: float
     availability: float
+    offsets: Optional[Dict[Hashable, float]] = None
 
 
 def _meeting(levels: np.ndarray, demand: float) -> np.ndarray:

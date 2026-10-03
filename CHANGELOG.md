@@ -40,6 +40,17 @@ other release, fixes included, the minor.
   a 95% fill rate, and 17 on one. Members of one common-cause group, which
   their shared causes replace together, are refused; the results say which
   `members` a part holds.
+- **Staggered tests chosen with their intervals (#184).**
+  `optimal_inspection_intervals` chose intervals but tested every
+  component from its offset as given (usually 0), where testing redundant
+  components apart finds a common-cause failure sooner: a 1oo2 with a 10%
+  common cause has half the PFDavg with yearly tests six months apart.
+  `offsets=` chooses the first tests' times too, as shares of each
+  interval (a list, a dict per node, or `"stagger"` for even spreads),
+  searched with the intervals; the plan's `offsets` gives them. At a
+  PFDavg of 5e-4 that plan costs a third less than the best tested
+  together. Of plans that cost the same, the most available is now chosen
+  (it was the first found), for replacement intervals from `allowed` too.
 - **Discounted total costs (#184).** `total_cost` and
   `allocate_redundancy` were undiscounted, so over a 20-year life a copy
   bought now weighed the same as the running costs it saves later.

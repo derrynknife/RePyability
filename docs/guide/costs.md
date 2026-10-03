@@ -769,6 +769,38 @@ PFDavg at most `10⁻³`, two in parallel every two years. The result is a
 [`MaintenancePlan`][repyability.MaintenancePlan], as for
 [age-replacement intervals](#choosing-the-intervals).
 
+When the valves are tested matters as well. Tested together, both are down
+for as long as a common-cause failure stays hidden; tested half an interval
+apart, it is found twice as soon. `offsets` chooses the times of the first
+tests with the intervals (#184), as shares of each interval in [0, 1): a
+list for every component, a dict of one per component, or `"stagger"`, the
+shares `0, 1/n, …, (n − 1)/n` of `n` components, among which are tests of
+one interval spread evenly over it. With a 10% common cause and a PFDavg of
+at most `5 × 10⁻⁴`:
+
+```python
+paired = RepairableRBD(
+    [("s", "v1"), ("s", "v2"), ("v1", "t"), ("v2", "t")],
+    {"v1": priced_valve(), "v2": priced_valve()},
+    ccf_groups=[CCFGroup(["v1", "v2"], BetaFactor(0.1))],
+)
+together = paired.optimal_inspection_intervals(
+    allowed=calendar, min_availability=1 - 5e-4)
+together.intervals        # {'v1': 4380.0, 'v2': 8760.0}
+together.cost_rate        # -> 0.1712
+apart = paired.optimal_inspection_intervals(
+    allowed=calendar, min_availability=1 - 5e-4, offsets="stagger")
+apart.intervals           # {'v1': 8760.0, 'v2': 8760.0}
+apart.offsets             # {'v1': 0.0, 'v2': 4380.0}   six months apart
+apart.cost_rate           # -> 0.1142   a third less
+```
+
+Shifting every test by one time changes nothing in the long run, so the
+first component's tests stay from 0, unless other tested components keep
+their schedules (then its offset is chosen too). Offsets change no cost, so
+of plans that cost the same the most available is chosen. The result's
+`offsets` gives the times of the first tests.
+
 ## The total cost of ownership
 
 The costs so far are running costs. Buying the system is a one-off cost:
