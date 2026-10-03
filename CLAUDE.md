@@ -105,6 +105,15 @@
   that checks the simulation against the exact methods must run plainly
   (`control_variate=False`), or it compares the exact values with
   themselves.
+- **A run's changes are put in time order on two paths that must agree to
+  the last bit** (#201): numpy's (`_by_time`, `_group_totals`,
+  `_capacity_totals` and `_working_over_time` in `repairable_rbd.py`) and
+  the compiled one (`repyability/rbd/_time_order.py`: a stable radix sort
+  of the times' bits, the groups and the capacity's merge in one pass
+  each), taken where numba is installed and a run has `_COMPILED_ORDER`
+  changes or more. A change to how either orders, groups or adds up the
+  changes goes into both: `test_time_order.py` checks them against each
+  other, with the sort's blocks of every size.
 - **The random streams (`repyability/rbd/_streams.py`) define every seeded
   result.** Changing how a stream is named, seeded or laid out (its width,
   `BLOCK_DRAWS`, `MAX_WIDTH`, `first_rows`, the expected draws in

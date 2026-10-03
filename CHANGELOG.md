@@ -518,6 +518,23 @@ other release, fixes included, the minor.
   however the run is split), so `capacity_timeline` is the grid and the
   curve is the full one at its times: the same run takes 1.2 s. Without a
   grid, changes that come in order are no longer sorted.
+- **A run's exact timelines are built in linear passes (#201).** Without
+  `curve_points`, a capacity run spent most of its time after the
+  simulations, putting their changes in time order: a stable `argsort`,
+  the gathers after it, `np.unique` and two `searchsorted` over every
+  change, and several full-size temporaries. Where numba is installed and
+  a run has a million changes or more, they are now put in order by a
+  stable radix sort of the times' bits, eleven bits a pass, in blocks on
+  numba's threads; grouped by time in one pass; and the capacity's times,
+  running totals and limits merged in one more, the curve worked out in
+  place. The availability curve's changes are sorted the same way. The
+  results are the same to the last bit (the same order, the totals added
+  in `np.cumsum`'s order, the curve by numpy's own `maximum` and `where`),
+  checked against numpy's path for whole runs and their chunks, and the
+  sort with blocks of every size. Three pumps with capacities over
+  2,000 h, 20,000 simulations (21.8 million changes): 16.5 s, of which
+  12.1 s built the result, now 5.2 s, of which 1.3 s. Without numba, or
+  for fewer changes, numpy's path is as before.
 
 - **A run's expected values are exact, or taken given its modules, by
   default (#187, #189).** `availability()` and `cost()` estimated a

@@ -506,14 +506,16 @@ grid = plant.availability(t_simulation=100.0, mc_samples=2_000, seed=0,
 len(grid.timeline)       # -> 101
 ```
 
-A compiled run of 40 960 simulations of a nine-component system over
-5 000 hours kept 3 million points without it, and ran 16% faster with
-`curve_points=1000`. With capacities, the capacity curve
-(`capacity_timeline`, `capacity`) follows the grid too, each step's changes
-summed exactly, so it equals the full curve at the grid's times: three
-pumps with capacities over 2 000 hours, 5 000 simulations compiled, kept
-5.5 million points without it and ran in a third of the time with
-`curve_points=200`.
+With capacities, the capacity curve (`capacity_timeline`, `capacity`)
+follows the grid too, each step's changes summed exactly, so it equals the
+full curve at the grid's times. Where numba is installed, a run's changes
+are put in time order by a compiled radix sort (#201), so the full curve
+costs little time even for millions of points: 40 960 simulations of nine
+components in series over 5 000 hours, compiled, keep 2.8 million points
+and take 0.7 s either way, and three pumps with capacities over 2 000
+hours, 5 000 simulations, keep 5.5 million capacity points and take 1.2 s,
+1.05 s with `curve_points=200`. What the grid saves is the memory the
+points take, and what a chunk carries.
 
 ## Splitting a run across machines
 

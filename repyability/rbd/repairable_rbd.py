@@ -1579,14 +1579,25 @@ class _Replication:
 
 
 def _working_over_time(
-    changed_at: np.ndarray, deltas: np.ndarray, t_end: float, start: int
+    changed_at: np.ndarray,
+    deltas: np.ndarray,
+    t_end: float,
+    start: int,
+    reuse: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """How many simulated systems work after each time at which one changed
     state (and at 0 and ``t_end`` whether or not any did): the times, in
     order, and the counts, ``start`` working at 0. Changes given in order of
     time (as an engine may keep them) are added up as they come; otherwise
-    they are sorted first. Either way the counts are whole numbers added
-    exactly, so the order cannot change them."""
+    they are sorted first (by the compiled radix sort where it applies;
+    with ``reuse``, the arrays given may be overwritten). Either way the
+    counts are whole numbers added exactly, so the order cannot change
+    them."""
+    compiled = _time_order(changed_at.size)
+    if compiled is not None:
+        ordered = compiled.sort_by_time(changed_at, deltas, reuse)
+        if ordered is not None:
+            changed_at, deltas = ordered
     in_order = changed_at.size == 0 or (
         changed_at[0] >= 0.0
         and changed_at[-1] < t_end
@@ -1642,12 +1653,39 @@ def _partials(value) -> list:
     return value.partials if isinstance(value, ExactSum) else [value]
 
 
+#: The fewest changes of a run for which they are put in time order by the
+#: compiled radix sort and merge (``_time_order``, #201), where numba is
+#: installed. The results are numpy's to the last bit either way: this only
+#: spares loading the compiled functions for a few changes.
+_COMPILED_ORDER = 1 << 20
+
+
+def _time_order(size: int):
+    """The compiled sorting and merging of a run's changes
+    (``_time_order``), for ``size`` changes; None where numba is not
+    installed, or the changes are too few to pay for it."""
+    if size < _COMPILED_ORDER:
+        return None
+    from repyability.rbd import _compiled
+
+    if not _compiled.available():
+        return None
+    from repyability.rbd import _time_order as compiled
+
+    return compiled
+
+
 def _by_time(
-    times: np.ndarray, values: np.ndarray
+    times: np.ndarray, values: np.ndarray, reuse: bool = False
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """``values`` grouped by their ``times``: the distinct times, in order;
     the values, in the order of their times; and where each time's values
-    start."""
+    start. With ``reuse``, the arrays given may be overwritten."""
+    compiled = _time_order(times.size)
+    if compiled is not None:
+        grouped = compiled.by_time(times, values, reuse)
+        if grouped is not None:
+            return grouped
     if times.size > 1 and not np.all(times[1:] >= times[:-1]):
         order = np.argsort(times, kind="stable")
         times, values = times[order], values[order]
@@ -1655,6 +1693,41 @@ def _by_time(
     new[1:] = times[1:] != times[:-1]
     starts = np.flatnonzero(new)
     return times[starts], values, starts
+
+
+def _zeroed(times: np.ndarray) -> np.ndarray:
+    """``times``, a new array, with ``-0.0`` made ``0.0`` (``+ 0.0``, in
+    place)."""
+    return np.add(times, 0.0, out=times)
+
+
+def _capacity_totals(
+    at: np.ndarray,
+    change: np.ndarray,
+    free_at: np.ndarray,
+    counts: np.ndarray,
+    t_end: float,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """The times at which a simulated system's expected capacity (by
+    ``change``, at the times ``at``) or whether it can carry an unlimited
+    amount (by the net ``counts`` of systems that can, at ``free_at``)
+    changed, and 0 and ``t_end``: in order; the systems' total expected
+    capacity after each (the running total of the changes); and whether any
+    can carry an unlimited amount then. ``at`` and ``free_at`` are in
+    order, each time once (as ``_by_time`` gives them). Merged in one
+    compiled pass where it applies (``_time_order.capacity_totals``),
+    to the same last bit."""
+    compiled = _time_order(at.size + free_at.size)
+    if compiled is not None:
+        merged = compiled.capacity_totals(at, change, free_at, counts, t_end)
+        if merged is not None:
+            return merged
+    times = np.unique(np.r_[at, free_at, 0.0, t_end])
+    step = np.zeros(times.size)
+    step[np.searchsorted(times, at)] = change
+    freed = np.zeros(times.size, dtype=np.int64)
+    freed[np.searchsorted(times, free_at)] = counts
+    return times, np.cumsum(step), np.cumsum(freed) > 0
 
 
 def _group_stops(values: np.ndarray, starts: np.ndarray) -> np.ndarray:
@@ -1669,10 +1742,15 @@ def _group_stops(values: np.ndarray, starts: np.ndarray) -> np.ndarray:
 def _group_totals(values: np.ndarray, starts: np.ndarray) -> np.ndarray:
     """The exact sum of each group of ``values`` (from each of ``starts``
     to the next), rounded once: a group of one value, the value."""
-    totals = values[starts]
-    stops = _group_stops(values, starts)
-    for i in np.flatnonzero(stops - starts > 1).tolist():
-        totals[i] = float(ExactSum(values[starts[i] : stops[i]]))  # noqa: E203
+    compiled = _time_order(values.size)
+    if compiled is not None:
+        totals, several = compiled.group_firsts(values, starts)
+    else:
+        totals = values[starts]
+        several = np.flatnonzero(_group_stops(values, starts) - starts > 1)
+    for i in several.tolist():
+        stop = starts[i + 1] if i + 1 < starts.size else values.size
+        totals[i] = float(ExactSum(values[starts[i] : stop]))  # noqa: E203
     return totals
 
 
@@ -2009,20 +2087,21 @@ class _Tally:
     def state_changes(self) -> Tuple[np.ndarray, np.ndarray]:
         """Every time a simulated system changed state (``-0.0`` made
         ``0.0``), and +1 for a restoration or -1 for a failure or planned
-        outage."""
+        outage: new arrays, which the caller may overwrite."""
         times = [np.asarray(self.changes, dtype=float)]
         deltas = [np.asarray(self.deltas, dtype=np.int64)]
         for chunk_times, chunk_deltas in self.change_arrays:
             times.append(chunk_times)
             deltas.append(chunk_deltas)
-        return np.concatenate(times) + 0.0, np.concatenate(deltas)
+        return _zeroed(np.concatenate(times)), np.concatenate(deltas)
 
     def capacity_records(self) -> Tuple[np.ndarray, ...]:
         """Every change of a simulated system's expected capacity, as
         times (``-0.0`` made ``0.0``) and changes, whose exact sum at a
         time is the total change then; and every change of whether it can
         carry an unlimited amount, as times and +1 or -1 (see
-        ``capacity_changes``)."""
+        ``capacity_changes``): new arrays, which the caller may
+        overwrite."""
         times = [np.asarray(self.capacity_times, dtype=float)]
         steps = [np.asarray(self.capacity_steps, dtype=float)]
         free_times = [np.asarray(self.unlimited_times, dtype=float)]
@@ -2033,9 +2112,9 @@ class _Tally:
             ):
                 kept.append(array)
         return (
-            np.concatenate(times) + 0.0,
+            _zeroed(np.concatenate(times)),
             np.concatenate(steps),
-            np.concatenate(free_times) + 0.0,
+            _zeroed(np.concatenate(free_times)),
             np.concatenate(free_steps),
         )
 
@@ -2047,8 +2126,10 @@ class _Tally:
         unlimited amount changed, in order, and the net change then in how
         many can."""
         times, steps, free_times, free_steps = self.capacity_records()
-        at, steps, starts = _by_time(times, steps)
-        free_at, free_steps, free_starts = _by_time(free_times, free_steps)
+        at, steps, starts = _by_time(times, steps, reuse=True)
+        free_at, free_steps, free_starts = _by_time(
+            free_times, free_steps, reuse=True
+        )
         counts = (
             np.add.reduceat(free_steps, free_starts)
             if free_steps.size
@@ -17607,7 +17688,11 @@ class RepairableRBD(RBD):
         else:
             changed_at, deltas = tally.state_changes()
             time, working = _working_over_time(
-                changed_at, deltas, t_simulation, N if initial_up else 0
+                changed_at,
+                deltas,
+                t_simulation,
+                N if initial_up else 0,
+                reuse=True,
             )
         system_availability = working / N
 
@@ -17645,20 +17730,21 @@ class RepairableRBD(RBD):
                 totals = np.cumsum(
                     bin_totals(tally.capacity_binned, len(times))
                 )
-                unlimited = np.cumsum(tally.unlimited_binned)
+                unlimited = np.cumsum(tally.unlimited_binned) > 0
             else:
                 at, steps, starts, free_at, counts = tally.capacity_changes()
-                times = np.unique(np.r_[at, free_at, 0.0, t_simulation])
-                change = np.zeros(times.size)
-                change[np.searchsorted(times, at)] = _group_totals(
-                    steps, starts
+                change = _group_totals(steps, starts)
+                del steps, starts  # (their memory serves what follows)
+                times, totals, unlimited = _capacity_totals(
+                    at, change, free_at, counts, t_simulation
                 )
-                freed = np.zeros(times.size, dtype=np.int64)
-                freed[np.searchsorted(times, free_at)] = counts
-                totals, unlimited = np.cumsum(change), np.cumsum(freed)
-            curve = np.where(
-                unlimited > 0, np.inf, np.maximum(totals / N, 0.0)
-            )
+                del at, change
+            # The mean over the systems, never below 0, and unlimited while
+            # one can carry an unlimited amount: np.where(unlimited, inf,
+            # np.maximum(totals / N, 0.0)), worked out in place.
+            curve = np.divide(totals, N, out=totals)
+            np.maximum(curve, 0.0, out=curve)
+            curve[unlimited] = np.inf
             capacity_fields = dict(
                 capacity_timeline=times,
                 capacity=curve,
