@@ -197,7 +197,7 @@ other release, fixes included, the minor.
   indices from draws (Jansen's estimators), which take nonlinearity and
   interactions in. An `UncertaintyImportance` holds the variance and the
   shares. A `RepairableRBD` does not propagate parameter uncertainty yet,
-  so it has none.
+  so it has none (#200).
 - **Joint importance: complements and substitutes (#194).**
   `joint_importance` (on `NonRepairableRBD`, `RepairableRBD` and
   `FaultTree`) gives the second-order Birnbaum measure of each pair,

@@ -221,10 +221,10 @@ days count in neither.
 The models above are known exactly. Fitted to failure data, they are
 estimates, and the answer is uncertain; vega says whose uncertainty makes
 it so, and so where more data would narrow it most. A `RepairableRBD` does
-not propagate its models' parameter uncertainty yet, so take the station
-unattended, never repaired, from new: a `NonRepairableRBD` on the same
-diagram, with the pumps' life fitted to 12 failures and the valve's to
-30:
+not propagate its models' parameter uncertainty yet (#200), so take the
+station unattended, never repaired, from new: a `NonRepairableRBD` on the
+same diagram, with the pumps' life fitted to 12 failures and the valve's
+to 30:
 
 ```python
 import numpy as np
@@ -284,7 +284,7 @@ ownership (`discount_rate=`, see [Costs](costs.md#discounting)).
 | `joint_importance` | at `x` | long run, `x`, `window`, `state` | at `t` |
 | Theta | `reliability_rate(x)` | `availability_rate(x)`, from new or `state` | |
 | `barlow_proschan_importance` | whole life, or by `x` | long run, `window`, `state` | |
-| `uncertainty_importance` | at `x`; `of=` the MTTF, a B-life, a time to a reliability | not yet | |
+| `uncertainty_importance` | at `x`; `of=` the MTTF, a B-life, a time to a reliability | not yet (#200) | |
 
 With limited repair crews or common-cause groups, the long-run measures
 follow the crews' and the groups' Markov chains, but `availability_rate`

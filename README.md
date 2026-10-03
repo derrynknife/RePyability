@@ -32,12 +32,12 @@ taking already-fitted lifetime models (from
   Fussell–Vesely, structural importance and parameter sensitivity, on
   repairable systems in the long run or over time.
 - **Sensitivity, the Greeks**: how far the system moves with each
-  component and lever, life, repair, maintenance or crew (delta); the
-  shares of a change, which add up (differential importance); whether two
-  improvements are complements or substitutes (gamma); which component is
-  moving the availability now, and which caused the failures (theta,
-  Barlow–Proschan); and whose parameter uncertainty widens the answer
-  (vega).
+  component (delta) and with each lever, a life, a repair, the maintenance
+  or a crew; the shares of a change, which add up (differential
+  importance); whether two improvements are complements or substitutes
+  (gamma); which component is moving the availability now, and which
+  caused the failures (theta, Barlow–Proschan); and whose parameter
+  uncertainty widens the answer (vega).
 - **Live state**: reliability, remaining life and importance given each
   component's current age, and covariate-dependent components.
 - **Redundancy and dependence**: cold, warm and hot standby; repeated nodes;
