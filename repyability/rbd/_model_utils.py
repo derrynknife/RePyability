@@ -99,7 +99,7 @@ def failure_time_scale(model) -> float:
 
 
 def parametric_spec(model):
-    """Return ``(surpyval_class, params, param_names, extras)`` for a
+    """Return ``(surpyval_class, params, parameter_names, extras)`` for a
     parametric node model, or ``None`` when it has no reconstructable
     distribution parameters (a ``StandbyModel``, ``RepeatedNode``, nested
     RBD, a repeated node's source name, the perfect-reliability helpers, or
@@ -123,7 +123,7 @@ def parametric_spec(model):
         return None
     params = [float(p) for p in np.atleast_1d(model.params)]
     dist = getattr(model, "dist", None)
-    names = getattr(dist, "param_names", None)
+    names = getattr(dist, "parameter_names", None)
     if not names or len(list(names)) != len(params):
         names = [f"param{i}" for i in range(len(params))]
     return cls, params, list(names), dict(getattr(model, "extras", {}))

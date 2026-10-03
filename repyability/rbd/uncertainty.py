@@ -163,7 +163,7 @@ def _parameter_draws(
     model, priors: Mapping, n: int, rng: np.random.Generator, label: str
 ) -> list:
     dist = _parametric(model, label)
-    names = list(getattr(dist, "param_names", []))
+    names = list(getattr(dist, "parameter_names", []))
     unknown = [p for p in priors if p not in names]
     if unknown:
         raise ValueError(

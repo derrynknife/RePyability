@@ -44,9 +44,10 @@ dependencies = [
     # to_dict/from_dict). A surpyval release reaches every fresh install at
     # once, so the upstream workflow runs the tests against surpyval's
     # development branch to show a break before it is released. CI also tests
-    # this minimum. 0.21 draws lifetimes of limited-failure and zero-inflated
-    # models, and takes random_state, as RePyability relies on.
-    "surpyval>=0.21",
+    # this minimum. 0.22 names a distribution's parameters parameter_names
+    # (param_names goes in 0.23), and computes the Normal and LogNormal
+    # quantiles directly, as RePyability relies on.
+    "surpyval>=0.22",
     "tqdm>=4.64",
 ]
 
@@ -87,6 +88,12 @@ Issues = "https://github.com/derrynknife/RePyability/issues"
 # cannot silently rot.
 testpaths = ["repyability"]
 addopts = "--doctest-modules"
+# A surpyval deprecation that RePyability or its tests run into fails them
+# ("... will be removed in v0.23"), so that the upstream workflow, on
+# surpyval's development branch, shows it before the name is removed.
+filterwarnings = [
+    "error:.*will be removed in v[0-9]:DeprecationWarning:repyability",
+]
 
 [tool.setuptools.dynamic]
 version = { attr = "repyability._version.__version__" }

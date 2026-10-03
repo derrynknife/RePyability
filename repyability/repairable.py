@@ -185,8 +185,7 @@ class Repairable:
         - ``cif(t)``: an analytic cumulative intensity (minimal repair),
           e.g. a surpyval ``CrowAMSAA`` or ``Duane`` model (fitted, or
           built with ``from_params``) or a fitted ``HPP``; or
-        - ``mcf(t, items=..., random_state=...)`` (``seed=...`` before
-          surpyval 0.21; either is accepted): a simulation-estimated mean
+        - ``mcf(t, items=..., random_state=...)``: a simulation-estimated mean
           cumulative function (imperfect repair), e.g. a surpyval
           ``GeneralizedRenewal`` (Kijima I/II) model, fitted or built with
           ``fit_from_parameters``.

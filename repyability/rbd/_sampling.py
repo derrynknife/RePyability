@@ -26,8 +26,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 import numpy as np
-from scipy.special import ndtri
-from surpyval import LogNormal, NonParametric, Normal, Parametric
+from surpyval import NonParametric, Parametric
 
 from .helper_classes import PerfectReliability, PerfectUnreliability
 
@@ -98,17 +97,6 @@ def lifetime_sampler(model) -> Optional[RowSampler]:
     return row_sampler(model)
 
 
-#: The quantile functions of surpyval's Normal and LogNormal, computed as
-#: surpyval computes them but without the argument checks of scipy.stats'
-#: generic ppf, which cost four times the maths: ``norm.ppf(u, mu, sigma)``
-#: is ``ndtri(u) * sigma + mu``, value for value. A workaround for surpyval
-#: #469 (keyed by the distribution objects' identity).
-_DIRECT_QF: dict = {
-    id(Normal): lambda u, mu, sigma: ndtri(u) * sigma + mu,
-    id(LogNormal): lambda u, mu, sigma: np.exp(ndtri(u) * sigma + mu),
-}
-
-
 def inverse_sampler(model) -> Optional[Sampler]:
     """``u -> model.random(len(u))`` for the uniforms ``u`` that call would
     draw, when the model samples by inverse transform with exactly one global
@@ -127,8 +115,7 @@ def inverse_sampler(model) -> Optional[Sampler]:
     ):
         if model.p == 1 and model.f0 == 0:
             dist, params, gamma = model.dist, model.params, model.gamma
-            qf = _DIRECT_QF.get(id(dist), dist.qf)
-            return lambda u: qf(u, *params) + gamma
+            return lambda u: dist.qf(u, *params) + gamma
         return lambda u: np.asarray(model.qf(u), dtype=float)
     return None
 

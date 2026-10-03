@@ -184,13 +184,6 @@ major.minor.
 
 ## surpyval workarounds to remove
 
-- **Normal and LogNormal quantiles** (surpyval #469). surpyval computes
-  them through `scipy.stats.norm.ppf`, whose argument checks cost four
-  times the maths. `_DIRECT_QF` in `repyability/rbd/_sampling.py` computes
-  the same values through `scipy.special.ndtri` for the simulations;
-  `test_direct_quantiles_are_surpyvals` checks that they stay identical.
-  Remove it once the minimum surpyval computes them directly.
-
 - **Fitted models in worker processes** (surpyval #573). A surpyval fit
   holds a closure, so pickle cannot take it. `_montecarlo.dumps`, which
   pickles a run for `n_jobs`' worker processes, sends a surpyval model that

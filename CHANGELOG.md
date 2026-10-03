@@ -235,6 +235,26 @@ other release, fixes included, the minor.
   A tree whose diagram passes `repyability.fault_tree.DIAGRAM_LIMIT` (two
   million nodes) is refused, with the advice to simulate it as a diagram;
   `PATH_SET_LIMIT`, which limited the listing, is gone.
+- **Requires surpyval 0.22** (was 0.21).
+  - A distribution's parameters are read by surpyval 0.22's name for them,
+    `parameter_names`, in `parameter_sensitivity` and in the uncertainty
+    methods' parameter distributions. 0.11 reads `param_names`, which
+    surpyval 0.23 removes: with it, 0.11's sensitivities would name the
+    parameters `param0`, `param1`, ... and its parameter distributions
+    would be refused.
+  - The simulations' own copy of the Normal and LogNormal quantiles is
+    gone, as surpyval 0.22 computes them directly
+    ([SurPyval#469](https://github.com/derrynknife/SurPyval/issues/469)).
+    Seeded results are the same, draw for draw, and take as long.
+  - A `RegressionNode` with a proportional-odds model keeps the precision
+    of a small `ff` along a covariate schedule too, as surpyval 0.22's
+    `Hf_tvc` does
+    ([SurPyval#528](https://github.com/derrynknife/SurPyval/issues/528)):
+    0.21's was 6e-4 off at a probability near 1e-6.
+  - The tests fail on a surpyval deprecation that RePyability or its tests
+    run into (`filterwarnings` in `pyproject.toml`). The upstream workflow,
+    which runs them on surpyval's development branch, then shows a name
+    surpyval will remove while it still works.
 
 ### Fixed
 

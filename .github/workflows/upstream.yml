@@ -3,7 +3,9 @@ name: upstream
 # Runs the tests against surpyval's development branch. RePyability requires
 # surpyval with no upper bound, so a surpyval release reaches every fresh
 # install at once; a surpyval change that breaks RePyability should show here
-# first, before surpyval releases it.
+# first, before surpyval releases it. A surpyval deprecation that RePyability
+# runs into fails the tests too (filterwarnings in pyproject.toml), so a
+# renamed name shows here while the old one still works.
 #
 # Kept apart from actions.yml, whose result the release workflow checks: a
 # failure here is a warning about surpyval's next release, not about the

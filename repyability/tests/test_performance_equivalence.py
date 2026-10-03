@@ -328,21 +328,6 @@ def test_inverse_sampler_reproduces_surpyval(name):
 
 
 @pytest.mark.parametrize(
-    "dist", [surv.Normal, surv.LogNormal], ids=["normal", "lognormal"]
-)
-def test_direct_quantiles_are_surpyvals(dist):
-    # Not only for the uniforms a draw takes: at the ends and outside too.
-    u = np.r_[
-        np.random.default_rng(4).random(1000),
-        [0.0, 1.0, 1e-300, 1 - 1e-16, -0.5, 1.5, np.nan],
-    ]
-    direct = _sampling._DIRECT_QF[id(dist)]
-    for params in ([0.0, 1.0], [3.1781, 0.6], [-2.0, 3.0]):
-        expected = dist.qf(u, *params)
-        assert np.array_equal(direct(u, *params), expected, equal_nan=True)
-
-
-@pytest.mark.parametrize(
     "model",
     [W([100, 2], p=0.9), W([100, 2], f0=0.1), W([100, 2], p=0.9, f0=0.1)],
     ids=["lfp", "zi", "both"],
