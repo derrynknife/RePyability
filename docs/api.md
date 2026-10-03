@@ -127,6 +127,8 @@ Up/down histories over a window (see the
 
 ::: repyability.ControlVariate
 
+::: repyability.ConditionalRun
+
 ::: repyability.UncertaintyResult
 
 ::: repyability.RedundancyAllocation

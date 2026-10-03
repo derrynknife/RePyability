@@ -71,6 +71,22 @@
   `_System`, `_Store` and `_structure` and on `_streams`' blocks. Keep those
   compatible, or raise `engines.API` (with a CHANGELOG entry) when an engine
   would have to change with them.
+- **A conditional run (#189, `repyability/rbd/_conditional.py`) simulates
+  the modules alone** (`_conditional_modules`: the nodes
+  `_node_over_time` refuses, with their maintenance groups), as a diagram
+  of their own (`_modules_rbd`) whose streams are named as in the system,
+  so its simulations are a plain run's; its tally keeps each simulation's
+  cost beside its histories, on both engines. Given each joint state of
+  the modules, the rest comes from `_window` and `point_availability`
+  with the modules held. A change to what makes a node need simulating
+  goes into `_node_over_time`, and anything that ties a module to the
+  other nodes (crews, a group's `system_down`) must refuse in
+  `_conditional_modules`. Changes at one instant are ordered as the loop
+  orders them (`_conditional.paths`: failures, the stops they open, then
+  restorations; a module's before the other nodes'): a change to that
+  order in the loop goes into `paths` too. `test_conditional.py` checks
+  each simulation's values against closed forms from its module's
+  history, and the estimates against plain runs.
 - **The random streams (`repyability/rbd/_streams.py`) define every seeded
   result.** Changing how a stream is named, seeded or laid out (its width,
   `BLOCK_DRAWS`, `MAX_WIDTH`, `first_rows`, the expected draws in

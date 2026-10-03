@@ -1133,6 +1133,12 @@ class Runner:
                     change_planned[made].astype(bool),
                 )
             )
+            # Each simulation's cost beside its histories (for a
+            # conditional run's modules).
+            if self._model.has_costs:
+                tally.cost_samples.extend(cost.tolist())
+                costed = len(self._model.costed)
+                tally.fold_costs(np.hstack([by_category, by_node[:, :costed]]))
             return
         tally.uptimes.extend(uptime.tolist())
         failures, restorations, planned = system.sum(axis=0).tolist()

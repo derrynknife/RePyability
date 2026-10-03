@@ -322,6 +322,52 @@ def simulate(
     )
 
 
+def with_costs(
+    rbd,
+    t_simulation: float,
+    N: int,
+    seed: int,
+    antithetic: bool,
+    engine: str,
+    n_jobs,
+    start: int,
+):
+    """Simulations ``start`` to ``start + N - 1`` of the run ``seed``
+    seeds, from new, in the event loop: each component's histories (as
+    ``simulate`` has them) and the run's tally, which keeps each
+    simulation's cost beside them (for a conditional run's modules, see
+    ``RepairableRBD._conditional_run``)."""
+    from repyability.rbd.repairable_rbd import _UNSTREAMED
+
+    if engine not in ("auto", "python", "numba"):
+        raise ValueError(
+            f"engine must be 'auto', 'python' or 'numba' (the engines that "
+            f"record histories) for a conditional run, got {engine!r}."
+        )
+    jobs = None if n_jobs is None else montecarlo.jobs(n_jobs)
+    entropy = _streams.entropy_of(seed)
+    plan, complete = rbd._stream_plan(t_simulation, entropy, antithetic)
+    if antithetic and not complete:
+        raise NotImplementedError(_UNSTREAMED)
+    tally = rbd._run(
+        t_simulation,
+        set(),
+        set(),
+        "p",
+        N,
+        False,
+        seed,
+        antithetic,
+        jobs=jobs,
+        engine=_engine(rbd, plan, engine, N),
+        entropy=entropy,
+        first=start,
+        histories=True,
+    )
+    parts, _ = tally.histories.data(t_simulation)
+    return dict(zip(rbd.components, parts)), tally
+
+
 def _engine(rbd, plan: _streams.Plan, engine: str, N: int, states=None) -> str:
     """The engine that records the run: ``"python"`` or ``"numba"``, as
     ``availability`` would choose between them for a run from the

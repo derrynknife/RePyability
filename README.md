@@ -164,6 +164,12 @@ places, nested diagrams):
 | Imperfect repair (Kijima), with or without replacement at the *N*-th failure | Simulated; but minimal repair (`q = 1`) in no time is numerical over a window from new (it fails `H(t)` times by `t`), its long run refused | Yes, in general: a repair does not renew the unit. |
 | The stock of block-replaced components whose repairs or block replacements take time | Refused; their demand over a horizon is numerical (and simulated with `spares_demand(method="simulate")`). The stock of block-replaced ones repaired and replaced in no time is numerical, and so are tested components' spares, whatever their tests and repairs take and whether their tests miss failures | No: the work carried over a block time could be numerical (#160). With crews, standby groups, opportunistic maintenance or imperfect repair: yes. |
 
+Where a system needs simulating for a few of its nodes (a standby group of
+other lives, a nested RBD sharing a crew, a unit repaired imperfectly),
+`availability(conditional=True)` and `cost(conditional=True)` simulate only
+those, and take every other node exactly given their states: the window's
+expected values, with a fraction of the error of a plain run.
+
 For your own diagram, `analysis_routes()` says how each analysis will be
 computed (exact, numerical, simulated or refused) and why, without running
 anything; a refusal's message names the simulation to run instead. The

@@ -171,6 +171,33 @@ other release, fixes included, the minor.
   last as long as its interval stays simulated (the refusal says how
   likely it is to), as do a common-cause group's members whose tests or
   repairs take time (#158).
+- **Conditional runs: simulate only what needs it (#189).** A system with
+  one dependency (a standby group of other lives, a nested RBD sharing a
+  crew, a unit repaired imperfectly, a maintenance group) was simulated
+  whole, though the rest of it is independent components whose values over
+  time are exact, and whose randomness is most of a run's error.
+  `availability(conditional=True)` and `cost(conditional=True)` simulate
+  only the *modules*, the nodes the exact methods over time do not take,
+  and take every other node exactly given their joint states (worked out
+  once per state met, on a grid, to about 1e-8 of the window): each
+  simulation contributes its expected up time, failures, restorations,
+  planned outages, curve and cost given its modules' histories. The
+  estimates are unbiased, and vary less: twelve units in a line with a
+  Weibull standby pair, 43 times less for the same simulations in the same
+  time. The modules draw what they draw in a plain run with the seed, on
+  either engine and any `n_jobs`, with their own costs from the same
+  simulations (the tally now keeps each simulation's cost beside its
+  histories). Each simulation's values are expected values, whose spread
+  is less than a window's own: the cost's `percentile` and `std` refuse,
+  `criticalities` is None, and `result.conditional` (a `ConditionalRun`)
+  names the modules. `analysis_routes()` names them for `availability` and
+  `cost` when a conditional run applies. Changes at one instant are taken
+  as the event loop takes them: a module's before the other nodes' (a
+  scheduled replacement shared with one, a unit dead on arrival), and a
+  failure before the opportunistic stop it opens. Not with limited repair
+  crews that tie the components together, a maintenance group that stops
+  at every outage of the system (`system_down`), a `state`, capacities,
+  `shard_map` or `control_variate`, as yet.
 - **Common-cause groups in a repairable diagram over time, in the
   simulations and in the allocations (#158).** A `RepairableRBD` with
   `ccf_groups` had exact long-run values and importance, but refused the
