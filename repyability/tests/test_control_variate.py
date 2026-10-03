@@ -369,3 +369,30 @@ def test_minimal_repair_in_no_time_is_kept_by_the_twin():
         | {"C": unit()},
     )
     assert "imperfect repair" in partly.analysis_routes()["availability"].twin
+
+
+def test_the_twin_builds_each_curve_once(monkeypatch):
+    # Its exact cost and availability share the components' curves (#185),
+    # and give what they give apart.
+    rbd = RepairableRBD(EDGES, {n: unit() for n in "ABC"})
+    twin, _ = rbd._twin()
+    apart = (twin.expected_cost(300.0).mean, twin.mission_availability(300.0))
+    built = []
+    plain = RepairableRBD._unit_curve
+
+    def counted(self, node, *args, **kwargs):
+        built.append(node)
+        return plain(self, node, *args, **kwargs)
+
+    monkeypatch.setattr(RepairableRBD, "_unit_curve", counted)
+    with twin._sharing_curves():
+        together = (
+            twin.expected_cost(300.0).mean,
+            twin.mission_availability(300.0),
+        )
+    assert sorted(built) == ["A", "B", "C"]
+    assert together == apart
+    assert twin._curve_memo is None
+    built.clear()
+    rbd.availability(300.0, mc_samples=20, seed=1, control_variate=True)
+    assert sorted(built) == ["A", "B", "C"]

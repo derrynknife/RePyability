@@ -20,6 +20,7 @@ import pickle
 import warnings
 from collections import Counter, defaultdict, deque
 from collections.abc import Mapping
+from contextlib import contextmanager
 from copy import copy
 from dataclasses import dataclass, field
 from fractions import Fraction
@@ -3673,6 +3674,9 @@ class RepairableRBD(RBD):
     )
     #: The models of imperfect repair a spec's ``"repair"`` can name.
     REPAIR_MODELS = ("kijima1", "kijima2")
+    #: The curves kept while an analysis shares them (see
+    #: ``_sharing_curves``); None otherwise.
+    _curve_memo: Optional[dict] = None
     #: The keys of a component's ``"preventive"`` spec.
     PREVENTIVE_KEYS = (
         "interval",
@@ -10423,63 +10427,108 @@ class RepairableRBD(RBD):
         state = state or {}
         curves: dict = {}
         degrading = self._capacity_models() if stages else {}
+        memo = self._curve_memo
         for node, component in self.components.items():
             if node in skip:
                 continue
             start = state.get(node)
-            if isinstance(component, RepairableRBD):
-                curves[node] = component._nested_curve(
-                    horizon, counts, stages, start
-                )
-            elif node in self._standby:
-                curves[node] = self._standby_curve(node, start)
-            elif node in self._inspection:
-                life = self._tested_life(node)
-                if life is not None:
-                    curves[node] = self._tested_life_curve(node, life, start)
+            key: Optional[tuple] = (node, float(horizon), stages, start)
+            try:
+                hash(key)
+            except TypeError:  # a nested RBD's own states, as a dict
+                key = None
+            if memo is not None and key is not None:
+                # A curve that counts its events serves one that need not.
+                found = memo.get((key, True))
+                if found is None and not counts:
+                    found = memo.get((key, False))
+                if found is not None:
+                    curves[node] = found
                     continue
-                rate, interval = self._inspected_rate(node)
-                inspection = self._inspection[node]
-                if inspection.partial:
-                    # From new (its state is not taken: see _check_state).
-                    curves[node] = PartialTestCurve(
-                        rate,
-                        interval,
-                        inspection.offset,
-                        inspection.coverage,
-                        inspection.per_full_test,
-                    )
-                    continue
-                if start is None and inspection.offset:
-                    # New at 0, first tested at the offset: on a calendar
-                    # whose last test was interval - offset before 0, last
-                    # known up at 0.
-                    curves[node] = InspectionCurve(
-                        rate, interval, interval - inspection.offset, 0.0
-                    )
-                    continue
-                if start is not None and not start.alive:
-                    raise NotImplementedError(
-                        f"Component {node!r} has hidden failures, repaired "
-                        "at once when a test finds them, as the exact values "
-                        "need: it cannot be down. Give the time since its "
-                        "last test as its phase (it was found working), or "
-                        "simulate it: availability(state=...)."
-                    )
-                phase = 0.0 if start is None else start.phase or 0.0
-                # Last known up at its last test, or, put into service
-                # since, when it was.
-                since = (
-                    phase
-                    if start is None or start.stationary
-                    else min(start.age, phase)
-                )
-                curves[node] = InspectionCurve(rate, interval, phase, since)
-            else:
-                curves[node] = self._unit_curve(
-                    node, horizon, counts, node in degrading, start
-                )
+            curves[node] = self._node_curve(
+                node,
+                component,
+                horizon,
+                counts,
+                node in degrading,
+                stages,
+                start,
+            )
+            if memo is not None and key is not None:
+                memo[(key, counts)] = curves[node]
         return curves
+
+    @contextmanager
+    def _sharing_curves(self):
+        """Within it, the curves ``_availability_curves`` builds are kept
+        and shared, so that an analysis asking for several exact values
+        builds each node's curve once (#185): keyed by the node, the
+        horizon, the stages followed and its state, a curve that counts its
+        events serving one that need not. Out of it, every call builds its
+        own, so that a change to the diagram or its models is taken."""
+        if self._curve_memo is not None:
+            yield
+            return
+        self._curve_memo = {}
+        try:
+            yield
+        finally:
+            self._curve_memo = None
+
+    def _node_curve(
+        self,
+        node,
+        component,
+        horizon: float,
+        counts: bool,
+        degrading: bool,
+        stages: bool,
+        start,
+    ):
+        """A node's curve for ``_availability_curves``: a nested RBD's, a
+        standby group's, a tested component's or any other unit's."""
+        if isinstance(component, RepairableRBD):
+            return component._nested_curve(horizon, counts, stages, start)
+        if node in self._standby:
+            return self._standby_curve(node, start)
+        if node not in self._inspection:
+            return self._unit_curve(node, horizon, counts, degrading, start)
+        life = self._tested_life(node)
+        if life is not None:
+            return self._tested_life_curve(node, life, start)
+        rate, interval = self._inspected_rate(node)
+        inspection = self._inspection[node]
+        if inspection.partial:
+            # From new (its state is not taken: see _check_state).
+            return PartialTestCurve(
+                rate,
+                interval,
+                inspection.offset,
+                inspection.coverage,
+                inspection.per_full_test,
+            )
+        if start is None and inspection.offset:
+            # New at 0, first tested at the offset: on a calendar whose last
+            # test was interval - offset before 0, last known up at 0.
+            return InspectionCurve(
+                rate, interval, interval - inspection.offset, 0.0
+            )
+        if start is not None and not start.alive:
+            raise NotImplementedError(
+                f"Component {node!r} has hidden failures, repaired at once "
+                "when a test finds them, as the exact values need: it cannot "
+                "be down. Give the time since its last test as its phase (it "
+                "was found working), or simulate it: availability(state=...)."
+            )
+        phase = 0.0 if start is None else start.phase or 0.0
+        # Last known up at its last test, or, put into service since, when
+        # it was.
+        since = (
+            phase
+            if start is None or start.stationary
+            else min(start.age, phase)
+        )
+        return InspectionCurve(rate, interval, phase, since)
 
     def _tested_life_curve(self, node, life: TestedLife, start):
         """A tested component's point availability and events from 0, for
@@ -14043,25 +14092,28 @@ class RepairableRBD(RBD):
         its costs (None without costs) by the twin's (see
         ``ControlVariate``), ``itself`` if the twin is this system."""
         twin_states = twin._simulation_states(state, working | broken)
-        exact = float(
-            np.ravel(
-                twin.mission_availability(
-                    t_simulation, working, broken, method, state=state
-                )
-            )[0]
-        )
         priced = self.has_costs and twin.has_costs
-        exact_cost = (
-            float(
+        # The cost's curves, which count events, serve the availability too
+        # (#185).
+        with twin._sharing_curves():
+            exact_cost = (
+                float(
+                    np.ravel(
+                        twin.expected_cost(
+                            t_simulation, working, broken, method, state=state
+                        ).mean
+                    )[0]
+                )
+                if priced
+                else None
+            )
+            exact = float(
                 np.ravel(
-                    twin.expected_cost(
+                    twin.mission_availability(
                         t_simulation, working, broken, method, state=state
-                    ).mean
+                    )
                 )[0]
             )
-            if priced
-            else None
-        )
         entropy = _streams.entropy_of(seed)
         widths = self._common_widths(twin, t_simulation, states, twin_states)
         tally: Optional[_Tally] = None
