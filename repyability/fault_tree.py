@@ -70,7 +70,7 @@ class _Made(NamedTuple):
     """A gate ``FaultTree.from_rbd`` has made, by its place among them,
     before it is named."""
 
-    index: int
+    place: int
 
 
 class _Gate(NamedTuple):
@@ -1361,7 +1361,7 @@ class FaultTree:
             )
         # A single node is a top event of its own failure.
         top_gate = (
-            made[top_label.index]
+            made[top_label.place]
             if isinstance(top_label, _Made)
             else ("or", [top_label])
         )
@@ -1369,17 +1369,17 @@ class FaultTree:
         pending = [x for x in top_gate[-1] if isinstance(x, _Made)]
         while pending:
             ref = pending.pop()
-            if ref.index not in below:
-                below.add(ref.index)
+            if ref.place not in below:
+                below.add(ref.place)
                 pending += [
-                    x for x in made[ref.index][-1] if isinstance(x, _Made)
+                    x for x in made[ref.place][-1] if isinstance(x, _Made)
                 ]
         names = {i: fresh(f"G{n}") for n, i in enumerate(sorted(below), 1)}
         top = fresh("TOP")
 
         def named(gate: tuple) -> tuple:
             inputs = [
-                names[x.index] if isinstance(x, _Made) else x for x in gate[-1]
+                names[x.place] if isinstance(x, _Made) else x for x in gate[-1]
             ]
             return (*gate[:-1], inputs)
 
