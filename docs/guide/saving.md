@@ -185,8 +185,10 @@ The nodes can change a route:
   and the simulations follow the queue, in Python.
 - **Spares.** The spares counts need each component's replacements to be a
   renewal process, or to fall on a calendar: under block replacement they
-  are counted block interval by block interval (the stock too, with repairs
-  and block replacements in no time, #160),
+  are counted block interval by block interval (the stock too, #160: with
+  repairs and block replacements that take time, from a typical
+  replacement in the long run; refused for a unit dead on arrival while
+  they may take none, whose replacements can come several at one instant),
   and with hidden failures on the tests that find them, whatever the tests
   and repairs take (with tests that can miss a failure, over where each
   cycle starts between the full tests). Standby groups, renewals at a

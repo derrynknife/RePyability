@@ -166,9 +166,9 @@ Two kinds of component replace on a calendar, and are counted their own way
   valves.spares_stock(26 * 7 * 24.0, fill_rate=0.95, fleet=50)["v"].stock   # -> 5
   ```
 
-A block-replaced component's stock is worked out when its repairs and block
-replacements take no time (#160). Each block interval then starts with a
-new unit, so the demand repeats every interval, and a lead time's is
+A block-replaced component's stock is worked out too (#160). With its
+repairs and block replacements in no time, each block interval starts with
+a new unit, so the demand repeats every interval, and a lead time's is
 averaged over where in the interval it starts. Pumps swapped in no time
 every 1,000 hours of the calendar need more on the shelf than the 46 for
 pumps swapped at 1,000 hours of their age, as young pumps are swapped too:
@@ -183,14 +183,31 @@ stock.fill_rate   # -> 0.9596
 ```
 
 A demand finds at least two pumps of its own system on order: those swapped
-at the two block times in the 12 weeks before it. A fleet's systems are
-taken as on block schedules of their own, out of step with each other; two
-block-replaced components in one part are refused, as their block times
-keep step. Repairs or block replacements that take time are refused (#160),
-as one still going on at a block time carries over into the next interval.
-A tested component's spares are counted whatever its tests and repairs
-take, and whether or not its tests can miss a failure: the replacements
-still fall on the tests that find failures (#159).
+at the two block times in the 12 weeks before it. When repairs or block
+replacements take time, a pump down at a block time is not swapped there,
+and one still being repaired or swapped carries over into the next
+interval, which then need not start with a new pump. The demand is then
+counted from a typical replacement in the long run: a failure at some
+point of the interval, or a block replacement. The `calendar` pumps above,
+repaired in about 8 hours and swapped in about 4:
+
+```python
+stock = calendar.spares_stock(2016.0, fill_rate=0.95, fleet=20, nodes=["pump"])["pump"]
+stock.stock       # -> 52
+stock.fill_rate   # -> 0.9667
+```
+
+Their time out of service lowers their demand a little (1.160 replacements
+every 1,000 hours, against 1.165), and the same stock fills more of it.
+
+A fleet's systems are taken as on block schedules of their own, out of step
+with each other; two block-replaced components in one part are refused, as
+their block times keep step, and so is a unit that can be dead on arrival
+while its repairs or block replacements may take no time, as its
+replacements can then come several at one instant. A tested component's
+spares are counted whatever its tests and repairs take, and whether or not
+its tests can miss a failure: the replacements still fall on the tests that
+find failures (#159).
 
 ## How it is computed
 
@@ -229,13 +246,32 @@ exchanged order (over the phase, and over where the unit then in service
 started), this needs only sums over one grid of the interval. Before a
 replacement the count is that after one, as the times between replacements
 are stationary from one: after a failure, at the renewal density, or after
-a block replacement. With proof tests, every replacement falls on
-a test, and the count is that of a discrete renewal process on the tests.
-Tested and repaired in no time, it is exact, with no grid: a unit renewed
-at a test is renewed again `k` tests later with probability `R((k − 1)τ) −
-R(kτ)`. With tests or repairs that take time, the chances of each cycle's
-length in tests come from the cycle followed test by test on a grid (see
-[tests and repairs that take
+a block replacement.
+
+With repairs or block replacements that take time, an interval need not
+start with a new unit, and the count is taken from a typical replacement in
+the long run (its Palm distribution): a failure at each point of the
+interval, weighted by the long-run failures there, or a block replacement,
+weighted by its chance an interval, the weights coming from intervals
+followed one after another until they settle. Each is followed block
+interval by block interval, all of them at once on one grid, which gives
+the chance that the `s`-th replacement after it falls within the lead time,
+`G_s(τ)`: the count before a replacement. From a random time, the chance of
+`s` or more is the long-run rate `λ` times the integral of `G_{s−1} − G_s`
+over the lead time (Campbell's formula). Only the life is rounded: the
+repairs and block replacements, often far shorter than an interval, are
+shared between the grid points either side of each value, keeping their
+mean. The grids are refined by halving the step and extrapolated, their
+error falling as its square, until two extrapolations agree to `1e-5`,
+which leaves about `1e-6`. The `calendar` pumps' stock takes about
+3 seconds.
+
+With proof tests, every replacement falls on a test, and the count is that
+of a discrete renewal process on the tests. Tested and repaired in no time,
+it is exact, with no grid: a unit renewed at a test is renewed again `k`
+tests later with probability `R((k − 1)τ) − R(kτ)`. With tests or repairs
+that take time, the chances of each cycle's length in tests come from the
+cycle followed test by test on a grid (see [tests and repairs that take
 time](costs.md#tests-and-repairs-that-take-time)). From a random time, the
 next replacement is `j` tests on with probability `P(C ≥ j) / S`, `C` being
 a cycle's length in tests and `S` its mean.
@@ -252,8 +288,9 @@ place in proportion to its share of the replacements.
 Some components' replacements are not counted this way, and the counts
 refuse, with the reason:
 
-- the stock of a component under **block replacement** whose repairs or
-  block replacements take time (#160);
+- the stock of a component under **block replacement** that can be dead on
+  arrival while its repairs or block replacements may take no time, as its
+  replacements can then come several at one instant;
 - a component with **hidden failures** whose tests can last as long as
   their interval;
 - a **standby group**, whose units' failures depend on each other;

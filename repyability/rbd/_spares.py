@@ -69,6 +69,34 @@ Two kinds of component are counted otherwise (#147):
   replacement, ``C``; over ``M(T) + 1`` replacements an interval. The
   life's sums are kept as the bands of grid points that hold their mass,
   as a block interval may hold many lives.
+
+  With repairs or block replacements that take time (#160), a unit down
+  at a block time is not replaced there, and an interval need not start
+  with a new unit, so the demand is counted from a typical replacement
+  (its Palm distribution): a failure at a phase of the interval, or a
+  block replacement. Each is followed by the recursion above, from its
+  next unit's start, the rows of all phases at once; their weights are
+  the long-run failures at each phase and block replacements an
+  interval, followed interval by interval until they settle (the next
+  unit's start after a block time is its carry-over). A replacement finds
+  ``s`` before it within ``tau`` as often as it finds ``s`` after it,
+  ``G_s(tau)``, ``G_s`` the CDF of the ``s``-th one after a typical one;
+  and from a random time, ``P(N >= s) = lambda * integral over [0, tau)
+  of G_{s-1} - G_s`` (Campbell's formula), ``lambda`` the long-run
+  replacements' rate. Only the life is rounded both ways: the repairs and
+  block replacements, often far shorter than an interval, are split
+  between the grid points either side, keeping their mean (rounded, one
+  shorter than a step is dropped or stretched to one, which the mean of
+  the two roundings does not undo). A block time measured from a failure
+  at a rounded time is rounded the other way (a failure rounded up puts
+  it earlier), so it is moved a step, to be rounded as the rest are.
+  ``G_s`` jumps at whole intervals (the block times, from a failure at
+  any phase, end there), so a lead time of whole intervals falls on a
+  jump: each rounding is read on its own there (rounded up, a value is in
+  the step before its grid point, and down, in the one after), where the
+  half-step reading of their mean blurs the jump over a step. The grids
+  are refined by halving the step and extrapolated, their error falling
+  as its square.
 - **With hidden failures** (``Tested``), a unit is replaced at the test
   that finds it failed, however long the test and the repair then take, so
   the replacements fall on the tests, and their count is that of a
@@ -95,6 +123,7 @@ Two kinds of component are counted otherwise (#147):
   shares of the places.
 """
 
+import functools
 import math
 from typing import Any, Callable, List, NamedTuple, Optional, Tuple
 
@@ -106,12 +135,17 @@ from repyability.utils.vectors import dot
 TOLERANCE = 1e-6
 #: The grid's first and largest number of steps up to the time.
 FIRST_STEPS, MAX_STEPS = 2**9, 2**16
+#: The same, per block interval, for a block-replaced unit whose repairs or
+#: block replacements take time, whose rows cost the steps squared (#160).
+PALM_FIRST_STEPS, PALM_MAX_STEPS = 2**7, 2**11
 #: A count is followed until the probability of more falls below this.
 _TAIL = 1e-12
 #: The most replacements a count follows.
 MAX_COUNT = 2_000
 #: Gauss-Legendre nodes and weights for integrals over grid cells.
 _GAUSS = np.polynomial.legendre.leggauss(4)
+#: The pieces of a step a split duration is taken on (``_Grid.split``).
+_SPLIT = 16
 
 Cdf = Callable[[np.ndarray], np.ndarray]
 
@@ -226,6 +260,29 @@ class _Grid:
         atoms = np.zeros(self.size)
         atoms[0] = values[0]
         return _Dist(rest, atoms)
+
+    def split(self, cdf: Cdf) -> _Dist:
+        """A duration with CDF ``cdf``: its mass at 0 an atom, and the rest
+        of each value's shared between the grid points either side of it,
+        in proportion to its nearness to each, which keeps its mean (the
+        values taken on ``_SPLIT`` pieces of each step). Unlike rounding, it
+        neither drops a duration much shorter than a step nor stretches it
+        to one (#160)."""
+        pieces = self.size * _SPLIT
+        edges = (self.step / _SPLIT) * np.arange(pieces + 1)
+        values = np.clip(np.asarray(cdf(edges), dtype=float), 0.0, 1.0)
+        values = np.maximum.accumulate(values)
+        masses = np.diff(values)
+        middles = (np.arange(pieces) + 0.5) / _SPLIT
+        low = np.floor(middles).astype(int)
+        share = middles - low
+        rest = np.bincount(
+            low, masses * (1.0 - share), minlength=self.size + 1
+        )
+        rest += np.bincount(low + 1, masses * share, minlength=self.size + 1)
+        atoms = np.zeros(self.size)
+        atoms[0] = values[0]
+        return _Dist(rest[: self.size], atoms)
 
     def from_density(self, density: Callable, up: bool) -> _Dist:
         """A continuous distribution (or part of one) with density
@@ -444,7 +501,8 @@ def _block_starts(
     """The next units' starts: after each failure's repair and each block
     replacement's. Rounded up, a start on a block time is before it (its
     true time is at most the grid's), unless it is the unit put in there
-    by that block's replacement in no time: those are kept apart."""
+    by that block's replacement in no time (or, split, in under a step):
+    those are kept apart."""
     start = _sum(failed, repair) + _sum(blocks, maintenance)
     size = len(start.rest)
     before = np.zeros(size)
@@ -452,7 +510,9 @@ def _block_starts(
         return start, before
     on = np.arange(period, size, period)
     total = start.rest[on] + start.atoms[on]
-    renewed = blocks.atoms[on] * float(maintenance.atoms[0])
+    renewed = blocks.atoms[on] * float(
+        maintenance.atoms[0] + maintenance.rest[0]
+    )
     before[on] = np.maximum(total - renewed, 0.0)
     start.rest[on] = 0.0
     start.atoms[on] = np.minimum(renewed, total)
@@ -528,7 +588,8 @@ class _Read:
         atoms: Optional[Tuple[np.ndarray, np.ndarray]] = None,
     ):
         self.step, self.offset = step, offset
-        self.rest = 0.5 * (np.cumsum(up) + np.cumsum(down))
+        self.each = (np.cumsum(up), np.cumsum(down))
+        self.rest = 0.5 * (self.each[0] + self.each[1])
         mass = 0.5 * (up + down)
         self.atoms = None
         if atoms is not None:
@@ -571,6 +632,31 @@ class _Read:
             reach = np.clip(reach - self.offset, 0, len(self.atoms) - 1)
             rest = rest + self.atoms[reach]
         return np.minimum(rest, 1.0)
+
+    def below_each(self, x: float) -> float:
+        """``P(X < x)`` as ``below``, but each rounding's continuous part
+        read on its own: rounded up, a mass is in the step before its grid
+        point, and rounded down, in the step after it, spread evenly. On
+        the grid, one rounding is read exactly, and so is a density that
+        jumps at a grid point (a block time), which ``below``'s mean of the
+        two blurs over a step (#160)."""
+        position = x / self.step - self.offset
+        rest = 0.0
+        for cumulative, start in zip(self.each, (position, position - 1.0)):
+            if start <= 0.0 or not len(cumulative):
+                continue
+            low = int(math.floor(start))
+            share = start - low
+            last = len(cumulative) - 1
+            value = (1.0 - share) * cumulative[min(low, last)]
+            if share:
+                value += share * cumulative[min(low + 1, last)]
+            rest += 0.5 * float(value)
+        if self.atoms is not None:
+            reach = int(math.ceil(x / self.step * (1.0 - 1e-12) - 1e-9))
+            reach = min(max(reach - self.offset, 0), len(self.atoms) - 1)
+            rest += float(self.atoms[reach])
+        return min(rest, 1.0)
 
     def integral(self, x) -> np.ndarray:
         """``E[(x - X)^+]``, the integral of ``P(X < z)`` over ``z`` in
@@ -876,6 +962,421 @@ def _assembled(
     return np.array(out)
 
 
+def carries_over(model: Block) -> bool:
+    """Whether a block-replaced unit's repairs or block replacements take
+    time, so that an interval need not start with a new unit (#160)."""
+    zero = np.zeros(1)
+    if float(np.ravel(model.repair(zero))[0]) < 1.0:
+        return True
+    return model.maintenance is not None and (
+        float(np.ravel(model.maintenance(zero))[0]) < 1.0
+    )
+
+
+def _rows_fft(a: np.ndarray, b: np.ndarray, size: int = 0) -> np.ndarray:
+    """Each row of ``a`` convolved with ``b`` and cut to ``size`` (the
+    rows' length by default), clipped at 0 (as ``_fft``), on every core.
+    ``b``'s tail past its last ``_TAIL * 1e-6`` of mass is left out."""
+    from scipy import fft
+
+    size = size or a.shape[1]
+    tail = np.cumsum(b[::-1])[::-1]
+    support = np.flatnonzero(tail > _TAIL * 1e-6)
+    if not len(support) or not a.any():
+        return np.zeros((a.shape[0], size))
+    # Neither's terms past ``size`` reach the terms kept.
+    a = a[:, :size]
+    kernel = b[: min(support[-1] + 1, size)]
+    length = fft.next_fast_len(a.shape[1] + len(kernel) - 1, real=True)
+    product = fft.rfft(a, length, axis=1, workers=-1)
+    product *= fft.rfft(kernel, length)
+    out = fft.irfft(product, length, axis=1, workers=-1)[:, :size]
+    if out.shape[1] < size:
+        out = np.pad(out, ((0, 0), (0, size - out.shape[1])))
+    return np.maximum(out, 0.0, out=out)
+
+
+def _rows_sum(
+    rest: np.ndarray, atoms: np.ndarray, other: _Dist, size: int = 0
+) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+    """``_sum`` of each row's distribution and ``other``, cut to ``size``
+    (the rows' length by default); its atoms are None when it has none."""
+    total = _rows_fft(rest + atoms, other.rest + other.atoms, size)
+    if not (atoms.any() and other.atoms.any()):
+        return total, None
+    held = _rows_fft(atoms, other.atoms, size)
+    return np.maximum(total - held, 0.0), held
+
+
+def _rows_step(
+    rest: np.ndarray,
+    atoms: np.ndarray,
+    before: np.ndarray,
+    life: _Dist,
+    period: int,
+    up: bool,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``_block_step`` row by row, from each row's start (``rest``,
+    ``atoms`` and ``before``): its failures' times and its block
+    replacements (atoms on the block times)."""
+    rows, size = rest.shape
+    failed_rest = np.zeros((rows, size))
+    failed_atoms = np.zeros((rows, size))
+    blocks = np.zeros((rows, size))
+    width = period + 1
+    cut = _Dist(life.rest[:width], life.atoms[:width])
+    dead = float(life.atoms[0])
+    for lo in range(0, size, period):
+        hi = lo + period
+        if hi < size:
+            failed_atoms[:, hi] += before[:, hi] * dead
+            blocks[:, hi] += before[:, hi] * (1.0 - dead)
+        part_rest, part_atoms = rest[:, lo:hi], atoms[:, lo:hi]
+        if not (part_rest.any() or part_atoms.any()):
+            continue
+        keep = width if up else width - 1
+        stop = min(lo + keep, size)
+        out_rest, out_atoms = _rows_sum(part_rest, part_atoms, cut, stop - lo)
+        failed_rest[:, lo:stop] += out_rest
+        survive = part_rest.sum(axis=1) + part_atoms.sum(axis=1)
+        survive -= out_rest.sum(axis=1)
+        if out_atoms is not None:
+            failed_atoms[:, lo:stop] += out_atoms
+            survive -= out_atoms.sum(axis=1)
+        if hi < size:
+            blocks[:, hi] += np.maximum(survive, 0.0)
+    return failed_rest, failed_atoms, blocks
+
+
+def _rows_starts(
+    failed_rest: np.ndarray,
+    failed_atoms: np.ndarray,
+    blocks: np.ndarray,
+    repair: _Dist,
+    maintenance: _Dist,
+    period: int,
+    up: bool,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``_block_starts`` row by row: the next units' starts."""
+    start_rest, held = _rows_sum(failed_rest, failed_atoms, repair)
+    start_atoms = np.zeros_like(start_rest) if held is None else held
+    rows, size = start_rest.shape
+    # The block replacements are on the block times alone: the starts after
+    # them are their maintenance's, shifted there.
+    reach = [
+        int(np.flatnonzero(part)[-1]) + 1 if part.any() else 0
+        for part in (maintenance.rest, maintenance.atoms)
+    ]
+    for at in range(0, size, period):
+        blocked = blocks[:, at]
+        if not blocked.any():
+            continue
+        for start, part, span in zip(
+            (start_rest, start_atoms),
+            (maintenance.rest, maintenance.atoms),
+            reach,
+        ):
+            span = min(span, size - at)
+            if span:
+                start[:, at : at + span] += (
+                    blocked[:, None] * part[None, :span]
+                )
+    before = np.zeros((rows, size))
+    if not up or period >= size:
+        return start_rest, start_atoms, before
+    on = np.arange(period, size, period)
+    total = start_rest[:, on] + start_atoms[:, on]
+    renewed = blocks[:, on] * float(maintenance.atoms[0] + maintenance.rest[0])
+    before[:, on] = np.maximum(total - renewed, 0.0)
+    start_rest[:, on] = 0.0
+    start_atoms[:, on] = np.minimum(renewed, total)
+    return start_rest, start_atoms, before
+
+
+def _block_pieces(
+    model: Block, grid: _Grid, up: bool
+) -> Tuple[_Dist, _Dist, _Dist]:
+    """A block-replaced unit's life on ``grid``, rounded up or down, and
+    its repair's and block replacement's durations, split
+    (``_Grid.split``): often much shorter than a block interval, they are
+    then right on a grid of the interval (#160)."""
+    life = grid.from_cdf(model.life, up)
+    repair = grid.split(model.repair)
+    maintenance = (
+        grid.split(model.maintenance)
+        if model.maintenance is not None
+        else grid.unit()
+    )
+    return life, repair, maintenance
+
+
+def _reach(model: Block, step: float, period: int) -> int:
+    """How many steps past a start its repair or block replacement may
+    last, but for a negligible chance (at least an interval)."""
+    reach = period
+    while True:
+        left = 1.0 - float(np.ravel(model.repair(np.array([reach * step])))[0])
+        if model.maintenance is not None:
+            left = max(
+                left,
+                1.0
+                - float(
+                    np.ravel(model.maintenance(np.array([reach * step])))[0]
+                ),
+            )
+        if left < _TAIL:
+            return reach
+        if reach > 64 * period:
+            raise NotImplementedError(
+                "A repair or block replacement lasting more than 64 block "
+                "intervals is likely: count the spares by simulation "
+                "instead."
+            )
+        reach *= 2
+
+
+@functools.lru_cache(maxsize=64)
+def _settled(model: Block, period: int, up: bool) -> Tuple[np.ndarray, float]:
+    """The long run at the block times (#160): an interval's expected
+    failures at each phase (grid points ``0`` to ``period``, the last
+    rounded onto the block time from before it) and its chance of a block
+    replacement, followed from new interval by interval, each from the
+    starts of next units that the ones before carry over (rounded up onto
+    a block time, a start is before it, and replaced there), until they
+    settle."""
+    step = model.interval / period
+    size = period + _reach(model, step, period) + 3
+    grid = _Grid((size - 3) * step, model.interval, size - 3)
+    life, repair, maintenance = _block_pieces(model, grid, up)
+    start, waiting = grid.unit(), np.zeros(size)
+    previous: Optional[Tuple[np.ndarray, float]] = None
+    for _ in range(MAX_COUNT):
+        fails = np.zeros(period + 1)
+        block = 0.0
+        carry = _Dist(np.zeros(size), np.zeros(size))
+        carried = np.zeros(size)
+
+        def pass_on(current: _Dist, before: np.ndarray) -> None:
+            """Starts on this interval's end or after it are the next
+            intervals', and so are those before a later block time."""
+            carry.rest[: size - period] += current.rest[period:]
+            carry.atoms[: size - period] += current.atoms[period:]
+            current.rest[period:] = 0.0
+            current.atoms[period:] = 0.0
+            carried[1 : size - period] += before[period + 1 :]
+            before[period + 1 :] = 0.0
+
+        current = _Dist(start.rest.copy(), start.atoms.copy())
+        before = waiting.copy()
+        pass_on(current, before)
+        for _ in range(MAX_COUNT):
+            failed, blocked = _block_step(current, before, life, period, up)
+            fails += failed.rest[: period + 1] + failed.atoms[: period + 1]
+            block += float(blocked.atoms[period])
+            current, before = _block_starts(
+                failed, blocked, repair, maintenance, period, up
+            )
+            pass_on(current, before)
+            left = current.rest.sum() + current.atoms.sum() + before[period]
+            if left < _TAIL:
+                break
+        else:
+            raise NotImplementedError(
+                f"More than {MAX_COUNT} replacements are likely in a block "
+                "interval: count the spares by simulation instead."
+            )
+        # The next units' starts make a distribution: its mass is kept at
+        # one, against the rounding's drift.
+        mass = float(carry.rest.sum() + carry.atoms.sum() + carried.sum())
+        start, waiting = carry.scaled(1.0 / mass), carried / mass
+        if previous is not None:
+            moved = max(
+                float(np.abs(fails - previous[0]).max()),
+                abs(block - previous[1]),
+            )
+            if moved < _SETTLED:
+                return fails, block
+        previous = (fails, block)
+    raise NotImplementedError(
+        "The block intervals did not settle into a long run: count the "
+        "spares by simulation instead."
+    )
+
+
+def _palm_mixtures(
+    model: Block,
+    tau: float,
+    period: int,
+    up: bool,
+    fails: np.ndarray,
+    block: float,
+) -> List[Tuple[np.ndarray, np.ndarray]]:
+    """For ``j = 1, 2, ...``, the ``j``-th replacement after a typical
+    one, relative to it, on the grid up to ``tau``: rounded masses and
+    atoms, over the typical one's kinds, a failure at each phase (weights
+    ``fails``) or a block replacement (``block``), each a row followed by
+    the block recursion from the start of its next unit (see the module
+    docstring)."""
+    step = model.interval / period
+    K = int(math.ceil(tau / step)) + 3
+    size = period + 1 + K + 3
+    grid = _Grid((size - 3) * step, model.interval, size - 3)
+    life, repair, maintenance = _block_pieces(model, grid, up)
+    phases = np.flatnonzero(fails > 0.0)
+    rows = len(phases) + 1
+    weights = np.append(fails[phases], block)
+    weights = weights / weights.sum()
+    # A row's typical replacement in its interval's frame: a failure at its
+    # phase, or the block replacement at the interval's start.
+    origins = np.append(phases, 0)
+    failed_rest = np.zeros((rows, size))
+    blocks = np.zeros((rows, size))
+    failed_rest[np.arange(rows - 1), phases] = 1.0
+    blocks[rows - 1, 0] = 1.0
+    start_rest, start_atoms, before = _rows_starts(
+        failed_rest,
+        np.zeros((rows, size)),
+        blocks,
+        repair,
+        maintenance,
+        period,
+        up,
+    )
+    window = origins[:, None] + np.arange(K)[None, :]
+    on = np.zeros(size, dtype=bool)
+    on[::period] = True
+    times = np.flatnonzero(on)
+    shifted = times + (1 if up else -1)
+    inside = (shifted >= 0) & (shifted < size)
+    failure = (np.arange(rows) < rows - 1).astype(float)[:, None]
+    past = np.arange(size)[None, :] >= (origins + K)[:, None]
+    mixtures: List[Tuple[np.ndarray, np.ndarray]] = []
+    for _ in range(MAX_COUNT):
+        failed_rest, failed_atoms, blocks = _rows_step(
+            start_rest, start_atoms, before, life, period, up
+        )
+        rest = failed_rest.copy()
+        atoms = failed_atoms + blocks
+        # Measured from a failure, at a rounded time, a block time is a
+        # rounded one, the other way (a failure rounded up puts it
+        # earlier): a step on, it is rounded as the rest are.
+        moved = atoms[:, on] * failure
+        atoms[:, on] -= moved
+        rest[:, shifted[inside]] += moved[:, inside]
+        mixed_rest = weights @ np.take_along_axis(rest, window, axis=1)
+        mixed_atoms = weights @ np.take_along_axis(atoms, window, axis=1)
+        mixtures.append((mixed_rest, mixed_atoms))
+        if mixed_rest.sum() + mixed_atoms.sum() < _TAIL:
+            return mixtures
+        start_rest, start_atoms, before = _rows_starts(
+            failed_rest, failed_atoms, blocks, repair, maintenance, period, up
+        )
+        # A start past a row's window cannot reach it.
+        start_rest[past] = 0.0
+        start_atoms[past] = 0.0
+        before[past] = 0.0
+    raise NotImplementedError(
+        f"More than {MAX_COUNT} replacements are likely in the lead time: "
+        "count the spares by simulation instead."
+    )
+
+
+#: How closely an interval's long-run failures settle (``_settled``).
+_SETTLED = 1e-12
+
+
+@functools.lru_cache(maxsize=64)
+def _palm(model: Block, tau: float, steps: int) -> Tuple[tuple, tuple, float]:
+    """``P(N >= s)``, ``s = 1, 2, ...``, in a lead time ``tau`` in the long
+    run, from a random time and before a replacement, for a block-replaced
+    unit whose repairs or block replacements take time (#160), on grids of
+    ``steps`` steps an interval, and the long-run replacements' rate (see
+    the module docstring)."""
+    step = model.interval / steps
+    rates, parts = [], []
+    for up in (True, False):
+        fails, block = _settled(model, steps, up)
+        rates.append(float(fails.sum() + block) / model.interval)
+        parts.append(_palm_mixtures(model, tau, steps, up, fails, block))
+    reads = []
+    for j in range(max(len(part) for part in parts)):
+        (up_rest, up_atoms), (down_rest, down_atoms) = (
+            part[j] if j < len(part) else (np.zeros(1), np.zeros(1))
+            for part in parts
+        )
+        size = max(len(up_rest), len(down_rest))
+
+        def padded(a: np.ndarray) -> np.ndarray:
+            return np.pad(a, (0, size - len(a)))
+
+        reads.append(
+            _Read(
+                step,
+                0,
+                padded(up_rest),
+                padded(down_rest),
+                (padded(up_atoms), padded(down_atoms)),
+            )
+        )
+    rate = 0.5 * (rates[0] + rates[1])
+    arrival = [read.below_each(tau) for read in reads]
+    integrals = [tau] + [float(read.integral(tau)) for read in reads]
+    random = [
+        rate * (integrals[s - 1] - integrals[s])
+        for s in range(1, len(integrals))
+    ]
+    return tuple(_cut(random)), tuple(_cut(arrival)), rate
+
+
+def _palm_tails(model: Block, tau: float, kind: str) -> np.ndarray:
+    """``P(N >= s)``, ``s = 1, 2, ...``, in a lead time ``tau`` (see
+    ``_palm``), on grids of an interval refined by halving its step: their
+    error falls as the step squared, so each pair is extrapolated (a third
+    of their difference past the finer), until two extrapolations agree
+    to ``10 * TOLERANCE``, which puts the finer's error at about
+    ``TOLERANCE``, or ``PALM_MAX_STEPS``."""
+    which = 0 if kind == "random" else 1
+
+    def on(steps: int) -> np.ndarray:
+        return np.array(_palm(model, tau, steps)[which])
+
+    def padded(a: np.ndarray, size: int) -> np.ndarray:
+        return np.pad(a, (0, size - len(a)))
+
+    steps = PALM_FIRST_STEPS
+    coarse = on(steps)
+    previous: Optional[np.ndarray] = None
+    while True:
+        steps *= 2
+        fine = on(steps)
+        size = max(len(coarse), len(fine))
+        guess = (
+            padded(fine, size)
+            + (padded(fine, size) - padded(coarse, size)) / 3.0
+        )
+        if previous is not None:
+            size = max(size, len(previous))
+            change = np.abs(padded(guess, size) - padded(previous, size))
+            # What the extrapolations leave falls as the step cubed or
+            # faster: the finer's error is at most about a seventh of the
+            # change.
+            if change.max(initial=0.0) <= 10.0 * TOLERANCE:
+                return guess
+        if steps >= PALM_MAX_STEPS:
+            return guess
+        previous, coarse = guess, fine
+
+
+def _cut(tails: List[float]) -> List[float]:
+    """Tails clipped to ``[0, 1]``, to the first below ``_TAIL``."""
+    out: List[float] = []
+    for tail in tails:
+        out.append(min(max(tail, 0.0), 1.0))
+        if tail < _TAIL:
+            break
+    return out
+
+
 def _convolved(a: np.ndarray, b: np.ndarray, last: int) -> np.ndarray:
     """The convolution of ``a`` and ``b`` to index ``last``."""
     from scipy.signal import fftconvolve
@@ -1071,24 +1572,47 @@ def rate(model) -> float:
     its mean cycle (for a ``Tested`` one, its mean cycle in tests times
     the test interval; for a ``Block`` one, with repairs and block
     replacements in no time, the block replacement and the failures in a
-    block interval, ``M(T) + 1``, over ``T``)."""
+    block interval, ``M(T) + 1``, over ``T``, and otherwise those of an
+    interval once settled, see ``_settled``)."""
     if isinstance(model, Tested):
         cycles = _cycles(model)
         tests = float(_shares(cycles) @ (cycles @ np.arange(cycles.shape[1])))
         return 1.0 / (model.interval * tests)
     if isinstance(model, Block):
+        if carries_over(model):
+            return _palm_rate(model)
         counts = count(model, model.interval, "new")
         failures = float(np.arange(len(counts)) @ counts)
         return (failures + 1.0) / model.interval
     return 1.0 / model.mean_cycle
 
 
+def _palm_rate(model: Block) -> float:
+    """A block-replaced unit's replacements per unit time in the long run
+    when its repairs or block replacements take time (#160): an interval's
+    failures and block replacement once settled, over ``T``, from grids
+    refined until they agree to ``TOLERANCE``, relatively."""
+    previous = None
+    steps = PALM_FIRST_STEPS
+    while True:
+        rate = 0.0
+        for up in (True, False):
+            fails, block = _settled(model, steps, up)
+            rate += 0.5 * float(fails.sum() + block) / model.interval
+        done = previous is not None and abs(rate - previous) <= (
+            3.0 * TOLERANCE * rate
+        )
+        if done or steps >= PALM_MAX_STEPS:
+            return rate
+        previous, steps = rate, 2 * steps
+
+
 def count(model, end: float, kind: str) -> np.ndarray:
     """The distribution of a component's replacements (see
     ``_count_tails`` for ``kind``): their probabilities for ``0, 1, 2,
     ...``, from grids refined until they agree to ``TOLERANCE`` (a
-    ``Block`` in a lead time with its repairs and block replacements in no
-    time; a ``Tested`` exactly, with no grid).
+    ``Block`` in a lead time with repairs or block replacements that take
+    time, see ``_palm_tails``; a ``Tested`` exactly, with no grid).
 
     Raises
     ------
@@ -1101,6 +1625,11 @@ def count(model, end: float, kind: str) -> np.ndarray:
         tails = np.minimum.accumulate(
             np.clip(_tested_tails(model, end, kind), 0.0, 1.0)
         )
+        return -np.diff(np.concatenate(([1.0], tails, [0.0])))
+
+    if isinstance(model, Block) and kind != "new" and carries_over(model):
+        tails = _palm_tails(model, end, kind)
+        tails = np.minimum.accumulate(np.clip(tails, 0.0, 1.0))
         return -np.diff(np.concatenate(([1.0], tails, [0.0])))
 
     def tails_on(steps: int) -> np.ndarray:

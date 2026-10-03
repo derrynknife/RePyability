@@ -929,9 +929,17 @@ def test_the_readme_says_what_is_simulated():
             (minimal, "expected_cost", "numerical"),
             (minimal, "mean_availability", "refused"),
         ],
-        "The stock of block-replaced components whose repairs or block "
-        "replacements take time": [
-            (repairable["block replacement"], "spares_stock", "refused"),
+        "Spares with repair crews, standby groups, opportunistic "
+        "maintenance or imperfect repair": [
+            (crew, "spares_stock", "refused"),
+            (group, "spares_demand", "refused"),
+            (
+                repairable["opportunistic maintenance"],
+                "spares_stock",
+                "refused",
+            ),
+            (repairable["imperfect repair"], "spares_demand", "refused"),
+            (repairable["block replacement"], "spares_stock", "numerical"),
             (repairable["tested, missing"], "spares_demand", "numerical"),
             (repairable["tested, missing"], "spares_stock", "numerical"),
             (repairable["tested, taking time"], "spares_demand", "numerical"),

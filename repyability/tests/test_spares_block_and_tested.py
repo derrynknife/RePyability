@@ -12,6 +12,7 @@ import surpyval as surv
 from scipy.stats import binom, poisson
 
 from repyability import RepairableRBD
+from repyability.rbd import _spares
 from repyability.rbd import routes as r
 
 E, W = surv.Exponential.from_params, surv.Weibull.from_params
@@ -244,30 +245,177 @@ def test_a_part_with_one_block_replaced_member():
         both.spares_stock(30.0, fill_rate=0.9, parts={"p": ["a", "b"]})
 
 
+def block_history_with_work(life, repair, duration, interval, chains, rng):
+    """The replacement times of units under block replacement whose repairs
+    and block replacements take time, ``chains`` histories of 1500 each: a
+    unit up at a block time is replaced there, one down is not."""
+    start = np.zeros(chains)
+    times = np.empty((chains, 1500))
+    for k in range(1500):
+        due = (np.floor(start / interval + 1e-12) + 1.0) * interval
+        end = start + life.qf(rng.uniform(size=chains))
+        fails = end < due
+        times[:, k] = np.where(fails, end, due)
+        start = times[:, k] + np.where(
+            fails,
+            repair.qf(rng.uniform(size=chains)),
+            duration.qf(rng.uniform(size=chains)),
+        )
+    return times
+
+
+@pytest.mark.parametrize(
+    "life, repair, lead",
+    [
+        (W([100.0, 2.0]), W([8.0, 1.5]), 45.0),
+        (W([100.0, 2.0]), W([40.0, 1.5]), 45.0),
+        (W([100.0, 0.7]), W([8.0, 1.5]), 150.0),
+        (W([100.0, 2.0], f0=0.1), W([8.0, 1.5]), 120.0),
+    ],
+    ids=[
+        "within an interval",
+        "repairs often over a block time",
+        "over intervals",
+        "dead on arrival",
+    ],
+)
+def test_a_stock_whose_work_takes_time_against_long_histories(
+    life, repair, lead
+):
+    # #160: a unit down at a block time is not replaced there, so an
+    # interval need not start with a new one.
+    interval, duration = 60.0, W([5.0, 2.0])
+    stock = single(
+        block(life, interval, repair=repair, duration=duration)
+    ).spares_stock(lead, fill_rate=0.9)["c"]
+    rng = np.random.default_rng(11)
+    times = block_history_with_work(life, repair, duration, interval, 800, rng)
+    random, arrival = [], []
+    for row in times:
+        lo, hi = 20 * interval, row[-1] - lead - 20 * interval
+        starts = rng.uniform(lo, hi, 600)
+        random.append(
+            np.searchsorted(row, starts + lead) - np.searchsorted(row, starts)
+        )
+        inner = row[(row > lo + lead) & (row < hi)]
+        arrival.append(
+            np.searchsorted(row, inner)
+            - np.searchsorted(row, inner - lead, side="right")
+        )
+    for got, sample in (
+        (stock.on_order, np.concatenate(random)),
+        (stock.on_order_at_demand, np.concatenate(arrival)),
+    ):
+        got, want = padded(got, np.bincount(sample) / len(sample))
+        np.testing.assert_allclose(got, want, atol=0.006)
+
+
+def test_a_lead_time_on_block_times_is_read_at_its_jump():
+    # From a typical failure, the block times fall a whole number of
+    # intervals on less its phase, so their distribution jumps at each
+    # interval: read on its own, each rounding takes it exactly, where
+    # their mean blurred it over a step (an error of the step's order).
+    model = single(
+        block(W([100.0, 2.5]), 60.0, repair=W([4.0, 1.5]), duration=E([0.5]))
+    )._replacements("c", True)
+    coarse, fine = (
+        np.array(_spares._palm(model, 120.0, steps)[1]) for steps in (256, 512)
+    )
+    coarse, fine = padded(coarse, fine)
+    assert np.abs(fine - coarse).max() < 2e-6
+
+
+def test_the_long_run_is_an_interval_settled_from_new():
+    # Counted from new, interval after interval settles into the long run:
+    # its replacements in an interval, the rate times the interval.
+    rbd = single(
+        block(W([100.0, 2.0]), 60.0, repair=W([40.0, 1.5]), duration=E([0.2]))
+    )
+    settled = (
+        rbd.spares_demand(21 * 60.0)["c"].mean
+        - rbd.spares_demand(20 * 60.0)["c"].mean
+    )
+    model = rbd._replacements("c", True)
+    assert _spares.rate(model) * 60.0 == pytest.approx(settled, rel=2e-6)
+    # From a random time, the mean on order is the rate times the lead time.
+    stock = rbd.spares_stock(45.0, fill_rate=0.9)["c"]
+    mean = np.arange(len(stock.on_order)) @ stock.on_order
+    assert mean == pytest.approx(_spares.rate(model) * 45.0, rel=3e-6)
+
+
+@pytest.mark.parametrize("kind", ["random", "arrival"])
+def test_renewals_in_no_time_through_a_typical_replacement(kind):
+    # The typical replacement's counts take renewals in no time too, where
+    # each interval starts new: they are the averages over the phase.
+    model = single(block(W([100.0, 2.0]), 60.0))._replacements("c", True)
+    assert not _spares.carries_over(model)
+    tails = np.minimum.accumulate(
+        np.clip(_spares._palm_tails(model, 45.0, kind), 0.0, 1.0)
+    )
+    got = -np.diff(np.concatenate(([1.0], tails, [0.0])))
+    got, want = padded(got, _spares.count(model, 45.0, kind))
+    np.testing.assert_allclose(got, want, atol=2e-6)
+
+
+def test_a_part_with_a_member_whose_work_takes_time():
+    # Its demands come with its share of the long-run rates.
+    rbd = RepairableRBD(
+        [("s", "a"), ("a", "b"), ("b", "t")],
+        {
+            "a": block(E([0.02]), 60.0, repair=E([0.2]), duration=E([0.5])),
+            "b": {"reliability": E([0.01]), "repairability": "instant"},
+        },
+    )
+    stock = rbd.spares_stock(30.0, fill_rate=0.9, parts={"p": ["a", "b"]})["p"]
+    alone = rbd.spares_stock(30.0, fill_rate=0.9)["a"]
+    other = poisson.pmf(np.arange(40), 0.3)
+    got, want = padded(stock.on_order, np.convolve(alone.on_order, other))
+    np.testing.assert_allclose(got, want, atol=2e-6)
+    rate = _spares.rate(rbd._replacements("a", True))
+    share = rate / (rate + 0.01)
+    at_a, at_b = padded(
+        np.convolve(alone.on_order_at_demand, other),
+        np.convolve(alone.on_order, other),
+    )
+    got, want = padded(
+        stock.on_order_at_demand, share * at_a + (1 - share) * at_b
+    )
+    np.testing.assert_allclose(got, want, atol=2e-6)
+
+
 @pytest.mark.parametrize(
     "spec, reason",
     [
         (
-            block(W([100.0, 2.0]), 60.0, repair=E([0.5])),
-            "its repairs take time",
+            block(W([100.0, 2.0], f0=0.1), 60.0, duration=E([0.5])),
+            "while its repairs may take no time",
         ),
         (
-            block(W([100.0, 2.0]), 60.0, duration=E([0.5])),
-            "its block replacements take time",
+            block(W([100.0, 2.0], f0=0.1), 60.0, repair=E([0.5])),
+            "while its block replacements may take no time",
         ),
-        (block(W([100.0, 2.0], f0=0.1), 60.0), "dead on arrival"),
     ],
-    ids=["repairs", "block replacements", "dead on arrival"],
+    ids=["repairs in no time", "block replacements in no time"],
 )
-def test_block_schedules_that_carry_work_over_are_refused(spec, reason):
+def test_dead_on_arrival_with_renewals_in_no_time_is_refused(spec, reason):
+    # Replacements could come several at one instant.
     rbd = single(spec)
-    with pytest.raises(NotImplementedError, match="#160") as error:
+    with pytest.raises(NotImplementedError, match="one instant") as error:
         rbd.spares_stock(30.0, fill_rate=0.9)
     assert reason in str(error.value)
     report = rbd.analysis_routes()
     assert report["spares_stock"].route == r.REFUSED
     assert report["spares_stock"].reason == str(error.value)
     assert report["spares_demand"].route == r.NUMERICAL
+    # Taking time, a unit dead on arrival is counted.
+    timed = single(
+        block(
+            W([100.0, 2.0], f0=0.1), 60.0, repair=E([0.5]), duration=E([0.5])
+        )
+    )
+    routes = timed.analysis_routes()
+    assert routes["spares_stock"].route == r.NUMERICAL
+    assert "a typical replacement" in routes["spares_stock"].reason
     routes = single(block(W([100.0, 2.0]), 60.0)).analysis_routes()
     assert routes["spares_stock"].route == r.NUMERICAL
     assert "where the lead time falls" in routes["spares_stock"].reason

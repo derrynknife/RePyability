@@ -6750,11 +6750,11 @@ class RepairableRBD(RBD):
             if blocker is not None:
                 raise NotImplementedError(
                     f"Component {node!r} is replaced on a block schedule, "
-                    f"and {blocker}: its demand in a lead time is worked "
-                    "out only when its repairs and block replacements take "
-                    "no time and its units work at 0, so that each block "
-                    "interval starts with a new unit (#160). spares_demand "
-                    "counts its spares over a horizon."
+                    f"and {blocker}: replacements can then come several at "
+                    "one instant (a new unit failing as it is put in), "
+                    "which its demand in a lead time does not take. "
+                    "spares_demand counts its spares over a horizon, and "
+                    "spares_demand(method='simulate') in the simulation."
                 )
             component = self.components[node]
             duration = schedule.duration
@@ -6810,22 +6810,28 @@ class RepairableRBD(RBD):
 
     def _block_lead_time_blocker(self, node) -> Optional[str]:
         """Why a block-replaced component's demand in a lead time is not
-        worked out (None if it is): it is when its repairs and block
-        replacements take no time and its units work at 0, so that each
-        block interval starts with a new unit (see ``_spares``)."""
+        worked out (None if it is): a unit may be dead on arrival while its
+        repairs or block replacements may take no time, so that
+        replacements can come several at one instant (#160; see
+        ``_spares``)."""
         component = self.components[node]
 
-        def takes_time(model) -> bool:
-            return float(np.ravel(_sf_values(model.sf, np.zeros(1)))[0]) > 0.0
+        def at_zero(model) -> float:
+            return 1.0 - float(np.ravel(_sf_values(model.sf, np.zeros(1)))[0])
 
-        if takes_time(component.time_to_replace):
-            return "its repairs take time"
+        if at_zero(component.reliability) <= 0.0:
+            return None
         duration = self._preventive[node].duration
-        if duration is not None and takes_time(duration):
-            return "its block replacements take time"
-        life = component.reliability
-        if float(np.ravel(_sf_values(life.sf, np.zeros(1)))[0]) < 1.0:
-            return "its life may end at 0 (dead on arrival)"
+        if at_zero(component.time_to_replace) > 0.0:
+            return (
+                "its life may end at 0 (dead on arrival) while its repairs "
+                "may take no time"
+            )
+        if duration is None or at_zero(duration) > 0.0:
+            return (
+                "its life may end at 0 (dead on arrival) while its block "
+                "replacements may take no time"
+            )
         return None
 
     def _tested_replacements(self, node, simulate: str) -> "_spares.Tested":
@@ -7109,8 +7115,18 @@ class RepairableRBD(RBD):
         that, uniform on ``[0, T)`` from a random time, and as the
         replacements fall from a replacement (a failure, at the renewal
         density, or a block replacement), on a grid of the interval, to
-        about 1e-6. A fleet's systems are taken as on block schedules of
-        their own, out of step with each other.
+        about 1e-6. With repairs or block replacements that take time, a
+        unit down at a block time is not replaced there, and an interval
+        need not start new: the demand is counted from a typical
+        replacement in the long run, a failure at each phase of the
+        interval or a block replacement, each followed block interval by
+        block interval, the replacements before one as those after it,
+        and from a random time by Campbell's formula; on grids of the
+        interval, extrapolated, to about 1e-6. A unit dead on arrival is
+        refused while its repairs or block replacements may take no time,
+        as replacements could then come several at one instant. A fleet's
+        systems are taken as on block schedules of their own, out of step
+        with each other.
 
         A part's components draw on one shelf (#183), which needs fewer
         spares than a shelf each: its spares on order are the sum of its
@@ -10125,7 +10141,10 @@ class RepairableRBD(RBD):
                     "counted on a grid (to about 1e-6): under block "
                     + (
                         "replacement, averaged over where the lead time "
-                        "falls in the block interval"
+                        "falls in the block interval (with repairs or "
+                        "block replacements that take time, from a typical "
+                        "replacement, a failure at each phase of the "
+                        "interval or a block replacement, in the long run)"
                         if long_run_count
                         else "replacement, from one block interval to the "
                         "next"

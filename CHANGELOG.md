@@ -412,9 +412,31 @@ other release, fixes included, the minor.
   in no time every 1,000 hours need 52 on the shelf for a 95% fill rate
   with 12 weeks to restock, against 46 swapped at 1,000 hours of their
   age. A fleet's systems are taken as out of step; two block-replaced
-  components in one part, whose block times keep step, are refused, and
-  so are repairs or block replacements that take time, which carry work
-  over a block time.
+  components in one part, whose block times keep step, are refused.
+
+  With repairs or block replacements that take time, a unit down at a
+  block time is not replaced there, and its work carries over into the
+  next interval, which need not start with a new unit. The demand is then
+  counted from a typical replacement in the long run (its Palm
+  distribution): a failure at each phase of the interval or a block
+  replacement, weighted as intervals followed one after another from new
+  settle, each followed block interval by block interval, all phases at
+  once on one grid. Before a replacement, the chance of `s` on order is
+  that the `s`-th replacement after a typical one falls within the lead
+  time; from a random time, Campbell's formula integrates those chances
+  over the lead time at the long-run rate. Only the life is rounded: the
+  repairs and block replacements are split between the grid points either
+  side, keeping their mean (rounded, 8-hour repairs on a yearly interval
+  were still 7e-6 out on the finest grid), and a lead time of whole
+  intervals, on a jump in the replacement times' distribution, is read
+  from each rounding on its own. The grids are extrapolated as the step
+  squared, to about 1e-6, in a few seconds. The pumps above, repaired
+  in about 8 hours and swapped in about 4, need the same 52, for a 96.7%
+  fill rate. 58 million simulated replacements agree within their noise
+  (fewer than two pumps on order at a demand: 6.05e-5 ± 1.0e-6, against
+  5.99e-5). A unit dead on arrival while its repairs or block
+  replacements may take no time is refused, as its replacements can then
+  come several at one instant.
 - **Smaller API additions (#179, #184).** `"paths"` and `"cuts"` name the
   structure methods wherever `"p"` and `"c"` do. A `Network` takes a number
   as a link's or node's probability of failing, as a `FaultTree` takes an
