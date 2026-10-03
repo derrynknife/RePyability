@@ -234,9 +234,27 @@ other release, fixes included, the minor.
   component's share of the system's failures in the long run (its terms of
   `system_failure_frequency`, from the crews' and common-cause groups'
   chains too) or over a window (its terms of `expected_failures`), the exact
-  counterpart of the simulated `failure_criticality_index`. The rates, and
-  the shares over a window, are refused with limited repair crews or
-  common-cause groups, as yet.
+  counterpart of the simulated `failure_criticality_index`.
+- **Theta and Barlow–Proschan with repair crews and common-cause groups
+  (#199).** `availability_rate` and `barlow_proschan_importance(window=)`
+  refused a system whose components wait for crews or share common causes,
+  as they do not fail and recover independently. Their parts now come from
+  the crews' and the groups' Markov chains. The system's rate is `p(t) Q
+  u`; each transition is one component's failure or repair (a crew taking
+  the next job belongs to the repair that freed it), so the generator
+  splits by component, and each part, `p(t) Q_i u`, is one more vector of
+  the same uniformized chain: exact. A nested RBD, with crews of its own,
+  takes its part as an independent component, its importance over the
+  chain. In a common-cause group, a member's own cause and repairs are its
+  part, and the causes that strike more than one member the group's, under
+  the tuple of its members, each at the system's availability with the
+  group in each of its states. A hidden group's tests change the members'
+  joint states, so a jump with a test in it is split by the Shapley value
+  of each test and node that changes then, worked out exactly (up to 12 at
+  once). Over a window, the shares integrate the chains' failure rates by
+  component and by cause. Checked against `expm` for a pair with one crew,
+  the parts adding up to the system's rate and jumps, long windows reaching
+  the long-run shares, and the simulated failure criticality with a crew.
 - **Differential importance: shares that add up (#193).**
   `differential_importance` (on `NonRepairableRBD`, `RepairableRBD` and
   `FaultTree`) gives each node's (or basic event's) share of the change in

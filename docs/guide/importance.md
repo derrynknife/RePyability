@@ -514,10 +514,28 @@ plant.barlow_proschan_importance(window=10.0)["C"]    # -> 0.5682
 ```
 
 With common-cause groups, a cause that strikes several members at once is
-counted for the group, under the tuple of its members. The rates, and the
-shares over a window, are refused with limited repair crews or common-cause
-groups, whose components do not fail independently. The long-run shares
-come from their chains.
+counted for the group, under the tuple of its members.
+
+With limited repair crews or common-cause groups the components do not fail
+and recover independently, and the rates and shares come from the crews' or
+the groups' Markov chains instead (#199). Each of the chain's transitions is
+one component's failure or repair, or a cause's strike, and its part is
+what those transitions do to the system: exact, from the same chain. With
+one crew for the plant above:
+
+```python
+rate = crewed.availability_rate(2.0)
+rate.node_rate["C"]                                    # -> -0.00349
+crewed.barlow_proschan_importance(window=10.0)["C"]    # -> 0.5696
+```
+
+C pulls the availability down faster than with a crew each (-0.00258 at
+2), as its repair can wait for a crew busy with A or B. A crew that finishes
+a repair and takes the next job counts as the repair that freed it. In a
+common-cause group, a member's own cause and its repairs are its part, and
+the causes that strike more than one member the group's. A hidden group's
+tests can find several members' failures at once, so a jump with a test in
+it is split by the Shapley value of what changes then, worked out exactly.
 
 ## Limits
 

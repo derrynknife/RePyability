@@ -9983,18 +9983,26 @@ class RepairableRBD(RBD):
             )
         )
         give(("point_availability", "mission_availability"), self._over_time())
-        independent = r.refusal(self._require_independent_curves)
         give(
             ("availability_rate",),
             (
-                r.refused(independent)
-                if independent
+                self._crew_over_time("rate")
+                if self._crews_couple()
                 else self._over_time(
                     "Each component's renewal equation solved on a grid (to "
                     "about 1e-7) and differentiated on it, times its Birnbaum "
                     "importance at the components' availabilities; the jumps "
                     "at scheduled events split along the path between the "
                     "values either side."
+                    + (
+                        " A common-cause group's part is its chain's moves, "
+                        "split by cause and by member repair, at the "
+                        "system's availability with the group in each of "
+                        "its states (exact); the jumps at a hidden group's "
+                        "tests are split by the Shapley value of what jumps."
+                        if self.ccf_groups
+                        else ""
+                    )
                 )
             ),
         )
@@ -10634,6 +10642,20 @@ class RepairableRBD(RBD):
                 "failures and down time, are the integrals of their rates "
                 "over its states."
             )
+        elif kind == "rate":
+            reason = chain + (
+                "the system's rate of change is split by the component "
+                "whose failure or repair makes each transition (a crew "
+                "taking the next job belongs to the repair that freed it), "
+                "each part one more vector of the chain, exact"
+                + (
+                    "; a nested RBD's part is its importance over the chain "
+                    "and the other nested RBDs' patterns times its own rate"
+                    if nested
+                    else ""
+                )
+                + "."
+            )
         elif kind == "capacity" and nested:
             reason = chain + (
                 "the capacity distribution is the probability of the states "
@@ -10659,7 +10681,8 @@ class RepairableRBD(RBD):
                 "it is up in, and the mission availability its integral, "
                 "exactly."
             )
-        nodes = {node: self._node_over_time(node, kind) for node in nested}
+        inner = "availability" if kind == "rate" else kind
+        nodes = {node: self._node_over_time(node, inner) for node in nested}
         refusals = {
             n: how for n, (route, how) in nodes.items() if route == r.REFUSED
         }
@@ -11158,8 +11181,8 @@ class RepairableRBD(RBD):
         system's expected events over them (see ``_window_counts``): the
         forced nodes have no curves. With ``setups``, the stops of each
         maintenance group with a set-up cost are counted too; with
-        ``causes``, the system failures each node causes (independent
-        nodes only)."""
+        ``causes``, the system failures each node (or common cause)
+        causes."""
         method = structure_method(method)
         windows = _check_times(t)
         working = set() if working_nodes is None else set(working_nodes)
@@ -11178,12 +11201,12 @@ class RepairableRBD(RBD):
             }
         if self._crews_couple():
             curves, counts = self._crew_window(
-                ends, working, broken, method, states, nodes, groups
+                ends, working, broken, method, states, nodes, groups, causes
             )
             return windows, ends, curves, counts, working, broken
         if self.ccf_groups:
             curves, counts = self._groups_window(
-                ends, working, broken, method, states, nodes, groups
+                ends, working, broken, method, states, nodes, groups, causes
             )
             return windows, ends, curves, counts, working, broken
         curves = self._availability_curves(
@@ -11695,10 +11718,13 @@ class RepairableRBD(RBD):
         after, last = unreliability(failed), unreliability(planned)
         caused = None
         if causes:
-            assert crew is None, "the crews' chain: not split by node"
 
             def importances(values: dict) -> dict:
                 size = len(next(iter(values.values())))
+                if crew is not None:
+                    # Each jump's time, for each point of its path.
+                    points = size // len(times)
+                    return crew.evaluate(values, np.repeat(times, points))[0]
                 return self._importances(
                     self._filled(values, size, working_nodes, broken_nodes)
                 )[0]
@@ -11743,8 +11769,10 @@ class RepairableRBD(RBD):
         ``[0, end)`` for each of ``ends``, from its nodes' ``curves`` (which
         count their events); with ``nodes``, each node's expected down time
         too; with ``causes``, the system failures each node causes (its
-        terms of the failures' sum, below, under ``"caused"``; not with the
-        crews' chain); and for each of ``groups`` (a name and members), the
+        terms of the failures' sum, below, under ``"caused"``; with the
+        crews' chain or common-cause groups, each of their components' or
+        causes' too, from their rates, #199); and for each of ``groups`` (a
+        name and members), the
         expected number of its members' failures and replacements that fall
         at one instant with another's (each stop of a maintenance group is
         one).
@@ -11845,6 +11873,9 @@ class RepairableRBD(RBD):
                 # The chain's components' failures, at their rate in each
                 # state, where they take the system down.
                 failures += _quadrature.summed(rate, half)
+                if causes:
+                    for key, value in crew.caused(at_points, x).items():
+                        out[("caused", key)] = _quadrature.summed(value, half)
             for node in curves:
                 counted = spread(node, np.concatenate([a, b, x]))
                 for total, values, key in zip(
@@ -11905,6 +11936,8 @@ class RepairableRBD(RBD):
         keys: List[Any] = ["uptime", "failures", "planned"]
         if causes:
             keys += [("caused", node) for node in curves]
+            if crew is not None:
+                keys += [("caused", key) for key in crew.cause_keys]
         if nodes:
             keys += [("downtime", node) for node in curves]
             if crew is not None:
@@ -11998,6 +12031,8 @@ class RepairableRBD(RBD):
             failures += float(rate[0])
             for node, value in own.items():
                 rates[("downtime", node)] = 1.0 - float(value[0])
+            for key, value in crew.caused(values, x).items():
+                rates[("caused", key)] = float(np.ravel(value)[0])
         else:
             filled = self._filled(values, 1, working_nodes, broken_nodes)
             rates = {
@@ -12582,6 +12617,41 @@ class RepairableRBD(RBD):
             failing += importance[node] * chain.up[:, k] * rates[node][0]
         return failing
 
+    def _crew_failing_each(self, chain, importance: dict) -> np.ndarray:
+        """``_crew_failing`` by component: the rate of the system's failures
+        by each of the chain's components (columns) in each of its states
+        (#199)."""
+        rates = self._crew_chain_rates()
+        return np.column_stack(
+            [
+                importance[node] * chain.up[:, k] * rates[node][0]
+                for k, node in enumerate(chain.nodes)
+            ]
+        )
+
+    def _crew_each(
+        self, chain, nested: list, working, broken, method: str
+    ) -> list:
+        """For each pattern of the ``nested`` RBDs up and down, the rate of
+        the system's failures by each of the crews' chain's components in
+        each state (see ``_crew_failing_each``), for ``CrewSystem``'s
+        ``causes``."""
+        size = len(chain.probabilities)
+        out = []
+        for pattern in range(2 ** len(nested)):
+            _, importance = self._crew_vectors(
+                chain,
+                {
+                    node: np.full(size, float((pattern >> j) & 1))
+                    for j, node in enumerate(nested)
+                },
+                working,
+                broken,
+                method,
+            )
+            out.append(self._crew_failing_each(chain, importance))
+        return out
+
     def _crew_start(self, chain, states: dict) -> np.ndarray:
         """The probabilities of the crews' chain's states at 0, from the
         components' ``states`` (checked by ``_states``): every component up
@@ -12710,6 +12780,7 @@ class RepairableRBD(RBD):
         states: dict,
         nodes: bool,
         groups: Optional[dict],
+        causes: bool = False,
     ) -> Tuple[dict, dict]:
         """``_window``'s curves and counts with common-cause groups (#158):
         the system's up time, failures and planned outages over its groups'
@@ -12730,6 +12801,7 @@ class RepairableRBD(RBD):
             nodes=nodes,
             groups=groups,
             crew=system_curve.system,
+            causes=causes,
         )
         curves = dict(system_curve.curves)
         members = [m for group in self.ccf_groups for m in group.members]
@@ -12751,6 +12823,7 @@ class RepairableRBD(RBD):
         states: dict,
         nodes: bool,
         groups: Optional[dict],
+        causes: bool = False,
     ) -> Tuple[dict, dict]:
         """``_window``'s curves and counts with limited repair crews, from
         their chain over time: the system's up time and failures (the
@@ -12767,6 +12840,11 @@ class RepairableRBD(RBD):
         if nested:
             # The nested RBDs, independent of the chain, counted as nodes,
             # with the system worked out over the chain (#162).
+            each = (
+                self._crew_each(chain, nested, working, broken, method)
+                if causes
+                else []
+            )
             uniformized = self._uniformized(
                 "The repair crews'",
                 chain.generator,
@@ -12775,10 +12853,11 @@ class RepairableRBD(RBD):
                 np.column_stack(
                     self._crew_patterns(chain, nested, working, broken, method)
                     + [chain.up.astype(float)]
+                    + each
                 ),
             )
             system = _chain_transient.CrewSystem(
-                uniformized, nested, chain.nodes
+                uniformized, nested, chain.nodes, causes
             )
             horizon = float(np.max(ends)) if len(ends) else 0.0
             curves = {
@@ -12796,6 +12875,7 @@ class RepairableRBD(RBD):
                 nodes=nodes,
                 groups=groups,
                 crew=system,
+                causes=causes,
             )
             column = 2 * system.patterns
             for k, node in enumerate(chain.nodes):
@@ -12805,12 +12885,13 @@ class RepairableRBD(RBD):
             return curves, totals
         up, importance = self._crew_vectors(chain, {}, working, broken, method)
         failing = self._crew_failing(chain, importance)
+        each = [self._crew_failing_each(chain, importance)] if causes else []
         uniformized = self._uniformized(
             "The repair crews'",
             chain.generator,
             self._crew_start(chain, states),
             chain.probabilities,
-            np.column_stack([up, failing, chain.up.astype(float)]),
+            np.column_stack([up, failing, chain.up.astype(float)] + each),
         )
         totals = uniformized.integrals(ends)
         zero = np.zeros(len(ends))
@@ -12821,6 +12902,12 @@ class RepairableRBD(RBD):
             "downtime": {},
             "overlaps": {name: zero for name in groups or {}},
         }
+        if causes:
+            base = 2 + len(chain.nodes)
+            counts["caused"] = {
+                node: np.maximum(totals[:, base + k], 0.0)
+                for k, node in enumerate(chain.nodes)
+            }
         curves = {}
         for k, node in enumerate(chain.nodes):
             curves[node] = _chain_transient.CrewNodeEvents(
@@ -13385,7 +13472,7 @@ class RepairableRBD(RBD):
         the combinations' probabilities."""
         size = len(x)
         values = {node: curve.at(x) for node, curve in curves.items()}
-        probabilities, weights, index = system._split(values, x)
+        probabilities, weights, index, _ = system._split(values, x)
         points = len(index)
         arrays, _ = self._node_arrays(probabilities)
         own = {}
@@ -20526,24 +20613,305 @@ class RepairableRBD(RBD):
         scalar = x is None or np.ndim(x) == 0
         return shares(contributions, groups, scalar, improving)
 
-    def _require_independent_curves(self) -> None:
-        """Raise if the components do not fail and recover independently
-        over time (see ``availability_rate``): with limited repair crews,
-        or common-cause groups, the system's change is not split among them
-        as yet."""
-        if self._crews_couple():
-            raise NotImplementedError(
-                "With fewer repair crews than components, a component can "
-                "wait for a crew, so they do not fail and recover "
-                "independently: the system's change over time is not split "
-                "among them, as yet."
+    def _independent_rates(
+        self, flat, horizon: float, scale: float, working, broken, states
+    ) -> Tuple[dict, np.ndarray, dict]:
+        """``availability_rate``'s parts with independent components: each
+        component's Birnbaum importance times its own rate, the times the
+        components jump, and each one's part in each jump (see
+        ``_rates``)."""
+        # A little past the last time, for the differences there.
+        curves = self._availability_curves(
+            1.01 * scale, working | broken, state=states
+        )
+
+        def importances(values: dict) -> dict:
+            size = len(next(iter(values.values()))) if values else len(flat)
+            return self._importances(
+                self._filled(values, size, working, broken)
+            )[0]
+
+        importance = importances(
+            {node: curve.at(flat) for node, curve in curves.items()}
+        )
+        parts = {
+            node: importance[node]
+            * _rates.derivative(curves[node], flat, scale)
+            for node in curves
+        }
+        jump_times, before, after = _rates.jumps(curves, horizon)
+        return (
+            parts,
+            jump_times,
+            _rates.split_jumps(importances, before, after),
+        )
+
+    def _crew_rates(
+        self, flat, horizon: float, scale: float, working, broken, states
+    ) -> Tuple[dict, np.ndarray, dict]:
+        """``availability_rate``'s parts with limited repair crews (#199).
+        The system is up with probability ``sum_m p(t) u_m w_m(t)`` (see
+        ``_chain_transient.CrewCurve``), so its rate is ``sum_m p(t) Q u_m
+        w_m(t)`` plus ``sum_m p(t) u_m w_m'(t)``. Split by the component
+        whose failures and repairs make each transition, ``Q = sum_i Q_i``
+        (``_crew_chain.CrewChain.split``), the first is the chain's
+        components' parts, each ``p(t) Q_i u_m`` one more vector of the
+        crews' uniformized chain, exact; the second, the nested RBDs', each
+        one's Birnbaum importance over the chain times its own rate, as for
+        independent components, and their jumps are split likewise."""
+        nested = self._require_crew_over_time(frozenset(working | broken))
+        chain = self._crew_chain(frozenset(working | broken))
+        size, count = len(chain.probabilities), len(chain.nodes)
+        patterns = 2 ** len(nested)
+        ups = [
+            self._crew_vectors(
+                chain,
+                {
+                    node: np.full(size, float((m >> j) & 1))
+                    for j, node in enumerate(nested)
+                },
+                working,
+                broken,
+                "p",
+            )[0]
+            for m in range(patterns)
+        ]
+        uniformized = self._uniformized(
+            "The repair crews'",
+            chain.generator,
+            self._crew_start(chain, states),
+            chain.probabilities,
+            np.column_stack(ups + [chain.split(up) for up in ups]),
+        )
+        curves = {
+            node: self.components[node]._nested_curve(
+                1.01 * scale, start=states.get(node)
             )
-        if self.ccf_groups:
-            raise NotImplementedError(
-                "With common-cause groups, their members do not fail "
-                "independently: the system's change over time is not split "
-                "among them, as yet."
+            for node in nested
+        }
+
+        def importances(values: dict, times: np.ndarray) -> dict:
+            columns = uniformized.values(times)[:, :patterns]
+            return dict(
+                zip(
+                    nested,
+                    _chain_transient.pattern_importances(
+                        columns, [values[node] for node in nested]
+                    ),
+                )
             )
+
+        columns = uniformized.values(flat)
+        available = {
+            node: np.asarray(curve.at(flat), dtype=float)
+            for node, curve in curves.items()
+        }
+        weights = _chain_transient.pattern_weights(
+            [available[node] for node in nested]
+        )
+        parts: Dict[Hashable, np.ndarray] = {}
+        for k, node in enumerate(chain.nodes):
+            own = columns[:, patterns + k + count * np.arange(patterns)]
+            parts[node] = np.sum(own * weights, axis=1)
+        importance = importances(available, flat)
+        for node in nested:
+            parts[node] = importance[node] * _rates.derivative(
+                curves[node], flat, scale
+            )
+        jump_times, before, after = _rates.jumps(curves, horizon)
+
+        def along(values: dict) -> dict:
+            # Each jump's time, for each point of the path between the
+            # values either side of it.
+            points = len(next(iter(values.values()))) // len(jump_times)
+            return importances(values, np.repeat(jump_times, points))
+
+        return parts, jump_times, _rates.split_jumps(along, before, after)
+
+    def _groups_rates(
+        self, flat, horizon: float, scale: float, working, broken, states
+    ) -> Tuple[dict, np.ndarray, dict]:
+        """``availability_rate``'s parts with common-cause groups (#199).
+        The nodes outside the groups are independent of the groups and of
+        each other, so each one's part is its Birnbaum importance (over the
+        groups' joint states, see ``_ccf_chain.GroupsSystem``) times its own
+        rate. A group's members' states move by its chain, ``p_g'(t) =
+        p_g(t) Q_g``, so its part is ``p_g(t) Q_g a_g(t)``, ``a_g(t)`` the
+        system's availability with the group in each of its states then.
+        Split by whose each move is (``_ccf_chain.Move``), ``Q_g`` gives
+        each member the part of its own cause and its repairs, and the
+        group, under the tuple of its members, that of its causes that
+        strike more than one. The jumps are split by ``_groups_jumps``."""
+        self._require_free_members(working, broken)
+        self._require_groups_over_time(states)
+        curve = self._groups_curve(1.01 * scale, working, broken, "p", states)
+        curves, system = curve.curves, curve.system
+        values = {
+            node: np.asarray(c.at(flat), dtype=float)
+            for node, c in curves.items()
+        }
+        importance = system.evaluate(values, flat)[0]
+        parts: Dict[Any, np.ndarray] = {
+            node: importance[node] * _rates.derivative(c, flat, scale)
+            for node, c in curves.items()
+        }
+        for number, group in enumerate(system.groups):
+            # The system's unavailability with the group in each of its
+            # combinations, and the group's chain's states.
+            down = system.given(values, flat, number)
+            chances = group.raw(flat)
+            for label, begin, end, rate in group.moves:
+                key = (
+                    group.members[label]
+                    if label != _ccf_chain.SHARED
+                    else tuple(group.members)
+                )
+                fall = (
+                    down[:, group.combination[end]]
+                    - down[:, group.combination[begin]]
+                )
+                part = -np.sum(chances[:, begin] * rate * fall, axis=1)
+                parts[key] = parts.get(key, 0.0) + part
+        jump_times, split = self._groups_jumps(curves, system, horizon)
+        return parts, jump_times, split
+
+    def _groups_jumps(
+        self, curves: dict, system, horizon: float
+    ) -> Tuple[np.ndarray, dict]:
+        """The times in ``(0, horizon]`` at which the system with
+        common-cause groups jumps (a scheduled event of a node outside the
+        groups, a hidden group's tests), and each one's part in each jump.
+        Where only nodes outside the groups jump, independent and the
+        system multilinear in them, ``_rates.split_jumps`` splits it. Where
+        a test is among what jumps, the members' states are no longer
+        independent, and the jump is split by the Shapley value of what
+        jumps then (the nodes, and each test, under its member's name),
+        the system worked out exactly with each subset of them done: for
+        independent nodes alone, the same split."""
+        out_times, before, after = _rates.jumps(curves, horizon)
+        tests = [group.tests(horizon) for group in system.groups]
+        tested = sorted({t for by in tests for t in by})
+        times = np.unique(np.concatenate([out_times, np.array(tested)]))
+        split: Dict[Any, np.ndarray] = {}
+
+        def part(key) -> np.ndarray:
+            if key not in split:
+                split[key] = np.zeros(len(times))
+            return split[key]
+
+        alone = np.array([t not in set(tested) for t in out_times], bool)
+        if alone.any():
+            at = out_times[alone]
+
+            def importances(values: dict) -> dict:
+                points = len(next(iter(values.values()))) // len(at)
+                return system.evaluate(values, np.repeat(at, points))[0]
+
+            shares = _rates.split_jumps(
+                importances,
+                {node: v[alone] for node, v in before.items()},
+                {node: v[alone] for node, v in after.items()},
+            )
+            rows = np.searchsorted(times, at)
+            for node, values in shares.items():
+                part(node)[rows] += values
+        for time in tested:
+            row = int(np.searchsorted(times, time))
+            just = np.nextafter(time, -np.inf)
+            low = {
+                node: float(np.ravel(c.at(np.array([just])))[0])
+                for node, c in curves.items()
+            }
+            high = {
+                node: float(np.ravel(c.at(np.array([time])))[0])
+                for node, c in curves.items()
+            }
+            players: List[Tuple[Any, Any]] = [
+                (node, None)
+                for node in curves
+                if abs(high[node] - low[node]) > _rates.JUMP
+            ]
+            for number, by in enumerate(tests):
+                for test in by.get(time, []):
+                    players.append((number, test))
+            for (who, test), value in zip(
+                players, self._shapley(system, players, low, high, time)
+            ):
+                key = (
+                    who
+                    if test is None
+                    else system.groups[who].members[test.member]
+                )
+                part(key)[row] += value
+        return times, split
+
+    #: The most that may jump at one instant with a hidden common-cause
+    #: group's tests among them (the Shapley value takes every subset).
+    _MAX_PLAYERS = 12
+
+    def _shapley(
+        self, system, players: list, low: dict, high: dict, time: float
+    ) -> np.ndarray:
+        """Each player's Shapley value in the system's jump at ``time``
+        (see ``_groups_jumps``): the system's availability with each
+        subset of the players done, a node at its value after the jump
+        (``high``) rather than before (``low``), and a test applied to its
+        group's states just before the time."""
+        count = len(players)
+        if count > self._MAX_PLAYERS:
+            raise NotImplementedError(
+                f"{count} nodes and tests change at time {time:g}, with a "
+                "common-cause group's tests among them: their jump is split "
+                f"for at most {self._MAX_PLAYERS}, as yet. Simulate it with "
+                "availability()."
+            )
+        subsets = np.arange(2**count)
+        values = {}
+        for node in low:
+            if (node, None) in players:
+                j = players.index((node, None))
+                values[node] = np.where(
+                    (subsets >> j) & 1, high[node], low[node]
+                ).astype(float)
+            else:
+                values[node] = np.full(len(subsets), high[node])
+        chances = []
+        just = np.array([np.nextafter(time, -np.inf)])
+        for number, group in enumerate(system.groups):
+            mine = [
+                (j, test)
+                for j, (who, test) in enumerate(players)
+                if test is not None and who == number
+            ]
+            if not mine:
+                chances.append(
+                    np.repeat(
+                        group.probabilities(np.array([time])), len(subsets), 0
+                    )
+                )
+                continue
+            start = group.raw(just)
+            table = np.empty((len(subsets), len(group.down)))
+            for subset in subsets:
+                done = [test for j, test in mine if (subset >> j) & 1]
+                table[subset] = group.grouped(group.tested(start, done))[0]
+            chances.append(table)
+        worth = system.availability(values, chances)
+        out = np.zeros(count)
+        weight = [
+            math.factorial(k)
+            * math.factorial(count - k - 1)
+            / math.factorial(count)
+            for k in range(count)
+        ]
+        sizes = np.array([bin(int(s)).count("1") for s in subsets])
+        for j in range(count):
+            without = subsets[(subsets >> j) & 1 == 0]
+            out[j] = sum(
+                weight[sizes[s]] * (worth[s | (1 << j)] - worth[s])
+                for s in without
+            )
+        return out
 
     def availability_rate(
         self,
@@ -20581,6 +20949,25 @@ class RepairableRBD(RBD):
         system being multilinear, gives parts that add up to the jump. The
         rate at the time of a jump is the rate just after it.
 
+        With limited repair crews or common-cause groups the components no
+        longer fail and recover independently, and the parts come from
+        the crews' or the groups' Markov chains (#199). The system's rate
+        is ``p(t) Q u``, ``p(t)`` the chain's states' probabilities,
+        ``Q`` its generator and ``u`` the system up in each state; each
+        transition is one component's failure or repair (a crew finishing
+        a repair and taking the next job belongs to the repair that freed
+        it), so ``Q`` splits into each component's transitions, and each
+        part, ``p(t) Q_i u``, is exact. A nested RBD, with crews of its
+        own, takes its part as an independent component does. In a
+        common-cause group, a member's own cause and its repairs are its
+        part, and the causes that strike more than one member are the
+        group's, under the tuple of its members. A hidden group's members
+        are found at their tests, where the system jumps: as tests change
+        the members' joint states, which are not independent, a jump with
+        a test in it is split by the Shapley value of each test and node
+        that changes then, worked out exactly (for independent nodes alone,
+        the same as the path).
+
         Parameters
         ----------
         x : float or array-like
@@ -20596,8 +20983,9 @@ class RepairableRBD(RBD):
         -------
         RateBreakdown
             The system's ``rate`` (a float for a number ``x``, else an array
-            in its shape) and each component's part in it (``node_rate``),
-            and the jumps after 0 and up to the last of ``x``
+            in its shape) and each component's part in it (``node_rate``;
+            a common-cause group's shared causes' under the tuple of its
+            members), and the jumps after 0 and up to the last of ``x``
             (``jump_times``, ``jumps``, ``node_jumps``).
 
         Raises
@@ -20606,9 +20994,9 @@ class RepairableRBD(RBD):
             For a negative or non-finite time, or as
             ``point_availability`` does.
         NotImplementedError
-            With limited repair crews or common-cause groups (the
-            components are not independent), or as ``point_availability``
-            does.
+            As ``point_availability`` does, or with more than 12 tests and
+            nodes changing at one instant, a common-cause group's tests
+            among them.
 
         Examples
         --------
@@ -20638,7 +21026,6 @@ class RepairableRBD(RBD):
         >>> rate.node_rate["p1"].round(5).tolist()
         [-3e-05, -0.00156]
         """
-        self._require_independent_curves()
         times = _check_times(x)
         working = set() if working_nodes is None else set(working_nodes)
         broken = set() if broken_nodes is None else set(broken_nodes)
@@ -20648,37 +21035,33 @@ class RepairableRBD(RBD):
         flat = times.ravel()
         horizon = float(flat.max()) if flat.size else 0.0
         scale = horizon if horizon > 0.0 else 1.0
-        # A little past the last time, for the differences there.
-        curves = self._availability_curves(1.01 * scale, forced, state=states)
-
-        def importances(values: dict) -> dict:
-            size = len(next(iter(values.values()))) if values else len(flat)
-            return self._importances(
-                self._filled(values, size, working, broken)
-            )[0]
-
-        importance = importances(
-            {node: curve.at(flat) for node, curve in curves.items()}
-        )
+        if self._crews_couple():
+            parts, jump_times, split = self._crew_rates(
+                flat, horizon, scale, working, broken, states
+            )
+        elif self.ccf_groups:
+            parts, jump_times, split = self._groups_rates(
+                flat, horizon, scale, working, broken, states
+            )
+        else:
+            parts, jump_times, split = self._independent_rates(
+                flat, horizon, scale, working, broken, states
+            )
+        keys = list(self.components) + [
+            key for key in {**parts, **split} if key not in self.components
+        ]
         node_rate: Dict[Hashable, np.ndarray] = {}
         rate = np.zeros(len(flat))
-        for node in self.components:
-            part = np.zeros(len(flat))
-            if node in curves:
-                part = importance[node] * _rates.derivative(
-                    curves[node], flat, scale
-                )
-            node_rate[node] = part
-            rate = rate + part
-        jump_times, before, after = _rates.jumps(curves, horizon)
-        split = _rates.split_jumps(importances, before, after)
         node_jumps: Dict[Hashable, np.ndarray] = {}
         jumps = np.zeros(len(jump_times))
-        for node in self.components:
+        for key in keys:
+            part = np.asarray(parts.get(key, np.zeros(len(flat))), dtype=float)
+            node_rate[key] = part
+            rate = rate + part
             part = np.asarray(
-                split.get(node, np.zeros(len(jump_times))), dtype=float
+                split.get(key, np.zeros(len(jump_times))), dtype=float
             )
-            node_jumps[node] = part
+            node_jumps[key] = part
             jumps = jumps + part
 
         def shaped(values: np.ndarray):
@@ -20721,11 +21104,12 @@ class RepairableRBD(RBD):
         arrival) are split among them as ``availability_rate`` splits a
         jump.
 
-        With common-cause groups (in the long run), a cause that strikes
-        several members at once is counted for the group, under the tuple
-        of its members, and one that strikes a member alone for that
-        member; with limited repair crews, the shares come from the crews'
-        chain. Over a window neither is split as yet.
+        With common-cause groups, a cause that strikes several members at
+        once is counted for the group, under the tuple of its members, and
+        one that strikes a member alone for that member; with limited
+        repair crews, the shares come from the crews' chain, its
+        components' failures at their rates in each state, over a window
+        from its transient probabilities (#199).
 
         Parameters
         ----------
@@ -20755,9 +21139,7 @@ class RepairableRBD(RBD):
             length, or as ``system_failure_frequency`` and
             ``expected_failures`` do.
         NotImplementedError
-            Over a window with limited repair crews or common-cause groups,
-            or as ``system_failure_frequency`` and ``expected_failures``
-            do.
+            As ``system_failure_frequency`` and ``expected_failures`` do.
 
         Examples
         --------
@@ -20792,7 +21174,6 @@ class RepairableRBD(RBD):
                 parts[cause] = parts.get(cause, 0.0) + term
             scalar = True
         else:
-            self._require_independent_curves()
             ends = _check_times(window)
             if np.any(ends <= 0.0):
                 raise ValueError(
@@ -20809,10 +21190,10 @@ class RepairableRBD(RBD):
             )
             caused = counts["caused"]
             parts = {
-                node: np.asarray(
-                    caused.get(node, np.zeros(len(flat))), dtype=float
+                key: np.asarray(
+                    caused.get(key, np.zeros(len(flat))), dtype=float
                 )
-                for node in self.components
+                for key in [*self.components, *caused]
             }
             scalar = np.ndim(window) == 0
         total: Any = 0.0

@@ -219,11 +219,10 @@ def test_a_series_of_exponential_units_in_closed_form():
     assert rate.jump_times.size == 0
 
 
-def own_rate(rbd, x, **given):
+def own_rate(rbd, x, h=0.012, **given):
     """The system's own rate: central differences of its point availability
     a step of its coarsest curve's grid either side (each curve is linear
-    between its points)."""
-    h = 0.012
+    between its points), or ``h`` for a chain's exact curve."""
     return (
         rbd.point_availability(np.asarray(x) + h, **given)
         - rbd.point_availability(np.asarray(x) - h, **given)
@@ -342,21 +341,146 @@ def test_held_components_take_no_part():
     )
 
 
-def test_dependent_components_are_refused_for_now():
-    crews = RepairableRBD(
-        PAIR_THEN_C, {n: unit(E([0.1])) for n in "abc"}, repair_crews=1
+# -- repair crews and common-cause groups (#199) ------------------------------
+
+
+def test_with_one_crew_each_part_is_its_own_transitions():
+    # a and b in parallel, one crew between them: a's failure takes the
+    # system down only while b is under repair, and the end of a's repair
+    # brings it back while b waits (the crew then takes b's). So a's part
+    # is -l_a P(b in repair alone) + m_a P(a in repair, b waiting).
+    from scipy.linalg import expm
+
+    rbd = RepairableRBD(
+        [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        {"a": unit(E([0.3]), E([1.0])), "b": unit(E([0.2]), E([0.5]))},
+        repair_crews=1,
     )
-    with pytest.raises(NotImplementedError, match="repair crews"):
-        crews.availability_rate(1.0)
-    with pytest.raises(NotImplementedError, match="repair crews"):
-        crews.barlow_proschan_importance(window=10.0)
+    x = np.array([0.0, 0.4, 2.0, 30.0])
+    rate = rbd.availability_rate(x)
+    chain = rbd._crew_chain()
+    generator = chain.generator.toarray()
+    a, b = (chain.nodes.index(n) for n in "ab")
+    state = {s: k for k, s in enumerate(chain.states)}
+    rates = {"a": (0.3, 1.0), "b": (0.2, 0.5)}
+    for t, got_a, got_b in zip(x, rate.node_rate["a"], rate.node_rate["b"]):
+        p = expm(generator * t)[0]
+        for node, me, other, got in (("a", a, b, got_a), ("b", b, a, got_b)):
+            fails, repairs = rates[node]
+            expected = (
+                -fails * p[state[((other,), ())]]
+                + repairs * p[state[((me,), (other,))]]
+            )
+            assert got == pytest.approx(expected, abs=1e-12)
+    np.testing.assert_allclose(
+        rate.rate[1:], own_rate(rbd, x[1:], h=1e-6), atol=1e-9
+    )
+
+
+def test_crews_around_a_nested_rbd():
+    # The nested RBD has a crew of its own: its part is its importance over
+    # the crews' chain times its own rate.
+    inner = RepairableRBD(
+        [("s", "p"), ("p", "t")], {"p": unit(W([8, 2.0]), E([2.0]))}
+    )
+    rbd = RepairableRBD(
+        PAIR_THEN_C,
+        {"a": unit(E([0.3])), "b": unit(E([0.2]), E([0.5])), "c": inner},
+        repair_crews=1,
+    )
+    x = np.array([1.0, 3.0, 9.0])
+    rate = rbd.availability_rate(x)
+    np.testing.assert_allclose(rate.rate, own_rate(rbd, x), rtol=3e-5)
+    assert np.all(rate.node_rate["c"] < 0.0)
+
+
+def test_a_common_cause_group_s_shared_causes_are_the_group_s_part():
+    # Two members in parallel, all up at 0: only the shared cause, which
+    # fails both, takes the system down then.
+    beta, rate_ = 0.2, 0.1
+    rbd = RepairableRBD(
+        [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        {n: unit(E([rate_])) for n in "ab"},
+        ccf_groups=[CCFGroup(["a", "b"], BetaFactor(beta))],
+    )
+    at0 = rbd.availability_rate(0.0)
+    assert at0.node_rate[("a", "b")] == pytest.approx(-beta * rate_, rel=1e-12)
+    assert at0.node_rate["a"] == pytest.approx(0.0, abs=1e-15)
+    x = np.array([0.5, 4.0, 40.0])
+    rate = rbd.availability_rate(x)
+    np.testing.assert_allclose(rate.rate, own_rate(rbd, x, h=1e-6), atol=1e-10)
+    assert set(rate.node_rate) == {"a", "b", ("a", "b")}
+
+
+def test_a_hidden_group_s_tests_split_its_jumps():
+    # Tested every 10, staggered: each test's jump is its member's; tested
+    # together, they share each jump alike. Either way the jumps are the
+    # system's, and with the rates they make up its change.
+    def tested(offsets):
+        spec = {
+            n: {
+                "reliability": E([0.01]),
+                "repairability": "instant",
+                "inspection": {"interval": 10.0, "offset": offset},
+            }
+            for n, offset in zip("ab", offsets)
+        }
+        spec["c"] = unit(E([0.002]))
+        return RepairableRBD(
+            PAIR_THEN_C,
+            spec,
+            ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.2))],
+        )
+
+    staggered = tested([0.0, 5.0])
+    rate = staggered.availability_rate(23.0)
+    np.testing.assert_allclose(rate.jump_times, [5.0, 10.0, 15.0, 20.0])
+    before = staggered.point_availability(
+        np.nextafter(rate.jump_times, -np.inf)
+    )
+    after = staggered.point_availability(rate.jump_times)
+    np.testing.assert_allclose(rate.jumps, after - before, atol=1e-10)
+    np.testing.assert_array_equal(rate.node_jumps["a"][[0, 2]], 0.0)
+    np.testing.assert_array_equal(rate.node_jumps["b"][[1, 3]], 0.0)
+    together = tested([0.0, 0.0]).availability_rate(21.0)
+    np.testing.assert_allclose(
+        together.node_jumps["a"], together.node_jumps["b"], rtol=1e-12
+    )
+    end = 12.0
+    edges = np.concatenate([[0.0], rate.jump_times[rate.jump_times < end]])
+    edges = np.append(edges, end)
+    integral = 0.0
+    for lo, hi in zip(edges[:-1], edges[1:]):
+        x = np.linspace(lo, hi, 801)
+        if hi < end:
+            x[-1] = np.nextafter(hi, -np.inf)
+        values = staggered.availability_rate(x).rate
+        integral += np.sum(0.5 * (values[1:] + values[:-1]) * np.diff(x))
+    jumps = rate.jumps[rate.jump_times < end].sum()
+    change = staggered.point_availability(end) - staggered.point_availability(
+        0.0
+    )
+    assert integral + jumps == pytest.approx(change, abs=1e-7)
+
+
+def test_window_shares_with_crews_and_groups_reach_the_long_run():
+    crews = RepairableRBD(
+        PAIR_THEN_C,
+        {"a": unit(E([0.1])), "b": unit(E([0.1])), "c": unit(E([0.02]))},
+        repair_crews=1,
+    )
     grouped = RepairableRBD(
         PAIR_THEN_C,
         {n: unit(E([0.1])) for n in "abc"},
         ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
     )
-    with pytest.raises(NotImplementedError, match="common-cause"):
-        grouped.availability_rate(1.0)
+    for rbd in (crews, grouped):
+        long_run = rbd.barlow_proschan_importance()
+        window = rbd.barlow_proschan_importance(window=[5.0, 1e4])
+        assert set(window) == set(long_run)
+        assert sum(v[0] for v in window.values()) == pytest.approx(1.0)
+        for key, share in long_run.items():
+            assert window[key][1] == pytest.approx(share, rel=1e-4)
 
 
 def test_long_run_shares_of_the_failure_frequency():
@@ -406,6 +530,29 @@ def test_window_shares_against_the_simulated_criticality():
     end = 40.0
     shares = rbd.barlow_proschan_importance(window=end)
     result = rbd.availability(end, mc_samples=4000, seed=3)
+    simulated = result.criticalities.failure_criticality_index
+    failures = rbd.expected_failures(end) * 4000
+    for node, share in shares.items():
+        p = simulated.per_system_failure[node]
+        sd = np.sqrt(p * (1 - p) / failures)
+        assert abs(share - p) < 4 * sd + 1e-3, (node, share, p)
+
+
+def test_window_shares_with_crews_against_the_simulation():
+    rbd = RepairableRBD(
+        PAIR_THEN_C,
+        {
+            "a": unit(E([0.3])),
+            "b": unit(E([0.2]), E([0.5])),
+            "c": unit(E([0.05])),
+        },
+        repair_crews=1,
+    )
+    end = 40.0
+    shares = rbd.barlow_proschan_importance(window=end)
+    result = rbd.availability(
+        end, mc_samples=4000, seed=5, control_variate=False
+    )
     simulated = result.criticalities.failure_criticality_index
     failures = rbd.expected_failures(end) * 4000
     for node, share in shares.items():

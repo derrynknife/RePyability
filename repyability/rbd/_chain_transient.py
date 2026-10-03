@@ -284,6 +284,31 @@ def pattern_weights(availabilities: Sequence[np.ndarray]) -> np.ndarray:
     return weights
 
 
+def pattern_importances(
+    ups: np.ndarray, available: Sequence[np.ndarray]
+) -> List[np.ndarray]:
+    """For independent nodes up with the probabilities ``available`` (one
+    array over the rows of ``ups`` each), and ``ups[:, m]`` the system's
+    availability with them in pattern ``m`` (see ``pattern_weights``):
+    each node's Birnbaum importance, the difference that it being up
+    makes, over the patterns of the others."""
+    count = len(available)
+    rest = np.arange(2 ** max(count - 1, 0))
+    out = []
+    for j in range(count):
+        others = list(available[:j]) + list(available[j + 1 :])  # noqa
+        # Each pattern of the others, with node j down and up.
+        down = ((rest >> j) << (j + 1)) | (rest & ((1 << j) - 1))
+        out.append(
+            np.sum(
+                pattern_weights(others)
+                * (ups[:, down | (1 << j)] - ups[:, down]),
+                axis=1,
+            )
+        )
+    return out
+
+
 class CrewSystem:
     """A system whose components wait for repair crews, as the analyses
     over a window evaluate it at given times (see
@@ -292,17 +317,22 @@ class CrewSystem:
     len(nested)`` of them, see ``pattern_weights``), whether it is up in
     each state, then for each pattern the rate of its failures by the
     chain's components in each state, then whether each of the chain's
-    ``served`` components is up. The nested RBDs have crews of their own,
-    so they are independent of the chain: at a time, the system is up with
-    probability ``sum_m p(t) u_m w_m(t)``, ``w_m`` the pattern's
-    probability from their availabilities then, and a nested RBD's
-    Birnbaum importance is the difference that it being up makes."""
+    ``served`` components is up; with ``causes``, then for each pattern
+    the rate of its failures by each of them (#199). The nested RBDs have
+    crews of their own, so they are independent of the chain: at a time,
+    the system is up with probability ``sum_m p(t) u_m w_m(t)``, ``w_m``
+    the pattern's probability from their availabilities then, and a nested
+    RBD's Birnbaum importance is the difference that it being up makes."""
 
-    def __init__(self, chain: Uniformized, nested: Sequence, served=()):
+    def __init__(
+        self, chain: Uniformized, nested: Sequence, served=(), causes=False
+    ):
         self.chain = chain
         self.nested = list(nested)
         self.served = list(served)
         self.patterns = 2 ** len(self.nested)
+        #: The chain's components whose failures are counted apart.
+        self.cause_keys = list(self.served) if causes else []
         #: For the pieces of the integrals: the chain's knots and settling.
         self.curve = ChainCurve(chain)
 
@@ -316,7 +346,7 @@ class CrewSystem:
         columns = self.chain.values(x)
         count = self.patterns
         ups, rates = columns[:, :count], columns[:, count : 2 * count]
-        own = columns[:, 2 * count :]  # noqa: E203
+        own = columns[:, 2 * count : 2 * count + len(self.served)]  # noqa
         available = [
             np.broadcast_to(np.asarray(values[node], dtype=float), x.shape)
             for node in self.nested
@@ -324,20 +354,39 @@ class CrewSystem:
         weights = pattern_weights(available)
         up = np.sum(ups * weights, axis=1)
         rate = np.sum(rates * weights, axis=1)
-        importance = {}
-        rest = np.arange(2 ** max(len(self.nested) - 1, 0))
-        for j, node in enumerate(self.nested):
-            others = available[:j] + available[j + 1 :]  # noqa: E203
-            # Each pattern of the others, with node j down and up.
-            down = ((rest >> j) << (j + 1)) | (rest & ((1 << j) - 1))
-            importance[node] = np.sum(
-                pattern_weights(others)
-                * (ups[:, down | (1 << j)] - ups[:, down]),
-                axis=1,
-            )
+        importance = dict(
+            zip(self.nested, pattern_importances(ups, available))
+        )
         chain_up = {node: own[:, k] for k, node in enumerate(self.served)}
         up = np.clip(up, 0.0, 1.0)
         return importance, up, 1.0 - up, np.maximum(rate, 0.0), chain_up
+
+    def caused(self, values: dict, x: np.ndarray) -> dict:
+        """The rate of the system's failures by each of the chain's
+        components at the times ``x`` (with ``causes``; else none), the
+        nested RBDs up with the probabilities ``values[node]``."""
+        if not self.cause_keys:
+            return {}
+        x = np.asarray(x, dtype=float).ravel()
+        columns = self.chain.values(x)
+        weights = pattern_weights(
+            [
+                np.broadcast_to(np.asarray(values[node], dtype=float), x.shape)
+                for node in self.nested
+            ]
+        )
+        base, count = 2 * self.patterns + len(self.served), len(self.served)
+        return {
+            node: np.maximum(
+                np.sum(
+                    columns[:, base + k + count * np.arange(self.patterns)]
+                    * weights,
+                    axis=1,
+                ),
+                0.0,
+            )
+            for k, node in enumerate(self.served)
+        }
 
 
 class CrewCurve:

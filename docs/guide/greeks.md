@@ -286,8 +286,8 @@ ownership (`discount_rate=`, see [Costs](costs.md#discounting)).
 | `barlow_proschan_importance` | whole life, or by `x` | long run, `window`, `state` | |
 | `uncertainty_importance` | at `x`; `of=` the MTTF, a B-life, a time to a reliability | not yet (#200) | |
 
-With limited repair crews or common-cause groups, the long-run measures
-follow the crews' and the groups' Markov chains, but `availability_rate`
-and the Barlow–Proschan shares over a window are refused as yet (#199),
-and with common-cause groups `joint_importance` too, as their members
-cannot be held.
+With limited repair crews or common-cause groups, the measures follow the
+crews' and the groups' Markov chains: theta and the Barlow–Proschan shares
+split the chains' transitions by the component, or common cause, that makes
+each (#199). With common-cause groups `joint_importance` is refused, as
+their members cannot be held.

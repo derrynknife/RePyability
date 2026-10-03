@@ -169,6 +169,57 @@ class _Counted:
         return down, _index((self.up == 0).astype(np.int8), 2)
 
 
+#: A move of a group's chain: whose it is (a member's position, for its
+#: own cause and its repairs, or ``SHARED`` for a cause that strikes more
+#: than one), and its sources, targets and rates.
+Move = Tuple[int, np.ndarray, np.ndarray, np.ndarray]
+SHARED = -1
+
+
+def _revealed_moves(
+    model,
+    members: Sequence[Hashable],
+    rate: float,
+    repair: float,
+    counts: Optional[Sequence[int]] = None,
+) -> Tuple[int, List[Move]]:
+    """The moves between the states of a group whose members' failures
+    are revealed, each repaired at rate ``repair`` (independently: as many
+    repairs at once as are needed), its states those of ``_Counted``
+    (with ``counts`` copies of each member, by default one: each state
+    then its own combination of the members up or down), and how many
+    states it has. Each move is labelled with whose it is (see
+    ``Move``)."""
+    n = len(members)
+    space = _Counted(members, [1] * n if counts is None else counts, 2)
+    source = np.arange(space.size)
+    out: List[Move] = []
+    for number, (struck, cause) in enumerate(causes(model, members, rate)):
+        target, times = space.strike(struck, FOUND, own=number < n)
+        moves = target != source
+        out.append(
+            (
+                number if number < n else SHARED,
+                source[moves],
+                target[moves],
+                cause * times[moves],
+            )
+        )
+    for i in range(n):
+        down = space.found[:, i] > 0
+        fixed = space.found.copy()
+        fixed[:, i] -= down.astype(np.int64)
+        out.append(
+            (
+                i,
+                source[down],
+                space.index(fixed, space.missed)[down],
+                repair * space.found[down, i].astype(float),
+            )
+        )
+    return space.size, out
+
+
 def _revealed_flow(
     model,
     members: Sequence[Hashable],
@@ -177,28 +228,11 @@ def _revealed_flow(
     counts: Optional[Sequence[int]] = None,
 ) -> np.ndarray:
     """The rates between the states of a group whose members' failures
-    are revealed, each repaired at rate ``repair`` (independently: as many
-    repairs at once as are needed), its states those of ``_Counted``
-    (with ``counts`` copies of each member, by default one: each state
-    then its own combination of the members up or down)."""
-    n = len(members)
-    space = _Counted(members, [1] * n if counts is None else counts, 2)
-    size = space.size
+    are revealed (see ``_revealed_moves``)."""
+    size, moves = _revealed_moves(model, members, rate, repair, counts)
     flow = np.zeros((size, size))
-    source = np.arange(size)
-    for number, (struck, cause) in enumerate(causes(model, members, rate)):
-        target, times = space.strike(struck, FOUND, own=number < n)
-        moves = target != source
-        np.add.at(flow, (source[moves], target[moves]), cause * times[moves])
-    for i in range(n):
-        down = space.found[:, i] > 0
-        fixed = space.found.copy()
-        fixed[:, i] -= down.astype(np.int64)
-        np.add.at(
-            flow,
-            (source[down], space.index(fixed, space.missed)[down]),
-            repair * space.found[down, i],
-        )
+    for _, begin, end, value in moves:
+        np.add.at(flow, (begin, end), value)
     return flow
 
 
@@ -276,27 +310,29 @@ class _Hidden:
         # The uniformized chain: a step of it is the chance of each move in
         # a time 1 / pace.
         source = np.arange(size)
-        moves: List[Tuple[np.ndarray, np.ndarray, Any]] = []
+        #: The causes' moves, labelled (see ``Move``).
+        self.moves: List[Move] = []
         for number, (struck, cause) in enumerate(causes(model, members, rate)):
             for level, share in ((FOUND, coverage), (MISSED, 1.0 - coverage)):
                 if share <= 0.0 or (level == MISSED and not partial):
                     continue
                 target, times = space.strike(struck, level, own=number < n)
                 moved = target != source
-                moves.append(
+                self.moves.append(
                     (
+                        number if number < n else SHARED,
                         source[moved],
                         target[moved],
                         cause * share * times[moved],
                     )
                 )
         outflow = np.zeros(size)
-        for begin, _, value in moves:
+        for _, begin, _, value in self.moves:
             np.add.at(outflow, begin, value)
-        self.pace = pace = float(outflow.max()) if len(moves) else 0.0
+        self.pace = pace = float(outflow.max()) if self.moves else 0.0
         step = np.zeros((size, size))
         if pace > 0.0:
-            for begin, end, value in moves:
+            for _, begin, end, value in self.moves:
                 np.add.at(step, (begin, end), value / pace)
         np.fill_diagonal(step, 1.0 - outflow / pace if pace > 0.0 else 1.0)
         self.step = step
@@ -422,6 +458,10 @@ class OverTime:
         self._chain: Any = None
         self._tests: Optional[list] = None
         self._settled: Any = None
+        #: The chain's moves, labelled (see ``Move``), and the combination
+        #: of the members up or down of each of its states (#199).
+        self.moves: List[Move] = []
+        self.combination = np.arange(len(combinations))
 
     @classmethod
     def revealed(
@@ -430,12 +470,14 @@ class OverTime:
         """A group whose failures are revealed (see ``revealed``), its
         chain followed by ``uniformized(generator, start, steady,
         vectors)`` (a ``_chain_transient.Uniformized``)."""
-        flow = _revealed_flow(model, members, rate, repair)
+        size, moves = _revealed_moves(model, members, rate, repair)
+        flow = np.zeros((size, size))
+        for _, begin, end, value in moves:
+            np.add.at(flow, (begin, end), value)
         steady = gth(flow)
         generator = flow.copy()
         np.fill_diagonal(generator, 0.0)
         np.fill_diagonal(generator, -generator.sum(axis=1))
-        size = len(flow)
         start = np.zeros(size)
         start[0] = 1.0
         chain = uniformized(generator, start, steady, np.identity(size))
@@ -444,6 +486,7 @@ class OverTime:
         )
         out._chain = chain
         out._tests = None
+        out.moves = moves
         return out
 
     @classmethod
@@ -457,14 +500,16 @@ class OverTime:
         out._tests = sorted(tests)
         # The states at the start of the second period, which repeats.
         out._settled = chain.follow(tests, np.array([float(period)]))[0]
+        out.moves = chain.moves
+        out.combination = chain.combination
         return out
 
-    def probabilities(self, x) -> np.ndarray:
-        """Each combination's probability (columns) at each time ``x``
-        (rows): at a test's time, after it."""
+    def raw(self, x) -> np.ndarray:
+        """Each of the chain's states' probability (columns) at each time
+        ``x`` (rows): at a test's time, after it."""
         x = np.asarray(x, dtype=float).ravel()
         if self._tests is None:
-            values = np.maximum(self._chain.values(x), 0.0)
+            values = self._chain.values(x)
         else:
             chain, period = self._chain, self.period
             values = np.empty((len(x), chain.size))
@@ -479,9 +524,47 @@ class OverTime:
                     self._settled,
                     period,
                 )
-            values = chain.grouped(np.maximum(values, 0.0))
+        values = np.maximum(values, 0.0)
         total = values.sum(axis=1, keepdims=True)
         return values / np.where(total > 0.0, total, 1.0)
+
+    def probabilities(self, x) -> np.ndarray:
+        """Each combination's probability (columns) at each time ``x``
+        (rows): at a test's time, after it."""
+        values = self.raw(x)
+        if self._tests is not None:
+            values = self._chain.grouped(values)
+        return values
+
+    def grouped(self, values: np.ndarray) -> np.ndarray:
+        """The chain's states' probabilities (rows of ``values``) summed
+        over each combination of the members up or down."""
+        if self._tests is None:
+            return values
+        return self._chain.grouped(values)
+
+    def tests(self, stop: float) -> dict:
+        """The tests in ``(0, stop]``: each time's, as a list of
+        ``ProofTest`` (with their times in the first period's, where the
+        schedule repeats from)."""
+        out: dict = {}
+        if self._tests is None:
+            return out
+        cycles = int(np.floor(stop / self.period)) + 1
+        for cycle in range(cycles):
+            for test in self._tests:
+                time = test.time + cycle * self.period
+                if 0.0 < time <= stop:
+                    out.setdefault(time, []).append(test)
+        return out
+
+    def tested(self, values: np.ndarray, tests) -> np.ndarray:
+        """The chain's states' probabilities (rows of ``values``) after
+        ``tests``."""
+        out = np.array(values, dtype=float)
+        for test in tests:
+            out = np.vstack([self._chain.tested_at(row, test) for row in out])
+        return out
 
     def knots(self, start: float, stop: float) -> np.ndarray:
         """Where its states bend or jump: the tests (every period), or the
@@ -554,22 +637,39 @@ class GroupsSystem:
         self.working, self.broken = set(working), set(broken)
         self.method = method
         self.served = [m for group in self.groups for m in group.members]
+        #: What the system's failures by the groups' causes are counted
+        #: under (see ``caused``).
+        self.cause_keys = list(
+            dict.fromkeys(
+                (
+                    group.members[struck[0]]
+                    if len(struck) == 1
+                    else tuple(group.members)
+                )
+                for group, by in zip(self.groups, self.causes)
+                for struck, _ in by
+            )
+        )
         #: For the pieces of the integrals: the groups' knots and settling.
         self.curve = _GroupsCurve(self.groups)
 
-    def _split(self, values: dict, x: np.ndarray):
+    def _split(self, values: dict, x: np.ndarray, chances=None):
         """The points at the times ``x`` split by the groups' combinations:
         each node's probability at each point, each point's probability,
-        and its time's position in ``x``."""
+        its time's position in ``x``, and each group's combination there.
+        ``chances`` gives a group's combinations' probabilities at the
+        times (rows), where not None, in place of its own."""
         size = len(x)
         probabilities = self.rbd._filled(
             values, size, self.working, self.broken
         )
         index, weights = np.arange(size), np.ones(size)
-        for group in self.groups:
-            chances = group.probabilities(x)
-            count = chances.shape[1]
-            mass = (weights[:, None] * chances[index, :]).ravel()
+        combinations: List[np.ndarray] = []
+        for number, group in enumerate(self.groups):
+            given = None if chances is None else chances[number]
+            table = group.probabilities(x) if given is None else given
+            count = table.shape[1]
+            mass = (weights[:, None] * table[index, :]).ravel()
             keep = mass > 0.0
             weights = mass[keep]
             points = len(index)
@@ -580,11 +680,69 @@ class GroupsSystem:
                 )[keep]
                 for node, v in probabilities.items()
             }
+            combinations = [np.repeat(c, count)[keep] for c in combinations]
+            combinations.append(np.tile(np.arange(count), points)[keep])
             for k, member in enumerate(group.members):
                 down = np.tile(group.down[:, k], points)[keep]
                 probabilities[member] = np.where(down, 0.0, 1.0)
             index = np.repeat(index, count)[keep]
-        return probabilities, weights, index
+        return probabilities, weights, index, combinations
+
+    def availability(self, values: dict, chances: list) -> np.ndarray:
+        """The system's availability at each row, with each node outside
+        the groups up with the probability ``values[node]`` and each
+        group's members in each combination with the probabilities
+        ``chances[number]`` (one row each)."""
+        rows = len(chances[0]) if chances else 1
+        probabilities, weights, index, _ = self._split(
+            values, np.zeros(rows), chances
+        )
+        down = self.rbd._system_unreliability(probabilities)
+        return 1.0 - np.bincount(index, weights * down, rows)
+
+    def given(self, values: dict, x: np.ndarray, number: int) -> np.ndarray:
+        """The system's unavailability at the times ``x`` (rows) with the
+        group ``number``'s members in each of their combinations (columns),
+        the other groups' as at the times, and each node outside the groups
+        up with the probability ``values[node]`` (#199)."""
+        x = np.asarray(x, dtype=float).ravel()
+        count = len(self.groups[number].down)
+        chances: List[Any] = [None] * len(self.groups)
+        chances[number] = np.ones((len(x), count))
+        probabilities, weights, index, combinations = self._split(
+            values, x, chances
+        )
+        down = self.rbd._system_unreliability(probabilities)
+        return np.bincount(
+            index * count + combinations[number],
+            weights * down,
+            len(x) * count,
+        ).reshape(len(x), count)
+
+    def caused(self, values: dict, x: np.ndarray) -> dict:
+        """The rate of the system's failures by each cause at the times
+        ``x`` (see ``evaluate``): a member's own causes under its name, and
+        each group's causes that strike more than one member under the
+        tuple of its members (#199)."""
+        x = np.asarray(x, dtype=float).ravel()
+        probabilities, weights, index, _ = self._split(values, x)
+        base = self.rbd._system_unreliability(probabilities)
+        out: dict = {}
+        for group, causes in zip(self.groups, self.causes):
+            for struck, cause in causes:
+                hit = dict(probabilities)
+                for position in struck:
+                    hit[group.members[position]] = np.zeros_like(weights)
+                rise = self.rbd._system_unreliability(hit) - base
+                key = (
+                    group.members[struck[0]]
+                    if len(struck) == 1
+                    else tuple(group.members)
+                )
+                out[key] = out.get(key, 0.0) + cause * np.bincount(
+                    index, weights * rise, len(x)
+                )
+        return {key: np.maximum(v, 0.0) for key, v in out.items()}
 
     def evaluate(self, values: dict, x: np.ndarray):
         """At the times ``x``, with each node outside the groups up with the
@@ -594,7 +752,7 @@ class GroupsSystem:
         and each member's availability (a dict)."""
         x = np.asarray(x, dtype=float).ravel()
         size = len(x)
-        probabilities, weights, index = self._split(values, x)
+        probabilities, weights, index, _ = self._split(values, x)
 
         def total(v) -> np.ndarray:
             v = np.broadcast_to(np.asarray(v, dtype=float), weights.shape)
