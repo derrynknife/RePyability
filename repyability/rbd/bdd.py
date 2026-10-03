@@ -42,8 +42,24 @@ from typing import (
 
 import numpy as np
 
+from repyability.rbd import _compiled
+
 # Value slots 0 and 1 of a plan: the system fails, the system works.
 FAIL, WORK = 0, 1
+
+#: Whether ``build`` runs compiled (``_bdd_kernel``, with numba installed):
+#: ``"auto"`` (the default) for a core whose diagram may be large (its
+#: order's ``_cost`` at least ``COMPILED_COST``), True for every core, False
+#: for none. The plan is the same either way, step for step.
+COMPILED: Any = "auto"
+#: The ``_cost`` from which ``"auto"`` compiles: below it the search takes
+#: under a tenth of a second in Python, about what loading numba does. (A
+#: 10 by 20 grid's, ``2**17.4``, takes 1.1 s in Python and 0.14 s compiled;
+#: a 12 by 24 grid's, ``2**19.9``, 7.8 s and 0.86 s.)
+COMPILED_COST = 2.0**15
+#: The widest frontier (and the most repeated components pending at once)
+#: the compiled search takes: its states are bits of an integer.
+COMPILED_WIDTH = 62
 
 
 def order(
@@ -159,7 +175,9 @@ def build(
     """The decision diagram of the core whose vertices are ``sequence``, a
     topological order, as a plan (see the module docstring). ``variable``
     names the random variable each vertex stands for: two vertices with the
-    same variable are one component, drawn in two places.
+    same variable are one component, drawn in two places. Compiled when
+    numba is installed and the diagram may be large (see ``COMPILED``),
+    with the same plan.
 
     Returns
     -------
@@ -167,6 +185,128 @@ def build(
         ``(steps, root)``, each step ``(variable, active slot, inactive
         slot)``; ``root`` is 0 or 1 if the system never or always works.
     """
+    if COMPILED and _compiled.available():
+        if COMPILED is True or (
+            _cost(sequence, pred, succ, source, sink) >= COMPILED_COST
+        ):
+            plan = _compiled_build(
+                sequence, pred, succ, k, source, sink, variable
+            )
+            if plan is not None:
+                return plan
+    return _build(sequence, pred, succ, k, source, sink, variable)
+
+
+def _compiled_build(
+    sequence: Sequence[int],
+    pred: Mapping[int, Iterable[int]],
+    succ: Mapping[int, Iterable[int]],
+    k: Mapping[int, int],
+    source: int,
+    sink: int,
+    variable: Mapping[int, Hashable],
+) -> Optional[tuple]:
+    """``_build``, compiled (``_bdd_kernel.build``): the same plan, or None
+    for a core whose frontier is wider than ``COMPILED_WIDTH``.
+
+    The vertices are numbered by their place in ``sequence``, the input
+    ``n``. At step ``i`` the vertices that can be in the frontier are the
+    decided ones that feed an undecided vertex (or the output), whichever
+    branch led there, and the repeated components that can be pending are
+    those first drawn before ``i`` and drawn again from ``i`` on: each
+    state is then a bit for each of the first that is reached and for each
+    of the second that works, numbered in the order they joined."""
+    from repyability.rbd import _bdd_kernel
+
+    n = len(sequence)
+    position = {v: i for i, v in enumerate(sequence)}
+    position[source] = n
+
+    def number(u: int) -> int:
+        return position[u]
+
+    last = np.full(n + 1, -1, np.int64)
+    for u in [source, *sequence]:
+        ends = [n if w == sink else position[w] for w in succ.get(u, ())]
+        last[number(u)] = max(ends, default=-1)
+    names = list(dict.fromkeys(variable[v] for v in sequence))
+    index = {name: j for j, name in enumerate(names)}
+    variables = np.array([index[variable[v]] for v in sequence], np.int64)
+    first = np.full(len(names), -1, np.int64)
+    final = np.full(len(names), -1, np.int64)
+    for i, x in enumerate(variables.tolist()):
+        if first[x] < 0:
+            first[x] = i
+        final[x] = i
+    frontiers: List[List[int]] = [[n] if last[n] >= 0 else []]
+    pending: List[List[int]] = [[]]
+    for i, x in enumerate(variables.tolist()):
+        frontiers.append(
+            [u for u in frontiers[i] if last[u] > i]
+            + ([i] if last[i] > i else [])
+        )
+        pending.append(
+            [y for y in pending[i] if final[y] > i]
+            + ([x] if first[x] == i and final[x] > i else [])
+        )
+    width_f = np.array([len(f) for f in frontiers], np.int64)
+    width_r = np.array([len(r) for r in pending], np.int64)
+    if max(width_f) > COMPILED_WIDTH or max(width_r) > COMPILED_WIDTH:
+        return None
+    pos_f = np.full((n + 1, n + 1), -1, np.int8)
+    members_f = np.zeros((n + 1, max(int(width_f.max()), 1)), np.int64)
+    for i, members in enumerate(frontiers):
+        for j, u in enumerate(members):
+            pos_f[i, u] = j
+            members_f[i, j] = u
+    pos_r = np.full((n + 1, max(len(names), 1)), -1, np.int8)
+    members_r = np.zeros((n + 1, max(int(width_r.max()), 1)), np.int64)
+    for i, members in enumerate(pending):
+        for j, x in enumerate(members):
+            pos_r[i, x] = j
+            members_r[i, j] = x
+    lists = [[number(u) for u in pred[v]] for v in sequence]
+    pred_ptr = np.zeros(n + 1, np.int64)
+    pred_ptr[1:] = np.cumsum([len(p) for p in lists])
+    pred_ids = np.array([u for p in lists for u in p], np.int64)
+    out_var, out_active, out_inactive, root = _bdd_kernel.build(
+        n,
+        variables,
+        first,
+        final,
+        np.array([k[v] for v in sequence], np.int64),
+        pred_ptr,
+        pred_ids,
+        np.array([number(u) for u in pred[sink]], np.int64),
+        k[sink],
+        last,
+        pos_f,
+        members_f,
+        width_f,
+        pos_r,
+        members_r,
+        width_r,
+        1 if last[n] >= 0 else 0,
+    )
+    steps = [
+        (names[x], a, b)
+        for x, a, b in zip(
+            out_var.tolist(), out_active.tolist(), out_inactive.tolist()
+        )
+    ]
+    return steps, int(root)
+
+
+def _build(
+    sequence: Sequence[int],
+    pred: Mapping[int, Iterable[int]],
+    succ: Mapping[int, Iterable[int]],
+    k: Mapping[int, int],
+    source: int,
+    sink: int,
+    variable: Mapping[int, Hashable],
+) -> tuple:
+    """``build`` in Python."""
     n = len(sequence)
     position = {v: i for i, v in enumerate(sequence)}
     last: Dict[int, int] = {}

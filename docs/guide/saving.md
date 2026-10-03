@@ -264,6 +264,13 @@ routes["availability"].engine      # 'numba' with numba installed, else 'python'
   the same to rounding either way (the whole test suite passes with
   either forced). To force one, set `repyability.rbd.modular.CORE_METHOD`
   to `"paths"` or `"bdd"` (by default `"auto"`) before building the RBD.
+  With numba installed (`pip install "repyability[fast]"`), a large
+  decision diagram is built, and its probabilities and their gradient
+  worked out, compiled, with the same values to the last bit: a 12 × 24
+  grid (288 nodes, 86 566 decisions) builds in 0.9 seconds rather than
+  7.6, its reliability at 200 times takes 0.03 seconds rather than 0.2,
+  its Birnbaum importances 0.03 rather than 0.65, and its mean time to
+  failure 2.8 seconds rather than 31.
 - **Simulations** are vectorised where the models allow it: `mean()` of a
   system of parametric components draws 100 000 lifetimes in well under a
   second. Availability simulations step through events, so their cost grows

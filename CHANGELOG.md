@@ -9,6 +9,17 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+### Added
+
+- With numba installed, the decision diagram of a meshed part of a diagram
+  (`bdd.py`) is built compiled, and its probabilities and their gradient are
+  worked out compiled (`_bdd_kernel.py`), for diagrams large enough to pay
+  for it: the same plan, step for step, and the same values, to the last
+  bit. A 12 × 24 grid of 288 nodes builds in 0.9 s rather than 7.6, and its
+  mean time to failure takes 2.8 s rather than 31; its Birnbaum importances
+  0.03 s rather than 0.65. `bdd.COMPILED` and `modular.COMPILED_STEPS` say
+  when.
+
 ## [0.11] - 2026-10-02
 
 How much a system can deliver, and exact answers where there were estimates.

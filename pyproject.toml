@@ -131,9 +131,9 @@ follow_imports = 'skip'
 # Coverage
 [tool.coverage.run]
 source = ["repyability"]
-# The compiled loop runs as machine code, which coverage cannot trace (its
-# equivalence with the Python loop is tested instead).
-omit = ["*/tests/*", "*/rbd/_kernel.py"]
+# The compiled loop and decision diagram run as machine code, which coverage
+# cannot trace (their equivalence with the Python code is tested instead).
+omit = ["*/tests/*", "*/rbd/_kernel.py", "*/rbd/_bdd_kernel.py"]
 
 [tool.coverage.report]
 # The library (excluding tests) must stay above this bar.

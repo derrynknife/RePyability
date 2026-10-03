@@ -62,7 +62,7 @@ from typing import (
 
 import numpy as np
 
-from repyability.rbd import bdd
+from repyability.rbd import _compiled, bdd
 from repyability.rbd.min_path_sets import min_path_sets as find_min_path_sets
 from repyability.rbd.rbd_graph import RBDGraph
 from repyability.rbd.shannon import (
@@ -99,6 +99,11 @@ CORE_METHOD = "auto"
 #: smaller and the listing slows (a hundred take about a tenth of a second
 #: to decompose, four thousand about nine).
 AUTO_PATHS = 100
+#: The fewest steps in a core's plan for which, with numba installed, its
+#: probabilities (and their gradient) are worked out compiled
+#: (``_bdd_kernel``): the same products and sums in the same order, so the
+#: same values; below, replaying it in Python takes a few milliseconds.
+COMPILED_STEPS = 5000
 
 
 class FlowGraph:
@@ -204,6 +209,10 @@ class Decomposition:
         # term (see ``failed_cut_sets``), and the dual decomposition.
         self._cut_plan: Optional[tuple] = None
         self._dual: Optional["Decomposition"] = None
+        # The core's plan as arrays, for ``_bdd_kernel`` (``_compiled_plan``),
+        # and the kernel's working memory.
+        self._plan_arrays: Optional[tuple] = None
+        self._buffers: Optional[tuple] = None
 
     @property
     def core(self) -> Optional[List[tuple]]:
@@ -222,6 +231,7 @@ class Decomposition:
         # compiled again on first use.
         state = dict(self.__dict__)
         state["_functions"] = {}
+        state["_buffers"] = None  # working memory, made again when needed
         return state
 
     # -- the core ----------------------------------------------------------
@@ -283,11 +293,77 @@ class Decomposition:
                 R[i], Q[i] = above, sum(below)
         return R, Q
 
+    def _compiled_plan(self, R: list, Q: list, shape) -> Optional[tuple]:
+        """The core's plan as arrays for ``_bdd_kernel`` (its pivots as rows
+        of the terms it branches on), with those terms' probabilities of
+        working and failing, a column per value; None if it is not worth
+        compiling, or the probabilities are not plain numbers (traced by
+        autograd, say)."""
+        steps, root = self.core_plan()
+        if len(steps) < COMPILED_STEPS or not _compiled.available():
+            return None
+        # (A decomposition saved before the arrays were kept has none.)
+        arrays = getattr(self, "_plan_arrays", None)
+        if arrays is None:
+            used = sorted({pivot for pivot, _, _ in steps})
+            row = {t: j for j, t in enumerate(used)}
+            arrays = self._plan_arrays = (
+                np.array([row[pivot] for pivot, _, _ in steps], np.int64),
+                np.array([a for _, a, _ in steps], np.int64),
+                np.array([b for _, _, b in steps], np.int64),
+                used,
+            )
+        pivots, actives, inactives, used = arrays
+        size = 1 if shape is None else int(np.prod(shape))
+        works = np.empty((len(used), size))
+        fails = np.empty((len(used), size))
+        for j, t in enumerate(used):
+            for table, value in ((works, R[t]), (fails, Q[t])):
+                if not isinstance(
+                    value, (float, int, np.floating, np.ndarray)
+                ):
+                    return None
+                array = np.asarray(value)
+                if array.dtype != np.float64 and array.dtype.kind != "i":
+                    return None
+                table[j] = np.broadcast_to(array, shape or ()).reshape(-1)
+        return pivots, actives, inactives, root, works, fails, used
+
+    def _replay_buffers(self) -> tuple:
+        """Two buffers of a row per slot of the core's plan and
+        ``_bdd_kernel.COLUMNS`` columns, kept for the next call."""
+        from repyability.rbd import _bdd_kernel
+
+        buffers = getattr(self, "_buffers", None)
+        if buffers is None:
+            rows = len(self.core_plan()[0]) + 2
+            buffers = self._buffers = tuple(
+                np.empty((rows, _bdd_kernel.COLUMNS)) for _ in range(2)
+            )
+        return buffers
+
     def _core_value(self, R: list, Q: list, fails: bool, shape) -> Any:
         """The core's probability of working (or, with ``fails``, of
         failing), from its terms' probabilities. The complement uses the
         same decomposition with the outcomes swapped, so it too is a sum of
-        products and keeps its relative precision."""
+        products and keeps its relative precision. Compiled for a large
+        plan (``COMPILED_STEPS``), with the same values."""
+        compiled = self._compiled_plan(R, Q, shape)
+        if compiled is not None:
+            from repyability.rbd import _bdd_kernel
+
+            pivots, actives, inactives, root, works, failing, _ = compiled
+            value = _bdd_kernel.replay(
+                pivots,
+                actives,
+                inactives,
+                root,
+                works,
+                failing,
+                fails,
+                self._replay_buffers()[0],
+            )
+            return float(value[0]) if shape is None else value.reshape(shape)
         steps, root = self.core_plan()
         zero: Any = 0.0 if shape is None else np.zeros(shape)
         one: Any = 1.0 if shape is None else np.ones(shape)
@@ -352,11 +428,8 @@ class Decomposition:
             works, fails = R[self.root], Q[self.root]
             adjoint[self.root] = 1.0
         else:
-            plan = self.core_plan()
-            works, d_works = _shannon_value_and_gradient(plan, R, Q)
-            fails, d_fails = _shannon_value_and_gradient(
-                plan, R, Q, (1.0, 0.0)
-            )
+            works, d_works = self._core_gradient(R, Q, (0.0, 1.0), shape)
+            fails, d_fails = self._core_gradient(R, Q, (1.0, 0.0), shape)
             # From whichever end is accurate: a difference of two values
             # near 1 would cancel.
             if np.ndim(works) == 0 and np.ndim(fails) == 0:
@@ -392,6 +465,39 @@ class Decomposition:
             for c, d in zip(children, partials):
                 adjoint[c] = a * d
         return works, fails, gradient
+
+    def _core_gradient(self, R: list, Q: list, terminals, shape) -> tuple:
+        """``_shannon_value_and_gradient`` of the core's plan (compiled for a
+        large plan, with the same values)."""
+        compiled = self._compiled_plan(R, Q, shape)
+        if compiled is None:
+            return _shannon_value_and_gradient(
+                self.core_plan(), R, Q, terminals
+            )
+        from repyability.rbd import _bdd_kernel
+
+        pivots, actives, inactives, root, works, fails, used = compiled
+        value, gradient, has = _bdd_kernel.value_and_gradient(
+            pivots,
+            actives,
+            inactives,
+            root,
+            works,
+            fails,
+            terminals[0],
+            terminals[1],
+            len(used),
+            *self._replay_buffers(),
+        )
+        if shape is None:
+            return float(value[0]), {
+                used[j]: float(gradient[j, 0])
+                for j in np.flatnonzero(has).tolist()
+            }
+        return value.reshape(shape), {
+            used[j]: gradient[j].reshape(shape)
+            for j in np.flatnonzero(has).tolist()
+        }
 
     def failed_cut_sets(
         self, p: Dict[Any, Any], q: Dict[Any, Any], shape=None
