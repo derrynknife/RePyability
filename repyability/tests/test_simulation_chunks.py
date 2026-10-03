@@ -208,6 +208,32 @@ def test_chunks_follow_the_capacity():
     assert identical(merged, whole)
 
 
+def test_chunks_count_the_capacity_on_the_grid():
+    # With curve_points the capacity's changes are counted in the grid's
+    # bins, exactly (#190): chunks, through JSON too, merge into the run.
+    rbd = RepairableRBD(
+        EDGES,
+        {
+            node: {"reliability": E([0.1]), "repairability": E([1.0])}
+            for node in "ABC"
+        },
+        capacity={"A": 60.0, "B": 60.0, "C": 100.0},
+    )
+    run = dict(seed=2, demand=100.0, curve_points=25)
+    whole = rbd.availability(50.0, mc_samples=300, **run)
+    assert len(whole.capacity_timeline) == 26
+    chunks = [
+        SimulationChunk.from_json(
+            rbd.simulate_chunk(50.0, a, b, **run).to_json()
+        )
+        for a, b in [(0, 120), (120, 300)]
+    ]
+    merged = rbd.availability_from_chunks(chunks)
+    assert np.array_equal(merged.capacity_timeline, whole.capacity_timeline)
+    assert np.array_equal(merged.capacity, whole.capacity)
+    assert identical(merged, whole)
+
+
 @pytest.mark.parametrize("engine", ["python", "numba"])
 def test_a_capacity_chunk_is_saved_alike_by_either_engine(engine):
     # Each time's change of the capacity curve is saved as its exact total

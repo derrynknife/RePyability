@@ -1220,7 +1220,7 @@ class Runner:
             self._t,
             self._table,
         )
-        tally.capacity_arrays.append(
+        tally.add_capacity(
             (change_times, change_steps, free_times, free_steps)
         )
         levels = list(self._levels)

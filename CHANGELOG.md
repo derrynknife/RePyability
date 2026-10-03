@@ -149,6 +149,16 @@ other release, fixes included, the minor.
 
 ### Changed
 
+- **A capacity run's curve follows `curve_points` (#190).** The capacity
+  curve kept every change of every simulation's expected capacity, millions
+  for a large run, and sorting them took most of the run: 3.4 s of a
+  compiled run of three pumps over 2,000 h, 5,000 simulations, whose loop
+  took under half a second. With `curve_points` the changes are now summed
+  in the grid's steps as they come, exactly (each step's total the same
+  however the run is split), so `capacity_timeline` is the grid and the
+  curve is the full one at its times: the same run takes 1.2 s. Without a
+  grid, changes that come in order are no longer sorted.
+
 - **A run to a tolerance takes exact expected values where it can (#187).**
   `availability()` and `cost()` estimated a window's mean availability and
   cost by simulation even where the exact methods give them: for 12

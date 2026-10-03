@@ -69,7 +69,13 @@ from repyability.rbd._block_replacement import (
     block_cycle,
 )
 from repyability.rbd._condition_replacement import condition_cycle
-from repyability.rbd._exact import ExactSum, add_columns
+from repyability.rbd._exact import (
+    ExactSum,
+    add_columns,
+    bin_totals,
+    binned_parts,
+    compact_parts,
+)
 from repyability.rbd._hidden_life import (
     TestedLife,
     TestedLifeCurve,
@@ -1012,8 +1018,9 @@ def _by_time(
     """``values`` grouped by their ``times``: the distinct times, in order;
     the values, in the order of their times; and where each time's values
     start."""
-    order = np.argsort(times, kind="stable")
-    times, values = times[order], values[order]
+    if times.size > 1 and not np.all(times[1:] >= times[:-1]):
+        order = np.argsort(times, kind="stable")
+        times, values = times[order], values[order]
     new = np.ones(times.size, dtype=bool)
     new[1:] = times[1:] != times[:-1]
     starts = np.flatnonzero(new)
@@ -1143,6 +1150,16 @@ class _Tally:
         self.unlimited_times: list = []
         self.unlimited_steps: list = []
         self.capacity_arrays: list = []
+        # With curve_points (#190), the changes of the expected capacity are
+        # counted on the grid instead, as the changes of state are: in each
+        # bin, exactly (arrays whose exact sum, bin by bin, is the bin's
+        # total change), and the net change in how many can carry an
+        # unlimited amount.
+        self.capacity_binned: Optional[list] = None
+        self.unlimited_binned: Optional[np.ndarray] = None
+        if self.edges is not None:
+            self.capacity_binned = []
+            self.unlimited_binned = np.zeros(len(self.edges), dtype=np.int64)
         self.capacity_time: dict = {}
         self.delivered: List[float] = []
         # Each replication's replacements of each node, when asked for
@@ -1207,6 +1224,42 @@ class _Tally:
         if self.binned is not None:
             self._fold_changes()
 
+    def add_capacity(self, arrays: tuple) -> None:
+        """Add simulations' changes of capacity, as an engine gives them
+        (see ``capacity_records``): kept, or counted on the grid."""
+        self.capacity_arrays.append(arrays)
+        if self.capacity_binned is not None:
+            self._fold_capacity()
+
+    def _grid_bins(self, times: np.ndarray) -> np.ndarray:
+        """The grid's bin of each of ``times``: that of the first grid time
+        at or after it (``-0.0`` taken as ``0.0``)."""
+        assert self.edges is not None
+        return np.minimum(
+            np.searchsorted(self.edges, times + 0.0, side="left"),
+            len(self.edges) - 1,
+        )
+
+    def _fold_capacity(self) -> None:
+        """Count the changes of capacity kept so far in the grid's bins,
+        exactly, and drop them."""
+        assert self.capacity_binned is not None
+        assert self.unlimited_binned is not None
+        size = len(self.unlimited_binned)
+        for times, steps, free_times, free_steps in self.capacity_arrays:
+            self.capacity_binned.extend(
+                binned_parts(self._grid_bins(times), steps, size)
+            )
+            if len(free_times):
+                self.unlimited_binned += np.bincount(
+                    self._grid_bins(free_times),
+                    weights=free_steps,
+                    minlength=size,
+                ).astype(np.int64)
+        self.capacity_arrays = []
+        if len(self.capacity_binned) > 64:
+            self.capacity_binned = compact_parts(self.capacity_binned, size)
+
     def _fold_changes(self) -> None:
         """Count the changes kept so far in the grid's bins (each time in
         the bin of the first grid time at or after it), and drop them."""
@@ -1252,6 +1305,8 @@ class _Tally:
             )
             self.capacity_times, self.capacity_steps = [], []
             self.unlimited_times, self.unlimited_steps = [], []
+        if self.capacity_binned is not None and self.capacity_arrays:
+            self._fold_capacity()
 
     def compact(self) -> "_Tally":
         """This tally with its simulations' values folded into the totals
@@ -1413,7 +1468,14 @@ class _Tally:
             self.cost_by_category[key].add(amount)
         for node, amount in other.cost_by_component.items():
             self.cost_by_component[node].add(amount)
-        self.capacity_arrays.append(other.capacity_records())
+        if self.capacity_binned is not None:
+            # Chunks of one run, on one grid.
+            assert other.capacity_binned is not None
+            assert self.unlimited_binned is not None
+            self.capacity_binned.extend(other.capacity_binned)
+            self.unlimited_binned += other.unlimited_binned
+        else:
+            self.capacity_arrays.append(other.capacity_records())
         for level, time in other.capacity_time.items():
             _add_at(self.capacity_time, level, time)
         self.delivered.extend(other.delivered)
@@ -1457,6 +1519,22 @@ class _Tally:
                 zip(at.tolist(), _group_partials(steps, starts))
             ),
             "unlimited_changes": list(zip(free_at.tolist(), counts.tolist())),
+            "capacity_binned": (
+                None
+                if self.capacity_binned is None
+                or self.unlimited_binned is None
+                else [
+                    part.tolist()
+                    for part in compact_parts(
+                        self.capacity_binned, len(self.unlimited_binned)
+                    )
+                ]
+            ),
+            "unlimited_binned": (
+                None
+                if self.unlimited_binned is None
+                else self.unlimited_binned.tolist()
+            ),
             "capacity_time": sorted(
                 (level, _partials(time))
                 for level, time in self.capacity_time.items()
@@ -1515,6 +1593,14 @@ class _Tally:
         for time, change in data["unlimited_changes"]:
             tally.unlimited_times.append(float(time))
             tally.unlimited_steps.append(int(change))
+        if data.get("capacity_binned") is not None:
+            tally.capacity_binned = [
+                np.array(part, dtype=float) for part in data["capacity_binned"]
+            ]
+        if data.get("unlimited_binned") is not None:
+            tally.unlimited_binned = np.array(
+                data["unlimited_binned"], dtype=np.int64
+            )
         tally.delivered = [float(v) for v in data["delivered"]]
         tally.opportunistic = [int(c) for c in data["opportunistic"]]
         return tally
@@ -12775,10 +12861,11 @@ class RepairableRBD(RBD):
             the simulations count their changes in the grid's steps, so
             the curve costs ``curve_points`` counts however many run, and
             its values at the grid's times are those the full curve takes
-            there, exactly (and only there). For a large run, whose full
-            curve has a point at every change of every simulation. By
-            default None: the full curve. Everything else in the result is
-            the same either way.
+            there, exactly (and only there). With capacities, so does the
+            capacity curve (``capacity_timeline``), each step's changes
+            summed exactly. For a large run, whose full curve has a point
+            at every change of every simulation. By default None: the full
+            curve. Everything else in the result is the same either way.
         shard_map : callable, optional
             Run the simulations as shards (see ``shards``) through this
             map, wherever it sends them: ``shard_map(run_shard, shards)``
@@ -14955,13 +15042,25 @@ class RepairableRBD(RBD):
             # The mean capacity from t=0..t_simulation: the simulated
             # systems' total expected capacity after each time at which one
             # changed (unlimited while one can carry an unlimited amount).
-            at, steps, starts, free_at, counts = tally.capacity_changes()
-            times = np.unique(np.r_[at, free_at, 0.0, t_simulation])
-            change = np.zeros(times.size)
-            change[np.searchsorted(times, at)] = _group_totals(steps, starts)
-            freed = np.zeros(times.size, dtype=np.int64)
-            freed[np.searchsorted(times, free_at)] = counts
-            totals, unlimited = np.cumsum(change), np.cumsum(freed)
+            if tally.capacity_binned is not None:
+                # On the grid (#190): the total after each of its times.
+                assert tally.edges is not None
+                assert tally.unlimited_binned is not None
+                times = tally.edges.copy()
+                totals = np.cumsum(
+                    bin_totals(tally.capacity_binned, len(times))
+                )
+                unlimited = np.cumsum(tally.unlimited_binned)
+            else:
+                at, steps, starts, free_at, counts = tally.capacity_changes()
+                times = np.unique(np.r_[at, free_at, 0.0, t_simulation])
+                change = np.zeros(times.size)
+                change[np.searchsorted(times, at)] = _group_totals(
+                    steps, starts
+                )
+                freed = np.zeros(times.size, dtype=np.int64)
+                freed[np.searchsorted(times, free_at)] = counts
+                totals, unlimited = np.cumsum(change), np.cumsum(freed)
             curve = np.where(
                 unlimited > 0, np.inf, np.maximum(totals / N, 0.0)
             )

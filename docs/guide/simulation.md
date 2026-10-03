@@ -373,7 +373,12 @@ len(grid.timeline)       # -> 101
 
 A compiled run of 40 960 simulations of a nine-component system over
 5 000 hours kept 3 million points without it, and ran 16% faster with
-`curve_points=1000`.
+`curve_points=1000`. With capacities, the capacity curve
+(`capacity_timeline`, `capacity`) follows the grid too, each step's changes
+summed exactly, so it equals the full curve at the grid's times: three
+pumps with capacities over 2 000 hours, 5 000 simulations compiled, kept
+5.5 million points without it and ran in a third of the time with
+`curve_points=200`.
 
 ## Splitting a run across machines
 
