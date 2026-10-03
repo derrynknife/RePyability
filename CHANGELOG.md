@@ -58,6 +58,18 @@ other release, fixes included, the minor.
   edges, a diagram with no input or output node says so, and a diagram with
   a cycle built with `on_infeasible_rbd="ignore"` says it has a cycle when
   evaluated, rather than recursing until Python stopped it.
+- **The tests run from an installed copy (#167).** The wheel holds the tests
+  but not the recorded results 13 of their modules read, which errored on
+  collection: they are package data now, and `test_packaging` checks that
+  every data file in the package is listed as such. The tests that check the
+  repository's docs, README or `pyproject.toml` skip in an installed copy,
+  where they had read another package's `docs` folder in site-packages.
+- **The package's licence metadata (#177).** `LICENSE` named the holder of
+  the sample project it was copied from; it is Derryn Knife's. The licence
+  is given as an SPDX expression (`license = "MIT"`, `license-files`, PEP
+  639), which building needs setuptools 77 for, and the wheel is marked as
+  typed (`py.typed`). SciPy's floor is 1.13, the first built for NumPy 2,
+  which RePyability already required.
 
 - **Planned outages after age replacement were overcounted, by about one
   in 10^4 (#164).** The chained maintenance of units that each reach their

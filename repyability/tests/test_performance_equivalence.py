@@ -1138,7 +1138,11 @@ def record_seeded_runs():
     RECORDED_PATH.write_text(json.dumps(recorded, indent=1) + "\n")
 
 
-RECORDED = json.loads(RECORDED_PATH.read_text())
+# Read here, at collection, for the runs' names; a missing file fails one
+# test below, rather than every module that imports from this one (#167).
+RECORDED = (
+    json.loads(RECORDED_PATH.read_text()) if RECORDED_PATH.is_file() else {}
+)
 
 
 @pytest.fixture(scope="module")
@@ -1147,6 +1151,7 @@ def runs():
 
 
 def test_every_seeded_run_is_recorded(runs):
+    assert RECORDED_PATH.is_file(), f"{RECORDED_PATH.name} is missing"
     assert sorted(runs) == sorted(RECORDED)
 
 

@@ -9,7 +9,6 @@ the same seed. And the report covers every public analysis.
 import inspect
 import re
 import warnings
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -30,6 +29,7 @@ from repyability import (
     network,
 )
 from repyability.rbd import phased_mission, routes
+from repyability.tests.repository import source
 from repyability.tests.test_performance_equivalence import binomial_first
 from repyability.tests.test_simulation_engines import (
     identical,
@@ -641,7 +641,7 @@ def test_the_guide_s_table_agrees_with_the_report():
     # The saving guide's table gives each method's route on a diagram of
     # plain components: the report must give the same, for each class
     # the method is on.
-    guide = Path(__file__).resolve().parents[2] / "docs/guide/saving.md"
+    guide = source("docs/guide/saving.md")
     section = guide.read_text().split("## What is exact and what is simulated")
     table = section[1].split("\n## ")[0]
     life, repair = W([500, 1.5]), E([0.5])
@@ -672,7 +672,7 @@ def test_the_readme_says_what_is_simulated():
     # The README's table of what is simulated: each situation it lists is
     # routed as it says, on a diagram of that kind. When a route changes
     # (say, warm standby made exact), the README must change with it.
-    readme = (Path(__file__).resolve().parents[2] / "README.md").read_text()
+    readme = source("README.md").read_text()
     nonrepairable, repairable = nonrepairable_rbds(), repairable_rbds()
 
     def alone(node):

@@ -1,5 +1,6 @@
 [build-system]
-requires = ["setuptools>=61", "wheel"]
+# 77 reads the licence as an SPDX expression (PEP 639).
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +8,8 @@ name = "repyability"
 dynamic = ["version"]
 description = "Reliability engineering tools for Python"
 readme = "README.md"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 authors = [{ name = "derrynknife", email = "derrynknife@gmail.com" }]
 keywords = [
@@ -23,7 +25,6 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
     "Intended Audience :: Education",
-    "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
@@ -35,7 +36,8 @@ classifiers = [
 ]
 dependencies = [
     "numpy>=2.0,<3",
-    "scipy>=1.7",
+    # The first SciPy built for NumPy 2.
+    "scipy>=1.13",
     "networkx>=3.0",
     # Deliberately uncapped: RePyability consumes a small surface of surpyval
     # (sf/ff/qf/random/mean, extras/with_params, regression sf/sf_tvc,
@@ -91,6 +93,12 @@ version = { attr = "repyability._version.__version__" }
 
 [tool.setuptools.packages.find]
 include = ["repyability*"]
+
+# The type-checking marker, and the data the installed tests read (#167):
+# test_packaging checks that every data file in the package is listed here.
+[tool.setuptools.package-data]
+"repyability" = ["py.typed"]
+"repyability.tests" = ["*.json"]
 
 # For Black pre-commit hook
 [tool.black]

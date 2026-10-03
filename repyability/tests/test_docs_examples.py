@@ -13,13 +13,17 @@ Tracebacks point at the page and line of the failing example.
 import ast
 import re
 import textwrap
-from pathlib import Path
 
 import numpy as np
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
-PAGES = sorted((ROOT / "docs").rglob("*.md")) + [ROOT / "README.md"]
+from repyability.tests.repository import CHECKOUT, ROOT
+
+PAGES = (
+    sorted((ROOT / "docs").rglob("*.md")) + [ROOT / "README.md"]
+    if CHECKOUT
+    else []
+)
 BLOCK = re.compile(r"```python\n(.*?)```", re.S)
 QUOTED = re.compile(r"#\s*(->|~>)\s*(-?\d+(?:\.\d+)?(?:[eE]-?\d+)?)")
 
@@ -78,7 +82,9 @@ def test_examples_run_and_quoted_numbers_hold(page):
 
 def test_every_page_is_covered():
     # Guard against the page list silently going empty (e.g. a moved docs/).
-    if not (ROOT / "docs").exists():
+    # An installed copy has no docs: its ROOT is site-packages, which may
+    # hold another package's docs/ (#167).
+    if not CHECKOUT:
         pytest.skip("the documentation sources are not available")
     assert len(PAGES) > 10
     quoted = sum(
