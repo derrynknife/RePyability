@@ -124,9 +124,9 @@ places, nested diagrams):
   importance measures at any time, also given each component's current age;
   the distribution of the system's capacity;
 - **repairable questions,** for independent components repaired when they
-  fail, replaced on age or block schedules or on condition at inspections
-  (the long run), or tested for hidden failures (with instant tests and
-  repairs, any life): the long-run availability,
+  fail, replaced on age or block schedules or on condition at inspections,
+  or tested for hidden failures (with instant tests and repairs, any
+  life): the long-run availability,
   failure frequency, MUT/MDT/MTBF and cost rate; the availability over time
   and over a mission, and the expected failures, outages, downtime and cost
   over a window, from new or from the components' current states (their
@@ -155,7 +155,6 @@ places, nested diagrams):
 | Block diagrams too meshed for their decision diagrams | Simulated (lifetimes, availability, cost and timelines, in Python); the exact and numerical analyses refused | Only in practice: the diagram grows with how wide the mesh is rather than with its paths, so most meshes are exact (a 10 × 10 grid in 0.04 seconds, a random mesh of 60 nodes and 345 links in 2); one of 70 nodes and 485 links passes the limit, `repyability.rbd.bdd.STEP_LIMIT`, which can be raised. |
 | Hidden failures whose tests or repairs take time, or whose tests miss failures of a life that is not exponential | Simulated (with instant tests and repairs, any life is numerical, summed over the test intervals; a constant failure rate is exact, staggered or with tests that miss failures too) | No: could be numerical, the next unit starting at a random phase of the test calendar, or the renewals on the lattice of the full tests (#159). |
 | Common-cause groups in a repairable diagram | Long run and importance exact, for exponential lives, tested or repaired; over time, allocation and the simulations refused | No: over time could be exact from the same Markov chain, the simulations could draw the shared causes, and an allocation could build each design's chain (#158). |
-| Replacement on condition at periodic inspections, over time | Simulated (the long-run values are numerical: a renewal cycle from one inspection that replaces the unit to the next) | No: could be numerical on the same grid (#161). |
 | Shared repair crews | For exponential lives and repairs, the long run and importance exact, and the values over time numerical (the same Markov chain, followed by uniformization), but the allocations; other lives simulated. The maintenance and test intervals are chosen as if every repair started at once on request (`assume_unlimited_crews=True`), for a plan to simulate with the crews | Other lives: yes, in general. Around a nested RBD the expected events and the capacity over time are refused, and could be numerical too (#162). |
 | Standby groups (a duty unit and its spares, repaired) | For exponential units, the long run and importance exact, and the values over time numerical (the units' Markov chain, followed by uniformization); other units simulated | Other units: yes, in general. |
 | Opportunistic maintenance (renewals at a group's stops) | Simulated | Yes: each member's renewals depend on the others' ages. |

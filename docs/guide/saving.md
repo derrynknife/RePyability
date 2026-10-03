@@ -154,8 +154,8 @@ The nodes can change a route:
   models](redundancy-models.md#how-the-survival-function-is-obtained)). The
   analyses built on such a node are then simulated too.
 - **Maintenance.** Preventive maintenance makes the long-run values numerical,
-  replacement on condition (`"policy": "condition"`) too, though its values
-  over time are simulated and the exact ones refuse it (#161). The exact
+  and the values over time too, replacement on condition (`"policy":
+  "condition"`) among it (#161). The exact
   values refuse a component renewed early at its maintenance group's stops
   (an `"opportunity"`). A group's set-up cost is
   exact when no member is renewed early, unless two members are replaced on

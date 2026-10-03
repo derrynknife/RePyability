@@ -1264,7 +1264,9 @@ class BlockCurve:
     ``_block_replacement.BlockAvailability``), the last interval repeating
     once it has settled. ``duration_knots`` are quantiles of the time a
     replacement takes. After a head (not ``fresh``), the curve starts at a
-    block time, with the replacement due there."""
+    block time, with the replacement due there. Replaced on condition (see
+    ``_condition_replacement.condition_availability``), the block times
+    are its inspections, which it counts too."""
 
     def __init__(self, result, duration_knots):
         self.interval = float(result.interval)
@@ -1275,6 +1277,7 @@ class BlockCurve:
         self.replace = result.replace
         self.failures = result.failures
         self.fresh = result.fresh
+        self.inspected = result.inspected
         knots = np.asarray(duration_knots, dtype=float)
         self.duration_knots = knots[(knots > 0.0) & (knots < self.interval)]
         last = len(self.replaced) - 1
@@ -1293,7 +1296,8 @@ class BlockCurve:
         """The unit's expected events before each time ``x`` (see
         ``GridCurve.events``): its failures, interval by interval, and its
         replacements at the block times, which take it down if they take
-        time (have a time model)."""
+        time (have a time model); replaced on condition, its inspections,
+        one at each block time it is up at."""
         x = np.asarray(x, dtype=float)
         k = np.floor(x / self.interval)
         s = x - k * self.interval
@@ -1317,9 +1321,15 @@ class BlockCurve:
         replaced = self.replaced.copy()
         if self.fresh:
             replaced[0] = 0.0
-        preventive = self._whole(replaced, np.where(x > 0.0, due + 1.0, 0.0))
+        before = np.where(x > 0.0, due + 1.0, 0.0)
+        preventive = self._whole(replaced, before)
         planned = preventive if self.replace.model is not None else None
-        return _events(failures, planned, preventive=preventive)
+        inspections = None
+        if self.inspected is not None:
+            inspections = self._whole(self.inspected, before)
+        return _events(
+            failures, planned, preventive=preventive, inspections=inspections
+        )
 
     def atoms(self, stop: float) -> Atoms:
         """The replacements at the block times before ``stop`` (see

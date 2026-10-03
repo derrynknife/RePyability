@@ -68,7 +68,11 @@ from repyability.rbd._block_replacement import (
     block_availability,
     block_cycle,
 )
-from repyability.rbd._condition_replacement import condition_cycle
+from repyability.rbd._condition_replacement import (
+    ConditionHead,
+    condition_availability,
+    condition_cycle,
+)
 from repyability.rbd._exact import (
     ExactSum,
     add_columns,
@@ -9196,8 +9200,6 @@ class RepairableRBD(RBD):
             )
         message = r.refusal(partial(self._require_time_models, node))
         if not message:
-            message = r.refusal(partial(self._require_no_condition, node))
-        if not message:
             message = r.refusal(partial(self._require_no_opportunities, node))
         if not message and node in self._imperfect:
             message = r.refusal(partial(self._require_minimal_repair, node))
@@ -9211,10 +9213,17 @@ class RepairableRBD(RBD):
         if not message and node in self._inspection:
             message = r.refusal(partial(self._require_tested_exact, node))
         schedule = self._preventive.get(node)
-        if not message and schedule is not None and schedule.policy == "block":
+        calendar = schedule is not None and schedule.policy != "age"
+        if not message and calendar:
             message = r.refusal(partial(self._require_block_models, node))
         if message:
             return r.REFUSED, message
+        if calendar and schedule.policy == "condition":  # type: ignore
+            return (
+                r.NUMERICAL,
+                "replacement on condition: followed from one inspection to "
+                "the next on a grid, the units kept by age",
+            )
         return r.NUMERICAL, "its renewal equation, solved on a grid"
 
     def _over_time(
@@ -11276,7 +11285,6 @@ class RepairableRBD(RBD):
         preventive maintenance, and follows it to the horizon: the head of a
         block-replacement curve, up to its first block time."""
         self._require_time_models(node)
-        self._require_no_condition(node)
         self._require_no_opportunities(node)
         component = self.components[node]
         if node in self._imperfect:
@@ -11288,7 +11296,7 @@ class RepairableRBD(RBD):
                 component.reliability, scale, _POINT_STEPS, counts
             )
         schedule = None if unscheduled else self._preventive.get(node)
-        if schedule is not None and schedule.policy == "block":
+        if schedule is not None and schedule.policy in ("block", "condition"):
             return self._block_curve(node, horizon, start)
         age = None if schedule is None else float(schedule.interval)
         duration = None if schedule is None else schedule.duration
@@ -11449,52 +11457,57 @@ class RepairableRBD(RBD):
     ):
         """A component's point availability from new under block
         replacement, over ``[0, horizon]`` (see
-        ``_block_replacement.block_availability``); in its long-run state
-        (a stationary ``start``), its settled cycle from its phase on; from
-        another state, its own curve up to its first block time, and the
-        block replacement's from there (see ``StartedBlockCurve``)."""
+        ``_block_replacement.block_availability``), or replaced on condition
+        (#161, see ``_condition_replacement.condition_availability``); in
+        its long-run state (a stationary ``start``), its settled cycle from
+        its phase on; from another state, its own curve up to its first
+        block time or inspection, and the schedule's from there (see
+        ``StartedBlockCurve``)."""
         component = self.components[node]
         schedule = self._preventive[node]
         duration = schedule.duration
         stationary = start is not None and start.stationary
         knots = np.empty(0) if duration is None else point_knots(duration)
+        life = component.reliability
+        models = (life, component.time_to_replace, duration, schedule.interval)
+
+        def followed(horizon: float, head=None):
+            if schedule.policy == "condition":
+                return condition_availability(
+                    *models, float(schedule.threshold), horizon, node, head
+                )
+            return block_availability(*models, horizon, node, head)
+
         if start is not None and not start.new and not stationary:
             length = schedule.interval - (start.phase or 0.0)
             head = self._unit_curve(
                 node, length, counts=True, start=start, unscheduled=True
             )
             down_sf = None
+            first = None
             if not start.alive:
                 down_sf = self._first_unit(
                     node, start, None, (), None, None
                 ).down_sf
+            else:
+                # The unit in service now, if unfailed by the first
+                # inspection, and its age there.
+                ages = float(start.age) + np.array([0.0, length])
+                alive = _sf_values(life.sf, ages)
+                first = (float(alive[1] / alive[0]), float(ages[1]))
 
             def failures(u):
                 return head.events(np.asarray(u, dtype=float))["failures"]
 
-            result = block_availability(
-                component.reliability,
-                component.time_to_replace,
-                duration,
-                schedule.interval,
-                max(horizon - length, 0.0),
-                node,
-                BlockHead(
-                    length,
-                    float(head.at(np.array([length]))[0]),
-                    failures,
-                    down_sf,
-                ),
+            up = float(head.at(np.array([length]))[0])
+            reached = (
+                ConditionHead(length, up, failures, down_sf, first)
+                if schedule.policy == "condition"
+                else BlockHead(length, up, failures, down_sf)
             )
+            result = followed(max(horizon - length, 0.0), reached)
             return StartedBlockCurve(head, BlockCurve(result, knots), length)
-        result = block_availability(
-            component.reliability,
-            component.time_to_replace,
-            duration,
-            schedule.interval,
-            np.inf if stationary else max(horizon, 0.0),
-            node,
-        )
+        result = followed(np.inf if stationary else max(horizon, 0.0))
         curve = BlockCurve(result, knots)
         if not stationary:
             return curve
@@ -14082,8 +14095,6 @@ class RepairableRBD(RBD):
             partial(self._require_minimal_repair, node)
         ):
             drop["repair"] = drop["replace_after"] = "imperfect repair"
-        if r.refusal(partial(self._require_no_condition, node)):
-            drop["preventive"] = "replacement on condition"
         if node in self._inspection and r.refusal(
             partial(self._require_tested_exact, node)
         ):
@@ -14091,10 +14102,14 @@ class RepairableRBD(RBD):
         schedule = self._preventive.get(node)
         if (
             schedule is not None
-            and schedule.policy == "block"
+            and schedule.policy in ("block", "condition")
             and r.refusal(partial(self._require_block_models, node))
         ):
-            drop["preventive"] = "block replacement"
+            drop["preventive"] = (
+                "block replacement"
+                if schedule.policy == "block"
+                else "replacement on condition"
+            )
         if not drop:
             return spec, ""
         what = list(dict.fromkeys(drop[key] for key in drop if key in spec))
@@ -15564,22 +15579,6 @@ class RepairableRBD(RBD):
                 "maintained or inspected on a schedule: its long-run time in "
                 "each stage has no exact value here. Give it a capacity "
                 "instead."
-            )
-
-    def _require_no_condition(self, node) -> None:
-        """Raise if a component is replaced on condition (a ``"preventive"``
-        schedule with ``"policy": "condition"``): its availability over time
-        is known only by simulation (its long-run values are numerical:
-        see ``_condition_replacement``)."""
-        schedule = self._preventive.get(node)
-        if schedule is not None and schedule.policy == "condition":
-            raise NotImplementedError(
-                f"Component {node!r} is replaced on condition (at an "
-                "inspection, if it is then likely enough to fail before the "
-                "next), so its availability over time has no exact value "
-                "here, as yet (#161): its long-run values do. Estimate the "
-                "values over time by simulation, with availability() or "
-                "cost()."
             )
 
     def _imperfect_phrase(self, node) -> str:

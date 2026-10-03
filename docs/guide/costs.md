@@ -430,10 +430,25 @@ calendar. A low threshold replaces it too young; a high one lets it fail.
   numerical, to about `1e-7`. A cycle in which the unit fails many times
   before an inspection replaces it is summed to its end as a geometric
   series once it falls at a steady rate.
-- **Simulated over time.** The availability over time and the expected
-  events of a window refuse a component replaced on condition, with the
-  reason (#161); `availability`, `cost` and `compare` simulate it, in
-  Python.
+- **Numerical over time** (#161). The same recursion, followed from new
+  over all the intervals rather than over one cycle, gives the availability
+  at any time and the expected events and cost of any window. Each
+  interval starts with what the inspection at its start replaced, the
+  repairs carried into it and the units it kept, by age, and after some
+  intervals it repeats from one to the next: its long-run cycle. From a
+  state, the unit in service at the start is decided on at its own age at
+  each inspection, however that falls on the grid.
+
+A year of the weekly-inspected pump from new, and the next 30 days of one
+already 600 hours old, 100 hours after its last inspection:
+
+```python
+from repyability import NodeState
+
+inspected.expected_cost(8760.0).total     # -> 114491   new: less than a year at the rate, 117139
+worn = {"p": NodeState(age=600.0, phase=100.0)}
+inspected.expected_cost(720.0, state=worn).total   # -> 10265   against 8517 new
+```
 
 ### Opportunistic maintenance
 

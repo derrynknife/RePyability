@@ -897,19 +897,6 @@ def test_the_readme_says_what_is_simulated():
                 "refused",
             ),
         ],
-        "Replacement on condition at periodic inspections, over time": [
-            (
-                repairable["replaced on condition"],
-                "point_availability",
-                "refused",
-            ),
-            (
-                repairable["replaced on condition"],
-                "mean_availability",
-                "numerical",
-            ),
-            (repairable["replaced on condition"], "availability", "simulated"),
-        ],
         "Shared repair crews": [
             (crew, "mean_availability", "exact"),
             (crew, "birnbaum_importance", "exact"),

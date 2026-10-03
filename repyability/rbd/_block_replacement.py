@@ -458,6 +458,11 @@ class BlockAvailability(NamedTuple):
     #: with a replacement due, ``replaced[0]``, as the later ones do (after
     #: a ``BlockHead``).
     fresh: bool = True
+    #: Replaced on condition (see ``_condition_replacement``): the
+    #: probability that the unit is up at the inspection that starts each
+    #: interval (an inspection, charged, whether it replaces the unit or
+    #: not); None under block replacement, which has no inspections.
+    inspected: Optional[np.ndarray] = None
 
 
 class BlockHead(NamedTuple):

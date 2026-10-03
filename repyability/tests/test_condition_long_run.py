@@ -157,8 +157,9 @@ def test_the_routes():
     assert route.route == r.NUMERICAL
     assert "replacement on condition" in route.reason
     assert "a" in route.nodes
+    # Over time too (#161): followed from one inspection to the next.
     over = report["point_availability"]
-    assert over.route == r.REFUSED and "#161" in over.reason
-    with pytest.raises(NotImplementedError) as error:
-        rbd.point_availability(10.0)
-    assert str(error.value) == over.reason
+    assert over.route == r.NUMERICAL
+    route, reason = rbd._node_over_time("a", "availability")
+    assert route == r.NUMERICAL and "replacement on condition" in reason
+    assert 0.0 < float(np.ravel(rbd.point_availability(10.0))[0]) < 1.0

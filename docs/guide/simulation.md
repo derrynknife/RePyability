@@ -266,9 +266,9 @@ of 5 000 for `tolerance=0.0005`.
   what the exact methods over time do not take: a standby group's switching
   (unless its units are exponential, when its own chain follows it), whose
   units then operate together; imperfect repair (but minimal repair in no
-  time, which the exact methods take); replacement on condition;
-  and inspections they do not take (tests or repairs that take time), whose
-  failures are then revealed. It keeps the rest, age and block replacement
+  time, which the exact methods take); and inspections they do not take
+  (tests or repairs that take time), whose failures are then revealed. It
+  keeps the rest, age and block replacement and replacement on condition
   among it: the closer the twin, the more it gains.
   `analysis_routes()["availability"].twin` says what it leaves out, or why
   there is none (a model that is a probability, or a simulated life).

@@ -138,6 +138,21 @@ other release, fixes included, the minor.
   and its cause can be read off today's plant. The event loop records
   them, in Python, as the compiled engine starts no component part way
   through a life.
+- **Replacement on condition over time (#161).** The availability over
+  time and the expected events, cost and capacity of a window refused a
+  component replaced on condition, simulated only, though its long run was
+  numerical. They now follow the long run's recursion from new over every
+  inspection interval, rather than over one cycle: each interval starts
+  with what the inspection at its start replaced, the repairs carried into
+  it and the units it kept, by age, and after some intervals it repeats
+  from one to the next, its long-run cycle. From a state, the unit in
+  service is decided on at each inspection at its own age, and from its
+  long-run state the cycle is shifted to its phase. A year of a weekly
+  inspected pump costs 114,491 from new (114,442 ± 447 simulated), less
+  than the long run's 117,139. A threshold of 0 gives block replacement's
+  values to 1e-12; the control variate's twin keeps the policy, so such a
+  system is its own twin, and its inspections are counted for their cost
+  as the simulation counts them, at each one it is up at.
 - **The stock of a block-replaced component (#160).** `spares_stock`
   refused a component under block replacement, whose demand in a lead time
   depends on where in the block interval the lead time falls. With its
