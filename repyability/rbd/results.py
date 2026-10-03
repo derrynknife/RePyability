@@ -1189,9 +1189,10 @@ class TotalCostAllocation(_ResultMapping):
         original unit or train.
     total_cost : float
         The total cost of owning the system for ``horizon`` with those
-        copies, ``acquisition_cost + cost_rate * horizon``: what
-        ``RepairableRBD.total_cost(horizon)`` gives for the system with the
-        copies drawn out.
+        copies, ``acquisition_cost + cost_rate * horizon`` (with the
+        horizon's present value for it when discounted): what
+        ``RepairableRBD.total_cost(horizon, discount_rate=...)`` gives for
+        the system with the copies drawn out.
     acquisition_cost : float
         The one-off cost of buying every component, each copy included.
     cost_rate : float
@@ -1208,6 +1209,9 @@ class TotalCostAllocation(_ResultMapping):
     trains : dict or None
         The trains considered (``allocate_redundancy``'s ``trains``), each
         name with its nodes in order; None without.
+    discount_rate : float
+        The continuous discount rate the running costs were discounted at
+        (0: undiscounted).
 
     Examples
     --------
@@ -1244,6 +1248,7 @@ class TotalCostAllocation(_ResultMapping):
     horizon: float
     method: str
     trains: Optional[Dict[Hashable, list]] = None
+    discount_rate: float = 0.0
 
 
 @dataclass

@@ -40,6 +40,15 @@ other release, fixes included, the minor.
   a 95% fill rate, and 17 on one. Members of one common-cause group, which
   their shared causes replace together, are refused; the results say which
   `members` a part holds.
+- **Discounted total costs (#184).** `total_cost` and
+  `allocate_redundancy` were undiscounted, so over a 20-year life a copy
+  bought now weighed the same as the running costs it saves later.
+  `discount_rate=r`, a continuous rate per unit time of the models
+  (`math.log(1.07) / 8760` for 7% a year in hours), gives the present
+  value: the components bought at the start, the running costs discounted,
+  the horizon counting as `(1 - exp(-r H)) / r`. A fourth pump train that
+  pays undiscounted no longer does at 15% a year. `TotalCostAllocation`
+  reports the `discount_rate`. Undiscounted by default, as before.
 - **Redundancy a train at a time (#184).** `RepairableRBD.allocate_redundancy`
   copied single nodes, each in parallel with its own, so "should we add a
   fourth pump train?" could not be asked of it. `trains={name: [nodes]}`

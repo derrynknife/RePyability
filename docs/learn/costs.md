@@ -535,15 +535,20 @@ line.allocate_redundancy(87600, min_availability=0.99999).units   # {'pump': 3}
 
 Two cautions. The copies are assumed to fail independently: a common cause
 (Lesson 5) sets a floor that no number of copies gets below, so price it in
-before trusting a design with many copies. And money spent in ten years
-counts the same as money spent now (see the pitfall below).
+before trusting a design with many copies. And unless you give a
+`discount_rate`, money spent in ten years counts the same as money spent now
+(see the pitfall below).
 
 ## Pitfalls
 
-!!! warning "Costs are not discounted"
-    A cost next year counts the same as one today. That is fine for a year's
-    budget; to compare designs over a 20-year life, discount each year's
-    expected cost yourself.
+!!! warning "Costs are not discounted unless you ask"
+    By default a cost next year counts the same as one today. That is fine
+    for a year's budget; to compare designs over a 20-year life, give
+    `total_cost` and `allocate_redundancy` a `discount_rate`: a continuous
+    rate per unit time of the models, `math.log(1.07) / 8760` for 7% a year
+    with lives in hours. It can change which design wins, as a copy bought
+    now saves money later. The rest (`expected_cost`, the cost rates, the
+    simulated costs) stays undiscounted.
 
 !!! warning "A mean alone hides risk"
     Designs with the same `expected_cost_rate()` can have very different bad

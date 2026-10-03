@@ -695,7 +695,9 @@ exact rate.
 
 The **total cost of ownership** over a horizon `H` adds the one-off cost of
 buying the components, `Σ a_i`, to `H` times the long-run cost rate
-(undiscounted). Redundancy that minimises it trades copies against downtime:
+(undiscounted; with a continuous `discount_rate` `r`, the present value,
+`H` counting as `(1 − e^{−rH}) / r`). Redundancy that minimises it trades
+copies against downtime:
 `n_i` independently repaired active copies of component *i* each cost
 `a_i + H · r_i` (`r_i` its own running cost rate) and are all down
 `(1 − A_i)^{n_i}` of the time, so a design costs

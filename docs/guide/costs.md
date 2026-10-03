@@ -50,7 +50,8 @@ plant.has_costs   # True
 ```
 
 Every cost defaults to 0, so any subset can be priced. Costs are
-undiscounted, and every failure is repaired at the same price (preventive
+undiscounted (but for the [total cost](#discounting)'s optional discount
+rate), and every failure is repaired at the same price (preventive
 replacement is [below](#preventive-maintenance)). A cost must be finite and
 non-negative; an unknown key (such as `repair_costs`) raises `ValueError`
 rather than being priced at zero.
@@ -778,9 +779,10 @@ the purchase to the running cost over the time the system is owned,
 total_cost(H) = acquisition_cost + expected_cost_rate() · H
 ```
 
-(undiscounted). The acquisition cost is not a running cost, so it is left
-out of `has_costs`, `expected_cost_rate` and the simulated samples; a
-`CostResult` reports it beside them, as `acquisition_cost`.
+(undiscounted by default: see [Discounting](#discounting)). The
+acquisition cost is not a running cost, so it is left out of `has_costs`,
+`expected_cost_rate` and the simulated samples; a `CostResult` reports it
+beside them, as `acquisition_cost`.
 
 ```python
 pump = {
@@ -804,6 +806,27 @@ long run.
 ```python
 line.expected_cost(87600.0).total   # -> 150089
 ```
+
+### Discounting
+
+Money spent in ten years is worth less than money spent now. `discount_rate`
+gives `total_cost` (and `allocate_redundancy`) the present value (#184): the
+components are bought at the start, and the running costs, spent at a steady
+rate, are discounted continuously at `r` per unit time, so the horizon counts
+as `(1 − e^(−r·H)) / r`. A rate is per unit time of the models: 7% a year,
+with models in hours, is `math.log(1.07) / 8760`.
+
+```python
+import math
+seven = math.log(1.07) / 8760
+line.total_cost(87600.0, discount_rate=seven)   # -> 114538   ten years count as 63,656 hours
+```
+
+Discounting favours what is cheaper to buy and dearer to run, as the running
+costs it saves come later: it can change which design wins (see the
+[fourth pump train](#whole-trains) below, which no longer pays at 15% a
+year). `expected_cost`, the cost rates and the simulated costs stay
+undiscounted.
 
 ### Buying redundancy
 
@@ -871,8 +894,9 @@ failures between them (see [Common-cause failures](common-cause.md)).
 Copies of a component with hidden failures are inspected together. A nested
 `RepairableRBD` cannot be given copies. Copies of a component under block
 replacement are replaced together, at the same block times. Costs are not
-discounted. For non-repairable systems, redundancy allocation within a
-budget or to a reliability target is in
+discounted unless `discount_rate` is given (see [Discounting](#discounting)).
+For non-repairable systems, redundancy allocation within a budget or to a
+reliability target is in
 [Design and allocation](design.md#redundancy-allocation).
 
 ### Whole trains
@@ -903,11 +927,16 @@ fourth = station.allocate_redundancy(87600.0, trains={"train 1": ["pump 1", "mot
 fourth.units                   # {'train 1': 2}   train 1 and a copy: four trains
 fourth.total_cost              # -> 295306
 station.allocate_redundancy(87600.0, nodes=["pump 1", "motor 1"]).total_cost   # -> 311130
+fifteen = math.log(1.15) / 8760   # 15% a year
+station.allocate_redundancy(87600.0, trains={"train 1": ["pump 1", "motor 1"]},
+                            discount_rate=fifteen).units   # {'train 1': 1}
 ```
 
 Copies of train 1's own nodes, each in parallel with its own, stand in for
 train 1 alone, where a fourth train stands in for whichever train is down:
-the fourth train is the cheaper design. Name one of identical trains.
+the fourth train is the cheaper design. Discounted at 15% a year it no
+longer pays: bought now, it saves running costs and downtime that come
+later. Name one of identical trains.
 `units` counts it and its copies under its name, which is not a node's, and
 the result's `trains` lists each train's nodes.
 

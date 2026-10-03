@@ -2388,6 +2388,26 @@ def _horizon(horizon) -> float:
     return value
 
 
+def _present_horizon(horizon: float, discount_rate) -> float:
+    """What a unit cost rate over ``[0, horizon)`` is worth at the start,
+    discounted continuously at ``discount_rate`` per unit time (#184):
+    ``(1 - exp(-r * horizon)) / r``, the ``horizon`` itself undiscounted;
+    a ValueError for a rate that is not a finite, non-negative number."""
+    number = isinstance(
+        discount_rate, (int, float, np.integer, np.floating)
+    ) and not isinstance(discount_rate, bool)
+    rate = float(discount_rate) if number else float("nan")
+    if not (np.isfinite(rate) and rate >= 0.0):
+        raise ValueError(
+            "discount_rate must be a finite, non-negative number (a "
+            "continuous rate per unit time of the component models), got "
+            f"{discount_rate!r}."
+        )
+    if rate == 0.0:
+        return horizon
+    return -math.expm1(-rate * horizon) / rate
+
+
 def _objective(cost: float, availability: float, max_cost_rate) -> float:
     """What an interval choice minimises: the cost rate, or the
     unavailability when the cost rate is capped."""
@@ -5327,18 +5347,24 @@ class RepairableRBD(RBD):
         horizon: float,
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
+        *,
+        discount_rate: float = 0.0,
     ) -> float:
         """Returns the total cost of owning the system for ``horizon``.
 
-        The life-cycle cost, undiscounted: buying the components, then
-        running the system for ``horizon`` at the long-run cost rate,
+        The life-cycle cost: buying the components, then running the system
+        for ``horizon`` at the long-run cost rate,
 
         ```text
         total = acquisition_cost + expected_cost_rate() * horizon
         ```
 
         with ``acquisition_cost`` the sum of the components'
-        ``"acquisition_cost"``. The running cost is the long-run rate,
+        ``"acquisition_cost"``. With a ``discount_rate`` ``r`` it is the
+        present value (#184): the components are bought at the start, and
+        the running costs, spent at a steady rate, are discounted
+        continuously, so the horizon counts as ``(1 - exp(-r * horizon)) /
+        r``. The running cost is the long-run rate,
         exact over a horizon long compared with the components' cycles;
         ``expected_cost(horizon).total`` is the exact expected cost of
         owning the system from new, and ``cost`` simulates a window from new
@@ -5354,6 +5380,10 @@ class RepairableRBD(RBD):
             As for ``expected_cost_rate``, by default None.
         broken_nodes : Collection[Hashable], optional
             As for ``expected_cost_rate``, by default None.
+        discount_rate : float, optional
+            The continuous discount rate per unit time of the component
+            models, by default 0 (undiscounted): for an annual rate of 7%
+            with models in hours, ``math.log(1.07) / 8760``.
 
         Returns
         -------
@@ -5363,7 +5393,8 @@ class RepairableRBD(RBD):
         Raises
         ------
         ValueError
-            If ``horizon`` is not finite and non-negative, or as for
+            If ``horizon`` is not finite and non-negative, ``discount_rate``
+            is not a finite, non-negative number, or as for
             ``expected_cost_rate``.
         NotImplementedError
             As for ``expected_cost_rate``.
@@ -5392,9 +5423,17 @@ class RepairableRBD(RBD):
         1.4851
         >>> round(rbd.total_cost(87600.0))
         150099
+
+        Its present value at 7% a year, the ten years counting as 63,656
+        hours:
+
+        >>> import math
+        >>> r = math.log(1.07) / 8760  # per hour
+        >>> round(rbd.total_cost(87600.0, discount_rate=r))
+        114538
         """
-        horizon = _horizon(horizon)
-        return self.acquisition_cost + horizon * self.expected_cost_rate(
+        present = _present_horizon(_horizon(horizon), discount_rate)
+        return self.acquisition_cost + present * self.expected_cost_rate(
             working_nodes, broken_nodes
         )
 
@@ -5984,6 +6023,7 @@ class RepairableRBD(RBD):
         min_availability: Optional[float] = None,
         max_units: Union[int, Dict[Hashable, int], None] = None,
         method: str = "exact",
+        discount_rate: float = 0.0,
     ) -> TotalCostAllocation:
         """Choose the redundancy with the lowest total cost of ownership.
 
@@ -6004,7 +6044,10 @@ class RepairableRBD(RBD):
 
         with ``n_i`` copies of node ``i``, each bought for ``a_i`` and
         running at ``r_i`` per unit time, and ``A_sys`` the system's
-        long-run availability. The copies fail and are repaired
+        long-run availability. With a ``discount_rate`` ``r`` it is the
+        present value, as ``total_cost`` gives it: the copies are bought at
+        the start and the running costs discounted, ``horizon`` counting as
+        ``(1 - exp(-r * horizon)) / r``. The copies fail and are repaired
         independently, so ``n`` copies of a node of long-run availability
         ``A`` are all down a fraction ``(1 - A) ** n`` of the time, and each
         design is scored exactly, with no simulation. (Copies of a
@@ -6025,8 +6068,7 @@ class RepairableRBD(RBD):
         optimum however many there are; otherwise a branch and bound over
         the designs does, which suits a handful of nodes.
         ``method="greedy"`` adds or removes one copy at a time while that
-        lowers the total: fast, but not guaranteed optimal. Discounting is
-        not modelled.
+        lowers the total: fast, but not guaranteed optimal.
 
         Parameters
         ----------
@@ -6065,6 +6107,10 @@ class RepairableRBD(RBD):
             gives up with an explanatory error after examining 500,000
             designs (the dynamic program, after holding 2,000,000 partial
             ones).
+        discount_rate : float, optional
+            The continuous discount rate per unit time of the component
+            models, by default 0 (undiscounted), as for ``total_cost``: the
+            design with the lowest present value is chosen.
 
         Returns
         -------
@@ -6078,8 +6124,9 @@ class RepairableRBD(RBD):
         ------
         ValueError
             If ``horizon``, ``nodes``, ``trains``, ``min_availability``,
-            ``max_units`` or ``method`` is invalid; if no component has an
-            acquisition cost and neither ``nodes`` nor ``trains`` is given;
+            ``max_units``, ``method`` or ``discount_rate`` is invalid; if
+            no component has an acquisition cost and neither ``nodes`` nor
+            ``trains`` is given;
             if a node's or train's copies cost nothing and are not capped;
             if ``min_availability`` cannot be reached; if a component has a
             non-parametric reliability model; or if the exact search
@@ -6161,6 +6208,8 @@ class RepairableRBD(RBD):
         ({'train 1': 2}, 295306)
         """
         horizon = _horizon(horizon)
+        # The running costs count over the horizon's present value.
+        present = _present_horizon(horizon, discount_rate)
         if method not in ("exact", "greedy"):
             raise ValueError(
                 f"method must be 'exact' or 'greedy', got {method!r}."
@@ -6231,7 +6280,7 @@ class RepairableRBD(RBD):
             copy_cost[node] = (
                 self.acquisition_costs.get(node, 0.0),
                 rate,
-                self.acquisition_costs.get(node, 0.0) + horizon * rate,
+                self.acquisition_costs.get(node, 0.0) + present * rate,
             )
         # A train's copy costs its nodes'.
         train_cost = [
@@ -6326,7 +6375,7 @@ class RepairableRBD(RBD):
         counts, _, u = lowest_total_cost(
             unavailability,
             item_cost,
-            horizon * self.downtime_cost_rate,
+            present * self.downtime_cost_rate,
             [gain(node) for node in chosen]
             + [train_gain(train) for train in drawn],
             caps,
@@ -6355,12 +6404,13 @@ class RepairableRBD(RBD):
         )
         return TotalCostAllocation(
             units=units,
-            total_cost=acquisition + horizon * cost_rate,
+            total_cost=acquisition + present * cost_rate,
             acquisition_cost=acquisition,
             cost_rate=cost_rate,
             availability=1.0 - u,
             horizon=horizon,
             method=method,
+            discount_rate=float(discount_rate),
             trains=(
                 {train.name: list(train.members) for train in drawn}
                 if drawn
