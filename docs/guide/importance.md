@@ -378,6 +378,108 @@ gain["maintenance"]   # -> 0.2571
 A `FaultTree` shares out its top event's change over its basic events, in
 the same way (`change` and `groups`).
 
+## What is moving the system: rates and Barlow–Proschan
+
+The measures above say how much each component matters. Two more say which
+component is moving the system *now*, or caused its failures *so far*.
+
+### The rate of change, split by component
+
+With independent components the system's reliability is multilinear in
+theirs, so its rate of change is the sum of each component's Birnbaum
+importance times its own rate, `dR/dt = Σ I_B^i dR_i/dt`. Each term is what
+that component is doing to the system then, and the terms add up.
+`reliability_rate(x)` gives the system's rate, which is `-df(x)`, and each
+node's part:
+
+```python
+rate = rbd.reliability_rate(50)
+rate.node_rate["valve"]   # -> -0.003147
+rate.node_rate["pump1"]   # -> -0.00152
+rate.rate                 # -> -0.006188
+```
+
+At 50 the valve is bringing the system down about as fast as the two pumps
+together. On a `RepairableRBD`, `availability_rate(x)` splits the rate of
+change of the point availability (from new, or from `state=`) the same way:
+
+```python
+rate = plant.availability_rate([0.5, 2.0])
+rate.node_rate["C"][0]   # -> -0.01199
+rate.node_rate["A"][0]   # -> -0.0022
+```
+
+Early on, C pulls the system down five times as fast as A, since A and B
+back each other up. A component's rate is that of its point availability,
+by differences on the grid it is solved on: numerical, to about `1e-5` of
+the rates, less just after a scheduled event where a curve turns sharply.
+
+Where a scheduled event makes an availability jump (a block replacement or
+test that takes the component off line), the system's jumps are reported
+apart, in `jump_times`, `jumps` and `node_jumps`. Components that jump
+together share each jump along the straight path between their values
+before and after, so the parts add up to it:
+
+```python
+serviced = RepairableRBD(
+    [("s", "A"), ("s", "B"), ("A", "C"), ("B", "C"), ("C", "t")],
+    {
+        "A": wearing(10, 2.0),
+        "B": wearing(10, 2.0),
+        "C": wearing(
+            50,
+            3.0,
+            preventive={
+                "policy": "block",
+                "interval": 20.0,
+                "duration": surv.Exponential.from_params([4.0]),
+            },
+        ),
+    },
+)
+rate = serviced.availability_rate(21.0)
+rate.jump_times[0]         # -> 20.0
+rate.node_jumps["C"][0]    # -> -0.9816
+rate.node_rate["C"]        # -> 0.07493
+```
+
+At 20, C's block replacement takes the system down; at 21, C coming back
+from it is what raises the availability.
+
+### Which component caused the failures: Barlow–Proschan
+
+Integrated over time, the parts give the Barlow–Proschan importance: the
+probability that the system's failure is caused by the component's, the one
+whose failure finds the system up and leaves it down.
+`barlow_proschan_importance()` gives each component's share over the whole
+life, and `barlow_proschan_importance(x)` its share of the failures by `x`:
+
+```python
+rbd.barlow_proschan_importance()["valve"]     # -> 0.3474
+rbd.barlow_proschan_importance(50)["valve"]   # -> 0.7212
+```
+
+Over its whole life the valve causes a third of the system's failures, but
+72% of those by 50: early failures are the valve's, while the pumps cause
+one only once both have failed.
+
+On a `RepairableRBD` it is each component's share of the system's failures
+in the long run (its terms of `system_failure_frequency`), or over a window
+from new or from `state=` (its terms of `expected_failures`). This is the
+exact counterpart of the simulated
+`failure_criticality_index.per_system_failure`:
+
+```python
+plant.barlow_proschan_importance()["C"]               # -> 0.5455
+plant.barlow_proschan_importance(window=10.0)["C"]    # -> 0.5682
+```
+
+With common-cause groups, a cause that strikes several members at once is
+counted for the group, under the tuple of its members. The rates, and the
+shares over a window, are refused with limited repair crews or common-cause
+groups, whose components do not fail independently. The long-run shares
+come from their chains.
+
 ## Limits
 
 - A perfect junction node (`PerfectReliability`, such as the vote of a

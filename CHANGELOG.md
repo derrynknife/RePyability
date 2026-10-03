@@ -171,6 +171,31 @@ other release, fixes included, the minor.
   last as long as its interval stays simulated (the refusal says how
   likely it is to), as do a common-cause group's members whose tests or
   repairs take time (#158).
+- **Which component is moving the system, and which caused its failures
+  (#195).** `RepairableRBD.availability_rate(x)` gives how fast the
+  system's point availability is changing at each time (from new or from
+  `state=`), split among the components: with independent components it is
+  multilinear in theirs, so its rate is the sum of each one's Birnbaum
+  importance times its own rate, and each term is what that component is
+  doing to the system then. A component's rate is its point availability's,
+  by differences on the grid it is solved on. Where a scheduled event makes
+  an availability jump (a block replacement or test that takes a component
+  off line), the system's jumps are reported apart, split among the
+  components that jump together along the straight path between their
+  values before and after, so that the parts add up. A `RateBreakdown`
+  holds the rates and jumps. `NonRepairableRBD.reliability_rate(x)` splits
+  the system's density the same way (from each node's own density; a
+  common-cause group's part, under the tuple of its members, by
+  differences). `barlow_proschan_importance` gives the probability that the
+  system's failure is caused by each component's: on a `NonRepairableRBD`,
+  over its whole life or given that it fails by `x` (its parts of the
+  density, integrated by adaptive quadrature); on a `RepairableRBD`, each
+  component's share of the system's failures in the long run (its terms of
+  `system_failure_frequency`, from the crews' and common-cause groups'
+  chains too) or over a window (its terms of `expected_failures`), the exact
+  counterpart of the simulated `failure_criticality_index`. The rates, and
+  the shares over a window, are refused with limited repair crews or
+  common-cause groups, as yet.
 - **Differential importance: shares that add up (#193).**
   `differential_importance` (on `NonRepairableRBD`, `RepairableRBD` and
   `FaultTree`) gives each node's (or basic event's) share of the change in
@@ -567,6 +592,13 @@ other release, fixes included, the minor.
 
 ### Fixed
 
+- **An age-replaced unit's later maintenance from new starts a piece of its
+  integrals.** A unit replaced on age from new is maintained again, unit
+  after unit, at nearly fixed times, which its curve follows on a grid of
+  its own; the start of each such window, where the chance of being down
+  for it begins to rise, was not among the curve's breaks, so a piece of a
+  window's integral (or a difference for its rate, #195) could straddle the
+  kink there.
 - **Schedules that repeat together only after a very long time are refused
   rather than exhausting memory.** The long-run values with block
   replacements or tests average over their schedules' common period, on a

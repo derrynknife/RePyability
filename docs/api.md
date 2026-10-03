@@ -121,6 +121,8 @@ Up/down histories over a window (see the
 
 ::: repyability.ExpectedEvents
 
+::: repyability.RateBreakdown
+
 ::: repyability.ExpectedCost
 
 ::: repyability.ConfidenceInterval

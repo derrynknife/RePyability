@@ -63,6 +63,7 @@ from .repeated_standby_node import RepeatedStandbyNode
 from .results import (
     CapacityDistribution,
     ConfidenceInterval,
+    RateBreakdown,
     RedundancyAllocation,
     ReliabilityRedundancyAllocation,
     UncertaintyResult,
@@ -4482,6 +4483,43 @@ class NonRepairableRBD(RBD):
                 "derivatives." + through,
             ),
         )
+        differenced = sorted(
+            (
+                str(node)
+                for node, model in self.reliabilities.items()
+                if node not in self.in_or_out
+                and node not in self._junctions()
+                and parametric_spec(model) is None
+            )
+        )
+        give(
+            ("reliability_rate",),
+            built(
+                r.NUMERICAL if grouped or differenced else r.EXACT,
+                "Each node's Birnbaum importance times its failure density, "
+                "its model's own"
+                + (
+                    f" (differences of the reliability for {differenced})"
+                    if differenced
+                    else ""
+                )
+                + (
+                    "; a common-cause group's part by differences of the "
+                    "system with its members' lives moved on."
+                    if grouped
+                    else "."
+                ),
+            ),
+        )
+        give(
+            ("barlow_proschan_importance",),
+            built(
+                r.NUMERICAL,
+                "Each node's part of the system's failure density (see "
+                "reliability_rate), integrated over time by adaptive "
+                "Gauss-Legendre quadrature (to about 1e-9).",
+            ),
+        )
         out["parameter_sensitivity"] = built(
             r.NUMERICAL,
             "The exact Birnbaum importance times each parameter's "
@@ -7531,3 +7569,306 @@ class NonRepairableRBD(RBD):
                 }
         scalar = x is None or np.ndim(x) == 0
         return shares(contributions, groups, scalar, improving)
+
+    def _node_density(self, node, x: np.ndarray) -> np.ndarray:
+        """A node's failure density at the times ``x``: its model's own
+        (``df``) where it has one, else by central differences of its
+        probability of failing, as ``df`` takes the system's (one-sided
+        near 0)."""
+        model = self.reliabilities[node]
+        try:
+            with np.errstate(all="ignore"):
+                return np.asarray(model.df(x), dtype=float).reshape(x.shape)
+        except (AttributeError, TypeError, ValueError, NotImplementedError):
+            pass
+        step = 1e-6 * np.maximum(np.abs(x), 1.0)
+        hi, lo = x + step, np.maximum(x - step, 0.0)
+        if hasattr(model, "ff"):
+            change = np.asarray(model.ff(hi), dtype=float) - np.asarray(
+                model.ff(lo), dtype=float
+            )
+        else:
+            change = np.asarray(model.sf(lo), dtype=float) - np.asarray(
+                model.sf(hi), dtype=float
+            )
+        return np.clip(change.reshape(x.shape) / (hi - lo), 0.0, None)
+
+    def _rate_parts(
+        self, x: np.ndarray, working_nodes, broken_nodes
+    ) -> Dict[Any, np.ndarray]:
+        """Each node's part in the system reliability's rate of change at
+        the times ``x`` (see ``reliability_rate``), and each common-cause
+        group's, under the tuple of its members."""
+        importance = self.birnbaum_importance(x, working_nodes, broken_nodes)
+        held = set(working_nodes or ()) | set(broken_nodes or ())
+        members = {m for group in self.ccf_groups for m in group.members}
+        parts: Dict[Any, np.ndarray] = {}
+        for node, value in importance.items():
+            if node in members:
+                continue
+            value = np.asarray(value, dtype=float).reshape(x.shape)
+            if node in held:
+                parts[node] = np.zeros(x.shape)
+                continue
+            with np.errstate(invalid="ignore"):
+                part = -value * self._node_density(node, x)
+            # A node that cannot matter, with an infinite density (a
+            # Weibull life of shape below 1, at 0), takes no part.
+            parts[node] = np.where(value == 0.0, 0.0, part)
+        if self.ccf_groups:
+            # A group's part: the system's change with its members' lives
+            # moved on and the rest held, by central differences.
+            step = 1e-6 * np.maximum(np.abs(x), 1.0)
+            hi, lo = x + step, np.maximum(x - step, 0.0)
+            p, q = self._importance_inputs(x, working_nodes, broken_nodes)
+            ends = [
+                self._importance_inputs(t, working_nodes, broken_nodes)
+                for t in (hi, lo)
+            ]
+            for group in self.ccf_groups:
+                downs = []
+                for moved_p, moved_q in ends:
+                    given, failing = dict(p), dict(q)
+                    for member in group.members:
+                        given[member] = moved_p[member]
+                        failing[member] = moved_q[member]
+                    downs.append(
+                        self._ccf_system_pair(
+                            given,
+                            failing,
+                            working_nodes or (),
+                            broken_nodes or (),
+                        )[1].reshape(x.shape)
+                    )
+                parts[tuple(group.members)] = -(downs[0] - downs[1]) / (
+                    hi - lo
+                )
+        return parts
+
+    def reliability_rate(
+        self,
+        x: ArrayLike,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> RateBreakdown:
+        """How fast the system reliability is falling at each time ``x``,
+        and which nodes are bringing it down (#195).
+
+        The nodes failing independently, the system reliability is
+        multilinear in theirs, so
+
+        ``dR/dt = sum_i I_B^i(t) dR_i/dt = -sum_i I_B^i(t) f_i(t)``
+
+        exactly: the system's failure density, ``f(t) = -dR/dt``, split
+        among the nodes, each term the density with which that node's
+        failure is the one that fails the system then. Integrated over
+        time, it is ``barlow_proschan_importance``. A node's density is its
+        model's own (``df``) where it has one, else by differences of its
+        reliability, as ``df`` takes the system's; with common-cause groups
+        a group's part (its members together, under the tuple of their
+        names) is the system's change with its members' lives moved on and
+        the rest held, by differences too.
+
+        Parameters
+        ----------
+        x : array_like
+            Time/s, a number or an array.
+        working_nodes : Collection[Hashable], optional
+            Nodes held working: their part is 0.
+        broken_nodes : Collection[Hashable], optional
+            Nodes held failed, likewise.
+
+        Returns
+        -------
+        RateBreakdown
+            The system reliability's ``rate`` of change (``-df``: a float
+            for a number ``x``, else an array) and each node's (and
+            group's) part in it, ``node_rate``; no jumps.
+
+        Raises
+        ------
+        ValueError
+            As ``birnbaum_importance`` does.
+
+        Examples
+        --------
+        Two pumps in parallel, then a valve: at 50 the valve is bringing
+        the system down about as fast as the two pumps together.
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "p1"), ("s", "p2"), ("p1", "v"), ("p2", "v"),
+        ...      ("v", "t")],
+        ...     {
+        ...         "p1": surv.Weibull.from_params([100, 2]),
+        ...         "p2": surv.Weibull.from_params([100, 2]),
+        ...         "v": surv.Weibull.from_params([200, 1.5]),
+        ...     },
+        ... )
+        >>> rate = rbd.reliability_rate(50)
+        >>> {node: round(part, 5) for node, part in rate.node_rate.items()}
+        {'p1': -0.00152, 'p2': -0.00152, 'v': -0.00315}
+        >>> round(rate.rate, 5) == round(-rbd.df(50), 5)
+        True
+        """
+        times = np.atleast_1d(np.asarray(x, dtype=float))
+        flat = times.ravel()
+        parts = self._rate_parts(flat, working_nodes, broken_nodes)
+        rate = np.zeros(flat.shape)
+        for part in parts.values():
+            rate = rate + part
+
+        def shaped(values: np.ndarray):
+            if np.ndim(x) == 0:
+                return float(values[0])
+            return values.reshape(times.shape)
+
+        return RateBreakdown(
+            x=shaped(flat),
+            rate=shaped(rate),
+            node_rate={key: shaped(part) for key, part in parts.items()},
+            jump_times=np.empty(0),
+            jumps=np.empty(0),
+            node_jumps={key: np.empty(0) for key in parts},
+        )
+
+    def barlow_proschan_importance(
+        self,
+        x: Optional[ArrayLike] = None,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> Dict[Any, Union[float, np.ndarray]]:
+        """Each node's Barlow-Proschan importance: the probability that the
+        system's failure is caused by the node's (Barlow & Proschan, 1975;
+        #195), given that the system fails by ``x``, or over its whole life.
+
+        A node's failure fails the system when the node is critical then,
+        so the probability that the system has failed by ``x``, through
+        node ``i``, is ``integral_0^x I_B^i(t) f_i(t) dt``: the
+        node's part of the system's failure density
+        (``reliability_rate``), integrated. Its share of the sum over the
+        nodes, the system's unreliability by ``x``, is the node's
+        importance; the shares add up to 1. With ``x`` left out the
+        integrals run over the whole life. A common-cause group's part is
+        its members' together, under the tuple of their names.
+
+        The integrals are by adaptive Gauss-Legendre quadrature, as
+        ``mean`` integrates the reliability, to about ``1e-9``, relative.
+
+        Parameters
+        ----------
+        x : array_like, optional
+            Time/s by which the system has failed, a number or an array; by
+            default its whole life.
+        working_nodes : Collection[Hashable], optional
+            Nodes held working (they cause nothing).
+        broken_nodes : Collection[Hashable], optional
+            Nodes held failed (likewise).
+
+        Returns
+        -------
+        dict
+            Each node's share (and each common-cause group's): floats for a
+            number ``x`` or the whole life, else arrays. NaN where the
+            system cannot have failed.
+
+        Raises
+        ------
+        ValueError
+            For a negative time, or as ``birnbaum_importance`` does.
+
+        Examples
+        --------
+        Two nodes in series, with failure rates 1 and 3: the second causes
+        three quarters of the system's failures.
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> E = surv.Exponential.from_params
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "a"), ("a", "b"), ("b", "t")],
+        ...     {"a": E([1.0]), "b": E([3.0])},
+        ... )
+        >>> shares = rbd.barlow_proschan_importance()
+        >>> {node: round(share, 6) for node, share in shares.items()}
+        {'a': 0.25, 'b': 0.75}
+        """
+        from . import _rates
+
+        keys = list(self._rate_parts(np.ones(1), working_nodes, broken_nodes))
+
+        def density(t: np.ndarray) -> np.ndarray:
+            parts = self._rate_parts(t, working_nodes, broken_nodes)
+            return -np.column_stack([parts[key] for key in keys])
+
+        knots = np.concatenate(
+            [np.empty(0)]
+            + [model_knots(m) for m in self.reliabilities.values()]
+        )
+        knots = np.unique(knots[np.isfinite(knots) & (knots > 0.0)])
+        if x is None:
+            ends = np.array(
+                [self._life_end(knots, working_nodes, broken_nodes)]
+            )
+        else:
+            ends = np.atleast_1d(np.asarray(x, dtype=float)).ravel()
+            if np.any(~np.isfinite(ends)) or np.any(ends < 0.0):
+                raise ValueError(
+                    f"Times must be finite and non-negative, got {x!r}."
+                )
+        order = np.argsort(ends)
+        totals = np.zeros((len(ends), len(keys)))
+        running = np.zeros(len(keys))
+        start = 0.0
+        for k in order:
+            end = float(ends[k])
+            if end > start:
+                running = running + _rates.integral(
+                    density, _filled_edges(knots, start, end)
+                )
+                start = end
+            totals[k] = running
+        whole = totals.sum(axis=1)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            shares = np.where(
+                whole[:, None] > 0.0, totals / whole[:, None], np.nan
+            )
+        if x is None or np.ndim(x) == 0:
+            return {key: float(shares[0, j]) for j, key in enumerate(keys)}
+        shape = np.shape(x)
+        return {key: shares[:, j].reshape(shape) for j, key in enumerate(keys)}
+
+    def _life_end(
+        self, knots: np.ndarray, working_nodes, broken_nodes
+    ) -> float:
+        """A time by which what is left of the system's failures is
+        negligible: its reliability within ``1e-14`` of what it never
+        loses."""
+
+        def sf(t):
+            return np.asarray(
+                self._sf_and_ff(np.atleast_1d(t), working_nodes, broken_nodes)[
+                    0
+                ],
+                dtype=float,
+            ).ravel()
+
+        never = float(sf(np.array([1e300]))[0])
+        start = float(knots[-1]) if knots.size else 1.0
+        tail = start * 2.0 ** np.arange(int(np.log2(1e300 / start)) + 1)
+        values = sf(tail)
+        ended = np.flatnonzero(values - never <= 1e-14)
+        return float(tail[ended[0]] if ended.size else tail[-1])
+
+
+def _filled_edges(knots: np.ndarray, start: float, end: float) -> np.ndarray:
+    """The pieces of an integral from ``start`` to ``end``: at the
+    ``knots`` within, and at least eight to a decade from the first."""
+    inside = knots[(knots > start) & (knots < end)]
+    low = max(start, float(inside[0]) if inside.size else end * 1e-6)
+    if low <= 0.0:
+        low = end * 1e-6
+    decades = max(np.log10(end / low), 1.0)
+    filler = np.geomspace(low, end, int(np.ceil(decades * 8)) + 1)
+    return np.unique(np.concatenate([[start, end], inside, filler]))

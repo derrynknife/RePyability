@@ -59,6 +59,7 @@ from repyability.rbd import (
 from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd import (
     _quadrature,
+    _rates,
     _sensitivity,
     _spares,
     _standby_chain,
@@ -134,6 +135,7 @@ from repyability.rbd.results import (
     ExpectedEvents,
     FailureCriticalityIndex,
     MaintenancePlan,
+    RateBreakdown,
     RestorationCriticalityIndex,
     SparesDemand,
     SparesStock,
@@ -3323,12 +3325,14 @@ class _Jumps(NamedTuple):
     at exact times (see ``RepairableRBD._atom_groups``): the times, the
     probability at each that the system fails there, and that a planned
     outage takes it down there, and how much its point availability there
-    falls with them (``drop``)."""
+    falls with them (``drop``); if asked for, each node's part in the
+    failures (``caused``)."""
 
     times: np.ndarray
     failures: np.ndarray
     planned: np.ndarray
     drop: np.ndarray
+    caused: Optional[dict] = None
 
 
 def _matched(times: np.ndarray, at: np.ndarray, values: np.ndarray):
@@ -4779,10 +4783,10 @@ class RepairableRBD(RBD):
                 "common-cause groups, as yet."
             )
 
-    def _ccf_outage_frequencies(
+    def _ccf_outage_terms(
         self, working_nodes, broken_nodes
-    ) -> Tuple[float, float]:
-        """``_outage_frequencies`` with common-cause groups, over the points
+    ) -> Tuple[List[Tuple[Any, float]], float]:
+        """``_outage_terms`` with common-cause groups, over the points
         of ``_with_ccf_groups``: a node outside the groups fails at its
         rate and takes the system down where it is critical (its Birnbaum
         importance at the point); each cause strikes at its rate and takes
@@ -4807,7 +4811,8 @@ class RepairableRBD(RBD):
         birnbaum = super()._birnbaum_importance(
             availability, node_failures=unavailability
         )
-        failures = planned = 0.0
+        terms: List[Tuple[Any, float]] = []
+        planned = 0.0
         blocks = set(self._block_nodes())
         for node in self.components:
             if node in forced or node in members:
@@ -4825,7 +4830,7 @@ class RepairableRBD(RBD):
                 node_planned = 0.0
             else:
                 node_failures, _, node_planned = self._node_frequencies(node)
-            failures += float(weights @ (importance * node_failures))
+            terms.append((node, float(weights @ (importance * node_failures))))
             planned += float(weights @ (importance * node_planned))
         base = self._system_unreliability(availability, unavailability)
         for group in self.ccf_groups:
@@ -4839,8 +4844,13 @@ class RepairableRBD(RBD):
                     up[member] = np.zeros_like(up[member])
                     down[member] = np.ones_like(down[member])
                 rise = self._system_unreliability(up, down) - base
-                failures += rate * float(weights @ rise)
-        return failures, planned
+                cause = (
+                    group.members[struck[0]]
+                    if len(struck) == 1
+                    else tuple(group.members)
+                )
+                terms.append((cause, rate * float(weights @ rise)))
+        return terms, planned
 
     def _validate_imperfect(self, node, spec: dict) -> Optional[_Imperfect]:
         """A component spec's imperfect repair (``"repair"`` and
@@ -9250,6 +9260,23 @@ class RepairableRBD(RBD):
             ),
             r.refused(frequencies) if frequencies else long_run,
         )
+        give(
+            ("barlow_proschan_importance",),
+            (
+                r.refused(frequencies)
+                if frequencies
+                else (
+                    long_run
+                    if long_run.route == r.REFUSED
+                    else dataclasses.replace(
+                        long_run,
+                        reason="Each component's share of the system's "
+                        "long-run failure frequency (the Birnbaum/Vesely "
+                        "formula's terms). " + long_run.reason,
+                    )
+                )
+            ),
+        )
         # The allocations assume independent components, which limited
         # repair crews make them not; the common-cause groups' chains take
         # theirs in.
@@ -9369,6 +9396,21 @@ class RepairableRBD(RBD):
             )
         )
         give(("point_availability", "mission_availability"), self._over_time())
+        independent = r.refusal(self._require_independent_curves)
+        give(
+            ("availability_rate",),
+            (
+                r.refused(independent)
+                if independent
+                else self._over_time(
+                    "Each component's renewal equation solved on a grid (to "
+                    "about 1e-7) and differentiated on it, times its Birnbaum "
+                    "importance at the components' availabilities; the jumps "
+                    "at scheduled events split along the path between the "
+                    "values either side."
+                )
+            ),
+        )
         over_time_capacity = self._capacity_refusal()
         give(
             ("point_capacity", "mission_capacity"),
@@ -10521,11 +10563,14 @@ class RepairableRBD(RBD):
         nodes: bool = False,
         setups: bool = False,
         state=None,
+        causes: bool = False,
     ):
         """The windows ``t`` checked, flat, and the nodes' curves and the
         system's expected events over them (see ``_window_counts``): the
         forced nodes have no curves. With ``setups``, the stops of each
-        maintenance group with a set-up cost are counted too."""
+        maintenance group with a set-up cost are counted too; with
+        ``causes``, the system failures each node causes (independent
+        nodes only)."""
         method = structure_method(method)
         windows = _check_times(t)
         working = set() if working_nodes is None else set(working_nodes)
@@ -10556,7 +10601,14 @@ class RepairableRBD(RBD):
             horizon, forced, counts=True, state=states
         )
         counts = self._window_counts(
-            curves, ends, working, broken, method, nodes=nodes, groups=groups
+            curves,
+            ends,
+            working,
+            broken,
+            method,
+            nodes=nodes,
+            groups=groups,
+            causes=causes,
         )
         return windows, ends, curves, counts, working, broken
 
@@ -10989,7 +11041,13 @@ class RepairableRBD(RBD):
         )
 
     def _atom_groups(
-        self, curves: dict, atoms: dict, working_nodes, broken_nodes, crew=None
+        self,
+        curves: dict,
+        atoms: dict,
+        working_nodes,
+        broken_nodes,
+        crew=None,
+        causes: bool = False,
     ) -> _Jumps:
         """The system at the times its nodes fail or are taken down at
         exact times (their ``atoms``): a unit dead on arrival at 0, an exact
@@ -11008,7 +11066,9 @@ class RepairableRBD(RBD):
         failure times its Birnbaum importance there. With limited repair
         crews (``crew``, see ``_chain_transient.CrewSystem``), the nodes are
         the nested RBDs, and the system is worked out over the crews' chain
-        at those times."""
+        at those times. With ``causes``, the failures are split among the
+        nodes failing together as ``_rates.split_jumps`` splits the fall
+        in availability from just before to just after their failures."""
         down = [
             a.times[(a.failure > 0.0) | (a.planned > 0.0)]
             for a in atoms.values()
@@ -11016,7 +11076,13 @@ class RepairableRBD(RBD):
         times = np.unique(np.concatenate(down)) if down else np.empty(0)
         if not times.size:
             empty = np.empty(0)
-            return _Jumps(empty, empty, empty, empty)
+            return _Jumps(
+                empty,
+                empty,
+                empty,
+                empty,
+                {node: empty for node in curves} if causes else None,
+            )
         at, before, failed, planned = {}, {}, {}, {}
         for node, curve in curves.items():
             value = np.asarray(curve.at(times.copy()), dtype=float)
@@ -11038,11 +11104,24 @@ class RepairableRBD(RBD):
 
         now, first = unreliability(at), unreliability(before)
         after, last = unreliability(failed), unreliability(planned)
+        caused = None
+        if causes:
+            assert crew is None, "the crews' chain: not split by node"
+
+            def importances(values: dict) -> dict:
+                size = len(next(iter(values.values())))
+                return self._importances(
+                    self._filled(values, size, working_nodes, broken_nodes)
+                )[0]
+
+            falls = _rates.split_jumps(importances, before, failed)
+            caused = {node: -fall for node, fall in falls.items()}
         return _Jumps(
             times,
             np.maximum(after - first, 0.0),
             np.maximum(last - after, 0.0),
             np.maximum(now - first, 0.0),
+            caused,
         )
 
     def _system_atoms(self, curves: dict, stop: float, crew=None) -> Atoms:
@@ -11069,13 +11148,17 @@ class RepairableRBD(RBD):
         nodes: bool = False,
         groups: Optional[dict] = None,
         crew=None,
+        causes: bool = False,
     ) -> dict:
         """The system's expected up time, failures and planned outages in
         ``[0, end)`` for each of ``ends``, from its nodes' ``curves`` (which
         count their events); with ``nodes``, each node's expected down time
-        too; and for each of ``groups`` (a name and members), the expected
-        number of its members' failures and replacements that fall at one
-        instant with another's (each stop of a maintenance group is one).
+        too; with ``causes``, the system failures each node causes (its
+        terms of the failures' sum, below, under ``"caused"``; not with the
+        crews' chain); and for each of ``groups`` (a name and members), the
+        expected number of its members' failures and replacements that fall
+        at one instant with another's (each stop of a maintenance group is
+        one).
         With limited repair crews (``crew``, a
         ``_chain_transient.CrewSystem``, #162), the ``curves`` are the nested
         RBDs', independent of the crews' chain: the system is worked out
@@ -11108,7 +11191,7 @@ class RepairableRBD(RBD):
         beyond = ends > reach
         atoms = {node: curve.atoms(reach) for node, curve in curves.items()}
         jumps = self._atom_groups(
-            curves, atoms, working_nodes, broken_nodes, crew
+            curves, atoms, working_nodes, broken_nodes, crew, causes
         )
         # The events at exact times start pieces; the ends need not (see
         # ``totals_at``), so that a nested RBD counted at many times costs
@@ -11175,13 +11258,18 @@ class RepairableRBD(RBD):
                 failures += _quadrature.summed(rate, half)
             for node in curves:
                 counted = spread(node, np.concatenate([a, b, x]))
-                for total, values in zip((failures, planned), counted):
-                    total += _quadrature.stieltjes(
+                for total, values, key in zip(
+                    (failures, planned), counted, ("caused", None)
+                ):
+                    term = _quadrature.stieltjes(
                         importance[node],
                         values[:n],
                         values[n : 2 * n],  # noqa: E203
                         values[2 * n :],  # noqa: E203
                     )
+                    total += term
+                    if causes and key is not None:
+                        out[(key, node)] = term
             out["failures"], out["planned"] = failures, planned
             return out
 
@@ -11210,15 +11298,24 @@ class RepairableRBD(RBD):
             "failures": np.zeros(pieces),
             "planned": np.zeros(pieces),
         }
+        if causes:
+            for node in curves:
+                starting[("caused", node)] = np.zeros(pieces)
         if jumps.times.size:
             piece = np.searchsorted(edges, jumps.times, side="right") - 1
             np.add.at(starting["failures"], piece, jumps.failures)
             np.add.at(starting["planned"], piece, jumps.planned)
+            if causes:
+                assert jumps.caused is not None
+                for node, values in jumps.caused.items():
+                    np.add.at(starting[("caused", node)], piece, values)
         for name, members in (groups or {}).items():
             starting[("overlaps", name)] = self._overlaps(
                 atoms, members, edges
             )
         keys: List[Any] = ["uptime", "failures", "planned"]
+        if causes:
+            keys += [("caused", node) for node in curves]
         if nodes:
             keys += [("downtime", node) for node in curves]
             if crew is not None:
@@ -11266,7 +11363,7 @@ class RepairableRBD(RBD):
                 method,
                 crew,
             )
-        out: dict = {"downtime": {}, "overlaps": {}}
+        out: dict = {"downtime": {}, "overlaps": {}, "caused": {}}
         inside = totals_at(ends[~beyond])
         for key, values in series.items():
             totals = np.empty(len(ends))
@@ -11325,9 +11422,11 @@ class RepairableRBD(RBD):
             events = curve.events(span)
             width = span[1] - span[0]
             weight = float(importance[node][0])
-            failures += weight * np.diff(events["failures"])[0] / width
+            caused = weight * np.diff(events["failures"])[0] / width
+            failures += caused
             planned += weight * np.diff(events["planned"])[0] / width
             rates[("downtime", node)] = 1.0 - float(values[node][0])
+            rates[("caused", node)] = caused
         rates["failures"], rates["planned"] = failures, planned
         return rates
 
@@ -13392,10 +13491,10 @@ class RepairableRBD(RBD):
             out[node] = np.ones(size)
         return out, chain.probabilities
 
-    def _chain_outage_frequencies(
+    def _chain_outage_terms(
         self, working_nodes, broken_nodes
-    ) -> Tuple[float, float]:
-        """``_outage_frequencies`` with limited repair crews, over the
+    ) -> Tuple[List[Tuple[Any, float]], float]:
+        """``_outage_terms`` with limited repair crews, over the
         states of their Markov chain: in each, a component that is up fails
         at its constant rate, and takes the system down if it is critical
         there. A nested RBD enters through its own frequencies, as it has
@@ -13408,7 +13507,8 @@ class RepairableRBD(RBD):
         birnbaum = super()._birnbaum_importance(
             availability, node_failures=unavailability
         )
-        failures = planned = 0.0
+        terms: List[Tuple[Any, float]] = []
+        planned = 0.0
         for node in self.components:
             if node in forced:
                 continue
@@ -13418,9 +13518,9 @@ class RepairableRBD(RBD):
                 node_failures, node_planned = life * availability[node], 0.0
             else:
                 node_failures, _, node_planned = self._node_frequencies(node)
-            failures += float(weights @ (importance * node_failures))
+            terms.append((node, float(weights @ (importance * node_failures))))
             planned += float(weights @ (importance * node_planned))
-        return failures, planned
+        return terms, planned
 
     def _maintained_follow_up(
         self, event: Event, source, schedule: _Preventive
@@ -18340,12 +18440,29 @@ class RepairableRBD(RBD):
         ``sum_i I_B(i) * omega_i`` over the nodes' failures, and the same
         over their planned outages (a node's outage takes the system down
         when the node is critical, which it is with probability
-        ``I_B(i)``). With limited repair crews, see
-        ``_chain_outage_frequencies``."""
+        ``I_B(i)``): the sum of ``_outage_terms``."""
+        terms, planned = self._outage_terms(working_nodes, broken_nodes)
+        failures = 0.0
+        for _, term in terms:
+            failures += term
+        return failures, planned
+
+    def _outage_terms(
+        self,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> Tuple[List[Tuple[Any, float]], float]:
+        """The system's long-run failures per unit time, as the terms of
+        their sum, each with what causes it (a node, or a common-cause
+        group's members together, for its causes that strike more than one
+        of them), and its planned outages per unit time (see
+        ``_outage_frequencies``). With limited repair crews, see
+        ``_chain_outage_terms``; with common-cause groups,
+        ``_ccf_outage_terms``."""
         if self._crews_couple():
-            return self._chain_outage_frequencies(working_nodes, broken_nodes)
+            return self._chain_outage_terms(working_nodes, broken_nodes)
         if self.ccf_groups:
-            return self._ccf_outage_frequencies(working_nodes, broken_nodes)
+            return self._ccf_outage_terms(working_nodes, broken_nodes)
         times, weights = self._long_run_grid()
         availability = self._probabilities_with_overrides(
             self._availabilities_at(times), working_nodes, broken_nodes
@@ -18362,7 +18479,8 @@ class RepairableRBD(RBD):
         birnbaum = super()._birnbaum_importance(
             availability, node_failures=unavailability
         )
-        failures = planned = 0.0
+        terms: List[Tuple[Any, float]] = []
+        planned = 0.0
         blocks = set(self._block_nodes())
         for node in self.components:
             if node in forced:
@@ -18384,10 +18502,10 @@ class RepairableRBD(RBD):
                 node_planned = 0.0
             else:
                 node_failures, _, node_planned = self._node_frequencies(node)
-            failures += float(weights @ (importance * node_failures))
+            terms.append((node, float(weights @ (importance * node_failures))))
             planned += float(weights @ (importance * node_planned))
         planned += self._calendar_outages(working_nodes, broken_nodes)
-        return failures, planned
+        return terms, planned
 
     def mean_time_between_failures(
         self,
@@ -19640,3 +19758,311 @@ class RepairableRBD(RBD):
             }
         scalar = x is None or np.ndim(x) == 0
         return shares(contributions, groups, scalar, improving)
+
+    def _require_independent_curves(self) -> None:
+        """Raise if the components do not fail and recover independently
+        over time (see ``availability_rate``): with limited repair crews,
+        or common-cause groups, the system's change is not split among them
+        as yet."""
+        if self._crews_couple():
+            raise NotImplementedError(
+                "With fewer repair crews than components, a component can "
+                "wait for a crew, so they do not fail and recover "
+                "independently: the system's change over time is not split "
+                "among them, as yet."
+            )
+        if self.ccf_groups:
+            raise NotImplementedError(
+                "With common-cause groups, their members do not fail "
+                "independently: the system's change over time is not split "
+                "among them, as yet."
+            )
+
+    def availability_rate(
+        self,
+        x,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        *,
+        state=None,
+    ) -> RateBreakdown:
+        """How fast the system's availability is changing at each time
+        ``x`` from new (or from the components' ``state``), and which
+        components are moving it (#195).
+
+        The components failing and recovering independently, the system's
+        point availability is multilinear in theirs, so
+
+        ``dA/dt = sum_i I_B^i(t) dA_i/dt``
+
+        exactly, ``I_B^i(t)`` component ``i``'s Birnbaum importance at the
+        components' point availabilities then: each term is what that
+        component is doing to the system, pulling it down (negative) as it
+        wears or fails, or up as it is restored, and the terms add up to
+        the system's rate. A component's ``dA_i/dt`` is the rate of change
+        of its point availability (see ``point_availability``), by
+        differences on the grid that is worked out on, so the rates are
+        numerical: to about ``1e-5`` of their size, less where a curve
+        bends sharply (just after a scheduled event), and at 0 where a
+        life's density is not smooth there.
+
+        At a scheduled event a component's availability can jump: a block
+        replacement or test that takes it off line, maintenance due at a
+        fixed age from new. The system's jumps there are reported apart,
+        each split among the components that jump together along the
+        straight path between their values before and after, which, the
+        system being multilinear, gives parts that add up to the jump. The
+        rate at the time of a jump is the rate just after it.
+
+        Parameters
+        ----------
+        x : float or array-like
+            Times from new (or from ``state``).
+        working_nodes : Collection[Hashable], optional
+            Nodes held working: their part is 0.
+        broken_nodes : Collection[Hashable], optional
+            Nodes held failed, likewise.
+        state : dict or str, optional
+            The components' current states, as for ``point_availability``.
+
+        Returns
+        -------
+        RateBreakdown
+            The system's ``rate`` (a float for a number ``x``, else an array
+            in its shape) and each component's part in it (``node_rate``),
+            and the jumps after 0 and up to the last of ``x``
+            (``jump_times``, ``jumps``, ``node_jumps``).
+
+        Raises
+        ------
+        ValueError
+            For a negative or non-finite time, or as
+            ``point_availability`` does.
+        NotImplementedError
+            With limited repair crews or common-cause groups (the
+            components are not independent), or as ``point_availability``
+            does.
+
+        Examples
+        --------
+        Two pumps in parallel, wearing out, and a valve after them that
+        fails at a constant rate. Early on it is the valve that pulls the
+        system down; by 8, it has settled, and the pumps' wear does:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> def unit(life):
+        ...     return {
+        ...         "reliability": life,
+        ...         "repairability": surv.Exponential.from_params([1.0]),
+        ...     }
+        >>> rbd = RepairableRBD(
+        ...     [("s", "p1"), ("s", "p2"), ("p1", "v"), ("p2", "v"),
+        ...      ("v", "t")],
+        ...     {
+        ...         "p1": unit(surv.Weibull.from_params([10, 3])),
+        ...         "p2": unit(surv.Weibull.from_params([10, 3])),
+        ...         "v": unit(surv.Exponential.from_params([0.02])),
+        ...     },
+        ... )
+        >>> rate = rbd.availability_rate([2.0, 8.0])
+        >>> rate.node_rate["v"].round(5).tolist()
+        [-0.0026, -1e-05]
+        >>> rate.node_rate["p1"].round(5).tolist()
+        [-3e-05, -0.00156]
+        """
+        self._require_independent_curves()
+        times = _check_times(x)
+        working = set() if working_nodes is None else set(working_nodes)
+        broken = set() if broken_nodes is None else set(broken_nodes)
+        self._validate_node_overrides(working, broken)
+        forced = working | broken
+        states = self._states(state, forced)
+        flat = times.ravel()
+        horizon = float(flat.max()) if flat.size else 0.0
+        scale = horizon if horizon > 0.0 else 1.0
+        # A little past the last time, for the differences there.
+        curves = self._availability_curves(1.01 * scale, forced, state=states)
+
+        def importances(values: dict) -> dict:
+            size = len(next(iter(values.values()))) if values else len(flat)
+            return self._importances(
+                self._filled(values, size, working, broken)
+            )[0]
+
+        importance = importances(
+            {node: curve.at(flat) for node, curve in curves.items()}
+        )
+        node_rate: Dict[Hashable, np.ndarray] = {}
+        rate = np.zeros(len(flat))
+        for node in self.components:
+            part = np.zeros(len(flat))
+            if node in curves:
+                part = importance[node] * _rates.derivative(
+                    curves[node], flat, scale
+                )
+            node_rate[node] = part
+            rate = rate + part
+        jump_times, before, after = _rates.jumps(curves, horizon)
+        split = _rates.split_jumps(importances, before, after)
+        node_jumps: Dict[Hashable, np.ndarray] = {}
+        jumps = np.zeros(len(jump_times))
+        for node in self.components:
+            part = np.asarray(
+                split.get(node, np.zeros(len(jump_times))), dtype=float
+            )
+            node_jumps[node] = part
+            jumps = jumps + part
+
+        def shaped(values: np.ndarray):
+            if np.ndim(x) == 0:
+                return float(values[0])
+            return values.reshape(times.shape)
+
+        return RateBreakdown(
+            x=shaped(flat),
+            rate=shaped(rate),
+            node_rate={node: shaped(v) for node, v in node_rate.items()},
+            jump_times=jump_times,
+            jumps=jumps,
+            node_jumps=node_jumps,
+        )
+
+    def barlow_proschan_importance(
+        self,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        *,
+        window=None,
+        state=None,
+    ) -> dict:
+        """Each component's share of the system's failures: the probability
+        that a system failure is caused by the component's (Barlow &
+        Proschan, 1975; #195), in the long run or over a window from new
+        (or from the components' ``state``).
+
+        A component's failure fails the system when the component is
+        critical then, which it is with probability ``I_B^i(t)``, so the
+        system's failures are ``sum_i integral I_B^i(t) dM_i(t)``,
+        ``M_i(t)`` the component's expected failures by ``t``: each term is
+        the system failures that component causes, and its share of the sum
+        is its Barlow-Proschan importance. In the long run it is its share
+        of ``system_failure_frequency``; over a window, of
+        ``expected_failures`` (the exact counterpart of the simulated
+        ``failure_criticality_index.per_system_failure``). Failures of
+        several components at one instant (exact lifetimes, units dead on
+        arrival) are split among them as ``availability_rate`` splits a
+        jump.
+
+        With common-cause groups (in the long run), a cause that strikes
+        several members at once is counted for the group, under the tuple
+        of its members, and one that strikes a member alone for that
+        member; with limited repair crews, the shares come from the crews'
+        chain. Over a window neither is split as yet.
+
+        Parameters
+        ----------
+        working_nodes : Collection[Hashable], optional
+            Nodes held working (they cause nothing).
+        broken_nodes : Collection[Hashable], optional
+            Nodes held failed (likewise).
+        window : float or array-like, optional
+            Over ``[0, window)`` (one share for each window); by default
+            the long run.
+        state : dict or str, optional
+            With ``window``, the components' current states, as for
+            ``expected_failures``.
+
+        Returns
+        -------
+        dict
+            Each component's share (and each common-cause group's, under
+            the tuple of its members), adding up to 1: floats in the long
+            run or for one window, else arrays in the windows' shape. NaN
+            where the system cannot fail.
+
+        Raises
+        ------
+        ValueError
+            For ``state`` without a window, a window that is not a positive
+            length, or as ``system_failure_frequency`` and
+            ``expected_failures`` do.
+        NotImplementedError
+            Over a window with limited repair crews or common-cause groups,
+            or as ``system_failure_frequency`` and ``expected_failures``
+            do.
+
+        Examples
+        --------
+        Two units in series, failing at rates 0.2 and 0.5 and repaired at
+        rate 1: in the long run a share of the system's failures in
+        proportion to each one's rate, while the system is up:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> E = surv.Exponential.from_params
+        >>> rbd = RepairableRBD(
+        ...     [("s", "a"), ("a", "b"), ("b", "t")],
+        ...     {
+        ...         "a": {"reliability": E([0.2]), "repairability": E([1.0])},
+        ...         "b": {"reliability": E([0.5]), "repairability": E([1.0])},
+        ...     },
+        ... )
+        >>> shares = rbd.barlow_proschan_importance()
+        >>> {node: round(share, 4) for node, share in shares.items()}
+        {'a': 0.2857, 'b': 0.7143}
+        """
+        if window is None:
+            if state is not None:
+                raise ValueError(
+                    "state is where the components start from, for the "
+                    "shares over a window: give its length (window). The "
+                    "long-run shares do not depend on it."
+                )
+            terms, _ = self._outage_terms(working_nodes, broken_nodes)
+            parts: Dict[Any, Any] = {node: 0.0 for node in self.components}
+            for cause, term in terms:
+                parts[cause] = parts.get(cause, 0.0) + term
+            scalar = True
+        else:
+            self._require_independent_curves()
+            ends = _check_times(window)
+            if np.any(ends <= 0.0):
+                raise ValueError(
+                    "A window must be a positive length of time, got "
+                    f"{window!r}."
+                )
+            windows, flat, _, counts, _, _ = self._window(
+                window,
+                working_nodes,
+                broken_nodes,
+                "p",
+                state=state,
+                causes=True,
+            )
+            caused = counts["caused"]
+            parts = {
+                node: np.asarray(
+                    caused.get(node, np.zeros(len(flat))), dtype=float
+                )
+                for node in self.components
+            }
+            scalar = np.ndim(window) == 0
+        total: Any = 0.0
+        for value in parts.values():
+            total = total + np.asarray(value, dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            shares = {
+                key: np.where(
+                    total > 0.0, np.asarray(value, dtype=float) / total, np.nan
+                )
+                for key, value in parts.items()
+            }
+        if scalar:
+            return {
+                key: float(np.ravel(value)[0]) for key, value in shares.items()
+            }
+        return {
+            key: np.asarray(value).reshape(windows.shape)
+            for key, value in shares.items()
+        }

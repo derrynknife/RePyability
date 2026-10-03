@@ -240,6 +240,13 @@ ranking at an operating point:
   maintenance intervals. A uniform change (every `dθ` equal) shares out the
   Birnbaum importance, a proportional one (every `dθ / θ` equal) the
   criticality.
+- **Rates and Barlow–Proschan** `availability_rate`, `reliability_rate`,
+  `barlow_proschan_importance`: with independent components the system's
+  rate of change is the sum of each one's Birnbaum importance times its own
+  rate, so it splits into what each component is doing to the system now.
+  Integrated over time, a component's part gives the probability that it
+  caused the system's failure (Barlow–Proschan), the exact counterpart of
+  the simulated failure criticality index.
 
 A rule of thumb: **Birnbaum** for "where does an improvement help most",
 **risk achievement worth** for "what must not be allowed to fail",

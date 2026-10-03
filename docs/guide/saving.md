@@ -135,12 +135,15 @@ maintenance or hidden failures):
 | `df`, `hf` | numerical | The exact reliability, differentiated numerically. |
 | `time_to_reliability`, `bx_life`, `remaining_life` | numerical | The exact reliability, inverted by root-finding. |
 | `parameter_sensitivity` | numerical | The exact Birnbaum importance times a numerical parameter derivative; a repairable diagram's, central differences of its long-run values in each lever. |
+| `reliability_rate` | exact | Each node's Birnbaum importance times its own failure density: the system's density, split by node. |
+| `NonRepairableRBD.barlow_proschan_importance` | numerical | Each node's part of the system's failure density, integrated over time by adaptive quadrature (to about `1e-9`). |
 | `mean`, `mean_time_to_failure` | numerical | The exact reliability, integrated over time by quadrature (to about `1e-10`). |
 | `random`, `mean_time_to_failure_interval` | simulated | Monte Carlo. |
-| `mean_availability`, `system_failure_frequency`, `mean_up_time`, `mean_down_time`, `mean_time_between_failures`, `expected_cost_rate`, `total_cost`, and the repairable importance measures | exact | From the long-run node availabilities. |
+| `mean_availability`, `system_failure_frequency`, `mean_up_time`, `mean_down_time`, `mean_time_between_failures`, `expected_cost_rate`, `total_cost`, and the repairable importance measures (`RepairableRBD.barlow_proschan_importance` among them, from the failure frequency's terms) | exact | From the long-run node availabilities. |
 | `capacity_distribution`, `system_capacity` | exact | From the node reliabilities (at a time) or long-run availabilities. |
 | `point_capacity`, `mission_capacity` | numerical | The capacity distribution at each component's availability over time from new or from its state (each solved on a grid, to about `1e-7`), and its mean over a window. |
 | `point_availability`, `mission_availability` | numerical | Each component's renewal equation, from new or from its state, solved numerically (to about `1e-7`), and the system at its components' availabilities at each time; with repair crews, and for a standby group, a Markov chain followed by uniformization (to about `1e-13`). |
+| `availability_rate` | numerical | Each component's point availability differentiated on the grid it is solved on, times its Birnbaum importance; the jumps at scheduled events split along the path between the values either side. |
 | `expected_failures`, `expected_events` | numerical | Each component's expected events from its renewal equation, on the grid of its availability (to about `1e-7`), and the system's failures by the time-dependent Birnbaum/Vesely formula; `expected_cost` prices them, numerically when anything is priced. |
 | `availability` (with the capacity over time and the delivered fraction), `cost`, `compare` | simulated | Discrete-event simulation. |
 | `spares_demand`, `spares_stock` | numerical | Each component's replacements, a renewal process, counted on a grid (to about `1e-6`); `spares_demand(method="simulate")` counts them in simulations instead. |

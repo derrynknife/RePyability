@@ -1026,6 +1026,68 @@ class ExpectedEvents(_ResultMapping):
 
 
 @dataclass
+class RateBreakdown(_ResultMapping):
+    """How fast a system's availability (or reliability) is changing at
+    each time, and each node's part in it: returned by
+    ``RepairableRBD.availability_rate`` and
+    ``NonRepairableRBD.reliability_rate`` (#195).
+
+    With independent nodes the system's value is multilinear in theirs, so
+    its rate is the sum, over the nodes, of each one's Birnbaum importance
+    times its own rate: ``rate`` is ``sum(node_rate.values())``, and a
+    node's part says how much it is pulling the system down (negative) or
+    up then. Where a scheduled event makes a node's availability jump (a
+    block replacement or test that takes it off line), the system's may
+    jump too: ``jumps`` holds the system's jumps, split among the nodes in
+    ``node_jumps``, whose parts add up to them.
+
+    Attributes
+    ----------
+    x : float or numpy.ndarray
+        The times.
+    rate : float or numpy.ndarray
+        The system's rate of change at each time, per unit time: after
+        anything that happens at it.
+    node_rate : dict
+        Each node's part in the rate.
+    jump_times : numpy.ndarray
+        The times, after 0 and up to the last of ``x``, at which a node's
+        value jumps (and so the system's may).
+    jumps : numpy.ndarray
+        The system's jump at each.
+    node_jumps : dict
+        Each node's part in the jumps.
+
+    Examples
+    --------
+    One unit, failing at rate 0.1 and repaired at rate 1, from new: its
+    availability ``A(t) = (1 + 0.1 exp(-1.1 t)) / 1.1`` falls at
+    ``0.1 exp(-1.1 t)``:
+
+    >>> import surpyval as surv
+    >>> from repyability import RepairableRBD
+    >>> rbd = RepairableRBD(
+    ...     [("s", "c"), ("c", "t")],
+    ...     {
+    ...         "c": {
+    ...             "reliability": surv.Exponential.from_params([0.1]),
+    ...             "repairability": surv.Exponential.from_params([1.0]),
+    ...         }
+    ...     },
+    ... )
+    >>> round(rbd.availability_rate(1.0).rate, 5)  # -0.1 * exp(-1.1)
+    -0.03329
+    """
+
+    x: Any
+    rate: Any
+    node_rate: Dict[Hashable, Any]
+    jump_times: np.ndarray
+    jumps: np.ndarray
+    node_jumps: Dict[Hashable, np.ndarray]
+
+
+@dataclass
 class ExpectedCost(_ResultMapping):
     """The expected cost of running a system over a window from new:
     returned by ``RepairableRBD.expected_cost``.

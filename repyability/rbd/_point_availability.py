@@ -909,10 +909,16 @@ class ChainDips:
                 continue
             begin, step, values = self.windows[n - 1]
             stride = max(1, len(values) // 256)
-            index = np.append(
-                np.arange(-1, len(values) + 1, stride), len(values)
+            # The window's ends too: where it starts, the dip rises from
+            # nothing (a kink, as the maintenance starts at once).
+            index = np.concatenate(
+                [
+                    [-1, 0],
+                    np.arange(-1, len(values) + 1, stride),
+                    [len(values) - 1, len(values)],
+                ]
             )
-            parts.append(due + begin + step * index)
+            parts.append(due + begin + step * np.unique(index))
         if not parts:
             return np.empty(0)
         times = np.concatenate(parts)
