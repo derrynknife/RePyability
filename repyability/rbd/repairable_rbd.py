@@ -19451,13 +19451,13 @@ class RepairableRBD(RBD):
 
     def parameter_sensitivity(
         self,
-        x=None,
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
-        rel_step: Optional[float] = None,
         *,
+        x=None,
         window=None,
         state=None,
+        rel_step: Optional[float] = None,
         of="availability",
         unit_costs: Optional[dict] = None,
     ) -> dict:
@@ -19510,15 +19510,22 @@ class RepairableRBD(RBD):
 
         Parameters
         ----------
-        x : float or array-like, optional
-            Times from new (or from ``state``) to take the point
-            availability's sensitivity at, by default None: the long-run
-            availability's.
         working_nodes : Collection[Hashable], optional
             Nodes held working, as for ``mean_availability``: a held node's
             levers report 0.
         broken_nodes : Collection[Hashable], optional
             Nodes held failed, likewise.
+        x : float or array-like, optional
+            Times from new (or from ``state``) to take the point
+            availability's sensitivity at, by default None: the long-run
+            availability's.
+        window : float, optional
+            Take the sensitivity of the mean availability over
+            ``[0, window)`` (``mission_availability``) instead. Not with
+            ``x``.
+        state : dict or str, optional
+            With ``x`` or ``window``, the components' current states to
+            start from, as for ``point_availability``.
         rel_step : float, optional
             The step of a continuous lever's difference, relative to its
             value (absolute where the value is 0), by default ``1e-5`` in
@@ -19527,13 +19534,6 @@ class RepairableRBD(RBD):
             difference their error. The derivatives over time are then
             good to about ``1e-4`` of their size (``1e-3`` early on, where
             the curves change fastest).
-        window : float, optional
-            Take the sensitivity of the mean availability over
-            ``[0, window)`` (``mission_availability``) instead. Not with
-            ``x``.
-        state : dict or str, optional
-            With ``x`` or ``window``, the components' current states to
-            start from, as for ``point_availability``.
         of : str or tuple of str, optional
             ``"availability"`` (the default), ``"cost_rate"`` (the long-run
             ``expected_cost_rate``, or over a window the expected cost per
@@ -19753,12 +19753,12 @@ class RepairableRBD(RBD):
         else:
             derivatives = flattened(
                 self.parameter_sensitivity(
-                    x,
                     working_nodes,
                     broken_nodes,
-                    rel_step,
+                    x=x,
                     window=window,
                     state=state,
+                    rel_step=rel_step,
                 )
             )
             continuous = {

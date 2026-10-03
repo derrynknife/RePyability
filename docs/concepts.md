@@ -263,7 +263,15 @@ A rule of thumb: **Birnbaum** for "where does an improvement help most",
 when deciding where to spend a testing budget.
 
 On a repairable system the same measures are evaluated with long-run
-availabilities in place of reliabilities.
+availabilities in place of reliabilities, or with the point availabilities
+from new (or from the components' current states) over time.
+
+Read together, the sensitivity measures are the system's *Greeks*, named
+after an option's: delta (Birnbaum), the levers' deltas (parameter
+sensitivity), their shares (differential importance), gamma (joint
+importance), theta (the rate of change and Barlow–Proschan) and vega
+(uncertainty importance). [Sensitivities: the Greeks](guide/greeks.md)
+runs one pumping station through all of them.
 
 ## Condition-based evaluation
 

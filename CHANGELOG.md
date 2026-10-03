@@ -171,6 +171,18 @@ other release, fixes included, the minor.
   last as long as its interval stays simulated (the refusal says how
   likely it is to), as do a common-cause group's members whose tests or
   repairs take time (#158).
+- **The Greeks: the sensitivity measures as one family (#197).** A guide
+  page, *Sensitivities: the Greeks*, reads them as one family, named after
+  an option's Greeks: delta (`birnbaum_importance`, over time on a
+  repairable diagram, #191), the levers' deltas (`parameter_sensitivity`,
+  #192), their shares (`differential_importance`, #193), gamma
+  (`joint_importance`, #194), theta (`availability_rate`,
+  `reliability_rate` and `barlow_proschan_importance`, #195) and vega
+  (`uncertainty_importance`, #196). It says what they share (the same `x`,
+  `window`, `state`, `working_nodes` and `broken_nodes`, exact where the
+  structure is, shares that add up) and runs one pumping station through
+  every one. Rho, a plan's value's sensitivity to the discount rate, waits
+  for the plan's net present value.
 - **Uncertainty importance: whose uncertainty widens the answer (#196).**
   `NonRepairableRBD.uncertainty_importance(x, uncertainty)` gives each
   uncertain input's share of a system quantity's variance over the
@@ -268,7 +280,9 @@ other release, fixes included, the minor.
   and `1e-2` over time, whose curves are numerical. In the long run an
   interval of a component sharing a calendar with others' tests or block
   replacements would move it off their common calendar, where the value
-  jumps: its derivative takes its schedule apart from theirs.
+  jumps: its derivative takes its schedule apart from theirs. As for the
+  diagram's other measures, `working_nodes` and `broken_nodes` come first,
+  and `x`, `window`, `state` and `rel_step` are keyword-only.
 - **A repairable diagram's importance measures over time (#191).**
   `birnbaum_importance`, `improvement_potential`, `risk_achievement_worth`,
   `risk_reduction_worth`, `criticality_importance` and `fussell_vesely` of a

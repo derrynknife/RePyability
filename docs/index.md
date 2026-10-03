@@ -108,6 +108,7 @@ result.criticalities.iou.up  # intersection-over-union importance (system up)
 | Phased missions | Missions through phases with their own durations and diagrams over the same components: the exact mission reliability and the chance of failing in each phase, or simulated | [Phased missions](guide/phased-missions.md) |
 | Networks | Undirected networks with failing links and nodes: the exact two-terminal reliability, minimal paths and cuts, link importance and mean time to disconnection, or simulated | [Networks](guide/networks.md) |
 | Importance | Birnbaum, improvement potential, RAW, RRW, criticality, Fussell–Vesely, structural importance, parameter sensitivity | [Importance measures](guide/importance.md) |
+| Sensitivity | The Greeks: how far the system moves with each component and lever (delta), the shares of a change, complements and substitutes (gamma), what is moving it now and what caused its failures (theta), and whose parameter uncertainty widens the answer (vega) | [Sensitivities: the Greeks](guide/greeks.md) |
 | Live state | Reliability, remaining life and importance given each component's age; covariate-dependent components and load schedules | [Condition-based evaluation](guide/condition-based.md) |
 | Redundancy | Cold, warm and hot standby, imperfect switching, repeated nodes, load sharing | [Redundancy models](guide/redundancy-models.md) |
 | Dependence | Beta-factor and Multiple Greek Letter common-cause groups | [Common-cause failures](guide/common-cause.md) |

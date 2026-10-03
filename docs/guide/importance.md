@@ -4,7 +4,8 @@
     This page is the reference. The ideas behind it are taught step by step,
     with worked examples and exercises, in [Lesson
     4](../learn/importance.md), which builds every measure on this page from
-    one idea.
+    one idea. [Sensitivities: the Greeks](greeks.md) reads the sensitivity
+    measures as one family and runs one system through all of them.
 
 An importance measure ranks the nodes of a system by how much they matter.
 "Matter" has several meanings, and the measures disagree on purpose;
