@@ -272,10 +272,14 @@ N \ge \left(\frac{1.96 \times 0.14}{0.001}\right)^2 \approx 75\,700.
 $$
 
 `tolerance` does this for you: it runs `mc_samples` histories, checks the
-interval, and runs another `mc_samples` until the interval is narrow enough:
+interval, and runs another `mc_samples` until the interval is narrow enough.
+(A pump on its own has an exact mean availability, worked out below, and by
+default a run to a tolerance would take it and stop at once; to watch the
+simulation converge, `control_variate=False` makes it simulate.)
 
 ```python
-precise = one_pump.availability(t_simulation=5.0, mc_samples=10_000, seed=0, tolerance=0.001)
+precise = one_pump.availability(t_simulation=5.0, mc_samples=10_000, seed=0,
+                                tolerance=0.001, control_variate=False)
 precise.n_simulations            # -> 80000
 window = precise.mean_availability_interval()
 window.estimate                  # -> 0.9267

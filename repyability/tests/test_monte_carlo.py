@@ -111,7 +111,10 @@ class Drawn:
 
 def test_availability_to_a_tolerance_is_a_run_of_its_size():
     rbd = plant()
-    result = rbd.availability(T, mc_samples=200, seed=1, tolerance=0.004)
+    # Its own twin, it would take its exact values (#187): simulate.
+    result = rbd.availability(
+        T, mc_samples=200, seed=1, tolerance=0.004, control_variate=False
+    )
     n = result.n_simulations
     assert n > 200 and n % 200 == 0
     fractions = result.uptimes / T
@@ -133,7 +136,9 @@ def test_availability_to_a_tolerance_is_a_run_of_its_size():
 
 def test_cost_to_a_tolerance():
     rbd = plant(cost=100.0)
-    result = rbd.cost(T, mc_samples=100, seed=2, tolerance=15.0)
+    result = rbd.cost(
+        T, mc_samples=100, seed=2, tolerance=15.0, control_variate=False
+    )
     n = result.n_simulations
     assert n > 100 and n % 100 == 0
     assert half_width(result.samples) <= 15.0
@@ -148,12 +153,19 @@ def test_a_run_that_does_not_converge_warns():
     rbd = plant()
     with pytest.warns(RuntimeWarning, match="did not converge"):
         result = rbd.availability(
-            T, mc_samples=100, seed=3, tolerance=1e-6, max_samples=300
+            T,
+            mc_samples=100,
+            seed=3,
+            tolerance=1e-6,
+            max_samples=300,
+            control_variate=False,
         )
     assert result.n_simulations == 300
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        rbd.availability(T, mc_samples=100, seed=3, tolerance=0.5)
+        rbd.availability(
+            T, mc_samples=100, seed=3, tolerance=0.5, control_variate=False
+        )
 
 
 @pytest.mark.parametrize(
@@ -344,6 +356,7 @@ def test_parallel_runs_to_a_tolerance_and_in_pairs():
             tolerance=0.004,
             antithetic=True,
             n_jobs=jobs,
+            control_variate=False,
         )
         for jobs in (1, 3)
     ]

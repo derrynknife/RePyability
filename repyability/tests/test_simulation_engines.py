@@ -448,6 +448,7 @@ def test_a_simulation_is_the_same_however_the_run_is_cut_up(name):
             engine="python",
             tolerance=1e-9,
             max_samples=40,
+            control_variate=False,
         )
     n = stopped.n_simulations
     identical(

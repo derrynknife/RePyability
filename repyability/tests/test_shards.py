@@ -137,7 +137,7 @@ def test_availability_and_cost_through_a_map(engine, pool):
         rbd.cost(100.0, shard_map=pool.map, shard_size=400, **run),
     )
     # A run to a tolerance maps a round of shards at a time.
-    run = dict(run, mc_samples=500, tolerance=0.002)
+    run = dict(run, mc_samples=500, tolerance=0.002, control_variate=False)
     whole = rbd.availability(100.0, **run)
     assert whole.n_simulations > 500
     identical(

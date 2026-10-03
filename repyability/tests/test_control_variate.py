@@ -396,3 +396,66 @@ def test_the_twin_builds_each_curve_once(monkeypatch):
     built.clear()
     rbd.availability(300.0, mc_samples=20, seed=1, control_variate=True)
     assert sorted(built) == ["A", "B", "C"]
+
+
+def test_a_run_to_a_tolerance_takes_exact_values_by_default(monkeypatch):
+    # #187: a system that is its own twin has exact expected values over the
+    # window, which a run to a tolerance takes, stopping at once.
+    rbd = RepairableRBD(EDGES, {n: unit() for n in "ABC"})
+    run = rbd.availability(300.0, mc_samples=50, seed=3, tolerance=1e-6)
+    assert run.n_simulations == 50
+    interval = run.mean_availability_interval()
+    assert interval.method == "exact"
+    assert interval.estimate == rbd.mission_availability(300.0)
+    cost = rbd.cost(300.0, mc_samples=50, seed=3, tolerance=1e-6)
+    assert cost.mean_interval().method == "exact"
+    assert cost.mean_interval().estimate == pytest.approx(
+        rbd.expected_cost(300.0).mean, rel=1e-12
+    )
+    # Its simulations are a plain run's, and False simulates to the end.
+    plain = rbd.availability(300.0, mc_samples=50, seed=3)
+    np.testing.assert_array_equal(run.uptimes, plain.uptimes)
+    with pytest.warns(RuntimeWarning, match="did not converge"):
+        forced = rbd.availability(
+            300.0,
+            mc_samples=50,
+            seed=3,
+            tolerance=1e-6,
+            max_samples=100,
+            control_variate=False,
+        )
+    assert forced.n_simulations == 100
+    assert forced.control_variate is None
+    # Without a tolerance, or with a twin that differs, it is as before.
+    assert plain.control_variate is None
+    with pytest.warns(RuntimeWarning, match="did not converge"):
+        crewed_run = crewed().availability(
+            300.0, mc_samples=50, seed=3, tolerance=1e-6, max_samples=100
+        )
+    assert crewed_run.control_variate is None
+
+    # Should its exact values be out of reach, it simulates.
+    def refuse(*args, **kwargs):
+        raise NotImplementedError("too many grid points")
+
+    monkeypatch.setattr(RepairableRBD, "_twin_exact", refuse)
+    with pytest.warns(RuntimeWarning, match="did not converge"):
+        fallen = rbd.availability(
+            300.0, mc_samples=50, seed=3, tolerance=1e-6, max_samples=100
+        )
+    assert fallen.control_variate is None
+    assert fallen.n_simulations == 100
+    with pytest.raises(NotImplementedError, match="too many grid points"):
+        rbd.availability(300.0, mc_samples=50, seed=3, control_variate=True)
+
+
+def test_the_route_says_the_expected_values_need_no_simulation():
+    own = RepairableRBD(EDGES, {n: unit() for n in "ABC"}).analysis_routes()
+    for name in ("availability", "cost"):
+        assert "mission_availability, expected_events" in own[name].reason
+        assert "a run to a tolerance takes them" in own[name].reason
+    # Weibull lives sharing a crew have no exact values over a window.
+    assert (
+        "mission_availability"
+        not in crewed().analysis_routes()["availability"].reason
+    )

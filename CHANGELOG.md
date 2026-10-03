@@ -149,6 +149,22 @@ other release, fixes included, the minor.
 
 ### Changed
 
+- **A run to a tolerance takes exact expected values where it can (#187).**
+  `availability()` and `cost()` estimated a window's mean availability and
+  cost by simulation even where the exact methods give them: for 12
+  components over 5,000 h, ±1e-6 took some 19 million simulations against
+  seconds for `mission_availability`. `control_variate` is now None by
+  default: on a system that is its own exact twin (its components
+  independent, nothing the exact methods leave out), a run to a
+  `tolerance` is controlled by it, so its mean intervals are the exact
+  values and it stops after its first `mc_samples`; otherwise, and
+  without a tolerance, it is as before. The simulations are the same
+  either way. `control_variate=False` simulates to the tolerance, as
+  before. The `availability` and `cost` routes say when a system's
+  expected values need no simulation, naming the methods, and the
+  simulation guide has a table of which questions are exact and which
+  simulated.
+
 - **The analyses over a window cost little more than the point curve
   (#164).** `mission_availability`, `mission_capacity`, `expected_failures`,
   `expected_events` and `expected_cost` summed their integrals between every

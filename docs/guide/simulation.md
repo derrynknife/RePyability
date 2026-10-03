@@ -19,6 +19,27 @@ simulations, that spread the simulations over several CPUs, that compare
 two designs far more precisely than two separate runs can, and that run the
 simulations compiled.
 
+## Exact or simulated?
+
+A repairable system's expected values over a window need no simulation
+where its exact methods take it: only their spread does.
+
+| Question | Exact, no simulation | Simulated (`availability`, `cost`) |
+|---|---|---|
+| The mean availability over a window | `mission_availability(t)` | `mean_availability_interval()` |
+| The availability at given times | `point_availability(times)` | the result's curve, `availability` |
+| The expected failures, planned outages and down time | `expected_failures(t)`, `expected_events(t)` | the totals over the simulations (`system_failures`, ...) |
+| The expected cost, by category and component | `expected_cost(t)` | `cost.mean_interval()` |
+| The long run | `mean_availability()`, `system_failure_frequency()`, ... | |
+| How a window varies: each simulation's up time and cost, percentiles, the chance of no failure | | `uptimes`, `cost.samples`, `cost.percentile(q)` |
+
+The exact methods take independent components, with their maintenance and
+tests, and repair crews and standby groups where their Markov chains do;
+`analysis_routes()` says which a system's take, and its `availability`
+route says whether its expected values need a simulation. A run to a
+`tolerance` on a system that is its own [exact twin](#an-exact-twin) takes
+them exactly, and stops at once.
+
 | Option | Where | What it does |
 |---|---|---|
 | `tolerance`, `confidence`, `max_samples` | `availability`, `cost`; `mean` and `mean_time_to_failure` with `method="simulate"`, `mean_time_to_failure_interval` | Simulate until the estimate is known to within `tolerance`. |
@@ -124,12 +145,30 @@ cost of a window (`result.mean_interval()`), checking after every `mc_samples`
 simulations:
 
 ```python
-result = plant.availability(t_simulation=100.0, mc_samples=1_000, seed=0, tolerance=0.001)
+result = plant.availability(t_simulation=100.0, mc_samples=1_000, seed=0,
+                            tolerance=0.001, control_variate=False)
 result.n_simulations                  # -> 6000
 window = result.mean_availability_interval()
 window.estimate                       # -> 0.9547   the exact value is 0.9544
 window.upper - window.estimate        # -> 0.00094
 ```
+
+That run simulates to the tolerance, as `control_variate=False` asks. This
+plant's components fail and are repaired independently, so it is its own
+[exact twin](#an-exact-twin): its expected values over the window are exact,
+and by default a run to a tolerance takes them, with no error, and stops at
+once (the simulations are the same as without it; only the means are
+exact):
+
+```python
+exact = plant.availability(t_simulation=100.0, mc_samples=1_000, seed=0,
+                           tolerance=0.001)
+exact.n_simulations                            # -> 1000
+exact.mean_availability_interval().estimate    # -> 0.95444   mission_availability(100.0)
+```
+
+`analysis_routes()["availability"]` says, for a system, whether its
+expected values over the window need a simulation at all.
 
 If the tolerance is not reached within `max_samples` simulations (or
 lifetimes), by default 100 times `mc_samples`, the run stops there with a
