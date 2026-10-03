@@ -2,6 +2,8 @@
 held to the path-set route on random diagrams and through the public
 methods, and run where the path sets are too many to list."""
 
+import time
+
 import numpy as np
 import pytest
 import surpyval as surv
@@ -151,6 +153,78 @@ def test_a_chain_of_bridges_too_meshed_to_list_its_paths():
     assert len(steps) < 40 * 20
     assert rbd.sf() == pytest.approx(bridge**40, rel=1e-12)
     assert rbd.ff() == pytest.approx(1.0 - bridge**40, rel=1e-12)
+
+
+def meshed(n, p, seed):
+    """A random acyclic diagram of ``n`` components, each edge forward in
+    the order with probability ``p``: dense enough that the reached
+    frontier takes many values the rest of the diagram cannot tell apart
+    (#172)."""
+    rng = np.random.default_rng(seed)
+    edges = {
+        (f"v{i}", f"v{j}")
+        for i in range(n)
+        for j in range(i + 1, n)
+        if rng.random() < p
+    }
+    for i in range(n):
+        v = f"v{i}"
+        if not any(a == v for a, _ in edges):
+            edges.add((v, "t"))
+        if not any(b == v for _, b in edges):
+            edges.add(("s", v))
+    return sorted(edges)
+
+
+def reaches(edges, k, status):
+    """Whether the output is reached: the input is, and so is a component
+    that works with ``k`` of its predecessors reached."""
+    pred = {}
+    for a, b in edges:
+        pred.setdefault(b, []).append(a)
+    reached = {"s"}
+    for v in sorted(pred.keys() - {"t"}, key=lambda v: int(v[1:])):
+        if status[v] and sum(u in reached for u in pred[v]) >= k.get(v, 1):
+            reached.add(v)
+    return sum(u in reached for u in pred["t"]) >= k.get("t", 1)
+
+
+def test_a_meshed_diagram_matches_the_path_set_route():
+    # Small enough to list its path sets, meshed enough that states with
+    # different reached vertices but the same counts are merged (#172).
+    rng = np.random.default_rng(172)
+    edges = meshed(18, 0.3, 4)
+    names = sorted({n for e in edges for n in e} - {"s", "t"})
+    k = {n: int(rng.integers(1, 3)) for n in names[::3]}
+    rbd = RBD(edges, k=k, on_infeasible_rbd="ignore")
+    paths, graph = both(rbd.G)
+    assert paths.core is not None
+    assert_same(paths, graph, names, rng)
+
+
+def test_a_meshed_diagram_is_built_quickly():
+    # 35 components and 129 edges: the builder keyed on the set of reached
+    # frontier vertices took 40 seconds; keyed on the counts each undecided
+    # vertex sees, it takes a fraction of a second (#172).
+    edges = meshed(35, 0.2, 1)
+    assert len(edges) == 129
+    names = sorted({n for e in edges for n in e} - {"s", "t"})
+    k = {"v20": 2, "v30": 2}
+    start = time.perf_counter()
+    rbd = NonRepairableRBD(
+        edges, {n: FixedEventProbability.from_params(0.1) for n in names}, k=k
+    )
+    decomposition = rbd._decomposition()
+    assert decomposition.from_graph
+    assert time.perf_counter() - start < 10
+    rng = np.random.default_rng(0)
+    outcomes = set()
+    for _ in range(300):
+        status = {n: bool(rng.random() < 0.3) for n in names}
+        works = reaches(edges, k, status)
+        assert decomposition.works(status, "p") == works
+        outcomes.add(works)
+    assert outcomes == {True, False}
 
 
 def test_the_public_methods_agree(monkeypatch):

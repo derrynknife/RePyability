@@ -13,9 +13,11 @@ vertex is *reached* when it works and at least ``k`` of its predecessors
 are reached (the input always is), and the system works when the output's
 ``k`` predecessors are. After the first ``i`` vertices of the order, the
 rest of the decision depends only on which of the decided vertices that
-still feed undecided ones (the *frontier*) are reached, and on the value of
-any component drawn in several places (a repeated node) whose other
-appearances are still to come. So each such state is solved once: a vertex
+still feed undecided ones (the *frontier*) are reached -- and only through
+how many reached predecessors each undecided vertex has, up to its ``k``,
+so the state is those counts (#172) -- and on the value of any component
+drawn in several places (a repeated node) whose other appearances are
+still to come. So each such state is solved once: a vertex
 is branched on only when enough of its predecessors are reached for it to
 matter, a branch whose two outcomes agree is dropped, and equal branches
 are shared. The size of the diagram grows with the frontier's width, not
@@ -161,6 +163,14 @@ def build(
     names the random variable each vertex stands for: two vertices with the
     same variable are one component, drawn in two places.
 
+    A state is what the undecided vertices can see of the decided ones
+    (#172): for each undecided vertex, and the output, how many of its
+    predecessors are reached, capped at its ``k``, with the values of the
+    repeated components still to be drawn again. A decided vertex reaches
+    the rest of the diagram only through those counts, so two sets of
+    reached vertices that give the same counts have the same sub-diagram,
+    and are solved once.
+
     Returns
     -------
     tuple
@@ -168,11 +178,14 @@ def build(
         slot)``; ``root`` is 0 or 1 if the system never or always works.
     """
     n = len(sequence)
+    # Positions: the vertices of the order, then the output at ``n``.
     position = {v: i for i, v in enumerate(sequence)}
-    last: Dict[int, int] = {}
-    for u in [source, *sequence]:
-        ends = [n if w == sink else position[w] for w in succ.get(u, ())]
-        last[u] = max(ends, default=-1)
+    position[sink] = n
+    targets = {
+        u: tuple(sorted(position[w] for w in succ.get(u, ())))
+        for u in [source, *sequence]
+    }
+    cap = [k[v] for v in sequence] + [k[sink]]
     # Where each variable appears first, and last: a variable drawn in
     # several places is decided at its first appearance, so that every
     # variable is decided at the same point on every branch (the diagram
@@ -183,59 +196,69 @@ def build(
     for i, v in enumerate(sequence):
         first.setdefault(variable[v], i)
         final[variable[v]] = i
-    preds = [tuple(pred[v]) for v in sequence]
-    needs = [k[v] for v in sequence]
-    sink_preds, sink_k = tuple(pred[sink]), k[sink]
 
-    def settle(i: int, reached: frozenset, decided: frozenset):
-        """Decide vertices from the ``i``-th while no branch is needed: the
-        terminal reached (FAIL or WORK), or the state at which the next
-        vertex must be branched on, as ``(i, reached, decided)``."""
-        while True:
-            if sum(1 for u in sink_preds if u in reached) >= sink_k:
-                return WORK
-            if not reached or i == n:
-                return FAIL
-            v = sequence[i]
-            name = variable[v]
-            if first[name] == i and final[name] > i:
-                return (i, reached, decided)  # decided here, used later
-            reaching = sum(1 for u in preds[i] if u in reached)
-            if reaching >= needs[i]:
-                value = _decided(decided, name)
-                if value is None:
-                    return (i, reached, decided)
-                works = value
-            else:
-                works = False
-            reached, decided = _step(i, v, works, reached, decided)
-            i += 1
+    def reach(counts: Dict[int, int], u: int) -> Dict[int, int]:
+        """``counts`` once ``u`` is reached: one more reached predecessor
+        for each of its successors, up to the successor's ``k``."""
+        counts = dict(counts)
+        for j in targets[u]:
+            have = counts.get(j, 0)
+            if have < cap[j]:
+                counts[j] = have + 1
+        return counts
 
-    def _step(i, v, works, reached, decided):
-        kept = {u for u in reached if last[u] > i}
-        if works and last[v] > i:
-            kept.add(v)
+    def frozen(counts: Dict[int, int], i: int) -> tuple:
+        """The counts of the vertices from the ``i``-th on, as a key."""
+        return tuple(sorted((j, c) for j, c in counts.items() if j >= i))
+
+    def step(i: int, v: int, works: bool, counts: dict, decided: frozenset):
+        """The state after the ``i``-th vertex, ``v``, is decided."""
+        if works:
+            counts = reach(counts, v)
         if decided:
             decided = frozenset(
                 (name, value) for name, value in decided if final[name] > i
             )
-        return frozenset(kept), decided
+        return frozen(counts, i + 1), decided
+
+    def settle(i: int, counts: tuple, decided: frozenset):
+        """Decide vertices from the ``i``-th while no branch is needed: the
+        terminal reached (FAIL or WORK), or the state at which the next
+        vertex must be branched on, as ``(i, counts, decided)``."""
+        while True:
+            seen = dict(counts)
+            if seen.get(n, 0) >= cap[n]:
+                return WORK
+            if not seen or i == n:
+                return FAIL  # nothing left can be reached
+            v = sequence[i]
+            name = variable[v]
+            if first[name] == i and final[name] > i:
+                return (i, counts, decided)  # decided here, used later
+            if seen.get(i, 0) >= cap[i]:
+                value = _decided(decided, name)
+                if value is None:
+                    return (i, counts, decided)
+                works = value
+            else:
+                works = False
+            counts, decided = step(i, v, works, seen, decided)
+            i += 1
 
     def branches(state) -> list:
         """The states after the ``i``-th vertex's variable works, and
         fails (the vertex is reached only if enough predecessors are)."""
-        i, reached, decided = state
+        i, counts, decided = state
         v = sequence[i]
         name = variable[v]
-        enough = sum(1 for u in preds[i] if u in reached) >= needs[i]
+        seen = dict(counts)
+        enough = seen.get(i, 0) >= cap[i]
         out = []
         for value in (True, False):
             remembered = decided
             if final[name] > i:
                 remembered = decided | {(name, value)}
-            after, remembered = _step(
-                i, v, value and enough, reached, remembered
-            )
+            after, remembered = step(i, v, value and enough, seen, remembered)
             out.append(settle(i + 1, after, remembered))
         return out
 
@@ -248,11 +271,7 @@ def build(
             return state
         return slots.get(state)
 
-    start = settle(
-        0,
-        frozenset([source]) if last[source] >= 0 else frozenset(),
-        frozenset(),
-    )
+    start = settle(0, frozen(reach({}, source), 0), frozenset())
     root = known(start)
     stack: list = []
     if root is None:

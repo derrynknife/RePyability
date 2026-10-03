@@ -9,6 +9,17 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+### Changed
+
+- Diagrams with a dense, meshed core are built much faster (#172). The
+  decision diagram of a core is now built on what the undecided components
+  can see of the decided ones -- how many of each one's predecessors are
+  reached, up to its `k` -- rather than on which decided components are
+  reached, so states that differ only in which predecessors are reached are
+  solved once. A random 35-component core with 129 edges took 40 seconds to
+  build and now takes 0.05; 60 components and 220 edges take 10 seconds.
+  The diagrams, and every result from them, are unchanged.
+
 ## [0.11] - 2026-10-02
 
 How much a system can deliver, and exact answers where there were estimates.
