@@ -258,6 +258,14 @@ other release, fixes included, the minor.
 
 ### Fixed
 
+- **`FaultTree.from_rbd` of a diagram with events the logic absorbs
+  (#170).** A module of nodes that cannot affect the system (in an AND of
+  `e4`, `e6` and a vote that, given them, needs only `e5`, the `e1 AND e2`
+  input) became a gate that nothing used, and the tree it made was refused
+  (`'G1', 'e1', 'e2' are not below the top event`), so such a tree did not
+  convert back from its own diagram: two in a thousand random trees of
+  seven events and six gates. Only the gates below the top event are kept,
+  numbered in turn.
 - **A phased mission with an equal standby group in each phase (#179).**
   A component must keep one model through a mission, and two separately
   built but equal `StandbyModel`s (or other node models of RePyability's)

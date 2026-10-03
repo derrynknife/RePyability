@@ -66,6 +66,13 @@ GATE_KINDS = ("or", "and", "vote")
 DIAGRAM_LIMIT = 2_000_000
 
 
+class _Made(NamedTuple):
+    """A gate ``FaultTree.from_rbd`` has made, by its place among them,
+    before it is named."""
+
+    index: int
+
+
 class _Gate(NamedTuple):
     kind: str
     # The gate occurs when at least k of its inputs occur.
@@ -1291,7 +1298,6 @@ class FaultTree:
                 "directly), so it has no top event."
             )
         taken = set(rbd.reliabilities)
-        count = 0
 
         def fresh(base) -> Any:
             name = base
@@ -1300,13 +1306,12 @@ class FaultTree:
             taken.add(name)
             return name
 
-        def gate_name() -> Any:
-            nonlocal count
-            count += 1
-            return fresh(f"G{count}")
-
         terms = decomposition.terms
-        gates: Dict[Hashable, tuple] = {}
+        # The gates as made, each referred to by its _Made until the ones
+        # below the top event are named: a module whose members cannot
+        # affect the system (absorbed by the logic around it) gets a gate
+        # that nothing uses, which is left out (#170).
+        made: List[tuple] = []
 
         def over(inputs: list, needed: int) -> Any:
             # A gate that occurs when ``needed`` of ``inputs`` occur, or
@@ -1315,14 +1320,13 @@ class FaultTree:
                 return None
             if len(inputs) == 1:
                 return inputs[0]
-            name = gate_name()
             if needed == 1:
-                gates[name] = ("or", inputs)
+                made.append(("or", inputs))
             elif needed == len(inputs):
-                gates[name] = ("and", inputs)
+                made.append(("and", inputs))
             else:
-                gates[name] = ("vote", needed, inputs)
-            return name
+                made.append(("vote", needed, inputs))
+            return _Made(len(made) - 1)
 
         # Each term's event or gate, or None for one that can never fail,
         # such as a PerfectReliability junction: it drops out of the tree.
@@ -1355,12 +1359,34 @@ class FaultTree:
                 "The diagram cannot fail: every way it could needs a node "
                 "that never fails."
             )
+        # A single node is a top event of its own failure.
+        top_gate = (
+            made[top_label.index]
+            if isinstance(top_label, _Made)
+            else ("or", [top_label])
+        )
+        below = set()
+        pending = [x for x in top_gate[-1] if isinstance(x, _Made)]
+        while pending:
+            ref = pending.pop()
+            if ref.index not in below:
+                below.add(ref.index)
+                pending += [
+                    x for x in made[ref.index][-1] if isinstance(x, _Made)
+                ]
+        names = {i: fresh(f"G{n}") for n, i in enumerate(sorted(below), 1)}
         top = fresh("TOP")
-        if top_label in gates:
-            gates[top] = gates.pop(top_label)
-        else:
-            # A single node: the top event is its failure.
-            gates[top] = ("or", [top_label])
+
+        def named(gate: tuple) -> tuple:
+            inputs = [
+                names[x.index] if isinstance(x, _Made) else x for x in gate[-1]
+            ]
+            return (*gate[:-1], inputs)
+
+        gates: Dict[Hashable, tuple] = {
+            names[i]: named(made[i]) for i in sorted(below)
+        }
+        gates[top] = named(top_gate)
         used = {x for g in gates.values() for x in g[-1]}
         events = {
             node: rbd.reliabilities[node] for node in rbd.nodes if node in used

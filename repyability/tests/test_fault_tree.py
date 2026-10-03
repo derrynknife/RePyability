@@ -317,6 +317,40 @@ def test_random_trees_convert_to_diagrams(seed):
     assert set(back.minimal_cut_sets()) == set(tree.minimal_cut_sets())
 
 
+def test_events_the_logic_absorbs_leave_no_gate_behind():
+    # #170: given e4 and e6, the vote needs e5, so e1 and e2 cannot affect
+    # the top event. The diagram's module of them made a gate that nothing
+    # used, which the tree refused.
+    gates = {
+        "g0": ("and", ["e6", "e4", "g2"]),
+        "g2": ("vote", 3, ["e4", "g4", "g3", "e5"]),
+        "g4": ("vote", 2, ["e5", "e6"]),
+        "g3": ("and", ["e1", "e2"]),
+    }
+    tree = FaultTree(gates, {e: 0.3 for e in ["e1", "e2", "e4", "e5", "e6"]})
+    back = FaultTree.from_rbd(tree.to_rbd())
+    assert list(back.gates) == ["TOP"]
+    kind, inputs = back.gates["TOP"]
+    assert kind == "and" and sorted(inputs) == ["e4", "e5", "e6"]
+    assert set(back.events) == {"e4", "e5", "e6"}
+    assert back.top_event_probability() == pytest.approx(0.3**3, rel=1e-14)
+
+
+@pytest.mark.parametrize("seed", [335, 749])
+def test_larger_random_trees_convert_back(seed):
+    # The two of a thousand random trees of seven events and six gates
+    # that #170's gate left behind; the gates kept are numbered in turn.
+    gates, probabilities, top = random_tree(np.random.default_rng(seed), 7, 6)
+    tree = FaultTree(gates, probabilities)
+    back = FaultTree.from_rbd(tree.to_rbd())
+    assert back.top_event_probability() == pytest.approx(
+        tree.top_event_probability(), rel=1e-12
+    )
+    assert set(back.minimal_cut_sets()) == set(tree.minimal_cut_sets())
+    names = [g for g in back.gates if g != "TOP"]
+    assert names == [f"G{i}" for i in range(1, len(names) + 1)]
+
+
 def test_trees_without_repeats_always_convert():
     for seed in range(200):
         rng = np.random.default_rng(5000 + seed)
