@@ -316,3 +316,56 @@ def test_a_control_of_values_that_do_not_vary():
         "correlation",
         "itself",
     }
+
+
+def test_a_system_that_is_its_own_twin_is_simulated_once(monkeypatch):
+    # Its twin's run, drawn from the same streams, is its own to the last
+    # bit (#186): one run a round, where a twin that differs runs beside it.
+    runs = []
+    plain = RepairableRBD._run
+
+    def counted(self, *args, **kwargs):
+        runs.append(self)
+        return plain(self, *args, **kwargs)
+
+    monkeypatch.setattr(RepairableRBD, "_run", counted)
+    own = RepairableRBD(EDGES, {n: unit() for n in "ABC"})
+    result = own.availability(
+        300.0, mc_samples=100, seed=3, control_variate=True
+    )
+    assert runs == [own]
+    np.testing.assert_array_equal(
+        result.control_variate.twin, result.uptimes / 300.0
+    )
+    runs.clear()
+    crewed().availability(300.0, mc_samples=100, seed=3, control_variate=True)
+    assert len(runs) == 2
+
+
+def test_minimal_repair_in_no_time_is_kept_by_the_twin():
+    # Its values over a window are exact (#179), so the twin keeps it, and
+    # a system of it and plain components is its own twin.
+    pump = {
+        "reliability": surv.Weibull.from_params([100.0, 2.5]),
+        "repairability": "instant",
+        "repair": {"model": "kijima2", "q": 1.0},
+        "repair_cost": 1.0,
+    }
+    rbd = RepairableRBD(EDGES, {"A": pump, "B": unit(), "C": unit()})
+    assert rbd.analysis_routes()["availability"].twin.startswith(
+        "the system itself"
+    )
+    result = rbd.availability(
+        300.0, mc_samples=100, seed=1, control_variate=True
+    )
+    assert result.mean_availability_interval().method == "exact"
+    assert result.cost.mean_interval().estimate == pytest.approx(
+        rbd.expected_cost(300.0).mean, rel=1e-12
+    )
+    # Repaired otherwise, it is left out.
+    partly = RepairableRBD(
+        EDGES,
+        {"A": dict(pump, repair={"model": "kijima2", "q": 0.5}), "B": unit()}
+        | {"C": unit()},
+    )
+    assert "imperfect repair" in partly.analysis_routes()["availability"].twin

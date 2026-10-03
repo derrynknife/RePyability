@@ -182,12 +182,16 @@ other release, fixes included, the minor.
   `FutureWarning`, and goes in 0.13 (`deprecation.NEXT_REMOVAL`).
 - **A count given as `True` is refused by the demonstration functions
   (#179)**, as elsewhere (a fault tree's vote), where it was taken as 1.
-- **A run controlled by the system itself is exact (#179).** With
+- **A run controlled by the system itself is exact (#179, #186).** With
   `control_variate=True`, a system whose exact twin is itself (nothing ties
   its components together, and the exact methods take all of it) gave an
   interval of width 1e-17 around its exact value;
   `mean_availability_interval` and the cost's `mean_interval` now give
-  that value, with no error and `method="exact"`.
+  that value, with no error and `method="exact"`. Such a run simulated
+  the system twice, as itself and as its twin, the same draws to the last
+  bit; it now runs once (#186): 47 s instead of 68 for 24 maintained
+  components over 4,000 simulations. A component minimally repaired in no
+  time no longer makes the twin differ.
 - **A meshed diagram's core is worked out in a fraction of the time
   (#172).** A core that does not reduce, decided by its binary decision
   diagram, knew each sub-problem by which of the decided nodes that still

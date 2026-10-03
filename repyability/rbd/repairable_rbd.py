@@ -13837,9 +13837,10 @@ class RepairableRBD(RBD):
         """A component's spec in an exact twin (see ``_twin``), this system
         being the twin so far, and what it changes (or ""): a standby group
         whose own chain cannot follow it over time becomes its units
-        operating together; imperfect repair becomes perfect; replacement
-        on condition, inspections and block replacement that the exact
-        methods do not take go."""
+        operating together; imperfect repair becomes perfect (but for
+        minimal repair in no time, whose values over time are exact);
+        replacement on condition, inspections and block replacement that
+        the exact methods do not take go."""
         from repyability.rbd import routes as r
 
         if node in self._standby:
@@ -13851,7 +13852,9 @@ class RepairableRBD(RBD):
                 )
             return spec, ""
         drop: Dict[str, str] = {}
-        if r.refusal(partial(self._require_perfect_repair, node)):
+        if node in self._imperfect and r.refusal(
+            partial(self._require_minimal_repair, node)
+        ):
             drop["repair"] = drop["replace_after"] = "imperfect repair"
         if r.refusal(partial(self._require_no_condition, node)):
             drop["preventive"] = "replacement on condition"
@@ -14084,33 +14087,41 @@ class RepairableRBD(RBD):
                 states=states,
                 curve_points=curve_points,
             )
-            twin_part = twin._run(
-                t_simulation,
-                working,
-                broken,
-                method,
-                count,
-                False,
-                None,
-                antithetic,
-                jobs=jobs,
-                engine=engine,
-                entropy=entropy,
-                widths=widths,
-                common=True,
-                first=first,
-                states=twin_states,
-                curve_points=1,
+            # A twin that is this system, drawn from the same streams, runs
+            # as this system does, to the last bit: its run is this one.
+            twin_part = (
+                None
+                if itself
+                else twin._run(
+                    t_simulation,
+                    working,
+                    broken,
+                    method,
+                    count,
+                    False,
+                    None,
+                    antithetic,
+                    jobs=jobs,
+                    engine=engine,
+                    entropy=entropy,
+                    widths=widths,
+                    common=True,
+                    first=first,
+                    states=twin_states,
+                    curve_points=1,
+                )
             )
-            if tally is None or twin_tally is None:
+            if tally is None:
                 tally, twin_tally = part, twin_part
             else:
                 tally.merge(part)
-                twin_tally.merge(twin_part)
+                if twin_tally is not None and twin_part is not None:
+                    twin_tally.merge(twin_part)
+            twins = tally if twin_tally is None else twin_tally
             fractions = np.asarray(tally.uptimes, dtype=float) / t_simulation
             control = ControlVariate.of(
                 fractions,
-                np.asarray(twin_tally.uptimes, dtype=float) / t_simulation,
+                np.asarray(twins.uptimes, dtype=float) / t_simulation,
                 exact,
                 antithetic,
                 itself=itself,
@@ -14119,7 +14130,7 @@ class RepairableRBD(RBD):
             if exact_cost is not None:
                 cost_control = ControlVariate.of(
                     tally.cost_samples,
-                    twin_tally.cost_samples,
+                    twins.cost_samples,
                     exact_cost,
                     antithetic,
                     itself=itself,

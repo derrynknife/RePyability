@@ -226,7 +226,8 @@ of 5 000 for `tolerance=0.0005`.
   on repair crews, and maintenance groups. And, component by component,
   what the exact methods over time do not take: a standby group's switching
   (unless its units are exponential, when its own chain follows it), whose
-  units then operate together; imperfect repair; replacement on condition;
+  units then operate together; imperfect repair (but minimal repair in no
+  time, which the exact methods take); replacement on condition;
   and inspections they do not take (tests or repairs that take time), whose
   failures are then revealed. It keeps the rest, age and block replacement
   among it: the closer the twin, the more it gains.
@@ -234,7 +235,9 @@ of 5 000 for `tolerance=0.0005`.
   there is none (a model that is a probability, or a simulated life).
 - **A system that is its own twin** (plain components, nothing left out)
   gets its exact value, with a standard error of 0: its simulations are the
-  twin's.
+  twin's, so they run once, and the run costs its simulations and the exact
+  values. Its means need no simulation at all (`mission_availability`,
+  `expected_cost`); a controlled run adds the simulations' spread.
 - **What it costs.** The twin's exact values take a fraction of a second,
   and its simulations run compiled where they can. Every draw must come
   from a stream (surpyval parametric models); the streams are laid out as
