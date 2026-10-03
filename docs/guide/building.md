@@ -162,10 +162,12 @@ is not a valid RBD. It checks for:
 - cycles;
 - more than one node without predecessors, or more than one without
   successors;
-- a `k` of zero, or a `k` larger than the node's number of inputs, or a `k`
-  given for a node that is not in the graph;
+- a `k` below 1, or a `k` larger than the node's number of inputs, or a `k`
+  given for a node that is not in the graph (and a `k` that is not a whole
+  number is refused at once);
 - a node in the edges without a model (but the input and output nodes,
-  which need none), and a model for a name in no edge.
+  which need none; a junction, such as a vote point, takes
+  `PerfectReliability`), and a model for a name in no edge.
 
 The error lists each problem on a line of its own, and suggests the node a
 mistyped model was meant for:

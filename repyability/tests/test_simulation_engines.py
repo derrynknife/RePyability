@@ -24,7 +24,7 @@ import numpy as np
 import pytest
 import surpyval as surv
 
-from repyability import NodeState, RepairableRBD
+from repyability import NodeState, PerfectReliability, RepairableRBD
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import _compiled, _streams, repairable_rbd
 from repyability.rbd.repairable_rbd import Event
@@ -129,6 +129,32 @@ def plain_rbds():
                 },
             },
             downtime_cost_rate=10.0,
+        ),
+        # Two 2-of-3 votes at junctions, which are folded out of the
+        # structure (#182), and a junction where a bridge crosses.
+        "junctions": RepairableRBD(
+            [("s", f"x{i}") for i in range(3)]
+            + [(f"x{i}", "h1") for i in range(3)]
+            + [("h1", f"y{i}") for i in range(3)]
+            + [(f"y{i}", "h2") for i in range(3)]
+            + [("h2", "a"), ("h2", "b"), ("a", "j"), ("b", "j")]
+            + [("a", "c"), ("j", "c"), ("j", "d"), ("b", "d")]
+            + [("c", "t"), ("d", "t")],
+            {
+                n: {
+                    "reliability": W([90 + 10 * i, 1.6]),
+                    "repairability": E([0.4]),
+                }
+                for i, n in enumerate(
+                    ["x0", "x1", "x2", "y0", "y1", "y2", "a", "b", "c", "d"]
+                )
+            }
+            | {
+                "h1": PerfectReliability,
+                "h2": PerfectReliability,
+                "j": PerfectReliability,
+            },
+            k={"h1": 2, "h2": 2},
         ),
         # Fixed lives and repairs: events at the same time, released in the
         # heap's order.

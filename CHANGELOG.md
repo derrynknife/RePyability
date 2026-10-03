@@ -9,6 +9,24 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+### Added
+
+- **Junctions in a `RepairableRBD` (#182, #175).** A node given
+  `PerfectReliability` (or a spec whose `"reliability"` it is) is a
+  junction: it never fails, so a k-out-of-n vote can sit anywhere, such as
+  two 2-of-3 stages in series, where before it could only be the output
+  node's. It is no component: it is folded out of the structure
+  (`modular.fold`: a series module leaves it out, a parallel one with it
+  always works, a k-out-of-n one needs one fewer of the rest), so every
+  analysis and both simulation engines see the components alone, and give
+  what the same diagram drawn without the junction gives. The capacity
+  analysis lets it pass what reaches it, up to a capacity if it has one; it
+  takes no costs or maintenance, and cannot be held working or broken.
+  `PerfectReliability` as a repairable component's life failed with
+  "Unknown reliability function". A `NonRepairableRBD` node in the edges
+  with no model is now told that a junction takes `PerfectReliability`, and
+  `NonRepairable(PerfectReliability)` says to give it as the node itself.
+
 ### Changed
 
 - **The analyses over a window cost little more than the point curve

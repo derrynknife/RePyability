@@ -94,6 +94,7 @@ from repyability.rbd._point_availability import knots as point_knots
 from repyability.rbd._point_availability import unit_curve
 from repyability.rbd._sampling import inverse_sampler
 from repyability.rbd.degrading_node import DegradingNode
+from repyability.rbd.helper_classes import PerfectReliability
 from repyability.rbd.node_state import NodeState
 from repyability.rbd.rbd import RBD, _check_on_infeasible_rbd
 from repyability.rbd.redundancy_allocation import (
@@ -2308,6 +2309,32 @@ def _curve_points(value) -> Optional[int]:
     return int(value)
 
 
+def _is_junction(name, component) -> bool:
+    """Whether ``component`` makes node ``name`` a junction, which never
+    fails: ``PerfectReliability`` itself, or a spec whose life it is (#175,
+    #182). Such a spec may give a repair model, never used, but nothing
+    that only a part that fails or is maintained has."""
+    if component is PerfectReliability:
+        return True
+    if not (
+        isinstance(component, dict)
+        and component.get("reliability") is PerfectReliability
+    ):
+        return False
+    other = sorted(
+        str(key)
+        for key, value in component.items()
+        if key not in ("reliability", "repairability") and value is not None
+    )
+    if other:
+        raise ValueError(
+            f"Component {name!r} never fails (its reliability is "
+            f"PerfectReliability), so it takes no {', '.join(other)}: give "
+            "it as PerfectReliability alone, a junction that always works."
+        )
+    return True
+
+
 def _horizon(horizon) -> float:
     """``horizon`` as a finite, non-negative float, or a ValueError."""
     try:
@@ -3280,6 +3307,12 @@ class RepairableRBD(RBD):
           node its own object: nodes sharing one would share its
           simulation state, and ``availability`` then typically raises a
           ValueError. Its own costs are not counted in this RBD's costs.
+        - [`PerfectReliability`][repyability.PerfectReliability] itself
+          (or a spec whose ``"reliability"`` it is, with no costs or
+          maintenance), for a junction: a node that never fails, such as a
+          k-out-of-n vote point (#182). It is no component: the analyses
+          leave it out, the simulations draw nothing for it, and it passes
+          whatever reaches it, up to a ``capacity`` if it is given one.
     k : dict[Hashable, int], optional
         k-out-of-n nodes, as ``{node: k}``: the node passes only if at
         least ``k`` of the branches entering it are working (and the node
@@ -3661,6 +3694,19 @@ class RepairableRBD(RBD):
             for name, component in components.items()
             if name in in_edges
         }
+        # Junctions: nodes that never fail, such as a k-out-of-n vote point
+        # (#182). They are no components: the structure is folded with them
+        # working (see RBD._decomposition).
+        self._junction_nodes = frozenset(
+            name
+            for name, component in components.items()
+            if _is_junction(name, component)
+        )
+        components = {
+            name: component
+            for name, component in components.items()
+            if name not in self._junction_nodes
+        }
         reliability = {}
         repairability = {}
         for name, component in components.items():
@@ -3787,6 +3833,14 @@ class RepairableRBD(RBD):
         self._maintenance = self._validate_groups(maintenance_groups)
         self.ccf_groups = self._validate_ccf_groups(ccf_groups)
 
+    #: The junctions are folded out of the structure (see ``RBD``).
+    _FOLDS_JUNCTIONS = True
+
+    def _junctions(self) -> frozenset:
+        """The junctions: nodes given ``PerfectReliability``, which never
+        fail (see ``RBD._junctions``)."""
+        return getattr(self, "_junction_nodes", frozenset())
+
     def _repr_details(self) -> List[str]:
         """What shapes the repairable diagram, for ``repr``: its
         maintenance, tests, standby groups, nested RBDs and repair crews."""
@@ -3809,6 +3863,12 @@ class RepairableRBD(RBD):
         out = [f"{count} {what}" for count, what in counts if count]
         if getattr(self, "repair_crews", None) is not None:
             out.append(f"{self.repair_crews} repair crew(s)")
+        junctions = self._junctions()
+        if junctions:
+            out.append(
+                "junction(s) "
+                + ", ".join(repr(n) for n in sorted(junctions, key=str))
+            )
         return out
 
     def _validate_ccf_groups(self, ccf_groups) -> list:
@@ -4274,7 +4334,9 @@ class RepairableRBD(RBD):
 
         kinds = (
             "Give a spec dict with 'reliability' and 'repairability', a "
-            "NonRepairable, or a nested RepairableRBD."
+            "NonRepairable, or a nested RepairableRBD (or, for a junction "
+            "that never fails, such as a k-out-of-n vote point, "
+            "PerfectReliability)."
         )
         if isinstance(component, Repairable):
             return (

@@ -55,7 +55,12 @@ A component can be given as:
   time_to_replace)` object. The RBD keeps its own copy for each node, so one
   object can stand for several identical parts;
 - another `RepairableRBD`, nested as a subsystem (see
-  [below](#nested-repairable-rbds)).
+  [below](#nested-repairable-rbds));
+- [`PerfectReliability`][repyability.PerfectReliability] itself, for a
+  *junction*: a node that never fails, such as the point where two of three
+  trains must deliver (see [below](#junctions)). A spec whose
+  `"reliability"` is `PerfectReliability` is one too: a what-if of a part
+  that never fails.
 
 The constructor also takes `k`, `input_node`, `output_node` and
 `on_infeasible_rbd` exactly as for a
@@ -66,6 +71,36 @@ Every repair restores a component to as good as new (unless it is repaired
 imperfectly), components fail and are repaired independently of each other
 (unless they wait for a repair crew), and a component keeps its own
 failure/repair cycle whether or not the system is up.
+
+### Junctions
+
+A k-out-of-n vote needs a node to vote at, and that node is often no part
+at all, only the point where the trains meet. Give it
+`PerfectReliability`: it always works, so it passes on whatever reaches
+it, and `k` says how many of its inputs it needs. Votes can then sit
+anywhere, here two 2-of-3 stages in series:
+
+```python
+from repyability import PerfectReliability
+
+#   s -> 3 trains (x) -> h1 (2 of 3) -> 3 trains (y) -> h2 (2 of 3) -> t
+xs, ys = ["x0", "x1", "x2"], ["y0", "y1", "y2"]
+station = RepairableRBD(
+    [("s", x) for x in xs] + [(x, "h1") for x in xs]
+    + [("h1", y) for y in ys] + [(y, "h2") for y in ys] + [("h2", "t")],
+    {x: unit(0.1, 1.0) for x in xs}
+    | {y: unit(0.02, 0.5) for y in ys}
+    | {"h1": PerfectReliability, "h2": PerfectReliability},
+    k={"h1": 2, "h2": 2},
+)
+station.mean_availability()   # -> 0.9725   (3p² − 2p³ for each stage, multiplied)
+```
+
+A junction is no component: every analysis leaves it out (it is never in a
+path or cut set, has no importance, and cannot be held working or broken),
+the simulations draw nothing for it, and the capacity analysis lets it pass
+whatever reaches it, up to a capacity if it is given one. It may take a
+repair model, never used, but no costs or maintenance.
 
 ## Long-run availability and frequencies (exact)
 

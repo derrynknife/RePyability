@@ -87,6 +87,16 @@
 
 ## How each analysis is computed
 
+- **A `RepairableRBD`'s junctions are folded out of its structure.** A node
+  given `PerfectReliability` is no component: `RBD._decomposition()` folds
+  it in as always working (`modular.fold`), so whatever evaluates the
+  structure (the curves, the long-run values, both simulation engines, the
+  timelines, the path and cut sets) never sees it. Evaluate the structure
+  through `_decomposition()`, not the graph, so that this holds; only the
+  capacity analysis's reduced diagram (`flow`) keeps the junctions, and
+  `_capacity_arrays` passes them as working. `test_junctions.py` checks
+  every public method against the same system drawn without a junction.
+
 - **`analysis_routes()` (both RBD classes) must agree with the methods.** It
   says, without running anything, whether each public analysis is exact,
   numerical, simulated or refused. Refusals go through checks the report

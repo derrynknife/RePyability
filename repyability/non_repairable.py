@@ -11,6 +11,7 @@ from repyability.rbd._model_utils import (
     model_mean,
     never_fails,
 )
+from repyability.rbd.helper_classes import PerfectReliability
 from repyability.rbd.standby_node import StandbyModel
 from repyability.utils.deprecation import REMOVAL
 
@@ -177,6 +178,13 @@ class NonRepairable:
             # lifetimes), its sf gives it.
             self.model_parameterization = "standby"
             self.reliability_function = _scalar_sf(reliability)
+        elif reliability is PerfectReliability:
+            raise ValueError(
+                "A NonRepairable's life must end, and PerfectReliability "
+                "never does. In a RepairableRBD, give PerfectReliability "
+                "itself as the node, for a junction (such as a k-out-of-n "
+                "vote point) or a part that never fails."
+            )
         else:
             raise ValueError("Unknown reliability function")
 

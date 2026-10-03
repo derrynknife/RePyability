@@ -1132,6 +1132,103 @@ def decompose(
     return decomposition
 
 
+#: A term that always works, while folding (see ``fold``).
+_WORKS = -1
+
+
+def fold(decomposition: Decomposition, perfect: Iterable) -> Decomposition:
+    """``decomposition`` with the ``perfect`` nodes, which always work (a
+    ``RepairableRBD``'s junctions, #182), folded in: a series module leaves
+    them out, a parallel one with one always works, and a k-out-of-n one
+    needs one fewer of the rest for each; the core's path sets leave them
+    out, and its decision diagram takes each one's working branch. What is
+    left names none of them, so nothing that evaluates the structure (the
+    probabilities, the simulations' structure function, the path and cut
+    sets) needs them. The reduced diagram for the capacity analysis keeps
+    them, as nodes that pass what reaches them, up to their capacity."""
+    perfect = frozenset(perfect)
+    if not perfect & decomposition.nodes:
+        return decomposition
+    folded: list = []
+
+    def needing(members: tuple, k: int) -> int:
+        """The term (or _WORKS) that works when ``k`` of ``members``
+        do."""
+        if k <= 0:
+            return _WORKS
+        if len(members) == 1:
+            return members[0]
+        kind = PARALLEL if k == 1 else SERIES if k == len(members) else KOON
+        if kind != KOON:
+            # Members of the same kind are merged in, as the reduction does.
+            members = tuple(
+                c
+                for m in members
+                for c in (folded[m][1] if folded[m][0] == kind else (m,))
+            )
+        folded.append((kind, members, k) if kind == KOON else (kind, members))
+        return len(folded) - 1
+
+    position: Dict[int, int] = {}
+    for i, term in enumerate(decomposition.terms):
+        if term[0] == NODE:
+            if term[1] in perfect:
+                position[i] = _WORKS
+            else:
+                folded.append(term)
+                position[i] = len(folded) - 1
+            continue
+        members = [position[c] for c in term[1]]
+        rest = tuple(m for m in members if m != _WORKS)
+        working = len(members) - len(rest)
+        if term[0] == SERIES:
+            k = len(rest)
+        elif term[0] == PARALLEL:
+            k = 0 if working else 1
+        else:
+            k = term[2] - working
+        position[i] = needing(rest, k)
+
+    flow = decomposition.flow
+    if decomposition.root is not None:
+        root = position[decomposition.root]
+        if root == _WORKS:
+            return Decomposition([], flow=flow)
+        tree, renumbered = _tree(folded, [root])
+        return Decomposition(tree, root=renumbered[root], flow=flow)
+    if decomposition.from_graph:
+        # A step on a node that always works is its working branch; one
+        # whose branches are now the same is either.
+        steps, top = decomposition.core_plan()
+        slot = {bdd.FAIL: bdd.FAIL, bdd.WORK: bdd.WORK}
+        kept: list = []
+        for j, (pivot, active, inactive) in enumerate(steps):
+            on, off = slot[active], slot[inactive]
+            if position[pivot] == _WORKS or on == off:
+                slot[j + 2] = on
+            else:
+                kept.append((position[pivot], on, off))
+                slot[j + 2] = len(kept) + 1
+        top = slot[top]
+        if top == bdd.WORK:
+            return Decomposition([], flow=flow)
+        tree, renumbered = _tree(folded, sorted({p for p, _, _ in kept}))
+        plan = ([(renumbered[p], a, b) for p, a, b in kept], top)
+        return Decomposition(tree, plan=plan, flow=flow)
+    core = _minimal_sets(
+        frozenset(position[c] for c in path_set if position[c] != _WORKS)
+        for path_set in decomposition.core or ()
+    )
+    if frozenset() in core:
+        return Decomposition([], flow=flow)
+    tree, renumbered = _tree(folded, sorted(set().union(*core)))
+    return Decomposition(
+        tree,
+        core=[sorted(renumbered[c] for c in ps) for ps in core],
+        flow=flow,
+    )
+
+
 def _path_count(reduction: "_Reduction", cap: int = 10**15) -> int:
     """At least as many as the minimal path sets of what ``reduction``
     leaves (capped at ``cap``): the ways of reaching each vertex, from its

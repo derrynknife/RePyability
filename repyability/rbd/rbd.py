@@ -41,7 +41,7 @@ from scipy.special import expit as sigmoid
 from scipy.special import logit, logsumexp, softmax
 
 from repyability.rbd import capacity as _capacity
-from repyability.rbd.modular import Decomposition, decompose
+from repyability.rbd.modular import Decomposition, decompose, fold
 from repyability.rbd.rbd_graph import RBDGraph
 from repyability.rbd.results import CapacityDistribution
 from repyability.rbd.shannon import (
@@ -113,9 +113,18 @@ def structure_problems(check: dict) -> List[str]:
     (see ``RBD``), in the order a user would fix them."""
     lines = []
     missing = list(check.get("nodes_with_no_model", ()))
+    unused = list(check.get("nodes_in_no_edge", ()))
+    # A node a misspelt model was meant for needs no hint.
+    meant = {_close_name(node, missing) for node in unused}
     for node in missing:
-        lines.append(f"node {node!r} (in the edges) has no model")
-    for node in check.get("nodes_in_no_edge", ()):
+        line = f"node {node!r} (in the edges) has no model"
+        if node not in meant:
+            line += (
+                " (a junction, such as a k-out-of-n vote point, takes "
+                "PerfectReliability)"
+            )
+        lines.append(line)
+    for node in unused:
         line = f"model {node!r} is not a node in the edges"
         close = _close_name(node, missing)
         if close is not None:
@@ -632,6 +641,10 @@ class RBD:
     # runs (None for a structure alone): one in no edge is reported as
     # such, and a node in the edges with none as having no model.
     _models_given: Optional[list] = None
+    # Whether the junctions (see ``_junctions``) are folded out of the
+    # structure (``modular.fold``): a ``RepairableRBD``'s are no components,
+    # while a ``NonRepairableRBD``'s have a model that never fails.
+    _FOLDS_JUNCTIONS = False
 
     def __init__(
         self,
@@ -751,12 +764,14 @@ class RBD:
         self.output_node = structure_check["output_node"]
         self.in_or_out = [self.input_node, self.output_node]
         # A repeated node (a subclass's ``_aliases``) is the component it
-        # repeats, so it is not a component of its own.
+        # repeats, so it is not a component of its own; nor is a junction
+        # folded out of the structure.
         aliases = self._component_aliases()
+        folded = self._junctions() if self._FOLDS_JUNCTIONS else frozenset()
         self.nodes = [
             n
             for n in self.G.nodes
-            if n not in self.in_or_out and n not in aliases
+            if n not in self.in_or_out and n not in aliases and n not in folded
         ]
         self.capacity = self._validated_capacity(capacity)
         self.structure_check["has_irrelevant_nodes"] = False
@@ -1461,14 +1476,16 @@ class RBD:
                 reduce=reducible,
                 aliases=self._component_aliases(),
             )
+            if self._FOLDS_JUNCTIONS:
+                self._modules = fold(self._modules, self._junctions())
         return self._modules
 
     def _junctions(self) -> frozenset:
         """The nodes that are only drawing devices: perfectly reliable
-        junctions (a ``NonRepairableRBD``'s ``PerfectReliability`` nodes,
-        such as a k-out-of-n vote), which never fail and cannot be
-        improved. The importance measures and allocations leave them out
-        (and hold them at 1); none in a structure alone."""
+        junctions (the nodes given ``PerfectReliability``, such as a
+        k-out-of-n vote), which never fail and cannot be improved. The
+        importance measures and allocations leave them out (and hold them
+        at 1); none in a structure alone."""
         return frozenset()
 
     def _component_aliases(self) -> dict:
@@ -1641,10 +1658,17 @@ class RBD:
                 "failed the structure check (see structure_check)."
             )
 
+        junctions = self._junctions()
+
         def component(name):
             if name in own:
                 return own[name]
-            works = np.asarray(arrays[name], dtype=float)
+            if name in junctions and name not in arrays:
+                # A junction always works: it passes what reaches it, up to
+                # its capacity if it has one.
+                works = np.ones(size)
+            else:
+                works = np.asarray(arrays[name], dtype=float)
             return _capacity.node_distribution(
                 self.capacity.get(name, np.inf), works, 1.0 - works
             )
@@ -2779,6 +2803,7 @@ class RBD:
             )
 
         valid = set(self.nodes)
+        folded = self._junctions() if self._FOLDS_JUNCTIONS else frozenset()
         for label, nodes in (
             ("working_nodes", working_nodes),
             ("broken_nodes", broken_nodes),
@@ -2788,6 +2813,11 @@ class RBD:
                     which = "input" if node == self.input_node else "output"
                     raise ValueError(
                         f"Cannot set the {which} node {node!r} via {label}."
+                    )
+                if node in folded:
+                    raise ValueError(
+                        f"Node {node!r} is a junction, which always works: "
+                        f"it cannot be set via {label}."
                     )
                 if node not in valid:
                     raise ValueError(
