@@ -12,6 +12,7 @@ import warnings
 
 import numpy as np
 import pytest
+import scipy.stats as st
 import surpyval as surv
 
 from repyability import (
@@ -28,7 +29,14 @@ from repyability import (
     StandbyModel,
     network,
 )
-from repyability.rbd import bdd, modular, phased_mission, routes
+from repyability.rbd import (
+    _repairable_uncertainty,
+    bdd,
+    modular,
+    phased_mission,
+    routes,
+)
+from repyability.rbd._model_utils import parametric_spec
 from repyability.tests.repository import source
 from repyability.tests.test_performance_equivalence import binomial_first
 from repyability.tests.test_simulation_engines import (
@@ -457,6 +465,21 @@ NONREPAIRABLE_CALLS = {
     ),
 }
 
+
+def uncertain(rbd):
+    """A component's life scale known to within 5%: the first node, outside
+    the common-cause groups, whose life has parameters."""
+    members = {m for g in rbd.ccf_groups for m in g.members}
+    for node in rbd.components:
+        life = _repairable_uncertainty._models(rbd, node).get("reliability")
+        spec = None if life is None else parametric_spec(life)
+        if spec is not None and node not in members:
+            name, value = spec[2][0], spec[1][0]
+            spread = st.uniform(0.95 * value, 0.1 * value)
+            return {node: {"reliability": {name: spread}}}
+    raise AssertionError("No component's life has parameters.")
+
+
 REPAIRABLE_CALLS = {
     **{
         name: (lambda name: lambda rbd: getattr(rbd, name)())(name)
@@ -507,6 +530,29 @@ REPAIRABLE_CALLS = {
     ),
     "cost": lambda rbd: rbd.cost(200.0, mc_samples=20, seed=1),
     "compare": lambda rbd: rbd.compare(rbd, 200.0, mc_samples=20, seed=1),
+    "mean_availability_uncertainty": (
+        lambda rbd: rbd.mean_availability_uncertainty(
+            uncertain(rbd), n_draws=2, seed=1
+        )
+    ),
+    "point_availability_uncertainty": (
+        lambda rbd: rbd.point_availability_uncertainty(
+            [10.0, 200.0], uncertain(rbd), n_draws=2, seed=1
+        )
+    ),
+    "mission_availability_uncertainty": (
+        lambda rbd: rbd.mission_availability_uncertainty(
+            200.0, uncertain(rbd), n_draws=2, seed=1
+        )
+    ),
+    "expected_cost_rate_uncertainty": (
+        lambda rbd: rbd.expected_cost_rate_uncertainty(
+            uncertain(rbd), n_draws=2, seed=1
+        )
+    ),
+    "uncertainty_importance": lambda rbd: rbd.uncertainty_importance(
+        uncertainty=uncertain(rbd)
+    ),
 }
 
 
@@ -777,13 +823,25 @@ def test_the_readme_says_what_is_simulated():
         ],
         "The uncertainty from fitted component parameters "
         "(`sf_uncertainty`, `mean_uncertainty`, `bx_life_uncertainty`, "
-        "`time_to_reliability_uncertainty`)": [
+        "`time_to_reliability_uncertainty`; for a repairable system "
+        "`mean_availability_uncertainty`, `point_availability_uncertainty`, "
+        "`mission_availability_uncertainty`, "
+        "`expected_cost_rate_uncertainty`)": [
             (plain, name, "simulated")
             for name in (
                 "sf_uncertainty",
                 "mean_uncertainty",
                 "bx_life_uncertainty",
                 "time_to_reliability_uncertainty",
+            )
+        ]
+        + [
+            (repairable["costed_pairs"], name, "simulated")
+            for name in (
+                "mean_availability_uncertainty",
+                "point_availability_uncertainty",
+                "mission_availability_uncertainty",
+                "expected_cost_rate_uncertainty",
             )
         ],
         "Small failure probabilities, with a node only simulations take": [

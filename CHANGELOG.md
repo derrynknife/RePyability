@@ -196,8 +196,41 @@ other release, fixes included, the minor.
   variance; `method="sobol"` estimates the first-order and total Sobol
   indices from draws (Jansen's estimators), which take nonlinearity and
   interactions in. An `UncertaintyImportance` holds the variance and the
-  shares. A `RepairableRBD` does not propagate parameter uncertainty yet,
-  so it has none (#200).
+  shares. On a `RepairableRBD` it came with #200, below.
+- **Parameter uncertainty in a repairable system, and its vega (#200).**
+  `RepairableRBD.mean_availability_uncertainty`,
+  `point_availability_uncertainty(x)`, `mission_availability_uncertainty(t)`
+  and `expected_cost_rate_uncertainty` give the spread of the availability
+  and of the cost rate over plausible models of the components, as an
+  `UncertaintyResult`. A component's models are its roles: its life
+  (`"reliability"`), its repair (`"repairability"`), and the durations of
+  its preventive maintenance and of its tests (`"preventive.duration"`,
+  `"inspection.duration"`), named as `parameter_sensitivity`'s levers. Each
+  may be uncertain (`{node: {role: uncertainty}}`, the uncertainty as
+  `sf_uncertainty` takes it: `"fit"`, distributions over its parameters, or
+  a list of models), and so may a common-cause group's model, keyed by the
+  `CCFGroup`. By default every model that is a surpyval fit with a
+  parameter covariance is drawn, the nodes holding the same fitted object
+  sharing its draws. Each draw is the diagram rebuilt from its
+  constructor's arguments with the drawn models, and its value worked out
+  as the diagram's own (exactly or numerically), so what the diagram
+  refuses, the draws do too. `uncertainty_importance(x, uncertainty, of=)`
+  splits the variance of the long-run availability, the availability at
+  `x` or over missions `x` (from new or from `state=`), or the cost rate
+  among the inputs: by the delta method, `parameter_sensitivity`'s
+  derivatives with the parameters' covariance, or by Sobol indices from
+  draws. Checked against a repair rate known to a range (whose mean
+  availability has a closed form), the delta method's variance against the
+  draws', and its shares against the Sobol indices.
+- **Quasi-random parameter draws (#200).** Every method that draws models
+  from their uncertainty, on both diagram classes, takes
+  `sampling="sobol"`: the draws are the points of a scrambled Sobol
+  sequence (seeded by `seed`), each parameter or choice from a list one of
+  its dimensions, rather than random numbers. They cover the parameters
+  more evenly, so the mean, the percentiles and the Sobol indices settle
+  with fewer draws: for a repair rate known to a range, 512 points put the
+  mean availability within `1e-5` of its value, ten times closer than
+  random draws. The default, `sampling="random"`, draws as before.
 - **Joint importance: complements and substitutes (#194).**
   `joint_importance` (on `NonRepairableRBD`, `RepairableRBD` and
   `FaultTree`) gives the second-order Birnbaum measure of each pair,

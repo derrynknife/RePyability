@@ -1515,6 +1515,7 @@ class NonRepairableRBD(RBD):
         *,
         n_draws: int = 1000,
         seed=None,
+        sampling: str = "random",
     ) -> UncertaintyResult:
         """System reliability over plausible node models (parameter
         uncertainty).
@@ -1582,6 +1583,11 @@ class NonRepairableRBD(RBD):
             The number of draws, by default 1000.
         seed : int, optional
             Seed for the draws, for reproducible results.
+        sampling : str, optional
+            ``"random"`` (the default) draws with pseudo-random numbers;
+            ``"sobol"`` from the points of a scrambled Sobol sequence,
+            which cover the parameters more evenly and shrink the error of
+            the summaries for the same number of draws (#200).
 
         Returns
         -------
@@ -1651,7 +1657,9 @@ class NonRepairableRBD(RBD):
         >>> round(lower, 3), round(upper, 3)
         (0.401, 0.795)
         """
-        drawn, drawn_groups = self._uncertain_draws(uncertainty, n_draws, seed)
+        drawn, drawn_groups = self._uncertain_draws(
+            uncertainty, n_draws, seed, sampling
+        )
 
         fixed = self.is_fixed and all(
             self._model_is_fixed(m) for ms in drawn.values() for m in ms
@@ -1778,6 +1786,7 @@ class NonRepairableRBD(RBD):
         *,
         n_draws: int = 1000,
         seed=None,
+        sampling: str = "random",
     ) -> UncertaintyResult:
         """The system's MTTF over plausible node models (parameter
         uncertainty).
@@ -1805,6 +1814,11 @@ class NonRepairableRBD(RBD):
             The number of draws, by default 1000.
         seed : int, optional
             Seed for the draws, for reproducible results.
+        sampling : str, optional
+            ``"random"`` (the default) draws with pseudo-random numbers;
+            ``"sobol"`` from the points of a scrambled Sobol sequence,
+            which cover the parameters more evenly and shrink the error of
+            the summaries for the same number of draws (#200).
 
         Returns
         -------
@@ -1846,7 +1860,9 @@ class NonRepairableRBD(RBD):
         (515, 1352)
         """
         self._require_lifetimes()
-        drawn, drawn_groups = self._uncertain_draws(uncertainty, n_draws, seed)
+        drawn, drawn_groups = self._uncertain_draws(
+            uncertainty, n_draws, seed, sampling
+        )
         samples = self._quantity_samples(
             "mean", None, drawn, drawn_groups, n_draws
         )
@@ -1861,6 +1877,7 @@ class NonRepairableRBD(RBD):
         *,
         n_draws: int = 1000,
         seed=None,
+        sampling: str = "random",
         upper_bound: Optional[float] = None,
     ) -> UncertaintyResult:
         """The time at which the system reliability falls to ``target``,
@@ -1884,6 +1901,11 @@ class NonRepairableRBD(RBD):
             The number of draws, by default 1000.
         seed : int, optional
             Seed for the draws, for reproducible results.
+        sampling : str, optional
+            ``"random"`` (the default) draws with pseudo-random numbers;
+            ``"sobol"`` from the points of a scrambled Sobol sequence,
+            which cover the parameters more evenly and shrink the error of
+            the summaries for the same number of draws (#200).
         upper_bound : float, optional
             An upper bound for each draw's search, at which its reliability
             is below ``target``; found by doubling if None.
@@ -1928,7 +1950,9 @@ class NonRepairableRBD(RBD):
         self._require_time_varying()
         if not 0.0 < target < 1.0:
             raise ValueError("target reliability must be in (0, 1).")
-        drawn, drawn_groups = self._uncertain_draws(uncertainty, n_draws, seed)
+        drawn, drawn_groups = self._uncertain_draws(
+            uncertainty, n_draws, seed, sampling
+        )
         samples = self._quantity_samples(
             "time_to_reliability",
             target,
@@ -1949,6 +1973,7 @@ class NonRepairableRBD(RBD):
         *,
         n_draws: int = 1000,
         seed=None,
+        sampling: str = "random",
         upper_bound: Optional[float] = None,
     ) -> UncertaintyResult:
         """The Bx life, the time by which ``x`` percent of systems have
@@ -1970,6 +1995,11 @@ class NonRepairableRBD(RBD):
             The number of draws, by default 1000.
         seed : int, optional
             Seed for the draws, for reproducible results.
+        sampling : str, optional
+            ``"random"`` (the default) draws with pseudo-random numbers;
+            ``"sobol"`` from the points of a scrambled Sobol sequence,
+            which cover the parameters more evenly and shrink the error of
+            the summaries for the same number of draws (#200).
         upper_bound : float, optional
             An upper bound for each draw's search, found by doubling if
             None.
@@ -2009,6 +2039,7 @@ class NonRepairableRBD(RBD):
             uncertainty,
             n_draws=n_draws,
             seed=seed,
+            sampling=sampling,
             upper_bound=upper_bound,
         )
 
@@ -2021,6 +2052,7 @@ class NonRepairableRBD(RBD):
         method: str = "delta",
         n_draws: int = 1000,
         seed=None,
+        sampling: str = "random",
         rel_step: float = 1e-4,
         upper_bound: Optional[float] = None,
     ) -> UncertaintyImportance:
@@ -2073,6 +2105,11 @@ class NonRepairableRBD(RBD):
             1000.
         seed : int, optional
             With ``method="sobol"``, the seed of the draws.
+        sampling : str, optional
+            With ``method="sobol"``, ``"random"`` (the default) or
+            ``"sobol"``: the draws' two sets from the points of a scrambled
+            Sobol sequence, each from dimensions of its own, which shrinks
+            the indices' sampling error for the same number of draws.
         rel_step : float, optional
             With ``method="delta"``, the parameters' step, as a fraction of
             each (one-sided at a bound of its range), by default ``1e-4``.
@@ -2200,6 +2237,7 @@ class NonRepairableRBD(RBD):
                 seed,
                 upper_bound,
                 keys,
+                sampling,
             )
         scalar = of != "sf" or x is None or np.ndim(x) == 0
 
@@ -2301,6 +2339,7 @@ class NonRepairableRBD(RBD):
         seed,
         upper_bound,
         keys,
+        sampling="random",
     ):
         """The first-order and total Sobol indices of each input (Jansen's
         estimators, 1999), and the quantity's variance, from two
@@ -2308,7 +2347,7 @@ class NonRepairableRBD(RBD):
         input with it taken from the second (see
         ``uncertainty_importance``)."""
         drawn, drawn_groups = self._uncertain_draws(
-            uncertainty, 2 * n_draws, seed
+            uncertainty, n_draws, seed, sampling, paired=True
         )
         n = n_draws
 
@@ -2359,44 +2398,81 @@ class NonRepairableRBD(RBD):
         return first, total, variance
 
     def _uncertain_draws(
-        self, uncertainty, n_draws: int, seed
+        self,
+        uncertainty,
+        n_draws: int,
+        seed,
+        sampling: str = "random",
+        paired: bool = False,
     ) -> Tuple[Dict[Hashable, list], list]:
         """``n_draws`` plausible models for each uncertain node, after
         checking ``uncertainty`` and ``n_draws`` (see ``sf_uncertainty``):
         the nodes given together share their models. And, for each
         common-cause group, ``n_draws`` plausible common-cause models, or
-        None if its model is certain."""
+        None if its model is certain. ``paired``: two independent sets of
+        ``n_draws``, one after the other (for the Sobol indices). With
+        ``sampling="sobol"`` (#200), the draws are the points of a
+        scrambled Sobol sequence, a pair's two sets from dimensions of
+        their own (see ``uncertainty``)."""
+        from .uncertainty import (
+            Counter,
+            SobolPoints,
+            check_sampling,
+            sobol_table,
+        )
+
         if isinstance(n_draws, bool) or not isinstance(
             n_draws, (int, np.integer)
         ):
             raise ValueError(f"n_draws must be an integer, got {n_draws!r}.")
         if n_draws < 1:
             raise ValueError(f"n_draws must be at least 1, got {n_draws}.")
+        check_sampling(sampling)
         sources, ccf_specs = self._uncertainty_sources(uncertainty)
         rng = np.random.default_rng(seed)
-        drawn: Dict[Hashable, list] = {}
-        for _, members, spec in sources:
-            label = (
-                f"Node {members[0]!r}"
-                if len(members) == 1
-                else f"Nodes {list(members)!r}"
-            )
-            models = draw_models(
-                self.reliabilities[members[0]], spec, n_draws, rng, label
-            )
-            for node in members:
-                drawn[node] = models
-        # The common-cause models after the nodes', so that the nodes'
-        # draws are the same whether or not they are uncertain.
-        drawn_groups: list = [
-            (
-                draw_ccf_models(group, ccf_specs[i][1], n_draws, rng)
-                if i in ccf_specs
-                else None
-            )
-            for i, group in enumerate(self.ccf_groups)
-        ]
-        return drawn, drawn_groups
+
+        def draw(n: int, source) -> Tuple[Dict[Hashable, list], list]:
+            drawn: Dict[Hashable, list] = {}
+            for _, members, spec in sources:
+                label = (
+                    f"Node {members[0]!r}"
+                    if len(members) == 1
+                    else f"Nodes {list(members)!r}"
+                )
+                models = draw_models(
+                    self.reliabilities[members[0]], spec, n, source, label
+                )
+                for node in members:
+                    drawn[node] = models
+            # The common-cause models after the nodes', so that the nodes'
+            # draws are the same whether or not they are uncertain.
+            groups: list = [
+                (
+                    draw_ccf_models(group, ccf_specs[i][1], n, source)
+                    if i in ccf_specs
+                    else None
+                )
+                for i, group in enumerate(self.ccf_groups)
+            ]
+            return drawn, groups
+
+        if sampling == "random":
+            return draw(2 * n_draws if paired else n_draws, rng)
+        counter = Counter()
+        draw(1, counter)
+        width = counter.dimensions
+        table = sobol_table(n_draws, 2 * width if paired else width, rng)
+        first = draw(n_draws, SobolPoints(table[:, :width]))
+        if not paired:
+            return first
+        second = draw(n_draws, SobolPoints(table[:, width:]))
+        return (
+            {node: first[0][node] + second[0][node] for node in first[0]},
+            [
+                None if a is None else a + b
+                for a, b in zip(first[1], second[1])
+            ],
+        )
 
     def _uncertainty_sources(
         self, uncertainty

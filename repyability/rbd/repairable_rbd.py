@@ -141,6 +141,8 @@ from repyability.rbd.results import (
     SparesStock,
     TimelineSimulation,
     TotalCostAllocation,
+    UncertaintyImportance,
+    UncertaintyResult,
     UpDownImportance,
 )
 from repyability.rbd.standby_node import StandbyModel
@@ -10356,7 +10358,40 @@ class RepairableRBD(RBD):
                 "shards",
             ):
                 out[name] = r.refused(meshed)
-        return self._meshed_routes(out, free)
+        out = self._meshed_routes(out, free)
+        # Parameter uncertainty (#200): each draw's diagram rebuilt and its
+        # value worked out as the diagram's own, so refused where that is
+        # (a structure too meshed included).
+        for name, method in (
+            ("mean_availability_uncertainty", "mean_availability"),
+            ("point_availability_uncertainty", "point_availability"),
+            ("mission_availability_uncertainty", "mission_availability"),
+            ("expected_cost_rate_uncertainty", "expected_cost_rate"),
+        ):
+            own = out[method]
+            out[name] = (
+                own
+                if own.route == r.REFUSED
+                else r.AnalysisRoute(
+                    r.SIMULATED,
+                    "The components' models drawn from their uncertainty, "
+                    f"and each draw's diagram's {method} worked out as its "
+                    f"own ({own.route}).",
+                )
+            )
+        sensitivity = out["parameter_sensitivity"]
+        out["uncertainty_importance"] = (
+            sensitivity
+            if sensitivity.route == r.REFUSED
+            else r.AnalysisRoute(
+                r.NUMERICAL,
+                "The delta method: parameter_sensitivity's derivatives in "
+                "each uncertain parameter, with their covariance "
+                "(method='sobol' estimates Sobol indices from draws "
+                "instead).",
+            )
+        )
+        return dict(sorted(out.items()))
 
     def _capacity_refusal(self) -> Optional[Tuple[str, tuple]]:
         """What ``capacity_distribution`` refuses beyond the long-run
@@ -20432,6 +20467,452 @@ class RepairableRBD(RBD):
             rel_step=rel_step,
             of=of,
             unit_costs=unit_costs,
+        )
+
+    def _uncertainty(
+        self, of: str, x, uncertainty, n_draws, seed, sampling, state
+    ) -> UncertaintyResult:
+        """The quantity ``of`` over draws of the uncertain models (see
+        ``_repairable_uncertainty``), as an ``UncertaintyResult``."""
+        from repyability.rbd import _repairable_uncertainty as drawn
+
+        drawn.check(self, of, x, state)
+        # The diagram's own value first: what it refuses, every draw would.
+        nominal = drawn.value(self, of, x, state)
+        inputs, groups = drawn.sources(self, uncertainty)
+        models, group_models = drawn.draws(
+            self, inputs, groups, n_draws, seed, sampling
+        )
+        samples = drawn.samples(
+            self, of, x, state, inputs, models, group_models, n_draws
+        )
+        if x is None or np.ndim(x) == 0:
+            return UncertaintyResult(
+                samples=samples[:, 0],
+                nominal=float(nominal[0]),
+                n_draws=n_draws,
+            )
+        return UncertaintyResult(
+            samples=samples, nominal=nominal, n_draws=n_draws
+        )
+
+    def mean_availability_uncertainty(
+        self,
+        uncertainty: Optional[Dict[Hashable, Any]] = None,
+        *,
+        n_draws: int = 1000,
+        seed=None,
+        sampling: str = "random",
+    ) -> UncertaintyResult:
+        """The long-run availability over plausible models of the components
+        (parameter uncertainty, #200).
+
+        A component's models are estimated from data, so their parameters
+        are uncertain: *epistemic* uncertainty, about what the models are,
+        as opposed to the aleatory variability they describe. Each of the
+        ``n_draws`` draws gives every uncertain model a plausible value, and
+        the diagram, rebuilt with them, its long-run availability, worked
+        out as ``mean_availability`` works it out (exactly, or numerically
+        with maintenance): the spread of the draws, and its percentiles
+        (``interval``), say how well the availability is known.
+
+        A component has several models: its life (``"reliability"``), its
+        repair (``"repairability"``), and the durations of its preventive
+        maintenance and of its tests (``"preventive.duration"``,
+        ``"inspection.duration"``), named as ``parameter_sensitivity``'s
+        levers. ``uncertainty`` maps an input to its uncertainty: a node; a
+        tuple of nodes of one population, sharing their models, which each
+        draw gives them alike; or a common-cause group (the
+        [`CCFGroup`][repyability.CCFGroup] itself), whose model's
+        parameters, or alternative models, are drawn as for
+        ``NonRepairableRBD.sf_uncertainty``. A node's uncertainty is
+
+        - ``"fit"``: every one of its models that is a surpyval fit with a
+          parameter covariance (``hess_inv``), drawn from its normal
+          approximation (on the log scale for a positive parameter, the
+          logit scale for one in (0, 1));
+        - ``{role: uncertainty}``: each model named drawn as its
+          uncertainty says (``"fit"``, ``{parameter: distribution}`` or a
+          list of models), the others kept;
+        - ``{parameter: distribution}`` or a list of models: its life's.
+
+        Parameters
+        ----------
+        uncertainty : dict, optional
+            ``{node, tuple of nodes or CCFGroup: uncertainty}`` (see above).
+            By default, every model that is a fit with a parameter
+            covariance, the nodes whose fitted models are one set of
+            objects, or one common-cause group, together.
+        n_draws : int, optional
+            The number of draws, by default 1000: one evaluation each.
+        seed : int, optional
+            Seed for the draws.
+        sampling : str, optional
+            ``"random"`` (the default), or ``"sobol"``: the draws from the
+            points of a scrambled Sobol sequence, which cover the
+            parameters more evenly and shrink the error of the summaries for
+            the same number of draws.
+
+        Returns
+        -------
+        UncertaintyResult
+            The availability of every draw (``samples``), the ``nominal``
+            value with the components' own models, and summaries (``mean``,
+            ``median``, ``std``, ``percentile``, ``interval``).
+
+        Raises
+        ------
+        ValueError
+            If ``uncertainty`` names an unknown node, a nested RBD or a
+            junction, a node twice, nodes of a population with different
+            models, a model a node does not have, or a common-cause group's
+            members apart; if a model's uncertainty cannot be drawn; if
+            ``n_draws`` or ``sampling`` is invalid; or as
+            ``mean_availability`` does for a draw.
+
+        Examples
+        --------
+        A pump whose repair time was fitted to 12 repairs, in series with a
+        valve: the repair's uncertainty is the availability's.
+
+        >>> import numpy as np
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> repairs = surv.LogNormal.fit(
+        ...     np.exp(1.5 + 0.4 * np.linspace(-1.6, 1.6, 12))
+        ... )
+        >>> rbd = RepairableRBD(
+        ...     [("s", "pump"), ("pump", "valve"), ("valve", "t")],
+        ...     {
+        ...         "pump": {
+        ...             "reliability": surv.Exponential.from_params([0.01]),
+        ...             "repairability": repairs,
+        ...         },
+        ...         "valve": {
+        ...             "reliability": surv.Exponential.from_params([0.002]),
+        ...             "repairability": surv.Exponential.from_params([0.5]),
+        ...         },
+        ...     },
+        ... )
+        >>> result = rbd.mean_availability_uncertainty(n_draws=2000, seed=0)
+        >>> round(result.nominal, 4)
+        0.9499
+        >>> lower, upper = result.interval(0.9)
+        >>> round(lower, 4), round(upper, 4)
+        (0.9392, 0.9577)
+        """
+        return self._uncertainty(
+            "mean_availability",
+            None,
+            uncertainty,
+            n_draws,
+            seed,
+            sampling,
+            None,
+        )
+
+    def point_availability_uncertainty(
+        self,
+        x,
+        uncertainty: Optional[Dict[Hashable, Any]] = None,
+        *,
+        n_draws: int = 1000,
+        seed=None,
+        sampling: str = "random",
+        state=None,
+    ) -> UncertaintyResult:
+        """The point availability at times ``x`` (from new, or from
+        ``state``) over plausible models of the components (#200), each draw
+        worked out as ``point_availability`` works it out: the inputs and
+        their uncertainty as for ``mean_availability_uncertainty``.
+
+        Parameters
+        ----------
+        x : float or array-like
+            Times.
+        uncertainty : dict, optional
+            As for ``mean_availability_uncertainty``.
+        n_draws : int, optional
+            The number of draws, by default 1000: one evaluation of the
+            availability over time each.
+        seed : int, optional
+            Seed for the draws.
+        sampling : str, optional
+            ``"random"`` (the default) or ``"sobol"`` (see
+            ``mean_availability_uncertainty``).
+        state : dict or str, optional
+            The components' current states, as for ``point_availability``.
+
+        Returns
+        -------
+        UncertaintyResult
+            Per draw, the availability at each time (``samples``: one value
+            a draw for a number ``x``, else one row a draw), the
+            ``nominal`` values and their summaries.
+
+        Raises
+        ------
+        ValueError, NotImplementedError
+            As for ``mean_availability_uncertainty`` and
+            ``point_availability``.
+        """
+        return self._uncertainty(
+            "point_availability",
+            x,
+            uncertainty,
+            n_draws,
+            seed,
+            sampling,
+            state,
+        )
+
+    def mission_availability_uncertainty(
+        self,
+        t,
+        uncertainty: Optional[Dict[Hashable, Any]] = None,
+        *,
+        n_draws: int = 1000,
+        seed=None,
+        sampling: str = "random",
+        state=None,
+    ) -> UncertaintyResult:
+        """The mission availability over ``[0, t]`` (from new, or from
+        ``state``) over plausible models of the components (#200), each draw
+        worked out as ``mission_availability`` works it out: the inputs and
+        their uncertainty as for ``mean_availability_uncertainty``.
+
+        Parameters
+        ----------
+        t : float or array-like
+            The missions' lengths.
+        uncertainty : dict, optional
+            As for ``mean_availability_uncertainty``.
+        n_draws : int, optional
+            The number of draws, by default 1000.
+        seed : int, optional
+            Seed for the draws.
+        sampling : str, optional
+            ``"random"`` (the default) or ``"sobol"``.
+        state : dict or str, optional
+            The components' current states, as for
+            ``mission_availability``.
+
+        Returns
+        -------
+        UncertaintyResult
+            Per draw, the mission availability of each mission, the
+            ``nominal`` values and their summaries.
+
+        Raises
+        ------
+        ValueError, NotImplementedError
+            As for ``mean_availability_uncertainty`` and
+            ``mission_availability``.
+        """
+        return self._uncertainty(
+            "mission_availability",
+            t,
+            uncertainty,
+            n_draws,
+            seed,
+            sampling,
+            state,
+        )
+
+    def expected_cost_rate_uncertainty(
+        self,
+        uncertainty: Optional[Dict[Hashable, Any]] = None,
+        *,
+        n_draws: int = 1000,
+        seed=None,
+        sampling: str = "random",
+    ) -> UncertaintyResult:
+        """The long-run cost rate over plausible models of the components
+        (#200), each draw worked out as ``expected_cost_rate`` works it
+        out: the inputs and their uncertainty as for
+        ``mean_availability_uncertainty``.
+
+        Parameters
+        ----------
+        uncertainty : dict, optional
+            As for ``mean_availability_uncertainty``.
+        n_draws : int, optional
+            The number of draws, by default 1000.
+        seed : int, optional
+            Seed for the draws.
+        sampling : str, optional
+            ``"random"`` (the default) or ``"sobol"``.
+
+        Returns
+        -------
+        UncertaintyResult
+            The cost rate of every draw, the ``nominal`` value and their
+            summaries.
+
+        Raises
+        ------
+        ValueError, NotImplementedError
+            As for ``mean_availability_uncertainty`` and
+            ``expected_cost_rate``.
+        """
+        return self._uncertainty(
+            "expected_cost_rate",
+            None,
+            uncertainty,
+            n_draws,
+            seed,
+            sampling,
+            None,
+        )
+
+    def uncertainty_importance(
+        self,
+        x=None,
+        uncertainty: Optional[Dict[Hashable, Any]] = None,
+        *,
+        of: str = "mean_availability",
+        method: str = "delta",
+        n_draws: int = 1000,
+        seed=None,
+        sampling: str = "random",
+        rel_step: Optional[float] = None,
+        state=None,
+    ) -> UncertaintyImportance:
+        """Which input's parameter uncertainty makes the availability (or
+        the cost rate) uncertain: each uncertain input's share of its
+        variance (vega, #200), the inputs as for
+        ``mean_availability_uncertainty``.
+
+        ``of`` is the quantity: ``"mean_availability"`` (the default, the
+        long run), ``"point_availability"`` at the times ``x``,
+        ``"mission_availability"`` over ``[0, x]``, or
+        ``"expected_cost_rate"``.
+
+        ``method="delta"`` (the default) linearises the quantity in the
+        inputs' parameters: ``Var(Q) ~ sum_k g_k^T Sigma_k g_k``, ``g_k``
+        its derivatives in input ``k``'s parameters (``parameter_
+        sensitivity``'s, of every one of its uncertain models; a
+        population's summed over its nodes, which move together) and
+        ``Sigma_k`` their covariance (a fit's ``hess_inv``, or the
+        variances of the distributions given). The inputs are independent,
+        so each one's part is its own term, and the shares add up to 1. A
+        list of models has no parameters to move: it needs
+        ``method="sobol"``.
+
+        ``method="sobol"`` draws the inputs as
+        ``mean_availability_uncertainty`` does and estimates the first-order
+        and total Sobol indices: ``n_draws`` draws of two independent sets,
+        and one more set for each input with it taken from the second
+        (Jansen's estimators), ``n_draws * (inputs + 2)`` evaluations in
+        all, at the cost of sampling error, which ``sampling="sobol"``
+        shrinks.
+
+        Parameters
+        ----------
+        x : float or array-like, optional
+            The times for ``"point_availability"``, the missions' lengths
+            for ``"mission_availability"``; none for the long run.
+        uncertainty : dict, optional
+            As for ``mean_availability_uncertainty``.
+        of : str, optional
+            The quantity (see above).
+        method : str, optional
+            ``"delta"`` (the default) or ``"sobol"``.
+        n_draws : int, optional
+            With ``method="sobol"``, the draws of each set, by default
+            1000.
+        seed : int, optional
+            With ``method="sobol"``, the seed of the draws.
+        sampling : str, optional
+            With ``method="sobol"``, ``"random"`` (the default) or
+            ``"sobol"`` (see ``mean_availability_uncertainty``).
+        rel_step : float, optional
+            With ``method="delta"``, ``parameter_sensitivity``'s step.
+        state : dict or str, optional
+            For the values over time, the components' current states.
+
+        Returns
+        -------
+        UncertaintyImportance
+            The ``method``, the quantity's ``variance``, and each input's
+            ``first_order`` and ``total`` shares, by the key it was given
+            under: floats, or arrays for an array ``x``.
+
+        Raises
+        ------
+        ValueError
+            For an unknown ``of`` or ``method``, an ``x`` or ``state`` the
+            quantity does not take, a list of models with the delta method,
+            or as ``mean_availability_uncertainty`` does.
+
+        Examples
+        --------
+        A pump whose repair was fitted to 12 repairs, in series with a valve
+        failing half as often, whose repair was fitted to 8: the pump's,
+        down twice as often, makes three quarters of the availability's
+        uncertainty.
+
+        >>> import numpy as np
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> def fitted(median, n):
+        ...     spread = 0.4 * np.linspace(-1.6, 1.6, n)
+        ...     return surv.LogNormal.fit(median * np.exp(spread))
+        >>> rbd = RepairableRBD(
+        ...     [("s", "pump"), ("pump", "valve"), ("valve", "t")],
+        ...     {
+        ...         "pump": {
+        ...             "reliability": surv.Exponential.from_params([0.01]),
+        ...             "repairability": fitted(4.5, 12),
+        ...         },
+        ...         "valve": {
+        ...             "reliability": surv.Exponential.from_params([0.005]),
+        ...             "repairability": fitted(4.0, 8),
+        ...         },
+        ...     },
+        ... )
+        >>> parts = rbd.uncertainty_importance()
+        >>> {n: round(s, 2) for n, s in parts.first_order.items()}
+        {'pump': 0.74, 'valve': 0.26}
+        """
+        from repyability.rbd import _repairable_uncertainty as drawn
+
+        drawn.check(self, of, x, state)
+        if method not in ("delta", "sobol"):
+            raise ValueError(
+                f"method must be 'delta' or 'sobol', got {method!r}."
+            )
+        inputs, groups = drawn.sources(self, uncertainty)
+        keys = [item.key for item in inputs] + [
+            groups[i][0] for i in sorted(groups)
+        ]
+        if method == "delta":
+            parts = drawn.delta(self, of, x, state, inputs, groups, rel_step)
+            variance = np.sum(parts, axis=0)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                shares = [
+                    np.where(variance > 0.0, part / variance, np.nan)
+                    for part in parts
+                ]
+            first = total = dict(zip(keys, shares))
+        else:
+            firsts, totals, variance = drawn.sobol(
+                self, of, x, state, inputs, groups, n_draws, seed, sampling
+            )
+            first, total = dict(zip(keys, firsts)), dict(zip(keys, totals))
+        scalar = x is None or np.ndim(x) == 0
+
+        def shaped(values):
+            values = np.asarray(values, dtype=float).reshape(-1)
+            if scalar:
+                return float(values[0])
+            return values.reshape(np.shape(x))
+
+        return UncertaintyImportance(
+            method=method,
+            variance=shaped(variance),
+            first_order={key: shaped(v) for key, v in first.items()},
+            total={key: shaped(v) for key, v in total.items()},
         )
 
     def differential_importance(

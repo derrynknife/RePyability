@@ -30,9 +30,10 @@ for vega); this page runs one system through all of them.
   default. `x` evaluates it at times from new, `window` over
   `[0, window)`, and `state=` starts from the components' current states,
   as `point_availability` and `mission_availability` take them (theta,
-  a rate, needs its times). On a `NonRepairableRBD` they take the time
-  `x`. All but vega take `working_nodes` and `broken_nodes`, which hold
-  nodes working or failed as for every importance measure.
+  a rate, needs its times; vega names its quantity, `of=`, and takes its
+  times as `x`). On a `NonRepairableRBD` they take the time `x`. All but
+  vega take `working_nodes` and `broken_nodes`, which hold nodes working
+  or failed as for every importance measure.
 - **Exact where the structure is.** With independent components the
   system's availability is multilinear in theirs, so delta, gamma, the
   shares among components and theta's split are exact given the
@@ -220,36 +221,67 @@ days count in neither.
 
 The models above are known exactly. Fitted to failure data, they are
 estimates, and the answer is uncertain; vega says whose uncertainty makes
-it so, and so where more data would narrow it most. A `RepairableRBD` does
-not propagate its models' parameter uncertainty yet (#200), so take the
-station unattended, never repaired, from new: a `NonRepairableRBD` on the
-same diagram, with the pumps' life fitted to 12 failures and the valve's
-to 30:
+it so, and so where more data would narrow it most. Give the station's
+pumps a life fitted to 12 failures, and its valve one fitted to 30:
 
 ```python
 import numpy as np
-from repyability import NonRepairableRBD
 
 pump_fit = surv.Weibull.fit(W([40, 2.0]).qf(np.linspace(0.04, 0.96, 12)))
 valve_fit = surv.Weibull.fit(W([160, 1.5]).qf(np.linspace(0.02, 0.98, 30)))
+fitted = RepairableRBD(
+    [("s", "pump1"), ("s", "pump2"),
+     ("pump1", "valve"), ("pump2", "valve"),
+     ("valve", "t")],
+    {
+        "pump1": unit(pump_fit, E([1.0])),
+        "pump2": unit(pump_fit, E([1.0])),
+        "valve": unit(
+            valve_fit,
+            E([2.0]),
+            preventive={"policy": "age", "interval": 80.0, "duration": E([4.0])},
+        ),
+    },
+)
+spread = fitted.mean_availability_uncertainty(n_draws=400, seed=0)
+spread.interval(0.9)   # (0.9937, 0.9954)
+vega = fitted.uncertainty_importance()
+vega.first_order["valve"]              # -> 0.81
+vega.first_order[("pump1", "pump2")]   # -> 0.19
+```
+
+Each draw gives the fits plausible parameters, from their covariance, and
+works the station's availability out as the station's own is worked out.
+The two pumps share one fit, so they are one input, keyed by the pair.
+Four-fifths of the variance of the long-run availability is the valve's
+fit: the valve is in series, and its life sets how often the station
+stops, where a pump's failure stops it only while the other is down. More
+valve failures, not pump failures, would narrow the interval.
+
+The question decides whose data to collect. Unattended, never repaired, the
+station is a `NonRepairableRBD` on the same diagram, and its reliability
+from new is the pumps' to lose:
+
+```python
+from repyability import NonRepairableRBD
+
 unattended = NonRepairableRBD(
     [("s", "pump1"), ("s", "pump2"),
      ("pump1", "valve"), ("pump2", "valve"),
      ("valve", "t")],
     {"pump1": pump_fit, "pump2": pump_fit, "valve": valve_fit},
 )
-vega = unattended.uncertainty_importance(20.0)
-vega.first_order[("pump1", "pump2")]   # -> 0.79
-vega.first_order["valve"]              # -> 0.21
+unattended.uncertainty_importance(20.0).first_order[("pump1", "pump2")]   # -> 0.79
 unattended.uncertainty_importance(of="mean").first_order[("pump1", "pump2")]   # -> 0.95
 ```
 
-The two pumps share one fit, so they are one input, keyed by the pair. Most
-of the variance of the reliability at 20 days, and nearly all of the
-MTTF's, is the pumps' fit: more pump failures, not more valve failures,
-would narrow the interval. By default each input's share is the delta
-method's, which adds up to 1; `method="sobol"` estimates Sobol indices from
-draws instead, which take the quantity's nonlinearity in.
+Unrepaired, a pump's failure is for good, and the pair's wear sets the
+station's life: most of the variance of the reliability at 20 days, and
+nearly all of the MTTF's, is the pumps' fit. By default each input's share
+is the delta method's, which adds up to 1; `method="sobol"` estimates Sobol
+indices from draws instead, which take the quantity's nonlinearity in, and
+`sampling="sobol"` takes the draws from a scrambled Sobol sequence, which
+settles with fewer of them than random draws do.
 
 ### Rho: to come
 
@@ -271,8 +303,9 @@ ownership (`discount_rate=`, see [Costs](costs.md#discounting)).
   and its first replacement, due at 80 days for every valve that has not
   failed by then.
 - **Barlow–Proschan** says the valve causes three failures in four.
-- **Vega** says the pumps' data, not the valve's, is what to collect more
-  of.
+- **Vega** says the valve's failure data, not the pumps', is what to
+  collect more of, for the station as it is run; left unattended, the
+  pumps' would be.
 
 ## Which class has which
 
@@ -284,7 +317,7 @@ ownership (`discount_rate=`, see [Costs](costs.md#discounting)).
 | `joint_importance` | at `x` | long run, `x`, `window`, `state` | at `t` |
 | Theta | `reliability_rate(x)` | `availability_rate(x)`, from new or `state` | |
 | `barlow_proschan_importance` | whole life, or by `x` | long run, `window`, `state` | |
-| `uncertainty_importance` | at `x`; `of=` the MTTF, a B-life, a time to a reliability | not yet (#200) | |
+| `uncertainty_importance` | at `x`; `of=` the MTTF, a B-life, a time to a reliability | long run; `of=` the availability at `x` or over missions `x`, from new or `state`, or the cost rate | |
 
 With limited repair crews or common-cause groups, the measures follow the
 crews' and the groups' Markov chains: theta and the Barlow–Proschan shares

@@ -278,7 +278,12 @@ b10.interval(0.9)             # (33.36, 43.26)   around a B10 of 39.26
 
 The interval's width is a property of what is known about the models, and
 does not shrink with more draws, which only make its ends more precise. More
-failure data (a refit in surpyval) is what narrows it. With common-cause
+failure data (a refit in surpyval) is what narrows it. `sampling="sobol"`
+makes them precise sooner: it takes the draws from a scrambled Sobol
+sequence rather than from random numbers, points that cover the
+parameters' range evenly, so the mean, the percentiles and the Sobol
+indices settle with fewer draws (a power of 2 of them suits the sequence
+best). Every method here that draws takes it. With common-cause
 groups each draw is worked out with them: a group's members are given
 together, in one tuple, and the group's own model can be uncertain too (see
 [Common-cause

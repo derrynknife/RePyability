@@ -24,8 +24,16 @@ in surpyval, already provides. A node's uncertainty is one of
 
 A common-cause group's model may be uncertain too (``draw_ccf_models``):
 distributions over its parameters, or a sequence of models.
+
+The draws take their randomness from a numpy generator, or (``sampling=
+"sobol"``, #200) from a scrambled Sobol sequence: each draw is one of its
+points, each parameter (or choice from a list) one of its dimensions, in
+the order the draws take them. Quasi-random points cover the parameters
+more evenly than random ones, which shrinks the error of the summaries
+over the draws, and of the Sobol indices, for the same number of draws.
 """
 
+import warnings
 from collections.abc import Mapping, Sequence
 from typing import Any, List, Optional
 
@@ -33,6 +41,86 @@ import numpy as np
 
 #: The draws of a node's model that ``"fit"`` asks for.
 FIT = "fit"
+#: Where the draws' randomness comes from (see the module docstring).
+SAMPLINGS = ("random", "sobol")
+
+
+def check_sampling(sampling) -> str:
+    """``sampling``, checked: one of ``SAMPLINGS``."""
+    if sampling not in SAMPLINGS:
+        raise ValueError(
+            f"sampling must be one of {list(SAMPLINGS)}, got {sampling!r}."
+        )
+    return sampling
+
+
+class Counter:
+    """Stands in for a generator, to count the dimensions a set of draws
+    takes (one for each column of normals or uniforms, and each choice
+    from a list), with the shapes a numpy generator gives."""
+
+    def __init__(self):
+        self.dimensions = 0
+
+    def standard_normal(self, shape) -> np.ndarray:
+        n, k = shape
+        self.dimensions += k
+        return np.zeros((n, k))
+
+    def random(self, n) -> np.ndarray:
+        self.dimensions += 1
+        return np.full(n, 0.5)
+
+    def integers(self, high, size) -> np.ndarray:
+        self.dimensions += 1
+        return np.zeros(size, dtype=int)
+
+
+class SobolPoints:
+    """A scrambled Sobol sequence's points (rows of ``table``), handed out
+    a dimension at a time as the draws take them, in the shapes a numpy
+    generator gives: normals through the normal quantile function, and a
+    choice from a list as the uniform's share of it."""
+
+    def __init__(self, table: np.ndarray):
+        # Kept off 0 and 1, where a quantile function is infinite.
+        self.table = np.clip(table, 2.0**-53, 1.0 - 2.0**-53)
+        self.used = 0
+
+    def _take(self, k: int) -> np.ndarray:
+        if self.used + k > self.table.shape[1]:
+            raise RuntimeError("The draws took more dimensions than counted.")
+        out = self.table[:, self.used : self.used + k]  # noqa: E203
+        self.used += k
+        return out
+
+    def standard_normal(self, shape) -> np.ndarray:
+        from scipy.special import ndtri
+
+        n, k = shape
+        return ndtri(self._take(k)[:n])
+
+    def random(self, n) -> np.ndarray:
+        return self._take(1)[:n, 0].copy()
+
+    def integers(self, high, size) -> np.ndarray:
+        u = self._take(1)[:size, 0]
+        return np.minimum((u * high).astype(int), int(high) - 1)
+
+
+def sobol_table(n: int, dimensions: int, rng) -> np.ndarray:
+    """``n`` points of a scrambled Sobol sequence in ``dimensions``
+    dimensions, scrambled by ``rng`` (numpy's generator). Its balance is
+    best for a power of 2 points; others are taken as they come."""
+    if dimensions == 0:
+        return np.empty((n, 0))
+    from scipy.stats import qmc
+
+    engine = qmc.Sobol(dimensions, scramble=True, seed=rng)
+    with warnings.catch_warnings():
+        # The warning that n is not a power of 2.
+        warnings.simplefilter("ignore", UserWarning)
+        return engine.random(n)
 
 
 def _parametric(model, label: str):

@@ -47,8 +47,10 @@ taking already-fitted lifetime models (from
   histories with criticality measures; shared repair crews, exact for
   exponential components in the long run and numerical over time, with
   their importance; repairable standby groups (a duty unit and its spares,
-  repaired one at a time); and imperfect repair
-  (Kijima's virtual age), with replacement at the N-th failure.
+  repaired one at a time); imperfect repair (Kijima's virtual age), with
+  replacement at the N-th failure; and uncertainty intervals on the
+  availability and the cost rate from uncertain (fitted) models of the
+  lives, repairs and maintenance.
 - **Capacity**: how much a system delivers, from its components'
   capacities (with several levels, or degrading through stages): the exact
   distribution of its capacity at a time or in the long run, the
@@ -155,7 +157,7 @@ places, nested diagrams):
 | **What you ask** | | |
 | Sampled lifetimes or histories, and distributions or percentiles of an outcome over a window | Simulated (from new, or from the components' current states); each simulation's histories, the system's and its components', kept whole as timelines by `simulate_timelines` (from new) | Yes: the answer is a sample. Its mean over a window (failures, outages, downtime, cost, the capacity delivered) is exact, from new or from a state: `expected_events`, `expected_cost`, `mission_capacity`. |
 | Comparing two designs (`compare`) | Simulated, with common random numbers | No, where both are exact: compare their exact values. |
-| The uncertainty from fitted component parameters (`sf_uncertainty`, `mean_uncertainty`, `bx_life_uncertainty`, `time_to_reliability_uncertainty`) | Sampled over the parameters, each draw exact | Sampling is the method. |
+| The uncertainty from fitted component parameters (`sf_uncertainty`, `mean_uncertainty`, `bx_life_uncertainty`, `time_to_reliability_uncertainty`; for a repairable system `mean_availability_uncertainty`, `point_availability_uncertainty`, `mission_availability_uncertainty`, `expected_cost_rate_uncertainty`) | Sampled over the parameters, randomly or quasi-randomly (`sampling="sobol"`), each draw exact or numerical as the diagram's own value is | Sampling is the method. |
 | Small failure probabilities, with a node only simulations take | Rare-event simulation (`unreliability_interval`); `ff` refused | Only while the node has no reliability of its own: an exact diagram gives `ff` directly, to full precision however small (a numerical node, such as a cold-standby group of non-exponential units, to its own accuracy, about 1e-6). |
 | **Components** | | |
 | Warm standby with two or more units operating, of non-exponential units | Simulated in the system's simulations; the analyses that need the group's reliability refused | Yes, in general: which spare is switched in where, and how much each has aged, branch with the order of the failures. With one unit operating it is numerical, and hot standby (k-out-of-*n*) exact. |

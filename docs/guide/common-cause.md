@@ -435,6 +435,24 @@ run.system_uptime / (2000 * 1000.0)          # -> 0.9841   simulated
 run.mean_availability_interval().estimate    # -> 0.98429  exact, as the chains give it
 ```
 
+The parameter-uncertainty methods (`mean_availability_uncertainty` and the
+rest; see [Repairable
+systems](repairable.md#uncertain-component-models)) rebuild the diagram
+with each draw's models, the groups included: a group's members are drawn
+together, in one tuple, and the group's own model is an input of its own,
+keyed by the group. A beta known only roughly, here to a Beta(4, 16)
+distribution about 0.2, widens the availability's interval:
+
+```python
+import scipy.stats as st
+
+group = shared.ccf_groups[0]
+drawn = shared.mean_availability_uncertainty(
+    {group: {"beta": st.beta(4, 16)}}, n_draws=1000, seed=0
+)
+drawn.interval(0.9)   # (0.9783, 0.9886)
+```
+
 In `allocate_redundancy` a member's copies join its group, as for a
 non-repairable diagram: a `BetaFactor` group's, each copy alike in every way,
 struck by the shared cause too, and tested with its member when its failures

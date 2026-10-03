@@ -190,7 +190,14 @@ the uncertainty away. The same draws give the MTTF's, a B*X* life's and the
 time to a reliability's uncertainty (`mean_uncertainty`,
 `bx_life_uncertainty`, `time_to_reliability_uncertainty`): each draw's value
 is the exact one for its models, the area under its reliability or the root
-of its reliability less the target.
+of its reliability less the target. A repairable system's availability and
+cost rate are uncertain in the same way, through its components' lives,
+repairs and maintenance times: each draw rebuilds the diagram with its
+models and works its value out as the diagram's own
+(`mean_availability_uncertainty` and the rest). The draws can be
+quasi-random (`sampling="sobol"`), the points of a scrambled Sobol
+sequence, which cover the parameters more evenly than random draws and so
+settle the summaries with fewer of them.
 
 ## Reliability vs availability
 
@@ -242,7 +249,8 @@ ranking at an operating point:
   criticality.
 - **Uncertainty importance** `uncertainty_importance`: each uncertain
   input's share of the variance of a system quantity (the reliability, the
-  MTTF, a B-life) over the fitted models' parameter uncertainty, by the
+  MTTF, a B-life, the availability, the cost rate) over the fitted models'
+  parameter uncertainty, by the
   delta method or as Sobol indices: where more data would narrow the answer
   most.
 - **Joint importance** `joint_importance`: the second-order Birnbaum

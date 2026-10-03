@@ -305,6 +305,102 @@ before the other is back.
   `NodeState(stationary=True)`), and the virtual age of an imperfectly
   repaired component; leave them out (new).
 
+## Uncertain component models
+
+The components' models are estimated from data, so the availability worked
+out from them is uncertain too: *epistemic* uncertainty, about what the
+models are, as opposed to the variability they describe.
+`mean_availability_uncertainty`, `point_availability_uncertainty(x)`,
+`mission_availability_uncertainty(t)` and `expected_cost_rate_uncertainty`
+carry it to the system, as `sf_uncertainty` does for a [system that is not
+repaired](reliability.md#uncertainty-in-the-component-models): each draw
+gives the uncertain models plausible parameters, and the diagram, rebuilt
+with them, its value, worked out as the diagram's own is. Here the pumps'
+repairs are fitted to 20 repair times, and the valve's life to 15 failures:
+
+```python
+E = surv.Exponential.from_params
+pump_repair = surv.LogNormal.fit(np.exp(np.linspace(-0.8, 0.8, 20)))   # fitted in surpyval
+valve_life = surv.Weibull.fit(surv.Weibull.from_params([55.0, 1.5]).qf(np.linspace(0.05, 0.95, 15)))
+fitted_plant = RepairableRBD(
+    edges,
+    {
+        "A": {"reliability": E([0.1]), "repairability": pump_repair},
+        "B": {"reliability": E([0.1]), "repairability": pump_repair},
+        "C": {"reliability": valve_life, "repairability": E([0.5])},
+    },
+)
+spread = fitted_plant.mean_availability_uncertainty(n_draws=1000, seed=0)
+spread.nominal         # -> 0.9505   with the fitted models
+spread.interval(0.9)   # (0.9396, 0.9596)
+```
+
+By default every model that is a surpyval fit with a parameter covariance
+is drawn, from the normal approximation of its fit, and the nodes that hold
+the same fitted object share its draws: here the pumps' repair, one input
+keyed `("A", "B")`, and the valve's life. A component has several models,
+its roles: its life (`"reliability"`), its repair (`"repairability"`), and
+the durations of its preventive maintenance and of its tests
+(`"preventive.duration"`, `"inspection.duration"`), named as
+`parameter_sensitivity`'s levers. `uncertainty=` says which are uncertain,
+and how, by node, by a tuple of the nodes of one population, or by
+common-cause group (its model's parameters):
+
+```python
+import scipy.stats as st
+
+known = {
+    ("A", "B"): {
+        "reliability": {"failure_rate": st.uniform(0.08, 0.04)},   # known to within 20%
+        "repairability": "fit",
+    },
+    "C": "fit",   # every fitted model of the valve's
+}
+fitted_plant.mean_availability_uncertainty(known, n_draws=1000, seed=0).interval(0.9)
+# (0.9385, 0.9600)
+```
+
+A role's uncertainty is given as a non-repairable node's is: `"fit"`,
+distributions over its parameters, or a list of models (refits to bootstrap
+resamples, say); one given without a role is the life's. Every draw of a
+population, or of a common-cause group's members, gives them all the same
+models.
+
+**Whose uncertainty widens the interval.** `uncertainty_importance` splits
+the variance among the inputs: by the delta method by default
+(`parameter_sensitivity`'s derivatives, with the parameters' covariance),
+whose shares add up to 1, or by Sobol indices estimated from draws
+(`method="sobol"`):
+
+```python
+vega = fitted_plant.uncertainty_importance(uncertainty=known)
+vega.first_order["C"]          # -> 0.88
+vega.first_order[("A", "B")]   # -> 0.12
+```
+
+The valve's life is most of it, so more valve failures would narrow the
+interval most. `of=` picks the quantity: the long-run availability (the
+default), the availability at the times `x` (`"point_availability"`) or
+over missions of the lengths `x` (`"mission_availability"`), from new or
+from `state=`, or the cost rate (`"expected_cost_rate"`). See
+[Sensitivities](greeks.md#vega-whose-uncertainty-widens-the-answer) for a
+station with maintenance.
+
+- **One evaluation a draw.** In the long run a draw takes a fraction of a
+  millisecond; over time, the components' curves, tens of milliseconds for
+  one that wears out.
+- **Quasi-random draws.** `sampling="sobol"` takes the draws from a
+  scrambled Sobol sequence rather than from random numbers: points that
+  fill the parameters' range evenly, so the mean and the percentiles settle
+  with fewer draws. Here 256 such draws put the mean availability within
+  about `1e-5` of where 20,000 put it, and 256 random draws `3e-4` away.
+  The non-repairable methods take it too.
+- **What the diagram refuses, the draws do.** Each draw's value is worked
+  out as the diagram's own, so the uncertainty is refused where the value
+  is, and `analysis_routes()` says so.
+- **More draws do not narrow the interval**, they only place its ends more
+  precisely. More failure data, refitted in surpyval, narrows it.
+
 ## Availability over time (simulated)
 
 `availability(t_simulation, ...)` runs `mc_samples` independent simulations of the
