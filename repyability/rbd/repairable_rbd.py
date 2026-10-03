@@ -54,6 +54,7 @@ from repyability.rbd import (
     _chain_transient,
     _conditional,
     _crew_chain,
+    _importance_time,
 )
 from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd import (
@@ -17934,6 +17935,52 @@ class RepairableRBD(RBD):
         is up or down for certain (#146)."""
         return self._long_run_points(working_nodes, broken_nodes)
 
+    def _importance_over_time(
+        self,
+        spec: "_importance_time.Spec",
+        working_nodes,
+        broken_nodes,
+        x,
+        window,
+        state,
+    ) -> dict:
+        """An importance measure at the times ``x`` or over the window
+        ``[0, window)`` (#191, see ``_importance_time``), from new or from
+        the components' ``state``."""
+        if x is None and window is None:
+            raise ValueError(
+                "state is where the components start from, for a measure at "
+                "times (x) or over a window (window): give one of them. The "
+                "long-run measure does not depend on it."
+            )
+        if spec.name == _importance_time.FUSSELL_VESELY:
+            if spec.fv_type not in ("c", "p"):
+                raise ValueError(
+                    "fv_type must be either 'c' (cut-set) or 'p' (path-set), "
+                    f"fv_type={spec.fv_type!r} was given."
+                )
+            if spec.method not in ("exact", "rare_event"):
+                raise ValueError(
+                    "method must be 'exact' or 'rare_event', "
+                    f"got {spec.method!r}."
+                )
+        if spec.name == _importance_time.CRITICALITY and spec.kind not in (
+            "failure",
+            "success",
+        ):
+            raise ValueError(
+                f"kind must be 'failure' or 'success', got {spec.kind!r}."
+            )
+        return _importance_time.measure(
+            self,
+            spec,
+            working_nodes,
+            broken_nodes,
+            x=x,
+            window=window,
+            state=state,
+        )
+
     def _crew_held_importance(
         self, measure: str, working_nodes, broken_nodes
     ) -> dict:
@@ -18485,7 +18532,11 @@ class RepairableRBD(RBD):
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
-    ) -> dict[Any, float]:
+        *,
+        x=None,
+        window=None,
+        state=None,
+    ) -> dict[Any, Any]:
         """Returns the Birnbaum measure of importance for all nodes,
         evaluated at the nodes' long-run availabilities.
 
@@ -18530,11 +18581,30 @@ class RepairableRBD(RBD):
         broken_nodes : Collection[Hashable], optional
             Condition on these nodes being failed, by default None.
 
+        x : float or array-like, optional
+            Times from new (or from ``state``) to evaluate it at instead of
+            the long run, by default None: at each, the nodes are up with
+            their point availabilities then (see ``point_availability``),
+            and with limited repair crews the crews' chain is followed to
+            it (#191).
+        window : float or array-like, optional
+            The length of a window ``[0, window)`` to evaluate it over
+            instead, by default None: a ratio measure is then the ratio of
+            the system's means over the window (as ``mission_availability``
+            is its mean availability), not the mean of the ratio. Not with
+            ``x``.
+        state : dict or str, optional
+            With ``x`` or ``window``, the components' current states to
+            start from, as for ``point_availability``; by default None,
+            every component new at 0.
+
         Returns
         -------
-        dict[Any, float]
+        dict[Any, float or numpy.ndarray]
             Dictionary with node names as keys and Birnbaum importances as
             values, for every node except the input and output nodes.
+            Floats in the long run, at a single time or over a single
+            window; else arrays in the shape of ``x`` or ``window``.
 
         Raises
         ------
@@ -18564,6 +18634,15 @@ class RepairableRBD(RBD):
         >>> round(rbd.birnbaum_importance(working_nodes=["a"])["b"], 4)
         1.0
         """
+        if x is not None or window is not None or state is not None:
+            return self._importance_over_time(
+                _importance_time.Spec(_importance_time.BIRNBAUM, "failure"),
+                working_nodes,
+                broken_nodes,
+                x,
+                window,
+                state,
+            )
         if self._crews_couple():
             return self._crew_held_importance(
                 "birnbaum", working_nodes, broken_nodes
@@ -18590,7 +18669,11 @@ class RepairableRBD(RBD):
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
-    ) -> dict[Any, float]:
+        *,
+        x=None,
+        window=None,
+        state=None,
+    ) -> dict[Any, Any]:
         """Returns the improvement potential of all nodes, evaluated at the
         nodes' long-run availabilities.
 
@@ -18609,11 +18692,30 @@ class RepairableRBD(RBD):
         broken_nodes : Collection[Hashable], optional
             Condition on these nodes being failed, by default None.
 
+        x : float or array-like, optional
+            Times from new (or from ``state``) to evaluate it at instead of
+            the long run, by default None: at each, the nodes are up with
+            their point availabilities then (see ``point_availability``),
+            and with limited repair crews the crews' chain is followed to
+            it (#191).
+        window : float or array-like, optional
+            The length of a window ``[0, window)`` to evaluate it over
+            instead, by default None: a ratio measure is then the ratio of
+            the system's means over the window (as ``mission_availability``
+            is its mean availability), not the mean of the ratio. Not with
+            ``x``.
+        state : dict or str, optional
+            With ``x`` or ``window``, the components' current states to
+            start from, as for ``point_availability``; by default None,
+            every component new at 0.
+
         Returns
         -------
-        dict[Any, float]
+        dict[Any, float or numpy.ndarray]
             Dictionary with node names as keys and improvement potentials as
             values, for every node except the input and output nodes.
+            Floats in the long run, at a single time or over a single
+            window; else arrays in the shape of ``x`` or ``window``.
 
         Raises
         ------
@@ -18639,6 +18741,15 @@ class RepairableRBD(RBD):
         >>> {node: round(p, 4) for node, p in potential.items()}
         {'a': 0.1111, 'b': 0.2778}
         """
+        if x is not None or window is not None or state is not None:
+            return self._importance_over_time(
+                _importance_time.Spec(_importance_time.IMPROVEMENT, "failure"),
+                working_nodes,
+                broken_nodes,
+                x,
+                window,
+                state,
+            )
         if self._crews_couple():
             return self._crew_held_importance(
                 "improvement", working_nodes, broken_nodes
@@ -18665,7 +18776,11 @@ class RepairableRBD(RBD):
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
-    ) -> dict[Any, float]:
+        *,
+        x=None,
+        window=None,
+        state=None,
+    ) -> dict[Any, Any]:
         """Returns the RAW importance per Modarres & Kaminskiy, evaluated at
         the nodes' long-run availabilities. That is RAW_i =
         (unavailability of system given i failed) /
@@ -18687,11 +18802,30 @@ class RepairableRBD(RBD):
         broken_nodes : Collection[Hashable], optional
             Condition on these nodes being failed, by default None.
 
+        x : float or array-like, optional
+            Times from new (or from ``state``) to evaluate it at instead of
+            the long run, by default None: at each, the nodes are up with
+            their point availabilities then (see ``point_availability``),
+            and with limited repair crews the crews' chain is followed to
+            it (#191).
+        window : float or array-like, optional
+            The length of a window ``[0, window)`` to evaluate it over
+            instead, by default None: a ratio measure is then the ratio of
+            the system's means over the window (as ``mission_availability``
+            is its mean availability), not the mean of the ratio. Not with
+            ``x``.
+        state : dict or str, optional
+            With ``x`` or ``window``, the components' current states to
+            start from, as for ``point_availability``; by default None,
+            every component new at 0.
+
         Returns
         -------
-        dict[Any, float]
+        dict[Any, float or numpy.ndarray]
             Dictionary with node names as keys and RAW importances as
             values, for every node except the input and output nodes.
+            Floats in the long run, at a single time or over a single
+            window; else arrays in the shape of ``x`` or ``window``.
 
         Raises
         ------
@@ -18720,6 +18854,15 @@ class RepairableRBD(RBD):
         >>> {node: round(r, 4) for node, r in raw.items()}
         {'a': 2.25, 'b': 2.25}
         """
+        if x is not None or window is not None or state is not None:
+            return self._importance_over_time(
+                _importance_time.Spec(_importance_time.RAW, "failure"),
+                working_nodes,
+                broken_nodes,
+                x,
+                window,
+                state,
+            )
         if self._crews_couple():
             return self._crew_held_importance(
                 "raw", working_nodes, broken_nodes
@@ -18746,7 +18889,11 @@ class RepairableRBD(RBD):
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
-    ) -> dict[Any, float]:
+        *,
+        x=None,
+        window=None,
+        state=None,
+    ) -> dict[Any, Any]:
         """Returns the RRW importance per Modarres & Kaminskiy, evaluated at
         the nodes' long-run availabilities. That is RRW_i =
         (nominal unavailability of system) /
@@ -18769,11 +18916,30 @@ class RepairableRBD(RBD):
         broken_nodes : Collection[Hashable], optional
             Condition on these nodes being failed, by default None.
 
+        x : float or array-like, optional
+            Times from new (or from ``state``) to evaluate it at instead of
+            the long run, by default None: at each, the nodes are up with
+            their point availabilities then (see ``point_availability``),
+            and with limited repair crews the crews' chain is followed to
+            it (#191).
+        window : float or array-like, optional
+            The length of a window ``[0, window)`` to evaluate it over
+            instead, by default None: a ratio measure is then the ratio of
+            the system's means over the window (as ``mission_availability``
+            is its mean availability), not the mean of the ratio. Not with
+            ``x``.
+        state : dict or str, optional
+            With ``x`` or ``window``, the components' current states to
+            start from, as for ``point_availability``; by default None,
+            every component new at 0.
+
         Returns
         -------
-        dict[Any, float]
+        dict[Any, float or numpy.ndarray]
             Dictionary with node names as keys and RRW importances as
             values, for every node except the input and output nodes.
+            Floats in the long run, at a single time or over a single
+            window; else arrays in the shape of ``x`` or ``window``.
 
         Raises
         ------
@@ -18799,6 +18965,15 @@ class RepairableRBD(RBD):
         >>> {node: round(r, 4) for node, r in rrw.items()}
         {'a': 1.3333, 'b': 2.6667}
         """
+        if x is not None or window is not None or state is not None:
+            return self._importance_over_time(
+                _importance_time.Spec(_importance_time.RRW, "failure"),
+                working_nodes,
+                broken_nodes,
+                x,
+                window,
+                state,
+            )
         if self._crews_couple():
             return self._crew_held_importance(
                 "rrw", working_nodes, broken_nodes
@@ -18826,7 +19001,11 @@ class RepairableRBD(RBD):
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
         kind: str = "failure",
-    ) -> dict[Any, float]:
+        *,
+        x=None,
+        window=None,
+        state=None,
+    ) -> dict[Any, Any]:
         """Returns the criticality importance of all nodes, evaluated at the
         nodes' long-run availabilities.
 
@@ -18861,11 +19040,30 @@ class RepairableRBD(RBD):
         kind : str, optional
             ``"failure"`` (the default) or ``"success"``.
 
+        x : float or array-like, optional
+            Times from new (or from ``state``) to evaluate it at instead of
+            the long run, by default None: at each, the nodes are up with
+            their point availabilities then (see ``point_availability``),
+            and with limited repair crews the crews' chain is followed to
+            it (#191).
+        window : float or array-like, optional
+            The length of a window ``[0, window)`` to evaluate it over
+            instead, by default None: a ratio measure is then the ratio of
+            the system's means over the window (as ``mission_availability``
+            is its mean availability), not the mean of the ratio. Not with
+            ``x``.
+        state : dict or str, optional
+            With ``x`` or ``window``, the components' current states to
+            start from, as for ``point_availability``; by default None,
+            every component new at 0.
+
         Returns
         -------
-        dict[Any, float]
+        dict[Any, float or numpy.ndarray]
             Dictionary with node names as keys and criticality importances
             as values, for every node except the input and output nodes.
+            Floats in the long run, at a single time or over a single
+            window; else arrays in the shape of ``x`` or ``window``.
 
         Raises
         ------
@@ -18907,6 +19105,15 @@ class RepairableRBD(RBD):
         >>> {node: round(c, 4) for node, c in criticality.items()}
         {'a': 1.0, 'b': 1.0}
         """
+        if x is not None or window is not None or state is not None:
+            return self._importance_over_time(
+                _importance_time.Spec(_importance_time.CRITICALITY, kind),
+                working_nodes,
+                broken_nodes,
+                x,
+                window,
+                state,
+            )
         node_probabilities, node_failures, weights, index = (
             self._importance_probabilities(working_nodes, broken_nodes)
         )
@@ -18935,7 +19142,11 @@ class RepairableRBD(RBD):
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
         method: str = "exact",
-    ) -> dict[Any, float]:
+        *,
+        x=None,
+        window=None,
+        state=None,
+    ) -> dict[Any, Any]:
         """Calculate Fussell-Vesely importance of all nodes, evaluated at the
         nodes' long-run availabilities.
 
@@ -18978,11 +19189,30 @@ class RepairableRBD(RBD):
         method : str, optional
             ``"exact"`` (the default) or ``"rare_event"``.
 
+        x : float or array-like, optional
+            Times from new (or from ``state``) to evaluate it at instead of
+            the long run, by default None: at each, the nodes are up with
+            their point availabilities then (see ``point_availability``),
+            and with limited repair crews the crews' chain is followed to
+            it (#191).
+        window : float or array-like, optional
+            The length of a window ``[0, window)`` to evaluate it over
+            instead, by default None: a ratio measure is then the ratio of
+            the system's means over the window (as ``mission_availability``
+            is its mean availability), not the mean of the ratio. Not with
+            ``x``.
+        state : dict or str, optional
+            With ``x`` or ``window``, the components' current states to
+            start from, as for ``point_availability``; by default None,
+            every component new at 0.
+
         Returns
         -------
-        dict[Any, float]
+        dict[Any, float or numpy.ndarray]
             Dictionary with node names as keys and Fussell-Vesely importances
             as values, for every node except the input and output nodes.
+            Floats in the long run, at a single time or over a single
+            window; else arrays in the shape of ``x`` or ``window``.
 
         Raises
         ------
@@ -19012,6 +19242,20 @@ class RepairableRBD(RBD):
         >>> {node: round(v, 4) for node, v in fv.items()}
         {'a': 0.375, 'b': 0.75}
         """
+        if x is not None or window is not None or state is not None:
+            return self._importance_over_time(
+                _importance_time.Spec(
+                    _importance_time.FUSSELL_VESELY,
+                    "failure",
+                    fv_type=fv_type,
+                    method=method,
+                ),
+                working_nodes,
+                broken_nodes,
+                x,
+                window,
+                state,
+            )
         node_probabilities, node_failures, weights, index = (
             self._importance_probabilities(working_nodes, broken_nodes)
         )

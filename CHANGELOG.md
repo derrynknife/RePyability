@@ -171,6 +171,24 @@ other release, fixes included, the minor.
   last as long as its interval stays simulated (the refusal says how
   likely it is to), as do a common-cause group's members whose tests or
   repairs take time (#158).
+- **A repairable diagram's importance measures over time (#191).**
+  `birnbaum_importance`, `improvement_potential`, `risk_achievement_worth`,
+  `risk_reduction_worth`, `criticality_importance` and `fussell_vesely` of a
+  `RepairableRBD` were long-run only, though from new, around a planned
+  outage or from the components' states now the ranking can differ. Each
+  now takes `x` (times from new), evaluating it at the nodes' point
+  availabilities then, or `window` (a length), evaluating it over
+  `[0, window)` as a ratio of the system's means over the window (as
+  `mission_availability` is its mean availability), with `state=` to start
+  from the components' current states. Without them the measures are the
+  long-run ones, as before. With common-cause groups each time is split by
+  the groups' joint states then; with limited repair crews the Birnbaum
+  importance, improvement potential and risk worths hold each node in the
+  crews' chain over time, and the criticality and Fussell–Vesely measures
+  average over its states at each time (not yet around nested RBDs). The
+  window's integrals are on the pieces `mission_availability` uses, and a
+  window past the time the curves settle or repeat costs no more than one
+  to it. `x`, `window` and `state` are keyword-only.
 - **Conditional runs: simulate only what needs it (#189).** A system with
   one dependency (a standby group of other lives, a nested RBD sharing a
   crew, a unit repaired imperfectly, a maintenance group) was simulated

@@ -185,6 +185,47 @@ downtime: C, in series, causes 70% of it. The simulation
 also produces time-weighted criticality measures from the simulated histories;
 see [Repairable systems](repairable.md#criticality-measures).
 
+### Over time
+
+The long-run measures describe the system once it has settled. From new,
+or from the components' states now, the ranking can differ. Give `x`
+(times from new) to evaluate a measure at the nodes' point availabilities
+then (see `point_availability`), or `window` (a window's length) to
+evaluate it over `[0, window)`; `state=` starts the components from their
+current states, as for `point_availability`:
+
+```python
+critical = plant.criticality_importance(x=[0.5, 2.0, 20.0])["C"]
+critical[0]   # -> 0.841   at 0.5: early on the pair rarely fails together
+critical[2]   # -> 0.7018   settled: the long-run value
+plant.criticality_importance(window=10.0)["C"]   # -> 0.7109
+```
+
+C causes 84% of the system's chance of being down at 0.5, against 70% in
+the long run. Over a window, a ratio measure is the ratio of the system's
+means over it, as `mission_availability` is its mean availability: C's
+criticality over the first 10 time units is its share of the window's
+expected downtime, not the mean of its shares at each time.
+
+From a state: with A down now, in repair, B matters more for a while:
+
+```python
+from repyability import NodeState
+
+down = {"A": NodeState(alive=False)}
+plant.birnbaum_importance(x=1.0)["B"]               # -> 0.0599
+plant.birnbaum_importance(x=1.0, state=down)["B"]   # -> 0.3886
+```
+
+With limited repair crews, the measures follow the crews' chain over time:
+the Birnbaum importance, improvement potential and risk worths hold each
+node working and failed in it, as in the long run, and the criticality and
+Fussell–Vesely measures average over its states at each time (not yet
+around nested RBDs). With common-cause groups, each time's point is split
+by the groups' joint states then. A component whose curve over time is not
+worked out (one repaired imperfectly, say) is refused, as by
+`point_availability`.
+
 ## Limits
 
 - A perfect junction node (`PerfectReliability`, such as the vote of a
