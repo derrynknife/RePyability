@@ -75,11 +75,15 @@ models provided here (see [Building an RBD](guide/building.md) and
 
 ::: repyability.demonstration_pass_probability
 
+::: repyability.demonstration_plan
+
 ::: repyability.mtbf_test_time
 
 ::: repyability.demonstrated_mtbf
 
 ::: repyability.mtbf_pass_probability
+
+::: repyability.mtbf_demonstration_plan
 
 ## Timelines
 
@@ -132,6 +136,8 @@ Up/down histories over a window (see the
 ::: repyability.TotalCostAllocation
 
 ::: repyability.MaintenancePlan
+
+::: repyability.DemonstrationPlan
 
 ::: repyability.AvailabilityAllocation
 

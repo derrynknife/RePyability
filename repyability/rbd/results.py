@@ -1252,6 +1252,43 @@ class TotalCostAllocation(_ResultMapping):
 
 
 @dataclass
+class DemonstrationPlan(_ResultMapping):
+    """The result of ``demonstration_plan`` and ``mtbf_demonstration_plan``.
+
+    A demonstration test that keeps both of its risks: a design no better
+    than the target passes it with a chance of at most the consumer's
+    risk, and a good design fails it with a chance of at most the
+    producer's. Like the other result types it is also a read-only mapping
+    of its fields.
+
+    Attributes
+    ----------
+    n : int or None
+        The number of units to test (an attribute test); None for a test
+        of a constant failure rate.
+    test_multiple : float or None
+        How many missions long each unit's test is (an attribute test);
+        None for a test of a constant failure rate.
+    test_time : float or None
+        The total unit time to test (a test of a constant failure rate);
+        None for an attribute test.
+    failures : int
+        The failures the test allows: it passes with at most so many.
+    consumer_risk : float
+        The chance that a design at the target passes.
+    producer_risk : float
+        The chance that a design at the good level fails.
+    """
+
+    n: Optional[int]
+    test_multiple: Optional[float]
+    test_time: Optional[float]
+    failures: int
+    consumer_risk: float
+    producer_risk: float
+
+
+@dataclass
 class MaintenancePlan(_ResultMapping):
     """The result of ``RepairableRBD.optimal_replacement_intervals()`` and
     ``RepairableRBD.optimal_inspection_intervals()``.

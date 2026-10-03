@@ -27,9 +27,14 @@ what a finished test demonstrated:
   A test is time-terminated (it stops at its time) unless
   ``failure_terminated`` says it stops at its ``failures``-th failure.
 
+A test has two risks: the consumer's, that a design no better than the
+target passes (at most ``1 - confidence``), and the producer's, that a good
+design fails. ``demonstration_plan`` and ``mtbf_demonstration_plan`` design
+the smallest test that keeps both (#184).
+
 The functions plan tests from targets and results; they fit nothing (surpyval
-does that). Each takes arrays for its numbers too, and answers for each
-element, broadcast together (#179).
+does that). Each but the two plans takes arrays for its numbers too, and
+answers for each element, broadcast together (#179).
 """
 
 import functools
@@ -39,6 +44,7 @@ from typing import Callable, Optional, TypeVar
 import numpy as np
 from scipy import stats
 
+from repyability.rbd.results import DemonstrationPlan
 from repyability.utils.checks import is_whole
 
 _Function = TypeVar("_Function", bound=Callable)
@@ -531,6 +537,264 @@ def mtbf_pass_probability(
     failures = _check_failures(failures)
     allowed = _degrees_of_freedom(failures, failure_terminated) // 2 - 1
     return float(stats.poisson.cdf(allowed, test_time / mtbf))
+
+
+def demonstration_plan(
+    reliability: float,
+    good_reliability: float,
+    confidence: float = 0.95,
+    producer_risk: float = 0.2,
+    *,
+    n: Optional[int] = None,
+    test_multiple: float = 1.0,
+    shape: Optional[float] = None,
+    max_failures: int = 1000,
+) -> DemonstrationPlan:
+    """The smallest attribute test that demonstrates a reliability and that
+    a good design passes.
+
+    A plan's consumer's risk is the chance that a design of the target
+    ``reliability`` passes it, at most ``1 - confidence``; its producer's
+    risk is the chance that a design of ``good_reliability``, which should
+    pass, fails it, at most ``producer_risk`` (#184). A test allowing no
+    failures keeps the first with the fewest units, but often fails a good
+    design: allowing failures, with more units, keeps both. For each number
+    of failures allowed, from none, the fewest units that keep the
+    consumer's risk (``demonstration_sample_size``) pass the good design
+    most often, and the first of those plans that keeps the producer's risk
+    tests the fewest units of all.
+
+    Given ``n``, the test length is searched instead, with the lifetime's
+    Weibull ``shape``: the shortest test of ``n`` units that keeps both
+    risks (each failure allowed takes a longer test, as
+    ``demonstration_test_multiple`` gives it).
+
+    Parameters
+    ----------
+    reliability : float
+        The reliability to demonstrate over one mission, in (0, 1).
+    good_reliability : float
+        The reliability of a design that should pass, more than
+        ``reliability`` and less than 1.
+    confidence : float, optional
+        The confidence level, in (0, 1), by default 0.95: the consumer's
+        risk is at most ``1 - confidence``.
+    producer_risk : float, optional
+        The most chance of failing a good design, in (0, 1), by default
+        0.2.
+    n : int, optional
+        The number of units to test, to search the test length instead of
+        the number of units (with ``shape``).
+    test_multiple : float, optional
+        Without ``n``: how many missions long each unit's test is, by
+        default 1.0 (another length needs ``shape``).
+    shape : float, optional
+        The Weibull shape of the lifetime, needed for a test longer or
+        shorter than a mission, and with ``n``.
+    max_failures : int, optional
+        The most failures a plan may allow, by default 1000.
+
+    Returns
+    -------
+    DemonstrationPlan
+        The plan: ``n``, ``test_multiple`` and ``failures``, and its risks.
+
+    Raises
+    ------
+    ValueError
+        If an argument is out of range, ``good_reliability`` is no more
+        than ``reliability``, ``n`` is given without ``shape``, or no plan
+        within ``max_failures`` (or, given ``n``, fewer failures than
+        units) keeps both risks.
+
+    Examples
+    --------
+    Demonstrating 90% reliability at 90% confidence, so that a design of
+    95% passes at least 80% of the time: a test of 22 units with no
+    failures would pass that design only a third of the time, and the plan
+    tests 128, allowing 8 to fail:
+
+    >>> from repyability import demonstration_plan
+    >>> from repyability import demonstration_pass_probability
+    >>> round(demonstration_pass_probability(0.95, 22), 2)
+    0.32
+    >>> plan = demonstration_plan(0.9, 0.95, confidence=0.9)
+    >>> plan.n, plan.failures
+    (128, 8)
+    >>> round(plan.consumer_risk, 3), round(plan.producer_risk, 3)
+    (0.097, 0.192)
+    """
+    _check_probability(reliability, "reliability")
+    _check_probability(good_reliability, "good_reliability")
+    _check_probability(confidence, "confidence")
+    _check_probability(producer_risk, "producer_risk")
+    if good_reliability <= reliability:
+        raise ValueError(
+            "good_reliability must be more than the reliability to "
+            f"demonstrate ({reliability!r}), got {good_reliability!r}: no "
+            "test can pass a design no better than the target more often "
+            "than the target."
+        )
+    most = _check_failures(max_failures)
+    if n is not None:
+        n = _check_count(n)
+        if shape is None:
+            raise ValueError(
+                "Given n, the test length is searched: give the lifetime's "
+                "Weibull shape."
+            )
+        _check_shape(shape)
+        for failures in range(min(most, n - 1) + 1):
+            multiple = demonstration_test_multiple(
+                reliability, n, confidence, failures, shape=shape
+            )
+            plan = _attribute_plan(
+                reliability, good_reliability, n, failures, multiple, shape
+            )
+            if plan.producer_risk <= producer_risk:
+                return plan
+        raise ValueError(
+            f"No test of {n} units keeps both risks: test more units, or "
+            "allow a larger producer's risk."
+        )
+    _test_exponent(test_multiple, shape)
+    for failures in range(most + 1):
+        count = demonstration_sample_size(
+            reliability,
+            confidence,
+            failures,
+            test_multiple=test_multiple,
+            shape=shape,
+        )
+        plan = _attribute_plan(
+            reliability,
+            good_reliability,
+            count,
+            failures,
+            test_multiple,
+            shape,
+        )
+        if plan.producer_risk <= producer_risk:
+            return plan
+    raise ValueError(
+        f"No plan allowing at most {most} failures keeps both risks: the "
+        "good reliability is too close to the target (raise max_failures, "
+        "or allow larger risks)."
+    )
+
+
+def _attribute_plan(
+    reliability, good_reliability, n, failures, test_multiple, shape
+) -> DemonstrationPlan:
+    """An attribute test's plan, with its risks."""
+    return DemonstrationPlan(
+        n=int(n),
+        test_multiple=float(test_multiple),
+        test_time=None,
+        failures=int(failures),
+        consumer_risk=demonstration_pass_probability(
+            reliability, n, failures, test_multiple=test_multiple, shape=shape
+        ),
+        producer_risk=1.0
+        - demonstration_pass_probability(
+            good_reliability,
+            n,
+            failures,
+            test_multiple=test_multiple,
+            shape=shape,
+        ),
+    )
+
+
+def mtbf_demonstration_plan(
+    mtbf: float,
+    good_mtbf: float,
+    confidence: float = 0.95,
+    producer_risk: float = 0.2,
+    *,
+    max_failures: int = 1000,
+) -> DemonstrationPlan:
+    """The shortest constant-failure-rate test that demonstrates an MTBF and
+    that a good design passes.
+
+    The total test time and the failures it allows, for a time-terminated
+    test, such that a design of the target ``mtbf`` passes with a chance of
+    at most ``1 - confidence`` (the consumer's risk) and one of
+    ``good_mtbf`` fails with a chance of at most ``producer_risk`` (#184):
+    the fixed-length test plans of MIL-HDBK-781, for a discrimination ratio
+    ``good_mtbf / mtbf``. For each number of failures allowed, from none,
+    the shortest test that keeps the consumer's risk (``mtbf_test_time``)
+    passes the good design most often, and the first that keeps the
+    producer's risk is the shortest of all. Both risks are kept, where
+    some of the handbook's plans exceed one a little for a shorter test;
+    those that keep both are these (plans XI-D, XV-D and XVII-D).
+
+    Parameters
+    ----------
+    mtbf : float
+        The MTBF to demonstrate, positive.
+    good_mtbf : float
+        The MTBF of a design that should pass, more than ``mtbf``.
+    confidence : float, optional
+        The confidence level, in (0, 1), by default 0.95.
+    producer_risk : float, optional
+        The most chance of failing a good design, in (0, 1), by default
+        0.2.
+    max_failures : int, optional
+        The most failures a plan may allow, by default 1000.
+
+    Returns
+    -------
+    DemonstrationPlan
+        The plan: ``test_time`` and ``failures``, and its risks.
+
+    Raises
+    ------
+    ValueError
+        If an argument is out of range, ``good_mtbf`` is no more than
+        ``mtbf``, or no plan within ``max_failures`` keeps both risks.
+
+    Examples
+    --------
+    Demonstrating an MTBF of 1000 hours at 90% confidence, so that a design
+    of 2000 passes at least 80% of the time (a discrimination ratio of 2):
+    the test runs about 14,200 unit hours, and passes with at most 9
+    failures:
+
+    >>> from repyability import mtbf_demonstration_plan
+    >>> plan = mtbf_demonstration_plan(1000.0, 2000.0, confidence=0.9)
+    >>> round(plan.test_time), plan.failures
+    (14206, 9)
+    >>> round(plan.consumer_risk, 3), round(plan.producer_risk, 3)
+    (0.1, 0.18)
+    """
+    _check_positive(mtbf, "mtbf")
+    _check_positive(good_mtbf, "good_mtbf")
+    _check_probability(confidence, "confidence")
+    _check_probability(producer_risk, "producer_risk")
+    if good_mtbf <= mtbf:
+        raise ValueError(
+            f"good_mtbf must be more than the MTBF to demonstrate ({mtbf!r}), "
+            f"got {good_mtbf!r}."
+        )
+    most = _check_failures(max_failures)
+    for failures in range(most + 1):
+        time = mtbf_test_time(mtbf, confidence, failures)
+        missed = 1.0 - mtbf_pass_probability(good_mtbf, time, failures)
+        if missed <= producer_risk:
+            return DemonstrationPlan(
+                n=None,
+                test_multiple=None,
+                test_time=float(time),
+                failures=failures,
+                consumer_risk=mtbf_pass_probability(mtbf, time, failures),
+                producer_risk=float(missed),
+            )
+    raise ValueError(
+        f"No plan allowing at most {most} failures keeps both risks: the "
+        "good MTBF is too close to the target (raise max_failures, or allow "
+        "larger risks)."
+    )
 
 
 def _test_reliability(

@@ -40,6 +40,16 @@ other release, fixes included, the minor.
   a 95% fill rate, and 17 on one. Members of one common-cause group, which
   their shared causes replace together, are refused; the results say which
   `members` a part holds.
+- **Demonstration plans that keep both risks (#184).** Each demonstration
+  function answered one question, so designing a test that a design at the
+  target passes rarely and a good design passes often meant searching by
+  hand; a success run that keeps the consumer's risk fails a design 50%
+  better two times in three. `demonstration_plan(reliability,
+  good_reliability, confidence, producer_risk)` gives the fewest units and
+  the failures to allow (or, given `n` and the Weibull `shape`, the
+  shortest test), and `mtbf_demonstration_plan` the least test time, for
+  a constant failure rate: MIL-HDBK-781's fixed-length plans, keeping both
+  risks. Both return a `DemonstrationPlan` with the plan's risks.
 - **Intervals with limited repair crews, and plans applied (#184).**
   `optimal_replacement_intervals` and `optimal_inspection_intervals`
   failed with limited `repair_crews`, saying only to simulate, though
