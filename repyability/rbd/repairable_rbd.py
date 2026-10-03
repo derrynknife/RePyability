@@ -2244,24 +2244,42 @@ def _cdf(model) -> Callable[[np.ndarray], np.ndarray]:
     return cdf
 
 
+def _product(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """The distribution of the sum of two independent counts, with ``a``
+    and ``b`` for ``0, 1, 2, ...``, its negligible tail cut."""
+    from scipy.signal import fftconvolve
+
+    out = np.maximum(fftconvolve(a, b), 0.0)
+    keep = np.nonzero(out > 1e-16)[0]
+    return out[: keep[-1] + 1] if keep.size else np.ones(1)
+
+
 def _fleet(probabilities: np.ndarray, fleet: int) -> np.ndarray:
     """The distribution of the sum of ``fleet`` independent counts, each
     with ``probabilities`` for ``0, 1, 2, ...``."""
-    from scipy.signal import fftconvolve
-
-    def product(a, b):
-        out = np.maximum(fftconvolve(a, b), 0.0)
-        keep = np.nonzero(out > 1e-16)[0]
-        return out[: keep[-1] + 1] if keep.size else np.ones(1)
-
     total, power = np.ones(1), np.asarray(probabilities, dtype=float)
     while fleet:
         if fleet & 1:
-            total = product(total, power)
+            total = _product(total, power)
         fleet >>= 1
         if fleet:
-            power = product(power, power)
+            power = _product(power, power)
     return total / total.sum()
+
+
+def _summed(counts) -> np.ndarray:
+    """The distribution of the sum of independent counts, each given by its
+    probabilities for ``0, 1, 2, ...``."""
+    total = np.ones(1)
+    for count in counts:
+        total = _product(total, np.asarray(count, dtype=float))
+    return total / total.sum()
+
+
+def _fractions(counts: np.ndarray) -> np.ndarray:
+    """The fractions of simulations with each count ``0, 1, 2, ...``."""
+    counts = np.asarray(counts, dtype=np.int64)
+    return np.bincount(counts) / len(counts)
 
 
 def _whole(name: str, value, least: int = 1) -> int:
@@ -5380,6 +5398,70 @@ class RepairableRBD(RBD):
                 )
         return chosen
 
+    def _spares_parts(self, parts) -> Dict[Hashable, Tuple[Hashable, ...]]:
+        """The parts whose spares are pooled (#183), ``{part: members}``,
+        checked: each a collection of components (no nested RBD), a node
+        in one part at most, a part's name no component's, and no two
+        members in one common-cause group, whose shared causes replace
+        them together."""
+        if parts is None:
+            return {}
+        if not isinstance(parts, Mapping) or not parts:
+            raise ValueError(
+                "parts must be a dict of part name: the components that use "
+                f"it, e.g. {{'seal': ['seal1', 'seal2']}}; got {parts!r}."
+            )
+        out: Dict[Hashable, Tuple[Hashable, ...]] = {}
+        owner: Dict[Hashable, Hashable] = {}
+        for part, members in parts.items():
+            if part in self.components:
+                raise ValueError(
+                    f"Part {part!r} has the name of a component: name the "
+                    "part apart, as both can be counted."
+                )
+            if isinstance(members, (str, bytes)) or not isinstance(
+                members, Iterable
+            ):
+                raise ValueError(
+                    f"Part {part!r}: give the components that use it as a "
+                    f"list, got {members!r}."
+                )
+            chosen = self._spares_nodes(list(members))
+            if not chosen:
+                raise ValueError(f"Part {part!r} has no components.")
+            for node in chosen:
+                if node in owner:
+                    raise ValueError(
+                        f"Node {node!r} is in parts {owner[node]!r} and "
+                        f"{part!r}: its spares come from one shelf."
+                    )
+                owner[node] = part
+            for group in self.ccf_groups:
+                shared = [m for m in group.members if m in chosen]
+                if len(shared) > 1:
+                    raise NotImplementedError(
+                        f"Part {part!r}: {shared} are a common-cause group, "
+                        "whose shared causes replace them together, so "
+                        "their pooled demand is not the sum of independent "
+                        "ones: count them apart."
+                    )
+            out[part] = tuple(chosen)
+        return out
+
+    def _spares_counted(self, nodes, parts) -> Tuple[list, dict, list]:
+        """The components counted on their own (``nodes``, or every one
+        but a nested RBD; none when only ``parts`` are asked for), the
+        parts (see ``_spares_parts``), and every component either counts,
+        in order."""
+        pools = self._spares_parts(parts)
+        chosen = [] if (nodes is None and pools) else self._spares_nodes(nodes)
+        counted = list(
+            dict.fromkeys(
+                [*chosen, *(m for members in pools.values() for m in members)]
+            )
+        )
+        return chosen, pools, counted
+
     def _replacements(self, node, long_run: bool = False):
         """What a component's replacements follow, for counting them
         exactly (see ``_spares``): a renewal process, a block schedule's
@@ -5510,10 +5592,12 @@ class RepairableRBD(RBD):
         method: str = "exact",
         mc_samples: Optional[int] = None,
         seed=None,
+        parts: Optional[Mapping[Hashable, Collection[Hashable]]] = None,
     ) -> Dict[Hashable, SparesDemand]:
         """How many spares each component uses over ``[0, horizon)``, from
         new: the distribution of its replacements, for one system or a
-        fleet of ``fleet``.
+        fleet of ``fleet``; and how many each part that several components
+        use (``parts``) takes from its one shelf.
 
         A component uses a spare at each failure and at each preventive
         replacement; a standby group at each of its units' failures. Its
@@ -5537,13 +5621,21 @@ class RepairableRBD(RBD):
         that take time. With constant failure rates and instant repair,
         the counts are Poisson.
 
+        Identical parts often share one shelf: the seals of a station's
+        three pumps come from one bin. ``parts={part: [nodes]}`` pools the
+        spares of each part's components (#183): their counts are
+        independent, so the part's is their sum (by simulation, the sum in
+        each simulation). Its components may differ, one under age
+        replacement and the others not.
+
         Parameters
         ----------
         horizon : float
             The time counted over, from new.
         nodes : Collection[Hashable], optional
             The components to count for, by default every component but a
-            nested RBD (whose own ``spares_demand`` counts its components').
+            nested RBD (whose own ``spares_demand`` counts its components'),
+            or none when ``parts`` are given.
         fleet : int, optional
             How many systems, by default 1.
         method : str, optional
@@ -5553,22 +5645,28 @@ class RepairableRBD(RBD):
             10_000.
         seed : int, optional
             Seeds the simulations, by default None.
+        parts : dict, optional
+            ``{part: [nodes]}``: the components whose spares come from one
+            shelf, counted together under the part's name. A node is in one
+            part at most, and a part is named apart from the components.
 
         Returns
         -------
         dict[Hashable, SparesDemand]
-            Per component, the distribution of the spares it uses, with its
-            ``mean()``, ``std()``, and ``stock(probability)``: the fewest
-            spares that cover the horizon with that probability.
+            Per component, and per part, the distribution of the spares it
+            uses, with its ``mean``, ``std``, and ``stock(probability)``:
+            the fewest spares that cover the horizon with that probability.
 
         Raises
         ------
         ValueError
             If ``horizon`` is negative or not finite, ``fleet`` is not a
-            whole number of at least 1, ``method`` is unknown, or ``nodes``
-            names a node that is not a component, or a nested RBD.
+            whole number of at least 1, ``method`` is unknown, ``nodes`` or
+            a part names a node that is not a component, or a nested RBD,
+            or ``parts`` is not as above.
         NotImplementedError
-            With ``method="exact"``, for a standby group, a component with
+            For a part with two members in one common-cause group; and
+            with ``method="exact"``, for a standby group, a component with
             hidden failures whose tests or repairs take time or whose tests
             can miss a failure, or while a component can wait for a repair
             crew (see ``repair_crews``), or if more than 2,000 replacements
@@ -5602,32 +5700,52 @@ class RepairableRBD(RBD):
             raise ValueError(
                 f"method must be 'exact' or 'simulate', got {method!r}."
             )
-        chosen = self._spares_nodes(nodes)
+        chosen, pools, counted = self._spares_counted(nodes, parts)
         if method == "simulate":
-            counts = self._simulated_replacements(
-                end, chosen, 10_000 if mc_samples is None else mc_samples, seed
+            runs = self._simulated_replacements(
+                end,
+                counted,
+                10_000 if mc_samples is None else mc_samples,
+                seed,
             )
+            counts = {node: _fractions(runs[node]) for node in chosen}
+            pooled = {
+                part: _fractions(sum(runs[m] for m in members))
+                for part, members in pools.items()
+            }
         else:
             self._require_unlimited_crews(*_SPARES_CREWS)
-            models = {node: self._replacements(node) for node in chosen}
-            counts = {
+            models = {node: self._replacements(node) for node in counted}
+            each = {
                 node: _spares.count(model, end, "new")
                 for node, model in models.items()
             }
-        return {
+            counts = {node: each[node] for node in chosen}
+            pooled = {
+                part: _summed(each[m] for m in members)
+                for part, members in pools.items()
+            }
+        out = {
             node: SparesDemand(_fleet(count, fleet), end, fleet, method)
             for node, count in counts.items()
         }
+        for part, count in pooled.items():
+            out[part] = SparesDemand(
+                _fleet(count, fleet), end, fleet, method, pools[part]
+            )
+        return out
 
     def _simulated_replacements(
         self, horizon: float, nodes: list, mc_samples: int, seed
     ) -> Dict[Any, np.ndarray]:
-        """The fractions of ``mc_samples`` simulations of ``[0, horizon)``
-        in which each of ``nodes`` was replaced ``0, 1, 2, ...`` times."""
+        """How many times each of ``nodes`` was replaced in each of
+        ``mc_samples`` simulations of ``[0, horizon)``."""
         montecarlo.check_count(mc_samples, False, "mc_samples")
         if horizon == 0.0:
             # Nothing is replaced in no time (as the exact count says).
-            return {node: np.ones(1) for node in nodes}
+            return {
+                node: np.zeros(mc_samples, dtype=np.int64) for node in nodes
+            }
         tally = self._run(
             horizon,
             set(),
@@ -5640,10 +5758,7 @@ class RepairableRBD(RBD):
         )
         counts = np.array(tally.replacements, dtype=np.int64)
         column = {node: c for c, node in enumerate(self.components)}
-        return {
-            node: np.bincount(counts[:, column[node]]) / len(counts)
-            for node in nodes
-        }
+        return {node: counts[:, column[node]] for node in nodes}
 
     def spares_stock(
         self,
@@ -5653,11 +5768,13 @@ class RepairableRBD(RBD):
         stockout_probability: Optional[float] = None,
         nodes: Optional[Collection[Hashable]] = None,
         fleet: int = 1,
+        parts: Optional[Mapping[Hashable, Collection[Hashable]]] = None,
     ) -> Dict[Hashable, SparesStock]:
-        """The fewest spares of each component to hold for a fill rate, or
-        to run out no more than a fraction of the time, when each spare
-        used is reordered at once and arrives ``lead_time`` later
-        (one-for-one, or ``(S - 1, S)``, replenishment), in the long run.
+        """The fewest spares of each component (or each part several
+        share, ``parts``) to hold for a fill rate, or to run out no more
+        than a fraction of the time, when each spare used is reordered at
+        once and arrives ``lead_time`` later (one-for-one, or ``(S - 1,
+        S)``, replenishment), in the long run.
 
         With a stock of ``S`` a spare is on the shelf while fewer than
         ``S`` are on order: those used in the last lead time. The demand is
@@ -5675,6 +5792,14 @@ class RepairableRBD(RBD):
         ``j`` tests on with probability ``R((j - 1) T) / S``, ``S`` the
         mean cycle in tests).
 
+        A part's components draw on one shelf (#183), which needs fewer
+        spares than a shelf each: its spares on order are the sum of its
+        components' independent ones, and a demand comes from component
+        ``i`` with the share ``rate_i / sum(rates)`` of their long-run
+        replacement rates, finding ``i``'s as its own demands do and the
+        others' as at a random time (see the spares
+        [guide](guide/spares.md#one-shelf-for-interchangeable-parts)).
+
         Parameters
         ----------
         lead_time : float
@@ -5686,25 +5811,31 @@ class RepairableRBD(RBD):
             At least one of the two targets must be given; the stock meets
             both.
         nodes : Collection[Hashable], optional
-            The components, by default every component but a nested RBD.
+            The components, by default every component but a nested RBD
+            (none when ``parts`` are given).
         fleet : int, optional
             How many systems share the stock, by default 1.
+        parts : dict, optional
+            ``{part: [nodes]}``: the components that draw on one shelf, as
+            for ``spares_demand``.
 
         Returns
         -------
         dict[Hashable, SparesStock]
-            Per component, the stock and what it achieves, with the
-            distributions behind them.
+            Per component, and per part, the stock and what it achieves,
+            with the distributions behind them.
 
         Raises
         ------
         ValueError
             If ``lead_time`` is negative or not finite, neither target is
             given or one is not in ``(0, 1)``, ``fleet`` is not a whole
-            number of at least 1, or ``nodes`` names a node that is not a
-            component, or a nested RBD.
+            number of at least 1, ``nodes`` or a part names a node that is
+            not a component, or a nested RBD, or ``parts`` is not as for
+            ``spares_demand``.
         NotImplementedError
-            For a component under block replacement (#160), with hidden
+            For a part with two members in one common-cause group, a
+            component under block replacement (#160), with hidden
             failures whose tests or repairs take time or whose tests can
             miss a failure, a standby group or a life that may never end,
             or while a component can wait for a repair crew, or if more
@@ -5745,19 +5876,55 @@ class RepairableRBD(RBD):
         ):
             if target is not None and not 0.0 < target < 1.0:
                 raise ValueError(f"{name} must be in (0, 1), got {target!r}.")
-        chosen = self._spares_nodes(nodes)
+        chosen, pools, counted = self._spares_counted(nodes, parts)
         self._require_unlimited_crews(*_SPARES_CREWS)
-        models = {node: self._replacements(node, True) for node in chosen}
-        out: Dict[Hashable, SparesStock] = {}
-        for node, model in models.items():
-            random = _spares.count(model, tau, "random")
-            arrival = _spares.count(model, tau, "arrival")
-            on_order = _fleet(random, fleet)
-            at_demand = (
-                arrival
-                if fleet == 1
-                else _fleet(np.convolve(arrival, _fleet(random, fleet - 1)), 1)
-            )
+        models = {node: self._replacements(node, True) for node in counted}
+        random = {
+            node: _spares.count(model, tau, "random")
+            for node, model in models.items()
+        }
+        arrival = {
+            node: _spares.count(model, tau, "arrival")
+            for node, model in models.items()
+        }
+
+        def stocked(members: Tuple[Hashable, ...]) -> SparesStock:
+            if len(members) == 1:
+                node = members[0]
+                on_order = _fleet(random[node], fleet)
+                at_demand = (
+                    arrival[node]
+                    if fleet == 1
+                    else _fleet(
+                        np.convolve(
+                            arrival[node], _fleet(random[node], fleet - 1)
+                        ),
+                        1,
+                    )
+                )
+            else:
+                # A demand finds its own component's replacements as they
+                # come (``arrival``), and the others' as at a random time,
+                # each component's share of the demands its share of the
+                # long-run rates.
+                one = _summed(random[m] for m in members)
+                others = _fleet(one, fleet - 1)
+                rates = np.array([_spares.rate(models[m]) for m in members])
+                on_order = _fleet(one, fleet)
+                at_demand = np.zeros(1)
+                for i, member in enumerate(members):
+                    seen = _summed(
+                        [arrival[member], others]
+                        + [random[m] for j, m in enumerate(members) if j != i]
+                    )
+                    size = max(len(at_demand), len(seen))
+                    at_demand = np.pad(at_demand, (0, size - len(at_demand)))
+                    at_demand += (
+                        rates[i]
+                        / rates.sum()
+                        * np.pad(seen, (0, size - len(seen)))
+                    )
+                at_demand = at_demand / at_demand.sum()
             result = SparesStock(0, 0.0, 1.0, tau, fleet, on_order, at_demand)
             stock = 0
             while not (
@@ -5772,12 +5939,18 @@ class RepairableRBD(RBD):
                 )
             ):
                 stock += 1
-            out[node] = dataclasses.replace(
+            return dataclasses.replace(
                 result,
                 stock=stock,
                 fill_rate=result.fill_rate_for(stock),
                 stockout_probability=result.stockout_probability_for(stock),
             )
+
+        out: Dict[Hashable, SparesStock] = {
+            node: stocked((node,)) for node in chosen
+        }
+        for part, members in pools.items():
+            out[part] = dataclasses.replace(stocked(members), members=members)
         return out
 
     def allocate_redundancy(

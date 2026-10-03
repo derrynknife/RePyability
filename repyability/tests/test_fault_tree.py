@@ -622,3 +622,345 @@ def test_importance_where_the_top_event_cannot_occur():
     assert tree.birnbaum_importance()["b"] == 0.0
     # Preventing "b" makes the top event impossible, as it already was.
     assert math.isnan(tree.risk_reduction_worth()["b"])
+
+
+# -- common-cause groups (#184) -----------------------------------------------
+
+
+def cooling_with_ccf(model, q_pump=0.05):
+    from repyability import CCFGroup
+
+    return FaultTree(
+        {
+            "no cooling": ("or", ["no flow", "valve"]),
+            "no flow": ("and", ["pump 1", "pump 2"]),
+        },
+        {"pump 1": q_pump, "pump 2": q_pump, "valve": 0.01},
+        ccf_groups=[CCFGroup(["pump 1", "pump 2"], model)],
+    )
+
+
+def test_a_beta_factor_pair_by_hand():
+    from repyability import BetaFactor
+
+    tree = cooling_with_ccf(BetaFactor(0.1))
+    # The shared cause (beta Q) fails both pumps; without it each fails on
+    # its own with (1 - beta) Q.
+    Q, beta = 0.05, 0.1
+    both = beta * Q + (1 - beta * Q) * ((1 - beta) * Q) ** 2
+    assert tree.top_event_probability() == pytest.approx(
+        1 - (1 - both) * (1 - 0.01), rel=1e-14
+    )
+    assert tree.sf() == pytest.approx((1 - both) * (1 - 0.01), rel=1e-14)
+    # The pumps' cut set is the pair failing together, the shared cause
+    # included: nearly three times the independent pair's 0.0025.
+    ranked = dict(tree.ranked_cut_sets())
+    assert ranked[frozenset({"pump 1", "pump 2"})] == pytest.approx(
+        both, rel=1e-14
+    )
+    assert ranked[frozenset({"valve"})] == 0.01
+    # The logic is the tree's: the cut sets are of basic events.
+    assert tree.minimal_cut_sets() == [
+        frozenset({"valve"}),
+        frozenset({"pump 1", "pump 2"}),
+    ]
+    # A pump's occurrence says the other has likely occurred too.
+    one = beta * Q + (1 - beta * Q) * (1 - beta) * Q
+    given = both / one
+    raw = tree.risk_achievement_worth()["pump 1"]
+    assert raw == pytest.approx(
+        (1 - (1 - given) * 0.99) / tree.top_event_probability(), rel=1e-12
+    )
+
+
+def same_groups(a, b) -> bool:
+    return [(list(g.members), g.model) for g in a] == [
+        (list(g.members), g.model) for g in b
+    ]
+
+
+GROUP_MODELS = [
+    "beta",
+    "beta-rate",
+    "mgl",
+    "mgl-independent",
+    "mgl-rate",
+]
+
+
+def group_model(kind, size):
+    from repyability import MGL, BetaFactor
+
+    letters = (0.15, 0.4, 0.5)[: size - 1]
+    return {
+        "beta": lambda: BetaFactor(0.1),
+        "beta-rate": lambda: BetaFactor(0.2, basis="rate"),
+        "mgl": lambda: MGL(*letters),
+        "mgl-independent": lambda: MGL(*letters, shocks="independent"),
+        "mgl-rate": lambda: MGL(*letters, basis="rate"),
+    }[kind]()
+
+
+@pytest.mark.parametrize("seed", range(40))
+@pytest.mark.parametrize("kind", GROUP_MODELS)
+def test_random_trees_with_groups_agree_with_their_diagrams(seed, kind):
+    from repyability import CCFGroup
+
+    rng = np.random.default_rng(9000 + seed)
+    gates, probabilities, top = random_tree(
+        rng, int(rng.integers(4, 8)), int(rng.integers(1, 6))
+    )
+    events = list(probabilities)
+    size = int(rng.integers(2, min(4, len(events)) + 1))
+    members = [events[i] for i in rng.choice(len(events), size, False)]
+    groups = [CCFGroup(members, group_model(kind, size))]
+    q = float(rng.uniform(0.005, 0.1))
+    probabilities.update({m: q for m in members})
+    rest = [e for e in events if e not in members]
+    if len(rest) >= 2 and rng.random() < 0.5:
+        # A second group, of another size.
+        second = rest[:2]
+        groups.append(CCFGroup(second, group_model(kind, 2)))
+        probabilities.update({m: q / 2 for m in second})
+    tree = FaultTree(gates, probabilities, ccf_groups=groups)
+    rbd = tree.to_rbd()
+    assert rbd.ccf_groups == groups
+    probability = tree.top_event_probability()
+    assert probability == pytest.approx(rbd.ff(), rel=1e-12, abs=1e-16)
+    assert tree.sf() == pytest.approx(rbd.sf(), rel=1e-12, abs=1e-16)
+    for measure in (
+        "birnbaum_importance",
+        "criticality_importance",
+        "risk_achievement_worth",
+        "risk_reduction_worth",
+        "fussell_vesely",
+    ):
+        ours = getattr(tree, measure)()
+        with np.errstate(divide="ignore", invalid="ignore"):
+            theirs = getattr(rbd, measure)()
+        for e in tree.events:
+            assert ours[e] == pytest.approx(
+                theirs[e], rel=1e-9, abs=1e-14, nan_ok=True
+            ), (measure, e)
+    ours = tree.fussell_vesely(method="rare_event")
+    theirs = rbd.fussell_vesely(method="rare_event")
+    for e in tree.events:
+        assert ours[e] == pytest.approx(theirs[e], rel=1e-9, abs=1e-14)
+
+    # A cut set's probability is its events' occurring together, enumerated
+    # over the groups' outcomes.
+    p, qs = tree._event_probabilities(np.array([1.0]))
+    outcomes = list(tree._outcomes(p, qs))
+    for cut, value in tree.ranked_cut_sets():
+        together = sum(
+            float(np.ravel(w)[0]) * math.prod(f[e][0] for e in cut)
+            for w, _, f in outcomes
+        )
+        assert value == pytest.approx(together, rel=1e-12)
+
+    # Back to a tree, and saved and restored. An event the logic absorbs
+    # is left out of the diagram's tree, and so is a group of only such
+    # events; one with some refuses.
+    relevant = set().union(*tree.minimal_cut_sets())
+    some = [g for g in groups if relevant & set(g.members)]
+    if any(not relevant.issuperset(g.members) for g in some):
+        with pytest.raises(NotImplementedError, match="cannot affect"):
+            FaultTree.from_rbd(rbd)
+    else:
+        back = FaultTree.from_rbd(rbd)
+        assert same_groups(back.ccf_groups, some)
+        assert back.top_event_probability() == pytest.approx(
+            probability, rel=1e-12, abs=1e-16
+        )
+    restored = FaultTree.from_json(tree.to_json())
+    assert same_groups(restored.ccf_groups, groups)
+    assert restored.top_event_probability() == probability
+
+
+def test_a_group_is_its_cause_drawn_as_a_repeated_event():
+    from repyability import BetaFactor, CCFGroup
+
+    # Without groups, an AND of the pair is their product; a group makes it
+    # the shared cause's probability and more.
+    gates = {"top": ("and", ["a", "b"])}
+    plain = FaultTree(gates, {"a": 0.01, "b": 0.01})
+    grouped = FaultTree(
+        gates,
+        {"a": 0.01, "b": 0.01},
+        ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
+    )
+    assert plain.top_event_probability() == pytest.approx(1e-4)
+    assert grouped.top_event_probability() == pytest.approx(
+        0.001 + 0.999 * 0.009**2, rel=1e-14
+    )
+    # The same as the cause drawn as a repeated event of its own:
+    # OR(a's own, cause) and OR(b's own, cause), the cause occurring with
+    # beta Q and each pump on its own with (1 - beta) Q.
+    explicit = FaultTree(
+        {
+            "top": ("and", ["A", "B"]),
+            "A": ("or", ["a alone", "cause"]),
+            "B": ("or", ["b alone", "cause"]),
+        },
+        {"a alone": 0.009, "b alone": 0.009, "cause": 0.001},
+    )
+    assert grouped.top_event_probability() == pytest.approx(
+        explicit.top_event_probability(), rel=1e-13
+    )
+
+
+def test_groups_over_time():
+    from repyability import MGL, CCFGroup
+
+    unit = W([1000.0, 1.5])
+    tree = FaultTree(
+        {"top": ("or", ["trains", "d"]), "trains": ("vote", 2, list("abc"))},
+        {"a": unit, "b": unit, "c": unit, "d": W([5000.0, 1.2])},
+        ccf_groups=[CCFGroup(list("abc"), MGL(0.1, 0.3, basis="rate"))],
+    )
+    t = np.array([50.0, 200.0, 800.0])
+    rbd = tree.to_rbd()
+    np.testing.assert_allclose(
+        tree.top_event_probability(t), rbd.ff(t), rtol=1e-12
+    )
+    for e, v in tree.birnbaum_importance(t).items():
+        np.testing.assert_allclose(v, rbd.birnbaum_importance(t)[e], rtol=1e-9)
+    # Each time's value is the scalar one.
+    assert tree.top_event_probability(200.0) == pytest.approx(
+        tree.top_event_probability(t)[1], rel=1e-15
+    )
+    # More often than the trains failing independently while failures are
+    # rare (by 800 h, when half the units have failed, the shared causes'
+    # bunching of failures no longer adds to a vote's).
+    independent = FaultTree(tree.gates, tree.events)
+    assert np.all(
+        tree.top_event_probability(t[:2])
+        > independent.top_event_probability(t[:2])
+    )
+
+
+def test_a_repeated_grouped_event_converts():
+    from repyability import BetaFactor, CCFGroup
+
+    # Event "a" feeds two gates: the diagram draws it twice, the group
+    # takes its first place.
+    tree = FaultTree(
+        {
+            "top": ("and", ["g1", "g2"]),
+            "g1": ("or", ["a", "b"]),
+            "g2": ("or", ["a", "c"]),
+        },
+        {"a": 0.02, "b": 0.02, "c": 0.05},
+        ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.2))],
+    )
+    rbd = tree.to_rbd()
+    assert rbd.repeated
+    assert tree.top_event_probability() == pytest.approx(rbd.ff(), rel=1e-13)
+    # By hand: a's occurring decides the top event; otherwise b and c must.
+    Q, beta = 0.02, 0.2
+    own = (1 - beta) * Q
+    shock = beta * Q
+    a = shock + (1 - shock) * own
+    b_not_a = (1 - shock) * (1 - own) * own
+    assert tree.top_event_probability() == pytest.approx(
+        a + b_not_a * 0.05, rel=1e-13
+    )
+
+
+def test_groups_are_checked():
+    from repyability import BetaFactor, CCFGroup
+
+    gates = {"top": ("or", ["a", "b", "c"])}
+    events = {"a": 0.01, "b": 0.01, "c": 0.02}
+    with pytest.raises(ValueError, match="not a basic event"):
+        FaultTree(
+            gates, events, ccf_groups=[CCFGroup(["a", "z"], BetaFactor(0.1))]
+        )
+    with pytest.raises(ValueError, match="more than one CCF group"):
+        FaultTree(
+            gates,
+            {**events, "c": 0.01},
+            ccf_groups=[
+                CCFGroup(["a", "b"], BetaFactor(0.1)),
+                CCFGroup(["b", "c"], BetaFactor(0.1)),
+            ],
+        )
+    with pytest.raises(ValueError, match="not symmetric"):
+        FaultTree(
+            gates, events, ccf_groups=[CCFGroup(["a", "c"], BetaFactor(0.1))]
+        )
+    with pytest.raises(ValueError, match="not symmetric"):
+        FaultTree(
+            gates,
+            {"a": W([10.0, 2.0]), "b": W([10.0, 3.0]), "c": 0.1},
+            ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
+        )
+    with pytest.raises(ValueError, match="CCFGroup instances"):
+        FaultTree(gates, events, ccf_groups=[("a", "b")])
+    # A gate is no basic event.
+    with pytest.raises(ValueError, match="not a basic event"):
+        FaultTree(
+            {"top": ("or", ["g", "c"]), "g": ("and", ["a", "b"])},
+            {"a": 0.01, "b": 0.01, "c": 0.01},
+            ccf_groups=[CCFGroup(["g", "c"], BetaFactor(0.1))],
+        )
+    # Keyword only.
+    with pytest.raises(TypeError):
+        FaultTree(gates, events, "top", [])
+
+
+def test_a_probability_split_warns_beyond_its_range_once():
+    import warnings
+
+    from repyability import BetaFactor
+
+    tree = cooling_with_ccf(BetaFactor(0.1), q_pump=0.3)
+    with pytest.warns(UserWarning, match="Q = 0.3"):
+        tree.top_event_probability()
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        tree.top_event_probability()
+        tree.fussell_vesely()
+        cooling_with_ccf(BetaFactor(0.1, basis="rate"), 0.3).ff()
+
+
+def test_a_diagrams_groups_become_the_trees():
+    from repyability import MGL, CCFGroup
+
+    p = FixedEventProbability.from_params
+    group = CCFGroup(["p1", "p2", "p3"], MGL(0.1, 0.3))
+    rbd = NonRepairableRBD(
+        [("s", "p1"), ("s", "p2"), ("s", "p3")]
+        + [("p1", "v"), ("p2", "v"), ("p3", "v"), ("v", "t")],
+        {"p1": p(0.05), "p2": p(0.05), "p3": p(0.05), "v": p(0.001)},
+        ccf_groups=[group],
+    )
+    tree = FaultTree.from_rbd(rbd)
+    assert tree.ccf_groups == [group]
+    assert tree.top_event_probability() == pytest.approx(rbd.ff(), rel=1e-13)
+    for e, v in tree.criticality_importance().items():
+        assert v == pytest.approx(rbd.criticality_importance()[e], rel=1e-9)
+
+    # A member that cannot affect the system is no event of the tree, but
+    # the group's shocks would still strike it with the others.
+    irrelevant = NonRepairableRBD(
+        [("s", "x"), ("s", "j"), ("x", "m"), ("j", "m"), ("m", "a")]
+        + [("a", "t")],
+        {"x": p(0.05), "j": PerfectReliability, "m": PerfectReliability}
+        | {"a": p(0.05)},
+        ccf_groups=[CCFGroup(["a", "x"], MGL(0.1))],
+    )
+    with pytest.raises(NotImplementedError, match="cannot affect"):
+        FaultTree.from_rbd(irrelevant)
+    # A group none of whose members can is left out with them.
+    p2 = {n: p(0.05) for n in ("x", "y")}
+    unaffected = NonRepairableRBD(
+        [("s", "x"), ("x", "m"), ("s", "y"), ("y", "m"), ("s", "j")]
+        + [("j", "m"), ("m", "a"), ("a", "t")],
+        {**p2, "j": PerfectReliability, "m": PerfectReliability}
+        | {"a": p(0.05)},
+        ccf_groups=[CCFGroup(["x", "y"], MGL(0.1))],
+    )
+    tree = FaultTree.from_rbd(unaffected)
+    assert tree.ccf_groups == [] and set(tree.events) == {"a"}
+    assert tree.top_event_probability() == pytest.approx(unaffected.ff())

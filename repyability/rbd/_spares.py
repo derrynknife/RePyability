@@ -506,6 +506,16 @@ def _tested_tails(model: Tested, end: float, kind: str) -> np.ndarray:
     return (1.0 - share) * fewer + share * more
 
 
+def rate(model) -> float:
+    """A component's replacements per unit time in the long run: one over
+    its mean cycle (for a ``Tested`` one, its mean cycle in tests times
+    the test interval)."""
+    if isinstance(model, Tested):
+        tests = float(np.arange(1, len(model.cycle) + 1) @ model.cycle)
+        return 1.0 / (model.interval * tests)
+    return 1.0 / model.mean_cycle
+
+
 def count(model, end: float, kind: str) -> np.ndarray:
     """The distribution of a component's replacements (see
     ``_count_tails`` for ``kind``): their probabilities for ``0, 1, 2,

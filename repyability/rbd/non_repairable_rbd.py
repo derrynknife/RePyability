@@ -52,7 +52,7 @@ from ._model_utils import is_fixed_probability, model_mean, parametric_spec
 from ._sampling import RowSampler, column, inverse_sampler, row_sampler
 from .ccf import VALIDITY, BetaFactor, CCFGroup
 from .ccf import parameters as ccf_parameters
-from .ccf import validity_warning
+from .ccf import shock_outcomes, validity_warning
 from .ccf import with_parameters as with_ccf_parameters
 from .degrading_node import DegradingNode
 from .helper_classes import PerfectReliability, PerfectUnreliability
@@ -1151,8 +1151,6 @@ class NonRepairableRBD(RBD):
         ``ff``) is given, so that a small one keeps its precision (else
         None). ``groups``, the RBD's groups by default, may give them other
         models (as a parameter's draws or perturbations do)."""
-        from itertools import product
-
         groups = self.ccf_groups if groups is None else groups
         forced = set(working_nodes) | set(broken_nodes)
         for group in groups:
@@ -1162,78 +1160,9 @@ class NonRepairableRBD(RBD):
                     "broken_nodes is not supported yet."
                 )
 
-        # Each group's mutually-exclusive shock outcomes: (weight, {member:
-        # reliability}, {member: unreliability}) for every subset that can
-        # fail together plus the no-shock case, from the model's
-        # decomposition of Q(t) (taken from a representative member, since
-        # groups are symmetric).
-        group_outcomes = []
-        for index, group in enumerate(groups):
-            first = group.members[0]
-            R = np.atleast_1d(np.asarray(base_probabilities[first], float))
-            Q = (
-                1.0 - np.atleast_1d(base_probabilities[first])
-                if base_failures is None
-                else np.atleast_1d(np.asarray(base_failures[first], float))
-            )
-            self._check_ccf_validity(index, group, Q)
-            q_independent, r_independent, shocks = group.model._split(
-                group.members, Q, R
-            )
-            outcomes = []
-            total_shock = np.zeros_like(Q)
-            for subset, prob in shocks:
-                total_shock = total_shock + prob
-                outcomes.append(
-                    (
-                        prob,
-                        {
-                            member: (
-                                np.zeros_like(Q)
-                                if member in subset
-                                else r_independent
-                            )
-                            for member in group.members
-                        },
-                        {
-                            member: (
-                                np.ones_like(Q)
-                                if member in subset
-                                else q_independent
-                            )
-                            for member in group.members
-                        },
-                    )
-                )
-            # No common-cause shock: every member fails only independently.
-            # With independent causes (by rate, or as basic events), no
-            # cause has struck: its own probability keeps its precision
-            # where one less the shocks' would not.
-            outcomes.append(
-                (
-                    (
-                        group.model._no_shock(group.members, Q, R)
-                        if group.model.shocks == "independent"
-                        else 1.0 - total_shock
-                    ),
-                    {member: r_independent for member in group.members},
-                    {member: q_independent for member in group.members},
-                )
-            )
-            group_outcomes.append(outcomes)
-
-        for combo in product(*group_outcomes):
-            node_probabilities = dict(base_probabilities)
-            node_failures = (
-                None if base_failures is None else dict(base_failures)
-            )
-            weight: Any = 1.0
-            for outcome_weight, member_probs, member_fails in combo:
-                weight = weight * outcome_weight
-                node_probabilities.update(member_probs)
-                if node_failures is not None:
-                    node_failures.update(member_fails)
-            yield weight, node_probabilities, node_failures
+        yield from shock_outcomes(
+            groups, base_probabilities, base_failures, self._check_ccf_validity
+        )
 
     def _check_ccf_validity(self, index: int, group, Q: np.ndarray) -> None:
         """Warn, once per group, when a group splitting the probability of

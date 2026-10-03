@@ -98,6 +98,39 @@ stock["pump"].fill_rate_for(26)       # -> 0.8870
 - **A fleet** shares one store, its systems' independent demands adding
   up.
 
+## One shelf for interchangeable parts
+
+The same part often serves several positions: the seals of a station's
+three pumps come from one bin. `parts={part: [nodes]}` pools their spares
+under the part's name (#183), for `spares_demand` and `spares_stock` alike.
+A pooled shelf needs fewer spares than one for each position, as the
+positions seldom all draw on it at once:
+
+```python
+seal = {"reliability": surv.Weibull.from_params([4000.0, 1.8]),
+        "repairability": surv.LogNormal.from_params([2.0, 0.5])}
+station = RepairableRBD(
+    [("s", f"seal{i}") for i in (1, 2, 3)] + [(f"seal{i}", "t") for i in (1, 2, 3)],
+    {f"seal{i}": dict(seal) for i in (1, 2, 3)}, k={"t": 2})   # 2 of 3 trains
+six_weeks = 6 * 168.0
+each = station.spares_stock(six_weeks, fill_rate=0.95, fleet=13)
+sum(s.stock for s in each.values())   # -> 21   7 for each position
+shelf = station.spares_stock(six_weeks, fill_rate=0.95, fleet=13,
+                             parts={"seal": ["seal1", "seal2", "seal3"]})
+shelf["seal"].stock                   # -> 17
+shelf["seal"].fill_rate               # -> 0.9704
+```
+
+The positions' demands are independent, so a part's is their sum: for its
+stock, a demand comes from position `i` with its share of the long-run
+replacement rates, and finds `i`'s spares on order as its own demands do
+and the others' as at a random time. The positions may differ, one under
+age replacement and the others not. A node is in one part at most, and a
+part is named apart from the components; given with `parts`, `nodes` (by
+default none then) still counts components on their own. Two members of
+one common-cause group are refused, as their shared causes replace them
+together.
+
 ## Block replacement and proof tests
 
 Two kinds of component replace on a calendar, and are counted their own way

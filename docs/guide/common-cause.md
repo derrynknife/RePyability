@@ -351,6 +351,10 @@ pair.mean()                                # -> 1145.8   exact, without the grou
 Groups are saved with the RBD, their basis with them. An *alpha-factor*
 model, a data-estimable reparameterisation of MGL, is a planned extension.
 
+A [`FaultTree`](fault-trees.md#common-causes) takes the same groups over its
+basic events, with the same exact top event probability and importance
+measures, and its conversions to and from a diagram keep them.
+
 ## Repairable systems
 
 A [`RepairableRBD`][repyability.RepairableRBD] takes `ccf_groups` too. A

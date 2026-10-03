@@ -89,8 +89,9 @@ timed.ranked_cut_sets(5000)         # at 5000 h the pumps dominate
 # [(frozenset({'pump 1', 'pump 2'}), 0.1217), (frozenset({'valve'}), 0.1175)]
 ```
 
-A cut set's probability is the product of its events'. `minimal_path_sets()`
-gives the dual: the smallest sets of events whose not occurring keeps the top
+A cut set's probability is the product of its events' (with
+[common causes](#common-causes), that of its events occurring together).
+`minimal_path_sets()` gives the dual: the smallest sets of events whose not occurring keeps the top
 event from occurring. `occurs(events)` evaluates the tree's logic for one
 combination: whether the top event occurs when exactly `events` have.
 
@@ -128,6 +129,59 @@ evaluated in a fraction of a second. A tree whose diagram would pass two
 million nodes (`repyability.fault_tree.DIAGRAM_LIMIT`) is refused, with the
 advice to convert it with `to_rbd()` and simulate the diagram. There is no
 rare-event or min-cut upper-bound approximation.
+
+## Common causes
+
+Redundant pumps of one design, in one room, also fail together: from one
+flood, one bad batch of seals, one maintenance error. `ccf_groups` (#184)
+declares such groups over basic events, with the
+[common-cause models](common-cause.md) a block diagram takes: a
+`BetaFactor` or `MGL` model splits each member's probability into the part
+that is its own and the shared causes that fail several members at once.
+
+```python
+from repyability import BetaFactor, CCFGroup
+
+grouped = FaultTree(
+    {"no cooling": ("or", ["no flow", "valve"]),
+     "no flow": ("and", ["pump 1", "pump 2"])},
+    {"pump 1": 0.1, "pump 2": 0.1, "valve": 0.05},
+    ccf_groups=[CCFGroup(["pump 1", "pump 2"], BetaFactor(0.1))],
+)
+grouped.top_event_probability()   # -> 0.0671   against 0.0595 independent
+grouped.ranked_cut_sets()
+# [(frozenset({'valve'}), 0.05), (frozenset({'pump 1', 'pump 2'}), 0.0180)]
+grouped.criticality_importance()
+# {'pump 1': 0.255, 'pump 2': 0.255, 'valve': 0.7315}
+```
+
+The pumps' pair now fails with probability `0.1 × 0.1 + 0.99 × 0.09² =
+0.0180`, nearly twice the independent `0.01`: the shared cause fails both
+with `β Q`, and without it each fails on its own with `(1 − β) Q`. A
+`BetaFactor` group is that cause drawn as a repeated event (`OR(pump 1's
+own, cause)` and `OR(pump 2's own, cause)`), which the group spares you
+writing; an `MGL` group of three or more has a cause for each set of
+members, as the [models](common-cause.md#what-each-model-assigns) assign.
+
+- **Exact**, as for a diagram: the top event probability and every
+  importance measure sum over the groups' shock outcomes, given each of
+  which the events are independent; a member's importance is conditioned
+  on its own state through them. A tree and its `to_rbd()` diagram, which
+  carries the groups, give the same values.
+- **The cut sets stay sets of basic events.** `ranked_cut_sets` gives each
+  the probability that its events occur together, the shared causes
+  included, so a pair of members often leads the ranking. (PRA tools that
+  draw each shared cause as an event of its own list it as a cut set of
+  one.)
+- **Rules**, as a diagram's: a member is a basic event, in one group at
+  most, and the members have one model. A group splitting a probability
+  warns once its members' probability passes 0.1, and
+  `basis="rate"` splits the failure rate over a lifetime
+  ([Over a lifetime](common-cause.md#over-a-lifetime)).
+- **Conversions keep them**: `to_rbd()` passes the groups to the diagram
+  and `from_rbd` takes the diagram's, refusing a group with a member that
+  cannot affect the system (it is no event of the tree, but the group's
+  shocks would still strike it) and dropping one whose members none can.
 
 ## Importance measures
 
@@ -196,18 +250,16 @@ with the bridge's logic.
 
 `to_json()` / `FaultTree.from_json()` (and `to_dict` / `from_dict`) save
 the gates, the top event and the events, probabilities as numbers and
-models as RePyability saves a diagram's node models.
+models as RePyability saves a diagram's node models, and the common-cause
+groups as a diagram saves them.
 
 ## The model and its limits
 
 - **Static gates only.** OR, AND and VOTE. Dynamic gates (priority-AND,
   spares, sequence dependence) and NOT gates are not supported; for standby
   and load sharing, see [Redundancy models](redundancy-models.md).
-- **Independent basic events.** Events fail independently except through
-  the events they share. For common-cause failures, model the cause as a
-  repeated event, or use the diagram's
-  [common-cause groups](common-cause.md) (`from_rbd` does not convert
-  them).
+- **Independent basic events,** but for the events they share and their
+  [common causes](#common-causes).
 - **Non-repairable.** A tree gives the probability that the top event has
   occurred by `t`. For availability with repair, build a
   [`RepairableRBD`](repairable.md).

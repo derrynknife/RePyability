@@ -762,3 +762,86 @@ class CCFGroup:
 
     def __repr__(self) -> str:
         return f"CCFGroup(members={list(self.members)}, model={self.model!r})"
+
+
+def shock_outcomes(groups, base_probabilities, base_failures, check=None):
+    """Every combination of the common-cause ``groups``' mutually exclusive
+    shock outcomes: for each, its probability, the nodes' probabilities of
+    working given it (``base_probabilities`` with the members' changed), and
+    of failing (from ``base_failures``, each node's own ``ff``, so that a
+    small one keeps its precision; None without it). Given an outcome, the
+    nodes are independent. ``check(index, group, Q)`` sees each group's
+    members' probability of failing (the RBD warns past ``VALIDITY``)."""
+    from itertools import product
+
+    # Each group's mutually-exclusive shock outcomes: (weight, {member:
+    # reliability}, {member: unreliability}) for every subset that can
+    # fail together plus the no-shock case, from the model's
+    # decomposition of Q(t) (taken from a representative member, since
+    # groups are symmetric).
+    group_outcomes = []
+    for index, group in enumerate(groups):
+        first = group.members[0]
+        R = np.atleast_1d(np.asarray(base_probabilities[first], float))
+        Q = (
+            1.0 - np.atleast_1d(base_probabilities[first])
+            if base_failures is None
+            else np.atleast_1d(np.asarray(base_failures[first], float))
+        )
+        if check is not None:
+            check(index, group, Q)
+        q_independent, r_independent, shocks = group.model._split(
+            group.members, Q, R
+        )
+        outcomes = []
+        total_shock = np.zeros_like(Q)
+        for subset, prob in shocks:
+            total_shock = total_shock + prob
+            outcomes.append(
+                (
+                    prob,
+                    {
+                        member: (
+                            np.zeros_like(Q)
+                            if member in subset
+                            else r_independent
+                        )
+                        for member in group.members
+                    },
+                    {
+                        member: (
+                            np.ones_like(Q)
+                            if member in subset
+                            else q_independent
+                        )
+                        for member in group.members
+                    },
+                )
+            )
+        # No common-cause shock: every member fails only independently.
+        # With independent causes (by rate, or as basic events), no
+        # cause has struck: its own probability keeps its precision
+        # where one less the shocks' would not.
+        outcomes.append(
+            (
+                (
+                    group.model._no_shock(group.members, Q, R)
+                    if group.model.shocks == "independent"
+                    else 1.0 - total_shock
+                ),
+                {member: r_independent for member in group.members},
+                {member: q_independent for member in group.members},
+            )
+        )
+        group_outcomes.append(outcomes)
+
+    for combo in product(*group_outcomes):
+        node_probabilities = dict(base_probabilities)
+        node_failures = None if base_failures is None else dict(base_failures)
+        weight: Any = 1.0
+        for outcome_weight, member_probs, member_fails in combo:
+            weight = weight * outcome_weight
+            node_probabilities.update(member_probs)
+            if node_failures is not None:
+                node_failures.update(member_fails)
+        yield weight, node_probabilities, node_failures

@@ -27,6 +27,30 @@ other release, fixes included, the minor.
   with no model is now told that a junction takes `PerfectReliability`, and
   `NonRepairable(PerfectReliability)` says to give it as the node itself.
 
+- **One shelf for interchangeable parts (#183).** `spares_demand` and
+  `spares_stock` sized each component's spares apart, where identical parts
+  share one bin: the seals of a station's three pumps. `parts={part:
+  [nodes]}` pools them under the part's name. The positions' demands are
+  independent, so a part's is their sum; for its stock, a demand comes
+  from each position with its share of the long-run replacement rates,
+  finding its own position's spares on order as that position's demands
+  do and the others' as at a random time. The positions may differ (one
+  under age replacement, the others not). Thirteen stations of three
+  wear-out seals, six weeks to restock, need 21 seals on three shelves for
+  a 95% fill rate, and 17 on one. Members of one common-cause group, which
+  their shared causes replace together, are refused; the results say which
+  `members` a part holds.
+- **Common causes in fault trees (#184).** `FaultTree(..., ccf_groups=)`
+  takes the `CCFGroup`s a diagram takes, over basic events: a tree could
+  only draw a shared cause as a repeated event of its own. The top event
+  probability and every importance measure sum over the groups' shock
+  outcomes, exactly, as the diagram's do (a member conditioned on its own
+  state through them); `ranked_cut_sets` gives each cut set's probability
+  of its events occurring together, the shared causes included. `to_rbd()`
+  and `from_rbd` keep the groups, where `from_rbd` refused a diagram with
+  any, and the tree saves them. `from_rbd` drops a group none of whose
+  members can affect the system, and refuses one with a member that cannot
+  and one that can.
 - **PRA's independent shocks for MGL groups (#180).** Splitting the
   probability, an MGL group's shocks were mutually exclusive (one shared
   cause at most), where PRA codes (SAPHIRE, CAFTA, RiskSpectrum) take each

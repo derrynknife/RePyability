@@ -1912,6 +1912,9 @@ class SparesDemand(_ResultMapping):
     method : str
         ``"exact"``, worked out to about 1e-6, or ``"simulate"``, the
         fractions of simulations.
+    members : tuple or None
+        The components whose spares a part pools (see ``spares_demand``'s
+        ``parts``), or None for one component's.
 
     Examples
     --------
@@ -1940,6 +1943,7 @@ class SparesDemand(_ResultMapping):
     horizon: float
     fleet: int
     method: str
+    members: Optional[tuple] = None
 
     @property
     def mean(self) -> float:
@@ -2049,12 +2053,15 @@ class SparesStock(_ResultMapping):
         the demand in a lead time.
     on_order_at_demand : numpy.ndarray
         The same, as a demand finds it (not counting itself).
+    members : tuple or None
+        The components whose spares a part pools (see ``spares_stock``'s
+        ``parts``), or None for one component's.
 
     Examples
     --------
     A component with a constant failure rate of 0.01, replaced in no time,
     and a lead time of 300 hours: the spares on order are Poisson, 3 on
-    average, and 6 on the shelf meet 96.6% of demands:
+    average, and 7 on the shelf meet 96.6% of demands:
 
     >>> import surpyval as surv
     >>> from repyability import RepairableRBD
@@ -2081,6 +2088,7 @@ class SparesStock(_ResultMapping):
     fleet: int
     on_order: np.ndarray
     on_order_at_demand: np.ndarray
+    members: Optional[tuple] = None
 
     def fill_rate_for(self, stock: int) -> float:
         """The fraction of demands a stock of ``stock`` meets from the
