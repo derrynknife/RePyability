@@ -341,27 +341,23 @@ def test_a_nested_rbd_with_a_group():
     assert outer.mean_availability() == pytest.approx(
         inner.mean_availability() * outer.node_availability()["y"]
     )
-    with pytest.raises(NotImplementedError, match="common-cause groups"):
-        outer.availability(100.0, mc_samples=10)
-    assert outer.analysis_routes()["availability"].route == "refused"
+    # Over time and simulated too (#158: see test_ccf_over_time.py).
+    assert outer.analysis_routes()["availability"].route == "simulated"
+    assert outer.analysis_routes()["point_availability"].route == "numerical"
 
 
 @pytest.mark.parametrize(
     "call",
     [
         lambda rbd: rbd.birnbaum_importance(working_nodes=["a"]),
-        lambda rbd: rbd.point_availability([10.0]),
-        lambda rbd: rbd.availability(100.0, mc_samples=10),
-        lambda rbd: rbd.availability_allocation(0.999),
-        lambda rbd: rbd.allocate_redundancy(100.0, nodes=["a", "b"]),
+        lambda rbd: rbd.point_availability([10.0], working_nodes=["a"]),
+        lambda rbd: rbd.availability(100.0, mc_samples=10, broken_nodes=["b"]),
         lambda rbd: rbd.mean_availability(working_nodes=["a"]),
     ],
     ids=[
         "held importance",
-        "over time",
-        "simulation",
-        "allocation",
-        "redundancy",
+        "held over time",
+        "held in a simulation",
         "held",
     ],
 )

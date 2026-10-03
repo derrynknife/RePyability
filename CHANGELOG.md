@@ -171,6 +171,42 @@ other release, fixes included, the minor.
   last as long as its interval stays simulated (the refusal says how
   likely it is to), as do a common-cause group's members whose tests or
   repairs take time (#158).
+- **Common-cause groups in a repairable diagram over time, in the
+  simulations and in the allocations (#158).** A `RepairableRBD` with
+  `ccf_groups` had exact long-run values and importance, but refused the
+  values over time, the simulations and the allocations.
+  - Over time from new, each group's Markov chain is followed from every
+    member up (by uniformization, or through the members' tests, after
+    whose first period it repeats its long run), and each time is split by
+    the groups' joint states: `point_availability`,
+    `mission_availability`, `expected_failures`, `expected_events`,
+    `expected_cost`, `point_capacity` and `mission_capacity` take the
+    groups in, a nested RBD's too. Two pumps sharing a fifth of their
+    failures are up 98.43% of their first 1,000 hours and the pair fails
+    3.16 times, against 99.18% and 1.64 independent.
+  - The simulations (`availability`, `cost`, `compare`, `simulate_chunk`,
+    `shards`, `simulate_timelines`, event stepping and
+    `spares_demand(method="simulate")`) draw each shared cause as a
+    Poisson process with its own random stream, failing the members it
+    names that are up at once, and a member's own failures at its own
+    share of the rate. They run in Python (the compiled engine leaves the
+    groups to it), and take in what the chains do not: tests and repairs
+    that take time, and repairs of any distribution. A control variate's
+    exact twin keeps the groups.
+  - `allocate_redundancy` gives a `BetaFactor` group's member copies that
+    join its group, each design scored exactly by chains that count how
+    many of a member's copies are down rather than telling them apart, so
+    a design with many copies is quick to score. Copies of an `MGL` group's
+    member, or of a train holding one, are refused. The copies are repaired
+    at once, so a shared failure ends with the first repaired, and a
+    shared cause can make more copies worth buying, not fewer.
+    `availability_allocation` and `mttf_mttr_allocation` keep the members'
+    availability (their MTTF and MTTR are their group's) and score the
+    system over the groups' joint states.
+
+  Members of other lives, held working or broken, or started from a current
+  state are refused with the reason, as are groups with limited repair
+  crews; `analysis_routes()` says which.
 - **Repair crews around nested RBDs, over time (#162).** With limited
   repair crews, the expected events and cost and the capacity over time
   refused a nested RBD, though its availability over time was worked out.

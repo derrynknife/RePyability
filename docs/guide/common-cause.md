@@ -404,5 +404,84 @@ shared.birnbaum_importance()["p1"]       # -> 0.1743   P(p2 down | p1 down)
 independent.birnbaum_importance()["p1"]  # -> 0.0909
 ```
 
-The allocations, the values over time from new and the simulations refuse a
-diagram with groups, as yet (#158; `analysis_routes()` says which).
+Over time from new, each group's chain is followed from every member up at
+0 (by uniformization, or through the members' tests, after whose first
+period it repeats its long run), and each time is split by the groups'
+joint states as the long-run times are. `point_availability`,
+`mission_availability`, `expected_failures`, `expected_events`,
+`expected_cost`, `point_capacity` and `mission_capacity` take the groups in,
+and settle into the long-run values. A member's own curve, and so its own
+events, are as without its group; the system's failures count each cause
+that takes it down, a shared one several members at once:
+
+```python
+shared.point_availability(10.0)       # -> 0.98891   independent: 0.99632
+shared.mission_availability(1000.0)   # -> 0.98429   settling to 0.98415
+shared.expected_failures(1000.0)      # -> 3.158     independent: 1.639
+```
+
+The simulations (`availability`, `cost`, `compare`, `simulate_timelines`,
+event stepping and `spares_demand(method="simulate")`) draw each group's
+causes: each strikes as a Poisson process at its share of the members'
+failure rate, and fails the members it names that are up, at once. A test
+that can miss a failure tosses one coin for all the failures a cause makes.
+They run in Python (the compiled engine does not draw the causes, as yet),
+and they take in what the chains cannot: tests and repairs that take time,
+and repairs of any distribution:
+
+```python
+run = shared.availability(1000.0, mc_samples=2000, seed=0)
+run.mean_availability_interval().estimate   # -> 0.9841   exact: 0.98429
+```
+
+In `allocate_redundancy` a member's copies join its group, as for a
+non-repairable diagram: a `BetaFactor` group's, each copy alike in every way,
+struck by the shared cause too, and tested with its member when its failures
+are hidden. Copies of an `MGL` group's member, or of a train holding one, are
+refused. Each design is scored exactly by its groups' chains, which count
+how many of a member's copies are down rather than telling them apart, so a
+design with many copies is quick to score. The copies are repaired at once
+(the allocations assume as many repair crews as jobs), so a shared failure
+ends with the first copy repaired, and a shared cause can make more pumps
+worth buying, not fewer:
+
+```python
+costed = {
+    "p1": {**pump, "acquisition_cost": 10000.0},
+    "p2": {**pump, "acquisition_cost": 10000.0},
+    "v": {
+        "reliability": surv.Exponential.from_params([0.001]),
+        "repairability": surv.Exponential.from_params([0.5]),
+        "acquisition_cost": 3000.0,
+    },
+}
+plant = RepairableRBD(valve_edges, costed, downtime_cost_rate=100.0)
+plant.allocate_redundancy(87600.0, nodes=["p1", "v"]).units
+# {'p1': 2, 'v': 2}
+plant_shared = RepairableRBD(
+    valve_edges,
+    costed,
+    ccf_groups=[CCFGroup(["p1", "p2"], BetaFactor(0.2))],
+    downtime_cost_rate=100.0,
+)
+plant_shared.allocate_redundancy(87600.0, nodes=["p1", "v"]).units
+# {'p1': 3, 'v': 2}
+```
+
+`availability_allocation` and `mttf_mttr_allocation` keep the members'
+availability, as their MTTF and MTTR are their group's, and allocate the
+other components', the system scored over the groups' joint states. The
+members then bound what the others can bring: with the valve never down, the
+shared failures hold the plant to 0.98415, and a higher target is refused:
+
+```python
+plant_shared.availability_allocation(0.983).mttf["v"]   # -> 1704.4   the valve's MTTF, at its 2 h repairs
+```
+
+What the groups' chains need (exponential lives, and revealed failures with
+exponential repairs or tests and repairs in no time) holds for the exact and
+numerical values; the simulations need exponential lives alone. A member
+held working or broken, a member started from a current state (`state=`), a
+member maintained on a schedule, repaired imperfectly or in a maintenance
+group, and a group with limited repair crews are refused, with the reason;
+`analysis_routes()` says which.

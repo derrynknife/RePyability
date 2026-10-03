@@ -132,6 +132,8 @@ def _unsupported_level(
     if rbd._too_meshed() is not None:
         # Its structure is the graph itself (modular.GraphStructure).
         return "a structure too meshed to work out"
+    if rbd.ccf_groups:
+        return "common-cause groups"
     if rbd._crews_limited() and not numba:
         return "repair crews"
     if rbd._standby and not numba:

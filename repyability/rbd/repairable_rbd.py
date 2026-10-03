@@ -298,6 +298,30 @@ class _ModelDraws:
         return self._model.random(1).item()
 
 
+def _exponential_sampler(rate: float):
+    """The quantile function of an exponential time at ``rate``: ``inf``
+    for a rate of 0 (a common-cause group member whose every cause is
+    shared never fails on its own, see ``RepairableRBD._own_rate``)."""
+    if rate <= 0.0:
+        return lambda u: np.full(np.shape(u), np.inf)
+    return lambda u: -np.log1p(-np.asarray(u, dtype=float)) / rate
+
+
+class _ExponentialDraws:
+    """Exponential times at ``rate``, one at a time, from numpy's global RNG
+    (``inf`` for a rate of 0)."""
+
+    __slots__ = ("_rate",)
+
+    def __init__(self, rate: float):
+        self._rate = rate
+
+    def draw(self) -> float:
+        if self._rate <= 0.0:
+            return math.inf
+        return float(np.random.exponential(1.0 / self._rate))
+
+
 def _aged_life(model, age: float, u: float) -> float:
     """The life left to a unit of lifetime ``model`` at virtual age
     ``age``, from the uniform ``u``: the ``x`` with ``H(age + x) = H(age) -
@@ -475,6 +499,44 @@ class _Unit:
 
     node: Any
     unit: int
+
+
+@dataclass(frozen=True)
+class _Cause:
+    """A shared cause of a common-cause group, as the simulation strikes
+    it (#158; a dataclass, so equal to no node name): the members it fails
+    (``struck``, those up when it strikes), its rate, and whether a test
+    that can miss its failures decides for all of them at once
+    (``coins``)."""
+
+    struck: tuple
+    rate: float
+    coins: bool
+
+
+class _CauseDraws:
+    """What a shared common cause draws in a simulation (#158): the times
+    between its strikes, exponential at its rate, and at each strike the
+    uniform that decides whether the tests that can miss its failures find
+    them (found, or missed, alike); from its own streams, or numpy's global
+    RNG."""
+
+    __slots__ = ("_rate", "_gaps", "_coins")
+
+    def __init__(self, rate: float, gaps=None, coins=None):
+        self._rate = rate
+        self._gaps = gaps
+        self._coins = coins
+
+    def gap(self) -> float:
+        if self._gaps is not None:
+            return self._gaps.draw()
+        return float(np.random.exponential(1.0 / self._rate))
+
+    def coin(self) -> float:
+        if self._coins is not None:
+            return self._coins.draw()
+        return float(np.random.random())
 
 
 class _StandbyDraws:
@@ -2731,6 +2793,16 @@ def _choose_from(
     return best
 
 
+#: How a system's values over time take in its common-cause groups (#158).
+_GROUPS_OVER_TIME = (
+    " Each common-cause group's members' joint states come from its Markov "
+    "chain followed from every member up at 0 (by uniformization, or through "
+    "its tests' first period, after which they repeat the long run's), and "
+    "the system is worked out over the combinations of its members up and "
+    "down, the other nodes independent of them; the members' failures by "
+    "each cause, at its rate where it takes the system down."
+)
+
 #: How the values of a component with hidden failures whose tests or
 #: repairs take time, or whose tests can miss a failure of a life that is
 #: not exponential, are found (#159).
@@ -3704,8 +3776,12 @@ class RepairableRBD(RBD):
         failures alike, and each member is found by its own tests) or
         revealed ones with exponential repairs. The importance measures
         take the groups in too, a member's conditioned on its state at
-        each time; the allocations, the values over time from new and the
-        simulations refuse a diagram with groups, as yet.
+        each time, and so do the allocations (a ``BetaFactor`` member's
+        copies join its group; the availability allocations keep the
+        members' availability) and the values over time from new, each
+        group's chain followed from every member up. The simulations draw
+        each cause as a Poisson process, failing the members it names that
+        are up; they need exponential lives alone (#158).
 
     Attributes
     ----------
@@ -4240,17 +4316,6 @@ class RepairableRBD(RBD):
             for c in self.components.values()
         )
 
-    def _require_no_ccf(self, what: str, nested: bool = False) -> None:
-        """Raise if this RBD (or, with ``nested``, one nested in it) has
-        common-cause groups, which ``what`` does not take in."""
-        if self.ccf_groups or (nested and self._has_ccf()):
-            raise NotImplementedError(
-                f"The RBD has common-cause groups, whose members fail "
-                f"together, which {what} does not take in, as yet: their "
-                "long-run values (mean_availability, "
-                "system_failure_frequency and those built on them) do."
-            )
-
     def _ccf_rates(self, group) -> Tuple[float, Optional[float]]:
         """A common-cause group's members' failure rate, and their repair
         rate (None for hidden failures, found by tests), for its chain
@@ -4312,6 +4377,121 @@ class RepairableRBD(RBD):
             )
         return life, repair
 
+    def _shared_causes(self) -> List[_Cause]:
+        """The common-cause groups' shared causes, as the simulation strikes
+        them (see ``_Cause``): each a Poisson process at its share of the
+        members' failure rate. A member's own share is its own life (see
+        ``_own_rate``)."""
+        out = []
+        for group in self.ccf_groups:
+            rate = _constant_rate(
+                self.components[group.members[0]].reliability
+            )
+            if rate is None:
+                continue  # refused (see _require_groups_simulated)
+            coins = any(
+                member in self._inspection and self._inspection[member].partial
+                for member in group.members
+            )
+            for struck, cause in _ccf_chain.causes(
+                group.model, group.members, rate
+            ):
+                if len(struck) > 1:
+                    out.append(
+                        _Cause(
+                            tuple(group.members[i] for i in struck),
+                            cause,
+                            coins,
+                        )
+                    )
+        return out
+
+    def _own_rate(self, node) -> Optional[float]:
+        """A common-cause group member's own cause's rate, at which the
+        simulation draws its life, the shared causes striking it too (see
+        ``_shared_causes``): 0 if every cause it has is shared; None for
+        any other node (and for a member whose life is not exponential,
+        which the simulation refuses, see ``_require_groups_simulated``)."""
+        for group in self.ccf_groups:
+            if node in group.members:
+                rate = _constant_rate(self.components[node].reliability)
+                if rate is None:
+                    return None
+                for struck, cause in _ccf_chain.causes(
+                    group.model, group.members, rate
+                ):
+                    if struck == (group.members.index(node),):
+                        return float(cause)
+        return None
+
+    def _require_groups_simulated(self, states: Optional[dict] = None):
+        """Raise unless the simulation takes the common-cause groups in
+        (#158): each member's life exponential, as its rate is split between
+        the causes; no member maintained on a schedule, repaired
+        imperfectly, in a maintenance group, or started from a state."""
+        for group in self.ccf_groups:
+            where = f"Common-cause group {list(group.members)}"
+            for member in group.members:
+                life = self.components[member].reliability
+                if _constant_rate(life) is None:
+                    raise NotImplementedError(
+                        f"{where}: its members' failure rate is split "
+                        "between the causes, which needs exponential lives, "
+                        f"and member {member!r}'s is not."
+                    )
+                for kinds, what in (
+                    (self._preventive, "scheduled maintenance"),
+                    (self._imperfect, "imperfect repair"),
+                    (self._member_group, "a maintenance group"),
+                ):
+                    if member in kinds:
+                        raise NotImplementedError(
+                            f"{where}: member {member!r} has {what}, which "
+                            "the simulation of its group does not take in, "
+                            "as yet."
+                        )
+                start = (states or {}).get(member)
+                if start is not None and not start.new:
+                    raise NotImplementedError(
+                        f"{where}: member {member!r} starts from a state, "
+                        "which the simulation of its group does not take in, "
+                        "as yet: its members start new."
+                    )
+        for component in self.components.values():
+            if isinstance(component, RepairableRBD):
+                component._require_groups_simulated()
+
+    def _require_groups_allocated(self, chosen, drawn) -> dict:
+        """Raise unless the redundancy allocation takes in the common-cause
+        groups (#158): their chains cover them, a member given copies is in
+        a ``BetaFactor`` group (its copies join the group, and an MGL
+        model's letters are for its group's size), and no member is in a
+        train. Returns each member given copies' group."""
+        from repyability.rbd.ccf import BetaFactor
+
+        self._require_ccf_long_run()
+        group_of = {m: g for g in self.ccf_groups for m in g.members}
+        for node in chosen:
+            group = group_of.get(node)
+            if group is not None and not isinstance(group.model, BetaFactor):
+                raise NotImplementedError(
+                    f"Node {node!r} is in a common-cause group whose model, "
+                    f"{group.model!r}, is for a group of "
+                    f"{len(group.members)}: its copies would join the group, "
+                    "and an MGL model's letters for a larger group are not "
+                    "known. Give the group a BetaFactor model, whose beta "
+                    "holds at any size, or leave its members out of nodes."
+                )
+        for train in drawn:
+            inside = [m for m in train.members if m in group_of]
+            if inside:
+                raise NotImplementedError(
+                    f"Train {train.name!r} holds {inside}, in a common-cause "
+                    "group, whose copies the allocation of trains does not "
+                    "take in, as yet: give the members copies as nodes."
+                )
+        return {node: group_of[node] for node in chosen if node in group_of}
+
     def _require_ccf_long_run(self) -> None:
         """Raise if a common-cause group's chain does not cover it."""
         for group in self.ccf_groups:
@@ -4327,20 +4507,51 @@ class RepairableRBD(RBD):
             intervals |= {schedule.interval, schedule.period}
         return _common_period(intervals) if intervals else 1.0
 
-    def _group_states(self, group, times: np.ndarray):
+    def _group_states(self, group, times: np.ndarray, counts=None):
         """A common-cause group's members' joint states, at each of
         ``times`` (of ``_long_run_grid``), in the long run (see
-        ``_ccf_chain``)."""
+        ``_ccf_chain``). With ``counts``, each member's number of copies,
+        which join the group (#158, a ``BetaFactor`` model's beta holding
+        at any size, see ``_ccf_chain._Counted``), tested with it: the
+        states of the members' nodes, each down while all its copies
+        are."""
         life, repair = self._ccf_rates(group)
+        counts = [1] * len(group.members) if counts is None else list(counts)
+        # A member with no copies counted (one made perfect, by the
+        # allocation's bounds) is left out: the others' states are as with
+        # it.
+        kept = [i for i, n in enumerate(counts) if n > 0]
+        if not kept:
+            return _ccf_chain.GroupStates(
+                (), np.zeros((1, 0), dtype=bool), np.ones((len(times), 1))
+            )
+        members = [group.members[i] for i in kept]
+        copies = [int(counts[i]) for i in kept]
         if repair is not None:
             states = _ccf_chain.revealed(
-                group.model, group.members, life, repair
+                group.model, members, life, repair, copies
             )
             return states._replace(
                 probabilities=np.repeat(
                     states.probabilities, len(times), axis=0
                 )
             )
+        tests, period = self._group_tests(group)
+        place = {old: new for new, old in enumerate(kept)}
+        tests = [
+            test._replace(member=place[test.member])
+            for test in tests
+            if test.member in place
+        ]
+        coverage = self._inspection[group.members[0]].coverage
+        return _ccf_chain.hidden(
+            group.model, members, life, coverage, tests, period, times, copies
+        )
+
+    def _group_tests(self, group) -> Tuple[list, float]:
+        """A common-cause group's members' tests in one period of the
+        calendar (``(0, period]``, see ``_calendar_period``), and the
+        period."""
         period = self._calendar_period()
         tests = []
         for position, member in enumerate(group.members):
@@ -4354,10 +4565,104 @@ class RepairableRBD(RBD):
                         time, position, schedule.is_full(time)
                     )
                 )
-        coverage = self._inspection[group.members[0]].coverage
-        return _ccf_chain.hidden(
-            group.model, group.members, life, coverage, tests, period, times
+        return tests, period
+
+    def _groups_over_time(self) -> list:
+        """Each common-cause group's members' joint states over time from
+        every member up at 0 (see ``_ccf_chain.OverTime``)."""
+        out = []
+        for group in self.ccf_groups:
+            life, repair = self._ccf_rates(group)
+            if repair is not None:
+                where = f"Common-cause group {list(group.members)}'s"
+                out.append(
+                    _ccf_chain.OverTime.revealed(
+                        group.model,
+                        group.members,
+                        life,
+                        repair,
+                        partial(self._uniformized, where),
+                    )
+                )
+                continue
+            tests, period = self._group_tests(group)
+            out.append(
+                _ccf_chain.OverTime.hidden(
+                    group.model,
+                    group.members,
+                    life,
+                    self._inspection[group.members[0]].coverage,
+                    tests,
+                    period,
+                )
+            )
+        return out
+
+    def _require_groups_over_time(self, states: dict) -> None:
+        """Raise unless the common-cause groups can be followed over time
+        from new (see ``_groups_curve``): their chains cover them, and no
+        member starts from a state."""
+        self._require_ccf_long_run()
+        started = sorted(
+            (m for g in self.ccf_groups for m in g.members if m in states),
+            key=str,
         )
+        if started:
+            raise NotImplementedError(
+                f"Node(s) {started} are in a common-cause group: its "
+                "values over time are worked out from every member new at "
+                "0, and a member's current state is not taken in, as yet."
+            )
+
+    def _groups_system(self, working, broken, method: str):
+        """The system with its common-cause groups at given times (see
+        ``_ccf_chain.GroupsSystem``)."""
+        causes = [
+            _ccf_chain.causes(
+                group.model, group.members, self._ccf_rates(group)[0]
+            )
+            for group in self.ccf_groups
+        ]
+        return _ccf_chain.GroupsSystem(
+            self,
+            self._groups_over_time(),
+            causes,
+            working,
+            broken,
+            structure_method(method),
+        )
+
+    def _groups_curve(
+        self,
+        horizon: float,
+        working_nodes=frozenset(),
+        broken_nodes=frozenset(),
+        method: str = "p",
+        states: Optional[dict] = None,
+        counts: bool = False,
+        stages: bool = False,
+    ) -> "_ccf_chain.GroupsCurve":
+        """The system over time with common-cause groups (#158, see
+        ``_ccf_chain.GroupsCurve``): its nodes outside the groups as their
+        own curves (each from its state in ``states``) to ``horizon``,
+        counting their events with ``counts`` and following their stages
+        with ``stages``, and the groups' members' joint states from their
+        chains, from every member up at 0."""
+        states = states or {}
+        working, broken = set(working_nodes), set(broken_nodes)
+        self._require_free_members(working, broken)
+        self._require_groups_over_time(states)
+        members = {m for group in self.ccf_groups for m in group.members}
+        curves = self._availability_curves(
+            horizon,
+            working | broken | members,
+            counts=counts,
+            stages=stages,
+            state=states,
+            groups=True,
+        )
+        system = self._groups_system(working, broken, method)
+        return _ccf_chain.GroupsCurve(self, curves, system)
 
     def _require_free_members(self, working_nodes, broken_nodes) -> None:
         """Raise if a common-cause group's member is held working or
@@ -4379,6 +4684,7 @@ class RepairableRBD(RBD):
         probabilities: dict,
         failures: Optional[dict],
         weights: np.ndarray,
+        states_by_group: Optional[list] = None,
     ) -> Tuple[dict, Optional[dict], np.ndarray, np.ndarray]:
         """The long-run points (the times of ``_long_run_grid``, and their
         weights) split by the common-cause groups' joint states: each
@@ -4386,10 +4692,16 @@ class RepairableRBD(RBD):
         up or down, weighted by its probability then, with those members
         up or down for certain and the other nodes as at the time. The
         long-run values are averages over these points as over the times.
-        Also each point's time's position in ``times``."""
+        Also each point's time's position in ``times``. ``states_by_group``
+        gives the groups' states (see ``_group_states``), in their order,
+        when they are not the groups' own (an allocation's design)."""
         index = np.arange(len(times))
-        for group in self.ccf_groups:
-            states = self._group_states(group, times)
+        for number, group in enumerate(self.ccf_groups):
+            states = (
+                self._group_states(group, times)
+                if states_by_group is None
+                else states_by_group[number]
+            )
             combinations = len(states.down)
             mass = (weights[:, None] * states.probabilities[index, :]).ravel()
             keep = mass > 0.0
@@ -5087,7 +5399,13 @@ class RepairableRBD(RBD):
                 continue
             failure = repair = None
             if type(component) is NonRepairable:
-                failure = inverse_sampler(component.reliability)
+                # A common-cause group's member draws its own cause's life.
+                own = self._own_rate(name)
+                failure = (
+                    inverse_sampler(component.reliability)
+                    if own is None
+                    else _exponential_sampler(own)
+                )
                 repair = inverse_sampler(component.time_to_replace)
             if failure is None or repair is None:
                 complete = False
@@ -5122,6 +5440,23 @@ class RepairableRBD(RBD):
                     complete = False
                 else:
                     add(path, _streams.DURATION, sampler, expected["action"])
+        for cause in self._shared_causes():
+            # A shared common cause's strikes (#158), and at each the
+            # uniform its failures' tests decide by.
+            strikes = cause.rate * t_simulation + 1.0
+            add(
+                prefix + cause.struck,
+                _streams.CAUSE,
+                _exponential_sampler(cause.rate),
+                strikes,
+            )
+            if cause.coins:
+                add(
+                    prefix + cause.struck,
+                    _streams.CAUSE_TEST,
+                    _uniforms,
+                    strikes,
+                )
         if not prefix:
             for node, node_costs in self.costs.items():
                 expected = self._expected_draws(node, t_simulation)
@@ -5258,8 +5593,30 @@ class RepairableRBD(RBD):
                         component, run, prefix + (name,), arrangement
                     )
                 )
+                own = self._own_rate(name)
+                if own is not None and made[id(component)] is component:
+                    # Not streamed: its own cause's life all the same.
+                    made[id(component)] = self._own_draws(name, own)
             streamed[name] = made[id(component)]
+        for cause in self._shared_causes():
+            path = prefix + cause.struck
+            streamed[cause] = _CauseDraws(
+                cause.rate,
+                run.stream(path, _streams.CAUSE),
+                run.stream(path, _streams.CAUSE_TEST),
+            )
         return streamed
+
+    def _own_draws(self, node, own: float) -> "_StreamedComponent":
+        """A common-cause group member's draws from numpy's global RNG: its
+        own cause's life (at the rate ``own``), and its repair, maintenance
+        and test times as it would draw them."""
+        component = self.components[node]
+        return _StreamedComponent(
+            _ExponentialDraws(own),
+            _ModelDraws(component.time_to_replace),
+            model=self._duration_model(node),
+        )
 
     def _keyed_charges(self, run: _streams.Run) -> Tuple[
         dict[Any, list[tuple[int, Any]]],
@@ -5452,11 +5809,10 @@ class RepairableRBD(RBD):
         NotImplementedError
             If something is priced and a component is under block
             replacement with models its exact values do not cover (see
-            ``node_availability``), or has hidden failures whose tests or
-            repairs take time, or whose tests can miss a failure of a life
-            that is not exponential; or, while a component can wait for a
-            repair crew, as for ``mean_availability``: simulate it with
-            ``cost``.
+            ``node_availability``), or has hidden failures its numerical
+            values do not cover (see ``mean_availability``); or, while a
+            component can wait for a repair crew, as for
+            ``mean_availability``: simulate it with ``cost``.
 
         Examples
         --------
@@ -6461,11 +6817,13 @@ class RepairableRBD(RBD):
         NotImplementedError
             If a component is under block replacement with models its exact
             values do not cover (see ``node_availability``), or has hidden
-            failures whose tests or repairs take time, or whose tests can
-            miss a failure of a life that is not exponential: its long-run
-            values are not known exactly. Or if a component can wait for a
-            repair crew (see ``repair_crews``): the search assumes that none
-            does.
+            failures its numerical values do not cover (see
+            ``mean_availability``): its long-run values are not known. Or if
+            a component can wait for a repair crew (see ``repair_crews``):
+            the search assumes that none does. Or if a common-cause group's
+            chain does not cover it (see ``ccf_groups``), a member given
+            copies is in an ``MGL`` group (its letters are for its group's
+            size), or a train holds a member.
 
         Examples
         --------
@@ -6589,7 +6947,7 @@ class RepairableRBD(RBD):
 
         # Adding copies adds jobs for the crews: the search assumes none waits.
         self._require_unlimited_crews(*_ALLOCATION_CREWS)
-        self._require_no_ccf("the allocations")
+        grouped = self._require_groups_allocated(chosen, drawn)
         # Every node's availability (and unavailability) over the times the
         # long-run values average over, and each component's own cost.
         times, weights = self._long_run_grid()
@@ -6637,10 +6995,41 @@ class RepairableRBD(RBD):
                 )
             return structures[extra]
 
+        # With common-cause groups (#158), a member's copies join its group:
+        # each design's groups' states, kept.
+        designs: Dict[tuple, list] = {}
+
+        def group_states(copies: dict) -> list:
+            key = tuple(
+                copies.get(m, 1) for g in self.ccf_groups for m in g.members
+            )
+            if key not in designs:
+                designs[key] = [
+                    self._group_states(
+                        group,
+                        times,
+                        [
+                            (
+                                0
+                                if copies.get(m, 1) == math.inf
+                                else copies.get(m, 1)
+                            )
+                            for m in group.members
+                        ],
+                    )
+                    for group in self.ccf_groups
+                ]
+            return designs[key]
+
         def unavailability(counts) -> float:
             p, q = dict(up), dict(down)
+            joining: dict = {}
             for node, n in zip(chosen, counts):
-                if n != 1:
+                if node in grouped:
+                    joining[node] = n
+                    if n == math.inf:
+                        p[node], q[node] = np.ones(size), np.zeros(size)
+                elif n != 1:
                     q[node] = down[node] ** n
                     p[node] = 1.0 - q[node]
             extra = []
@@ -6656,15 +7045,41 @@ class RepairableRBD(RBD):
                             p[name], q[name] = np.ones(size), np.zeros(size)
                         else:
                             p[name], q[name] = up[node], down[node]
+            points, at = size, weights
+            if self.ccf_groups:
+                p, split, at, _ = self._with_ccf_groups(
+                    times, p, q, weights, group_states(joining)
+                )
+                assert split is not None
+                q, points = split, len(at)
             _, fails = structure(tuple(extra)).probabilities(
-                p, q, shape=size, works=False, fails=True
+                p, q, shape=points, works=False, fails=True
             )
-            fails = np.broadcast_to(np.asarray(fails, dtype=float), (size,))
-            return float(weights @ fails)
+            fails = np.broadcast_to(np.asarray(fails, dtype=float), (points,))
+            return float(at @ fails)
+
+        copies_down: Dict[tuple, np.ndarray] = {}
+
+        def all_down(node, k: int) -> np.ndarray:
+            # The chance that all k copies of a common-cause group member
+            # are down, at each time: from its group's chain of them alone,
+            # as the others' copies do not change their law.
+            if (node, k) not in copies_down:
+                group = grouped[node]
+                counts = [k if m == node else 0 for m in group.members]
+                states = self._group_states(group, times, counts)
+                copies_down[(node, k)] = states.probabilities[:, -1]
+            return copies_down[(node, k)]
 
         def gain(node):
             # The most the k + 1-th copy of the node can lower the system
-            # unavailability: the node's own fall in unavailability.
+            # unavailability: the node's own fall in unavailability (a
+            # common-cause group member's, all its copies down, from its
+            # group's chain).
+            if node in grouped:
+                return lambda k: float(
+                    weights @ (all_down(node, k) - all_down(node, k + 1))
+                )
             return lambda k: float(weights @ (down[node] ** k * up[node]))
 
         def in_series(node) -> bool:
@@ -6691,7 +7106,8 @@ class RepairableRBD(RBD):
         series = None
         varying = set(self._inspection) | set(self._block_nodes())
         if not drawn and all(
-            node not in varying and in_series(node) for node in chosen
+            node not in varying and node not in grouped and in_series(node)
+            for node in chosen
         ):
             # Each such node's availability is constant, and the system's is
             # theirs times the rest's: the exact search is then a dynamic
@@ -6873,8 +7289,10 @@ class RepairableRBD(RBD):
         ``optimal_replacement_intervals`` and
         ``optimal_inspection_intervals`` choose), components repaired
         instantly (never down), nested ``RepairableRBD`` nodes, components
-        with units that never fail or repairs that may never end, and the
-        components in ``fixed``. A held component that is inspected or
+        with units that never fail or repairs that may never end, the
+        members of common-cause groups (whose MTTF and MTTR are their
+        group's; the system is scored over the groups' joint states), and
+        the components in ``fixed``. A held component that is inspected or
         block-replaced is up with a probability that varies over its
         schedule, together with the others on the same calendar; it enters
         with that variation, as it does in ``mean_availability``, so that
@@ -7347,10 +7765,12 @@ class RepairableRBD(RBD):
         """For an availability allocation: every component's long-run
         availability; the MTTF and MTTR of those allocated one (with
         corrective repair alone: they fail and take time to repair, with no
-        preventive or inspection schedule, and are not in ``fixed``); and
-        the set of the others, which keep theirs."""
+        preventive or inspection schedule, are not in a common-cause group,
+        whose members' MTTF and MTTR are the group's, and are not in
+        ``fixed``); and the set of the others, which keep theirs."""
         self._require_unlimited_crews(*_ALLOCATION_CREWS)
-        self._require_no_ccf("the allocations")
+        self._require_ccf_long_run()
+        members = {m for group in self.ccf_groups for m in group.members}
         held = set()
         if fixed is not None:
             held = set(fixed)
@@ -7370,6 +7790,7 @@ class RepairableRBD(RBD):
                 or node in self._preventive
                 or node in self._inspection
                 or node in self._standby
+                or node in members
             ):
                 held.add(node)
                 continue
@@ -7412,11 +7833,17 @@ class RepairableRBD(RBD):
         varies over its schedule, together with the others on the calendar:
         the system's availability is then averaged over the long-run grid,
         as ``mean_availability`` averages it, by a view of the RBD whose
-        ``_allocation_probability`` and ``_log_odds`` do so."""
+        ``_allocation_probability`` and ``_log_odds`` do so. With
+        common-cause groups, whose members are held, its points are split
+        by the groups' joint states (see ``_with_ccf_groups``)."""
         times, weights = self._long_run_grid()
-        if len(times) == 1:
+        if len(times) == 1 and not self.ccf_groups:
             return self
         profiles = self._availabilities_at(times)
+        if self.ccf_groups:
+            profiles, _, weights, _ = self._with_ccf_groups(
+                times, profiles, None, weights
+            )
         view = copy(self)
         view.__dict__["_allocation_calendar"] = (
             weights,
@@ -8356,10 +8783,11 @@ class RepairableRBD(RBD):
             If ``state`` is ``"stationary"``, or gives a state to a
             component whose state is not taken (see ``availability``).
         """
-        self._require_no_ccf("the simulation", nested=True)
         working_nodes = set() if working_nodes is None else set(working_nodes)
         broken_nodes = set() if broken_nodes is None else set(broken_nodes)
         states = self._simulation_states(state, working_nodes | broken_nodes)
+        self._require_free_members(working_nodes, broken_nodes)
+        self._require_groups_simulated(states)
         self._start_queue(
             t_simulation, working_nodes, broken_nodes, method, sources, states
         )
@@ -8430,6 +8858,14 @@ class RepairableRBD(RBD):
         self._cancelled: dict[int, Event] = {}
         self._early: dict[int, Event] = {}
         self._renewing: set = set()
+        # Common-cause groups (#158): each member's next event, which a
+        # shared cause that strikes it first supersedes, and the uniform a
+        # strike has decided its tests by (see _strike).
+        self._ccf_members = frozenset(
+            m for group in self.ccf_groups for m in group.members
+        )
+        self._ccf_pending: dict[Any, Optional[Event]] = {}
+        self._ccf_coins: dict[Any, float] = {}
         # The components down at the start in a repair or maintenance going
         # on, which holds a repair crew.
         in_hand: list = []
@@ -8475,6 +8911,12 @@ class RepairableRBD(RBD):
                 first = Event(t_event, component_id, event)
 
             # Only consider it if it occurs within the simulation window
+            if first.time < t_simulation:
+                event_queue.put(first)
+            if component_id in self._ccf_members:
+                self._ccf_pending[component_id] = first
+        for cause in self._shared_causes():
+            first = Event(sources[cause].gap(), cause, False)
             if first.time < t_simulation:
                 event_queue.put(first)
         self._event_queue = event_queue
@@ -8785,10 +9227,11 @@ class RepairableRBD(RBD):
             r.refused(frequencies) if frequencies else long_run,
         )
         # The allocations assume independent components, which limited
-        # repair crews make them not, and common-cause groups too.
+        # repair crews make them not; the common-cause groups' chains take
+        # theirs in.
         allocation = r.refusal(
             partial(self._require_unlimited_crews, *_ALLOCATION_CREWS)
-        ) or r.refusal(partial(self._require_no_ccf, "the allocations"))
+        ) or r.refusal(self._require_ccf_long_run)
         conditioned = long_run
         if self.ccf_groups and long_run.route != r.REFUSED:
             conditioned = dataclasses.replace(
@@ -8910,17 +9353,38 @@ class RepairableRBD(RBD):
                 "any acquisition costs beside it).",
             )
         )
-        give(
-            ("allocate_redundancy", "availability_allocation"),
-            (
-                r.refused(allocation)
-                if allocation
-                else from_long_run(
-                    r.EXACT,
-                    "A search over the exact long-run values of the "
-                    "candidates.",
-                )
-            ),
+        # A group's members' MTTF and MTTR are their group's: the
+        # availability allocations hold them, and a member's copies join its
+        # group.
+        held_members = (
+            " A common-cause group's members keep their availability: "
+            "their MTTF and MTTR are their group's."
+            if self.ccf_groups
+            else ""
+        )
+        out["allocate_redundancy"] = (
+            r.refused(allocation)
+            if allocation
+            else from_long_run(
+                r.EXACT,
+                "A search over the exact long-run values of the candidates."
+                + (
+                    " A common-cause group member's copies join its group, "
+                    "whose chain takes them in: a BetaFactor group's (an MGL "
+                    "group's member refuses)."
+                    if self.ccf_groups
+                    else ""
+                ),
+            )
+        )
+        out["availability_allocation"] = (
+            r.refused(allocation)
+            if allocation
+            else from_long_run(
+                r.EXACT,
+                "A search over the exact long-run values of the candidates."
+                + held_members,
+            )
         )
         out["mttf_mttr_allocation"] = (
             r.refused(allocation)
@@ -8928,7 +9392,7 @@ class RepairableRBD(RBD):
             else from_long_run(
                 r.NUMERICAL,
                 "A solver for the components' MTTF and MTTR targets, over the "
-                "exact long-run values.",
+                "exact long-run values." + held_members,
             )
         )
         # The optimisers, called for every node they can choose for.
@@ -9019,11 +9483,15 @@ class RepairableRBD(RBD):
             else " Antithetic pairs are refused: some components' draws "
             "do not come from a stream."
         )
-        groups = r.refusal(
-            partial(self._require_no_ccf, "the simulation", nested=True)
-        )
+        groups = r.refusal(self._require_groups_simulated)
         given = r.refusal(self._require_capacities_given)
         engine, why = self._engine_choice(capacity=self._has_capacity())
+        causes = (
+            " Each common-cause group's shared causes strike as Poisson "
+            "processes, each failing the members it names that are up."
+            if self._has_ccf()
+            else ""
+        )
         out["availability"] = (
             r.refused(groups)
             if groups
@@ -9033,7 +9501,7 @@ class RepairableRBD(RBD):
                 else r.AnalysisRoute(
                     r.SIMULATED,
                     "A discrete-event simulation of the components' failures, "
-                    "repairs and maintenance." + paired,
+                    "repairs and maintenance." + causes + paired,
                     engine=engine,
                     engine_reason=why,
                 )
@@ -9432,9 +9900,11 @@ class RepairableRBD(RBD):
 
         if self._crews_couple():
             return self._crew_over_time(kind)
-        ccf = r.refusal(partial(self._require_no_ccf, "the values over time"))
-        if ccf:
-            return r.refused(ccf)
+        if self.ccf_groups:
+            refusal = r.refusal(partial(self._require_groups_over_time, {}))
+            if refusal:
+                return r.refused(refusal)
+            reason = reason + _GROUPS_OVER_TIME
         nodes = {
             node: self._node_over_time(node, kind) for node in self.components
         }
@@ -9517,7 +9987,7 @@ class RepairableRBD(RBD):
         cover (see ``_require_crew_chain``), and too many nested RBDs (see
         ``_crew_nested``). Return the nested RBDs, less those in
         ``forced``."""
-        self._require_no_ccf("the values over time")
+        self._require_ccf_long_run()
         self._require_crew_chain()
         return self._crew_nested(forced)
 
@@ -9620,7 +10090,9 @@ class RepairableRBD(RBD):
             take), is under block replacement with models its exact values
             do not cover (see ``node_availability``), or has hidden
             failures whose tests or repairs take time, or whose tests can
-            miss a failure of a life that is not exponential; or, while a
+            miss a failure, with a life that is not a surpyval parametric
+            model with a density, repairs or tests that may never end, or a
+            test that can last as long as its interval; or, while a
             component can wait for a repair crew, if the Markov chain does
             not cover the components (a life
             or repair that is not exponential, scheduled maintenance or an
@@ -9691,8 +10163,9 @@ class RepairableRBD(RBD):
         ``mean_availability``, and nested RBDs through their own point
         availability. A component with hidden failures is up with the
         probability that it has not failed since its last test, ``u``
-        before (``exp(-lambda * u)`` for a constant failure rate): as in
-        ``mean_availability``, with instant tests and instant repair.
+        before (``exp(-lambda * u)`` for a constant failure rate), or
+        after it with its tests and repairs taking time or its tests
+        missing some failures: as in ``mean_availability``.
 
         With fewer ``repair_crews`` than components, a component can wait
         for a crew and the components are not independent: the system's
@@ -9700,7 +10173,10 @@ class RepairableRBD(RBD):
         ``mean_availability``), followed over time from its state at 0 by
         uniformization, to about 1e-13; a nested RBD, which has crews of
         its own, enters through its own point availability. A standby
-        group's comes from its units' chain in the same way.
+        group's comes from its units' chain in the same way, and a
+        common-cause group's members' joint states from theirs (see
+        ``ccf_groups``), followed from every member up through their tests
+        or by uniformization, with the system summed over them.
 
         Each component's curve is computed on a grid of 2,000 steps over its
         typical up time. Near a time at which its units start or stop on a
@@ -9743,11 +10219,10 @@ class RepairableRBD(RBD):
             If a time is negative or not finite, or a working/broken node is
             invalid (see ``mean_availability``).
         NotImplementedError
-            If a component has hidden failures whose tests or repairs take
-            time, or whose tests can miss a failure of a life that is not
-            exponential, a model that block replacement's exact values do
-            not cover (see
-            ``mean_availability``), or time scales too far apart for the
+            If a component has hidden failures its numerical values do not
+            cover, a model that block replacement's exact values do not
+            cover (see ``mean_availability``), a common-cause group's member
+            starts from a state, or time scales too far apart for the
             grid (years of running, seconds of repair, over centuries); or,
             while a component can wait for a repair crew (see
             ``repair_crews``), if the crews' Markov chain does not cover the
@@ -9783,6 +10258,10 @@ class RepairableRBD(RBD):
         states = self._states(state, forced)
         if self._crews_couple():
             values = self._crew_curve(
+                horizon, working_nodes, broken_nodes, method, states
+            ).at(times.ravel())
+        elif self.ccf_groups:
+            values = self._groups_curve(
                 horizon, working_nodes, broken_nodes, method, states
             ).at(times.ravel())
         else:
@@ -9890,7 +10369,12 @@ class RepairableRBD(RBD):
             crew = self._crew_curve(
                 horizon, working_nodes, broken_nodes, method, states
             )
-            system_at, pieces = crew.at, [crew]
+            system_at, pieces = crew.at, [crew]  # type: Any, list
+        elif self.ccf_groups:
+            grouped = self._groups_curve(
+                horizon, working_nodes, broken_nodes, method, states
+            )
+            system_at, pieces = grouped.at, [grouped]
         else:
             curves = self._availability_curves(horizon, forced, state=states)
 
@@ -10003,6 +10487,11 @@ class RepairableRBD(RBD):
             }
         if self._crews_couple():
             curves, counts = self._crew_window(
+                ends, working, broken, method, states, nodes, groups
+            )
+            return windows, ends, curves, counts, working, broken
+        if self.ccf_groups:
+            curves, counts = self._groups_window(
                 ends, working, broken, method, states, nodes, groups
             )
             return windows, ends, curves, counts, working, broken
@@ -10819,6 +11308,7 @@ class RepairableRBD(RBD):
         counts: bool = False,
         stages: bool = False,
         state: Optional[dict] = None,
+        groups: bool = False,
     ) -> dict:
         """Each node's point availability over ``[0, horizon]``, from new,
         as a curve (see ``_point_availability``), except the nodes in
@@ -10829,9 +11319,11 @@ class RepairableRBD(RBD):
         (checked by ``_states``) starts the nodes it names from their
         states rather than new. With limited repair crews the nodes are not
         independent: their values over time come from the crews' chain
-        instead (see ``_crew_curve``)."""
+        instead (see ``_crew_curve``). Nor are the members of common-cause
+        groups, though each member's own curve is as without its group:
+        ``groups`` says the caller takes them in (see ``_groups_curve``)."""
         assert not self._crews_couple(), "the crews' chain, not curves"
-        self._require_no_ccf("the values over time")
+        assert groups or not self.ccf_groups, "the groups' curve, not curves"
         state = state or {}
         curves: dict = {}
         degrading = self._capacity_models() if stages else {}
@@ -11282,6 +11774,10 @@ class RepairableRBD(RBD):
         at its own nodes' curves (a ``SystemCurve``), or, with limited
         repair crews, its crews' chain (see ``_crew_curve``). ``counts``,
         ``stages`` and ``start`` are as for ``_availability_curves``."""
+        if self.ccf_groups and not self._crews_couple():
+            return self._groups_curve(
+                horizon, states=start or {}, counts=counts, stages=stages
+            )
         if not self._crews_couple():
             inner = self._availability_curves(
                 horizon, set(), counts, stages, start
@@ -11460,6 +11956,47 @@ class RepairableRBD(RBD):
             "long-run values are exact."
         )
 
+    def _groups_window(
+        self,
+        ends: np.ndarray,
+        working_nodes,
+        broken_nodes,
+        method: str,
+        states: dict,
+        nodes: bool,
+        groups: Optional[dict],
+    ) -> Tuple[dict, dict]:
+        """``_window``'s curves and counts with common-cause groups (#158):
+        the system's up time, failures and planned outages over its groups'
+        joint states (see ``_ccf_chain.GroupsSystem``), and each node's own
+        curve, the members' as without their groups, for their own events
+        and down time."""
+        working, broken = set(working_nodes), set(broken_nodes)
+        horizon = float(np.max(ends)) if len(ends) else 0.0
+        system_curve = self._groups_curve(
+            horizon, working, broken, method, states, counts=True
+        )
+        totals = self._window_counts(
+            system_curve.curves,
+            ends,
+            working,
+            broken,
+            method,
+            nodes=nodes,
+            groups=groups,
+            crew=system_curve.system,
+        )
+        curves = dict(system_curve.curves)
+        members = [m for group in self.ccf_groups for m in group.members]
+        own = self._availability_curves(
+            horizon,
+            set(self.components) - set(members),
+            counts=True,
+            groups=True,
+        )
+        curves.update(own)
+        return curves, totals
+
     def _crew_window(
         self,
         ends: np.ndarray,
@@ -11613,6 +12150,10 @@ class RepairableRBD(RBD):
         capacity = getattr(curve, "capacity", None)
         if capacity is not None:
             return capacity.rows(x)
+        if isinstance(curve, _ccf_chain.GroupsCurve):
+            return self._groups_capacity_rows(
+                curve.curves, curve.system, x, set(), set()
+            )
         return self._capacity_rows(curve.curves, x, set(), set())
 
     def _unit_curve(
@@ -12069,6 +12610,64 @@ class RepairableRBD(RBD):
             )
         return self._capacity_arrays(arrays, size, own)
 
+    def _groups_capacity(
+        self, horizon: float, working_nodes, broken_nodes, state
+    ) -> tuple:
+        """With common-cause groups (#158): the curves of the nodes outside
+        them for the capacity over time (see ``_capacity_curves``), and the
+        groups' system (see ``_ccf_chain.GroupsSystem``)."""
+        working, broken = set(working_nodes), set(broken_nodes)
+        states = self._states(state, working | broken)
+        self._require_free_members(working, broken)
+        self._require_groups_over_time(states)
+        members = {m for group in self.ccf_groups for m in group.members}
+        held = working - set(self._capacity_models())
+        curves = self._availability_curves(
+            horizon,
+            held | broken | members,
+            stages=True,
+            state=states,
+            groups=True,
+        )
+        return curves, self._groups_system(working, broken, "p")
+
+    def _groups_capacity_rows(
+        self, curves: dict, system, x: np.ndarray, working_nodes, broken_nodes
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """``_capacity_rows`` with common-cause groups: worked out at the
+        points the groups' combinations split each time into (see
+        ``_ccf_chain.GroupsSystem``), and averaged back onto the times with
+        the combinations' probabilities."""
+        size = len(x)
+        values = {node: curve.at(x) for node, curve in curves.items()}
+        probabilities, weights, index = system._split(values, x)
+        points = len(index)
+        arrays, _ = self._node_arrays(probabilities)
+        own = {}
+        for node, model in self._capacity_models().items():
+            if node in broken_nodes:
+                own[node] = (np.zeros(1), np.ones((1, points)))
+                continue
+            curve = curves[node]
+            if isinstance(model, RepairableRBD):
+                levels, rows = model._capacity_at(curve, x)
+            else:
+                levels, rows = _capacity.merged(
+                    np.array((0.0,) + model.capacities),
+                    np.vstack([1.0 - values[node], curve.stages_at(x)]),
+                )
+            own[node] = self._forced(
+                (levels, np.asarray(rows)[:, index]),
+                node,
+                working_nodes,
+                broken_nodes,
+            )
+        levels, rows = self._capacity_arrays(arrays, points, own)
+        out = np.array(
+            [np.bincount(index, weights * row, size) for row in rows]
+        ).reshape(len(levels), size)
+        return levels, np.clip(out, 0.0, 1.0)
+
     def point_capacity(
         self,
         x,
@@ -12184,6 +12783,13 @@ class RepairableRBD(RBD):
                 self._states(state, working_nodes | broken_nodes),
             )
             rows = np.clip(chain.values(ends).T, 0.0, 1.0)
+        elif self.ccf_groups:
+            curves, system = self._groups_capacity(
+                horizon, working_nodes, broken_nodes, state
+            )
+            levels, rows = self._groups_capacity_rows(
+                curves, system, ends, working_nodes, broken_nodes
+            )
         else:
             curves = self._capacity_curves(
                 horizon, working_nodes, broken_nodes, state
@@ -12305,6 +12911,21 @@ class RepairableRBD(RBD):
             rows = np.clip(rows, 0.0, 1.0)
             keep = np.any(rows != 0.0, axis=1)
             levels, rows = levels[keep], rows[keep]
+            return CapacityDistribution(
+                levels, rows[:, 0] if np.ndim(t) == 0 else rows
+            )
+        if self.ccf_groups:
+            grouped, system = self._groups_capacity(
+                horizon, working_nodes, broken_nodes, state
+            )
+            levels, rows = self._mission_rows(
+                [*grouped.values(), system.curve],
+                lambda x: self._groups_capacity_rows(
+                    grouped, system, x, working_nodes, broken_nodes
+                ),
+                ends,
+                horizon,
+            )
             return CapacityDistribution(
                 levels, rows[:, 0] if np.ndim(t) == 0 else rows
             )
@@ -12462,6 +13083,31 @@ class RepairableRBD(RBD):
         if isinstance(self.components[node], RepairableRBD):
             return Event(t, node, status, _planned(source, status))
         return Event(event.time + t, node, status)
+
+    def _strike(self, event: Event, source) -> List[Event]:
+        """A shared common cause strikes (#158, see ``_Cause``): each member
+        it names that is up fails now, its own next event superseded (a
+        member down stays down), and with tests that can miss a failure,
+        one uniform decides for all its failures. Returns the events to
+        queue: the members' failures, and the cause's next strike."""
+        cause: Any = event.component
+        t = event.time
+        status = self.component_status
+        out: List[Event] = []
+        coin = source.coin() if cause.coins else None
+        for member in cause.struck:
+            if not status[member]:
+                continue
+            pending = self._ccf_pending.pop(member, None)
+            if pending is not None and pending.time < self.t_simulation:
+                self._cancelled[id(pending)] = pending
+            if coin is not None:
+                self._ccf_coins[member] = coin
+            out.append(Event(t, member, False))
+        later = Event(t + source.gap(), cause, False)
+        if later.time < self.t_simulation:
+            out.append(later)
+        return out
 
     def _crew_follow_up(
         self, event: Event, next_event: Event
@@ -12807,9 +13453,17 @@ class RepairableRBD(RBD):
             for node, start in (states or {}).items()
             if _draws_start(start)
         ]
-        if not self._imperfect and not starting:
+        if not self._imperfect and not starting and not self.ccf_groups:
             return self.components
         sources = dict(self.components)
+        for group in self.ccf_groups:
+            # Each member's own cause's life, and the shared causes (#158).
+            for member in group.members:
+                own = self._own_rate(member)
+                if own is not None:
+                    sources[member] = self._own_draws(member, own)
+        for cause in self._shared_causes():
+            sources[cause] = _CauseDraws(cause.rate)
         for node, imperfect in self._imperfect.items():
             sources[node] = _ImperfectComponent(
                 self.components[node],
@@ -12911,11 +13565,15 @@ class RepairableRBD(RBD):
                 # Repaired: as new, from t.
                 return self._inspected_renewal(node, t, source, inspection)
             # Failed, unseen: found by the first inspection at or after t,
-            # unless that one can miss it and does.
+            # unless that one can miss it and does (a shared common cause
+            # has decided for all its failures, see _strike).
             self._pending_failure[node] = None
             found = self._finds(node, inspection, t)
-            if not inspection.is_full(found) and not _test_finds(
-                source, inspection.coverage
+            coin = self._ccf_coins.pop(node, None) if self._ccf_coins else None
+            if not inspection.is_full(found) and not (
+                coin < inspection.coverage
+                if coin is not None
+                else _test_finds(source, inspection.coverage)
             ):
                 return Event(found, node, False, inspection=True, missed=True)
             return Event(found, node, False, inspection=True)
@@ -13043,7 +13701,6 @@ class RepairableRBD(RBD):
         >>> changes[4]
         (30.0, True)
         """
-        self._require_no_ccf("the simulation", nested=True)
         if not hasattr(self, "_event_queue"):
             raise ValueError("Need to initialize the event queue")
         # The components' draws come from the same sources the queue was
@@ -13063,7 +13720,12 @@ class RepairableRBD(RBD):
             event = self._event_queue.get()
             if self._cancelled and self._cancelled.get(id(event)) is event:
                 del self._cancelled[id(event)]
-                continue  # superseded by an early renewal (see _stop)
+                continue  # superseded by an early renewal, or a strike
+            if event.component.__class__ is _Cause:
+                # A shared common cause strikes (#158, see _strike).
+                for follow in self._strike(event, sources[event.component]):
+                    self._event_queue.put(follow)
+                continue
             renewing_early = False
             if self._early and self._early.get(id(event)) is event:
                 del self._early[id(event)]
@@ -13118,6 +13780,8 @@ class RepairableRBD(RBD):
             # of the simulation
             if next_event is not None and next_event.time < self.t_simulation:
                 self._event_queue.put(next_event)
+            if node in self._ccf_members:
+                self._ccf_pending[node] = next_event
 
         self.system_state = new_system_state
         # A system taken down by maintenance or a test is a planned outage.
@@ -13557,10 +14221,11 @@ class RepairableRBD(RBD):
             is given without a ``seed``, or a state is not one a
             simulation can start from (see ``availability``).
         NotImplementedError
-            If the RBD has common-cause groups, which the simulation does
-            not take in, as yet; with ``antithetic``, if a component's draws
-            cannot be replayed; or, with ``engine="numba"``, if the compiled
-            engine does not simulate the system.
+            If a common-cause group's members are not exponential, are
+            held, or start from a state (see ``availability``); with
+            ``antithetic``, if a component's draws cannot be replayed; or,
+            with ``engine="numba"``, if the compiled engine does not
+            simulate the system.
         ImportError
             With ``engine="numba"``, if numba is not installed.
 
@@ -13934,7 +14599,8 @@ class RepairableRBD(RBD):
         self._validate_node_overrides(working, broken)
         states = self._simulation_states(state, working | broken)
         capacity = self._chunk_capacity(broken, method, demand)
-        self._require_no_ccf("the simulation", nested=True)
+        self._require_free_members(working, broken)
+        self._require_groups_simulated(states)
         t_simulation = _check_window(t_simulation)
         entropy = _streams.entropy_of(seed)
         template = self._shard_template(
@@ -14412,6 +15078,13 @@ class RepairableRBD(RBD):
                     changes.append(change)
         if any(simpler[node] is not specs[node] for node in simpler):
             twin = self._twin_from({**specs, **simpler})
+        if twin.ccf_groups and r.refusal(
+            partial(twin._require_groups_over_time, {})
+        ):
+            # Its groups' chains cannot follow them over time (#158): its
+            # members fail independently.
+            twin = self._twin_from({**specs, **simpler}, groups=False)
+            changes.append("the common-cause groups")
         route = twin._over_time()
         if route.route == r.REFUSED:
             raise NotImplementedError(
@@ -14444,9 +15117,11 @@ class RepairableRBD(RBD):
             )
         return f"the system without {', '.join(changes)}."
 
-    def _twin_from(self, components: dict) -> "RepairableRBD":
+    def _twin_from(
+        self, components: dict, groups: bool = True
+    ) -> "RepairableRBD":
         """A system of this one's diagram with ``components`` (see
-        ``_twin``)."""
+        ``_twin``), and its common-cause groups unless not ``groups``."""
         args = self._init_args
         return RepairableRBD(
             args["edges"],
@@ -14456,6 +15131,7 @@ class RepairableRBD(RBD):
             output_node=args["output_node"],
             on_infeasible_rbd=args["on_infeasible_rbd"],
             downtime_cost_rate=args["downtime_cost_rate"],
+            ccf_groups=args.get("ccf_groups") if groups else None,
         )
 
     def _twin_simpler(self, node, spec: dict) -> Tuple[Any, str]:
@@ -14602,7 +15278,7 @@ class RepairableRBD(RBD):
             )
         entropy = sharded = None
         if shard_map is not None:
-            self._require_no_ccf("the simulation", nested=True)
+            self._require_groups_simulated()
             entropy = _streams.entropy_of(seed)
             template = self._shard_template(
                 t_simulation,
@@ -14887,7 +15563,8 @@ class RepairableRBD(RBD):
         of every total (see ``simulate_timelines``), on the Python engine
         or numba's.
         """
-        self._require_no_ccf("the simulation", nested=True)
+        self._require_free_members(working_nodes, broken_nodes)
+        self._require_groups_simulated(states)
         t_simulation = _check_window(t_simulation)
         from tqdm import tqdm
 
@@ -15152,6 +15829,9 @@ class RepairableRBD(RBD):
         # When each group last stopped: the work started at one instant is
         # one stop, with one set-up.
         stopped: Dict[Hashable, float] = {}
+        # Common-cause groups' members, whose next events a shared cause can
+        # supersede (see _strike).
+        ccf_members, ccf_pending = self._ccf_members, self._ccf_pending
 
         def corrective(node, c: int) -> float:
             """Charge a failure's corrective action, and count the spare a
@@ -15188,8 +15868,13 @@ class RepairableRBD(RBD):
             event = pop(heap)[1]
             if cancelled and cancelled.get(id(event)) is event:
                 del cancelled[id(event)]
-                continue  # superseded by an early renewal
+                continue  # superseded by an early renewal, or a strike
             node = event.component
+            if node.__class__ is _Cause:
+                # A shared common cause strikes (#158).
+                for follow in self._strike(event, sources[node]):
+                    push(heap, (follow.time, follow))
+                continue
             renewing_early = False
             if early and early.get(id(event)) is event:
                 del early[id(event)]
@@ -15237,6 +15922,8 @@ class RepairableRBD(RBD):
                 )
                 if next_event is not None and next_event.time < t_simulation:
                     push(heap, (next_event.time, next_event))
+                if ccf_members and node in ccf_members:
+                    ccf_pending[node] = next_event
                 continue
             t = event.time
             c = index[node]
@@ -15346,6 +16033,8 @@ class RepairableRBD(RBD):
                 next_event = self._crew_follow_up(event, next_event)
             if next_event is not None and next_event.time < t_simulation:
                 push(heap, (next_event.time, next_event))
+            if ccf_members and node in ccf_members:
+                ccf_pending[node] = next_event
         self.system_state = up
 
         # Close the system's time, and each component's, at the end of the
@@ -15802,10 +16491,9 @@ class RepairableRBD(RBD):
             values do not cover (a lifetime that is not a surpyval
             parametric model with a density, dead-on-arrival units, repairs
             that may never end, or repairs or maintenance far longer than
-            the interval), or has hidden failures whose tests or repairs
-            take time, or whose tests can miss a failure of a life that is
-            not exponential; or, while a component can wait for a repair
-            crew, as for ``mean_availability``.
+            the interval), or has hidden failures its numerical values do
+            not cover (see ``mean_availability``); or, while a component can
+            wait for a repair crew, as for ``mean_availability``.
 
         Examples
         --------

@@ -220,7 +220,7 @@ def simulate(
     from repyability.rbd.repairable_rbd import _UNSTREAMED
     from repyability.rbd.results import TimelineSimulation
 
-    rbd._require_no_ccf("the simulation", nested=True)
+    rbd._require_groups_simulated()
     if (
         isinstance(t_simulation, bool)
         or not isinstance(t_simulation, (int, float, np.integer, np.floating))
@@ -378,8 +378,9 @@ def _named(rbd, data: _Data) -> _Data:
 def independent(rbd, plan: _streams.Plan, prefix: tuple = ()) -> bool:
     """Whether each component's history follows from its own draws alone:
     plain units with streamed lives and repairs, and nested RBDs of them,
-    with no crew a job can wait for and nothing scheduled; and a structure
-    worked out (one too meshed is followed in the loop)."""
+    with no crew a job can wait for, nothing scheduled and no common cause
+    shared; and a structure worked out (one too meshed is followed in the
+    loop)."""
     from repyability.non_repairable import NonRepairable
     from repyability.rbd.repairable_rbd import RepairableRBD
 
@@ -391,6 +392,7 @@ def independent(rbd, plan: _streams.Plan, prefix: tuple = ()) -> bool:
         or rbd._imperfect
         or rbd._maintenance
         or rbd._crews_limited()
+        or rbd.ccf_groups
     ):
         return False
     for name, component in rbd.components.items():

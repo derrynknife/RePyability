@@ -84,6 +84,16 @@
   simulation. Likewise a standby group's chain (`_standby_chain.py`) copies
   `_StandbyGroup`'s rules (switching, spares, repairs), checked by
   `test_repairable_standby.py`.
+- **A common-cause group's chains (`repyability/rbd/_ccf_chain.py`) copy
+  the simulation's causes** (`_Cause`, `_strike`, #158): each cause, a
+  member's own or a shared one, strikes at its share of the failure rate
+  and fails the members it names that are up, at once; with tests that can
+  miss, one coin for all the failures it makes. A change to one goes into
+  the other: `test_ccf_over_time.py` checks the simulation against the
+  chains over time. The allocations' chains count a member's copies
+  (`_Counted`) rather than tell them apart, which holds for a
+  `BetaFactor`'s one shared cause: `test_ccf_allocations.py` checks them
+  against the chain of every copy.
 - **A tested unit's numerical model (`repyability/rbd/_hidden_tests.py`,
   #159) copies the simulation's inspections** (`_inspected_follow_up`,
   `_inspected_next`): a test takes a working unit off line without ageing

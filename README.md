@@ -135,7 +135,10 @@ places, nested diagrams):
   long run); the capacity distribution in the long run and over time, with
   the production availability of a window; and the spares used over a
   horizon, and the stock to hold for a lead time (under block replacement,
-  with repairs and block replacements in no time).
+  with repairs and block replacements in no time). Common-cause groups of
+  members with exponential lives, tested or repaired, take nothing away:
+  the long-run values, importance and allocations stay exact, and the
+  values over time from new numerical.
 
 **Simulated**, or refused with the simulation to run instead:
 
@@ -154,7 +157,7 @@ places, nested diagrams):
 | **Architecture and maintenance** | | |
 | Phased missions and networks too large for their decision diagrams | Refused, pointing to `method="simulate"` | Only in practice: the diagrams grow with the phases' and the network's width rather than their paths, so meshed missions and networks are exact (a network grid of 100 nodes in a second and a half); one of 121 nodes passes the limit, `repyability.network.MAX_STATES`, which can be raised. |
 | Block diagrams too meshed for their decision diagrams | Simulated (lifetimes, availability, cost and timelines, in Python); the exact and numerical analyses refused | Only in practice: the diagram grows with how wide the mesh is rather than with its paths, so most meshes are exact (a 10 × 10 grid in 0.04 seconds, a random mesh of 60 nodes and 345 links in 2); one of 70 nodes and 485 links passes the limit, `repyability.rbd.bdd.STEP_LIMIT`, which can be raised. |
-| Common-cause groups in a repairable diagram | Long run and importance exact, for exponential lives, tested or repaired; over time, allocation and the simulations refused | No: over time could be exact from the same Markov chain, the simulations could draw the shared causes, and an allocation could build each design's chain (#158). |
+| Common-cause groups in a repairable diagram | For exponential lives, tested or repaired: the long run, importance and the allocations exact (a beta-factor member's copies join its group, and the availability allocations keep the members' availability), the values over time from new numerical (the groups' Markov chains), and the simulations draw the shared causes, in Python. Members of other lives refused, and members held or started from a current state | Other lives: a shared cause has no one rate for members of different ages, so they need a model first. From a current state, no: the chains and the simulations could start from the members' states. |
 | Shared repair crews | For exponential lives and repairs, the long run and importance exact, and the values over time numerical (the same Markov chain, followed by uniformization), but the allocations; other lives simulated. The maintenance and test intervals are chosen as if every repair started at once on request (`assume_unlimited_crews=True`), for a plan to simulate with the crews | Other lives: yes, in general. |
 | Standby groups (a duty unit and its spares, repaired) | For exponential units, the long run and importance exact, and the values over time numerical (the units' Markov chain, followed by uniformization); other units simulated | Other units: yes, in general. |
 | Opportunistic maintenance (renewals at a group's stops) | Simulated | Yes: each member's renewals depend on the others' ages. |

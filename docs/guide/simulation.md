@@ -659,7 +659,9 @@ crews than components, the jobs waiting by priority; standby groups,
 cold, warm or hot, with switches that can fail; nested RBDs of up to 20
 components, each stepped to its next change as in Python; and the system's
 capacity over time, on systems of up to 63 components. Replacement on
-condition, maintenance groups, imperfect repair, a run from the components'
+condition, maintenance groups, imperfect repair, common-cause groups (whose
+shared causes the Python loop draws, see [repairable
+systems](common-cause.md#repairable-systems)), a run from the components'
 states with maintenance, tests or nested RBDs, and other models run in
 Python, which `"auto"` chooses by itself. With `n_jobs` it
 runs on that many threads, which start at once. Under age replacement (half

@@ -1044,7 +1044,9 @@ def test_numba_is_asked_for_only_where_it_simulates(monkeypatch):
     )
 
 
-def test_simulated_timelines_take_no_common_causes_as_yet():
+def test_simulated_timelines_with_common_causes_are_the_loop_s():
+    # A shared cause couples its members (#158): the histories come from
+    # the event loop, on the Python engine, as availability's do.
     rbd = RepairableRBD(
         PAR3,
         {
@@ -1053,8 +1055,14 @@ def test_simulated_timelines_take_no_common_causes_as_yet():
         },
         ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
     )
+    runs = rbd.simulate_timelines(100.0, mc_samples=10, seed=1)
+    assert runs.engine == "python" and runs.method == "event loop"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result = rbd.availability(100.0, mc_samples=10, seed=1)
+    assert np.array_equal(runs.system.uptime, result.uptimes)
     with pytest.raises(NotImplementedError, match="common-cause groups"):
-        rbd.simulate_timelines(100.0, mc_samples=10, seed=1)
+        rbd.simulate_timelines(100.0, mc_samples=10, seed=1, engine="numba")
 
 
 def test_a_component_that_changes_state_without_end_is_refused():

@@ -729,8 +729,9 @@ valve(0.7).expected_events(10 * 8760.0).system_planned_outages   # -> 8.750
 `spares_demand` and `spares_stock` count such a valve's spares on the
 tests that find its failures (see [how spares are
 counted](spares.md#how-it-is-computed)). Only a test that can last as long
-as its interval stays simulated, and a common-cause group's members need
-tests and repairs in no time (#158).
+as its interval stays simulated; a common-cause group's members are
+simulated when their tests or repairs take time (their group's chain needs
+them in no time).
 
 ### Common cause, staggered tests and test coverage
 
@@ -788,9 +789,10 @@ group's members, tested and repaired in no time, are a Markov chain of
 which of them are down, with each member found by its own tests, and a
 shared failure found alike by every test (the coverage is the group's).
 The importance measures take the groups in, a member's conditioned on its
-state at each time; the allocations, the values over time from new and the
-simulations do not take a common-cause group in yet, and refuse it (#158);
-see `analysis_routes()`.
+state at each time, and so do the allocations, the values over time from
+new (the chain followed through the tests from every member up) and the
+simulations, which draw the shared causes; see [repairable
+systems](common-cause.md#repairable-systems) and `analysis_routes()`.
 
 ### Choosing the interval
 
@@ -1011,9 +1013,11 @@ the nodes finds the optimum for any number of them; on other structures a
 branch and bound over the designs does, which suits a handful of nodes.
 
 The model and its limits: copies are active and repaired independently of
-each other (as many repair crews as failed copies), with no common-cause
-failures between them (see [Common-cause failures](common-cause.md)).
-Copies of a component with hidden failures are inspected together. A nested
+each other (as many repair crews as failed copies), and fail independently
+unless the component is in a common-cause group: then its copies join the
+group, a `BetaFactor` group's shared cause failing them all (see [repairable
+systems](common-cause.md#repairable-systems); an `MGL` group's member is
+refused). Copies of a component with hidden failures are inspected together. A nested
 `RepairableRBD` cannot be given copies. Copies of a component under block
 replacement are replaced together, at the same block times. Costs are not
 discounted unless `discount_rate` is given (see [Discounting](#discounting)).

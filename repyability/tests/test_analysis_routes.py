@@ -749,6 +749,8 @@ def test_the_readme_says_what_is_simulated():
     crew = repairable["one repair crew, exponential"]
     group = repairable["standby group"]
     minimal = repairable["minimal repair in no time"]
+    tested_group = repairable["common cause, tested"]
+    revealed_group = repairable["common cause, revealed"]
     claims = {
         "Sampled lifetimes or histories, and distributions or percentiles "
         "of an outcome over a window": [
@@ -858,37 +860,24 @@ def test_the_readme_says_what_is_simulated():
             (repairable["too meshed"], "point_availability", "refused"),
         ],
         "Common-cause groups in a repairable diagram": [
+            (tested_group, "mean_availability", "exact"),
+            (tested_group, "system_failure_frequency", "exact"),
+            (tested_group, "birnbaum_importance", "exact"),
+            (tested_group, "allocate_redundancy", "exact"),
+            (tested_group, "availability_allocation", "exact"),
+            (tested_group, "point_availability", "numerical"),
+            (tested_group, "expected_cost", "numerical"),
+            (tested_group, "availability", "simulated"),
+            (tested_group, "simulate_timelines", "simulated"),
+            (revealed_group, "mission_availability", "numerical"),
+            (tested_group, "cost", "simulated"),
+            (revealed_group, "availability", "simulated"),
             (
-                repairable["common cause, tested"],
+                repairable["common cause, Weibull"],
                 "mean_availability",
-                "exact",
-            ),
-            (
-                repairable["common cause, tested"],
-                "system_failure_frequency",
-                "exact",
-            ),
-            (repairable["common cause, tested"], "availability", "refused"),
-            (
-                repairable["common cause, tested"],
-                "simulate_timelines",
                 "refused",
             ),
-            (
-                repairable["common cause, revealed"],
-                "point_availability",
-                "refused",
-            ),
-            (
-                repairable["common cause, tested"],
-                "birnbaum_importance",
-                "exact",
-            ),
-            (
-                repairable["common cause, revealed"],
-                "availability_allocation",
-                "refused",
-            ),
+            (repairable["common cause, Weibull"], "availability", "refused"),
         ],
         "Shared repair crews": [
             (crew, "mean_availability", "exact"),
