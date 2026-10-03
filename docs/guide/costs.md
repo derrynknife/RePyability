@@ -841,7 +841,8 @@ separate nodes. The arguments:
 
 | Argument | Meaning |
 |---|---|
-| `nodes` | The components that may be given copies; by default every one with an `"acquisition_cost"`. The others are counted once. |
+| `nodes` | The components that may be given copies; by default every one with an `"acquisition_cost"` (none, given `trains`). The others are counted once. |
+| `trains` | Chains of components that may be given copies as a whole, `{name: [nodes]}`: see [Whole trains](#whole-trains). |
 | `min_availability` | Only designs at least this available, in (0, 1): e.g. a contractual availability, met at the lowest total cost. |
 | `max_units` | The most copies of every node (an int) or of some (a dict). A node whose copies cost nothing needs one. |
 | `method` | `"exact"` (the default): a proven optimum. `"greedy"`: adds or removes one copy at a time while that lowers the total; fast, not guaranteed optimal. |
@@ -873,6 +874,53 @@ replacement are replaced together, at the same block times. Costs are not
 discounted. For non-repairable systems, redundancy allocation within a
 budget or to a reliability target is in
 [Design and allocation](design.md#redundancy-allocation).
+
+### Whole trains
+
+Redundancy often comes a train at a time: a station that needs two of its
+three pump trains, each a pump and then its motor, asks whether a fourth
+train pays. `trains={name: [nodes]}` names chains of components that may be
+given copies as a whole (#184). A copy of a train is another path alongside
+it, fed as its first node is and feeding the node its last one feeds, which
+keeps its `k`: copies of a train of a 2-out-of-3 vote make it 2-out-of-4.
+
+```python
+motor = {
+    "reliability": surv.Exponential.from_params([2e-4]),   # MTTF 5000 h
+    "repairability": surv.Exponential.from_params([0.05]), # MTTR 20 h
+    "acquisition_cost": 10000.0,
+}
+trains = (1, 2, 3)
+station = RepairableRBD(
+    [("s", f"pump {i}") for i in trains]
+    + [(f"pump {i}", f"motor {i}") for i in trains]
+    + [(f"motor {i}", "t") for i in trains],
+    {**{f"pump {i}": pump for i in trains}, **{f"motor {i}": motor for i in trains}},
+    k={"t": 2}, downtime_cost_rate=2000.0,
+)
+station.total_cost(87600.0)    # -> 319927   three trains
+fourth = station.allocate_redundancy(87600.0, trains={"train 1": ["pump 1", "motor 1"]})
+fourth.units                   # {'train 1': 2}   train 1 and a copy: four trains
+fourth.total_cost              # -> 295306
+station.allocate_redundancy(87600.0, nodes=["pump 1", "motor 1"]).total_cost   # -> 311130
+```
+
+Copies of train 1's own nodes, each in parallel with its own, stand in for
+train 1 alone, where a fourth train stands in for whichever train is down:
+the fourth train is the cheaper design. Name one of identical trains.
+`units` counts it and its copies under its name, which is not a node's, and
+the result's `trains` lists each train's nodes.
+
+A train is a chain: its first node may be fed by several nodes (its copies
+are fed by them all), each of the others by the one before it alone, and its
+last node feeds one node alone, where the copies join. A node is in one
+train at most, and not in `nodes` as well; given `trains`, `nodes` is by
+default none, and a component may be both copied alone and in a train only
+in separate searches. Each design is scored exactly, the copies drawn out as
+trains of their own. The search's bound on what a copy can save is that the
+`n + 1`-th train changes the system only when at most `k − 1` of the `n`
+there work: it saves at most `H · downtime_cost_rate · A · P(at most k − 1
+of n work)`, `A` the train's availability.
 
 Costs, including cost distributions and acquisition costs, and maintenance
 and inspection schedules are saved with the RBD.

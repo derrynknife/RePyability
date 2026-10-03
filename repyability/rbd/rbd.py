@@ -1482,35 +1482,38 @@ class RBD:
                     + "), so it cannot be evaluated: every path must lead "
                     "from the input node to the output node."
                 )
-            reducible = self.structure_check["is_valid"] and all(
-                self.G.nodes[node]["k"] >= 1 for node in self.G.nodes
-            )
-            folded = (
-                self._junctions() if self._FOLDS_JUNCTIONS else frozenset()
-            )
-            try:
-                self._modules = decompose(
-                    self.G,
-                    self.input_node,
-                    self.output_node,
-                    reduce=reducible,
-                    aliases=self._component_aliases(),
-                )
-            except bdd.TooLarge as error:
-                # Too meshed to work out exactly (#172): the simulations
-                # follow the graph itself, and the rest refuses.
-                self._modules = GraphStructure(
-                    self.G,
-                    self.input_node,
-                    self.output_node,
-                    self._component_aliases(),
-                    folded,
-                    f"{error} {self._SIMULATE_INSTEAD}",
-                )
-                return self._modules
-            if folded:
-                self._modules = fold(self._modules, folded)
+            self._modules = self._decompose_graph(self.G)
         return self._modules
+
+    def _decompose_graph(self, graph) -> Decomposition:
+        """``graph`` reduced to modules as the diagram's own is (see
+        ``_decomposition``): the diagram's graph, or one drawn from it with
+        the same input and output nodes, junctions and repeated nodes (an
+        allocation's copies of a train)."""
+        reducible = self.structure_check["is_valid"] and all(
+            graph.nodes[node]["k"] >= 1 for node in graph.nodes
+        )
+        folded = self._junctions() if self._FOLDS_JUNCTIONS else frozenset()
+        try:
+            modules = decompose(
+                graph,
+                self.input_node,
+                self.output_node,
+                reduce=reducible,
+                aliases=self._component_aliases(),
+            )
+        except bdd.TooLarge as error:
+            # Too meshed to work out exactly (#172): the simulations follow
+            # the graph itself, and the rest refuses.
+            return GraphStructure(
+                graph,
+                self.input_node,
+                self.output_node,
+                self._component_aliases(),
+                folded,
+                f"{error} {self._SIMULATE_INSTEAD}",
+            )
+        return fold(modules, folded) if folded else modules
 
     def _meshed_routes(self, out: dict, free: Iterable[str]) -> dict:
         """A route report (see ``analysis_routes``), sorted, with every

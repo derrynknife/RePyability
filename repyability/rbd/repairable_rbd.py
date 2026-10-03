@@ -2313,6 +2313,28 @@ _ALLOCATION_CREWS = (
 )
 
 
+class _Train(NamedTuple):
+    """A train ``allocate_redundancy`` may copy (see its ``trains``): its
+    name, its nodes in order, the node its last one feeds, where its
+    copies join, and how many of its inputs that node needs."""
+
+    name: Hashable
+    members: Tuple[Hashable, ...]
+    exit: Hashable
+    k: int
+
+
+@dataclass(frozen=True)
+class _TrainCopy:
+    """A node of a copy of a train, drawn by ``allocate_redundancy``: the
+    train's ``index``-th copy of its ``node``. Equal only to itself, so
+    that no node of the diagram can share its name."""
+
+    train: Hashable
+    index: int
+    node: Hashable
+
+
 def _curve_points(value) -> Optional[int]:
     """``curve_points`` checked: None, or a whole number of at least 1."""
     if value is None:
@@ -5958,13 +5980,15 @@ class RepairableRBD(RBD):
         horizon: float,
         *,
         nodes: Optional[Collection[Hashable]] = None,
+        trains: Optional[Mapping] = None,
         min_availability: Optional[float] = None,
         max_units: Union[int, Dict[Hashable, int], None] = None,
         method: str = "exact",
     ) -> TotalCostAllocation:
         """Choose the redundancy with the lowest total cost of ownership.
 
-        How many identical copies of each node to fit in active parallel so
+        How many identical copies of each node to fit in active parallel
+        (or of each train of nodes to add alongside it, see ``trains``) so
         that owning the system for ``horizon`` costs least: each copy costs
         its ``"acquisition_cost"`` to buy and its running costs (repairs,
         replacements, preventive maintenance, inspections, its own downtime
@@ -6013,15 +6037,29 @@ class RepairableRBD(RBD):
             The components that may be given copies, by default every one
             with an ``"acquisition_cost"``. The others stay as they are, and
             their costs are counted once. Nested ``RepairableRBD`` nodes
-            cannot be given copies.
+            cannot be given copies. Given ``trains``, by default none.
+        trains : dict, optional
+            Trains of components that may be given copies (#184), ``{name:
+            [nodes]}``: each a chain in series, its first node fed by any
+            nodes, each of the others by the one before it alone, and its
+            last feeding one node alone (a pump train of seal, bearing and
+            motor, into a vote). A copy of a train is another path
+            alongside it, fed as its first node is and feeding the node its
+            last feeds, which keeps its ``k``: copies of a train of a
+            2-out-of-3 vote make it 2-out-of-4, where copies of its nodes,
+            each in parallel with its own, would not. Name one of identical
+            trains, as its copies stand in for any of them. A copy costs its
+            nodes' acquisition and running costs, and ``units`` counts a
+            train and its copies under its name, which is not a node's. A
+            node is in one train at most, and not in ``nodes`` as well.
         min_availability : float, optional
             Only consider designs whose long-run availability is at least
             this, in (0, 1), by default no limit.
         max_units : int or dict, optional
-            The most copies (at least 1) of every node considered (an int)
-            or of particular ones (a dict; nodes it leaves out are
-            unlimited), by default unlimited. A node whose copies cost
-            nothing over the horizon needs one.
+            The most copies (at least 1) of every node or train considered
+            (an int) or of particular ones (a dict; those it leaves out are
+            unlimited), by default unlimited. A node or train whose copies
+            cost nothing over the horizon needs one.
         method : str, optional
             ``"exact"`` (the default) or ``"greedy"``. The exact search
             gives up with an explanatory error after examining 500,000
@@ -6031,7 +6069,7 @@ class RepairableRBD(RBD):
         Returns
         -------
         TotalCostAllocation
-            The chosen ``units`` per node, with the design's
+            The chosen ``units`` per node and train, with the design's
             ``total_cost``, ``acquisition_cost``, ``cost_rate`` and
             ``availability`` (see
             [`TotalCostAllocation`][repyability.TotalCostAllocation]).
@@ -6039,12 +6077,13 @@ class RepairableRBD(RBD):
         Raises
         ------
         ValueError
-            If ``horizon``, ``nodes``, ``min_availability``, ``max_units``
-            or ``method`` is invalid; if no component has an acquisition
-            cost and ``nodes`` is not given; if a node's copies cost nothing
-            and are not capped; if ``min_availability`` cannot be reached;
-            if a component has a non-parametric reliability model; or if
-            the exact search examines more than 500,000 designs.
+            If ``horizon``, ``nodes``, ``trains``, ``min_availability``,
+            ``max_units`` or ``method`` is invalid; if no component has an
+            acquisition cost and neither ``nodes`` nor ``trains`` is given;
+            if a node's or train's copies cost nothing and are not capped;
+            if ``min_availability`` cannot be reached; if a component has a
+            non-parametric reliability model; or if the exact search
+            examines more than 500,000 designs.
         NotImplementedError
             If a component is under block replacement with models its exact
             values do not cover (see ``node_availability``), or has hidden
@@ -6085,13 +6124,50 @@ class RepairableRBD(RBD):
 
         >>> rbd.allocate_redundancy(8760.0).units
         {'pump': 1}
+
+        A station needing two of three pump trains, each a pump and its
+        motor, when an hour without pumping costs 2,000: is a fourth train
+        worth it? Name one train, and its copies join the vote:
+
+        >>> pump = {
+        ...     "reliability": surv.Exponential.from_params([1e-3]),
+        ...     "repairability": surv.Exponential.from_params([0.1]),
+        ...     "repair_cost": 500.0,
+        ...     "acquisition_cost": 20000.0,
+        ... }
+        >>> motor = {
+        ...     "reliability": surv.Exponential.from_params([2e-4]),
+        ...     "repairability": surv.Exponential.from_params([0.05]),
+        ...     "acquisition_cost": 10000.0,
+        ... }
+        >>> trains = (1, 2, 3)
+        >>> station = RepairableRBD(
+        ...     [("s", f"pump {i}") for i in trains]
+        ...     + [(f"pump {i}", f"motor {i}") for i in trains]
+        ...     + [(f"motor {i}", "t") for i in trains],
+        ...     {
+        ...         **{f"pump {i}": pump for i in trains},
+        ...         **{f"motor {i}": motor for i in trains},
+        ...     },
+        ...     k={"t": 2},
+        ...     downtime_cost_rate=2000.0,
+        ... )
+        >>> round(station.total_cost(87600.0))  # three trains
+        319927
+        >>> best = station.allocate_redundancy(
+        ...     87600.0, trains={"train 1": ["pump 1", "motor 1"]}
+        ... )
+        >>> best.units, round(best.total_cost)
+        ({'train 1': 2}, 295306)
         """
         horizon = _horizon(horizon)
         if method not in ("exact", "greedy"):
             raise ValueError(
                 f"method must be 'exact' or 'greedy', got {method!r}."
             )
-        if nodes is None:
+        if nodes is None and trains is not None:
+            chosen: list = []
+        elif nodes is None:
             chosen = [
                 n for n in self.components if n in self.acquisition_costs
             ]
@@ -6117,7 +6193,11 @@ class RepairableRBD(RBD):
                         "cannot be given copies here: its costs are not "
                         "this RBD's."
                     )
-        caps = redundancy_caps(chosen, max_units, named="nodes")
+        drawn = self._allocation_trains(trains, chosen)
+        items = chosen + [train.name for train in drawn]
+        caps = redundancy_caps(
+            items, max_units, named="nodes or trains" if drawn else "nodes"
+        )
         max_unavailability = None
         if min_availability is not None:
             try:
@@ -6153,16 +6233,33 @@ class RepairableRBD(RBD):
                 rate,
                 self.acquisition_costs.get(node, 0.0) + horizon * rate,
             )
-        for node, cap in zip(chosen, caps):
-            if copy_cost[node][2] <= 0.0 and cap == math.inf:
+        # A train's copy costs its nodes'.
+        train_cost = [
+            math.fsum(copy_cost[node][2] for node in train.members)
+            for train in drawn
+        ]
+        item_cost = [copy_cost[node][2] for node in chosen] + train_cost
+        for index, (name, cost, cap) in enumerate(zip(items, item_cost, caps)):
+            if cost <= 0.0 and cap == math.inf:
+                what = "train " if index >= len(chosen) else ""
                 raise ValueError(
-                    f"A copy of {node!r} costs nothing over the horizon (it "
-                    "has no acquisition or running cost), so copies could be "
-                    "added without end: give it an acquisition_cost or a "
-                    "max_units."
+                    f"A copy of {what}{name!r} costs nothing over the horizon "
+                    "(it has no acquisition or running cost), so copies "
+                    "could be added without end: give it an "
+                    "acquisition_cost or a max_units."
                 )
-        decomposition = self._decomposition()
         size = len(times)
+        structures: Dict[tuple, Any] = {(): self._decomposition()}
+
+        def structure(extra: tuple):
+            # The diagram with extra[i] copies of train i drawn alongside it.
+            if not any(extra):
+                return structures[()]
+            if extra not in structures:
+                structures[extra] = self._decompose_graph(
+                    self._with_train_copies(drawn, extra)
+                )
+            return structures[extra]
 
         def unavailability(counts) -> float:
             p, q = dict(up), dict(down)
@@ -6170,7 +6267,20 @@ class RepairableRBD(RBD):
                 if n != 1:
                     q[node] = down[node] ** n
                     p[node] = 1.0 - q[node]
-            _, fails = decomposition.probabilities(
+            extra = []
+            for train, n in zip(drawn, counts[len(chosen) :]):
+                # Made perfect (the search's bound), it is as many perfect
+                # copies as its vote needs.
+                copies = train.k if n == math.inf else int(n) - 1
+                extra.append(copies)
+                for index in range(1, copies + 1):
+                    for node in train.members:
+                        name = _TrainCopy(train.name, index, node)
+                        if n == math.inf:
+                            p[name], q[name] = np.ones(size), np.zeros(size)
+                        else:
+                            p[name], q[name] = up[node], down[node]
+            _, fails = structure(tuple(extra)).probabilities(
                 p, q, shape=size, works=False, fails=True
             )
             fails = np.broadcast_to(np.asarray(fails, dtype=float), (size,))
@@ -6187,9 +6297,26 @@ class RepairableRBD(RBD):
             alone[node] = np.zeros(1)
             return float(self.system_probability(alone)[0]) == 0.0
 
+        def train_gain(train):
+            # The n + 1-th train changes the system only if it brings its
+            # vote to k working inputs, so at most k - 1 of the n there
+            # work: it lowers the unavailability by at most its own
+            # availability times the chance of that.
+            from scipy.stats import binom
+
+            own = -np.expm1(
+                np.sum([np.log1p(-down[node]) for node in train.members], 0)
+            )
+            return lambda n: float(
+                weights
+                @ ((1.0 - own) * binom.sf(n - train.k, n, np.minimum(own, 1)))
+            )
+
         series = None
         varying = set(self._inspection) | set(self._block_nodes())
-        if all(node not in varying and in_series(node) for node in chosen):
+        if not drawn and all(
+            node not in varying and in_series(node) for node in chosen
+        ):
             # Each such node's availability is constant, and the system's is
             # theirs times the rest's: the exact search is then a dynamic
             # program over the nodes.
@@ -6198,21 +6325,30 @@ class RepairableRBD(RBD):
             ]
         counts, _, u = lowest_total_cost(
             unavailability,
-            [copy_cost[node][2] for node in chosen],
+            item_cost,
             horizon * self.downtime_cost_rate,
-            [gain(node) for node in chosen],
+            [gain(node) for node in chosen]
+            + [train_gain(train) for train in drawn],
             caps,
             max_unavailability,
             method,
             series,
         )
-        units = {node: int(n) for node, n in zip(chosen, counts)}
+        units = {name: int(n) for name, n in zip(items, counts)}
+        # Every component once, its copies as many times more, and each
+        # train's copies their nodes' costs as many times.
+        extra = {
+            node: units[train.name] - 1
+            for train in drawn
+            for node in train.members
+        }
         acquisition = math.fsum(
-            units.get(node, 1) * copy_cost[node][0] for node in self.components
+            (units.get(node, 1) + extra.get(node, 0)) * copy_cost[node][0]
+            for node in self.components
         )
         cost_rate = (
             math.fsum(
-                units.get(node, 1) * copy_cost[node][1]
+                (units.get(node, 1) + extra.get(node, 0)) * copy_cost[node][1]
                 for node in self.components
             )
             + self.downtime_cost_rate * u
@@ -6225,7 +6361,110 @@ class RepairableRBD(RBD):
             availability=1.0 - u,
             horizon=horizon,
             method=method,
+            trains=(
+                {train.name: list(train.members) for train in drawn}
+                if drawn
+                else None
+            ),
         )
+
+    def _allocation_trains(self, trains, chosen) -> List[_Train]:
+        """The trains ``allocate_redundancy`` may copy (see its ``trains``),
+        checked: each a chain of components in series ending at a node that
+        feeds one node, a node in one train at most and not in ``chosen``
+        (the nodes copied alone), and named apart from the nodes."""
+        if trains is None:
+            return []
+        if not isinstance(trains, Mapping) or not trains:
+            raise ValueError(
+                "trains must be a non-empty dict {name: [nodes in series]}, "
+                f"got {trains!r}."
+            )
+        graph = self.G
+        out: List[_Train] = []
+        seen: Dict[Hashable, Hashable] = {}
+        for name, members in trains.items():
+            if name in graph.nodes:
+                raise ValueError(
+                    f"Train {name!r} is named as a node: name a train apart "
+                    "from the nodes, as units holds both."
+                )
+            if isinstance(members, (str, bytes)) or not isinstance(
+                members, Collection
+            ):
+                raise ValueError(
+                    f"Train {name!r} must be a list of nodes, got "
+                    f"{members!r}."
+                )
+            members = list(members)
+            if not members:
+                raise ValueError(f"Train {name!r} has no nodes.")
+            for node in members:
+                if node not in self.components:
+                    raise ValueError(
+                        f"Node {node!r} of train {name!r} is not a component "
+                        "of this RBD."
+                    )
+                if isinstance(self.components[node], RepairableRBD):
+                    raise ValueError(
+                        f"Node {node!r} of train {name!r} is a nested "
+                        "RepairableRBD, which cannot be given copies here: "
+                        "its costs are not this RBD's."
+                    )
+                if node in seen:
+                    raise ValueError(
+                        f"Node {node!r} is in trains {seen[node]!r} and "
+                        f"{name!r}: a node is in one train at most."
+                    )
+                if node in chosen:
+                    raise ValueError(
+                        f"Node {node!r} is in nodes and in train {name!r}: "
+                        "copy it on its own or with its train."
+                    )
+                seen[node] = name
+            for a, b in zip(members, members[1:]):
+                if list(graph.successors(a)) != [b] or list(
+                    graph.predecessors(b)
+                ) != [a]:
+                    raise ValueError(
+                        f"Train {name!r} must be a chain of nodes in series: "
+                        f"{a!r} feeding {b!r} alone, and {b!r} fed by {a!r} "
+                        "alone."
+                    )
+            exits = list(graph.successors(members[-1]))
+            if len(exits) != 1:
+                raise ValueError(
+                    f"Train {name!r} must end at a node feeding one node, "
+                    f"which its copies join; {members[-1]!r} feeds "
+                    f"{len(exits)}."
+                )
+            out.append(
+                _Train(
+                    name,
+                    tuple(members),
+                    exits[0],
+                    int(graph.nodes[exits[0]]["k"]),
+                )
+            )
+        return out
+
+    def _with_train_copies(self, trains: List[_Train], extra: tuple):
+        """The diagram's graph with ``extra[i]`` copies of ``trains[i]``
+        drawn alongside it: each fed as its first node is, feeding the node
+        its last feeds, whose ``k`` is kept (see ``allocate_redundancy``)."""
+        graph = self.G.copy()
+        for train, copies in zip(trains, extra):
+            first = list(self.G.predecessors(train.members[0]))
+            for index in range(1, copies + 1):
+                names = [
+                    _TrainCopy(train.name, index, n) for n in train.members
+                ]
+                for name, node in zip(names, train.members):
+                    graph.add_node(name, **self.G.nodes[node])
+                graph.add_edges_from((u, names[0]) for u in first)
+                graph.add_edges_from(zip(names, names[1:]))
+                graph.add_edge(names[-1], train.exit)
+        return graph
 
     def availability_allocation(
         self,

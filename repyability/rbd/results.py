@@ -1174,18 +1174,19 @@ class RedundancyAllocation(_ResultMapping):
 class TotalCostAllocation(_ResultMapping):
     """The result of ``RepairableRBD.allocate_redundancy()``.
 
-    How many copies of each node give a repairable system the lowest total
-    cost of ownership over a horizon: buying the copies, running them
-    (repairs, replacements, maintenance, inspections, their own downtime),
-    and the cost of the system being down. Like the other result types it
-    is also a read-only mapping of its fields.
+    How many copies of each node (or train of nodes) give a repairable
+    system the lowest total cost of ownership over a horizon: buying the
+    copies, running them (repairs, replacements, maintenance, inspections,
+    their own downtime), and the cost of the system being down. Like the
+    other result types it is also a read-only mapping of its fields.
 
     Attributes
     ----------
     units : dict
         How many identical copies of each node considered to fit in active
-        parallel, each repaired independently. Always at least 1: the
-        original unit.
+        parallel, each repaired independently, and of each train to have
+        alongside it (under the train's name). Always at least 1: the
+        original unit or train.
     total_cost : float
         The total cost of owning the system for ``horizon`` with those
         copies, ``acquisition_cost + cost_rate * horizon``: what
@@ -1204,6 +1205,9 @@ class TotalCostAllocation(_ResultMapping):
     method : str
         ``"exact"`` (a proven optimum) or ``"greedy"`` (a fast heuristic
         solution, usually but not always optimal).
+    trains : dict or None
+        The trains considered (``allocate_redundancy``'s ``trains``), each
+        name with its nodes in order; None without.
 
     Examples
     --------
@@ -1239,6 +1243,7 @@ class TotalCostAllocation(_ResultMapping):
     availability: float
     horizon: float
     method: str
+    trains: Optional[Dict[Hashable, list]] = None
 
 
 @dataclass

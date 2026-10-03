@@ -40,6 +40,16 @@ other release, fixes included, the minor.
   a 95% fill rate, and 17 on one. Members of one common-cause group, which
   their shared causes replace together, are refused; the results say which
   `members` a part holds.
+- **Redundancy a train at a time (#184).** `RepairableRBD.allocate_redundancy`
+  copied single nodes, each in parallel with its own, so "should we add a
+  fourth pump train?" could not be asked of it. `trains={name: [nodes]}`
+  names chains of components in series that may be given copies as a
+  whole: a copy is another path alongside the train into the node it
+  feeds, which keeps its `k`, so copies of a train of a 2-out-of-3 vote
+  make it 2-out-of-4. Each design is scored exactly, the copies drawn out
+  as trains of their own, and `units` counts a train and its copies under
+  its name (the result's `trains` lists their nodes). Given `trains`,
+  `nodes` is by default none.
 - **Common causes in fault trees (#184).** `FaultTree(..., ccf_groups=)`
   takes the `CCFGroup`s a diagram takes, over basic events: a tree could
   only draw a shared cause as a repeated event of its own. The top event
