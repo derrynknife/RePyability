@@ -342,7 +342,9 @@ def test_long_run_availability_with_absorbing_ends():
     assert rbd.mean_availability() == pytest.approx(exact, rel=1e-12)
     # Over a long window, the fraction of it up is close to that (the
     # time before the unit settles is short).
-    result = rbd.availability(5_000.0, mc_samples=2_000, seed=14)
+    result = rbd.availability(
+        5_000.0, mc_samples=2_000, seed=14, control_variate=False
+    )
     window = result.mean_availability_interval()
     assert abs(window.estimate - exact) < 4 * window.standard_error + 0.01
 

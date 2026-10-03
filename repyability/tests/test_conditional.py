@@ -15,6 +15,7 @@ from surpyval import Exponential, Weibull
 
 from repyability import NodeState, PerfectReliability, RepairableRBD
 from repyability.rbd import routes as r
+from repyability.rbd.repairable_rbd import _ModuleRun
 
 E, W = Exponential.from_params, Weibull.from_params
 LIFE, REPAIR = 0.004, 0.25  # y's failure and repair rates
@@ -301,7 +302,7 @@ def test_it_agrees_with_a_plain_run():
     rbd = plant()
     T, n = 2000.0, 3000
     run = rbd.availability(T, mc_samples=n, seed=11, conditional=True)
-    plain = rbd.availability(T, mc_samples=n, seed=12)
+    plain = rbd.availability(T, mc_samples=n, seed=12, conditional=False)
     assert run.conditional.modules == ("pair", "group")
     a, b = run.mean_availability_interval(), plain.mean_availability_interval()
     assert (
@@ -432,6 +433,109 @@ def test_a_conditional_run_has_no_spread():
             spread()
 
 
+def test_a_plain_run_takes_its_means_given_its_modules():
+    # By default the whole system is simulated, and the mean intervals take
+    # each simulation's expected values given its modules' histories: a
+    # conditional run's with the seed, whose modules draw what they draw in
+    # the plain run.
+    rbd = plant()
+    T, n = 1000.0, 400
+    run = rbd.availability(T, mc_samples=n, seed=7)
+    plain = rbd.availability(T, mc_samples=n, seed=7, conditional=False)
+    alone = rbd.availability(T, mc_samples=n, seed=7, conditional=True)
+    assert run.conditional.whole
+    assert run.conditional.modules == ("pair", "group")
+    assert plain.conditional is None
+    # Its simulations, and all but its means, are the plain run's.
+    for name in ("uptimes", "timeline", "availability", "availability_se"):
+        np.testing.assert_array_equal(getattr(run, name), getattr(plain, name))
+    assert run.system_failures == plain.system_failures
+    assert run.criticalities == plain.criticalities
+    np.testing.assert_array_equal(run.cost.samples, plain.cost.samples)
+    assert run.cost.percentile(90) == plain.cost.percentile(90)
+    assert run.cost.std == plain.cost.std
+    # Its means are the conditional run's.
+    np.testing.assert_array_equal(run.conditional.uptimes, alone.uptimes)
+    np.testing.assert_array_equal(
+        run.cost.conditional.costs, alone.cost.samples
+    )
+    interval = run.mean_availability_interval()
+    assert interval.method == "conditional"
+    assert interval == alone.mean_availability_interval()
+    assert (
+        interval.standard_error
+        < plain.mean_availability_interval().standard_error
+    )
+    cost = run.cost.mean_interval()
+    assert cost.method == "conditional"
+    assert cost == alone.cost.mean_interval()
+    assert rbd.cost(T, mc_samples=n, seed=7).mean_interval() == cost
+
+
+def test_a_run_to_a_tolerance_judges_its_means_given_its_modules():
+    rbd = plant()
+    options = dict(mc_samples=100, seed=8, tolerance=0.0015)
+    run = rbd.availability(1000.0, max_samples=4000, **options)
+    plain = rbd.availability(
+        1000.0, max_samples=4000, conditional=False, **options
+    )
+    assert run.n_simulations < plain.n_simulations
+    interval = run.mean_availability_interval()
+    assert interval.upper - interval.estimate <= 0.0015 + 1e-12
+    # Its first simulations, and their means, are the first round's alone.
+    first = rbd.availability(1000.0, mc_samples=100, seed=8)
+    np.testing.assert_array_equal(run.uptimes[:100], first.uptimes)
+    np.testing.assert_array_equal(
+        run.conditional.uptimes[:100], first.conditional.uptimes
+    )
+
+
+def test_what_keeps_a_run_plain(monkeypatch):
+    rbd = plant()
+    plain = rbd.availability(500.0, mc_samples=50, seed=1, conditional=False)
+    run = rbd.availability(500.0, mc_samples=50, seed=1, control_variate=False)
+    assert run.conditional is None and run.control_variate is None
+    np.testing.assert_array_equal(run.uptimes, plain.uptimes)
+    controlled = rbd.availability(
+        500.0, mc_samples=50, seed=1, control_variate=True
+    )
+    assert controlled.conditional is None
+    assert not controlled.control_variate.itself
+    # Where the rest cannot be worked out exactly, the run is plain.
+
+    def refuse(self):
+        raise NotImplementedError("out of reach")
+
+    monkeypatch.setattr(_ModuleRun, "prepare", refuse)
+    fallen = rbd.availability(500.0, mc_samples=50, seed=1)
+    assert fallen.conditional is None
+    np.testing.assert_array_equal(fallen.uptimes, plain.uptimes)
+    with pytest.raises(NotImplementedError, match="out of reach"):
+        rbd.availability(500.0, mc_samples=50, seed=1, conditional=True)
+
+
+def test_chunks_and_shards_of_a_run_take_its_means():
+    rbd = plant()
+    run = rbd.availability(500.0, mc_samples=60, seed=2)
+    chunks = [
+        rbd.simulate_chunk(500.0, a, b, seed=2) for a, b in ((25, 60), (0, 25))
+    ]
+    merged = rbd.availability_from_chunks(chunks)
+    sharded = rbd.availability(
+        500.0, mc_samples=60, seed=2, shard_map=map, shard_size=20
+    )
+    for other in (merged, sharded):
+        np.testing.assert_array_equal(other.uptimes, run.uptimes)
+        np.testing.assert_array_equal(
+            other.conditional.uptimes, run.conditional.uptimes
+        )
+        assert (
+            other.mean_availability_interval()
+            == run.mean_availability_interval()
+        )
+        assert other.cost.mean_interval() == run.cost.mean_interval()
+
+
 def test_the_modules():
     assert plant()._conditional_modules(set(), set()) == ["pair", "group"]
     # Held, a module is no module; an exponential standby pair is exact.
@@ -460,7 +564,7 @@ def test_the_modules():
 
 def test_what_a_conditional_run_refuses():
     rbd = plant()
-    with pytest.raises(ValueError, match="True or False"):
+    with pytest.raises(ValueError, match="True, False or None"):
         rbd.availability(10.0, mc_samples=5, conditional="yes")
     with pytest.raises(ValueError, match="record histories"):
         rbd.availability(10.0, mc_samples=5, conditional=True, engine="other")
@@ -609,7 +713,13 @@ def test_from_the_components_states(state):
     np.testing.assert_allclose(
         run.uptimes, uptimes_given(module, integral, n), atol=1e-6 * T
     )
-    plain = rbd.availability(T, mc_samples=4000, seed=11, state=state)
+    # By default the whole system is simulated, and the means are these.
+    whole = rbd.availability(T, mc_samples=n, seed=5, state=state)
+    assert whole.conditional.whole
+    np.testing.assert_array_equal(whole.conditional.uptimes, run.uptimes)
+    plain = rbd.availability(
+        T, mc_samples=4000, seed=11, state=state, conditional=False
+    )
     a, b = run.mean_availability_interval(), plain.mean_availability_interval()
     assert (
         abs(z(a.estimate, b.estimate, a.standard_error, b.standard_error)) < 4
@@ -656,7 +766,9 @@ def test_capacities_given_the_modules():
     run = rbd.availability(
         T, mc_samples=600, seed=4, conditional=True, demand=50.0
     )
-    plain = rbd.availability(T, mc_samples=6000, seed=9, demand=50.0)
+    plain = rbd.availability(
+        T, mc_samples=6000, seed=9, demand=50.0, conditional=False
+    )
     assert sorted(run.capacity_time) == sorted(plain.capacity_time)
     for level, spent in plain.capacity_time.items():
         mine = run.capacity_time[level] / (run.n_simulations * T)
@@ -683,7 +795,7 @@ def test_a_control_variate_on_the_modules():
     assert run.control_variate is not None
     assert run.control_variate.variance_reduction >= 1.0
     assert run.cost.control_variate is not None
-    plain = rbd.availability(T, mc_samples=10000, seed=8)
+    plain = rbd.availability(T, mc_samples=10000, seed=8, conditional=False)
     a, b = run.mean_availability_interval(), plain.mean_availability_interval()
     assert (
         abs(z(a.estimate, b.estimate, a.standard_error, b.standard_error)) < 4

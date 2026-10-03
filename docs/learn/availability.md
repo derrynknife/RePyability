@@ -274,8 +274,9 @@ $$
 `tolerance` does this for you: it runs `mc_samples` histories, checks the
 interval, and runs another `mc_samples` until the interval is narrow enough.
 (A pump on its own has an exact mean availability, worked out below, and by
-default a run to a tolerance would take it and stop at once; to watch the
-simulation converge, `control_variate=False` makes it simulate.)
+default a run takes it, so one to a tolerance stops at once; to watch the
+simulation converge, `control_variate=False` makes it simulate, and keeps
+the simulations' own mean.)
 
 ```python
 precise = one_pump.availability(t_simulation=5.0, mc_samples=10_000, seed=0,
@@ -330,7 +331,8 @@ genuine histories, but they tend to err in opposite directions, so a pair's
 average is closer to the truth than two unrelated histories' would be:
 
 ```python
-paired = one_pump.availability(t_simulation=5.0, mc_samples=10_000, seed=0, antithetic=True)
+paired = one_pump.availability(t_simulation=5.0, mc_samples=10_000, seed=0,
+                               antithetic=True, control_variate=False)
 paired.mean_availability_interval().standard_error   # -> 0.0012   0.0014 without pairs
 ```
 

@@ -94,6 +94,17 @@
   order in the loop goes into `paths` too. `test_conditional.py` checks
   each simulation's values against closed forms from its module's
   history, and the estimates against plain runs.
+- **A run's means are exact or conditional by default (#187, #189).**
+  `availability()` and `cost()` take the exact methods' expected values
+  where they work them out (`_exact_means`, as the controls of the system
+  itself), and otherwise, where a conditional run applies, each
+  simulation's expected values given its modules' histories
+  (`_conditioned_run`, the modules simulated again from the run's
+  entropy); `availability_from_chunks` gives merged chunks the same
+  (`_default_means`). The simulations are a plain run's either way. A test
+  that checks the simulation against the exact methods must run plainly
+  (`control_variate=False`), or it compares the exact values with
+  themselves.
 - **The random streams (`repyability/rbd/_streams.py`) define every seeded
   result.** Changing how a stream is named, seeded or laid out (its width,
   `BLOCK_DRAWS`, `MAX_WIDTH`, `first_rows`, the expected draws in

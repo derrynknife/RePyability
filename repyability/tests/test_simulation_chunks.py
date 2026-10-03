@@ -12,6 +12,7 @@ import pytest
 import surpyval as surv
 
 from repyability import NonRepairableRBD, RepairableRBD, SimulationChunk
+from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd._exact import ExactSum, expansion
 from repyability.rbd.repairable_rbd import _group_totals, _Tally
 
@@ -180,9 +181,14 @@ def test_antithetic_chunks_hold_whole_pairs():
     ]
     merged = rbd.availability_from_chunks(chunks)
     assert same_result(merged, whole)
-    assert (
-        merged.mean_availability_interval().standard_error
-        == whole.mean_availability_interval().standard_error
+    # Their pairs are the run's: the plain run's interval is theirs.
+    plain = rbd.availability(
+        100.0, mc_samples=400, seed=3, antithetic=True, control_variate=False
+    )
+    assert montecarlo.standard_error(
+        merged.uptimes / 100.0, True
+    ) == pytest.approx(
+        plain.mean_availability_interval().standard_error, rel=1e-15
     )
     with pytest.raises(ValueError, match="even"):
         rbd.simulate_chunk(100.0, 0, 151, seed=3, antithetic=True)

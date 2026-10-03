@@ -50,7 +50,9 @@ def test_a_timeline_worked_by_hand():
             ),
         }
     )
-    result = rbd.availability(200.0, mc_samples=2, seed=1)
+    result = rbd.availability(
+        200.0, mc_samples=2, seed=1, control_variate=False
+    )
     assert result.mean_availability_interval().estimate == pytest.approx(
         192.0 / 200.0
     )
@@ -186,7 +188,9 @@ def test_a_constant_hazard_does_not_age(threshold, replaced):
     else:
         assert replacements == 0.0
     # Memoryless: replacing it or not, it is up as often.
-    availability = single(spec).availability(20_000.0, mc_samples=20, seed=5)
+    availability = single(spec).availability(
+        20_000.0, mc_samples=20, seed=5, control_variate=False
+    )
     assert availability.mean_availability_interval().estimate == (
         pytest.approx(0.5 / (0.5 + 0.01), abs=2e-3)
     )
@@ -237,7 +241,9 @@ def test_the_long_run_values_match_a_direct_simulation():
         }
     )
     until = 20_000.0
-    result = rbd.availability(until, mc_samples=60, seed=5)
+    result = rbd.availability(
+        until, mc_samples=60, seed=5, control_variate=False
+    )
     estimate = result.mean_availability_interval()
     rng = np.random.default_rng(7)
     direct = np.array(
@@ -304,7 +310,11 @@ def test_the_values_over_time_are_numerical_and_the_spares_simulated():
         {"a": WORN, "c": dict(WORN, preventive=on_condition(0.1))},
     )
     simulated = held.availability(
-        500.0, working_nodes=["c"], mc_samples=10, seed=1
+        500.0,
+        working_nodes=["c"],
+        mc_samples=10,
+        seed=1,
+        control_variate=False,
     )
     assert simulated.mean_availability_interval().estimate == 1.0
 

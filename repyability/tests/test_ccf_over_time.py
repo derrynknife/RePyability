@@ -308,7 +308,7 @@ def simulated_cases():
 def test_the_simulation_agrees(name):
     rbd = simulated_cases()[name]
     T, n = 3000.0, 6000
-    result = rbd.availability(T, mc_samples=n, seed=3)
+    result = rbd.availability(T, mc_samples=n, seed=3, control_variate=False)
     interval = result.mean_availability_interval()
     exact = rbd.mission_availability(T)
     assert abs(interval.estimate - exact) < 4.0 * interval.standard_error
@@ -465,7 +465,7 @@ def test_what_the_chains_need_not_the_simulation(components):
         assert routes["mean_availability"].route == r.REFUSED
         assert routes["availability"].route == r.SIMULATED
         interval = rbd.availability(
-            20000.0, mc_samples=400, seed=3
+            20000.0, mc_samples=400, seed=3, control_variate=False
         ).mean_availability_interval()
         z = (interval.estimate - plain.mean_availability()) / (
             interval.standard_error

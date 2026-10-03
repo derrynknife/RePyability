@@ -332,7 +332,7 @@ def test_the_expected_cost_is_what_the_simulation_estimates(name):
     rbd = systems()[name]
     t = 3000.0
     exact = rbd.expected_cost(t)
-    simulated = rbd.cost(t, mc_samples=3000, seed=11)
+    simulated = rbd.cost(t, mc_samples=3000, seed=11, control_variate=False)
     interval = simulated.mean_interval(0.999)
     assert interval.lower <= exact.mean <= interval.upper
     assert sum(exact.by_category.values()) == pytest.approx(exact.mean)

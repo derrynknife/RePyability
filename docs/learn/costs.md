@@ -265,10 +265,15 @@ independent windows of
 `t_simulation` hours, each starting with every component new and working. It
 charges every price as it falls due and returns a
 [`CostResult`][repyability.CostResult] holding one total cost per window in
-`samples`. Take `N = 400` years:
+`samples`. Take `N = 400` years. (The plant's expected cost over a window
+is exact too, `plant.expected_cost(8760.0)`, and by default a run's
+`mean_interval` is that cost, with no error; this lesson is about the
+simulation's own error, so its runs pass `control_variate=False`, which
+keeps the simulations' own.)
 
 ```python
-year = plant.cost(t_simulation=8760.0, mc_samples=400, seed=0)
+year = plant.cost(t_simulation=8760.0, mc_samples=400, seed=0,
+                  control_variate=False)
 year.mean              # -> 1058918.3   mean cost of a year
 year.cost_rate         # -> 120.88      the mean per hour, against the exact 121.23
 year.std               # -> 58061.7     how much one year's cost varies
@@ -333,7 +338,8 @@ Run a quick 100 years with the same seed, which are the first 100 of the
 400, and compare them with the 400:
 
 ```python
-quick = plant.cost(t_simulation=8760.0, mc_samples=100, seed=0)
+quick = plant.cost(t_simulation=8760.0, mc_samples=100, seed=0,
+                   control_variate=False)
 quick.std              # -> 56910.1
 quick.percentile(90)   # -> 1128018.5
 quick.mean_se          # -> 5691.0
@@ -372,7 +378,8 @@ per hour. For this plant the first effect is larger, so a short window costs
 less per hour. An 8-hour shift shows it:
 
 ```python
-shift = plant.cost(t_simulation=8.0, mc_samples=10_000, seed=0)
+shift = plant.cost(t_simulation=8.0, mc_samples=10_000, seed=0,
+                   control_variate=False)
 shift.cost_rate                             # -> 111.5   per hour, against 121.23
 shift.by_category["system_downtime"] / 8    # -> 35.7    lost production per hour, against 46.41
 shift_interval = shift.mean_interval(0.95)

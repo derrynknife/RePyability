@@ -89,7 +89,9 @@ def test_a_timeline_worked_by_hand():
         (197.5, False),
         (200.0, False),
     ]
-    result = rbd.availability(200.0, mc_samples=2, seed=1)
+    result = rbd.availability(
+        200.0, mc_samples=2, seed=1, control_variate=False
+    )
     assert result.mean_availability_interval().estimate == pytest.approx(
         157.5 / 200.0
     )
@@ -181,7 +183,7 @@ def test_a_wearing_unit_does_worse_the_less_a_repair_restores(model):
     availability, failures = [], []
     for q in (0.0, 0.25, 0.5, 0.75, 1.0):
         result = single(dict(WORN, **kijima(model, q))).availability(
-            1000.0, mc_samples=300, seed=4
+            1000.0, mc_samples=300, seed=4, control_variate=False
         )
         availability.append(result.mean_availability_interval().estimate)
         failures.append(result.system_failures)
@@ -235,7 +237,9 @@ def test_a_nested_diagram_repairs_imperfectly_too():
         }
     )
     parent = RepairableRBD([("s", "x"), ("x", "t")], {"x": inner})
-    result = parent.availability(200.0, mc_samples=2, seed=1)
+    result = parent.availability(
+        200.0, mc_samples=2, seed=1, control_variate=False
+    )
     assert result.mean_availability_interval().estimate == pytest.approx(
         157.5 / 200.0
     )

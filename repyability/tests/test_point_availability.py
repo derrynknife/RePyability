@@ -304,7 +304,9 @@ def test_age_replacement_matches_the_simulation():
     )
     rbd = pair(spec, dict(spec))
     T = 100.0
-    result = rbd.availability(T, mc_samples=20_000, seed=5)
+    result = rbd.availability(
+        T, mc_samples=20_000, seed=5, control_variate=False
+    )
     window = result.mean_availability_interval(confidence=0.999)
     assert window.lower <= rbd.mission_availability(T) <= window.upper
     lower, upper = result.availability_interval(confidence=0.999)
@@ -471,7 +473,9 @@ def test_a_nested_rbd_is_its_own_structure_function():
 def test_matches_the_simulation(name):
     rbd = repairable_rbds()[name]
     T = 200.0
-    result = rbd.availability(T, mc_samples=4000, seed=11)
+    result = rbd.availability(
+        T, mc_samples=4000, seed=11, control_variate=False
+    )
     window = result.mean_availability_interval(confidence=0.999)
     assert window.lower <= rbd.mission_availability(T) <= window.upper
     lower, upper = result.availability_interval(confidence=0.999)

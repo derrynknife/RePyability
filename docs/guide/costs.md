@@ -403,7 +403,7 @@ inspected = RepairableRBD([("s", "p"), ("p", "t")],
                           downtime_cost_rate=500.0)
 inspected.expected_cost_rate()              # -> 13.37   per hour
 run = inspected.cost(200_000.0, mc_samples=20, seed=1)
-run.mean_interval().estimate / 200_000.0    # -> 13.28   simulated, ± 0.2
+run.mean / 200_000.0                        # -> 13.28   simulated, ± 0.2
 ```
 
 | Threshold | 0.05 | 0.1 | 0.15 | 0.2 | 0.25 | 0.3 |

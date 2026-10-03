@@ -681,6 +681,520 @@ def _module_shards(
     )
 
 
+class _ModuleRun:
+    """A system's dependent modules simulated alone, and every other node
+    taken exactly given their joint states (#189, see ``_conditional``):
+    the machinery of a conditional run (``RepairableRBD._conditional_run``)
+    and of a plain run's means taken given its modules
+    (``RepairableRBD._conditioned_run``).
+
+    The modules (by default ``_conditional_modules``) are simulated as a
+    diagram of their own (``_modules_rbd``), from their states, whose
+    streams are named as in the system, so that its simulations are the
+    system's modules'. ``prepare`` works out the other nodes' own expected
+    values over the window; ``simulate`` runs a range of simulations,
+    working out the system given each joint state its modules meet once,
+    on a grid; and ``result`` and ``means`` give what they make. The
+    components' curves are built once for the whole run (see
+    ``_curves``)."""
+
+    def __init__(
+        self,
+        rbd: "RepairableRBD",
+        t_simulation: float,
+        working: set,
+        broken: set,
+        method: str,
+        entropy: int,
+        *,
+        antithetic: bool,
+        n_jobs: Optional[int],
+        engine: str,
+        curve_points: Optional[int],
+        state=None,
+        shard_map: Optional[Callable] = None,
+        shard_size: Optional[int] = None,
+        demand: Optional[float] = None,
+        capacities: bool = False,
+        control_variate: bool = False,
+        modules: Optional[list] = None,
+    ) -> None:
+        T = _check_window(t_simulation)
+        self.rbd = rbd
+        self.T = T
+        self.working, self.broken, self.method = working, broken, method
+        self.antithetic, self.n_jobs = antithetic, n_jobs
+        states = rbd._simulation_states(state, working | broken)
+        if modules is None:
+            modules = rbd._conditional_modules(working, broken)
+        self.modules = modules
+        self.module_states = {
+            node: states[node] for node in modules if node in states
+        }
+        self.entropy = entropy
+        self.engine = engine
+        self.sub = rbd._modules_rbd(modules) if modules else None
+        self.recorder = _CapacityRecorder(rbd, demand) if capacities else None
+        self.capacity_given: Dict[int, _conditional.CapacityGiven] = {}
+        self.capacity_parts: List[_conditional.CapacityValues] = []
+        self.shards = None
+        if self.sub is not None and shard_map is not None:
+            plan, _ = self.sub._stream_plan(
+                T, entropy, antithetic, None, self.module_states
+            )
+            template = {
+                **self.sub._shard_template(
+                    T,
+                    entropy,
+                    set(),
+                    set(),
+                    "p",
+                    antithetic,
+                    None,
+                    self.engine,
+                    self.module_states,
+                    None,
+                ),
+                "histories": True,
+            }
+            self.shards = (
+                shard_map,
+                template,
+                self.sub._shard_size(plan, shard_size),
+            )
+        # The exact twin's stand-ins for the modules, with common random
+        # numbers, and its exact expected values.
+        self.twin_sub: Optional["RepairableRBD"] = None
+        self.widths: Optional[dict] = None
+        self.twin_module_states: dict = {}
+        self.exacts: Tuple[float, Optional[float]] = (0.0, None)
+        if control_variate and self.sub is not None:
+            if self.shards is not None:
+                raise ValueError(
+                    "A run with control_variate simulates the system's twin "
+                    "alongside it, here: leave out shard_map."
+                )
+            twin, _ = rbd._twin()
+            self.exacts = rbd._twin_exact(
+                twin, T, working, broken, method, state
+            )
+            self.twin_sub = twin._modules_rbd(modules)
+            twin_states = twin._simulation_states(state, working | broken)
+            self.twin_module_states = {
+                node: twin_states[node]
+                for node in modules
+                if node in twin_states
+            }
+            self.widths = self.sub._common_widths(
+                self.twin_sub, T, self.module_states, self.twin_module_states
+            )
+        self.twin_uptimes: List[np.ndarray] = []
+        self.twin_costs: List[np.ndarray] = []
+        self.curve_x = _conditional.steps(curve_points, T)
+        self.given: Dict[int, _conditional.Given] = {}
+        self.parts: List[Tuple[int, _conditional.Values]] = []
+        self.module_up = np.zeros(len(modules))
+        self.priced = rbd.has_costs
+        self.own_costs: List[np.ndarray] = []
+        self.own_categories = dict.fromkeys(_CATEGORIES, 0.0)
+        self.own_components: Dict[Hashable, float] = {}
+        self.fixed = set(modules)
+        # The other nodes' states, as given (the modules are held).
+        self.other_states = (
+            None
+            if state is None
+            else {
+                node: value
+                for node, value in state.items()
+                if node not in self.fixed
+            }
+        )
+        # The rest given the modules, every node the crews serve among them.
+        self.exact = rbd._crew_free()
+        self._memo: dict = {}
+        self.n = 0
+
+    @contextmanager
+    def _curves(self):
+        """Within it, the exact part's curves are shared, as within
+        ``RepairableRBD._sharing_curves``, and kept from one round of
+        simulations to the next; out of it, the system holds none, so that
+        a plain run of it between rounds can go to other processes."""
+        exact = self.exact
+        if exact._curve_memo is not None:
+            yield
+            return
+        exact._curve_memo = self._memo
+        try:
+            yield
+        finally:
+            exact._curve_memo = None
+
+    def prepare(self) -> None:
+        """The other nodes' own expected down times and costs over the
+        window, which do not depend on the modules, and the grid the
+        system given each joint state is worked out on."""
+        exact, T = self.exact, self.T
+        with self._curves():
+            _, _, curves, self.totals, _, _ = exact._window(
+                np.array([T]),
+                self.working | self.fixed,
+                self.broken,
+                self.method,
+                nodes=True,
+                state=self.other_states,
+            )
+            self.exact_cost = (
+                exact.expected_cost(
+                    T,
+                    self.working | self.fixed,
+                    self.broken,
+                    self.method,
+                    state=self.other_states,
+                )
+                if self.priced
+                else None
+            )
+        self.others = (
+            0.0
+            if self.exact_cost is None
+            else math.fsum(
+                float(np.ravel(value)[0])
+                for key, value in self.exact_cost.by_category.items()
+                if key != "system_downtime"
+            )
+        )
+        self.x = _conditional.grid(
+            T, [curve_breaks(curve, 0.0, T) for curve in curves.values()]
+        )
+
+    def _given(self, paths: "_conditional.Paths") -> None:
+        """The system given each joint state ``paths`` meet, not worked
+        out yet."""
+        new = [
+            state for state in paths.states.tolist() if state not in self.given
+        ]
+        if not new:
+            return
+        with self._curves():
+            for state in new:
+                self.given[state] = self.exact._conditional_given(
+                    self.modules,
+                    state,
+                    self.working,
+                    self.broken,
+                    self.method,
+                    self.x,
+                    self.other_states,
+                )
+                if self.recorder is not None:
+                    self.capacity_given[state] = self.exact._capacity_given(
+                        self.modules,
+                        state,
+                        self.working,
+                        self.broken,
+                        self.x,
+                        self.other_states,
+                        self.recorder.demand,
+                    )
+
+    def simulate(self, first: int, count: int) -> None:
+        """Simulations ``first`` to ``first + count - 1``: the modules'
+        histories and own costs, and each simulation's expected values
+        given them (and its twin's, if controlled)."""
+        T, modules = self.T, self.modules
+        histories: List[Any] = []
+        simulated = np.zeros(count)
+        if self.shards is not None:
+            histories, simulated, spent_on, by_module = _module_shards(
+                *self.shards, first, count, len(modules)
+            )
+            for key, spent in spent_on.items():
+                self.own_categories[key] += spent
+            for node, spent in zip(modules, by_module):
+                if spent is not None:
+                    self.own_components[node] = (
+                        self.own_components.get(node, 0.0) + spent
+                    )
+        elif self.sub is not None:
+            # The modules' histories, and their own costs in the same
+            # simulations.
+            data, tally = _timeline_runs.with_costs(
+                self.sub,
+                T,
+                count,
+                None,
+                self.antithetic,
+                self.engine,
+                self.n_jobs,
+                first,
+                self.module_states,
+                entropy=self.entropy,
+                widths=self.widths,
+            )
+            histories = [data[node] for node in modules]
+            if self.sub.has_costs:
+                tally._fold()
+                simulated = np.asarray(tally.cost_samples, dtype=float)
+                for key, spent in tally.cost_by_category.items():
+                    self.own_categories[key] += float(spent)
+                for node, spent in tally.cost_by_component.items():
+                    self.own_components[node] = self.own_components.get(
+                        node, 0.0
+                    ) + float(spent)
+        paths = _conditional.paths(histories, count, T)
+        self._given(paths)
+        self.parts.append(
+            (count, _conditional.values(paths, self.given, self.curve_x))
+        )
+        if self.recorder is not None:
+            self.capacity_parts.append(
+                _conditional.capacity_values(
+                    paths, self.capacity_given, self.curve_x
+                )
+            )
+        if self.twin_sub is not None:
+            # The twin's modules in the same simulations: the other nodes
+            # are the same, and so is the system given them.
+            data, tally = _timeline_runs.with_costs(
+                self.twin_sub,
+                T,
+                count,
+                None,
+                self.antithetic,
+                self.engine,
+                self.n_jobs,
+                first,
+                self.twin_module_states,
+                entropy=self.entropy,
+                widths=self.widths,
+            )
+            twin_paths = _conditional.paths(
+                [data[node] for node in modules], count, T
+            )
+            self._given(twin_paths)
+            twin_uptime = _conditional.values(
+                twin_paths, self.given, self.curve_x
+            ).uptime
+            self.twin_uptimes.append(twin_uptime)
+            spent = np.zeros(count)
+            if self.twin_sub.has_costs:
+                tally._fold()
+                spent = np.asarray(tally.cost_samples, dtype=float)
+            self.twin_costs.append(
+                spent
+                + self.others
+                + self.rbd.downtime_cost_rate * (T - twin_uptime)
+            )
+        self.module_up += _conditional.module_totals(histories, count, T)[0]
+        self.own_costs.append(simulated)
+        self.n = first + count
+
+    def uptimes(self) -> np.ndarray:
+        """Each simulation's expected up time given its modules."""
+        return np.concatenate([values.uptime for _, values in self.parts])
+
+    def costs(self) -> np.ndarray:
+        """Each simulation's expected cost given its modules: their own
+        costs, the other nodes' expected costs, and the system's expected
+        down time's."""
+        return (
+            np.concatenate(self.own_costs)
+            + self.others
+            + self.rbd.downtime_cost_rate * (self.T - self.uptimes())
+        )
+
+    def controls(
+        self,
+    ) -> Tuple[Optional[ControlVariate], Optional[ControlVariate]]:
+        """The controls of the fractions up and of the costs, if the run is
+        controlled (the latter if priced)."""
+        if self.twin_sub is None:
+            return None, None
+        control = ControlVariate.of(
+            self.uptimes() / self.T,
+            np.concatenate(self.twin_uptimes) / self.T,
+            self.exacts[0],
+            self.antithetic,
+        )
+        cost_control = None
+        if self.priced and self.exacts[1] is not None:
+            cost_control = ControlVariate.of(
+                self.costs(),
+                np.concatenate(self.twin_costs),
+                self.exacts[1],
+                self.antithetic,
+            )
+        return control, cost_control
+
+    def judged(self, target: str) -> np.ndarray:
+        """The values a run to a tolerance judges: of the ``target``'s mean
+        (see ``_stopping_rule``), controlled if the run is."""
+        control, cost_control = self.controls()
+        if target == "cost":
+            values = self.costs()
+            return (
+                values
+                if cost_control is None
+                else cost_control.controlled(values)
+            )
+        values = self.uptimes() / self.T
+        return values if control is None else control.controlled(values)
+
+    def means(self) -> ConditionalRun:
+        """The record of a plain run whose means are taken given its
+        modules (see ``RepairableRBD._conditioned_run``)."""
+        return ConditionalRun(
+            tuple(self.modules),
+            len(self.given),
+            whole=True,
+            uptimes=self.uptimes(),
+            costs=self.costs() if self.priced else None,
+        )
+
+    def result(self) -> AvailabilityResult:
+        """The conditional run's result (see
+        ``RepairableRBD._conditional_run``)."""
+        rbd, T, n = self.rbd, self.T, self.n
+        parts, curve_x = self.parts, self.curve_x
+        uptimes = self.uptimes()
+        failures = np.concatenate([v.failures for _, v in parts])
+        planned = np.concatenate([v.planned for _, v in parts])
+        restorations = np.concatenate([v.restorations for _, v in parts])
+        curve = np.zeros(curve_x.size)
+        square = np.zeros(curve_x.size)
+        for size, part in parts:
+            curve += size * part.curve / n
+            square += size * part.curve_square / n
+        down = self.totals["downtime"]
+        node_downtime: Dict[Hashable, float] = {}
+        for node in rbd.components:
+            if node in self.working:
+                node_downtime[node] = 0.0
+            elif node in self.broken:
+                node_downtime[node] = n * T
+            elif node in self.fixed:
+                j = self.modules.index(node)
+                node_downtime[node] = n * T - float(self.module_up[j])
+            else:
+                node_downtime[node] = n * float(np.ravel(down[node])[0])
+        node_uptime = {
+            node: n * T - value for node, value in node_downtime.items()
+        }
+        record = ConditionalRun(tuple(self.modules), len(self.given), square)
+        control, cost_control = self.controls()
+        cost_result = None
+        if self.priced:
+            exact_cost = self.exact_cost
+            assert exact_cost is not None
+            system_down = rbd.downtime_cost_rate * (T - uptimes)
+            samples = self.costs()
+            by_category = {
+                key: self.own_categories[key] / n
+                + (
+                    0.0
+                    if key == "system_downtime"
+                    else float(
+                        np.ravel(exact_cost.by_category.get(key, 0.0))[0]
+                    )
+                )
+                for key in _CATEGORIES
+            }
+            by_category["system_downtime"] = float(np.mean(system_down))
+            by_component = {
+                node: float(np.ravel(value)[0])
+                for node, value in exact_cost.by_component.items()
+                if node not in self.fixed
+            }
+            for node, amount in self.own_components.items():
+                by_component[node] = amount / n
+            cost_result = CostResult(
+                samples=samples,
+                t_simulation=T,
+                n_simulations=n,
+                acquisition_cost=rbd.acquisition_cost,
+                by_category=by_category,
+                by_component=by_component,
+                antithetic=self.antithetic,
+                conditional=record,
+                control_variate=cost_control,
+            )
+        capacity_fields: dict = {}
+        if self.recorder is not None:
+            time_at: Dict[float, float] = {}
+            for piece in self.capacity_parts:
+                for level, spent in piece.time_at.items():
+                    time_at[level] = time_at.get(level, 0.0) + spent
+            mean = np.sum(
+                [piece.curve for piece in self.capacity_parts], axis=0
+            )
+            unlimited = np.sum(
+                [piece.unlimited for piece in self.capacity_parts], axis=0
+            )
+            demand = self.recorder.demand
+            capacity_fields = dict(
+                capacity_timeline=curve_x.copy(),
+                capacity=np.where(unlimited > 0, np.inf, mean / n),
+                capacity_time={
+                    level: time_at[level] for level in sorted(time_at)
+                },
+                demand=demand,
+                delivered=(
+                    None
+                    if demand is None
+                    else np.concatenate(
+                        [piece.delivered for piece in self.capacity_parts]
+                    )
+                    / (demand * T)
+                ),
+            )
+        return AvailabilityResult(
+            timeline=curve_x,
+            availability=curve,
+            system_uptime=float(math.fsum(uptimes)),
+            time_simulated_to=T,
+            criticalities=None,
+            node_uptime=node_uptime,
+            node_downtime=node_downtime,
+            system_downtime=float(n * T - math.fsum(uptimes)),
+            system_failures=float(math.fsum(failures)),
+            system_restorations=float(math.fsum(restorations)),
+            n_simulations=n,
+            cost=cost_result,
+            system_planned_outages=float(math.fsum(planned)),
+            uptimes=uptimes,
+            antithetic=self.antithetic,
+            conditional=record,
+            control_variate=control,
+            **capacity_fields,
+        )
+
+
+def _exact_controls(
+    tally: "_Tally",
+    t_simulation: float,
+    exacts: Tuple[float, Optional[float]],
+    antithetic: bool,
+) -> Tuple[ControlVariate, Optional[ControlVariate]]:
+    """The controls of a run's fractions up and costs by the system itself,
+    whose expected values the exact methods work out (#187): ``exacts``,
+    its mean availability over the window and its expected cost (None
+    unpriced). Its intervals are then those values, with no error (see
+    ``ControlVariate.itself``)."""
+    exact, exact_cost = exacts
+    fractions = np.asarray(tally.uptimes, dtype=float) / t_simulation
+    control = ControlVariate.of(
+        fractions, fractions, exact, antithetic, itself=True
+    )
+    cost_control = None
+    if exact_cost is not None:
+        costs = np.asarray(tally.cost_samples, dtype=float)
+        cost_control = ControlVariate.of(
+            costs, costs, exact_cost, antithetic, itself=True
+        )
+    return control, cost_control
+
+
 def _shard_bytes(template: dict, start: int, stop: int) -> bytes:
     """A shard (see ``RepairableRBD.shards``): the run's ``template`` with
     the range of its simulations, as JSON."""
@@ -9712,34 +10226,33 @@ class RepairableRBD(RBD):
         )
         twin = self._twin_report()
         # The expected values over the window, where the methods over time
-        # work them out, need no simulation (#187).
+        # work them out, need no simulation, and a run takes them (#187).
         exact_means = ""
         if all(
             out[name].route in (r.EXACT, r.NUMERICAL)
             for name in ("mission_availability", "expected_events")
+            + (("expected_cost",) if self.has_costs else ())
         ):
             exact_means = (
                 " Its expected values over the window need none: "
                 "mission_availability, expected_events and expected_cost "
-                "work them out"
-                + (
-                    ", and a run to a tolerance takes them, its twin being "
-                    "itself (control_variate)"
-                    if twin.startswith("the system itself")
-                    else ""
-                )
-                + ". Simulate for their spread: each simulation's values, "
+                "work them out, and by default a run's mean intervals are "
+                "theirs, with no error, so a run to a tolerance stops at "
+                "once. Simulate for their spread: each simulation's values, "
                 "percentiles, the chance of no failure."
             )
-        # Or a conditional run (#189) simulates only what needs it.
+        # Or a run's means are taken given its modules' histories (#189).
         if not exact_means:
             modules = self._conditional_applies()
             if modules:
+                names = ", ".join(map(repr, modules))
                 exact_means = (
-                    " With conditional=True, its expected values over the "
-                    f"window are estimated simulating only "
-                    f"{', '.join(map(repr, modules))}, the rest exact given "
-                    "their states."
+                    " By default a run's mean intervals take each "
+                    "simulation's expected values given the histories of "
+                    f"{names}, the rest exact given their states, which "
+                    "vary less than its own; with conditional=True only "
+                    f"{names} are simulated, for those means at a fraction "
+                    "of the work, and no spread."
                 )
         for name in ("availability", "cost"):
             if out[name].route == r.SIMULATED:
@@ -14027,7 +14540,7 @@ class RepairableRBD(RBD):
         shard_map: Optional[Callable] = None,
         shard_size: Optional[int] = None,
         control_variate: Optional[bool] = None,
-        conditional: bool = False,
+        conditional: Optional[bool] = None,
     ) -> AvailabilityResult:
         """Simulate the system's availability over ``[0, t_simulation]``.
 
@@ -14213,11 +14726,17 @@ class RepairableRBD(RBD):
             ``size``, by default as many as make 1024 or more.
         control_variate : bool, optional
             Control the estimate of the mean availability by the system's
-            exact twin. By default None: for a run to a ``tolerance`` on a
-            system that is its own twin, whose expected values over the
-            window are then exact (see below), True, so that the run stops
-            at once; otherwise False. False forces a plain simulation. The
-            twin has the same diagram,
+            exact twin. By default None: where the exact methods work out
+            the system's expected values over the window
+            (``mission_availability``, and ``expected_cost`` its cost), as
+            for independent components, the result's mean intervals are
+            those values, with no error, its twin being the system itself
+            (#187), and a run to a ``tolerance`` stops at once; otherwise
+            its means may be taken given its modules (see
+            ``conditional``). False forces a plain simulation, whose
+            intervals are the simulations' own. True controls the run by
+            the twin, whose simulations are then alongside. The twin has
+            the same diagram,
             components and models, failing and repaired independently:
             without a limit on repair crews or maintenance groups and,
             component by component, without what the exact methods over
@@ -14239,38 +14758,49 @@ class RepairableRBD(RBD):
             is the simulations' own. Every draw must come from a stream
             (surpyval parametric models), the streams are laid out as
             ``compare`` lays them, so a seeded run's simulations can differ
-            from those of a run without it, and it does not run with
-            ``shard_map``. See
+            from those of a run without it, and it runs with ``shard_map``
+            only when the twin is the system itself. See
             [An exact twin](guide/simulation.md#an-exact-twin).
         conditional : bool, optional
-            Simulate only the dependent modules, and take the rest exactly
-            given their states (#189), by default False. The modules are
-            the nodes whose values over time the exact methods do not work
-            out (a standby group of other lives, a nested RBD that needs
-            simulating, imperfect repair, a maintenance group's members:
-            ``analysis_routes`` names them); every other node is
-            independent of them, so given their states at ``t`` the system
-            is up with the probability that its availability with them held
-            so gives, and each simulation contributes its expected values
-            given its modules' histories. Their mean is the window's
-            expected value, without bias and with less variance than a
-            plain run's (the independent nodes' share is gone), and each
-            simulation costs only its modules' events: for a run to a
-            ``tolerance`` on a large system, a fraction of the work. But
-            each simulation's values are expected values, whose spread is
-            less than a window's own: the result's ``uptimes``, totals and
-            counts (floats), its curve (on a grid of ``curve_points`` steps,
-            by default 1000) and its cost's ``samples`` are means, the
-            cost's ``percentile`` and ``std`` refuse, and ``criticalities``
-            is None (see [`ConditionalRun`][repyability.ConditionalRun]).
-            The modules are simulated as in a plain run with the same
-            seed, by ``engine``, on ``n_jobs``, and in antithetic pairs if
-            asked; the exact part is worked out once for each joint state of
-            the modules the simulations meet, on a grid, to about 1e-8 of
-            the window. Not with limited repair crews that tie the
-            components together, a maintenance group that stops at every
-            outage of the system (``"system_down"``), a ``state``,
-            capacities, ``shard_map`` or ``control_variate``.
+            Take the expected values given the histories of the dependent
+            modules (#189). The modules are the nodes whose values over
+            time the exact methods do not work out (a standby group of
+            other lives, a nested RBD that needs simulating, imperfect
+            repair, a maintenance group's members, the nodes limited repair
+            crews serve: ``analysis_routes`` names them); every other node
+            is independent of them, so given their states at ``t`` the
+            system is up with the probability that its availability with
+            them held so gives, and each simulation's expected values given
+            its modules' histories are exact. Their mean is the window's
+            expected value, without bias and with less variance than the
+            simulations' own (the independent nodes' share is gone). By
+            default None: where the system has modules and the exact
+            methods do not take it whole (see ``control_variate``), the
+            whole system is simulated as a plain run simulates it, and its
+            mean intervals (``mean_availability_interval``, the cost's
+            ``mean_interval``) are those of its simulations' expected
+            values given their modules, which are simulated again alone,
+            drawing what they drew; a run to a ``tolerance`` is judged on
+            them, and everything else is the simulations' own (see
+            [`ConditionalRun`][repyability.ConditionalRun]). False keeps
+            the simulations' own means. True simulates only the modules,
+            which costs only their events: for a run to a ``tolerance`` on a
+            large system, a fraction of the work. But each simulation's
+            values are then expected values, whose spread is less than a
+            window's own: the result's ``uptimes``, totals and counts
+            (floats), its curve (on a grid of ``curve_points`` steps, by
+            default 1000) and its cost's ``samples`` are means, the cost's
+            ``percentile`` and ``std`` refuse, and ``criticalities`` is
+            None; a ``state``, capacities (each level's expected time, and
+            the delivered fraction), ``shard_map`` and ``control_variate``
+            (by the twin's stand-ins for the modules) are taken too. The
+            modules are simulated as in a plain run with the same seed, by
+            ``engine``, on ``n_jobs``, and in antithetic pairs if asked;
+            the exact part is worked out once for each joint state of the
+            modules the simulations meet, on a grid, to about 1e-8 of the
+            window. Not where limited repair crews serve every component,
+            or a maintenance group stops at every outage of the system
+            (``"system_down"``), when a run's means are its own.
             See [Conditional runs](guide/simulation.md#conditional-runs).
 
         Returns
@@ -14295,9 +14825,9 @@ class RepairableRBD(RBD):
             a tolerance or below ``mc_samples``, ...); or if a ``demand`` is
             not a positive, finite number, or is
             given for an RBD with no capacities; or if ``shard_map`` is not
-            callable or comes with ``n_jobs`` or ``control_variate``, or
-            ``shard_size`` is not a whole number at least 1 or comes without
-            ``shard_map``.
+            callable or comes with ``n_jobs``, or with ``control_variate``
+            for a twin other than the system itself, or ``shard_size`` is
+            not a whole number at least 1 or comes without ``shard_map``.
         NotImplementedError
             With ``antithetic``, if a component's draws cannot be replayed;
             with capacities, if a node takes its capacity from its model;
@@ -14306,9 +14836,8 @@ class RepairableRBD(RBD):
             be saved as JSON; with ``control_variate``, if the system has
             no exact twin (a component's model is a probability, or its
             life is simulated) or a draw cannot come from a stream; with
-            ``conditional``, if the system's other nodes cannot be taken
-            exactly given the modules (see ``conditional``), or with a
-            ``state`` or capacities.
+            ``conditional=True``, if the system's other nodes cannot be
+            taken exactly given the modules (see ``conditional``).
         ImportError
             With ``engine="numba"``, if numba is not installed.
 
@@ -15056,6 +15585,7 @@ class RepairableRBD(RBD):
                 "The chunks were simulated with another system (or with "
                 "this one saved by another RePyability version)."
             )
+        working = set(settings["working_nodes"])
         broken = set(settings["broken_nodes"])
         capacity = None
         if self._has_capacity():
@@ -15066,13 +15596,75 @@ class RepairableRBD(RBD):
                 settings["method"],
             )
         )
+        # The means the run's result takes by default (#187, #189).
+        controls, record = self._default_means(
+            chunk._tally,
+            float(settings["t_simulation"]),
+            working,
+            broken,
+            settings["method"],
+            int(settings["entropy"]),
+            bool(settings["antithetic"]),
+            _states_from_key(self, settings.get("state")),
+            chunk.ranges,
+        )
         return self._availability_result(
             chunk._tally,
             settings["t_simulation"],
             initial_up,
             settings["antithetic"],
             capacity,
+            controls,
+            conditional=record,
         )
+
+    def _default_means(
+        self,
+        tally: "_Tally",
+        t_simulation: float,
+        working: set,
+        broken: set,
+        method: str,
+        entropy: int,
+        antithetic: bool,
+        state,
+        ranges: List[Tuple[int, int]],
+    ) -> Tuple[Tuple[Optional[ControlVariate], ...], Optional[ConditionalRun]]:
+        """The means the result of a plain run takes by default, for its
+        simulations ``ranges`` in ``tally`` (chunks merged, see
+        ``availability_from_chunks``), as ``availability`` takes them: the
+        exact methods', where they work them out (#187, see
+        ``_exact_controls``), or given the histories of its modules,
+        simulated again from the run's ``entropy`` (#189, see
+        ``_conditioned_run``); else none."""
+        T = t_simulation
+        exact_means = self._exact_means(T, working, broken, method, state)
+        if exact_means is not None:
+            return _exact_controls(tally, T, exact_means, antithetic), None
+        modules = self._conditional_applies(working, broken, state)
+        if not modules:
+            return (None, None), None
+        run = _ModuleRun(
+            self,
+            T,
+            working,
+            broken,
+            method,
+            entropy,
+            antithetic=antithetic,
+            n_jobs=None,
+            engine="auto",
+            curve_points=1,
+            state=state,
+            modules=modules,
+        )
+        try:
+            run.prepare()
+        except NotImplementedError:
+            return (None, None), None
+        for start, stop in ranges:
+            run.simulate(start, stop - start)
+        return (None, None), run.means()
 
     def _fingerprint(self) -> Optional[str]:
         """A hash of this system saved as JSON (with the RePyability
@@ -15453,14 +16045,18 @@ class RepairableRBD(RBD):
         shard_map: Optional[Callable] = None,
         shard_size: Optional[int] = None,
         control_variate: Optional[bool] = None,
-        conditional: bool = False,
+        conditional: Optional[bool] = None,
     ) -> AvailabilityResult:
         """``availability`` (and ``cost``): validate, run the replications
         (serially, in parallel, or as shards through ``shard_map``, until
         converged if asked; with ``control_variate``, alongside the system's
         exact twin; with ``conditional``, of the dependent modules alone,
         see ``_conditional_run``) and build the result, its curve on a grid
-        of ``curve_points`` steps if given."""
+        of ``curve_points`` steps if given. By default its expected values
+        are exact where the system is its own exact twin (#187), and taken
+        given the modules' histories where a conditional run applies
+        (#189, see ``_conditioned_run``)."""
+        t_simulation = _check_window(t_simulation)
         working_nodes = set() if working_nodes is None else set(working_nodes)
         broken_nodes = set() if broken_nodes is None else set(broken_nodes)
         self._validate_node_overrides(working_nodes, broken_nodes)
@@ -15483,9 +16079,12 @@ class RepairableRBD(RBD):
                 f"control_variate must be True or False, got "
                 f"{control_variate!r}."
             )
-        if not isinstance(conditional, (bool, np.bool_)):
+        if conditional is not None and not isinstance(
+            conditional, (bool, np.bool_)
+        ):
             raise ValueError(
-                f"conditional must be True or False, got {conditional!r}."
+                f"conditional must be True, False or None, got "
+                f"{conditional!r}."
             )
         if conditional:
             if demand is not None and not self._has_capacity():
@@ -15513,39 +16112,36 @@ class RepairableRBD(RBD):
                 capacities=target == "availability" and self._has_capacity(),
                 control_variate=bool(control_variate),
             )
-        # By default a run to a tolerance on a system that is its own twin
-        # takes its exact expected values (#187): the run stops at once.
+        # By default the expected values are the exact methods', where they
+        # work them out (#187): a run to a tolerance stops at once.
         auto = control_variate is None
-        if auto:
-            control_variate = (
-                tolerance is not None
-                and shard_map is None
-                and self._is_own_twin()
+        exact_means = (
+            self._exact_means(
+                t_simulation, working_nodes, broken_nodes, method, state
             )
+            if auto
+            else None
+        )
         twin = None
         changes: List[str] = []
         exacts: Optional[Tuple[float, Optional[float]]] = None
         if control_variate:
-            if shard_map is not None:
+            twin, changes = self._twin()
+            if shard_map is not None and changes:
                 raise ValueError(
                     "A run with control_variate simulates the system's twin "
                     "alongside it, here: leave out shard_map."
                 )
-            twin, changes = self._twin()
-            try:
-                exacts = self._twin_exact(
-                    twin,
-                    t_simulation,
-                    working_nodes,
-                    broken_nodes,
-                    method,
-                    state,
-                )
-            except NotImplementedError:
-                if not auto:
-                    raise
-                # Its exact values are out of reach after all: simulate.
-                twin = None
+            exacts = self._twin_exact(
+                twin, t_simulation, working_nodes, broken_nodes, method, state
+            )
+        # Otherwise, by default, its means are taken given the histories of
+        # its modules, where a conditional run applies (#189).
+        modules = (
+            self._conditional_applies(working_nodes, broken_nodes, state)
+            if auto and exact_means is None and conditional is None
+            else []
+        )
         capacity = None
         # Shards follow the capacities whatever the target, as chunks do.
         if (
@@ -15580,6 +16176,40 @@ class RepairableRBD(RBD):
             sharded = (shard_map, template, step)
         jobs = None if n_jobs is None else montecarlo.jobs(n_jobs)
         controls: Tuple[Optional[ControlVariate], ...] = (None, None)
+        if modules:
+            done = self._conditioned_run(
+                modules,
+                t_simulation,
+                working_nodes,
+                broken_nodes,
+                method,
+                N,
+                verbose,
+                seed,
+                antithetic,
+                stop,
+                capacity=capacity,
+                jobs=jobs,
+                n_jobs=n_jobs,
+                engine=engine,
+                state=state,
+                states=states,
+                curve_points=curve_points,
+                target=target,
+                sharded=sharded,
+                shard_map=shard_map,
+                shard_size=shard_size,
+            )
+            if done is not None:
+                tally, record = done
+                return self._availability_result(
+                    tally,
+                    t_simulation,
+                    initial_up,
+                    antithetic,
+                    capacity,
+                    conditional=record,
+                )
         if twin is not None:
             assert exacts is not None
             tally, controls = self._controlled_run(
@@ -15602,6 +16232,7 @@ class RepairableRBD(RBD):
                 curve_points=curve_points,
                 target=target,
                 itself=not changes,
+                sharded=sharded,
             )
         else:
             tally = self._run(
@@ -15613,7 +16244,8 @@ class RepairableRBD(RBD):
                 verbose,
                 seed,
                 antithetic,
-                stop,
+                # Exact means need no more simulations.
+                None if exact_means is not None else stop,
                 capacity=capacity,
                 jobs=jobs,
                 engine=engine,
@@ -15622,9 +16254,31 @@ class RepairableRBD(RBD):
                 curve_points=curve_points,
                 sharded=sharded,
             )
+            if exact_means is not None:
+                controls = _exact_controls(
+                    tally, t_simulation, exact_means, antithetic
+                )
         return self._availability_result(
             tally, t_simulation, initial_up, antithetic, capacity, controls
         )
+
+    def _exact_means(
+        self,
+        t_simulation: float,
+        working: set,
+        broken: set,
+        method: str,
+        state,
+    ) -> Optional[Tuple[float, Optional[float]]]:
+        """The system's own expected values over the window, where the
+        exact methods work them out (#187): its mean availability and, if
+        it is priced, its expected cost (see ``_twin_exact``); else None."""
+        try:
+            return self._twin_exact(
+                self, t_simulation, working, broken, method, state
+            )
+        except NotImplementedError:
+            return None
 
     def _conditional_modules(self, working: set, broken: set) -> list:
         """The nodes a conditional run simulates (#189, see
@@ -15695,22 +16349,25 @@ class RepairableRBD(RBD):
             )
         return [node for node in self.components if node in chosen]
 
-    def _conditional_applies(self) -> list:
+    def _conditional_applies(
+        self, working: Collection = (), broken: Collection = (), state=None
+    ) -> list:
         """The modules a conditional run would simulate (see
-        ``_conditional_modules``), or none if it would refuse: the others
-        must be taken exactly given them, which a structure too meshed for
-        its decision diagram, or common-cause groups the exact methods over
-        time refuse, prevent."""
+        ``_conditional_modules``) with the nodes ``working`` and ``broken``
+        held and from the components' ``state``, or none if it would
+        refuse: the others must be taken exactly given them, which a
+        structure too meshed for its decision diagram, or common-cause
+        groups the exact methods over time refuse, prevent."""
         from repyability.rbd import routes as r
 
         if self._too_meshed() is not None:
             return []
         if self.ccf_groups and r.refusal(
-            partial(self._require_groups_over_time, {})
+            partial(self._require_groups_over_time, state or {})
         ):
             return []
         try:
-            return self._conditional_modules(set(), set())
+            return self._conditional_modules(set(working), set(broken))
         except NotImplementedError:
             return []
 
@@ -15851,12 +16508,10 @@ class RepairableRBD(RBD):
         capacities: bool = False,
         control_variate: bool = False,
     ) -> AvailabilityResult:
-        """``availability`` (and ``cost``) with ``conditional`` (#189, see
-        ``_conditional``): simulate the modules alone (see
-        ``_modules_rbd``), in rounds while ``stop`` asks for more, and take
-        every other node exactly given their joint states, each worked out
-        once on a grid. The modules' own costs come from the same
-        simulations, kept beside their histories. From the components'
+        """``availability`` (and ``cost``) with ``conditional=True`` (#189,
+        see ``_conditional`` and ``_ModuleRun``): simulate the modules
+        alone, in rounds while ``stop`` asks for more, and take every other
+        node exactly given their joint states. From the components'
         ``state``, the modules start from theirs and the others from
         theirs. With ``shard_map``, the modules' simulations run as shards
         (see ``shards``) wherever it sends them. With ``capacities``, the
@@ -15864,383 +16519,132 @@ class RepairableRBD(RBD):
         ``demand``. With ``control_variate``, the exact twin's stand-ins for
         the modules (see ``_twin``) are simulated alongside them, with
         common random numbers, and each simulation's expected values given
-        theirs, whose mean is the twin's exact one, control the run's
-        (see ``ControlVariate``)."""
-        T = _check_window(t_simulation)
-        states = self._simulation_states(state, working | broken)
-        modules = self._conditional_modules(working, broken)
-        module_states = {
-            node: states[node] for node in modules if node in states
-        }
-        if seed is None:
-            seed = int(np.random.randint(0, 2**32, dtype=np.int64))
-        sub = self._modules_rbd(modules) if modules else None
-        recorder = _CapacityRecorder(self, demand) if capacities else None
-        capacity_given: Dict[int, _conditional.CapacityGiven] = {}
-        capacity_parts: List[_conditional.CapacityValues] = []
-        shards = None
-        if sub is not None and shard_map is not None:
-            entropy = _streams.entropy_of(seed)
-            plan, _ = sub._stream_plan(
-                T, entropy, antithetic, None, module_states
-            )
-            template = {
-                **sub._shard_template(
-                    T,
-                    entropy,
-                    set(),
-                    set(),
-                    "p",
-                    antithetic,
-                    None,
-                    engine,
-                    module_states,
-                    None,
-                ),
-                "histories": True,
-            }
-            shards = (shard_map, template, sub._shard_size(plan, shard_size))
-        # The exact twin's stand-ins for the modules, with common random
-        # numbers, and its exact expected values.
-        twin_sub = None
-        widths: Optional[dict] = None
-        twin_module_states: dict = {}
-        exacts: Tuple[float, Optional[float]] = (0.0, None)
-        if control_variate and sub is not None:
-            if shards is not None:
-                raise ValueError(
-                    "A run with control_variate simulates the system's twin "
-                    "alongside it, here: leave out shard_map."
-                )
-            twin, _ = self._twin()
-            exacts = self._twin_exact(twin, T, working, broken, method, state)
-            twin_sub = twin._modules_rbd(modules)
-            twin_states = twin._simulation_states(state, working | broken)
-            twin_module_states = {
-                node: twin_states[node]
-                for node in modules
-                if node in twin_states
-            }
-            widths = sub._common_widths(
-                twin_sub, T, module_states, twin_module_states
-            )
-        twin_uptimes: List[np.ndarray] = []
-        twin_costs: List[np.ndarray] = []
-        curve_x = _conditional.steps(curve_points, T)
-        given: Dict[int, _conditional.Given] = {}
-        parts: List[Tuple[int, _conditional.Values]] = []
-        module_up = np.zeros(len(modules))
-        priced = self.has_costs
-        own_costs: List[np.ndarray] = []
-        own_categories = dict.fromkeys(_CATEGORIES, 0.0)
-        own_components: Dict[Hashable, float] = {}
-        fixed = set(modules)
-        # The other nodes' states, as given (the modules are held).
-        other_states = (
-            None
-            if state is None
-            else {
-                node: value
-                for node, value in state.items()
-                if node not in fixed
-            }
+        theirs, whose mean is the twin's exact one, control the run's (see
+        ``ControlVariate``)."""
+        run = _ModuleRun(
+            self,
+            t_simulation,
+            working,
+            broken,
+            method,
+            _streams.entropy_of(seed),
+            antithetic=antithetic,
+            n_jobs=n_jobs,
+            engine=engine,
+            curve_points=curve_points,
+            state=state,
+            shard_map=shard_map,
+            shard_size=shard_size,
+            demand=demand,
+            capacities=capacities,
+            control_variate=control_variate,
         )
-        # The rest given the modules, every node the crews serve among them.
-        exact = self._crew_free()
-        with exact._sharing_curves():
-            # The other nodes: their own expected down times and costs over
-            # the window, which do not depend on the modules.
-            _, _, curves, totals, _, _ = exact._window(
-                np.array([T]),
-                working | fixed,
+        run.prepare()
+        first, count = 0, N
+        while True:
+            run.simulate(first, count)
+            first += count
+            if stop is None:
+                break
+            # A run to a tolerance judges the mean asked for (see
+            # _stopping_rule), controlled if it is.
+            count = stop(None, run.judged(target))
+            if not count:
+                break
+        return run.result()
+
+    def _conditioned_run(
+        self,
+        modules: list,
+        t_simulation: float,
+        working: set,
+        broken: set,
+        method: str,
+        N: int,
+        verbose: bool,
+        seed,
+        antithetic: bool,
+        stop: Optional[Callable[..., int]],
+        *,
+        capacity: Optional[_CapacityRecorder],
+        jobs: Optional[int],
+        n_jobs: Optional[int],
+        engine: str,
+        state,
+        states: dict,
+        curve_points: Optional[int],
+        target: str,
+        sharded: Optional[tuple],
+        shard_map: Optional[Callable],
+        shard_size: Optional[int],
+    ) -> Optional[Tuple["_Tally", ConditionalRun]]:
+        """A plain run whose means are taken given its ``modules``'
+        histories (#189), by default where a conditional run applies: the
+        simulations, in rounds while ``stop`` asks for more (judged by
+        those means), and of the same simulations each one's expected up
+        time and cost given the histories of its modules, worked out as a
+        conditional run works them out (see ``_ModuleRun``): the modules'
+        simulations are the plain run's, drawn from the same streams. The
+        simulations' totals, and a record holding those values; or None,
+        before simulating anything, if the rest cannot be worked out
+        exactly given the modules."""
+        entropy = _streams.entropy_of(seed)
+        run = _ModuleRun(
+            self,
+            t_simulation,
+            working,
+            broken,
+            method,
+            entropy,
+            antithetic=antithetic,
+            n_jobs=n_jobs,
+            # The modules' histories are the event loop's, on every engine.
+            engine=engine if engine in ("python", "numba") else "auto",
+            curve_points=1,
+            state=state,
+            shard_map=shard_map,
+            shard_size=shard_size,
+            modules=modules,
+        )
+        try:
+            run.prepare()
+        except NotImplementedError:
+            return None
+        tally: Optional[_Tally] = None
+        first, count = 0, N
+        while True:
+            part = self._run(
+                t_simulation,
+                working,
                 broken,
                 method,
-                nodes=True,
-                state=other_states,
-            )
-            exact_cost = (
-                exact.expected_cost(
-                    T, working | fixed, broken, method, state=other_states
-                )
-                if priced
-                else None
-            )
-            others = (
-                0.0
-                if exact_cost is None
-                else math.fsum(
-                    float(np.ravel(value)[0])
-                    for key, value in exact_cost.by_category.items()
-                    if key != "system_downtime"
-                )
-            )
-            x = _conditional.grid(
-                T, [curve_breaks(curve, 0.0, T) for curve in curves.values()]
-            )
-            first, count = 0, N
-            while True:
-                histories: List[Any] = []
-                simulated = np.zeros(count)
-                if shards is not None:
-                    histories, simulated, spent_on, by_module = _module_shards(
-                        *shards, first, count, len(modules)
-                    )
-                    for key, spent in spent_on.items():
-                        own_categories[key] += spent
-                    for node, spent in zip(modules, by_module):
-                        if spent is not None:
-                            own_components[node] = (
-                                own_components.get(node, 0.0) + spent
-                            )
-                elif sub is not None:
-                    # The modules' histories, and their own costs in the same
-                    # simulations.
-                    data, tally = _timeline_runs.with_costs(
-                        sub,
-                        T,
-                        count,
-                        seed,
-                        antithetic,
-                        engine,
-                        n_jobs,
-                        first,
-                        module_states,
-                        widths=widths,
-                    )
-                    histories = [data[node] for node in modules]
-                    if sub.has_costs:
-                        tally._fold()
-                        simulated = np.asarray(tally.cost_samples, dtype=float)
-                        for key, spent in tally.cost_by_category.items():
-                            own_categories[key] += float(spent)
-                        for node, spent in tally.cost_by_component.items():
-                            own_components[node] = own_components.get(
-                                node, 0.0
-                            ) + float(spent)
-                paths = _conditional.paths(histories, count, T)
-                for state in paths.states.tolist():
-                    if state not in given:
-                        given[state] = exact._conditional_given(
-                            modules,
-                            state,
-                            working,
-                            broken,
-                            method,
-                            x,
-                            other_states,
-                        )
-                        if recorder is not None:
-                            capacity_given[state] = exact._capacity_given(
-                                modules,
-                                state,
-                                working,
-                                broken,
-                                x,
-                                other_states,
-                                recorder.demand,
-                            )
-                part = _conditional.values(paths, given, curve_x)
-                parts.append((count, part))
-                if twin_sub is not None:
-                    # The twin's modules in the same simulations: the other
-                    # nodes are the same, and so is the system given them.
-                    data, tally = _timeline_runs.with_costs(
-                        twin_sub,
-                        T,
-                        count,
-                        seed,
-                        antithetic,
-                        engine,
-                        n_jobs,
-                        first,
-                        twin_module_states,
-                        widths=widths,
-                    )
-                    twin_paths = _conditional.paths(
-                        [data[node] for node in modules], count, T
-                    )
-                    for state in twin_paths.states.tolist():
-                        if state not in given:
-                            given[state] = exact._conditional_given(
-                                modules,
-                                state,
-                                working,
-                                broken,
-                                method,
-                                x,
-                                other_states,
-                            )
-                    twin_uptime = _conditional.values(
-                        twin_paths, given, curve_x
-                    ).uptime
-                    twin_uptimes.append(twin_uptime)
-                    spent = np.zeros(count)
-                    if twin_sub.has_costs:
-                        tally._fold()
-                        spent = np.asarray(tally.cost_samples, dtype=float)
-                    twin_costs.append(
-                        spent
-                        + others
-                        + self.downtime_cost_rate * (T - twin_uptime)
-                    )
-                if recorder is not None:
-                    capacity_parts.append(
-                        _conditional.capacity_values(
-                            paths, capacity_given, curve_x
-                        )
-                    )
-                module_up += _conditional.module_totals(histories, count, T)[0]
-                own_costs.append(simulated)
-                first += count
-                if stop is None:
-                    break
-                uptimes = np.concatenate([v.uptime for _, v in parts])
-                # A run to a tolerance judges the mean asked for (see
-                # _stopping_rule), controlled if it is.
-                if target == "cost":
-                    values = (
-                        np.concatenate(own_costs)
-                        + others
-                        + self.downtime_cost_rate * (T - uptimes)
-                    )
-                    if twin_sub is not None and exacts[1] is not None:
-                        values = ControlVariate.of(
-                            values,
-                            np.concatenate(twin_costs),
-                            exacts[1],
-                            antithetic,
-                        ).controlled(values)
-                else:
-                    values = uptimes / T
-                    if twin_sub is not None:
-                        values = ControlVariate.of(
-                            values,
-                            np.concatenate(twin_uptimes) / T,
-                            exacts[0],
-                            antithetic,
-                        ).controlled(values)
-                count = stop(None, values)
-                if not count:
-                    break
-        n = first
-        uptimes = np.concatenate([v.uptime for _, v in parts])
-        failures = np.concatenate([v.failures for _, v in parts])
-        planned = np.concatenate([v.planned for _, v in parts])
-        restorations = np.concatenate([v.restorations for _, v in parts])
-        curve = np.zeros(curve_x.size)
-        square = np.zeros(curve_x.size)
-        for size, part in parts:
-            curve += size * part.curve / n
-            square += size * part.curve_square / n
-        down = totals["downtime"]
-        node_downtime: Dict[Hashable, float] = {}
-        for node in self.components:
-            if node in working:
-                node_downtime[node] = 0.0
-            elif node in broken:
-                node_downtime[node] = n * T
-            elif node in fixed:
-                j = modules.index(node)
-                node_downtime[node] = n * T - float(module_up[j])
-            else:
-                node_downtime[node] = n * float(np.ravel(down[node])[0])
-        node_uptime = {
-            node: n * T - value for node, value in node_downtime.items()
-        }
-        record = ConditionalRun(tuple(modules), len(given), square)
-        control = cost_control = None
-        if twin_sub is not None:
-            control = ControlVariate.of(
-                uptimes / T,
-                np.concatenate(twin_uptimes) / T,
-                exacts[0],
+                count,
+                verbose,
+                None,
                 antithetic,
+                capacity=capacity,
+                jobs=jobs,
+                engine=engine,
+                entropy=entropy,
+                first=first,
+                states=states,
+                curve_points=curve_points,
+                sharded=sharded,
             )
-        cost_result = None
-        if priced:
-            assert exact_cost is not None
-            system_down = self.downtime_cost_rate * (T - uptimes)
-            samples = np.concatenate(own_costs) + others + system_down
-            if twin_sub is not None and exacts[1] is not None:
-                cost_control = ControlVariate.of(
-                    samples, np.concatenate(twin_costs), exacts[1], antithetic
-                )
-            by_category = {
-                key: own_categories[key] / n
-                + (
-                    0.0
-                    if key == "system_downtime"
-                    else float(
-                        np.ravel(exact_cost.by_category.get(key, 0.0))[0]
-                    )
-                )
-                for key in _CATEGORIES
-            }
-            by_category["system_downtime"] = float(np.mean(system_down))
-            by_component = {
-                node: float(np.ravel(value)[0])
-                for node, value in exact_cost.by_component.items()
-                if node not in fixed
-            }
-            for node, amount in own_components.items():
-                by_component[node] = amount / n
-            cost_result = CostResult(
-                samples=samples,
-                t_simulation=T,
-                n_simulations=n,
-                acquisition_cost=self.acquisition_cost,
-                by_category=by_category,
-                by_component=by_component,
-                antithetic=antithetic,
-                conditional=record,
-                control_variate=cost_control,
-            )
-        capacity_fields: dict = {}
-        if recorder is not None:
-            time_at: Dict[float, float] = {}
-            for piece in capacity_parts:
-                for level, spent in piece.time_at.items():
-                    time_at[level] = time_at.get(level, 0.0) + spent
-            mean = np.sum([piece.curve for piece in capacity_parts], axis=0)
-            unlimited = np.sum(
-                [piece.unlimited for piece in capacity_parts], axis=0
-            )
-            capacity_fields = dict(
-                capacity_timeline=curve_x.copy(),
-                capacity=np.where(unlimited > 0, np.inf, mean / n),
-                capacity_time={
-                    level: time_at[level] for level in sorted(time_at)
-                },
-                demand=recorder.demand,
-                delivered=(
-                    None
-                    if recorder.demand is None
-                    else np.concatenate(
-                        [piece.delivered for piece in capacity_parts]
-                    )
-                    / (recorder.demand * T)
-                ),
-            )
-        return AvailabilityResult(
-            timeline=curve_x,
-            availability=curve,
-            system_uptime=float(math.fsum(uptimes)),
-            time_simulated_to=T,
-            criticalities=None,
-            node_uptime=node_uptime,
-            node_downtime=node_downtime,
-            system_downtime=float(n * T - math.fsum(uptimes)),
-            system_failures=float(math.fsum(failures)),
-            system_restorations=float(math.fsum(restorations)),
-            n_simulations=n,
-            cost=cost_result,
-            system_planned_outages=float(math.fsum(planned)),
-            uptimes=uptimes,
-            antithetic=antithetic,
-            conditional=record,
-            control_variate=control,
-            **capacity_fields,
-        )
+            if tally is None:
+                tally = part
+            else:
+                tally.merge(part)
+            run.simulate(first, count)
+            first += count
+            if stop is None:
+                break
+            more = stop(tally, run.judged(target))
+            if not more:
+                break
+            count = more
+        assert tally is not None
+        return tally, run.means()
 
     def _twin_exact(
         self,
@@ -16277,17 +16681,6 @@ class RepairableRBD(RBD):
             )
         return exact, exact_cost
 
-    def _is_own_twin(self) -> bool:
-        """Whether this system is its own exact twin (see ``_twin``):
-        nothing ties its components together or is left out of the exact
-        methods over time, and every draw comes from a stream."""
-        try:
-            _, changes = self._twin()
-        except NotImplementedError:
-            return False
-        _, complete = self._stream_specs(1.0)
-        return complete and not changes
-
     def _controlled_run(
         self,
         twin: "RepairableRBD",
@@ -16310,6 +16703,7 @@ class RepairableRBD(RBD):
         curve_points: Optional[int],
         target: str,
         itself: bool = False,
+        sharded: Optional[tuple] = None,
     ) -> Tuple["_Tally", Tuple[Optional[ControlVariate], ...]]:
         """Run this system and its exact ``twin`` (see ``_twin``) with
         common random numbers, as ``compare`` does, in rounds while
@@ -16318,7 +16712,10 @@ class RepairableRBD(RBD):
         its costs (None without costs) by the twin's (see
         ``ControlVariate``), ``itself`` if the twin is this system: by its
         exact values ``exacts``, its mean availability and its expected
-        cost (None unpriced; see ``_twin_exact``)."""
+        cost (None unpriced; see ``_twin_exact``). A twin that is this
+        system is not simulated again, so its run can be ``sharded`` (see
+        ``_run``)."""
+        assert sharded is None or itself
         twin_states = twin._simulation_states(state, working | broken)
         exact, exact_cost = exacts
         entropy = _streams.entropy_of(seed)
@@ -16345,6 +16742,7 @@ class RepairableRBD(RBD):
                 first=first,
                 states=states,
                 curve_points=curve_points,
+                sharded=sharded,
             )
             # A twin that is this system, drawn from the same streams, runs
             # as this system does, to the last bit: its run is this one.
@@ -16992,11 +17390,13 @@ class RepairableRBD(RBD):
         antithetic: bool,
         capacity: Optional[_CapacityRecorder] = None,
         controls: Tuple[Optional[ControlVariate], ...] = (None, None),
+        conditional: Optional[ConditionalRun] = None,
     ) -> AvailabilityResult:
         """The ``AvailabilityResult`` of the replications in ``tally``: its
         exact totals rounded, once; with ``controls``, the controls of its
         fractions up and its costs by an exact twin (see
-        ``_controlled_run``)."""
+        ``_controlled_run``); with ``conditional``, the record of its means
+        taken given its modules' histories (see ``_conditioned_run``)."""
         N = tally.n
         nodes = tally.nodes
         tally._fold()
@@ -17088,6 +17488,7 @@ class RepairableRBD(RBD):
                 },
                 antithetic=antithetic,
                 control_variate=controls[1],
+                conditional=conditional,
             )
 
         capacity_fields: dict = {}
@@ -17154,6 +17555,7 @@ class RepairableRBD(RBD):
                 else None
             ),
             control_variate=controls[0],
+            conditional=conditional,
             **capacity_fields,
         )
 
@@ -17177,7 +17579,7 @@ class RepairableRBD(RBD):
         shard_map: Optional[Callable] = None,
         shard_size: Optional[int] = None,
         control_variate: Optional[bool] = None,
-        conditional: bool = False,
+        conditional: Optional[bool] = None,
     ) -> Optional[CostResult]:
         """Simulate the cost of running the system for ``t_simulation``.
 
@@ -17265,17 +17667,22 @@ class RepairableRBD(RBD):
             Control the estimate of the mean cost by the system's exact
             twin, as for ``availability``: ``mean_interval`` then gives the
             controlled estimate, from the twin's exact ``expected_cost``,
-            and a ``tolerance`` is judged on it. By default None: True for
-            a run to a ``tolerance`` on a system that is its own twin, as
-            for ``availability``, otherwise False.
+            and a ``tolerance`` is judged on it. By default None: where the
+            exact methods work out the system's expected cost over the
+            window, ``mean_interval`` is that cost, with no error (#187), as
+            for ``availability``. False forces a plain simulation.
         conditional : bool, optional
-            Simulate only the dependent modules, and take the rest exactly
-            given their states, as for ``availability`` (#189), by default
-            False: ``samples`` are then each simulation's expected cost
-            given its modules' histories, the modules' own costs as
-            simulated, the other nodes' exact expected costs and the system
-            downtime's expected cost, so ``mean`` and ``mean_interval``
-            hold and ``percentile`` and ``std`` refuse.
+            Take the expected cost given the histories of the dependent
+            modules, as for ``availability`` (#189): each simulation's
+            expected cost given them is the modules' own costs as
+            simulated, the other nodes' exact expected costs and the
+            system downtime's expected cost. By default None: where a
+            system has modules, ``mean_interval`` is that of those
+            expected costs, while ``samples``, ``mean``, ``std`` and
+            ``percentile`` are the simulations' own. False keeps the
+            simulations' own means. True simulates only the modules:
+            ``samples`` are then those expected costs, so ``mean`` and
+            ``mean_interval`` hold and ``percentile`` and ``std`` refuse.
 
         Returns
         -------

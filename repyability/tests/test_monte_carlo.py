@@ -264,7 +264,9 @@ def test_antithetic_runs_are_reproducible():
 def test_antithetic_availability_is_unbiased_and_tighter():
     rbd = plant()
     exact = window_mean(lambda t: plant_availability(1.0, t))
-    paired = rbd.availability(T, mc_samples=4000, seed=3, antithetic=True)
+    paired = rbd.availability(
+        T, mc_samples=4000, seed=3, antithetic=True, control_variate=False
+    )
     interval = paired.mean_availability_interval()
     assert paired.antithetic
     assert abs(interval.estimate - exact) < 4 * interval.standard_error
@@ -274,7 +276,9 @@ def test_antithetic_availability_is_unbiased_and_tighter():
     assert interval.standard_error == pytest.approx(
         np.std(pairs, ddof=1) / np.sqrt(2000), rel=1e-12
     )
-    independent = rbd.availability(T, mc_samples=4000, seed=3)
+    independent = rbd.availability(
+        T, mc_samples=4000, seed=3, control_variate=False
+    )
     assert not independent.antithetic
     assert (
         interval.standard_error
@@ -327,7 +331,9 @@ def assert_same_results(a, b):
 
 def test_parallel_results_do_not_depend_on_the_processes():
     rbd = plant(cost=100.0)
-    one = rbd.availability(T, mc_samples=600, seed=4, n_jobs=1)
+    one = rbd.availability(
+        T, mc_samples=600, seed=4, n_jobs=1, control_variate=False
+    )
     assert one.n_simulations == 600
     assert_same_results(
         one, rbd.availability(T, mc_samples=600, seed=4, n_jobs=2)
@@ -385,8 +391,12 @@ def test_compare_against_the_exact_difference():
     assert gain.lower < gain.estimate < gain.upper
     assert gain.n_samples == 2000
     # Two independent runs of the same size are far less precise.
-    a = plant(1.0).availability(T, mc_samples=2000, seed=5)
-    b = plant(2.0).availability(T, mc_samples=2000, seed=6)
+    a = plant(1.0).availability(
+        T, mc_samples=2000, seed=5, control_variate=False
+    )
+    b = plant(2.0).availability(
+        T, mc_samples=2000, seed=6, control_variate=False
+    )
     independent = math.hypot(
         a.mean_availability_interval().standard_error,
         b.mean_availability_interval().standard_error,

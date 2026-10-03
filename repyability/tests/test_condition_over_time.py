@@ -166,7 +166,9 @@ def test_the_twin_keeps_it_and_a_run_to_a_tolerance_takes_exact_values():
         "expected_cost",
     ):
         assert report[name].route == r.NUMERICAL
-    assert "its twin being itself" in report["availability"].reason
+    assert "by default a run's mean intervals are theirs" in (
+        report["availability"].reason
+    )
     result = rbd.availability(500.0, tolerance=0.01, mc_samples=200, seed=1)
     exact = float(np.ravel(rbd.mission_availability(500.0))[0])
     estimate = result.mean_availability_interval().estimate

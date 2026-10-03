@@ -380,7 +380,9 @@ def test_the_long_run_is_reached():
 def test_a_shared_crew_against_the_simulation():
     rbd = four()
     window, samples = 150.0, 4000
-    result = rbd.availability(window, mc_samples=samples, seed=11)
+    result = rbd.availability(
+        window, mc_samples=samples, seed=11, control_variate=False
+    )
     lower, upper = result.availability_interval(confidence=0.999)
     t = np.array([5.0, 20.0, 60.0, 140.0])
     index = np.searchsorted(result.timeline, t, side="right") - 1
@@ -391,7 +393,9 @@ def test_a_shared_crew_against_the_simulation():
     failures = rbd.expected_failures(window)
     spread = np.sqrt(result.system_failures) / samples
     assert abs(result.system_failures / samples - failures) < 4 * spread
-    costs = rbd.cost(window, mc_samples=samples, seed=12)
+    costs = rbd.cost(
+        window, mc_samples=samples, seed=12, control_variate=False
+    )
     interval = costs.mean_interval(confidence=0.999)
     assert interval.lower <= rbd.expected_cost(window).mean <= interval.upper
 
@@ -432,7 +436,9 @@ def test_a_nested_rbd_beside_the_crews():
         atol=1e-13,
     )
     windows = np.array([10.0, 80.0, 400.0])
-    result = rbd.availability(80.0, mc_samples=4000, seed=3)
+    result = rbd.availability(
+        80.0, mc_samples=4000, seed=3, control_variate=False
+    )
     mean = result.mean_availability_interval(confidence=0.999)
     assert mean.lower <= rbd.mission_availability(80.0) <= mean.upper
     # The mission by quadrature, against the product's own.
@@ -686,7 +692,9 @@ def test_a_group_in_a_system_against_the_simulation():
     failures = rbd.expected_failures(window)
     spread = np.sqrt(result.system_failures) / samples
     assert abs(result.system_failures / samples - failures) < 4 * spread
-    costs = rbd.cost(window, mc_samples=samples, seed=22)
+    costs = rbd.cost(
+        window, mc_samples=samples, seed=22, control_variate=False
+    )
     interval = costs.mean_interval(confidence=0.999)
     assert interval.lower <= rbd.expected_cost(window).mean <= interval.upper
 

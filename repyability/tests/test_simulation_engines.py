@@ -453,7 +453,13 @@ def test_a_simulation_is_the_same_however_the_run_is_cut_up(name):
     n = stopped.n_simulations
     identical(
         stopped,
-        rbd.availability(window, mc_samples=n, seed=51, engine="python"),
+        rbd.availability(
+            window,
+            mc_samples=n,
+            seed=51,
+            engine="python",
+            control_variate=False,
+        ),
     )
 
 

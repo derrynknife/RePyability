@@ -334,7 +334,8 @@ other release, fixes included, the minor.
   stand-ins for the modules, simulated alongside them with common random
   numbers. Refused when the modules would be every component (crews
   serving them all) or a maintenance group stops at every outage of the
-  system (`system_down`).
+  system (`system_down`). By default a plain run of such a system takes the
+  same means from its own simulations (see Changed).
 - **Common-cause groups in a repairable diagram over time, in the
   simulations and in the allocations (#158).** A `RepairableRBD` with
   `ccf_groups` had exact long-run values and importance, but refused the
@@ -445,19 +446,36 @@ other release, fixes included, the minor.
   curve is the full one at its times: the same run takes 1.2 s. Without a
   grid, changes that come in order are no longer sorted.
 
-- **A run to a tolerance takes exact expected values where it can (#187).**
-  `availability()` and `cost()` estimated a window's mean availability and
-  cost by simulation even where the exact methods give them: for 12
-  components over 5,000 h, ±1e-6 took some 19 million simulations against
-  seconds for `mission_availability`. `control_variate` is now None by
-  default: on a system that is its own exact twin (its components
-  independent, nothing the exact methods leave out), a run to a
-  `tolerance` is controlled by it, so its mean intervals are the exact
-  values and it stops after its first `mc_samples`; otherwise, and
-  without a tolerance, it is as before. The simulations are the same
-  either way. `control_variate=False` simulates to the tolerance, as
-  before. The `availability` and `cost` routes say when a system's
-  expected values need no simulation, naming the methods, and the
+- **A run's expected values are exact, or taken given its modules, by
+  default (#187, #189).** `availability()` and `cost()` estimated a
+  window's mean availability and cost from the simulations' own values,
+  even where the exact methods give them: for 12 components over 5,000 h,
+  ±1e-6 took some 19 million simulations against seconds for
+  `mission_availability`. Now, by default, where the exact methods work out
+  a system's expected values over the window (independent components, and
+  crews, standby groups and common-cause groups where their chains do),
+  `mean_availability_interval` and the cost's `mean_interval` are those
+  values, with no error and `method="exact"` (the run's `control_variate`
+  is the system itself), and a run to a `tolerance` stops after its first
+  `mc_samples`. Where a system has dependent modules (#189), the whole
+  system is still simulated, and the intervals are those of each
+  simulation's expected values given its modules' histories, which are
+  simulated again alone, drawing what they drew, the rest exact given their
+  states (`method="conditional"`; `result.conditional`, a `ConditionalRun`
+  with `whole=True`, holds them): twelve units in a line with a Weibull
+  standby pair, a standard error 6.6 times smaller for a quarter more time,
+  and a run to a tolerance judged on them stops that much sooner. Everything
+  else in a result (each simulation's values, the curve, the totals, the
+  percentiles, the criticalities) is the simulations' own, and the
+  simulations are as before. The exact part takes a few tenths of a second,
+  more than a quick run of a few hundred simulations of a small system:
+  `control_variate=False` keeps the simulations' own means and skips it
+  (`conditional=False` keeps them where they would be taken given the
+  modules).
+  `control_variate=True` is the twin control, as before, and runs with
+  `shard_map` where the twin is the system itself; merged chunks
+  (`availability_from_chunks`) take the same means as the run. The
+  `availability` and `cost` routes say which a system takes, and the
   simulation guide has a table of which questions are exact and which
   simulated.
 

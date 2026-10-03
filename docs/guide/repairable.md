@@ -335,6 +335,7 @@ np.interp(50, result.timeline, result.availability)   # -> 0.9607   at t = 50
 | `n_jobs` | Run the simulations on several CPUs, with the same result as on one (see [Parallel runs](simulation.md#parallel-runs)). |
 | `engine` | `"python"`, `"numba"` (compiled) or `"auto"`, the default: the same results, faster compiled (see [The compiled engine](simulation.md#the-compiled-engine)). |
 | `demand` | With node capacities, the demand the delivered fraction is measured against (see [System capacity](capacity.md#over-a-window-simulated)). |
+| `control_variate`, `conditional` | How the mean over the window is estimated: by default exactly where the exact methods take the system, and given the histories of the few nodes they do not take otherwise (see [Exact or simulated?](simulation.md#exact-or-simulated)); `control_variate=False` keeps the simulations' own mean. |
 
 The curve starts at 1 and settles towards the long-run availability
 (`0.9536` here). Its sampling error is available pointwise:
@@ -347,11 +348,17 @@ lower[-1], upper[-1]                                  # (0.939, 0.9583)
 
 `lower`/`upper` align with `result.timeline`, ready to draw as a band. The
 mean availability over the whole window, the fraction of it the system was
-up, has an interval of its own:
+up, has an interval of its own. This plant's components fail and are
+repaired independently, so its mean over the window is exact
+(`plant.mission_availability(100.0)`), and by default the interval is that
+value, with no error; `control_variate=False` keeps the simulations' own:
 
 ```python
-window = result.mean_availability_interval(confidence=0.95)
-window.estimate                   # -> 0.9542   plant.mission_availability(100.0) is 0.9544
+result.mean_availability_interval().estimate    # -> 0.9544   exact
+own = plant.availability(t_simulation=100.0, mc_samples=2_000, seed=0,
+                         control_variate=False)
+window = own.mean_availability_interval(confidence=0.95)
+window.estimate                   # -> 0.9542   simulated
 window.lower, window.upper        # (0.9526, 0.9558)
 ```
 
@@ -431,7 +438,7 @@ three = [("s", p) for p in "xyz"] + [(p, "t") for p in "xyz"]
 one_crew = RepairableRBD(three, {p: dict(pump) for p in "xyz"}, repair_crews=1)
 one_crew.mean_availability()    # -> 0.9746
 result = one_crew.availability(20_000.0, mc_samples=40, seed=1)
-result.mean_availability_interval().estimate    # -> 0.9747   simulated
+result.system_uptime / (40 * 20_000.0)          # -> 0.9747   simulated
 RepairableRBD(three, {p: dict(pump) for p in "xyz"}).mean_availability()   # -> 0.9954   a crew each
 ```
 
@@ -528,7 +535,7 @@ pumps.mean_availability()    # -> 0.9894
 pumps.mean_down_time()       # -> 10.0   hours: until the first repair ends
 pumps.point_availability(10.0)    # -> 0.9963   ten hours from new
 result = pumps.availability(50_000.0, mc_samples=40, seed=1)
-result.mean_availability_interval().estimate    # -> 0.9893   simulated
+result.system_uptime / (40 * 50_000.0)          # -> 0.9893   simulated
 ```
 
 (One pump alone is up 0.9091 of the time; with a switch that always works,
@@ -597,8 +604,8 @@ five_years = 43_800.0
 renewed = line().availability(five_years, mc_samples=20, seed=1)
 patched = line(repair={"model": "kijima1", "q": 0.5}).availability(
     five_years, mc_samples=20, seed=1)
-renewed.mean_availability_interval().estimate     # -> 0.9759
-patched.mean_availability_interval().estimate     # -> 0.5295
+renewed.system_uptime / (20 * five_years)         # -> 0.9759
+patched.system_uptime / (20 * five_years)         # -> 0.5295
 ```
 
 | Repair | Up | Failures a year | Cost an hour |

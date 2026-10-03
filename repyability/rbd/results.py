@@ -90,7 +90,10 @@ class ConfidenceInterval(_ResultMapping):
         How the estimate was simulated, where the method chooses
         (``NonRepairableRBD.unreliability_interval``); ``"exact"`` for a
         run controlled by an exact twin that is the system itself, whose
-        estimate is then its exact value (#179); None otherwise.
+        estimate is then its exact value (#179, #187); ``"conditional"``
+        for one from each simulation's expected values given its modules'
+        histories (#189, see
+        [`ConditionalRun`][repyability.ConditionalRun]); None otherwise.
 
     Examples
     --------
@@ -124,7 +127,9 @@ class ConfidenceInterval(_ResultMapping):
 @dataclass
 class ControlVariate(_ResultMapping):
     """The exact twin a simulation run was controlled by (#154), with
-    ``RepairableRBD.availability``'s or ``cost``'s ``control_variate``.
+    ``RepairableRBD.availability``'s or ``cost``'s ``control_variate``; by
+    default, the system itself where the exact methods take it (#187, see
+    ``itself``).
 
     The twin is the system with its components failing and repaired
     independently: the same diagram, components and models, without what
@@ -158,9 +163,12 @@ class ControlVariate(_ResultMapping):
         The correlation of the system's values with the twin's, over the
         same.
     itself : bool
-        Whether the twin is the system itself (nothing ties its components
-        together, and the exact methods take all of it): its exact value
-        is then the system's, which the intervals give, with no error.
+        Whether the twin is the system itself, whose expected values the
+        exact methods work out (independent components, or tied together
+        only as the exact methods take them: crews, standby groups or
+        common-cause groups their chains follow): its exact value is then
+        the system's, which the intervals give, with no error. A run takes
+        it by default (#187).
 
     Examples
     --------
@@ -655,46 +663,73 @@ class Criticalities(_ResultMapping):
 
 @dataclass
 class ConditionalRun(_ResultMapping):
-    """How a conditional run was made: ``RepairableRBD.availability`` or
-    ``cost`` with ``conditional=True`` (#189).
+    """How a run's expected values were taken given its modules' histories
+    (#189): ``RepairableRBD.availability`` or ``cost`` on a system with
+    dependent modules, by default or with ``conditional=True``.
 
-    It simulated only the dependent modules, the nodes whose values over
-    time the exact methods do not work out (a standby group of other lives,
-    a nested RBD that needs simulating, imperfect repair, a maintenance
-    group's members), and took every other node exactly given their states:
-    each simulation's values are its *expected* values given its modules'
-    histories. Their mean, and its interval (``mean_availability_interval``,
-    the cost's ``mean_interval``), estimate the window's expected values
-    without bias, and more precisely than a plain run of as many
-    simulations; but their spread is less than a window's own, so a
-    conditional run gives no percentiles.
+    The modules are the nodes whose values over time the exact methods do
+    not work out (a standby group of other lives, a nested RBD that needs
+    simulating, imperfect repair, a maintenance group's members, the nodes
+    limited repair crews serve). Every other node is independent of them,
+    so each simulation's *expected* values given its modules' histories
+    are worked out exactly (the system given each joint state of the
+    modules, once). Their mean, and its interval
+    (``mean_availability_interval``, the cost's ``mean_interval``), estimate
+    the window's expected values without bias, and more precisely than the
+    simulations' own values, whose randomness from the other nodes is gone.
+
+    By default (``whole``) the whole system is simulated, as a plain run
+    simulates it, and only the mean intervals take the simulations'
+    expected values given their modules (``uptimes``, ``costs``):
+    everything else in the result, the spread included, is the
+    simulations' own. With ``conditional=True`` only the modules are
+    simulated, which costs only their events: the result's own values are
+    then the expected ones, whose spread is less than a window's own, so
+    it gives no percentiles.
 
     Attributes
     ----------
     modules : tuple
-        The nodes simulated, in the order of the RBD's components.
+        The nodes simulated as modules, in the order of the RBD's
+        components.
     states : int
         The joint states of the modules (each up or down) the simulations
         met: the system was worked out exactly given each.
-    availability_square : numpy.ndarray
-        At each time of the run's curve, the mean over the simulations of
-        the square of each one's chance of being up then, for the curve's
-        standard error (``AvailabilityResult.availability_se``).
+    availability_square : numpy.ndarray, optional
+        With ``conditional=True``, at each time of the run's curve, the
+        mean over the simulations of the square of each one's chance of
+        being up then, for the curve's standard error
+        (``AvailabilityResult.availability_se``); None otherwise.
+    whole : bool
+        Whether the whole system was simulated, by default False: True for
+        the default run of a system with modules, whose mean intervals
+        alone take the values below; False with ``conditional=True``.
+    uptimes : numpy.ndarray, optional
+        With ``whole``, each simulation's expected up time given its
+        modules' histories, in order; None otherwise (with
+        ``conditional=True`` they are the result's own ``uptimes``).
+    costs : numpy.ndarray, optional
+        With ``whole``, each simulation's expected cost given them, in
+        order, if anything is priced; None otherwise.
     """
 
     modules: Tuple[Hashable, ...]
     states: int
     availability_square: Optional[np.ndarray] = None
+    whole: bool = False
+    uptimes: Optional[np.ndarray] = None
+    costs: Optional[np.ndarray] = None
 
 
 def _no_spread(conditional: Optional["ConditionalRun"], what: str) -> None:
-    """Raise if a conditional run's values are asked for their spread."""
-    if conditional is not None:
+    """Raise if the values of a run of the modules alone are asked for
+    their spread (see ``ConditionalRun``)."""
+    if conditional is not None and not conditional.whole:
         raise ValueError(
             f"A conditional run's values are each simulation's expected "
             f"value given its modules' histories (see ConditionalRun), whose "
-            f"spread is less than a window's own: {what} needs a plain run "
-            "(conditional=False)."
+            f"spread is less than a window's own: {what} needs the whole "
+            "system simulated (leave out conditional=True)."
         )
 
 
@@ -759,9 +794,12 @@ class CostResult(_ResultMapping):
         ``samples``, ``mean`` and the breakdowns stay the simulations' own.
         None otherwise.
     conditional : ConditionalRun, optional
-        With ``conditional=True`` (see
-        [`ConditionalRun`][repyability.ConditionalRun]): ``samples`` are
-        each simulation's expected cost given its modules' histories, so
+        For a system with dependent modules (see
+        [`ConditionalRun`][repyability.ConditionalRun]): by default
+        (``whole``), ``mean_interval`` is that of each simulation's
+        expected cost given its modules' histories, while ``samples``,
+        ``mean`` and the breakdowns stay the simulations' own. With
+        ``conditional=True``, ``samples`` are those expected costs, so
         ``mean`` and ``mean_interval`` hold, and ``std`` and
         ``percentile`` refuse. None otherwise.
 
@@ -790,7 +828,18 @@ class CostResult(_ResultMapping):
     909.5
     >>> round(result.by_category["system_downtime"], 2)  # 50 per hour down
     445.27
+
+    One component's expected cost over a window is exact, and by default
+    ``mean_interval`` is that cost, with no error; the simulations' own
+    interval is a ``control_variate=False`` away:
+
     >>> interval = result.mean_interval(0.95)
+    >>> interval.method, round(interval.estimate, 2)
+    ('exact', 1360.33)
+    >>> own = rbd.cost(
+    ...     t_simulation=100.0, mc_samples=200, seed=0, control_variate=False
+    ... )
+    >>> interval = own.mean_interval(0.95)
     >>> round(interval.lower, 2), round(interval.upper, 2)
     (1295.21, 1414.33)
     """
@@ -845,7 +894,7 @@ class CostResult(_ResultMapping):
         """Standard error of ``mean``, ``std / sqrt(n_simulations)``: how far
         the simulated mean is likely to be from the true expected cost. For
         an antithetic run, the standard deviation of the pairs' means over
-        the square root of their number. For a conditional run, of its
+        the square root of their number. With ``conditional=True``, of its
         samples, each simulation's expected cost given its modules.
 
         Returns
@@ -869,7 +918,11 @@ class CostResult(_ResultMapping):
         window's cost could fall in, use ``percentile`` instead. With a
         ``control_variate``, the estimate and its standard error are the
         controlled values' (see
-        [`ControlVariate`][repyability.ControlVariate]).
+        [`ControlVariate`][repyability.ControlVariate]), and for a twin
+        that is the system itself its exact expected cost; with
+        ``conditional``, those of each simulation's expected cost given its
+        modules' histories (see
+        [`ConditionalRun`][repyability.ConditionalRun]).
 
         Parameters
         ----------
@@ -888,15 +941,24 @@ class CostResult(_ResultMapping):
         """
         if not 0.0 < confidence < 1.0:
             raise ValueError("confidence must be between 0 and 1.")
-        if self.control_variate is None:
-            estimate = self.mean
-            standard_error = self.mean_se
-        elif self.control_variate.itself:
-            return self.control_variate._exactly(confidence, len(self.samples))
-        else:
+        conditional = self.conditional
+        method = None if conditional is None else "conditional"
+        if self.control_variate is not None:
+            if self.control_variate.itself:
+                return self.control_variate._exactly(
+                    confidence, len(self.samples)
+                )
             values = self.control_variate.controlled(self.samples)
             estimate = float(np.mean(values))
             standard_error = montecarlo.standard_error(values, self.antithetic)
+        elif conditional is not None and conditional.whole:
+            assert conditional.costs is not None
+            values = np.asarray(conditional.costs, dtype=float)
+            estimate = float(np.mean(values))
+            standard_error = montecarlo.standard_error(values, self.antithetic)
+        else:
+            estimate = self.mean
+            standard_error = self.mean_se
         z = float(ndtri(0.5 + confidence / 2.0))
         return ConfidenceInterval(
             estimate=estimate,
@@ -905,6 +967,7 @@ class CostResult(_ResultMapping):
             confidence=confidence,
             standard_error=standard_error,
             n_samples=len(self.samples),
+            method=method,
         )
 
     @property
@@ -1756,11 +1819,11 @@ class AvailabilityResult(_ResultMapping):
         Number of system failures observed across all simulations (changes
         from up to down caused by a failure, including the zero-length
         outages an instantly repaired component causes); with
-        ``conditional``, their expected number.
+        ``conditional=True``, their expected number.
     system_restorations : int or float
         Number of system restorations observed across all simulations
         (changes from down to up, after a failure or a planned outage);
-        with ``conditional``, their expected number.
+        with ``conditional=True``, their expected number.
     n_simulations : int
         The number of simulations run (``mc_samples``).
     cost : CostResult, optional
@@ -1770,7 +1833,7 @@ class AvailabilityResult(_ResultMapping):
         Number of planned outages of the system observed across all
         simulations: changes from up to down caused by preventive
         maintenance or an inspection that takes time. 0 without either;
-        with ``conditional``, their expected number.
+        with ``conditional=True``, their expected number.
     uptimes : numpy.ndarray, optional
         The system's up time in each simulation, in order (they sum to
         ``system_uptime``); None in a result built without them.
@@ -1805,18 +1868,25 @@ class AvailabilityResult(_ResultMapping):
         early renewals at another's stop, summed over the simulations.
         None without groups.
     control_variate : ControlVariate, optional
-        The exact twin the run was controlled by, with ``control_variate=
-        True`` (see [`ControlVariate`][repyability.ControlVariate]):
-        ``mean_availability_interval`` is then the controlled estimate's,
+        The exact twin the run was controlled by (see
+        [`ControlVariate`][repyability.ControlVariate]): by default the
+        system itself, where it is its own exact twin (#187), or with
+        ``control_variate=True`` the system without what ties its
+        components together. ``mean_availability_interval`` is then the
+        controlled estimate's (for the system itself, its exact value),
         while everything else (``uptimes``, the curve, the totals) stays
         the simulations' own. None otherwise.
     conditional : ConditionalRun, optional
-        With ``conditional=True`` (see
-        [`ConditionalRun`][repyability.ConditionalRun]): the run simulated
-        only the dependent modules, and its values are each simulation's
+        For a system with dependent modules (see
+        [`ConditionalRun`][repyability.ConditionalRun]): by default
+        (``whole``), the whole system was simulated, and
+        ``mean_availability_interval`` is that of each simulation's
+        expected fraction up given its modules' histories, while everything
+        else stays the simulations' own. With ``conditional=True``, the run
+        simulated only the modules, and its values are each simulation's
         expected values given their histories: ``uptimes``, the totals and
         counts (floats), the curve (on a grid, its chance of being up at
-        each time) and the cost's ``samples``. ``criticalities`` is then
+        each time) and the cost's ``samples``; ``criticalities`` is then
         None. None otherwise.
 
     Examples
@@ -1970,7 +2040,11 @@ class AvailabilityResult(_ResultMapping):
         describes the simulation error, and narrows like ``1 / sqrt(n)``;
         ``availability(tolerance=...)`` runs until it is narrow enough.
         With a ``control_variate``, the fractions are the controlled ones
-        (see [`ControlVariate`][repyability.ControlVariate]).
+        (see [`ControlVariate`][repyability.ControlVariate]), and for a
+        twin that is the system itself the interval is its exact value;
+        with ``conditional``, each simulation's expected fraction up given
+        its modules' histories (see
+        [`ConditionalRun`][repyability.ConditionalRun]).
 
         Parameters
         ----------
@@ -1998,12 +2072,18 @@ class AvailabilityResult(_ResultMapping):
         fractions = np.asarray(self.uptimes, dtype=float) / (
             self.time_simulated_to
         )
+        conditional = self.conditional
         if self.control_variate is not None:
             if self.control_variate.itself:
                 return self.control_variate._exactly(
                     confidence, len(fractions)
                 )
             fractions = self.control_variate.controlled(fractions)
+        elif conditional is not None and conditional.whole:
+            assert conditional.uptimes is not None
+            fractions = np.asarray(conditional.uptimes, dtype=float) / (
+                self.time_simulated_to
+            )
         estimate = float(np.mean(fractions))
         se = montecarlo.standard_error(fractions, self.antithetic)
         z = montecarlo.z_value(confidence)
@@ -2014,6 +2094,7 @@ class AvailabilityResult(_ResultMapping):
             confidence=confidence,
             standard_error=se,
             n_samples=len(fractions),
+            method=None if conditional is None else "conditional",
         )
 
     @property
@@ -2025,9 +2106,10 @@ class AvailabilityResult(_ResultMapping):
         error is the binomial ``sqrt(A (1 - A) / n)``. It is 0 where the
         estimate is 0 or 1; ``availability_interval`` stays informative
         there. It treats the simulations as independent, which antithetic
-        ones are not. For a conditional run (see ``conditional``), each
-        simulation's value is its chance of being up then, and the error
-        is that of their mean, from their mean square.
+        ones are not. For a run of the modules alone (``conditional=True``,
+        see ``conditional``), each simulation's value is its chance of being
+        up then, and the error is that of their mean, from their mean
+        square.
 
         Returns
         -------
@@ -2035,7 +2117,7 @@ class AvailabilityResult(_ResultMapping):
             The standard error at each time in ``timeline``.
         """
         p = np.asarray(self.availability, dtype=float)
-        if self.conditional is not None:
+        if self.conditional is not None and not self.conditional.whole:
             square = self.conditional.availability_square
             assert square is not None
             n = self.n_simulations
@@ -2053,9 +2135,9 @@ class AvailabilityResult(_ResultMapping):
         Uses the Wilson score interval for a binomial proportion, which
         remains well-behaved when the estimated availability is at or near 0
         or 1 (where the plain normal interval collapses to zero width). For
-        a conditional run (see ``conditional``), whose simulations' values
-        are chances rather than 0 or 1, the normal interval of their mean
-        (``availability_se``).
+        a run of the modules alone (``conditional=True``, see
+        ``conditional``), whose simulations' values are chances rather than
+        0 or 1, the normal interval of their mean (``availability_se``).
 
         Parameters
         ----------
@@ -2077,7 +2159,7 @@ class AvailabilityResult(_ResultMapping):
             raise ValueError("confidence must be between 0 and 1.")
         z = float(ndtri(0.5 + confidence / 2.0))
         p = np.asarray(self.availability, dtype=float)
-        if self.conditional is not None:
+        if self.conditional is not None and not self.conditional.whole:
             se = self.availability_se
             return (
                 np.clip(p - z * se, 0.0, 1.0),
