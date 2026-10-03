@@ -16,6 +16,7 @@ import warnings
 from collections import defaultdict
 from typing import (
     Any,
+    Callable,
     Dict,
     Hashable,
     Iterable,
@@ -476,6 +477,37 @@ def _capacity_levels(node, levels: dict) -> dict:
             f"{total!r}."
         )
     return {level: out[level] / total for level in sorted(out)}
+
+
+class Pairs(dict):
+    """A symmetric measure of pairs (``joint_importance``): each pair once,
+    its two names in order as text (so that it does not depend on the order
+    the nodes were given in), and found either way round."""
+
+    @staticmethod
+    def oriented(i: Hashable, j: Hashable) -> Tuple[Hashable, Hashable]:
+        """The pair as it is kept: its names in order as text."""
+        return (j, i) if str(j) < str(i) else (i, j)
+
+    def _swapped(self, key):
+        if isinstance(key, tuple) and len(key) == 2:
+            return (key[1], key[0])
+        return None
+
+    def __missing__(self, key):
+        swapped = self._swapped(key)
+        if swapped is not None and dict.__contains__(self, swapped):
+            return dict.__getitem__(self, swapped)
+        raise KeyError(key)
+
+    def __contains__(self, key) -> bool:
+        swapped = self._swapped(key)
+        return dict.__contains__(self, key) or (
+            swapped is not None and dict.__contains__(self, swapped)
+        )
+
+    def get(self, key, default=None):
+        return self[key] if key in self else default
 
 
 class RBD:
@@ -1550,6 +1582,46 @@ class RBD:
                 if route.route in (r.EXACT, r.NUMERICAL) and name not in free:
                     out[name] = r.refused(meshed)
         return dict(sorted(out.items()))
+
+    def _require_no_ccf_pairs(self) -> None:
+        """Raise if the diagram has common-cause groups: the joint
+        importance holds pairs of nodes working and failed, which a group's
+        members cannot be (the causes they share would still strike the
+        others)."""
+        if getattr(self, "ccf_groups", None):
+            raise NotImplementedError(
+                "The joint importance holds pairs of nodes working and "
+                "failed, which a common-cause group's members cannot be "
+                "(the causes they share would still strike the others): it "
+                "is not worked out with common-cause groups, as yet."
+            )
+
+    def _joint_pairs(self, birnbaum: Callable, working_nodes, broken_nodes):
+        """The joint importance of each pair of nodes (see
+        ``NonRepairableRBD.joint_importance``) from ``birnbaum(working,
+        broken)``, every node's Birnbaum importance with those nodes held:
+        node ``j``'s with node ``i`` held working, less with it held
+        failed, for each pair once (see ``Pairs``); 0 for a pair with a
+        node already held."""
+        self._require_no_ccf_pairs()
+        working = set(working_nodes or ())
+        broken = set(broken_nodes or ())
+        base = birnbaum(working, broken)
+        nodes = list(base)
+        held = working | broken
+        up, down = {}, {}
+        for node in nodes:
+            if node not in held:
+                up[node] = birnbaum(working | {node}, broken)
+                down[node] = birnbaum(working, broken | {node})
+        out = Pairs()
+        for k, i in enumerate(nodes):
+            for j in nodes[k + 1 :]:  # noqa: E203
+                if i in held or j in held:
+                    out[Pairs.oriented(i, j)] = 0.0 * base[j]
+                else:
+                    out[Pairs.oriented(i, j)] = up[i][j] - down[i][j]
+        return out
 
     def _too_meshed(self) -> Optional[str]:
         """Why the diagram cannot be worked out exactly, if its core is too

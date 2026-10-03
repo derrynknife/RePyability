@@ -131,7 +131,7 @@ maintenance or hidden failures):
 
 | Quantity | Route | How it is computed |
 |---|---|---|
-| `sf`, `ff`, `Hf`, `cs`, `birnbaum_importance` and the other importance measures (`differential_importance` among them), `sf_given_state`, `structural_importance` | exact | From the node reliabilities. |
+| `sf`, `ff`, `Hf`, `cs`, `birnbaum_importance` and the other importance measures (`differential_importance` and `joint_importance` among them), `sf_given_state`, `structural_importance` | exact | From the node reliabilities. |
 | `df`, `hf` | numerical | The exact reliability, differentiated numerically. |
 | `time_to_reliability`, `bx_life`, `remaining_life` | numerical | The exact reliability, inverted by root-finding. |
 | `parameter_sensitivity` | numerical | The exact Birnbaum importance times a numerical parameter derivative; a repairable diagram's, central differences of its long-run values in each lever. |

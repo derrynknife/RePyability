@@ -1186,6 +1186,96 @@ class FaultTree:
             values = self.criticality_importance(t)
         return shares(values, groups, scalar=t is None or np.ndim(t) == 0)
 
+    def joint_importance(self, t: Optional[ArrayLike] = None) -> dict:
+        """The joint (second-order) importance of each pair of basic events
+        (#194): whether preventing the two together is worth more than
+        preventing each.
+
+        ``JRI(e, f) = -d2P / dq_e dq_f``, ``P`` the top event probability
+        and ``q`` the events' probabilities: how much event ``f``'s
+        Birnbaum importance falls when event ``e`` goes from occurring to
+        not. It is the joint importance of the diagram the tree describes
+        (see ``to_rbd``), in its reliability. Positive, the two are
+        complements, as under an OR gate: preventing either makes
+        preventing the other worth more. Negative, they are substitutes, as
+        under an AND gate: either one prevented keeps the gate from
+        occurring. Exact, from the top event probability with both events
+        held, as the tree is multilinear in the events.
+
+        Parameters
+        ----------
+        t : array_like, optional
+            Time/s, a number or an array. May be left out when no event's
+            probability depends on time.
+
+        Returns
+        -------
+        dict
+            ``{(e, f): JRI}`` for each pair once, its events' names in
+            order as text, and found either way round (the measure is
+            symmetric): floats for a number ``t``, arrays for an array.
+
+        Raises
+        ------
+        ValueError
+            If ``t`` is left out and an event's probability depends on
+            time.
+        NotImplementedError
+            With common-cause groups, whose members cannot be held.
+
+        Examples
+        --------
+        >>> from repyability import FaultTree
+        >>> tree = FaultTree(
+        ...     {"top": ("or", ["valve", "flow"]),
+        ...      "flow": ("and", ["pump 1", "pump 2"])},
+        ...     {"pump 1": 0.1, "pump 2": 0.1, "valve": 0.05},
+        ... )
+        >>> joint = tree.joint_importance()
+        >>> round(joint[("pump 1", "pump 2")], 4)  # substitutes
+        -0.95
+        >>> round(joint[("pump 1", "valve")], 4)  # complements
+        0.1
+        """
+        if self.ccf_groups:
+            raise NotImplementedError(
+                "The joint importance holds pairs of events occurring and "
+                "not, which a common-cause group's members cannot be (the "
+                "causes they share would still strike the others): it is "
+                "not worked out with common-cause groups, as yet."
+            )
+        times, scalar = self._times(t)
+        p, q = self._event_probabilities(times)
+        size = len(times)
+        ones, zeros = np.ones(size), np.zeros(size)
+        events = list(self.events)
+
+        def importance(p_: dict, q_: dict, of: list) -> dict:
+            out = {}
+            for f in of:
+                p_f, q_f = dict(p_), dict(q_)
+                p_f[f], q_f[f] = zeros, ones
+                occurred = self._top(p_f, q_f, size)
+                p_f[f], q_f[f] = ones, zeros
+                out[f] = occurred - self._top(p_f, q_f, size)
+            return out
+
+        from repyability.rbd.rbd import Pairs
+
+        pairs = Pairs()
+        for k, e in enumerate(events):
+            rest = events[k + 1 :]  # noqa: E203
+            if not rest:
+                continue
+            p_e, q_e = dict(p), dict(q)
+            p_e[e], q_e[e] = zeros, ones
+            occurring = importance(p_e, q_e, rest)
+            p_e[e], q_e[e] = ones, zeros
+            prevented = importance(p_e, q_e, rest)
+            for f in rest:
+                pairs[Pairs.oriented(e, f)] = prevented[f] - occurring[f]
+        return Pairs(self._out(pairs, scalar))
+
     # -- conversion --------------------------------------------------------
 
     def to_rbd(self) -> "NonRepairableRBD":

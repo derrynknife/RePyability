@@ -240,6 +240,10 @@ ranking at an operating point:
   maintenance intervals. A uniform change (every `dθ` equal) shares out the
   Birnbaum importance, a proportional one (every `dθ / θ` equal) the
   criticality.
+- **Joint importance** `joint_importance`: the second-order Birnbaum
+  measure, `∂²R/∂R_i ∂R_j`, for each pair. Positive for complements
+  (series: improving one makes improving the other worth more), negative
+  for substitutes (parallel): whether to bundle two improvements.
 - **Rates and Barlow–Proschan** `availability_rate`, `reliability_rate`,
   `barlow_proschan_importance`: with independent components the system's
   rate of change is the sum of each one's Birnbaum importance times its own

@@ -279,6 +279,44 @@ replacements or tests share a calendar with others' would move it off their
 common calendar, where the long-run value jumps: its derivative takes its
 schedule apart from theirs.
 
+## Pairs: joint importance
+
+The measures above rank improvements one at a time. Whether improving two
+together is worth more than the sum of improving each is the joint
+(second-order) importance, `JRI(i, j) = ∂²R/∂R_i ∂R_j = R(1_i, 1_j) −
+R(1_i, 0_j) − R(0_i, 1_j) + R(0_i, 0_j)`. It is how much node *j*'s
+Birnbaum importance rises when node *i* goes from failed to working:
+
+```python
+joint = rbd.joint_importance(50)
+joint[("pump1", "pump2")]   # -> -0.8825
+joint[("pump1", "valve")]   # -> 0.2212
+```
+
+Positive, the two are complements, as a pump and the valve in series are:
+a better pump makes a better valve worth more, so they belong in one
+campaign. Negative, they are substitutes, as the two pumps in parallel are:
+either one does the other's job, so improving both buys less than the sum
+of improving each. The structure being multilinear, the measure is exact
+and cheap: each node's Birnbaum importance with the other held working,
+less with it held failed. The result holds each pair once, its names in
+order as text, and finds a pair either way round (`joint[("valve",
+"pump1")]` too).
+
+A `RepairableRBD` has it in the long run, or with `x`, `window` and
+`state=` as its other measures take them; with limited repair crews, each
+pair is held in the crews' chain:
+
+```python
+plant.joint_importance()[("A", "B")]                # -> -0.9804
+plant.joint_importance(x=[0.5, 20.0])[("A", "C")]   # array([0.0385, 0.0909])
+```
+
+A `FaultTree` has it too, as `−∂²P/∂q_e ∂q_f` in its events'
+probabilities, which is the same as its diagram's (`to_rbd()`): positive
+under an OR gate (complements), negative under an AND gate (substitutes).
+With common-cause groups, whose members cannot be held, it is refused.
+
 ## Shares of a change: differential importance
 
 The measures above rank the nodes, but they do not add up: the two pumps'

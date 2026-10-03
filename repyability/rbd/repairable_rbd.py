@@ -9312,6 +9312,24 @@ class RepairableRBD(RBD):
             ),
             conditioned,
         )
+        pairs = r.refusal(self._require_no_ccf_pairs)
+        give(
+            ("joint_importance",),
+            (
+                r.refused(pairs)
+                if pairs
+                else (
+                    conditioned
+                    if conditioned.route == r.REFUSED
+                    else dataclasses.replace(
+                        conditioned,
+                        reason="Each component's Birnbaum importance with "
+                        "the other held up, less with it held down. "
+                        + conditioned.reason,
+                    )
+                )
+            ),
+        )
         give(
             ("differential_importance",),
             (
@@ -20066,3 +20084,87 @@ class RepairableRBD(RBD):
             key: np.asarray(value).reshape(windows.shape)
             for key, value in shares.items()
         }
+
+    def joint_importance(
+        self,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        *,
+        x=None,
+        window=None,
+        state=None,
+    ) -> dict:
+        """The joint (second-order) importance of each pair of components:
+        whether improving the two together is worth more than improving
+        each (#194), in the long run, at times ``x`` or over a window.
+
+        ``JRI(i, j) = d2A / dA_i dA_j = A(1_i, 1_j) - A(1_i, 0_j) -
+        A(0_i, 1_j) + A(0_i, 0_j)``, the system's availability with
+        component ``i`` up or down and ``j`` up or down: how much ``j``'s
+        Birnbaum importance rises when ``i`` goes from down to up. Positive,
+        the two are complements, as in series: improving either makes
+        improving the other worth more. Negative, they are substitutes, as
+        in parallel. It is each component's Birnbaum importance with the
+        other held up, less that with it held down, as
+        ``birnbaum_importance`` works them out, with ``x``, ``window`` and
+        ``state``; with limited repair crews, each pair held in the crews'
+        chain.
+
+        Parameters
+        ----------
+        working_nodes : Collection[Hashable], optional
+            Components held up: their pairs are 0.
+        broken_nodes : Collection[Hashable], optional
+            Components held down, likewise.
+        x : float or array-like, optional
+            Times from new (or from ``state``), as for
+            ``birnbaum_importance``; by default the long run.
+        window : float, optional
+            Over ``[0, window)`` instead, as for ``birnbaum_importance``.
+        state : dict or str, optional
+            With ``x`` or ``window``, the components' current states.
+
+        Returns
+        -------
+        dict
+            ``{(i, j): JRI}`` for each pair once, its components' names
+            in order as text, and found either way round (the measure is
+            symmetric): floats but for an array ``x``.
+
+        Raises
+        ------
+        ValueError
+            As ``birnbaum_importance`` does.
+        NotImplementedError
+            With common-cause groups, whose members cannot be held, or as
+            ``birnbaum_importance`` does.
+
+        Examples
+        --------
+        Two units in parallel, then a third, each up 10/11 of the time: the
+        pair are substitutes, and each is a complement of the third.
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> E = surv.Exponential.from_params
+        >>> unit = {"reliability": E([0.1]), "repairability": E([1.0])}
+        >>> rbd = RepairableRBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")],
+        ...     {"a": unit, "b": unit, "c": unit},
+        ... )
+        >>> {pair: round(v, 4) for pair, v in rbd.joint_importance().items()}
+        {('a', 'b'): -0.9091, ('a', 'c'): 0.0909, ('b', 'c'): 0.0909}
+        """
+        timed = {
+            key: value
+            for key, value in (("x", x), ("window", window), ("state", state))
+            if value is not None
+        }
+        with self._sharing_curves():
+            return self._joint_pairs(
+                lambda working, broken: self.birnbaum_importance(
+                    sorted(working, key=str), sorted(broken, key=str), **timed
+                ),
+                working_nodes,
+                broken_nodes,
+            )

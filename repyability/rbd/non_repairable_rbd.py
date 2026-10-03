@@ -4473,6 +4473,19 @@ class NonRepairableRBD(RBD):
                 ),
             ),
         )
+        pairs = r.refusal(self._require_no_ccf_pairs)
+        give(
+            ("joint_importance",),
+            (
+                r.refused(pairs)
+                if pairs
+                else built(
+                    r.EXACT,
+                    "Each node's exact Birnbaum importance with the other "
+                    "node held working, less with it held failed.",
+                )
+            ),
+        )
         give(
             ("differential_importance",),
             built(
@@ -7569,6 +7582,77 @@ class NonRepairableRBD(RBD):
                 }
         scalar = x is None or np.ndim(x) == 0
         return shares(contributions, groups, scalar, improving)
+
+    def joint_importance(
+        self,
+        x: Optional[ArrayLike] = None,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+    ) -> Dict[Tuple[Hashable, Hashable], Union[float, np.ndarray]]:
+        """The joint (second-order) importance of each pair of nodes:
+        whether improving the two together is worth more than improving
+        each (Hong & Lie, 1993; Armstrong, 1995; #194).
+
+        ``JRI(i, j) = d2R / dR_i dR_j = R(1_i, 1_j) - R(1_i, 0_j) -
+        R(0_i, 1_j) + R(0_i, 0_j)``, with ``R(1_i, 0_j)`` the system
+        reliability with node ``i`` working and node ``j`` failed: how much
+        node ``j``'s Birnbaum importance rises when node ``i`` goes from
+        failed to working. Positive, the two are complements, as in series:
+        improving either makes improving the other worth more. Negative,
+        they are substitutes, as in parallel: either does the other's job.
+        0 where neither changes what the other is worth.
+
+        The system reliability being multilinear in the nodes', it is
+        exact: each node's Birnbaum importance with the other held working,
+        less that with it held failed (twice as many evaluations as there
+        are nodes, not as pairs).
+
+        Parameters
+        ----------
+        x : array_like, optional
+            Time/s, as for ``birnbaum_importance``.
+        working_nodes : Collection[Hashable], optional
+            Nodes held working: their pairs are 0.
+        broken_nodes : Collection[Hashable], optional
+            Nodes held failed, likewise.
+
+        Returns
+        -------
+        dict
+            ``{(i, j): JRI}`` for each pair once, its nodes' names in
+            order as text, and found either way round (the measure is
+            symmetric): floats for a single time, else arrays.
+
+        Raises
+        ------
+        ValueError
+            As ``birnbaum_importance`` does.
+        NotImplementedError
+            With common-cause groups, whose members cannot be held.
+
+        Examples
+        --------
+        Two pumps in parallel, then a valve: the pumps are substitutes, and
+        each is a complement of the valve.
+
+        >>> from surpyval import FixedEventProbability
+        >>> from repyability import NonRepairableRBD
+        >>> F = FixedEventProbability.from_params
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "p1"), ("s", "p2"), ("p1", "v"), ("p2", "v"),
+        ...      ("v", "t")],
+        ...     {"p1": F(0.2), "p2": F(0.2), "v": F(0.1)},
+        ... )
+        >>> {pair: round(v, 4) for pair, v in rbd.joint_importance().items()}
+        {('p1', 'p2'): -0.9, ('p1', 'v'): 0.2, ('p2', 'v'): 0.2}
+        """
+        return self._joint_pairs(
+            lambda working, broken: self.birnbaum_importance(
+                x, working, broken
+            ),
+            working_nodes,
+            broken_nodes,
+        )
 
     def _node_density(self, node, x: np.ndarray) -> np.ndarray:
         """A node's failure density at the times ``x``: its model's own

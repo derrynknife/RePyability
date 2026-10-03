@@ -171,6 +171,20 @@ other release, fixes included, the minor.
   last as long as its interval stays simulated (the refusal says how
   likely it is to), as do a common-cause group's members whose tests or
   repairs take time (#158).
+- **Joint importance: complements and substitutes (#194).**
+  `joint_importance` (on `NonRepairableRBD`, `RepairableRBD` and
+  `FaultTree`) gives the second-order Birnbaum measure of each pair,
+  `∂²R/∂R_i ∂R_j = R(1_i, 1_j) − R(1_i, 0_j) − R(0_i, 1_j) + R(0_i, 0_j)`
+  (Hong & Lie, 1993): positive where the two are complements (in series,
+  improving one makes improving the other worth more), negative where
+  they are substitutes (in parallel). Exact, as each node's Birnbaum
+  importance with the other held working less with it held failed (twice
+  as many evaluations as nodes, not as pairs), keyed by each pair once
+  and found either way round. A
+  `RepairableRBD`'s is long-run, or with `x`, `window` and `state`, each
+  pair held in the crews' chain where there are crews; a `FaultTree`'s,
+  `−∂²P/∂q_e ∂q_f`, is its diagram's. Refused with common-cause groups,
+  whose members cannot be held.
 - **Which component is moving the system, and which caused its failures
   (#195).** `RepairableRBD.availability_rate(x)` gives how fast the
   system's point availability is changing at each time (from new or from
