@@ -22,7 +22,6 @@ from scipy.special import gamma as gamma_function
 import repyability.rbd._point_availability as point_availability
 import repyability.rbd.repairable_rbd as repairable_rbd
 from repyability import NodeState, RepairableRBD
-from repyability.rbd._model_utils import lfp_extras
 from repyability.tests.test_performance_equivalence import (
     instrument_air,
     repairable_rbds,
@@ -504,7 +503,7 @@ def test_units_dead_on_arrival_and_units_that_never_fail():
         dead.mean_availability(), abs=1e-10
     )
     # With p < 1 some unit eventually never fails: the unit ends up for good.
-    lasting = alone(unit(W([100.0, 2.0], **lfp_extras(0.8)), E([0.5])))
+    lasting = alone(unit(W([100.0, 2.0], lfp_p=0.8), E([0.5])))
     values = lasting.point_availability([0.0, 50.0, 500.0, 5000.0])
     assert values[0] == 1.0 and values[1] < values[2] < values[3]
     assert values[3] == pytest.approx(1.0, abs=1e-6)

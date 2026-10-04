@@ -29,7 +29,6 @@ from repyability import (
     RepairableRBD,
 )
 from repyability.rbd import capacity as engine
-from repyability.rbd._model_utils import lfp_extras
 
 FEP = surv.FixedEventProbability
 E = surv.Exponential.from_params
@@ -928,7 +927,7 @@ def test_repairable_multi_state_nodes_in_the_long_run():
 def test_a_stage_that_may_never_end():
     # Units whose second stage never ends (30%) are caught in it for good;
     # the rest fail, are renewed, and sooner or later are caught too.
-    forever = surv.Weibull.from_params([100, 2], **lfp_extras(0.7))
+    forever = surv.Weibull.from_params([100, 2], lfp_p=0.7)
     stages = DegradingNode([(100, E([0.01])), (50, forever)])
     np.testing.assert_allclose(stages.stage_fractions(), [0.0, 1.0])
     assert stages.mean() == math.inf

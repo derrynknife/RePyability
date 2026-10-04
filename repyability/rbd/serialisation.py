@@ -31,7 +31,7 @@ from typing import Any
 
 from repyability._version import __version__
 from repyability.non_repairable import NonRepairable
-from repyability.rbd._model_utils import distribution_name, lfp_extras
+from repyability.rbd._model_utils import distribution_name
 from repyability.rbd.degrading_node import DegradingNode
 from repyability.rbd.helper_classes import (
     PerfectReliability,
@@ -198,11 +198,11 @@ def deserialise_model(d: dict) -> Any:
     if kind == "parametric":
         # The format before 0.10.0: a distribution's name, parameters and
         # any offset, p and f0 ("extras", since 0.9.0). p is the
-        # limited-failure proportion, lfp_p from surpyval 0.23.
+        # limited-failure proportion, surpyval's lfp_p.
         cls = getattr(surpyval, d["dist"])
         extras = dict(d.get("extras", {}))
         if "p" in extras:
-            extras.update(lfp_extras(extras.pop("p")))
+            extras["lfp_p"] = extras.pop("p")
         return cls.from_params(d["params"], **extras)
     if kind == "rbd":
         return rbd_from_dict(d["rbd"])

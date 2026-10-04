@@ -11,6 +11,15 @@ other release, fixes included, the minor.
 
 ### Changed
 
+- **surpyval 0.23 or later is required** (0.22 was). Its next release drops
+  0.22's name for a limited-failure population's share that ever fails,
+  `p`, for `lfp_p`, which 0.22 does not know, so no example could be
+  written for both; 0.23 also pickles its fits (SurPyval#573) and takes
+  `success_run`'s level as `alpha_ci` (SurPyval#580). RePyability's
+  workarounds for 0.22 are gone: a system of fitted models goes to `n_jobs`'
+  worker processes as it is, rather than in its saved form, and models are
+  read by `lfp_p` alone. Files saved before 0.10 with `p` in a model's
+  extras still load.
 - **The exact curves are built several times as fast** (`point_availability`,
   `mission_availability`, `expected_events`, `expected_cost` and the exact
   means a simulation run takes by default, #187). A 12-component system's

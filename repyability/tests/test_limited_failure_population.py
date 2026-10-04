@@ -32,7 +32,6 @@ from repyability import (
 )
 from repyability.rbd._model_utils import (
     is_exponential,
-    lfp_extras,
     lfp_p,
     model_mean,
     never_fails,
@@ -45,9 +44,9 @@ from repyability.tests.keyed_draws import KeyedDraws
 W = surv.Weibull.from_params
 E = surv.Exponential.from_params
 
-LFP = W([100, 2], **lfp_extras(0.9))
+LFP = W([100, 2], lfp_p=0.9)
 ZI = W([100, 2], f0=0.1)
-BOTH = W([100, 2], **lfp_extras(0.9), f0=0.1)
+BOTH = W([100, 2], lfp_p=0.9, f0=0.1)
 MODELS = {"lfp": LFP, "zi": ZI, "both": BOTH}
 
 
@@ -66,8 +65,8 @@ def erlang2_ff(rate, t):
 
 def test_model_helpers():
     assert W([100, 2]).extras == {}
-    assert LFP.extras == lfp_extras(0.9)
-    assert BOTH.extras == {**lfp_extras(0.9), "f0": 0.1}
+    assert LFP.extras == {"lfp_p": 0.9}
+    assert BOTH.extras == {"lfp_p": 0.9, "f0": 0.1}
     assert lfp_p(LFP) == 0.9 and lfp_p(W([100, 2])) == 1
     assert W([100, 2], gamma=5.0).extras == {"gamma": 5.0}
     assert never_fails(LFP) == pytest.approx(0.1)
@@ -78,7 +77,7 @@ def test_model_helpers():
     assert model_mean(W([100, 2])) == pytest.approx(base, rel=1e-12)
     assert is_exponential(E([0.1]))
     for model in (
-        E([0.1], **lfp_extras(0.9)),
+        E([0.1], lfp_p=0.9),
         E([0.1], f0=0.1),
         E([0.1], gamma=1.0),
     ):
@@ -197,9 +196,7 @@ def test_cold_standby_of_exponentials_with_extras(p, f0):
     # and never fails otherwise; the pair's sum is 0, Exponential or
     # Erlang(2) as zero, one or two units are continuous, or infinite.
     rate = 0.1
-    unit = (
-        E([rate], **lfp_extras(p), f0=f0) if f0 else E([rate], **lfp_extras(p))
-    )
+    unit = E([rate], lfp_p=p, f0=f0) if f0 else E([rate], lfp_p=p)
     c = p - f0
     for pair in (StandbyModel([unit, unit]), RepeatedStandbyNode(unit, 2)):
         for t in (0.0, 5.0, 20.0, 60.0):
@@ -237,7 +234,7 @@ def test_the_convolution_keeps_the_dead_on_arrival_apart():
 
 def test_cold_standby_with_imperfect_switching():
     rate, p, s = 0.1, 0.8, 0.7
-    unit = E([rate], **lfp_extras(p))
+    unit = E([rate], lfp_p=p)
     pair = StandbyModel([unit, unit], switching_probability=s)
     for t in (5.0, 20.0, 60.0):
         one = 1 - p * (1 - math.exp(-rate * t))
@@ -259,7 +256,7 @@ def test_standby_of_plain_exponentials_keeps_its_closed_form():
 
 
 def test_warm_standby_that_may_never_fail():
-    unit = W([100, 2], **lfp_extras(0.9))
+    unit = W([100, 2], lfp_p=0.9)
     node = StandbyModel([unit, unit, unit], dormancy_factor=0.5)
     x = node.random(20_000, seed=9)
     assert not np.isnan(x).any()
@@ -284,7 +281,7 @@ def test_warm_standby_that_may_never_fail():
 def test_cold_k_out_of_n_that_may_never_fail():
     # Two of three operating: it never fails if two units never fail.
     p = 0.9
-    node = StandbyModel([W([100, 2], **lfp_extras(p))] * 3, k=2)
+    node = StandbyModel([W([100, 2], lfp_p=p)] * 3, k=2)
     never = 3 * (1 - p) ** 2 * p + (1 - p) ** 3
     x = node.random(40_000, seed=11)
     assert within(np.mean(np.isinf(x)), never, len(x))
@@ -292,7 +289,7 @@ def test_cold_k_out_of_n_that_may_never_fail():
 
 def test_repeated_standby_draws():
     # The sum of two lifetimes is finite only if both are.
-    node = RepeatedStandbyNode(W([100, 2], **lfp_extras(0.8)), 2)
+    node = RepeatedStandbyNode(W([100, 2], lfp_p=0.8), 2)
     x = node.random(40_000, seed=16)
     assert within(np.mean(np.isinf(x)), 1 - 0.8**2, len(x))
     for t in (100.0, 250.0):
@@ -302,7 +299,7 @@ def test_repeated_standby_draws():
 @pytest.mark.parametrize("kind", ["parallel", "series"])
 def test_repeated_node(kind):
     p = 0.9
-    node = RepeatedNode(W([100, 2], **lfp_extras(p)), 3, kind)
+    node = RepeatedNode(W([100, 2], lfp_p=p), 3, kind)
     x = node.random(40_000, seed=12)
     never = 1 - p**3 if kind == "parallel" else (1 - p) ** 3
     assert within(np.mean(np.isinf(x)), never, len(x))
@@ -326,7 +323,7 @@ def repairable(reliability, repair=None):
 
 
 def test_a_unit_that_may_never_fail_ends_up_for_good():
-    rbd = repairable(W([10, 2], **lfp_extras(0.9)))
+    rbd = repairable(W([10, 2], lfp_p=0.9))
     assert rbd.mean_availability() == 1.0
     assert rbd.system_failure_frequency() == 0.0
     # Each replacement never fails with probability 0.1: the number of
@@ -341,17 +338,13 @@ def test_long_run_availability_with_absorbing_ends():
     # A unit never fails with probability u = 0.2; a replacement never
     # finishes with probability d = 0.3: the unit ends up for good with
     # probability u / (u + (1 - u) d).
-    unit = NonRepairable(
-        W([10, 2], **lfp_extras(0.8)), E([1.0], **lfp_extras(0.7))
-    )
+    unit = NonRepairable(W([10, 2], lfp_p=0.8), E([1.0], lfp_p=0.7))
     exact = 0.2 / (0.2 + 0.8 * 0.3)
     assert unit.mean_availability() == pytest.approx(exact, rel=1e-12)
     assert unit.failure_frequency() == 0.0
-    down = NonRepairable(W([10, 2]), E([1.0], **lfp_extras(0.7)))
+    down = NonRepairable(W([10, 2]), E([1.0], lfp_p=0.7))
     assert down.mean_availability() == 0.0
-    rbd = repairable(
-        W([10, 2], **lfp_extras(0.8)), E([1.0], **lfp_extras(0.7))
-    )
+    rbd = repairable(W([10, 2], lfp_p=0.8), E([1.0], lfp_p=0.7))
     assert rbd.mean_availability() == pytest.approx(exact, rel=1e-12)
     # Over a long window, the fraction of it up is close to that (the
     # time before the unit settles is short).
@@ -367,7 +360,7 @@ def test_repairable_draws_come_from_their_streams():
     # a unit that never fails, 0 for one dead on arrival) comes from the
     # component's own stream like any other draw: each simulation's up time
     # is what its component's draws make it.
-    rbd = repairable(W([10, 2], **lfp_extras(0.9), f0=0.05))
+    rbd = repairable(W([10, 2], lfp_p=0.9, f0=0.05))
     window = 200.0
     result = rbd.availability(window, mc_samples=60, seed=15)
     draws = KeyedDraws(rbd, window, 15)
@@ -414,7 +407,7 @@ def test_repairable_draws_come_from_their_streams():
 
 @pytest.mark.parametrize(
     "model",
-    [LFP, ZI, BOTH, W([100, 2], gamma=5.0), E([0.01], **lfp_extras(0.7))],
+    [LFP, ZI, BOTH, W([100, 2], gamma=5.0), E([0.01], lfp_p=0.7)],
 )
 def test_saving_keeps_the_extras(model):
     rbd = NonRepairableRBD([("s", "c"), ("c", "t")], {"c": model})
@@ -444,7 +437,7 @@ def test_files_saved_before_0_10_still_load(extras):
     t = np.array([0.0, 4.0, 50.0, 1e9])
     named = dict(extras)
     if "p" in named:
-        named.update(lfp_extras(named.pop("p")))
+        named["lfp_p"] = named.pop("p")
     np.testing.assert_allclose(
         back.sf(t),
         NonRepairableRBD(
@@ -461,7 +454,7 @@ def test_sensitivity_keeps_the_extras():
     h = 1e-3
 
     def sf(alpha, beta):
-        return float(W([alpha, beta], **lfp_extras(0.9), f0=0.1).sf(50.0))
+        return float(W([alpha, beta], lfp_p=0.9, f0=0.1).sf(50.0))
 
     alpha = (sf(100 + h, 2) - sf(100 - h, 2)) / (2 * h)
     beta = (sf(100, 2 + h * 0.02) - sf(100, 2 - h * 0.02)) / (2 * h * 0.02)
@@ -485,14 +478,14 @@ def test_failure_time_scale():
 
     assert failure_time_scale(W([100, 2])) == pytest.approx(88.6227, rel=1e-5)
     # Some units never fail: the mean of those that fail, with the offset.
-    lfp = W([100, 2], **lfp_extras(0.8), f0=0.1, gamma=5.0)
+    lfp = W([100, 2], lfp_p=0.8, f0=0.1, gamma=5.0)
     assert failure_time_scale(lfp) == pytest.approx(93.6227, rel=1e-5)
     assert math.isnan(failure_time_scale(StandbyModel([lfp, lfp])))
 
 
 def test_cold_standby_when_the_mean_is_infinite(monkeypatch):
     rate, p = 0.1, 0.8
-    unit = _infinite_mean(E([rate], **lfp_extras(p)), monkeypatch)
+    unit = _infinite_mean(E([rate], lfp_p=p), monkeypatch)
     pair = StandbyModel([unit, unit])
     # The pair fails only if both units do: sf = 1 - p^2 * Erlang(2) ff.
     for t in (5.0, 20.0, 60.0):
@@ -506,7 +499,7 @@ def test_no_replacement_pays_when_units_may_never_fail(monkeypatch):
     # In the long run a unit that never fails is kept for good, so running
     # to failure costs nothing per unit time, whatever the wear-out.
     unit = NonRepairable(
-        _infinite_mean(W([1000, 2.5], **lfp_extras(0.9)), monkeypatch)
+        _infinite_mean(W([1000, 2.5], lfp_p=0.9), monkeypatch)
     )
     unit.set_costs_planned_and_unplanned(cp=1, cu=5)
     with warnings.catch_warnings():

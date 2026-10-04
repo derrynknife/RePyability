@@ -17,7 +17,6 @@ import surpyval as surv
 import repyability.rbd._block_replacement as block_replacement
 from repyability import RepairableRBD
 from repyability.rbd._block_replacement import block_cycle
-from repyability.rbd._model_utils import lfp_extras
 
 E = surv.Exponential.from_params
 W = surv.Weibull.from_params
@@ -259,7 +258,7 @@ def test_importance_and_allocation_run_on_the_calendar():
     "life, repair, match",
     [
         (W([100, 2], f0=0.1), E([0.1]), "dead on arrival"),
-        (W([100, 2]), E([0.1], **lfp_extras(0.9)), "never end"),
+        (W([100, 2]), E([0.1], lfp_p=0.9), "never end"),
     ],
     ids=["dead on arrival", "endless repairs"],
 )

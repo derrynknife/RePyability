@@ -19,7 +19,6 @@ from repyability import (
 )
 from repyability.rbd import routes
 from repyability.rbd._mean_lifetime import mean_lifetime, model_knots
-from repyability.rbd._model_utils import lfp_extras
 
 E = surv.Exponential.from_params
 W = surv.Weibull.from_params
@@ -128,9 +127,9 @@ def test_node_models_are_integrated_as_their_reliability_says():
 @pytest.mark.parametrize(
     "rbd",
     [
-        series(W([100, 2], **lfp_extras(0.9))),
+        series(W([100, 2], lfp_p=0.9)),
         parallel(PerfectReliability, E([0.01])),
-        parallel(W([100, 2], **lfp_extras(0.999)), E([0.01])),
+        parallel(W([100, 2], lfp_p=0.999), E([0.01])),
         # A tail too heavy for a finite mean: shape 1 or less.
         series(surv.LogLogistic.from_params([100, 0.9])),
         series(surv.LogLogistic.from_params([100, 1.0])),

@@ -2,7 +2,6 @@
 forward function, textbook values, and the special cases that reduce to
 simpler plans."""
 
-import inspect
 import math
 
 import numpy as np
@@ -59,12 +58,9 @@ def test_the_planned_test_is_the_smallest_that_demonstrates(
 
 
 def _success_run(n, confidence):
-    """surpyval's bound after ``n`` successes, by the name the installed
-    surpyval takes: ``alpha_ci = 1 - confidence`` from 0.23, which
-    deprecates ``confidence`` (surpyval #580), and ``confidence`` before."""
-    if "alpha_ci" in inspect.signature(surpyval.success_run).parameters:
-        return float(surpyval.success_run(n, alpha_ci=1.0 - confidence))
-    return float(surpyval.success_run(n, confidence=confidence))
+    """surpyval's bound after ``n`` successes, at ``alpha_ci = 1 -
+    confidence``."""
+    return float(surpyval.success_run(n, alpha_ci=1.0 - confidence))
 
 
 @pytest.mark.parametrize("n", [1, 5, 59, 1000])

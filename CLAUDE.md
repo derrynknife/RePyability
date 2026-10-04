@@ -269,27 +269,9 @@ major.minor.
 
 ## surpyval workarounds to remove
 
-- **Fitted models in worker processes** (surpyval #573). A surpyval fit
-  holds a closure, so pickle cannot take it. `_montecarlo.dumps`, which
-  pickles a run for `n_jobs`' worker processes, sends a surpyval model that
-  pickle refuses in its saved form (`to_dict`), rebuilt in the worker;
-  `test_fitted_models_in_parallel.py` checks the results are a single
-  process's. Remove the override once the minimum surpyval's fits pickle
-  (keep `dumps`' message for what still cannot be sent).
-
-- **`success_run`'s `alpha_ci`** (surpyval #580). surpyval 0.23 names
-  the bound's level `alpha_ci = 1 - confidence` and deprecates
-  `confidence`, which 0.22 needs: `test_demonstration.py`'s `_success_run`
-  passes the name the installed surpyval takes. Pass `alpha_ci` directly
-  once the minimum surpyval is 0.23.
-
-- **The limited-failure proportion's name** (surpyval #608). surpyval
-  0.23 renames `p` (the `from_params` argument, the attribute and the
-  `extras` key) to `lfp_p`, which 0.22 does not know: `_model_utils.lfp_p`
-  reads either, `lfp_extras` gives `from_params`' keyword (the tests and
-  files saved before 0.10 use it), `_PLAIN` holds both keys, and
-  `NonRepairable.mean_availability`'s example is skipped. Read and pass
-  `lfp_p` directly, and run the example, once the minimum surpyval is 0.23.
+None at present: surpyval 0.23 (the minimum) pickles its fits (#573),
+names the limited-failure proportion `lfp_p` (#608) and takes
+`success_run`'s `alpha_ci` (#580), which RePyability now uses directly.
 
 List each new workaround here with its surpyval issue and where it lives,
 so it can go once the minimum surpyval in `pyproject.toml` includes the
