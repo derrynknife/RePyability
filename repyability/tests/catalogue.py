@@ -474,6 +474,38 @@ def repairable_kinds():
             "common cause, Weibull": system(
                 unit(), ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))]
             ),
+            "common cause, timed tests and repairs": RepairableRBD(
+                EDGES,
+                {
+                    node: {
+                        "reliability": E([0.002]),
+                        "repairability": surv.ExactEventTime.from_params(
+                            [8.0]
+                        ),
+                        "inspection": {
+                            "interval": 100.0,
+                            "offset": offset,
+                            "duration": surv.ExactEventTime.from_params([2.0]),
+                        },
+                    }
+                    for node, offset in (("a", 0.0), ("b", 50.0))
+                }
+                | {"c": unit(repair_cost=2.0)},
+                ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
+                downtime_cost_rate=5.0,
+            ),
+            "common cause, one repair crew": RepairableRBD(
+                EDGES,
+                {
+                    node: {
+                        "reliability": E([0.002]),
+                        "repairability": E([0.5]),
+                    }
+                    for node in "abc"
+                },
+                ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
+                repair_crews=1,
+            ),
             "common cause, timed block replacement": RepairableRBD(
                 EDGES,
                 {

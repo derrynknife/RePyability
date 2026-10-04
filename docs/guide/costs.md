@@ -757,9 +757,9 @@ valve(0.7).expected_events(10 * 8760.0).system_planned_outages   # -> 8.750
 `spares_demand` and `spares_stock` count such a valve's spares on the
 tests that find its failures (see [how spares are
 counted](spares.md#how-it-is-computed)). Only a test that can last as long
-as its interval stays simulated; a common-cause group's members are
-simulated when their tests or repairs take time (their group's chain needs
-them in no time).
+as its interval stays simulated. A common-cause group's members' tests and
+repairs may take time too, of a fixed length or an exponential one (see
+[below](#common-cause-staggered-tests-and-test-coverage)).
 
 ### Common cause, staggered tests and test coverage
 
@@ -813,9 +813,26 @@ All three are exact with constant failure rates and instant tests and
 repairs, and staggered tests and test coverage are numerical with any life
 too, and with tests and repairs that take time (see [tests and repairs that
 take time](#tests-and-repairs-that-take-time)). With common causes, a
-group's members, tested and repaired in no time, are a Markov chain of
-which of them are down, with each member found by its own tests, and a
-shared failure found alike by every test (the coverage is the group's).
+group's members are a Markov chain of which of them are down, with each
+member found by its own tests, and a shared failure found alike by every
+test (the coverage is the group's). Their tests and repairs may take no
+time, a fixed time or an exponential one (#220): a working member is off
+line while it is tested, and neither ages nor fails meanwhile, a failure a
+test finds is repaired once the test is over, and a test that falls in a
+member's own test or repair is not done, as in the simulations. IEC
+61508-6's 1oo2 with an eight-hour mean repair time:
+
+```python
+repaired = {**proof_tested(), "repairability": surv.ExactEventTime.from_params([8.0])}
+mrt = RepairableRBD(
+    redundant_edges, {"v1": repaired, "v2": repaired}, ccf_groups=common
+)
+mrt.mean_unavailability()           # -> 5.300e-4   IEC 61508-6: 5.316e-4
+```
+
+A test of an exponential length followed by a repair of a fixed one, or
+fixed lengths that run into the member's next test, are refused, saying
+so: estimate those by simulation.
 The importance measures take the groups in, a member's conditioned on its
 state at each time, and so do the allocations, the values over time from
 new (the chain followed through the tests from every member up) and the

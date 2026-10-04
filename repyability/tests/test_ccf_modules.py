@@ -27,6 +27,13 @@ from repyability import (
 from repyability.rbd import _ccf_modules
 from repyability.rbd.ccf import _as_independent, shock_outcomes
 
+# The diagrams here reach large probabilities of failing on purpose, to try
+# the arithmetic: past the rare-event range a group's model is meant for,
+# which it warns about.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:Common-cause group:UserWarning"
+)
+
 KEYS = ("works", "fails", "up_ok", "down_ok", "up_bad", "down_bad")
 
 

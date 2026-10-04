@@ -28,6 +28,14 @@ together.
   member is up after its full test, and from then on its state depends
   only on the causes and its own tests), so one period of the tests from
   all up reaches the long run, and a second gives the state at each time.
+  A member whose tests or repairs take time (#220) has more levels: off
+  line for a test while working (where it neither ages nor is struck),
+  under a test while failed, and under repair. A test or repair of a fixed
+  length ends at a fixed time after its test, as a test does; one of an
+  exponential length at a rate, as a cause strikes. A test that falls in
+  a member's own test or repair is not done. With those, two periods from
+  all up reach the long run (a repair can run past a period's end), and a
+  third gives the state at each time.
 
 In the redundancy allocation (#158) a member may have copies, which join
 its group (a ``BetaFactor`` model's ``beta`` holding at any size: its
@@ -41,7 +49,16 @@ the group's own.
 
 import math
 from itertools import product
-from typing import Any, Hashable, List, NamedTuple, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    Dict,
+    Hashable,
+    List,
+    NamedTuple,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 import numpy as np
 
@@ -49,6 +66,14 @@ import numpy as np
 MAX_STATES = 20_000
 
 UP, FOUND, MISSED = 0, 1, 2
+
+#: A member's levels when its tests or repairs take time (#220): off line
+#: for a test while working, under a test while failed, under repair.
+OFF, TESTING, REPAIR = 3, 4, 5
+
+#: What happens at a ``ProofTest``'s time: the member's test, or the end of
+#: one of its tests (``TESTED``) or repairs (``REPAIRED``) of a fixed length.
+TEST, TESTED, REPAIRED = 0, 1, 2
 
 
 class GroupStates(NamedTuple):
@@ -280,11 +305,36 @@ def gth(flow: np.ndarray) -> np.ndarray:
 
 class ProofTest(NamedTuple):
     """A member's test: when, which member, and whether it is a full test
-    (one that finds a failure it would otherwise miss)."""
+    (one that finds a failure it would otherwise miss). With ``kind``, the
+    end of one of its tests or repairs of a fixed length instead (#220)."""
 
     time: float
     member: int
     full: bool
+    kind: int = TEST
+
+
+class Duration(NamedTuple):
+    """How long a member's tests, or its repairs, take (#220): a fixed
+    time (``fixed``, 0 for none), or an exponential one (at ``rate``)."""
+
+    fixed: float = 0.0
+    rate: Optional[float] = None
+
+    @property
+    def takes_time(self) -> bool:
+        return self.fixed > 0.0 or self.rate is not None
+
+
+class Timing(NamedTuple):
+    """How long a member's tests and repairs take (see ``Duration``)."""
+
+    test: Duration = Duration()
+    repair: Duration = Duration()
+
+    @property
+    def takes_time(self) -> bool:
+        return self.test.takes_time or self.repair.takes_time
 
 
 class _Hidden:
@@ -412,6 +462,157 @@ class _Hidden:
         return out
 
 
+class _Timed(_Hidden):
+    """``_Hidden`` for members whose tests or repairs take time (#220,
+    see the module's notes), one copy of each member: each member's level
+    is one of ``levels`` (``UP``, ``FOUND``, ``MISSED`` where tests can
+    miss a failure, ``OFF`` and ``TESTING`` where tests take time,
+    ``REPAIR`` where repairs do), a state one level for each member (see
+    ``_states``). Causes strike the members that are up; a test or repair
+    of an exponential length ends at its rate; one of a fixed length ends
+    at a ``ProofTest`` of its ``kind``, a fixed time after the test."""
+
+    def __init__(self, model, members, rate: float, coverage: float, timings):
+        n = len(members)
+        self.partial = partial = coverage < 1.0
+        tests_take = any(t.test.takes_time for t in timings)
+        repairs_take = any(t.repair.takes_time for t in timings)
+        ladder = [UP, FOUND] + ([MISSED] if partial else [])
+        ladder += [OFF, TESTING] if tests_take else []
+        ladder += [REPAIR] if repairs_take else []
+        #: The levels a member may be at.
+        self.ladder = ladder
+        self.levels = count = len(ladder)
+        code = {level: k for k, level in enumerate(ladder)}
+        states = _states(n, count)
+        self.size = size = len(states)
+        _check_size(size, members)
+        source = np.arange(size)
+
+        def index(target: np.ndarray) -> np.ndarray:
+            return _index(target, count)
+
+        def moving(member: int, rules) -> np.ndarray:
+            """The state each state goes to with ``member`` moved by
+            ``rules`` (``{level: level}``), the others as they are."""
+            target = states.copy()
+            column = states[:, member]
+            for old, new in rules.items():
+                if old in code and new in code:
+                    target[column == code[old], member] = code[new]
+            return index(target)
+
+        #: The continuous moves, labelled (see ``Move``).
+        self.moves: List[Move] = []
+        for number, (struck, cause) in enumerate(causes(model, members, rate)):
+            for level, share in ((FOUND, coverage), (MISSED, 1.0 - coverage)):
+                if share <= 0.0 or (level == MISSED and not partial):
+                    continue
+                target = states.copy()
+                for i in struck:
+                    target[:, i] = np.where(
+                        states[:, i] == code[UP], code[level], states[:, i]
+                    )
+                struck_to = index(target)
+                moved = struck_to != source
+                self.moves.append(
+                    (
+                        number if number < n else SHARED,
+                        source[moved],
+                        struck_to[moved],
+                        np.full(int(moved.sum()), cause * share),
+                    )
+                )
+        self.jumps: Dict[Tuple[int, int, bool], np.ndarray] = {}
+        for i, timing in enumerate(timings):
+            after = REPAIR if timing.repair.takes_time else UP
+            ends = {
+                "test": {OFF: UP, TESTING: after},
+                "repair": {REPAIR: UP},
+            }
+            for which, duration in (
+                ("test", timing.test),
+                ("repair", timing.repair),
+            ):
+                if duration.rate is not None:
+                    for old, new in ends[which].items():
+                        target = moving(i, {old: new})
+                        hit = target != source
+                        self.moves.append(
+                            (
+                                i,
+                                source[hit],
+                                target[hit],
+                                np.full(int(hit.sum()), duration.rate),
+                            )
+                        )
+                elif duration.fixed > 0.0:
+                    kind = TESTED if which == "test" else REPAIRED
+                    target = moving(i, ends[which])
+                    self.jumps[(i, kind, False)] = target
+                    self.jumps[(i, kind, True)] = target
+            # Its test: off line if it takes time, a failure found into its
+            # test or repair; one in its own test or repair is not done.
+            found = (
+                TESTING
+                if timing.test.takes_time
+                else (REPAIR if timing.repair.takes_time else UP)
+            )
+            for full in (False, True):
+                rules = {FOUND: found}
+                if timing.test.takes_time:
+                    rules[UP] = OFF
+                if partial and full:
+                    rules[MISSED] = found
+                self.jumps[(i, TEST, full)] = moving(i, rules)
+        outflow = np.zeros(size)
+        for _, sources, _, value in self.moves:
+            np.add.at(outflow, sources, value)
+        self.pace = pace = float(outflow.max()) if self.moves else 0.0
+        step = np.zeros((size, size))
+        if pace > 0.0:
+            for _, sources, targets, value in self.moves:
+                np.add.at(step, (sources, targets), value / pace)
+        np.fill_diagonal(step, 1.0 - outflow / pace if pace > 0.0 else 1.0)
+        self.step = step
+        self.combinations = _states(n, 2).astype(bool)
+        self.combination = _index((states != code[UP]).astype(np.int8), 2)
+
+    def tested_at(self, v: np.ndarray, test: "ProofTest") -> np.ndarray:
+        """``v`` after the member's test, or the end of its test or repair,
+        ``test``."""
+        full = test.full or not self.partial or test.kind != TEST
+        target = self.jumps.get((test.member, test.kind, full))
+        if target is None:
+            return v
+        return np.bincount(target, weights=v, minlength=self.size)
+
+
+def timed_events(tests, timings, period: float) -> List[ProofTest]:
+    """``tests`` (each member's, in ``(0, period]``) with the ends of the
+    tests and repairs of a fixed length after each (#220), each in
+    ``(0, period]`` as the schedule repeats: an end past the period is the
+    previous period's test's, at the start of this one (where, from all up
+    at 0, it ends nothing)."""
+    out = [test._replace(kind=TEST) for test in tests]
+    for test in tests:
+        timing = timings[test.member]
+        ends = []
+        if timing.test.rate is None and timing.test.fixed > 0.0:
+            ends.append((timing.test.fixed, TESTED))
+        if timing.repair.rate is None and timing.repair.fixed > 0.0:
+            ends.append((timing.test.fixed + timing.repair.fixed, REPAIRED))
+        for length, kind in ends:
+            time = test.time + length
+            time = time - period * math.floor((time - 1e-12 * period) / period)
+            out.append(ProofTest(time, test.member, True, kind))
+    return sorted(out)
+
+
+def _timed(timings) -> bool:
+    return timings is not None and any(t.takes_time for t in timings)
+
+
 def _shifted(tests, by: float) -> List[ProofTest]:
     return [test._replace(time=test.time + by) for test in tests]
 
@@ -425,13 +626,32 @@ def hidden(
     period: float,
     times: np.ndarray,
     counts: Optional[Sequence[int]] = None,
+    timings: Optional[Sequence[Timing]] = None,
 ) -> GroupStates:
     """The long-run states, at each of ``times`` (in ``[0, period)``), of a
     group whose members' failures are hidden, found by ``tests`` (each
     member's, in ``(0, period]``, the schedule repeating every
     ``period``), with ``coverage`` the chance that a test finds a cause's
     failures (a full test finds all), and ``counts`` copies of each member
-    (see ``_Counted``), tested together."""
+    (see ``_Counted``), tested together; or, with ``timings`` that take
+    time (#220), one copy of each, its tests and repairs taking them (see
+    ``_Timed``)."""
+    if _timed(timings):
+        timed = _Timed(model, members, rate, coverage, timings)
+        events = timed_events(tests, timings, period)
+        v = timed.follow(events, np.array([period]))[0]
+        v = timed.follow(
+            _shifted(events, period), np.array([2.0 * period]), v, period
+        )[0]
+        out = timed.follow(
+            _shifted(events, 2.0 * period),
+            2.0 * period + np.asarray(times),
+            v,
+            2.0 * period,
+        )
+        return GroupStates(
+            tuple(members), timed.combinations, timed.grouped(out)
+        )
     chain = _Hidden(model, members, rate, coverage, counts)
     # From all up, one period reaches the long run (every member has had a
     # full test by its end); a second gives the state at each time.
@@ -491,18 +711,44 @@ class OverTime:
 
     @classmethod
     def hidden(
-        cls, model, members, rate: float, coverage: float, tests, period
+        cls,
+        model,
+        members,
+        rate: float,
+        coverage: float,
+        tests,
+        period,
+        timings: Optional[Sequence[Timing]] = None,
     ) -> "OverTime":
-        """A group whose failures are hidden (see ``hidden``)."""
-        chain = _Hidden(model, members, rate, coverage)
-        out = cls(members, chain.combinations, float(period), float(period))
+        """A group whose failures are hidden (see ``hidden``): with
+        ``timings`` that take time (#220), its tests' and repairs' ends
+        among its tests, and settling after two periods."""
+        chain: _Hidden
+        if _timed(timings):
+            chain = _Timed(model, members, rate, coverage, timings)
+            tests = timed_events(tests, timings, period)
+            settle = 2.0 * float(period)
+        else:
+            chain = _Hidden(model, members, rate, coverage)
+            settle = float(period)
+        out = cls(members, chain.combinations, settle, float(period))
         out._chain = chain
         out._tests = sorted(tests)
-        # The states at the start of the second period, which repeats.
-        out._settled = chain.follow(tests, np.array([float(period)]))[0]
+        # The states at the start of the period that repeats.
+        out._settled = chain.follow(out._early(settle), np.array([settle]))[0]
         out.moves = chain.moves
         out.combination = chain.combination
         return out
+
+    def _early(self, stop: float) -> List[ProofTest]:
+        """The tests (and their ends) from 0 to ``stop``, in order."""
+        assert self._tests is not None
+        cycles = int(np.ceil(stop / self.period))
+        return sorted(
+            test
+            for k in range(max(cycles, 1))
+            for test in _shifted(self._tests, k * self.period)
+        )
 
     def raw(self, x) -> np.ndarray:
         """Each of the chain's states' probability (columns) at each time
@@ -511,18 +757,18 @@ class OverTime:
         if self._tests is None:
             values = self._chain.values(x)
         else:
-            chain, period = self._chain, self.period
+            chain, period, settle = self._chain, self.period, self.settle
             values = np.empty((len(x), chain.size))
-            early = x <= period
+            early = x <= settle
             if early.any():
-                values[early] = chain.follow(self._tests, x[early])
+                values[early] = chain.follow(self._early(settle), x[early])
             if (~early).any():
-                phase = np.mod(x[~early] - period, period)
+                phase = np.mod(x[~early] - settle, period)
                 values[~early] = chain.follow(
-                    _shifted(self._tests, period),
-                    period + phase,
+                    _shifted(self._tests, settle),
+                    settle + phase,
                     self._settled,
-                    period,
+                    settle,
                 )
         values = np.maximum(values, 0.0)
         total = values.sum(axis=1, keepdims=True)
@@ -582,6 +828,33 @@ class OverTime:
         )
 
     breaks = knots
+
+
+#: The most values (a probability for each node, or two, at each point)
+#: the points of every combination of every group's states may take,
+#: where an analysis splits each time by them (#218).
+SPLIT_VALUES = 1 << 27
+
+
+def check_split(times: int, counts, values: int, what: str, groups) -> None:
+    """Refuse, before anything is built, to split each of ``times`` times
+    by every combination of the groups' states (``counts``, each group's
+    number of combinations) where the points would take more than
+    ``SPLIT_VALUES`` values (``values`` at each point): ``what`` is the
+    analysis that would."""
+    points = times * math.prod(counts)
+    if points * max(values, 1) <= SPLIT_VALUES:
+        return
+    raise NotImplementedError(
+        f"{what} takes every combination of the common-cause groups' "
+        f"members' states at once: {math.prod(counts):,} of them for "
+        f"{[list(group.members) for group in groups]}, at each of "
+        f"{times:,} times, too many to work out exactly (more than "
+        f"{SPLIT_VALUES:,} values). The long-run values, the importance "
+        "measures and the values over time condition on each group within "
+        "its own module instead. Simulate the system with availability() "
+        "or cost(), which take the groups in."
+    )
 
 
 def _check_size(size: int, members) -> None:
@@ -658,10 +931,20 @@ class GroupsSystem:
         each node's probability at each point, each point's probability,
         its time's position in ``x``, and each group's combination there.
         ``chances`` gives a group's combinations' probabilities at the
-        times (rows), where not None, in place of its own."""
+        times (rows), where not None, in place of its own. For the
+        capacity over time, which takes the nodes' joint states: it
+        refuses where the points would be too many (see
+        ``check_split``)."""
         size = len(x)
         probabilities = self.rbd._filled(
             values, size, self.working, self.broken
+        )
+        check_split(
+            size,
+            [len(group.down) for group in self.groups],
+            len(probabilities),
+            "The capacity over time",
+            self.groups,
         )
         index, weights = np.arange(size), np.ones(size)
         combinations: List[np.ndarray] = []
@@ -688,17 +971,71 @@ class GroupsSystem:
             index = np.repeat(index, count)[keep]
         return probabilities, weights, index, combinations
 
+    def _evaluation(self, values: dict, x: np.ndarray, chances=None):
+        """The system at the times ``x`` (see
+        ``RepairableRBD._ccf_tabled``): each node outside the groups up
+        with the probability ``values[node]`` then, and each group's
+        members in each of their combinations with its probability then
+        (``chances[number]``, where given, in place of its chain's)."""
+        size = len(x)
+        p = {
+            node: np.broadcast_to(np.asarray(v, dtype=float), (size,))
+            for node, v in values.items()
+        }
+        p = self.rbd._filled(p, size, self.working, self.broken)
+        tables = []
+        for number, group in enumerate(self.groups):
+            given = None if chances is None else chances[number]
+            table = np.asarray(
+                group.probabilities(x) if given is None else given,
+                dtype=float,
+            )
+            tables.append(GroupStates(group.members, group.down, table))
+            for k, member in enumerate(group.members):
+                p[member] = table @ np.where(group.down[:, k], 0.0, 1.0)
+        q = {node: 1.0 - value for node, value in p.items()}
+        return self.rbd._ccf_tabled(p, q, tables)
+
+    def probabilities(self, values: dict, x: np.ndarray):
+        """The system's availability and unavailability at the times
+        ``x``, each node outside the groups up with the probability
+        ``values[node]`` (see ``evaluate``)."""
+        x = np.asarray(x, dtype=float).ravel()
+        up, down = self._evaluation(values, x).system()
+        return self._clipped(up, down)
+
+    def _clipped(self, up, down) -> Tuple[np.ndarray, np.ndarray]:
+        up = up if self.method == "p" else 1.0 - down
+        return np.clip(up, 0.0, 1.0), np.clip(down, 0.0, 1.0)
+
+    def importance(self, values: dict, x: np.ndarray) -> dict:
+        """Each node outside the groups' Birnbaum importance at the times
+        ``x`` (see ``evaluate``)."""
+        x = np.asarray(x, dtype=float).ravel()
+        evaluation = self._evaluation(values, x)
+        return self._importance(evaluation, values, *evaluation.system())
+
+    @staticmethod
+    def _importance(evaluation, values: dict, up, down) -> dict:
+        """Each node of ``values``' Birnbaum importance: the difference
+        the node held working or failed makes to the system, from
+        whichever end keeps its precision (its unavailability, where the
+        system is more often up)."""
+        out = {}
+        for node in values:
+            up_1, down_1 = evaluation.system(hold={node: True})
+            up_0, down_0 = evaluation.system(hold={node: False})
+            out[node] = np.where(down <= up, down_0 - down_1, up_1 - up_0)
+        return out
+
     def availability(self, values: dict, chances: list) -> np.ndarray:
         """The system's availability at each row, with each node outside
         the groups up with the probability ``values[node]`` and each
         group's members in each combination with the probabilities
         ``chances[number]`` (one row each)."""
         rows = len(chances[0]) if chances else 1
-        probabilities, weights, index, _ = self._split(
-            values, np.zeros(rows), chances
-        )
-        down = self.rbd._system_unreliability(probabilities)
-        return 1.0 - np.bincount(index, weights * down, rows)
+        evaluation = self._evaluation(values, np.zeros(rows), chances)
+        return 1.0 - evaluation.system()[1]
 
     def given(self, values: dict, x: np.ndarray, number: int) -> np.ndarray:
         """The system's unavailability at the times ``x`` (rows) with the
@@ -706,18 +1043,24 @@ class GroupsSystem:
         the other groups' as at the times, and each node outside the groups
         up with the probability ``values[node]`` (#199)."""
         x = np.asarray(x, dtype=float).ravel()
-        count = len(self.groups[number].down)
-        chances: List[Any] = [None] * len(self.groups)
-        chances[number] = np.ones((len(x), count))
-        probabilities, weights, index, combinations = self._split(
-            values, x, chances
-        )
-        down = self.rbd._system_unreliability(probabilities)
-        return np.bincount(
-            index * count + combinations[number],
-            weights * down,
-            len(x) * count,
-        ).reshape(len(x), count)
+        evaluation = self._evaluation(values, x)
+        return evaluation.combinations(number, self.groups[number].down)[1]
+
+    def _causes(self, evaluation, down) -> dict:
+        """The rate of the system's failures by each cause (see
+        ``caused``), not clipped at 0."""
+        out: dict = {}
+        for group, causes in zip(self.groups, self.causes):
+            for struck, cause in causes:
+                hit = {group.members[position]: False for position in struck}
+                rise = evaluation.system(hold=hit)[1] - down
+                key = (
+                    group.members[struck[0]]
+                    if len(struck) == 1
+                    else tuple(group.members)
+                )
+                out[key] = out.get(key, 0.0) + cause * rise
+        return out
 
     def caused(self, values: dict, x: np.ndarray) -> dict:
         """The rate of the system's failures by each cause at the times
@@ -725,61 +1068,31 @@ class GroupsSystem:
         each group's causes that strike more than one member under the
         tuple of its members (#199)."""
         x = np.asarray(x, dtype=float).ravel()
-        probabilities, weights, index, _ = self._split(values, x)
-        base = self.rbd._system_unreliability(probabilities)
-        out: dict = {}
-        for group, causes in zip(self.groups, self.causes):
-            for struck, cause in causes:
-                hit = dict(probabilities)
-                for position in struck:
-                    hit[group.members[position]] = np.zeros_like(weights)
-                rise = self.rbd._system_unreliability(hit) - base
-                key = (
-                    group.members[struck[0]]
-                    if len(struck) == 1
-                    else tuple(group.members)
-                )
-                out[key] = out.get(key, 0.0) + cause * np.bincount(
-                    index, weights * rise, len(x)
-                )
-        return {key: np.maximum(v, 0.0) for key, v in out.items()}
+        evaluation = self._evaluation(values, x)
+        down = evaluation.system()[1]
+        return {
+            key: np.maximum(v, 0.0)
+            for key, v in self._causes(evaluation, down).items()
+        }
 
     def evaluate(self, values: dict, x: np.ndarray):
         """At the times ``x``, with each node outside the groups up with the
         probability ``values[node]`` (an array over ``x``): each such
         node's Birnbaum importance (a dict), the system's availability and
         unavailability, the rate of its failures by the groups' causes,
-        and each member's availability (a dict)."""
+        and each member's availability (a dict). Each group is conditioned
+        on within the smallest module holding its members (see
+        ``RepairableRBD._ccf_tabled``, #218)."""
         x = np.asarray(x, dtype=float).ravel()
-        size = len(x)
-        probabilities, weights, index, _ = self._split(values, x)
-
-        def total(v) -> np.ndarray:
-            v = np.broadcast_to(np.asarray(v, dtype=float), weights.shape)
-            return np.bincount(index, weights * v, size)
-
-        importance, works, fails, _, _ = self.rbd._importances(probabilities)
-        down = total(fails)
-        up = total(works) if self.method == "p" else 1.0 - down
-        rate = np.zeros(size)
-        if self.causes:
-            base = self.rbd._system_unreliability(probabilities)
-            for group, causes in zip(self.groups, self.causes):
-                for struck, cause in causes:
-                    hit = dict(probabilities)
-                    for position in struck:
-                        hit[group.members[position]] = np.zeros_like(weights)
-                    rise = self.rbd._system_unreliability(hit) - base
-                    rate += cause * total(rise)
-        node_importance = {node: total(importance[node]) for node in values}
-        own = {member: total(probabilities[member]) for member in self.served}
-        return (
-            node_importance,
-            np.clip(up, 0.0, 1.0),
-            np.clip(down, 0.0, 1.0),
-            np.maximum(rate, 0.0),
-            own,
-        )
+        evaluation = self._evaluation(values, x)
+        up, down = evaluation.system()
+        importance = self._importance(evaluation, values, up, down)
+        rate: Any = np.zeros(len(x))
+        for value in self._causes(evaluation, down).values():
+            rate = rate + value
+        own = {member: evaluation.marginal(member) for member in self.served}
+        up, down = self._clipped(up, down)
+        return importance, up, down, np.maximum(rate, 0.0), own
 
 
 class GroupsCurve:
@@ -803,7 +1116,7 @@ class GroupsCurve:
         x = np.asarray(x, dtype=float)
         flat = x.ravel()
         values = {node: curve.at(flat) for node, curve in self.curves.items()}
-        return self.system.evaluate(values, flat)[1].reshape(x.shape)
+        return self.system.probabilities(values, flat)[0].reshape(x.shape)
 
     def events(self, x: np.ndarray):
         """The system's expected failures and planned outages before each

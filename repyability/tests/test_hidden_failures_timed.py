@@ -403,16 +403,19 @@ def test_what_stays_simulated():
         slow.mean_availability()
     assert str(error.value) == route.reason
     assert "within its test interval" in route.reason
-    # A common-cause group's chain takes its members tested in no time.
+    # A common-cause group's chain takes its members' tests of a fixed
+    # length too (#220): with no shared cause, as the members' own models.
     pair = [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")]
     member = hidden(E([0.01]), INSTANT, X([0.1]), interval=10.0)
     grouped = RepairableRBD(
         pair,
         {"a": member, "b": member},
-        ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
+        ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.0))],
     )
-    with pytest.raises(NotImplementedError, match="take time"):
-        grouped.mean_availability()
+    plain = RepairableRBD(pair, {"a": member, "b": member})
+    assert grouped.mean_availability() == pytest.approx(
+        plain.mean_availability(), rel=1e-6
+    )
 
 
 def test_the_routes():

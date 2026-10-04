@@ -428,27 +428,41 @@ The long-run values are exact: a group's members form a Markov chain of
 which of them are down, its long-run distribution found without
 subtraction, so a small probability keeps its precision. The members need
 exponential lives, and either revealed failures with exponential repairs, as
-here, or hidden failures found by tests (instant, as the long-run values of
-tests need, with one coverage for the group), at offsets of their own if
-they are staggered; see [the PFDavg of a safety
-function](costs.md#common-cause-staggered-tests-and-test-coverage).
+here, or hidden failures found by tests (with one coverage for the group),
+at offsets of their own if they are staggered, whose tests and repairs take
+no time, a fixed time or an exponential one (#220); see [the PFDavg of a
+safety function](costs.md#common-cause-staggered-tests-and-test-coverage).
 `mean_availability`, `mean_unavailability`, `system_failure_frequency`,
 MTBF, MUT and MDT, the cost rate, `capacity_distribution`, and the interval
 choices built on them take the groups in. So do the importance measures:
-each long-run time's points are split by the members' joint states, and a
-member's measures are conditioned on its state at each time, then averaged
-over the times as every node's are. With `beta = 0` they are the measures
-without the group:
+a member's are conditioned on its state at each time, as its state says
+something of its group's, then averaged over the times as every node's
+are. With `beta = 0` they are the measures without the group:
 
 ```python
 shared.birnbaum_importance()["p1"]       # -> 0.1743   P(p2 down | p1 down)
 independent.birnbaum_importance()["p1"]  # -> 0.0909
 ```
 
+Given which of its members are down, a group is independent of everything
+else, so, as for a non-repairable diagram, each group is conditioned on only
+within the smallest module of the diagram holding its members (#218): ten,
+or fifty, pairs of tested units in series, each pair a group, cost a sum,
+not a product, and take a fraction of a second. Groups that meet in one
+module, a group of each kind of component across redundant trains, multiply
+their members' combinations there; past about 33 million (combinations
+times the long-run grid's times) the exact values refuse, saying so, before
+working anything out: simulate such a system with `availability()` or
+`cost()`. The capacity distribution and the allocations still take every
+combination of every group's states at once, and refuse, before building
+them, where those would take too much memory. Limited repair crews are
+refused too: the groups' chains do not take the crews' queue in, and the
+crews' chain does not take the common causes in, as yet.
+
 Over time from new, each group's chain is followed from every member up at
 0 (by uniformization, or through the members' tests, after whose first
-period it repeats its long run), and each time is split by the groups'
-joint states as the long-run times are. `point_availability`,
+period it repeats its long run), and each group is conditioned on within
+its module at each time, as in the long run. `point_availability`,
 `mission_availability`, `expected_failures`, `expected_events`,
 `expected_cost`, `point_capacity` and `mission_capacity` take the groups in,
 and settle into the long-run values. A member's own curve, and so its own
@@ -467,8 +481,8 @@ causes: each strikes as a Poisson process at its share of the members'
 failure rate, and fails the members it names that are up, at once. A test
 that can miss a failure tosses one coin for all the failures a cause makes.
 They run in Python (the compiled engine does not draw the causes, as yet),
-and they take in what the chains cannot: tests and repairs that take time,
-and repairs of any distribution:
+and they take in what the chains cannot: tests and repairs of any length,
+and revealed failures' repairs of any distribution:
 
 ```python
 run = shared.availability(1000.0, mc_samples=2000, seed=0)

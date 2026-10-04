@@ -370,16 +370,10 @@ class Evaluation:
     """The system's probabilities at given node probabilities, with the
     common-cause groups as ``plan`` works them out (see ``Plan``)."""
 
-    def __init__(
-        self, plan: Plan, groups, p, q, shape, check=None, outcomes=None
-    ):
+    def __init__(self, plan: Plan, groups, p, q, shape, check=None):
         """``p`` and ``q``: the nodes' probabilities of working and of
         failing (1-d arrays of length ``shape``); ``check(index, group,
-        Q)`` sees each group's members' probability of failing. With
-        ``outcomes`` (each group's, see ``Outcome``), the groups' outcomes
-        are those, conditioned on within their modules (a repairable
-        system's members' joint states from their chains, #218), and the
-        groups' models are not used."""
+        Q)`` sees each group's members' probability of failing."""
         self.shape = shape
         #: Each group's outcomes, conditioned on (None for one written out).
         self.outcomes: List[Optional[List[Outcome]]] = []
@@ -392,12 +386,7 @@ class Evaluation:
             for member in group.members
         }
         self.plan = plan
-        if outcomes is not None:
-            self.c = plan.base
-            self.outcomes = list(outcomes)
-            self.p, self.q = dict(p), dict(q)
-        else:
-            self._from_models(plan, groups, p, q, check)
+        self._from_models(plan, groups, p, q, check)
         self._settle()
 
     def _from_models(self, plan: Plan, groups, p, q, check) -> None:
@@ -448,6 +437,26 @@ class Evaluation:
             else:
                 R_[i], Q_[i] = self._combine(i, R_, Q_)
         self._fv: Optional[list] = None
+
+    # -- frames --------------------------------------------------------------
+
+    def _shape(self, frame):
+        """The shape of a frame's values: the evaluation's own points
+        (``frame`` None), or with an axis for each set of combinations
+        laid out after them (see ``Tabled``)."""
+        return self.shape if frame is None else frame
+
+    @staticmethod
+    def _lift(value, frame):
+        """A value from the evaluation's points (or a frame around
+        ``frame``) in ``frame``: with an axis of length 1 for each set of
+        combinations it does not vary over."""
+        if frame is None:
+            return value
+        value = np.asarray(value)
+        if value.ndim == 0:
+            return value
+        return value.reshape(value.shape + (1,) * (len(frame) - value.ndim))
 
     # -- the terms' probabilities ------------------------------------------
 
@@ -500,92 +509,113 @@ class Evaluation:
                     stack.append((c, False))
         return order
 
-    def _pass(self, top: int, fixed: dict, hold: dict) -> Tuple[Any, Any]:
+    def _pass(
+        self, top: int, fixed: dict, hold: dict, frame=None
+    ) -> Tuple[Any, Any]:
         """``top``'s probabilities with the nodes ``fixed`` at the given
-        probabilities and those in ``hold`` working (True) or failed;
-        ``top`` itself is not summed over its own groups' outcomes."""
+        probabilities and those in ``hold`` working (True) or failed, at
+        the points of ``frame``; ``top`` itself is not summed
+        over its own groups' outcomes."""
         keys = fixed.keys() | hold.keys()
         R: Dict[int, Any] = {}
         Q: Dict[int, Any] = {}
+        lift = self._lift
         for i in self._order(top, keys):
             term = self.c.terms[i]
             if i != top and i in self.c.owned:
-                R[i], Q[i] = self._mix(i, fixed, hold)
+                R[i], Q[i] = self._mix(i, fixed, hold, frame)
             elif term[0] == NODE:
-                R[i], Q[i] = self._node(term[1], fixed, hold)
+                R[i], Q[i] = self._node(term[1], fixed, hold, frame)
             else:
                 children = term[1]
                 R[i], Q[i] = combined(
                     term[0],
-                    [R[c] if c in R else self.R[c] for c in children],
-                    [Q[c] if c in Q else self.Q[c] for c in children],
+                    [
+                        R[c] if c in R else lift(self.R[c], frame)
+                        for c in children
+                    ],
+                    [
+                        Q[c] if c in Q else lift(self.Q[c], frame)
+                        for c in children
+                    ],
                     term[2] if term[0] == KOON else 0,
                 )
         return R[top], Q[top]
 
-    def _node(self, node, fixed: dict, hold: dict) -> Tuple[Any, Any]:
-        works, fails = fixed.get(node, (self.p[node], self.q[node]))
+    def _node(self, node, fixed: dict, hold: dict, frame=None):
+        if node in fixed:
+            works, fails = fixed[node]
+        else:
+            works = self._lift(self.p[node], frame)
+            fails = self._lift(self.q[node], frame)
         if node not in hold:
             return works, fails
-        ones = np.ones_like(np.asarray(works, dtype=float))
+        ones = np.ones(self._shape(frame))
         return (ones, ones * 0.0) if hold[node] else (ones * 0.0, ones)
 
-    def _mix(self, owner: int, fixed: dict, hold: dict) -> Tuple[Any, Any]:
+    def _mix(
+        self, owner: int, fixed: dict, hold: dict, frame=None
+    ) -> Tuple[Any, Any]:
         """``owner``'s probabilities, summed over its groups' outcomes."""
         works: Any = 0.0
         fails: Any = 0.0
         for weight, given in self._overrides(owner, fixed):
-            r, q = self._pass(owner, given, hold)
+            r, q = self._unmixed(owner, given, hold, frame)
             works = works + weight * r
             fails = fails + weight * q
         return works, fails
 
+    def _unmixed(
+        self, owner: int, fixed: dict, hold: dict, frame=None
+    ) -> Tuple[Any, Any]:
+        """``owner``'s probabilities with ``fixed`` and ``hold``, not summed
+        over its own groups' outcomes: the core's for ``SYSTEM``."""
+        if owner != SYSTEM:
+            return self._pass(owner, fixed, hold, frame)
+        d = self.c.decomposition
+        size = self._shape(frame)
+        R, Q = self._top_terms(fixed, hold, frame)
+        return (
+            d._core_value(R, Q, False, size),
+            d._core_value(R, Q, True, size),
+        )
+
     # -- the system --------------------------------------------------------
 
-    def system(self, fixed=None, hold=None) -> Tuple[Any, Any]:
+    def system(self, fixed=None, hold=None, frame=None) -> Tuple[Any, Any]:
         """The probabilities that the system works and that it fails: given
         the outcomes of the groups whose members ``fixed`` holds (each
         member's probabilities of working and of failing in it), and the
-        nodes of ``hold`` working (True) or failed (False)."""
+        nodes of ``hold`` working (True) or failed (False); at the points
+        of ``frame`` (see ``_shape``)."""
         fixed = {} if fixed is None else fixed
         hold = {} if hold is None else hold
         d = self.c.decomposition
         if d.always_works:
-            one = np.ones(self.shape)
+            one = np.ones(self._shape(frame))
             return one, one * 0.0
-        if d.root is not None:
-            if not hold and not fixed:
-                return self.R[d.root], self.Q[d.root]
-            if d.root in self.c.owned:
-                return self._mix(d.root, fixed, hold)
-            return self._pass(d.root, fixed, hold)
-        if SYSTEM not in self.c.owned:
-            R, Q = self._top_terms(fixed, hold)
-            return (
-                d._core_value(R, Q, False, self.shape),
-                d._core_value(R, Q, True, self.shape),
+        top = SYSTEM if d.root is None else d.root
+        if top != SYSTEM and not hold and not fixed:
+            return self._lift(self.R[top], frame), self._lift(
+                self.Q[top], frame
             )
-        works: Any = 0.0
-        fails: Any = 0.0
-        for weight, given in self._overrides(SYSTEM, fixed):
-            R, Q = self._top_terms(given, hold)
-            works = works + weight * d._core_value(R, Q, False, self.shape)
-            fails = fails + weight * d._core_value(R, Q, True, self.shape)
-        return works, fails
+        if top in self.c.owned:
+            return self._mix(top, fixed, hold, frame)
+        return self._unmixed(top, fixed, hold, frame)
 
-    def _top_terms(self, fixed: dict, hold: dict) -> Tuple[list, list]:
+    def _top_terms(self, fixed: dict, hold: dict, frame=None):
         """Every term's probabilities, those of the core's terms with
-        ``fixed`` and ``hold``."""
+        ``fixed`` and ``hold`` (at the frame's points)."""
         R, Q = list(self.R), list(self.Q)
         keys = fixed.keys() | hold.keys()
-        if not keys:
-            return R, Q
         for t in self.c.core_terms:
             if self.c.below[t] & keys:
                 if t in self.c.owned:
-                    R[t], Q[t] = self._mix(t, fixed, hold)
+                    R[t], Q[t] = self._mix(t, fixed, hold, frame)
                 else:
-                    R[t], Q[t] = self._pass(t, fixed, hold)
+                    R[t], Q[t] = self._pass(t, fixed, hold, frame)
+            elif frame is not None:
+                R[t], Q[t] = self._lift(R[t], frame), self._lift(Q[t], frame)
         return R, Q
 
     # -- the importance measures -------------------------------------------
@@ -693,25 +723,36 @@ class Evaluation:
             return dict(fv[d.root])
         if SYSTEM not in self.c.owned:
             return self._core_shares(self.R, self.Q, fv)
-        out: Dict[Hashable, Any] = {}
-        for weight, given in self._overrides(SYSTEM, {}):
-            keys = given.keys()
-            R, Q = list(self.R), list(self.Q)
-            shares = list(fv)
-            for t in self.c.core_terms:
-                if self.c.below[t] & keys:
-                    R[t], Q[t], shares[t] = self._fv_pass(t, given, True)
-            for node, value in self._core_shares(R, Q, shares).items():
-                out[node] = out.get(node, 0.0) + weight * value
-        return out
+        return self._fv_mix(SYSTEM, {})
 
-    def _core_shares(self, R, Q, fv) -> Dict[Hashable, Any]:
+    def _fv_unmixed(self, owner: int, fixed: dict, frame=None) -> dict:
+        """``owner``'s probabilities for its nodes (see ``failed_cut_sets``)
+        with ``fixed``, not summed over its own groups' outcomes."""
+        if owner != SYSTEM:
+            return self._fv_pass(owner, fixed, False, frame)[2]
+        keys = fixed.keys()
+        R, Q = list(self.R), list(self.Q)
+        shares = list(self._fv_terms())
+        for t in self.c.core_terms:
+            if self.c.below[t] & keys:
+                R[t], Q[t], shares[t] = self._fv_pass(t, fixed, True, frame)
+            elif frame is not None:
+                R[t], Q[t] = self._lift(R[t], frame), self._lift(Q[t], frame)
+                shares[t] = self._lift_shares(shares[t], frame)
+        return self._core_shares(R, Q, shares, frame)
+
+    def _lift_shares(self, shares: dict, frame) -> dict:
+        if frame is None:
+            return shares
+        return {node: self._lift(v, frame) for node, v in shares.items()}
+
+    def _core_shares(self, R, Q, fv, frame=None) -> Dict[Hashable, Any]:
         """Each node's probability through the core's minimal cut sets:
         its term's, times the probability that for some cut set of the
         core containing the term every other term in it has failed."""
         d = self.c.decomposition
         terms, steps, roots = d._core_cut_plan()
-        shape = self.shape
+        shape = self._shape(frame)
         values: list = [np.zeros(shape), np.ones(shape)]
         for pivot, failed, works in steps:
             values.append(Q[pivot] * values[failed] + R[pivot] * values[works])
@@ -754,38 +795,49 @@ class Evaluation:
                 out[node] = value * share
         return out
 
-    def _fv_mix(self, owner: int, fixed: dict) -> Dict[Hashable, Any]:
+    def _fv_mix(
+        self, owner: int, fixed: dict, frame=None
+    ) -> Dict[Hashable, Any]:
         out: Dict[Hashable, Any] = {}
         for weight, given in self._overrides(owner, fixed):
-            _, _, values = self._fv_pass(owner, given, False)
-            for node, value in values.items():
+            for node, value in self._fv_unmixed(owner, given, frame).items():
                 out[node] = out.get(node, 0.0) + weight * value
         return out
 
-    def _fv_pass(self, top: int, fixed: dict, mix_top: bool):
+    def _fv_pass(self, top: int, fixed: dict, mix_top: bool, frame=None):
         """``top``'s probabilities of working and of failing, and for its
         nodes (see ``failed_cut_sets``), with ``fixed``; summed over its
         own groups' outcomes with ``mix_top``."""
         if mix_top and top in self.c.owned:
-            works, fails = self._mix(top, fixed, {})
-            return works, fails, self._fv_mix(top, fixed)
+            works, fails = self._mix(top, fixed, {}, frame)
+            return works, fails, self._fv_mix(top, fixed, frame)
         R: Dict[int, Any] = {}
         Q: Dict[int, Any] = {}
         fv: Dict[int, Any] = {}
         base = self._fv_terms()
+        lift = self._lift
         for i in self._order(top, fixed.keys()):
             term = self.c.terms[i]
             if i != top and i in self.c.owned:
-                R[i], Q[i] = self._mix(i, fixed, {})
-                fv[i] = self._fv_mix(i, fixed)
+                R[i], Q[i] = self._mix(i, fixed, {}, frame)
+                fv[i] = self._fv_mix(i, fixed, frame)
             elif term[0] == NODE:
-                R[i], Q[i] = self._node(term[1], fixed, {})
+                R[i], Q[i] = self._node(term[1], fixed, {}, frame)
                 fv[i] = {term[1]: Q[i]}
             else:
                 children = term[1]
-                Rc = {c: R[c] if c in R else self.R[c] for c in children}
-                Qc = {c: Q[c] if c in Q else self.Q[c] for c in children}
-                fvc = {c: fv[c] if c in fv else base[c] for c in children}
+                Rc = {
+                    c: R[c] if c in R else lift(self.R[c], frame)
+                    for c in children
+                }
+                Qc = {
+                    c: Q[c] if c in Q else lift(self.Q[c], frame)
+                    for c in children
+                }
+                fvc = {
+                    c: fv[c] if c in fv else self._lift_shares(base[c], frame)
+                    for c in children
+                }
                 R[i], Q[i] = combined(
                     term[0],
                     [Rc[c] for c in children],
@@ -794,3 +846,278 @@ class Evaluation:
                 )
                 fv[i] = self._fv_combine(i, Rc, Qc, fvc)
         return R[top], Q[top], fv[top]
+
+
+#: The most points (each a base point and a combination of the states of
+#: the groups conditioned on together there) a ``Tabled`` evaluation works
+#: out in one pass of an owner (#218): past it, it refuses.
+POINTS = 1 << 25
+
+#: How many such points are worked out at once.
+CHUNK = 1 << 17
+
+
+class _Table:
+    """A group's members' joint states, as ``Tabled`` takes them: each
+    combination of the members up or down with a probability at some point
+    (``works`` and ``fails`` one row each, 1 or 0 for each member), and its
+    probability at each point (``probabilities``, a column each)."""
+
+    def __init__(self, states):
+        probabilities = np.asarray(states.probabilities, dtype=float)
+        down = np.asarray(states.down, dtype=bool)
+        kept = np.flatnonzero(np.any(probabilities > 0.0, axis=0))
+        self.members = tuple(states.members)
+        self.fails = down[kept].astype(float)
+        self.works = 1.0 - self.fails
+        self.probabilities = np.ascontiguousarray(probabilities[:, kept])
+
+    def marginal(self, k: int) -> np.ndarray:
+        """The ``k``-th member's probability of working at each point."""
+        return self.probabilities @ self.works[:, k]
+
+
+class Tabled(Evaluation):
+    """``Evaluation`` with each common-cause group's members' joint states
+    given as tables (a repairable system's, from its groups' chains, #218),
+    not from its model's outcomes: each combination of the members up or
+    down, and its probability at each point (``tables``, each group's
+    ``_ccf_chain.GroupStates``). Given its combination the members are up
+    or down for certain, and independent of every other node, so each
+    group is conditioned on within its owner as before (see
+    ``Conditioned``); but where ``Evaluation`` sums an owner over its
+    groups' outcomes one at a time, here they are points of their own:
+    each point of the owner's repeated for each combination of its groups'
+    states with a probability there, worked out together, ``CHUNK`` at a
+    time, and summed back. So the memory taken stays bounded, and the time
+    is that of the points: a sum over the owners where the groups' states
+    are in separate modules, a product only where they meet. Before
+    anything is worked out, the most points an owner can need is checked
+    against ``POINTS`` (see ``_check``)."""
+
+    def __init__(self, plan: Plan, groups, p, q, shape, tables):
+        self.shape = shape
+        self.plan = plan
+        self.c = plan.base
+        self.causes: Dict[int, Any] = {}
+        self.outcomes = []
+        self.groups = list(groups)
+        self.tables = [_Table(states) for states in tables]
+        self.group_of = {
+            member: g
+            for g, table in enumerate(self.tables)
+            for member in table.members
+        }
+        self.p, self.q = dict(p), dict(q)
+        self._joints: Dict[int, dict] = {}
+        self._check()
+        self._settle()
+
+    # -- the size ----------------------------------------------------------
+
+    def _count(self, owner: int) -> int:
+        """How many combinations of its groups' states ``owner`` sums
+        over."""
+        return math.prod(
+            len(self.tables[g].works) for g in self.c.owned[owner]
+        )
+
+    def _check(self) -> None:
+        """Refuse before anything is worked out if an owner could need
+        more than ``POINTS`` points at once: its own combinations, at each
+        point of every owner above it (whose groups' members may lie in
+        it, so that it is worked out again for each of theirs)."""
+        owned = self.c.owned
+        worst, where = 0, None
+        for owner in owned:
+            count = self._count(owner)
+            chain = [] if owner == SYSTEM else self.c._ancestors(owner)[1:]
+            for above in chain:
+                if above in owned:
+                    count *= self._count(above)
+            if owner != SYSTEM and SYSTEM in owned:
+                count *= self._count(SYSTEM)
+            if count > worst:
+                worst, where = count, owner
+        if self.shape * worst <= POINTS:
+            return
+        members = [
+            list(self.groups[g].members)
+            for g in sorted(
+                {g for o in owned for g in owned[o]}
+                if where is None
+                else set(owned[where])
+            )
+        ]
+        raise NotImplementedError(
+            f"The common-cause groups {members} meet in one part of the "
+            "structure, whose exact values sum over every combination of "
+            f"their members' states: {worst:,} of them at each of "
+            f"{self.shape:,} times, more than the {POINTS:,} worked out "
+            "exactly. Simulate the system with availability() or cost(), "
+            "which take the groups in."
+        )
+
+    # -- an owner's combinations as points of their own ----------------------
+
+    def _frames(self, owner: int, fixed: dict, frame):
+        """The combinations of ``owner``'s groups' states (but those whose
+        members ``fixed`` holds) as a new last axis of ``frame``, ``CHUNK``
+        values at a time: for each chunk, the combinations' probabilities
+        at each point, ``fixed`` with the groups' members up or down in
+        each, and the chunk's frame. With no group left, ``fixed`` and the
+        frame itself."""
+        groups = [
+            g
+            for g in self.c.owned[owner]
+            if not set(self.tables[g].members) <= fixed.keys()
+        ]
+        if not groups:
+            yield None, fixed, frame
+            return
+        outer = (self.shape,) if frame is None else tuple(frame)
+        tables = [self.tables[g] for g in groups]
+        counts = [len(table.works) for table in tables]
+        total = math.prod(counts)
+        step = max(1, CHUNK // math.prod(outer))
+        # A point's probability varies only along the first axis (the
+        # points themselves) and the new one.
+        spread = (self.shape,) + (1,) * (len(outer) - 1)
+        for start in range(0, total, step):
+            columns = np.arange(start, min(start + step, total))
+            width = len(columns)
+            inner = outer + (width,)
+            # Each group's combination at each column (the last group's
+            # changing fastest), then their probabilities in group order.
+            digits = []
+            rest = columns
+            for count in reversed(counts):
+                digits.append(rest % count)
+                rest = rest // count
+            digits.reverse()
+            weights: Any = None
+            for table, digit in zip(tables, digits):
+                chance = table.probabilities[:, digit].reshape(
+                    spread + (width,)
+                )
+                weights = chance if weights is None else weights * chance
+            given = {
+                member: (self._lift(w, inner), self._lift(f, inner))
+                for member, (w, f) in fixed.items()
+            }
+            row = (1,) * len(outer) + (width,)
+            for table, digit in zip(tables, digits):
+                for k, member in enumerate(table.members):
+                    given[member] = (
+                        table.works[digit, k].reshape(row),
+                        table.fails[digit, k].reshape(row),
+                    )
+            yield weights, given, inner
+
+    def _mix(self, owner: int, fixed: dict, hold: dict, frame=None):
+        works: Any = 0.0
+        fails: Any = 0.0
+        for weights, given, inner in self._frames(owner, fixed, frame):
+            r, q = self._unmixed(owner, given, hold, inner)
+            if weights is None:
+                return r, q
+            works = works + (weights * r).sum(axis=-1)
+            fails = fails + (weights * q).sum(axis=-1)
+        return works, fails
+
+    def _fv_mix(self, owner: int, fixed: dict, frame=None) -> dict:
+        out: Dict[Hashable, Any] = {}
+        for weights, given, inner in self._frames(owner, fixed, frame):
+            values = self._fv_unmixed(owner, given, inner)
+            if weights is None:
+                return values
+            for node, value in values.items():
+                out[node] = out.get(node, 0.0) + (weights * value).sum(axis=-1)
+        return out
+
+    # -- what the measures need --------------------------------------------
+
+    def marginal(self, member) -> np.ndarray:
+        """A group member's probability of working at each point."""
+        table = self.tables[self.group_of[member]]
+        return table.marginal(table.members.index(member))
+
+    def joints(self, node) -> Tuple[Dict[str, Any], bool]:
+        """As ``Evaluation.joints``: a member's are worked out for its
+        whole group at once (see ``_group_joints``)."""
+        g = self.group_of.get(node)
+        if g is None:
+            return super().joints(node)
+        if g not in self._joints:
+            self._joints[g] = self._group_joints(g)
+        return self._joints[g][node], True
+
+    def _group_joints(self, g: int) -> Dict[Hashable, Dict[str, Any]]:
+        """``joints`` for each member of group ``g``: the system worked out
+        once with the group's members in each of their combinations (a last
+        axis, see ``_frames``), and summed over them for each member up
+        and down."""
+        table = self.tables[g]
+        count = len(table.works)
+        frame = (self.shape, count)
+        given = {
+            member: (
+                table.works[:, k].reshape(1, count),
+                table.fails[:, k].reshape(1, count),
+            )
+            for k, member in enumerate(table.members)
+        }
+        up, down = self.system(given, {}, frame)
+        weights = table.probabilities
+
+        def total(value) -> np.ndarray:
+            return np.broadcast_to((weights * value).sum(axis=-1), self.shape)
+
+        out: Dict[Hashable, Dict[str, Any]] = {}
+        for k, member in enumerate(table.members):
+            on, off = given[member]
+            out[member] = {
+                "works": total(on),
+                "fails": total(off),
+                "up_ok": total(on * up),
+                "down_ok": total(on * down),
+                "up_bad": total(off * up),
+                "down_bad": total(off * down),
+            }
+        return out
+
+    def combinations(self, g: int, down: np.ndarray) -> Tuple[Any, Any]:
+        """The system's probabilities of working and of failing at each
+        point (rows) with group ``g``'s members in each combination of
+        ``down`` (columns: for each, whether each member is down), the
+        other groups' as their tables have them."""
+        down = np.asarray(down, dtype=bool)
+        count = len(down)
+        frame = (self.shape, count)
+        given = {
+            member: (
+                np.where(down[:, k], 0.0, 1.0).reshape(1, count),
+                np.where(down[:, k], 1.0, 0.0).reshape(1, count),
+            )
+            for k, member in enumerate(self.tables[g].members)
+        }
+        up, fails = self.system(given, {}, frame)
+        return (
+            np.array(np.broadcast_to(up, frame)),
+            np.array(np.broadcast_to(fails, frame)),
+        )
+
+    def outcomes_of_tables(self) -> List[List[Outcome]]:
+        """Each group's combinations as outcomes (see
+        ``expected_product``)."""
+        return [
+            [
+                (
+                    table.probabilities[:, c],
+                    dict(zip(table.members, table.works[c])),
+                    dict(zip(table.members, table.fails[c])),
+                )
+                for c in range(len(table.works))
+            ]
+            for table in self.tables
+        ]

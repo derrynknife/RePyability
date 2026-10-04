@@ -116,6 +116,48 @@ other release, fixes included, the minor.
   within the modules), `ranked_cut_sets` and the rare-event Fussell–Vesely
   (a product over the groups). The capacity distribution and the
   redundancy allocations still condition on every combination.
+- **Common-cause groups in a `RepairableRBD` no longer take memory that
+  doubles per group (#218).** The long-run values, the importance
+  measures, the failure frequency (MTBF, MUT, MDT) and the values over
+  time split each time by every combination of every group's members up
+  or down: ten groups (pairs of tested units in series) were killed by the
+  operating system for memory, with no message. Each group is now
+  conditioned on only within the smallest module holding its members, as
+  for a non-repairable diagram (#219), an owner's combinations worked out
+  together a bounded chunk at a time: fifty such pairs take a third of a
+  second, in flat memory. Where groups meet in one module (kinds of
+  component across redundant trains) the values over time take far less
+  too: with five kinds across three trains, `point_availability` at 200
+  times took 42 s and 4 GB, and takes 0.1 s. Where a module's combinations
+  would still be too many, the exact values refuse before working anything
+  out, saying to simulate; the capacity distribution and the allocations,
+  which still take every combination at once, refuse where that would
+  take too much memory. The values are those of every combination, to
+  rounding.
+- **A common-cause group's members' tests and repairs may take time
+  (#220).** The most common SIL calculation, a 1oo2 or 2oo3 with a beta
+  factor and a mean repair time, was refused by every exact method. A
+  tested member's level in its group's chain may now be off line for a test
+  while working (where it neither ages nor is struck), under a test while
+  failed, or under repair: a test or repair of a fixed length ends a fixed
+  time after its test, and one of an exponential length at a rate, and a
+  test that falls in a member's own test or repair is not done, as in the
+  simulations. The long-run values, the importance measures and the values
+  over time are numerical (to the members' own models' grids): the issue's
+  1oo2, with an eight-hour MRT, has a PFDavg of 9.591e-4 against IEC
+  61508-6's estimate of 9.609e-4. Refused, each saying what to do: tests or
+  repairs of another distribution, a test of an exponential length
+  followed by a repair of a fixed one, fixed lengths as long as the test
+  interval, copies of such members in the allocations, and the failure
+  frequency where their tests take time (planned outages). The chains'
+  other refusals now say what to do too, and name a member as "the life of
+  member 'v1'" where they printed "member 'v1''s".
+- **Common-cause groups are no longer dropped with limited repair
+  crews.** With fewer `repair_crews` than jobs, `mean_availability`,
+  `mean_unavailability`, the importance measures, the failure frequency
+  and the capacity distribution gave the system without its groups (the
+  crews' chain does not take common causes in), and `analysis_routes`
+  called them exact. They now refuse, as the values over time did.
 - **`ConfidenceInterval.method` names every case of a repairable run's
   mean (#223):** `"simulated"`, `"control_variate"`, `"conditional"` or
   `"exact"`, where the simulations' own mean and a controlled one were

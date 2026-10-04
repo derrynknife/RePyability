@@ -157,6 +157,14 @@
   (`_Counted`) rather than tell them apart, which holds for a
   `BetaFactor`'s one shared cause: `test_ccf_allocations.py` checks them
   against the chain of every copy.
+- **A common-cause group's chain with tests and repairs that take time
+  (`_ccf_chain._Timed`, #220) copies the simulation's inspections** too
+  (`_inspected_follow_up`, `_inspected_next`, `_strike`): a working member
+  is off line for its test, unaged and not struck; a failure found is
+  repaired once the test is over; a test in a member's own test or repair
+  is not done. A change to one goes into the other: `test_ccf_timed.py`
+  checks the chain against the simulation, and against the members' own
+  model (`_hidden_tests`) where no cause is shared.
 - **A tested unit's numerical model (`repyability/rbd/_hidden_tests.py`,
   #159) copies the simulation's inspections** (`_inspected_follow_up`,
   `_inspected_next`): a test takes a working unit off line without ageing
@@ -221,6 +229,13 @@
   outcomes (`ccf.shock_outcomes`), which `test_ccf_modules.py` checks them
   against. A change to a model's outcomes (`_split`) goes into its causes
   (`_causes`, `_fired`) too.
+  A `RepairableRBD`'s groups are conditioned on module by module too
+  (#218, `_ccf_modules.Tabled`), on their chains' combinations of the
+  members up or down, an owner's laid out as a last axis of the arrays;
+  `test_ccf_repairable_modules.py` checks every long-run value, measure
+  and the groups' system over time against the times split by every
+  combination (`_with_ccf_groups`, which the capacity distribution and the
+  allocations still take, behind `_ccf_chain.check_split`).
 - **The integrals over a window are summed on coarse pieces**
   (`repyability/rbd/_quadrature.py`, #164): the curves' breaks, cut to a
   few steps of the finest grid still changing, and halved until their

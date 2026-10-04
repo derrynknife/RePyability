@@ -585,6 +585,7 @@ def test_the_readme_says_what_is_simulated():
     minimal = repairable["minimal repair in no time"]
     tested_group = repairable["common cause, tested"]
     revealed_group = repairable["common cause, revealed"]
+    timed_group = repairable["common cause, timed tests and repairs"]
     claims = {
         "Sampled lifetimes or histories, and distributions or percentiles "
         "of an outcome over a window": [
@@ -706,6 +707,11 @@ def test_the_readme_says_what_is_simulated():
             (repairable["too meshed"], "point_availability", "refused"),
         ],
         "Common-cause groups in a repairable diagram": [
+            (timed_group, "mean_availability", "numerical"),
+            (timed_group, "birnbaum_importance", "numerical"),
+            (timed_group, "point_availability", "numerical"),
+            (timed_group, "system_failure_frequency", "refused"),
+            (timed_group, "availability", "simulated"),
             (tested_group, "mean_availability", "exact"),
             (tested_group, "system_failure_frequency", "exact"),
             (tested_group, "birnbaum_importance", "exact"),
