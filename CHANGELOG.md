@@ -34,6 +34,18 @@ other release, fixes included, the minor.
 
 ### Fixed
 
+- **Parameter uncertainty draws a shared fitted model once (#214).** In a
+  `RepairableRBD`, nodes holding the same fitted life but repair fits of
+  their own (one fleet's life fit, repairs recorded by site) had their
+  life drawn per node, by default, and no spec could share it: the
+  intervals of `*_uncertainty` were some 40% too narrow, and the vega
+  split wrong. Draws are now shared per fitted object in each role: a
+  node may come under several inputs, a role of it under one
+  (`{("a", "b"): {"reliability": "fit"}, "a": {"repairability": "fit"},
+  ...}`), which the default now gives. In both diagram classes, a spec that
+  draws one node and leaves others holding the same fitted object as they
+  are is warned about. Seeded draws change where models were shared in
+  some roles only.
 - **A conditional run whose modules never changed state no longer reports
   a certain answer (#215).** When the dependent modules met only the state
   they started in, in every simulation (a standby pair that never went

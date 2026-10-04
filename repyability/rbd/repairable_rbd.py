@@ -20694,11 +20694,18 @@ class RepairableRBD(RBD):
         maintenance and of its tests (``"preventive.duration"``,
         ``"inspection.duration"``), named as ``parameter_sensitivity``'s
         levers. ``uncertainty`` maps an input to its uncertainty: a node; a
-        tuple of nodes of one population, sharing their models, which each
-        draw gives them alike; or a common-cause group (the
+        tuple of nodes of one population, sharing a model, which each draw
+        gives them alike; or a common-cause group (the
         [`CCFGroup`][repyability.CCFGroup] itself), whose model's
         parameters, or alternative models, are drawn as for
-        ``NonRepairableRBD.sf_uncertainty``. A node's uncertainty is
+        ``NonRepairableRBD.sf_uncertainty``. A node may come under several
+        inputs, a role of it under one: a fleet's life fit, shared by two
+        pumps whose repairs were recorded apart, is ``{("a", "b"):
+        {"reliability": "fit"}, "a": {"repairability": "fit"}, "b":
+        {"repairability": "fit"}}``, the life drawn once a draw (#214). An
+        input drawn without other nodes that hold the same model object,
+        which then keep it as fitted, is warned about. A node's uncertainty
+        is
 
         - ``"fit"``: every one of its models that is a surpyval fit with a
           parameter covariance (``hess_inv``), drawn from its normal
@@ -20714,8 +20721,9 @@ class RepairableRBD(RBD):
         uncertainty : dict, optional
             ``{node, tuple of nodes or CCFGroup: uncertainty}`` (see above).
             By default, every model that is a fit with a parameter
-            covariance, the nodes whose fitted models are one set of
-            objects, or one common-cause group, together.
+            covariance, drawn once for all the nodes holding that fitted
+            object in that role, and for one common-cause group's members
+            together.
         n_draws : int, optional
             The number of draws, by default 1000: one evaluation each.
         seed : int, optional

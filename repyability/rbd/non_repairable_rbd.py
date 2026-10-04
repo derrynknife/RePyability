@@ -1570,7 +1570,9 @@ class NonRepairableRBD(RBD):
         same data, share their uncertainty: give them together as a tuple
         of node names, and each draw gives them the same model. Drawing
         them independently would understate the uncertainty, which is
-        about the one population's parameters.
+        about the one population's parameters; so would drawing one and
+        leaving the others as fitted, which is warned about when they hold
+        the same model object (#214).
 
         With common-cause groups, each draw is worked out as ``sf`` works
         it out, with the groups. A group's members carry one model, so
@@ -2503,7 +2505,10 @@ class NonRepairableRBD(RBD):
         node or tuple of nodes given, its key, its nodes and its
         uncertainty; and for each common-cause group whose model is
         uncertain, by its index, its key and its uncertainty. By default,
-        every fitted node (``_fitted_uncertainty``)."""
+        every fitted node (``_fitted_uncertainty``). Given, a node drawn
+        without other nodes holding the same model object, which are left
+        as they are, is warned about (#214)."""
+        given = uncertainty is not None
         if uncertainty is None:
             uncertainty = self._fitted_uncertainty()
             if not uncertainty:
@@ -2574,6 +2579,30 @@ class NonRepairableRBD(RBD):
                     "uncertainty together, in one tuple of nodes (e.g. "
                     f"{{{tuple(group.members)!r}: 'fit'}})."
                 )
+        if given:
+            from repyability.rbd._repairable_uncertainty import half_named
+
+            for _, members, _ in sources:
+                model = self.reliabilities[members[0]]
+                others = [
+                    node
+                    for node in self.nodes
+                    if node not in seen
+                    and node not in self.repeated
+                    and self.reliabilities[node] is model
+                ]
+                if others:
+                    label = (
+                        f"Node {members[0]!r}"
+                        if len(members) == 1
+                        else f"Nodes {list(members)!r}"
+                    )
+                    half_named(
+                        label,
+                        others,
+                        "model",
+                        {tuple(members) + tuple(others): "fit"},
+                    )
         return sources, ccf_specs
 
     def _fitted_uncertainty(self) -> Dict[Hashable, str]:
