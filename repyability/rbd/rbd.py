@@ -177,6 +177,23 @@ def structure_problems(check: dict) -> List[str]:
             f"node(s) {_names(sinks)} have no outgoing edges, which only the "
             f"output node, {check['output_node']!r}, may have"
         )
+    for which, node in check.get("models_for_ends", ()):
+        if which == "output":
+            lines.append(
+                f"{node!r} is the output node (the only node with no "
+                "outgoing edges), so the model given for it would be "
+                f"ignored: did you forget an edge from {node!r} to the "
+                "output node? (The input and output nodes never fail: give "
+                "them no model, or PerfectReliability.)"
+            )
+        else:
+            lines.append(
+                f"{node!r} is the input node (the only node with no "
+                "incoming edges), so the model given for it would be "
+                "ignored: did you forget an edge from the input node to "
+                f"{node!r}? (The input and output nodes never fail: give "
+                "them no model, or PerfectReliability.)"
+            )
     lines.extend(check.get("koon_errors", ()))
     return lines
 
@@ -682,6 +699,10 @@ class RBD:
     # runs (None for a structure alone): one in no edge is reported as
     # such, and a node in the edges with none as having no model.
     _models_given: Optional[list] = None
+    # The names among those given a model that never fails (such as
+    # PerfectReliability): the only models the input or output node may be
+    # given (#217).
+    _perfect_given: frozenset = frozenset()
     # Whether the junctions (see ``_junctions``) are folded out of the
     # structure (``modular.fold``): a ``RepairableRBD``'s are no components,
     # while a ``NonRepairableRBD``'s have a model that never fails.
@@ -789,7 +810,21 @@ class RBD:
             ]
             structure_check["nodes_in_no_edge"] = unused
             structure_check["nodes_with_no_model"] = missing
-            if unused or missing:
+            # The input and output nodes are inferred from the edges and
+            # never fail, so a model given for one would be dropped: most
+            # likely a component whose edge to the output (or from the
+            # input) was forgotten, which would change the answer silently.
+            inferred = [
+                (which, structure_check.get(f"{which}_node"))
+                for which in ("input", "output")
+                if structure_check.get(f"has_unique_{which}_node")
+            ]
+            structure_check["models_for_ends"] = [
+                (which, node)
+                for which, node in inferred
+                if node in given and node not in self._perfect_given
+            ]
+            if unused or missing or structure_check["models_for_ends"]:
                 structure_check["is_valid"] = False
 
         if not structure_check["is_valid"]:

@@ -200,3 +200,84 @@ def test_a_structure_alone_takes_any_nodes():
     structure = RBD([("s", "a"), ("a", "t")])
     assert structure.structure_check["is_valid"] is True
     assert "nodes_with_no_model" not in structure.structure_check
+
+
+# -- a model given for the input or output node (#217) ----------------------
+
+BELT = [("s", "m1"), ("s", "m2"), ("m1", "belt"), ("m2", "belt")]
+
+
+def test_a_model_for_the_output_node_names_the_missing_edge():
+    # The edge ("belt", "t") is forgotten: "belt" becomes the output node,
+    # and its model would have been dropped, silently changing the answer.
+    models = {"m1": W, "m2": W, "belt": W}
+    assert problems(lambda: NonRepairableRBD(BELT, models)) == [
+        "'belt' is the output node (the only node with no outgoing edges), "
+        "so the model given for it would be ignored: did you forget an edge "
+        "from 'belt' to the output node? (The input and output nodes never "
+        "fail: give them no model, or PerfectReliability.)"
+    ]
+    whole = NonRepairableRBD(BELT + [("belt", "t")], models)
+    assert whole.sf(50.0) < W.sf(50.0)
+
+
+def test_a_model_for_the_input_node_names_the_missing_edge():
+    found = problems(
+        lambda: NonRepairableRBD([("a", "b"), ("b", "t")], {"a": W, "b": W})
+    )
+    assert found == [
+        "'a' is the input node (the only node with no incoming edges), so "
+        "the model given for it would be ignored: did you forget an edge "
+        "from the input node to 'a'? (The input and output nodes never "
+        "fail: give them no model, or PerfectReliability.)"
+    ]
+
+
+def test_a_repairable_component_for_the_output_node_is_refused_too():
+    unit = {
+        "reliability": surv.Exponential.from_params([1e-3]),
+        "repairability": surv.Exponential.from_params([0.1]),
+    }
+    found = problems(
+        lambda: RepairableRBD(BELT, {"m1": unit, "m2": unit, "belt": unit})
+    )
+    assert len(found) == 1 and found[0].startswith("'belt' is the output node")
+
+
+@pytest.mark.parametrize(
+    "never",
+    [
+        PerfectReliability,
+        surv.FixedEventProbability.from_params(0.0),
+    ],
+    ids=["perfect", "fails with probability 0"],
+)
+def test_a_model_that_never_fails_may_be_given_for_the_ends(never):
+    # As a dict built from node_availability() gives them: 1.0 for each end.
+    rbd = NonRepairableRBD(
+        [("s", "a"), ("a", "t")], {"s": never, "a": W, "t": never}
+    )
+    assert rbd.sf(50.0) == pytest.approx(W.sf(50.0))
+    pair = RepairableRBD(
+        [("s", "a"), ("a", "t")],
+        {
+            "s": PerfectReliability,
+            "a": {
+                "reliability": surv.Exponential.from_params([1e-3]),
+                "repairability": surv.Exponential.from_params([0.1]),
+            },
+            "t": PerfectReliability,
+        },
+    )
+    assert pair.mean_availability() == pytest.approx(0.1 / 0.101)
+
+
+def test_warn_keeps_the_old_behaviour():
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        rbd = NonRepairableRBD(
+            BELT, {"m1": W, "m2": W, "belt": W}, on_infeasible_rbd="warn"
+        )
+    assert any("'belt' is the output node" in str(w.message) for w in caught)
+    # The belt's model dropped: the pair of m's in parallel alone.
+    assert rbd.sf(50.0) == pytest.approx(1 - W.ff(50.0) ** 2)

@@ -9,6 +9,25 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+### Changed
+
+- **A model given for the input or output node is refused (#217).** The
+  input and output nodes are inferred from the edges and never fail, so a
+  model given for one was dropped: forgetting a component's edge to the
+  output node made it the output node, and the answer changed with no
+  warning. Both RBD classes now refuse it as an invalid structure, naming
+  the edge most likely missing ("'belt' is the output node ..., so the
+  model given for it would be ignored: did you forget an edge from 'belt'
+  to the output node?"). `PerfectReliability`, or a fixed probability of
+  failing of 0 (as a `node_availability()` of 1 gives), may still be given
+  for an end, and `on_infeasible_rbd="warn"` keeps the old behaviour.
+
+### Fixed
+
+- **`NonRepairableRBD.node_mttf()` leaves junctions out (#228)**, as the
+  importance measures do, where it raised an `AttributeError` on a
+  `PerfectReliability` node though `analysis_routes()` reported it exact.
+
 ## [0.12] - 2026-10-04
 
 Exact where there were estimates, and the sensitivities as one family. A

@@ -4227,7 +4227,9 @@ class RepairableRBD(RBD):
         series between the input node ``"s"`` and the output node ``"t"``.
     components : dict
         One entry per node other than the input and output nodes, keyed by
-        node name. Each is one of:
+        node name (the input and output nodes never fail: a component given
+        for one is refused, as its edge to the output node, or from the
+        input node, is most likely missing). Each is one of:
 
         - A spec dict with ``"reliability"`` (a time-to-failure model, such
           as a fitted surpyval distribution) and ``"repairability"`` (a
@@ -4747,6 +4749,7 @@ class RepairableRBD(RBD):
             for name, component in components.items()
             if _is_junction(name, component)
         )
+        self._perfect_given = self._junction_nodes
         components = {
             name: component
             for name, component in components.items()

@@ -264,6 +264,20 @@ def _system_difference(at, theta, rel_step, base) -> np.ndarray:
     return np.where(fails <= works, -d_fails, d_works)
 
 
+def _never_fails(model) -> bool:
+    """Whether ``model`` never fails, so that giving it for the input or
+    output node changes nothing (#217): ``PerfectReliability``, or a fixed
+    probability of failing of 0 (as a ``node_availability`` of 1 gives)."""
+    if model is PerfectReliability or isinstance(model, PerfectReliability):
+        return True
+    if is_fixed_probability(model):
+        try:
+            return float(np.ravel(model.ff(1.0))[0]) == 0.0
+        except Exception:
+            return False
+    return False
+
+
 def _check_model(node, model) -> None:
     """Raise if a node's model is not one (it has no ``sf``), saying what
     to give instead; a number most likely means a probability."""
@@ -347,8 +361,10 @@ class NonRepairableRBD(RBD):
         It stays where it is drawn, and every appearance is the one
         component: it works, or has failed, in all of them at once. That
         node cannot itself be a repeat. The input and output nodes need no
-        entry: they are always perfectly reliable, and a model given for
-        them is replaced.
+        entry: they are always perfectly reliable. A model given for one
+        (other than ``PerfectReliability``) is refused as an invalid
+        structure, since it would be ignored: most likely a component's
+        edge to the output node, or from the input node, is missing.
     k : dict[Any, int], optional
         ``{node: k}`` for k-out-of-n nodes: a node with ``n`` predecessors
         is reached only when at least ``k`` of them are reached through
@@ -570,6 +586,11 @@ class NonRepairableRBD(RBD):
         # with the names given models, which it checks against the edges.
         self._aliases = dict(repeated)
         self._models_given = list(reliabilities) + list(repeated)
+        self._perfect_given = frozenset(
+            name
+            for name, model in reliabilities.items()
+            if _never_fails(model)
+        )
         super().__init__(
             edges,
             None,
@@ -7114,19 +7135,21 @@ class NonRepairableRBD(RBD):
           ``mean()`` of one is the *defective* mean, its failing units' mean
           weighted by their fraction.)
 
-        Common-cause groups do not affect a node's own MTTF.
+        Common-cause groups do not affect a node's own MTTF. A junction (a
+        node given [`PerfectReliability`][repyability.PerfectReliability],
+        such as a k-out-of-n vote point) never fails and is left out, as
+        from the importance measures.
 
         Returns
         -------
         dict[Any, float]
             ``{node: MTTF}`` over the component nodes (not the input or
-            output node).
+            output node, nor a junction).
 
         Raises
         ------
         AttributeError
-            If a node's model has no ``mean()`` method (e.g.
-            [`PerfectReliability`][repyability.PerfectReliability]).
+            If a node's model has no ``mean()`` method.
         NotImplementedError
             If a nested RBD has common-cause groups that split a
             probability (see ``mean``).
@@ -7146,7 +7169,10 @@ class NonRepairableRBD(RBD):
         {'a': 100.0, 'b': 0.0}
         """
         out: dict[Any, float] = {}
+        junctions = self._junctions()
         for node in self.nodes:
+            if node in junctions:
+                continue  # never fails: no component (#228)
             model = self.reliabilities[node]
             if isinstance(
                 model,
