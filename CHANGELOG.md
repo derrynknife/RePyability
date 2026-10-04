@@ -766,6 +766,11 @@ properties, and calling them, like `StandbyModel`'s and
     run into (`filterwarnings` in `pyproject.toml`). The upstream workflow,
     which runs them on surpyval's development branch, then shows a name
     surpyval will remove while it still works.
+  - The tests take surpyval's `success_run` bound with `alpha_ci`, the
+    name surpyval 0.23 gives it, where the installed surpyval has it, and
+    with `confidence` otherwise, so the installed tests also pass with
+    surpyval's next release, which deprecates `confidence`
+    ([SurPyval#580](https://github.com/derrynknife/SurPyval/issues/580)).
 
 
 ### Deprecated

@@ -2,6 +2,7 @@
 forward function, textbook values, and the special cases that reduce to
 simpler plans."""
 
+import inspect
 import math
 
 import numpy as np
@@ -57,10 +58,19 @@ def test_the_planned_test_is_the_smallest_that_demonstrates(
         assert fewer > 1.0 - confidence
 
 
+def _success_run(n, confidence):
+    """surpyval's bound after ``n`` successes, by the name the installed
+    surpyval takes: ``alpha_ci = 1 - confidence`` from 0.23, which
+    deprecates ``confidence`` (surpyval #580), and ``confidence`` before."""
+    if "alpha_ci" in inspect.signature(surpyval.success_run).parameters:
+        return float(surpyval.success_run(n, alpha_ci=1.0 - confidence))
+    return float(surpyval.success_run(n, confidence=confidence))
+
+
 @pytest.mark.parametrize("n", [1, 5, 59, 1000])
 @pytest.mark.parametrize("confidence", [0.6, 0.9, 0.95])
 def test_no_failures_is_surpyvals_success_run(n, confidence):
-    expected = float(surpyval.success_run(n, confidence=confidence))
+    expected = _success_run(n, confidence)
     assert demonstrated_reliability(n, confidence) == pytest.approx(
         expected, rel=1e-12
     )
@@ -95,9 +105,7 @@ def test_weibayes_trades_units_for_test_time(k, beta):
     shown = demonstrated_reliability(
         n, confidence, test_multiple=k, shape=beta
     )
-    assert shown == pytest.approx(
-        float(surpyval.success_run(n, confidence)) ** (1 / k**beta)
-    )
+    assert shown == pytest.approx(_success_run(n, confidence) ** (1 / k**beta))
     assert shown >= reliability
 
 

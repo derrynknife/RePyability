@@ -269,6 +269,12 @@ major.minor.
   process's. Remove the override once the minimum surpyval's fits pickle
   (keep `dumps`' message for what still cannot be sent).
 
+- **`success_run`'s `alpha_ci`** (surpyval #580). surpyval 0.23 names
+  the bound's level `alpha_ci = 1 - confidence` and deprecates
+  `confidence`, which 0.22 needs: `test_demonstration.py`'s `_success_run`
+  passes the name the installed surpyval takes. Pass `alpha_ci` directly
+  once the minimum surpyval is 0.23.
+
 List each new workaround here with its surpyval issue and where it lives,
 so it can go once the minimum surpyval in `pyproject.toml` includes the
 fix.
