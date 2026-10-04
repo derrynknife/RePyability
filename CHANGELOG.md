@@ -520,6 +520,17 @@ other release, fixes included, the minor.
   guide rather than repeat it. `initialize_event_queue` stays public, as
   the guide steps a simulation by hand with it, and the wheel keeps its
   tests (#167).
+- **The values over time of a tested component with an exponential life
+  are no longer refused on some platforms.** Where its tests or repairs
+  take time, its curve follows its state from new until it is the long
+  run's, which it took to be within 1e-15 of it. The state settles a few
+  roundings from the long run's, how few depending on the platform's
+  numerical libraries, and on some (CI's Python 3.12 and 3.13) it did not
+  come that close: `point_availability`, `mission_availability`,
+  `expected_events` and its other values over time were refused as not
+  settled at times later than its curve can follow (some 2,000 tests). It
+  now has to be within 1e-12, as a component's with any other life
+  already did.
 
 ## [0.12] - 2026-10-04
 

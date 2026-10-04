@@ -187,9 +187,12 @@ def test_the_discounted_cost_from_new_in_closed_form():
 
     got = line.expected_cost([8760.0, HORIZON], discount_rate=SEVEN)
     assert got.discount_rate == SEVEN
+    # To the precision of the availability curve it is worked out from: on
+    # its 1,000-step grid, about 3e-7 over the first year, where the curve
+    # is still settling (the undiscounted cost is off by as much).
     for T, value in zip([8760.0, HORIZON], got.mean):
-        assert value == pytest.approx(present(T), rel=1e-7)
-    assert got.total[1] == pytest.approx(20000.0 + present(HORIZON), rel=1e-7)
+        assert value == pytest.approx(present(T), rel=1e-6)
+    assert got.total[1] == pytest.approx(20000.0 + present(HORIZON), rel=1e-6)
     # The long-run approximation of the same.
     assert line.total_cost(HORIZON, discount_rate=SEVEN) == pytest.approx(
         got.total[1], rel=1e-3

@@ -143,9 +143,10 @@ def check(
 
 
 def _too_long(node, what: str, instead=_UNSUPPORTED) -> NotImplementedError:
+    whose = "A tested unit" if node is None else f"Component {node!r}"
     return NotImplementedError(
-        f"Component {node!r}: {what}, too long for the numerical values of "
-        f"its hidden failures. {instead}"
+        f"{whose}: {what}, too long for the numerical values of its hidden "
+        f"failures. {instead}"
     )
 
 
@@ -742,10 +743,14 @@ class _Chain:
         out: list = []
         for k, position in enumerate(positions):
             lag = None if first_lag is None else first_lag + k
+            # Within SETTLED of the long run's state, as the walk's rows
+            # are: the iterated state settles a few roundings from the
+            # stationary one, how few depending on the platform's
+            # arithmetic, so a bound at the rounding never met on some.
             if (
                 settled is not None
                 and (self.first is None or lag >= self.first.lags)
-                and np.max(np.abs(x - settled[int(position)])) <= 1e-15
+                and np.max(np.abs(x - settled[int(position)])) <= SETTLED
             ):
                 return _rows_of(out, self.lags), k
             row, x = self.step(x, int(position), lag)

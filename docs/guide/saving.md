@@ -228,7 +228,7 @@ routes = tested.analysis_routes()
 routes["mean_availability"].route  # 'refused': a test can outlast its interval
 routes["mean_availability"].nodes  # ('pump',)
 routes["availability"].route       # 'simulated'
-routes["availability"].engine      # 'numba' with numba installed, else 'python'
+routes["availability"].engine      # with numba installed 'numba', else 'python'
 ```
 
 ## Performance

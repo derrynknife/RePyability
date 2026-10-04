@@ -227,7 +227,31 @@ def test_from_new_it_settles_into_its_long_run(spec):
             )
 
 
-# -- against the simulation -------------------------------------------------
+@pytest.mark.parametrize("nudge", [0.0, 2e-15, 1e-14])
+def test_it_settles_with_its_long_run_a_few_roundings_off(monkeypatch, nudge):
+    # The state iterated from new comes within a few roundings of the
+    # stationary one, how few depending on the platform's arithmetic: a bound
+    # at the rounding was never met on Python 3.12's, and the curve refused.
+    def unit():
+        return ht.TestedUnit(
+            interval=1.0,
+            life=E([0.3]),
+            repair=LN([np.log(0.3), 0.5]),
+            test=LN([np.log(0.05), 0.3]),
+            coverage=0.6,
+            per=2,
+            rate=0.3,
+        )
+
+    exact = unit().curve(np.inf, 0.0, 1)
+    stationary = ht._Chain.stationary
+    monkeypatch.setattr(
+        ht._Chain, "stationary", lambda chain: stationary(chain) + nudge
+    )
+    curve = unit().curve(np.inf, 0.0, 1)
+    assert curve.settled and curve.settle == exact.settle
+    x = np.linspace(0.0, 2 * curve.settle, 201)
+    assert np.allclose(curve.at(x), exact.at(x), rtol=0.0, atol=1e-11)
 
 
 CASES = {
