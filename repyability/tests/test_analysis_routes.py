@@ -384,9 +384,11 @@ def test_the_report_covers_every_public_analysis(cls):
         "get_non_analytic_nodes",
         "is_analytically_solvable",
         "is_system_working",
+        "levers",
         "node_names",
         "system_timeline",
         "with_intervals",
+        "with_levers",
     }
     public = {
         name

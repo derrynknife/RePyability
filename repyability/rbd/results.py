@@ -1820,6 +1820,59 @@ class MaintenancePlan(_ResultMapping):
     offsets: Optional[Dict[Hashable, float]] = None
 
 
+@dataclass(frozen=True)
+class Lever(_ResultMapping):
+    """One lever of a diagram: a value that its ``parameter_sensitivity``
+    moves (#244).
+
+    [`RepairableRBD.levers`][repyability.RepairableRBD.levers] and
+    [`NonRepairableRBD.levers`][repyability.NonRepairableRBD.levers] list
+    them, in the order ``parameter_sensitivity`` reports them, and
+    ``with_levers`` builds the diagram with them at other values. Like the
+    other result types it is also a read-only mapping of its fields.
+
+    Attributes
+    ----------
+    key : Hashable
+        Whose lever it is, as ``parameter_sensitivity`` keys its result: a
+        node; the tuple of a common-cause group's members, for the
+        parameters of the model they share and the group's own; or None,
+        for the repair crews.
+    name : str
+        The lever, as ``parameter_sensitivity`` names it: in a
+        ``RepairableRBD`` ``"reliability.alpha"``,
+        ``"inspection.interval"``, ``"standby.units"``, ``"ccf_beta"``,
+        ``"repair_crews"``, ...; in a ``NonRepairableRBD`` the parameter's
+        own name (``"alpha"``) or the group's (``"ccf_beta"``).
+    value : float
+        Its value in the diagram.
+    discrete : bool
+        Whether it counts something (standby units, repair crews), its
+        sensitivity the change one more makes; else its sensitivity is a
+        derivative.
+    bounds : tuple of float
+        ``(lower, upper)``, the range of its values: a value outside it is
+        refused (``-inf`` and ``inf`` where there is no bound). An end may
+        itself be a valid value or not: a coverage of 1 is, a rate of 0 is
+        not.
+    calendar : bool
+        Whether it moves the period of a calendar that its component
+        shares with others (a block replacement's or a test's interval,
+        with other components' block replacements or tests): the long-run
+        values jump as it leaves the common calendar, so its long-run
+        sensitivity takes its schedule apart from the others' (see
+        ``RepairableRBD.parameter_sensitivity``). Always False in a
+        ``NonRepairableRBD``.
+    """
+
+    key: Hashable
+    name: str
+    value: float
+    discrete: bool
+    bounds: Tuple[float, float]
+    calendar: bool = False
+
+
 def _meeting(levels: np.ndarray, demand: float) -> np.ndarray:
     """Which ``levels`` meet ``demand``. A level within rounding of it
     meets it: capacities that add up to the demand exactly (three units of

@@ -308,6 +308,16 @@
   has `to_dict()` (through `results.plain`, ready for `json.dumps`); a
   result holding arrays of a run's length gets a summary `__repr__`.
   `test_result_objects.py` sends each kind through JSON.
+- **A diagram's levers are listed in one place (#244)**:
+  `_sensitivity._levers` (repairable) and `_nonrepairable_levers`, each
+  lever with the range its constructor checks. `RepairableRBD`'s
+  `parameter_sensitivity`, both classes' `levers()` and `with_levers`
+  take them from there (`NonRepairableRBD.parameter_sensitivity` walks its
+  nodes itself). A new lever (a spec option, a kind of model) goes there
+  with its bounds: `test_levers.py` checks, on every catalogue diagram,
+  that `levers()` lists what `parameter_sensitivity` reports, in its
+  order, that each value lies in its range, and that `with_levers`
+  refuses a value past it.
 - **A deprecation gives one minor release's notice.** It warns in one
   minor release and the next removes it, with a `FutureWarning` (always
   shown) through `repyability/utils/deprecation.py`. What 0.11 deprecated

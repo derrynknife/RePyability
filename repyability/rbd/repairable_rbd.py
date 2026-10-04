@@ -140,6 +140,7 @@ from repyability.rbd.results import (
     ExpectedCost,
     ExpectedEvents,
     FailureCriticalityIndex,
+    Lever,
     MaintenancePlan,
     RateBreakdown,
     RestorationCriticalityIndex,
@@ -22018,7 +22019,9 @@ class RepairableRBD(RBD):
         more unit), its imperfect repair's (``"repair.q"``), a common-cause
         group's (its members' parameters, moved together, and its model's
         ``"ccf_beta"``, ``"ccf_gamma"``, ...), and the repair crews
-        (``"repair_crews"``, one more, under the key None).
+        (``"repair_crews"``, one more, under the key None). ``levers()``
+        lists them, with their values and ranges, and ``with_levers``
+        builds the RBD with them moved, as they are moved here.
 
         A continuous lever's derivative is a central difference of the
         system's own value with the lever moved by ``rel_step`` of its
@@ -22138,6 +22141,95 @@ class RepairableRBD(RBD):
             of=of,
             unit_costs=unit_costs,
         )
+
+    def levers(self) -> List[Lever]:
+        """The levers that ``parameter_sensitivity`` moves, in the order it
+        reports them (#244): each component's life and repair models'
+        parameters, its maintenance's and tests' options, its standby
+        group's and its imperfect repair's, each common-cause group's, and
+        the repair crews.
+
+        Each is a [`Lever`][repyability.Lever]: whose it is and its name, as
+        ``parameter_sensitivity`` keys them, its value, the range of its
+        values, whether it is discrete (one more standby unit or repair
+        crew), and whether it moves a calendar its component shares with
+        others. Nothing is worked out, so a report can name the levers and
+        show their values without the sensitivities;
+        [`with_levers`][repyability.RepairableRBD.with_levers] sets them.
+
+        Returns
+        -------
+        list of Lever
+            The levers, in ``parameter_sensitivity``'s order.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> E = surv.Exponential.from_params
+        >>> rbd = RepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {"c": {"reliability": E([0.01]), "repairability": E([0.1])}},
+        ... )
+        >>> for lever in rbd.levers():
+        ...     print(lever.key, lever.name, lever.value, lever.bounds)
+        c reliability.failure_rate 0.01 (0.0, inf)
+        c repairability.failure_rate 0.1 (0.0, inf)
+        """
+        return _sensitivity.public_levers(self)
+
+    def with_levers(self, values) -> "RepairableRBD":
+        """A copy of this RBD with levers at new values (#244), each moved
+        as ``parameter_sensitivity`` moves it, so that a what-if agrees
+        with the sensitivities: a test interval takes the full tests with it
+        (every so many tests, as before), and a common-cause group's
+        members' parameter moves for every member. ``levers()`` lists the
+        levers.
+
+        Parameters
+        ----------
+        values : dict
+            Each lever's new value, by its [`Lever`][repyability.Lever]
+            (from ``levers()``) or by its ``(key, name)``, as
+            ``parameter_sensitivity`` reports it; a discrete lever's (the
+            standby units, the repair crews) a whole number.
+
+        Returns
+        -------
+        RepairableRBD
+            The new RBD, built as this one was with the levers moved; this
+            one is unchanged.
+
+        Raises
+        ------
+        ValueError
+            For a lever the RBD does not have (with the closest name), a
+            discrete lever given a fraction, or a value the RBD refuses
+            (one outside the lever's ``bounds``, say).
+        TypeError
+            If ``values`` is not a dict, a lever is neither a ``Lever`` nor
+            a ``(key, name)``, or a value is not a number.
+
+        Examples
+        --------
+        Repairs in 8 rather than 10, on average: the availability rises
+        from ``100 / 110`` to ``100 / 108``:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> E = surv.Exponential.from_params
+        >>> rbd = RepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {"c": {"reliability": E([0.01]), "repairability": E([0.1])}},
+        ... )
+        >>> repair = ("c", "repairability.failure_rate")
+        >>> faster = rbd.with_levers({repair: 1 / 8})
+        >>> round(float(faster.mean_availability()), 4)
+        0.9259
+        >>> float(faster.repairability["c"].mean())
+        8.0
+        """
+        return _sensitivity.with_levers(self, values)
 
     def _uncertainty(
         self, of: str, x, uncertainty, n_draws, seed, sampling, state
@@ -22768,7 +22860,7 @@ class RepairableRBD(RBD):
             )
             continuous = {
                 (lever.key, lever.name): lever.value
-                for lever in _sensitivity.levers(self)
+                for lever in _sensitivity._levers(self)
                 if not lever.discrete
             }
             contributions = {

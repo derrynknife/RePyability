@@ -44,6 +44,7 @@ from repyability.utils.wrappers import conditional_survival, numpy_seed
 
 from . import _ccf_modules
 from . import _montecarlo as montecarlo
+from . import _sensitivity
 from . import capacity as _capacity
 from . import redundancy_allocation
 from ._mean_lifetime import mean_lifetime, model_kinks, model_knots
@@ -76,6 +77,7 @@ from .repeated_standby_node import RepeatedStandbyNode
 from .results import (
     CapacityDistribution,
     ConfidenceInterval,
+    Lever,
     RateBreakdown,
     RedundancyAllocation,
     ReliabilityRedundancyAllocation,
@@ -8088,7 +8090,9 @@ class NonRepairableRBD(RBD):
 
         Only nodes with reconstructable surpyval distribution parameters
         are included, fixed-probability nodes among them (their parameter
-        is the failure probability). Composite nodes (a nested RBD, a
+        is the failure probability); ``levers()`` lists them, with their
+        values and ranges, and ``with_levers`` builds the RBD with them
+        moved. Composite nodes (a nested RBD, a
         standby, load-sharing or repeated node, a regression node) and the
         input and output nodes have no parameters to perturb and are
         omitted. A node forced via
@@ -8226,27 +8230,86 @@ class NonRepairableRBD(RBD):
             sensitivities[node_name] = node_out
         return sensitivities
 
-    def _parameter_values(self) -> Dict[Any, float]:
-        """``{(key, parameter): value}`` for ``parameter_sensitivity``'s
-        parameters: each node's model's, and a common-cause group's (its
-        members' one model's, and its own ``ccf_...``), under the tuple of
-        its members."""
-        out: Dict[Any, float] = {}
-        group_of = {m: g for g in self.ccf_groups for m in g.members}
-        for node, model in self.reliabilities.items():
-            group = group_of.get(node)
-            if group is not None and node != group.members[0]:
-                continue
-            spec = parametric_spec(model)
-            key = tuple(group.members) if group is not None else node
-            if spec is not None:
-                _, params, names, _ = spec
-                for name, value in zip(names, params):
-                    out[(key, name)] = float(value)
-            if group is not None:
-                for name, value in ccf_parameters(group.model).items():
-                    out[(key, f"ccf_{name}")] = float(value)
-        return out
+    def levers(self) -> List[Lever]:
+        """The parameters that ``parameter_sensitivity`` moves, in the order
+        it reports them (#244): each node's model's, by surpyval's names,
+        and each common-cause group's under the tuple of its members (the
+        parameters of the one model its members carry, then its own,
+        ``"ccf_beta"``, ...).
+
+        Each is a [`Lever`][repyability.Lever]: whose it is and its name, as
+        ``parameter_sensitivity`` keys them, its value and the range of its
+        values. Nothing is worked out, so a report can name the parameters
+        and show their values without the sensitivities;
+        [`with_levers`][repyability.NonRepairableRBD.with_levers] sets them.
+
+        Returns
+        -------
+        list of Lever
+            The levers, in ``parameter_sensitivity``'s order.
+
+        Examples
+        --------
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {"c": surv.Weibull.from_params([100, 2])},
+        ... )
+        >>> for lever in rbd.levers():
+        ...     print(lever.key, lever.name, lever.value, lever.bounds)
+        c alpha 100.0 (0.0, inf)
+        c beta 2.0 (0.0, inf)
+        """
+        return _sensitivity.public_levers(self)
+
+    def with_levers(self, values) -> "NonRepairableRBD":
+        """A copy of this RBD with parameters at new values (#244), each
+        moved as ``parameter_sensitivity`` moves it: a node's model rebuilt
+        with the parameter changed, a common-cause group's members' one
+        model for every member, a group's own (``"ccf_beta"``, ...) in its
+        model. ``levers()`` lists the parameters.
+
+        Parameters
+        ----------
+        values : dict
+            Each parameter's new value, by its
+            [`Lever`][repyability.Lever] (from ``levers()``) or by its
+            ``(key, name)``, as ``parameter_sensitivity`` reports it.
+
+        Returns
+        -------
+        NonRepairableRBD
+            The new RBD, built as this one was with the parameters moved;
+            this one is unchanged.
+
+        Raises
+        ------
+        ValueError
+            For a parameter the RBD does not have (with the closest name),
+            or a value its model refuses (one outside the lever's
+            ``bounds``).
+        TypeError
+            If ``values`` is not a dict, a lever is neither a ``Lever`` nor
+            a ``(key, name)``, or a value is not a number.
+
+        Examples
+        --------
+        Twice the Weibull scale: at 100 the unit survives with probability
+        ``exp(-(100 / 200) ** 2)``, about 0.7788, where it did with
+        ``exp(-1)``:
+
+        >>> import surpyval as surv
+        >>> from repyability import NonRepairableRBD
+        >>> rbd = NonRepairableRBD(
+        ...     [("s", "c"), ("c", "t")],
+        ...     {"c": surv.Weibull.from_params([100, 2])},
+        ... )
+        >>> longer = rbd.with_levers({("c", "alpha"): 200.0})
+        >>> round(float(longer.sf(100)), 4)
+        0.7788
+        """
+        return _sensitivity.with_levers(self, values)
 
     def differential_importance(
         self,
@@ -8392,7 +8455,10 @@ class NonRepairableRBD(RBD):
             if change == "uniform":
                 contributions = derivatives
             else:
-                scale = self._parameter_values()
+                scale: Dict[Any, float] = {
+                    (lever.key, lever.name): lever.value
+                    for lever in self.levers()
+                }
                 contributions = {
                     key: np.asarray(d, dtype=float) * scale[key]
                     for key, d in derivatives.items()
