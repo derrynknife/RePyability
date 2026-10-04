@@ -9,6 +9,26 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+### Changed
+
+- **The exact curves are built several times as fast** (`point_availability`,
+  `mission_availability`, `expected_events`, `expected_cost` and the exact
+  means a simulation run takes by default, #187). A 12-component system's
+  exact mission availability over 5,000 h takes 0.33 s rather than 1.76 s,
+  and a 70-component one's 0.86 s rather than 3.7 s:
+  - each component's curve is built on a grid of 1,000 steps over its
+    typical up time, rather than 2,000. The error falls as the square of
+    the step: about 4e-7 at a point (up to 4e-6 soon after the start), and
+    about 4e-8 in a mission average, four times what it was. Exact values
+    change in their seventh or eighth significant figure;
+  - a curve that has not settled at its long-run value is followed to
+    where, judging by how fast it is settling, it will have, rather than
+    four times as far: most of the work went on curves that had long since
+    settled;
+  - identical components (the same life and repair models, the same state
+    at 0, with no schedule, tests or imperfect repair) share one curve;
+  - each series in a curve's convolutions is transformed once.
+
 ## [0.12] - 2026-10-04
 
 Exact where there were estimates, and the sensitivities as one family. A
