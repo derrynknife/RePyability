@@ -210,6 +210,17 @@
   a diagram to the Python loop. `test_meshed_structures.py` checks the
   stand-in against the structure worked out, and `test_analysis_routes.py`
   the routes of diagrams too meshed.
+- **A non-repairable structure's common-cause groups are worked out
+  module by module (#219, `repyability/rbd/_ccf_modules.py`)**: each group
+  conditioned on within the smallest module holding its members, and where
+  a module's groups would multiply past `COMBINATIONS` outcomes, their
+  causes written out as shock events (repeated nodes of the diagram,
+  repeated events of the tree), exclusive causes through their independent
+  equivalent (`ccf._as_independent`) where it exists. Either way the values
+  must be those of conditioning on every combination of every group's
+  outcomes (`ccf.shock_outcomes`), which `test_ccf_modules.py` checks them
+  against. A change to a model's outcomes (`_split`) goes into its causes
+  (`_causes`, `_fired`) too.
 - **The integrals over a window are summed on coarse pieces**
   (`repyability/rbd/_quadrature.py`, #164): the curves' breaks, cut to a
   few steps of the finest grid still changing, and halved until their

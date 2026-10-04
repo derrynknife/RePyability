@@ -37,6 +37,7 @@ from scipy.optimize import brentq
 from repyability.utils.checks import simulation_options, structure_method
 from repyability.utils.wrappers import conditional_survival, numpy_seed
 
+from . import _ccf_modules
 from . import _montecarlo as montecarlo
 from . import capacity as _capacity
 from . import redundancy_allocation
@@ -56,6 +57,7 @@ from .ccf import with_parameters as with_ccf_parameters
 from .degrading_node import DegradingNode
 from .helper_classes import PerfectReliability, PerfectUnreliability
 from .load_sharing_node import LoadSharingModel
+from .modular import GraphStructure
 from .node_state import NodeState
 from .rbd import RBD, _check_on_infeasible_rbd, leaves_out_junctions
 from .redundancy_allocation import ComponentOption, active_unreliability
@@ -709,9 +711,11 @@ class NonRepairableRBD(RBD):
         computed exactly from each node's reliability ``sf(x)`` by a
         Shannon decomposition over the minimal path sets (``method="p"``)
         or cut sets (``method="c"``). Nodes are independent apart from any
-        common-cause groups: with ``ccf_groups`` the result sums one exact
-        evaluation per combination of the groups' shared-cause outcomes,
-        so the cost grows with the number and size of the groups.
+        common-cause groups: with ``ccf_groups`` each group is conditioned
+        on within the smallest module holding its members, or its shared
+        causes written out as events of their own where a module's groups
+        would multiply their outcomes (#219, see the common-cause guide),
+        so the cost grows with the number of groups rather than doubling.
 
         ``working_nodes`` and ``broken_nodes`` condition on the state of
         some components by setting their reliability to 1 or 0, e.g. to
@@ -846,14 +850,9 @@ class NonRepairableRBD(RBD):
         nodes' probabilities of working ``p`` and of failing ``q``: sums
         over the groups' outcomes of products, so that a small one keeps
         its precision."""
-        up: Any = 0.0
-        down: Any = 0.0
-        for weight, given, failing in self._ccf_outcomes(
+        up, down = self._ccf_evaluation(
             p, q, set(working_nodes), set(broken_nodes), groups
-        ):
-            works, fails = self._system_probabilities(given, failing)
-            up = up + weight * works
-            down = down + weight * fails
+        ).system()
         return np.atleast_1d(up), np.atleast_1d(down)
 
     def _ccf_group_sensitivity(
@@ -925,57 +924,34 @@ class NonRepairableRBD(RBD):
         it working and with it failed; and the system's own.
 
         A group member works when neither its own failure nor a shock that
-        strikes it has happened. Given the groups' shock outcomes (see
-        ``_ccf_outcomes``) the nodes are independent, so each joint
-        probability is a sum over the outcomes of the outcome's probability
-        times the member's and the system's given it. A node outside the
-        groups is independent of them, so its "given" values are the
-        system's with it held working or failed. Every term is a product
-        of probabilities, the system's worked out as for ``ff``, so a small
-        one keeps its precision."""
+        strikes it has happened. Given its group's shock outcome (see
+        ``_ccf_modules.group_outcomes``) the member is independent of every
+        other node, so each joint probability is a sum over its group's
+        outcomes of the outcome's probability times the member's and the
+        system's given it, the other groups conditioned on within their
+        modules (#219). A node outside the groups is independent of them,
+        so its "given" values are the system's with it held working or
+        failed. A member of a group written out as shock events (see
+        ``_ccf_modules.Plan``) works while neither its own causes nor its
+        shocks have fired. Every term is a product of probabilities, the
+        system's worked out as for ``ff``, so a small one keeps its
+        precision (see ``_ccf_modules.Evaluation.joints``)."""
         working, broken = set(working_nodes or ()), set(broken_nodes or ())
         p, q = self._importance_inputs(x, working, broken)
+        evaluation = self._ccf_evaluation(p, q, working, broken)
         grouped = {m for group in self.ccf_groups for m in group.members}
         keys = ("works", "fails", "up_ok", "down_ok", "up_bad", "down_bad")
         sums: Dict[str, dict] = {key: {} for key in keys}
-        system: Dict[str, Any] = {"R": 0.0, "Q": 0.0}
-        outcomes: list = []
-
-        def add(table: dict, node, value) -> None:
-            table[node] = table.get(node, 0.0) + value
-
-        for weight, given, failing in self._ccf_outcomes(
-            p, q, working, broken
-        ):
-            outcomes.append((weight, given, failing))
-            up, down = self._system_probabilities(given, failing)
-            system["R"] = system["R"] + weight * up
-            system["Q"] = system["Q"] + weight * down
-            for node in self.nodes:
-                works = np.atleast_1d(np.asarray(given[node], dtype=float))
-                fails = np.atleast_1d(np.asarray(failing[node], dtype=float))
-                one, zero = np.ones_like(works), np.zeros_like(works)
-                up_1, down_1 = self._system_probabilities(
-                    {**given, node: one}, {**failing, node: zero}
-                )
-                up_0, down_0 = self._system_probabilities(
-                    {**given, node: zero}, {**failing, node: one}
-                )
-                # A member weighs each outcome by its own state's chance in
-                # it; a node outside the groups is held (see above).
-                on, off = (works, fails) if node in grouped else (1.0, 1.0)
-                add(sums["works"], node, weight * works)
-                add(sums["fails"], node, weight * fails)
-                add(sums["up_ok"], node, weight * on * up_1)
-                add(sums["down_ok"], node, weight * on * down_1)
-                add(sums["up_bad"], node, weight * off * up_0)
-                add(sums["down_bad"], node, weight * off * down_0)
+        R, Q = evaluation.system()
+        for node in self.nodes:
+            values, _ = evaluation.joints(node)
+            for key in keys:
+                sums[key][node] = values[key]
         return {
             **sums,
-            "R": np.atleast_1d(system["R"]),
-            "Q": np.atleast_1d(system["Q"]),
+            "R": np.atleast_1d(R),
+            "Q": np.atleast_1d(Q),
             "grouped": grouped,
-            "outcomes": outcomes,
         }
 
     def _ccf_measure(
@@ -1008,18 +984,19 @@ class NonRepairableRBD(RBD):
             raise ValueError(
                 f"method must be 'exact' or 'rare_event', got {method!r}."
             )
+        if measure == "fussell_vesely":
+            working = set(working_nodes or ())
+            broken = set(broken_nodes or ())
+            p, q = self._importance_inputs(x, working, broken)
+            shares = self._ccf_fv_numerators(
+                p, q, working, broken, fv_type, method
+            )
+            _, Q = self._ccf_system_pair(p, q, working, broken)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                return {node: shares[node] / Q for node in self.nodes}
         c = self._ccf_importances(x, working_nodes, broken_nodes)
         R, Q = c["R"], c["Q"]
         out: Dict[Any, Union[float, np.ndarray]] = {}
-        if measure == "fussell_vesely":
-            shares: dict = {}
-            for weight, given, failing in c["outcomes"]:
-                p, q, size = self._node_pairs(given, failing)
-                numerators = self._fv_numerators(p, q, size, fv_type, method)
-                for node, value in numerators.items():
-                    shares[node] = shares.get(node, 0.0) + weight * value
-            with np.errstate(divide="ignore", invalid="ignore"):
-                return {node: shares[node] / Q for node in self.nodes}
         with np.errstate(divide="ignore", invalid="ignore"):
             for node in self.nodes:
                 works, fails = c["works"][node], c["fails"][node]
@@ -1134,21 +1111,177 @@ class NonRepairableRBD(RBD):
         ``beta * Q``, failing every member) or does not (each member fails only
         independently, reliability ``1 - (1 - beta) * Q``). Conditioning on the
         independent shared-cause events of every group and summing over the
-        ``2 ** len(groups)`` combinations gives the exact result — each term a
-        call to the ordinary independent engine. ``beta = 0`` recovers it
+        combinations gives the exact result. Each group is conditioned on
+        only within the smallest module holding its members (#219, see
+        ``_ccf_modules``), so groups in separate modules cost a sum each,
+        not a product. ``beta = 0`` recovers the independent engine
         exactly. ``groups`` replaces the RBD's groups (see
         ``_ccf_outcomes``).
         """
-        terms = [
-            np.asarray(weight)
-            * np.asarray(
-                self.system_probability(node_probabilities, method=method)
+        works, fails = self._ccf_evaluation(
+            base_probabilities, None, working_nodes, broken_nodes, groups
+        ).system()
+        if structure_method(method) == "p":
+            return np.atleast_1d(np.asarray(works, dtype=float))
+        return np.atleast_1d(1.0 - np.asarray(fails, dtype=float))
+
+    def _ccf_evaluation(
+        self,
+        base_probabilities,
+        base_failures,
+        working_nodes,
+        broken_nodes,
+        groups=None,
+        structure=None,
+    ) -> "_ccf_modules.Evaluation":
+        """The system's probabilities at the nodes' ``base_probabilities``
+        of working (and ``base_failures`` of failing, each node's own
+        ``ff``, so that a small one keeps its precision; or one less the
+        first), with the common-cause groups (``groups``, the RBD's by
+        default) each conditioned on within the smallest module holding its
+        members, or written out as shock events where those would multiply
+        (#219, see ``_ccf_modules``). With ``structure`` (the structure the
+        path and cut sets are read from, or its dual), over it, the groups
+        conditioned on."""
+        groups = self.ccf_groups if groups is None else groups
+        self._require_ccf_free(working_nodes, broken_nodes, groups)
+        p, q, size = self._node_pairs(base_probabilities, base_failures)
+        return _ccf_modules.Evaluation(
+            self._ccf_plan(groups, structure),
+            groups,
+            p,
+            q,
+            size,
+            self._check_ccf_validity,
+        )
+
+    def _ccf_plan(self, groups, structure=None) -> "_ccf_modules.Plan":
+        """How the groups are worked out (see ``_ccf_modules.Plan``) on
+        ``structure``, by default the decomposition, whose groups may be
+        written out as shock events: once for each structure and the
+        groups' members and causes."""
+        expand = structure is None
+        structure = self._decomposition() if structure is None else structure
+        key = (id(structure), _ccf_modules.Plan.key(groups), expand)
+        cache = self.__dict__.setdefault("_ccf_plans", {})
+        entry = cache.get(key)
+        if entry is None or entry[0] is not structure:
+            plan = _ccf_modules.Plan(
+                structure,
+                groups,
+                (
+                    (lambda chosen: self._ccf_expanded(chosen, groups))
+                    if expand
+                    else None
+                ),
             )
-            for weight, node_probabilities in self._ccf_conditions(
-                base_probabilities, working_nodes, broken_nodes, groups
+            entry = cache[key] = (structure, plan)
+        return entry[1]
+
+    def _ccf_expanded(self, chosen: dict, groups) -> Optional[Any]:
+        """The diagram's structure with the causes of the groups ``chosen``
+        (each group's, as the members each fails) written out as events of
+        their own (#219): after each appearance of a member, one node for
+        each cause that strikes it, every one a repeat of the cause
+        (``_ccf_modules.Shock``), so that the member's place works while it
+        does and none of those causes has fired. None if the structure is
+        too meshed to work out."""
+        graph = self.G.copy()
+        aliases = dict(self._component_aliases())
+        places: Dict[Any, list] = {}
+        for node, target in aliases.items():
+            places.setdefault(target, []).append(node)
+        for g, sets in chosen.items():
+            for member in groups[g].members:
+                strikes = [
+                    _ccf_modules.Shock(g, k)
+                    for k, struck in enumerate(sets)
+                    if member in struck
+                ]
+                for place in [member] + places.get(member, []):
+                    successors = list(graph.successors(place))
+                    graph.remove_edges_from((place, s) for s in successors)
+                    last = place
+                    for shock in strikes:
+                        appearance = _ccf_modules.Struck(shock, place)
+                        graph.add_node(appearance)
+                        graph.add_edge(last, appearance)
+                        aliases[appearance] = shock
+                        last = appearance
+                    graph.add_edges_from((last, s) for s in successors)
+        structure = self._decompose_graph(graph, aliases)
+        if isinstance(structure, GraphStructure):
+            return None
+        return structure
+
+    def _ccf_fv_numerators(
+        self, p, q, working, broken, fv_type: str, method: str
+    ) -> Dict[Any, np.ndarray]:
+        """The numerators of the Fussell-Vesely importances (see
+        ``_fv_numerators``) with the common-cause groups: exactly, each
+        group conditioned on within the smallest module holding its
+        members (#219); as rare events, each set's probability of having
+        failed over its groups' outcomes (see
+        ``_ccf_modules.expected_product``)."""
+        if method == "exact":
+            structure = self._set_structure()
+            if structure.always_works:
+                failed: dict = {}
+                size = self._node_arrays(p)[1]
+            else:
+                if fv_type == "p":
+                    structure = structure.dual()
+                evaluation = self._ccf_evaluation(
+                    p, q, working, broken, structure=structure
+                )
+                failed = evaluation.failed_cut_sets()
+                size = evaluation.shape
+            zero = np.zeros(size)
+            return {
+                node: np.broadcast_to(
+                    np.asarray(failed.get(node, zero), dtype=float), (size,)
+                )
+                for node in self.nodes
+            }
+        self._require_ccf_free(working, broken, self.ccf_groups)
+        outcomes = _ccf_modules.group_outcomes(
+            self.ccf_groups, p, q, self._check_ccf_validity
+        )
+        _, failing, size = self._node_pairs(p, q)
+        if fv_type == "c":
+            node_sets = self.get_min_cut_sets()
+        else:
+            node_sets = {
+                frozenset(path_set)
+                for path_set in self.get_min_path_sets(
+                    include_in_out_nodes=False
+                )
+            }
+        out: Dict[Any, np.ndarray] = {
+            node: np.zeros(size) for node in self.nodes
+        }
+        for node_set in node_sets:
+            value = np.broadcast_to(
+                np.asarray(
+                    _ccf_modules.expected_product(node_set, failing, outcomes),
+                    dtype=float,
+                ),
+                (size,),
             )
-        ]
-        return np.sum(terms, axis=0)
+            for node in node_set:
+                out[node] = out[node] + value
+        return out
+
+    def _require_ccf_free(self, working_nodes, broken_nodes, groups) -> None:
+        """Raise if a common-cause group's member is held working or
+        broken."""
+        forced = set(working_nodes or ()) | set(broken_nodes or ())
+        for group in groups:
+            if forced.intersection(group.members):
+                raise NotImplementedError(
+                    "Forcing a CCF group member via working_nodes / "
+                    "broken_nodes is not supported yet."
+                )
 
     def _ccf_conditions(
         self, base_probabilities, working_nodes, broken_nodes, groups=None
@@ -1175,14 +1308,7 @@ class NonRepairableRBD(RBD):
         None). ``groups``, the RBD's groups by default, may give them other
         models (as a parameter's draws or perturbations do)."""
         groups = self.ccf_groups if groups is None else groups
-        forced = set(working_nodes) | set(broken_nodes)
-        for group in groups:
-            if forced.intersection(group.members):
-                raise NotImplementedError(
-                    "Forcing a CCF group member via working_nodes / "
-                    "broken_nodes is not supported yet."
-                )
-
+        self._require_ccf_free(working_nodes, broken_nodes, groups)
         yield from shock_outcomes(
             groups, base_probabilities, base_failures, self._check_ccf_validity
         )
@@ -1403,18 +1529,13 @@ class NonRepairableRBD(RBD):
             return self._system_probabilities(
                 node_probabilities, node_failures, works=sf
             )
-        up: Any = 0.0
-        down: Any = 0.0
-        for weight, probabilities, failures in self._ccf_outcomes(
+        up, down = self._ccf_evaluation(
             node_probabilities, node_failures, working_nodes, broken_nodes
-        ):
-            works, fails = self._system_probabilities(
-                probabilities, failures, works=sf
-            )
-            weight = np.asarray(weight)
-            up = up + weight * works if sf else None
-            down = down + weight * fails
-        return up, down
+        ).system()
+        return (
+            np.array(up, dtype=float) if sf else None,
+            np.array(down, dtype=float),
+        )
 
     def capacity_distribution(
         self,

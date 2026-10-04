@@ -351,6 +351,47 @@ pair.mean()                                # -> 1145.8   exact, without the grou
 Groups are saved with the RBD, their basis with them. An *alpha-factor*
 model, a data-estimable reparameterisation of MGL, is a planned extension.
 
+### Many groups
+
+Given the outcome of a group's shocks, its members are independent of
+everything else, so the exact values condition on a group only within the
+smallest module of the diagram that holds its members: groups in separate
+modules (a pair of pumps in each of many stages) cost a sum each. Groups
+that share a module, as a group of each kind of component across redundant
+trains does, would multiply their outcomes: past 64 combinations, their
+shared causes are written out as events of their own, each repeated under
+every member it strikes, which the diagram's decision diagram works out
+with the rest (#219). A beta factor's cause, and an MGL model's by rate or
+with `shocks="independent"`, are such events as they stand; an MGL
+model's exclusive shocks are taken as independent causes that fail the
+same sets of members as often, which exist unless the model leaves out a
+set that two pair shocks would fail together (a `gamma` of 0, say), when
+the groups are conditioned on together, as before. The values are the
+same either way:
+
+```python
+import time
+
+def trains(kinds, model):
+    """Three trains of `kinds` components in series, a group of each kind."""
+    units = {f"{i}{j}": surv.Exponential.from_params([1e-3])
+             for i in range(kinds) for j in "abc"}
+    edges = [(("s" if i == 0 else f"{i - 1}{j}"), f"{i}{j}")
+             for i in range(kinds) for j in "abc"]
+    edges += [(f"{kinds - 1}{j}", "t") for j in "abc"]
+    groups = [CCFGroup([f"{i}{j}" for j in "abc"], model) for i in range(kinds)]
+    return NonRepairableRBD(edges, units, ccf_groups=groups)
+
+big = trains(30, MGL(0.1, 0.3))
+start = time.perf_counter()
+big.ff(1.0)                             # -> 0.0010048   30 groups across 3 trains
+time.perf_counter() - start < 1.0       # True: where 5 ** 30 outcomes would never end
+```
+
+The Fussell–Vesely importance conditions on the groups within their
+modules, and the capacity distribution and the redundancy allocations on
+every combination of the groups' outcomes, as yet.
+
 A [`FaultTree`](fault-trees.md#common-causes) takes the same groups over its
 basic events, with the same exact top event probability and importance
 measures, and its conversions to and from a diagram keep them.

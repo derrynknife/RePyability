@@ -75,18 +75,18 @@ def _hazard(Q: np.ndarray, R: np.ndarray) -> np.ndarray:
         return np.where(Q <= 0.5, -np.log1p(-Q), -np.log(R))
 
 
-def _rate_outcomes(
-    members: tuple,
-    independent: float,
-    causes: List[Tuple[frozenset, float]],
-    H: np.ndarray,
-) -> Tuple[np.ndarray, np.ndarray, List[Tuple[frozenset, np.ndarray]]]:
-    """A rate-based split at cumulative hazards ``H``: each member's
-    probability of failing on its own and of not doing so, and the
-    probability of each set of members the shared causes fail together
-    (see ``_union_outcomes``). Each cause fires by then with probability
-    ``1 - exp(-c H)``, independently of the others, ``c`` its fraction of
-    the members' hazard."""
+#: A split into independent causes: each member's probability of failing
+#: on its own and of not doing so, and each shared cause as ``(members it
+#: fails, its probability of firing, of not)``.
+Causes = Tuple[np.ndarray, np.ndarray, List[Tuple[frozenset, Any, Any]]]
+
+
+def _rate_causes(
+    independent: float, causes: List[Tuple[frozenset, float]], H: np.ndarray
+) -> Causes:
+    """A rate-based split at cumulative hazards ``H``: each cause fires by
+    then with probability ``1 - exp(-c H)``, independently of the others,
+    ``c`` its fraction of the members' hazard."""
     if independent > 0.0:
         r_independent = np.exp(-independent * H)
         q_independent = -np.expm1(-independent * H)
@@ -97,7 +97,32 @@ def _rate_outcomes(
         for struck, c in causes
         if c > 0.0
     ]
-    return _union_outcomes(members, q_independent, r_independent, fired)
+    return q_independent, r_independent, fired
+
+
+def _event_causes(
+    independent: float, causes: List[Tuple[frozenset, float]], Q: np.ndarray
+) -> Causes:
+    """A probability split whose shocks are independent basic events, as
+    PRA codes take them (#180): each member fails on its own with
+    probability ``independent * Q``, and each shared cause, a fraction
+    ``c`` of ``Q``, fires with probability ``c * Q``, independently of the
+    others."""
+    fired = [(struck, c * Q, 1.0 - c * Q) for struck, c in causes if c > 0.0]
+    return independent * Q, 1.0 - independent * Q, fired
+
+
+def _rate_outcomes(
+    members: tuple,
+    independent: float,
+    causes: List[Tuple[frozenset, float]],
+    H: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, List[Tuple[frozenset, np.ndarray]]]:
+    """A rate-based split at cumulative hazards ``H``: each member's
+    probability of failing on its own and of not doing so, and the
+    probability of each set of members the shared causes fail together
+    (see ``_union_outcomes`` and ``_rate_causes``)."""
+    return _union_outcomes(members, *_rate_causes(independent, causes, H))
 
 
 def _event_outcomes(
@@ -106,15 +131,9 @@ def _event_outcomes(
     causes: List[Tuple[frozenset, float]],
     Q: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray, List[Tuple[frozenset, np.ndarray]]]:
-    """A probability split whose shocks are independent basic events, as
-    PRA codes take them (#180): each member fails on its own with
-    probability ``independent * Q``, and each shared cause, a fraction
-    ``c`` of ``Q``, fires with probability ``c * Q``, independently of the
-    others (see ``_union_outcomes``)."""
-    fired = [(struck, c * Q, 1.0 - c * Q) for struck, c in causes if c > 0.0]
-    return _union_outcomes(
-        members, independent * Q, 1.0 - independent * Q, fired
-    )
+    """A probability split whose shocks are independent basic events (see
+    ``_event_causes`` and ``_union_outcomes``)."""
+    return _union_outcomes(members, *_event_causes(independent, causes, Q))
 
 
 def _union_outcomes(
@@ -151,6 +170,52 @@ def _union_outcomes(
     return q_independent, r_independent, shocks
 
 
+def _as_independent(
+    members: tuple, q_independent, r_independent, shocks, sets
+) -> Optional[Causes]:
+    """Mutually exclusive shocks (each set of members failing together
+    with its probability, ``shocks``) as independent causes, one for each
+    of ``sets``, that fail the same sets of members between them as often
+    (#219): the members' states given the set struck are the same either
+    way, so the system's probabilities are too. With ``A_S = -log(1 -
+    p_S)`` for a cause failing ``S``, independent causes strike no member
+    outside ``T`` with probability ``exp(-sum of A_S over the S not
+    within T)``, which must be the shocks' ``G(T)``, the probability that
+    none or one within ``T`` has struck; so the sum of ``A_S`` over the
+    ``S`` within ``T`` is ``h(T) = log(G(T) / G(empty))``, and each
+    ``A_S`` is the alternating sum of ``h`` over the subsets of ``S`` (its
+    Moebius inversion). Each
+    ``h`` is a ``log1p`` of a sum of shock probabilities, so a small one
+    keeps its precision. None where some ``A_S`` is negative (a set the
+    shocks never fail, while two causes could; or a large probability of
+    failing): no independent causes do the same."""
+    from itertools import combinations as subsets_of
+
+    struck = {frozenset(subset): p for subset, p in shocks}
+    none = 1.0 - sum(struck.values())
+    if np.any(none <= 0.0):
+        return None
+    h: Dict[frozenset, Any] = {}
+    for k in range(len(members) + 1):
+        for subset in subsets_of(members, k):
+            within = frozenset(subset)
+            total = sum(p for S, p in struck.items() if S <= within)
+            h[within] = np.log1p(np.asarray(total, dtype=float) / none)
+    fired = []
+    for S in sets:
+        rate: Any = 0.0
+        for k in range(len(S) + 1):
+            for subset in subsets_of(sorted(S, key=members.index), k):
+                sign = -1.0 if (len(S) - k) % 2 else 1.0
+                rate = rate + sign * h[frozenset(subset)]
+        scale = max(float(np.max(np.abs(h[frozenset(S)]))), 1e-300)
+        if np.any(rate < -1e-9 * scale):
+            return None
+        rate = np.maximum(rate, 0.0)
+        fired.append((S, -np.expm1(-rate), np.exp(-rate)))
+    return q_independent, r_independent, fired
+
+
 class _Model:
     """What the common-cause models share."""
 
@@ -159,12 +224,61 @@ class _Model:
     def _causes(self, members) -> Tuple[float, list]:
         raise NotImplementedError
 
+    def _split(self, members, Q, R) -> tuple:
+        raise NotImplementedError
+
     @property
     def shocks(self) -> str:
         """How the shared causes combine: ``"independent"`` events (by
         rate, always), or ``"exclusive"`` ones (the probability split's
         default; see ``MGL``)."""
         return "independent" if self.basis == "rate" else "exclusive"
+
+    def _cause_sets(self, members) -> List[frozenset]:
+        """The members each shared cause fails, in order: each can stand as
+        an event of its own (#219, see ``_fired``)."""
+        return [struck for struck, _ in self._causes(members)[1]]
+
+    def _exclusive(self, members) -> bool:
+        """Whether the shared causes exclude each other: one at most fires
+        (the probability split's default with more than one cause)."""
+        return (
+            self.shocks != "independent" and len(self._causes(members)[1]) > 1
+        )
+
+    def _fired(self, members, Q, R) -> Optional[Causes]:
+        """The split into independent causes at the members' probabilities
+        of failing ``Q`` and of surviving ``R`` (see ``Causes``), a cause
+        for each of ``_cause_sets`` (one that cannot fire, with
+        probability 0). Causes that exclude each other are taken as
+        independent ones that fail the same sets of members between them
+        as often (see ``_as_independent``), where there are such; None
+        where there are not."""
+        independent, causes = self._causes(members)
+        if self._exclusive(members):
+            q_independent, r_independent, shocks = self._split(members, Q, R)
+            return _as_independent(
+                tuple(members),
+                q_independent,
+                r_independent,
+                shocks,
+                [struck for struck, _ in causes],
+            )
+        if self.basis == "rate":
+            split = _rate_causes(independent, causes, _hazard(Q, R))
+        else:
+            split = _event_causes(independent, causes, Q)
+        q_independent, r_independent, fired = split
+        firing = {struck: (fires, holds) for struck, fires, holds in fired}
+        zero, one = np.zeros_like(Q), np.ones_like(Q)
+        return (
+            q_independent,
+            r_independent,
+            [
+                (struck, *firing.get(struck, (zero, one)))
+                for struck, _ in causes
+            ],
+        )
 
     def _no_shock(self, members, Q, R) -> np.ndarray:
         """With independent causes: the probability that no shared cause
@@ -771,7 +885,10 @@ def shock_outcomes(groups, base_probabilities, base_failures, check=None):
     of failing (from ``base_failures``, each node's own ``ff``, so that a
     small one keeps its precision; None without it). Given an outcome, the
     nodes are independent. ``check(index, group, Q)`` sees each group's
-    members' probability of failing (the RBD warns past ``VALIDITY``)."""
+    members' probability of failing (the RBD warns past ``VALIDITY``).
+    The exact values condition on the groups module by module instead (see
+    ``_ccf_modules``), and must agree with the sum over these, which the
+    capacity distribution and the redundancy allocations still take."""
     from itertools import product
 
     # Each group's mutually-exclusive shock outcomes: (weight, {member:

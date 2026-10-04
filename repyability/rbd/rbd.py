@@ -1573,22 +1573,24 @@ class RBD:
             return decomposition
         return fold(decomposition, junctions)
 
-    def _decompose_graph(self, graph) -> Decomposition:
+    def _decompose_graph(self, graph, aliases=None) -> Decomposition:
         """``graph`` reduced to modules as the diagram's own is (see
         ``_decomposition``): the diagram's graph, or one drawn from it with
         the same input and output nodes, junctions and repeated nodes (an
-        allocation's copies of a train)."""
+        allocation's copies of a train), and the repeated nodes
+        ``aliases`` gives (common causes as events of their own, #219)."""
         reducible = self.structure_check["is_valid"] and all(
             graph.nodes[node]["k"] >= 1 for node in graph.nodes
         )
         folded = self._junctions() if self._FOLDS_JUNCTIONS else frozenset()
+        aliases = self._component_aliases() if aliases is None else aliases
         try:
             modules = decompose(
                 graph,
                 self.input_node,
                 self.output_node,
                 reduce=reducible,
-                aliases=self._component_aliases(),
+                aliases=aliases,
             )
         except bdd.TooLarge as error:
             # Too meshed to work out exactly (#172): the simulations follow
@@ -1597,7 +1599,7 @@ class RBD:
                 graph,
                 self.input_node,
                 self.output_node,
-                self._component_aliases(),
+                aliases,
                 folded,
                 f"{error} {self._SIMULATE_INSTEAD}",
             )

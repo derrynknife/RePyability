@@ -17,6 +17,7 @@ import surpyval as surv
 from surpyval import FixedEventProbability
 
 from repyability import FaultTree, NonRepairableRBD, PerfectReliability
+from repyability.rbd.ccf import shock_outcomes
 from repyability.tests.test_rbd_modular import random_diagram
 
 W = surv.Weibull.from_params
@@ -784,7 +785,7 @@ def test_random_trees_with_groups_agree_with_their_diagrams(seed, kind):
     # A cut set's probability is its events' occurring together, enumerated
     # over the groups' outcomes.
     p, qs = tree._event_probabilities(np.array([1.0]))
-    outcomes = list(tree._outcomes(p, qs))
+    outcomes = list(shock_outcomes(tree.ccf_groups, p, qs))
     for cut, value in tree.ranked_cut_sets():
         together = sum(
             float(np.ravel(w)[0]) * math.prod(f[e][0] for e in cut)

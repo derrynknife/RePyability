@@ -338,16 +338,70 @@ class FaultTree:
                 )
         return list(groups)
 
-    def _outcomes(self, p: dict, q: dict):
-        """For each combination of the common-cause groups' shock outcomes,
-        its probability and the events' probabilities given it, under which
-        they are independent (one outcome, certain, without groups)."""
-        if not self.ccf_groups:
-            yield 1.0, p, q
-            return
-        from repyability.rbd.ccf import shock_outcomes
+    def _evaluation(self, p: dict, q: dict, size: int, expand: bool = True):
+        """The tree's probabilities at the events' probabilities of not
+        having occurred ``p`` and of having occurred ``q``, with the
+        common-cause groups each conditioned on within the smallest module
+        holding its members, or (with ``expand``) written out as shock
+        events where those would multiply (#219, see
+        ``rbd._ccf_modules``)."""
+        from repyability.rbd import _ccf_modules
 
-        yield from shock_outcomes(self.ccf_groups, p, q, self._ccf_check)
+        plans = self.__dict__.setdefault("_ccf_plans", {})
+        if expand not in plans:
+            plans[expand] = _ccf_modules.Plan(
+                self._decomposition,
+                self.ccf_groups,
+                self._ccf_expanded if expand else None,
+            )
+        return _ccf_modules.Evaluation(
+            plans[expand], self.ccf_groups, p, q, size, self._ccf_check
+        )
+
+    def _ccf_expanded(self, chosen: dict) -> Optional[Decomposition]:
+        """The tree's structure with the causes of the groups ``chosen``
+        (each group's, as the members each fails) written out as events of
+        their own (#219): each member's place taken by an OR gate of its
+        own failure and the causes that strike it, every cause one event
+        (``_ccf_modules.Shock``) under all its members' gates. None if the
+        tree is then too entangled to work out."""
+        from repyability.rbd._ccf_modules import Failed, Shock
+
+        gates = self.gates
+        events: Dict[Hashable, Any] = {e: 0.5 for e in self.events}
+        failed: Dict[Hashable, Any] = {}
+        for g, sets in chosen.items():
+            for member in self.ccf_groups[g].members:
+                strikes = [
+                    Shock(g, k)
+                    for k, struck in enumerate(sets)
+                    if member in struck
+                ]
+                for shock in strikes:
+                    events[shock] = 0.5
+                failed[member] = Failed(member)
+        for name, gate in list(gates.items()):
+            *head, inputs = gate
+            gates[name] = (*head, [failed.get(x, x) for x in inputs])
+        for member, gate in failed.items():
+            g = next(
+                i
+                for i, group in enumerate(self.ccf_groups)
+                if member in group.members
+            )
+            gates[gate] = (
+                "or",
+                [member]
+                + [
+                    Shock(g, k)
+                    for k, struck in enumerate(chosen[g])
+                    if member in struck
+                ],
+            )
+        try:
+            return FaultTree(gates, events, top=self.top)._decomposition
+        except NotImplementedError:
+            return None
 
     def _ccf_check(self, index: int, group, Q: np.ndarray) -> None:
         """Warn, once per group, where a group splitting the probability
@@ -542,13 +596,11 @@ class FaultTree:
         return p, q
 
     def _top(self, p: dict, q: dict, size: int) -> np.ndarray:
-        """The top event probability from the events' probabilities, over
-        the common-cause groups' outcomes."""
-        total: Any = 0.0
-        for weight, given, failing in self._outcomes(p, q):
-            total = total + weight * self._independent_top(
-                given, failing, size
-            )
+        """The top event probability from the events' probabilities, with
+        the common-cause groups."""
+        if not self.ccf_groups:
+            return self._independent_top(p, q, size)
+        _, total = self._evaluation(p, q, size).system()
         return np.broadcast_to(np.asarray(total, dtype=float), (size,))
 
     def _independent_top(self, p: dict, q: dict, size: int) -> np.ndarray:
@@ -658,12 +710,12 @@ class FaultTree:
         t, scalar = self._times(t)
         p, q = self._event_probabilities(t)
         size = len(t)
-        total: Any = 0.0
-        for weight, given, failing in self._outcomes(p, q):
-            works, _ = self._decomposition.probabilities(
-                given, failing, shape=size, works=True, fails=False
+        if self.ccf_groups:
+            total, _ = self._evaluation(p, q, size).system()
+        else:
+            total, _ = self._decomposition.probabilities(
+                p, q, shape=size, works=True, fails=False
             )
-            total = total + weight * np.asarray(works, dtype=float)
         values = np.broadcast_to(np.asarray(total, dtype=float), (size,))
         return self._out(values, scalar)
 
@@ -816,18 +868,19 @@ class FaultTree:
         """
         if t is not None and np.ndim(t) != 0:
             raise ValueError("t must be a single number.")
+        from repyability.rbd._ccf_modules import (
+            expected_product,
+            group_outcomes,
+        )
+
         times, _ = self._times(t)
         p, q = self._event_probabilities(times)
-        outcomes = list(self._outcomes(p, q))
+        outcomes = group_outcomes(self.ccf_groups, p, q, self._ccf_check)
         ranked = [
             (
                 c,
                 float(
-                    sum(
-                        np.asarray(weight).reshape(-1)[0]
-                        * np.prod([failing[e][0] for e in c])
-                        for weight, _, failing in outcomes
-                    )
+                    np.asarray(expected_product(c, q, outcomes)).reshape(-1)[0]
                 ),
             )
             for c in self.minimal_cut_sets()
@@ -856,35 +909,23 @@ class FaultTree:
             return top, occurred, not_occurred, q, scalar
         # With common-cause groups, as the diagram's measures: a member's
         # occurrence says something of the others', so the top event's
-        # probability given it is a sum over the shock outcomes, each
-        # weighed by the member's chance of that state in it; an event
+        # probability given it is a sum over its group's shock outcomes,
+        # each weighed by the member's chance of that state in it, the
+        # other groups conditioned on within their modules (#219); an event
         # outside the groups is held, as without them.
-        grouped = {m for group in self.ccf_groups for m in group.members}
-        top_sum: Any = 0.0
-        joint_in: Dict[Hashable, Any] = {e: 0.0 for e in self.events}
-        joint_out: Dict[Hashable, Any] = {e: 0.0 for e in self.events}
-        chance_in: Dict[Hashable, Any] = {e: 0.0 for e in grouped}
-        chance_out: Dict[Hashable, Any] = {e: 0.0 for e in grouped}
-        ones, zeros = np.ones(size), np.zeros(size)
-        for weight, given, failing in self._outcomes(p, q):
-            top_sum = top_sum + weight * self._independent_top(
-                given, failing, size
-            )
-            for e in self.events:
-                yes = self._independent_top(
-                    {**given, e: zeros}, {**failing, e: ones}, size
-                )
-                no = self._independent_top(
-                    {**given, e: ones}, {**failing, e: zeros}, size
-                )
-                if e in grouped:
-                    chance_in[e] = chance_in[e] + weight * failing[e]
-                    chance_out[e] = chance_out[e] + weight * given[e]
-                    joint_in[e] = joint_in[e] + weight * failing[e] * yes
-                    joint_out[e] = joint_out[e] + weight * given[e] * no
-                else:
-                    joint_in[e] = joint_in[e] + weight * yes
-                    joint_out[e] = joint_out[e] + weight * no
+        evaluation = self._evaluation(p, q, size)
+        _, top_sum = evaluation.system()
+        joint_in: Dict[Hashable, Any] = {}
+        joint_out: Dict[Hashable, Any] = {}
+        chance_in: Dict[Hashable, Any] = {}
+        chance_out: Dict[Hashable, Any] = {}
+        grouped = set()
+        for e in self.events:
+            values, joint = evaluation.joints(e)
+            joint_in[e], joint_out[e] = values["down_bad"], values["down_ok"]
+            if joint:
+                grouped.add(e)
+                chance_in[e], chance_out[e] = values["fails"], values["works"]
         occurred, not_occurred, marginal = {}, {}, dict(q)
         with np.errstate(divide="ignore", invalid="ignore"):
             for e in self.events:
@@ -1089,24 +1130,32 @@ class FaultTree:
             raise ValueError(
                 f"method must be 'exact' or 'rare_event', got {method!r}."
             )
+        from repyability.rbd._ccf_modules import (
+            expected_product,
+            group_outcomes,
+        )
+
         times, scalar = self._times(t)
         p, q = self._event_probabilities(times)
-        top = self._top(p, q, len(times))
-        share = {e: np.zeros(len(times)) for e in self.events}
-        # Summed over the common-cause groups' outcomes, the events being
-        # independent given each.
-        for weight, given, failing in self._outcomes(p, q):
-            if method == "exact":
-                failed = self._decomposition.failed_cut_sets(
-                    given, failing, shape=len(times)
-                )
-                for e, probability in failed.items():
-                    share[e] = share[e] + weight * probability
-            else:
-                for cut in self.minimal_cut_sets():
-                    probability = np.prod([failing[e] for e in cut], axis=0)
-                    for e in cut:
-                        share[e] = share[e] + weight * probability
+        size = len(times)
+        top = self._top(p, q, size)
+        share = {e: np.zeros(size) for e in self.events}
+        # The common-cause groups each conditioned on within the smallest
+        # module holding its members (#219).
+        if method == "exact":
+            failed = (
+                self._evaluation(p, q, size, expand=False).failed_cut_sets()
+                if self.ccf_groups
+                else self._decomposition.failed_cut_sets(p, q, shape=size)
+            )
+            for e, probability in failed.items():
+                share[e] = share[e] + probability
+        else:
+            outcomes = group_outcomes(self.ccf_groups, p, q, self._ccf_check)
+            for cut in self.minimal_cut_sets():
+                probability = expected_product(cut, q, outcomes)
+                for e in cut:
+                    share[e] = share[e] + probability
         with np.errstate(divide="ignore", invalid="ignore"):
             out = {e: share[e] / top for e in self.events}
         return self._out(out, scalar)

@@ -96,6 +96,26 @@ other release, fixes included, the minor.
   (`method="simulated"`), and judge its `tolerance`; a run of the modules
   alone (`conditional=True`) has no error to give (`nan`), and runs on to
   `max_samples`. A run with no modules stays exact.
+- **Common-cause groups no longer double the time per group (#219).** A
+  `FaultTree`'s or `NonRepairableRBD`'s exact values conditioned on every
+  combination of every group's shock outcomes: 15 groups took 2 s for the
+  top event, and 8 over two minutes for the importance measures. A group is
+  now conditioned on only within the smallest module of the structure
+  holding its members, so groups in separate modules cost a sum each (the
+  issue's 40 groups take milliseconds); where a module's groups would
+  multiply past 64 outcomes, as a group of each kind of component across
+  redundant trains does, their shared causes are written out as events of
+  their own, repeated under every member they strike, which the decision
+  diagram works out with the rest (30 groups across three trains in a
+  tenth of a second). An MGL model's exclusive shocks are taken as
+  independent causes that fail the same sets of members as often, which
+  exist unless the model leaves out a set two pair shocks would fail
+  together (`gamma = 0`), when such groups are conditioned on together, as
+  before. The values are those of every combination, to rounding: the top
+  event, `sf`, `ff`, the importance measures (Fussell–Vesely conditioning
+  within the modules), `ranked_cut_sets` and the rare-event Fussell–Vesely
+  (a product over the groups). The capacity distribution and the
+  redundancy allocations still condition on every combination.
 - **`ConfidenceInterval.method` names every case of a repairable run's
   mean (#223):** `"simulated"`, `"control_variate"`, `"conditional"` or
   `"exact"`, where the simulations' own mean and a controlled one were
