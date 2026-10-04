@@ -343,17 +343,11 @@ def test_a_forced_node_is_not_inspected():
     assert result.cost.by_category["inspection"] == 0.0
 
 
-def test_exact_values_need_instant_tests_and_repair():
+def test_tests_and_repairs_that_take_time_are_numerical():
     # Any life, with instant tests and repairs (see
-    # test_hidden_failures_any_life.py); a repair that takes time, or tests
-    # that miss failures of a life that is not exponential, are simulated.
-    single(
-        {
-            "reliability": W([100, 2]),
-            "repairability": "instant",
-            "inspection": {"interval": 50},
-        }
-    ).mean_availability()
+    # test_hidden_failures_any_life.py), and with tests or repairs that
+    # take time, or tests that miss failures of a life that is not
+    # exponential (#159, see test_hidden_failures_timed.py).
     for spec in (
         {"reliability": E([0.01]), "repairability": E([1.0])},
         {
@@ -364,23 +358,41 @@ def test_exact_values_need_instant_tests_and_repair():
     ):
         inspection = {"interval": 50, **spec.pop("inspection", {})}
         rbd = single({**spec, "inspection": inspection})
-        with pytest.raises(NotImplementedError, match="hidden failures"):
-            rbd.mean_availability()
+        assert 0.0 < rbd.mean_availability() < 1.0
+    # A test of a fixed time D, in which the unit does not age, and an
+    # instant repair after it: every unit is new when its test is over, so
+    # up s after it with probability exp(-rate (s - D)). On the grid of
+    # 2,000 steps an interval, to its (rate * step) ** 2 / 12.
+    rate, interval, D = 0.01, 50.0, 1.0
     timed = single(
         {
-            "reliability": E([0.01]),
+            "reliability": E([rate]),
             "repairability": "instant",
-            "inspection": {"interval": 50, "duration": X(1)},
+            "inspection": {"interval": interval, "duration": X(D)},
         }
     )
-    for method in (
-        timed.mean_availability,
-        timed.node_availability,
-        timed.system_failure_frequency,
-        timed.birnbaum_importance,
-    ):
-        with pytest.raises(NotImplementedError, match="simulation"):
-            method()
+    kept = np.exp(-rate * (interval - D))
+    assert timed.mean_availability() == pytest.approx(
+        (1.0 - kept) / (rate * interval), rel=1e-8
+    )
+    assert timed.system_failure_frequency() == pytest.approx(
+        (1.0 - kept) / interval, rel=1e-8
+    )
+    # Each test takes the unit, working then, off line: planned outages.
+    assert timed._outage_frequencies()[1] == pytest.approx(
+        kept / interval, rel=1e-8
+    )
+    timed.birnbaum_importance()
+    # A test that can last the whole interval is simulated.
+    slow = single(
+        {
+            "reliability": E([rate]),
+            "repairability": "instant",
+            "inspection": {"interval": interval, "duration": E([0.02])},
+        }
+    )
+    with pytest.raises(NotImplementedError, match="within its test interval"):
+        slow.mean_availability()
     # A Weibull of shape 1 has a constant rate.
     shape_one = single(
         {

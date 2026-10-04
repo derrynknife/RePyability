@@ -254,8 +254,14 @@ def test_exact_engine_matches_the_original_recursion(name, method):
     rbd = rbds()[name]
     rng = np.random.default_rng(0)
     # The recorded plan is reused across calls with different probabilities.
+    # A junction never fails: the sets are the system's with it working
+    # (#198).
+    junctions = rbd._junctions()
     for shape in (1, 7):
-        probs = {n: rng.uniform(0.0, 1.0, shape) for n in rbd.nodes}
+        probs = {
+            n: np.ones(shape) if n in junctions else rng.uniform(0, 1, shape)
+            for n in rbd.nodes
+        }
         if method == "p":
             sets = rbd.get_min_path_sets(include_in_out_nodes=False)
             expected = reference_probability_any_set_satisfied(
@@ -294,8 +300,11 @@ def test_structure_function_matches_its_definition(name):
     rbd = rbds()[name]
     path_sets = rbd.get_min_path_sets(include_in_out_nodes=False)
     rng = np.random.default_rng(2)
+    junctions = rbd._junctions()  # which always work (#198)
     for _ in range(200):
-        status = {n: bool(rng.random() < 0.6) for n in rbd.nodes}
+        status = {
+            n: n in junctions or bool(rng.random() < 0.6) for n in rbd.nodes
+        }
         expected = any(all(status[c] for c in p) for p in path_sets)
         assert rbd.is_system_working(status, "p") is expected
         assert rbd.is_system_working(status, "c") is expected
@@ -325,21 +334,6 @@ def test_inverse_sampler_reproduces_surpyval(name):
     np.random.seed(3)
     assert np.array_equal(sampler(np.random.random_sample(50)), expected)
     assert_same_rng_state(rng_state(), after_single_draws)
-
-
-@pytest.mark.parametrize(
-    "dist", [surv.Normal, surv.LogNormal], ids=["normal", "lognormal"]
-)
-def test_direct_quantiles_are_surpyvals(dist):
-    # Not only for the uniforms a draw takes: at the ends and outside too.
-    u = np.r_[
-        np.random.default_rng(4).random(1000),
-        [0.0, 1.0, 1e-300, 1 - 1e-16, -0.5, 1.5, np.nan],
-    ]
-    direct = _sampling._DIRECT_QF[id(dist)]
-    for params in ([0.0, 1.0], [3.1781, 0.6], [-2.0, 3.0]):
-        expected = dist.qf(u, *params)
-        assert np.array_equal(direct(u, *params), expected, equal_nan=True)
 
 
 @pytest.mark.parametrize(
@@ -467,7 +461,7 @@ COLD_UNITS = [
 
 @pytest.mark.parametrize("k", [2, 3, 4])
 def test_cold_standby_k_is_identical_to_the_queue_loop(k, monkeypatch):
-    model = StandbyModel(COLD_UNITS, k=k, mc_samples=50, seed=0)
+    model = StandbyModel(COLD_UNITS, k=k)
     fast = model.random(3000, seed=13)
     np.random.seed(14)
     model.random(200)
@@ -480,14 +474,6 @@ def test_cold_standby_k_is_identical_to_the_queue_loop(k, monkeypatch):
     np.random.seed(14)
     model.random(200)
     assert_same_rng_state(rng_state(), after_fast)
-
-
-def test_cold_standby_fit_is_unchanged(monkeypatch):
-    t = np.linspace(0, 500, 26)
-    fast = StandbyModel(COLD_UNITS, k=2, mc_samples=2000, seed=15).sf(t)
-    no_fast_path(monkeypatch)
-    slow = StandbyModel(COLD_UNITS, k=2, mc_samples=2000, seed=15).sf(t)
-    np.testing.assert_allclose(fast, slow, rtol=RTOL, atol=0)
 
 
 def budgets_with_ties(size, n):
@@ -504,8 +490,6 @@ def test_warm_standby_is_identical_per_sample(k, dormancy, ties):
         [W([100, 2.0])] * 4,
         k=k,
         dormancy_factor=dormancy,
-        mc_samples=10,
-        seed=0,
     )
     budgets = (
         budgets_with_ties(3000, 4)
@@ -535,9 +519,7 @@ def test_warm_standby_plays_infinite_budgets_out_sample_by_sample(
 ):
     # A unit that never fails has an infinite budget: its samples go through
     # the per-sample loop, the rest all at once, with the same results.
-    model = StandbyModel(
-        [W([100, 2.0])] * 3, k=1, dormancy_factor=0.3, mc_samples=10, seed=0
-    )
+    model = StandbyModel([W([100, 2.0])] * 3, k=1, dormancy_factor=0.3)
     budgets = budgets_with_ties(20, 3)
     budgets[3, 1] = np.inf
     model.reliabilities = [FixedDraws(column) for column in budgets.T]
@@ -569,9 +551,7 @@ def weibull_aft():
 @pytest.mark.parametrize("k", [1, 2, 3])
 @pytest.mark.parametrize("ties", [False, True])
 def test_load_sharing_is_identical_per_sample(weibull_aft, k, ties):
-    model = LoadSharingModel(
-        [weibull_aft] * 3, load=2.0, k=k, mc_samples=10, seed=0
-    )
+    model = LoadSharingModel([weibull_aft] * 3, load=2.0, k=k)
     tau = (
         budgets_with_ties(3000, 3).T
         if ties
@@ -590,9 +570,7 @@ def test_load_sharing_is_identical_per_sample(weibull_aft, k, ties):
 def test_load_sharing_degenerate_inputs_use_the_per_sample_loop(
     weibull_aft, bad, monkeypatch
 ):
-    model = LoadSharingModel(
-        [weibull_aft] * 3, load=2.0, mc_samples=10, seed=0
-    )
+    model = LoadSharingModel([weibull_aft] * 3, load=2.0)
     tau = budgets_with_ties(20, 3).T
     if bad == "inf_threshold":
         tau[1, 5] = np.inf
@@ -608,22 +586,6 @@ def test_load_sharing_degenerate_inputs_use_the_per_sample_loop(
     assert np.array_equal(
         model.random(20, seed=0), model._lifetimes_by_sample(tau)
     )
-
-
-def test_load_sharing_fit_is_unchanged(weibull_aft, monkeypatch):
-    t = np.linspace(0, 200, 21)
-    fast = LoadSharingModel(
-        [weibull_aft] * 3, load=2.0, mc_samples=2000, seed=20
-    )
-    monkeypatch.setattr(
-        LoadSharingModel,
-        "_lifetimes",
-        lambda self, tau: self._lifetimes_by_sample(tau),
-    )
-    slow = LoadSharingModel(
-        [weibull_aft] * 3, load=2.0, mc_samples=2000, seed=20
-    )
-    np.testing.assert_allclose(fast.sf(t), slow.sf(t), rtol=RTOL, atol=0)
 
 
 # -- the repairable simulation -----------------------------------------------
@@ -1138,7 +1100,11 @@ def record_seeded_runs():
     RECORDED_PATH.write_text(json.dumps(recorded, indent=1) + "\n")
 
 
-RECORDED = json.loads(RECORDED_PATH.read_text())
+# Read here, at collection, for the runs' names; a missing file fails one
+# test below, rather than every module that imports from this one (#167).
+RECORDED = (
+    json.loads(RECORDED_PATH.read_text()) if RECORDED_PATH.is_file() else {}
+)
 
 
 @pytest.fixture(scope="module")
@@ -1147,6 +1113,7 @@ def runs():
 
 
 def test_every_seeded_run_is_recorded(runs):
+    assert RECORDED_PATH.is_file(), f"{RECORDED_PATH.name} is missing"
     assert sorted(runs) == sorted(RECORDED)
 
 
@@ -1234,15 +1201,11 @@ def composite_nodes(aft):
             [W([300, 2.0]), W([280, 1.7]), L([5.5, 0.4])],
             k=1,
             dormancy_factor=0.3,
-            mc_samples=50,
-            seed=1,
         ),
         "standby_warm_k2": StandbyModel(
             [W([300, 2.0])] * 4,
             k=2,
             dormancy_factor=0.6,
-            mc_samples=50,
-            seed=1,
         ),
         "standby_cold_k1": StandbyModel(
             [W([300, 2.0]), L([5.5, 0.4]), W([250, 1.2], gamma=5)], k=1
@@ -1253,21 +1216,17 @@ def composite_nodes(aft):
         "standby_cold_k1_switch_list": StandbyModel(
             [W([300, 2.0])] * 3, k=1, switching_probability=[0.95, 0.8]
         ),
-        "standby_cold_k2": StandbyModel(
-            COLD_UNITS, k=2, mc_samples=50, seed=1
-        ),
+        "standby_cold_k2": StandbyModel(COLD_UNITS, k=2),
         "repeated_parallel": RepeatedNode(W([500, 2.0]), 3, "parallel"),
         "repeated_series": RepeatedNode(L([6.0, 0.5]), 2, "series"),
         "repeated_standby": RepeatedStandbyNode(W([300, 2.0]), 3),
         "repeated_standby_switching": RepeatedStandbyNode(
             W([300, 2.0]), 3, switching_probability=0.85
         ),
-        "load_sharing": LoadSharingModel(
-            [aft] * 3, load=2.0, mc_samples=50, seed=1
-        ),
+        "load_sharing": LoadSharingModel([aft] * 3, load=2.0),
         # Different units, so their order matters.
         "load_sharing_mixed": LoadSharingModel(
-            [aft, aft, other_aft()], load=2.0, mc_samples=50, seed=1
+            [aft, aft, other_aft()], load=2.0
         ),
         "regression": RegressionNode(aft, covariates=[1.2]),
         "nested_rbd": NonRepairableRBD(
@@ -1352,30 +1311,6 @@ def test_every_composite_node_in_one_rbd(composites):
     np.testing.assert_allclose(fast, reference, rtol=RTOL, atol=0)
 
 
-def test_kaplan_meier_node_is_batched(monkeypatch):
-    with numpy_seed(34):
-        km = surv.KaplanMeier.fit(W([700, 2]).random(200))
-    rbd = rbd_with(km)
-    assert rbd._random_vectorised(1) is not None
-    # surpyval draws Kaplan-Meier samples from a generator it seeds from
-    # numpy's global stream once per call, so batching them uses the global
-    # stream deterministically: the same seed leaves it in the same state.
-    states = []
-    for _ in range(2):
-        np.random.seed(35)
-        rbd.random(300)
-        states.append(rng_state())
-    assert_same_rng_state(*states)
-    # Pinning the Kaplan-Meier draws makes the rest comparable exactly.
-    monkeypatch.setattr(
-        type(km), "random", lambda self, size, *a, **k: np.full(size, 450.0)
-    )
-    fast = rbd.random(500, seed=36)
-    with numpy_seed(36):
-        reference = rbd._random_by_events(500)
-    np.testing.assert_allclose(fast, reference, rtol=RTOL, atol=0)
-
-
 @pytest.mark.parametrize("where", ["standby", "nested"])
 def test_nan_inside_a_composite_node_falls_back(
     weibull_aft, where, monkeypatch
@@ -1387,7 +1322,7 @@ def test_nan_inside_a_composite_node_falls_back(
 
     if where == "standby":
         monkeypatch.setattr(standby_node, "inverse_sampler", nan_sampler)
-        node = StandbyModel(COLD_UNITS, k=2, mc_samples=5, seed=0)
+        node = StandbyModel(COLD_UNITS, k=2)
     else:
         node = rbd_with(W([500, 2]))
         monkeypatch.setattr(_sampling, "inverse_sampler", nan_sampler)

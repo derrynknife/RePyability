@@ -97,6 +97,7 @@ nav:
       - Phased missions: guide/phased-missions.md
       - Networks: guide/networks.md
       - Importance measures: guide/importance.md
+      - "Sensitivities: the Greeks": guide/greeks.md
       - Condition-based evaluation: guide/condition-based.md
       - Redundancy models: guide/redundancy-models.md
       - Common-cause failures: guide/common-cause.md

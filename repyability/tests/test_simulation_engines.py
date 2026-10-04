@@ -24,7 +24,7 @@ import numpy as np
 import pytest
 import surpyval as surv
 
-from repyability import NodeState, RepairableRBD
+from repyability import NodeState, PerfectReliability, RepairableRBD
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import _compiled, _streams, repairable_rbd
 from repyability.rbd.repairable_rbd import Event
@@ -129,6 +129,32 @@ def plain_rbds():
                 },
             },
             downtime_cost_rate=10.0,
+        ),
+        # Two 2-of-3 votes at junctions, which are folded out of the
+        # structure (#182), and a junction where a bridge crosses.
+        "junctions": RepairableRBD(
+            [("s", f"x{i}") for i in range(3)]
+            + [(f"x{i}", "h1") for i in range(3)]
+            + [("h1", f"y{i}") for i in range(3)]
+            + [(f"y{i}", "h2") for i in range(3)]
+            + [("h2", "a"), ("h2", "b"), ("a", "j"), ("b", "j")]
+            + [("a", "c"), ("j", "c"), ("j", "d"), ("b", "d")]
+            + [("c", "t"), ("d", "t")],
+            {
+                n: {
+                    "reliability": W([90 + 10 * i, 1.6]),
+                    "repairability": E([0.4]),
+                }
+                for i, n in enumerate(
+                    ["x0", "x1", "x2", "y0", "y1", "y2", "a", "b", "c", "d"]
+                )
+            }
+            | {
+                "h1": PerfectReliability,
+                "h2": PerfectReliability,
+                "j": PerfectReliability,
+            },
+            k={"h1": 2, "h2": 2},
         ),
         # Fixed lives and repairs: events at the same time, released in the
         # heap's order.
@@ -422,11 +448,18 @@ def test_a_simulation_is_the_same_however_the_run_is_cut_up(name):
             engine="python",
             tolerance=1e-9,
             max_samples=40,
+            control_variate=False,
         )
     n = stopped.n_simulations
     identical(
         stopped,
-        rbd.availability(window, mc_samples=n, seed=51, engine="python"),
+        rbd.availability(
+            window,
+            mc_samples=n,
+            seed=51,
+            engine="python",
+            control_variate=False,
+        ),
     )
 
 
@@ -621,6 +654,19 @@ def test_without_numba_the_compiled_engine_cannot_be_asked_for(monkeypatch):
         rbd.availability(10.0, mc_samples=2, seed=1, engine="numba")
     # "auto" runs in Python.
     rbd.availability(10.0, mc_samples=2, seed=1)
+    # What it does not simulate is refused as such: installing numba would
+    # not help.
+    imperfect = RepairableRBD(
+        [("s", "a"), ("a", "t")],
+        {
+            "a": {
+                **unit_spec(70, 2.0),
+                "repair": {"model": "kijima1", "q": 0.5},
+            }
+        },
+    )
+    with pytest.raises(NotImplementedError, match="imperfect repair"):
+        imperfect.availability(10.0, mc_samples=2, seed=1, engine="numba")
 
 
 @needs_numba

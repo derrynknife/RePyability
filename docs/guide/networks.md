@@ -59,10 +59,11 @@ The exact values come from a binary decision diagram built from the network
 itself (after Hardy, Lucet & Limnios, 2007). The links are decided one at a
 time; after each, what is left to decide depends only on how the nodes with
 links still to come are joined up by the working links so far, and which of
-those groups hold the terminals. Equal states are solved once, so the
-diagram grows with the network's width rather than with its number of
-paths, which multiply in a mesh. A 6-by-6 grid of cables, corner to corner,
-has over a million simple paths, and is exact in a tenth of a second:
+those groups hold the terminals. All the states before a decision are
+worked out together, and equal ones merged, so the diagram grows with the
+network's width rather than with its number of paths, which multiply in a
+mesh. A 6-by-6 grid of cables, corner to corner, has over a million simple
+paths, and is exact in a few hundredths of a second:
 
 ```python
 cable = surv.Exponential.from_params([0.05])
@@ -84,8 +85,11 @@ its links out. `ff` is worked out in its own right, so a small one keeps its
 precision, `birnbaum_importance` gives every element's at once (as the
 derivative of the reliability, from whichever of it and the unreliability
 is the smaller), and `mean` integrates the exact reliability. The width
-limits it: a diagram of more than a million states (a square grid of about
-100 nodes) refuses the exact values, and says to simulate. `path_sets()`
+limits it: a 10-by-10 grid has 1.9 million states before its decisions,
+and is exact in a second and a half, but a diagram of more than five
+million (`repyability.network.MAX_STATES`), such as an 11-by-11 grid's 7.7
+million, refuses the exact values, and says to simulate. Raise the limit
+to try harder: the 11-by-11 grid takes eight seconds. `path_sets()`
 lists the simple paths, up to 100,000 of them. Setting
 `repyability.network.METHOD = "paths"` decides the network from those
 paths instead, as the exact engine decides a diagram's core from its

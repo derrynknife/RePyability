@@ -251,7 +251,7 @@ def test_standby_of_plain_exponentials_keeps_its_closed_form():
 
 def test_warm_standby_that_may_never_fail():
     unit = W([100, 2], p=0.9)
-    node = StandbyModel([unit, unit, unit], dormancy_factor=0.5, seed=1)
+    node = StandbyModel([unit, unit, unit], dormancy_factor=0.5)
     x = node.random(20_000, seed=9)
     assert not np.isnan(x).any()
     # It never fails if any of its units never fails.
@@ -275,7 +275,7 @@ def test_warm_standby_that_may_never_fail():
 def test_cold_k_out_of_n_that_may_never_fail():
     # Two of three operating: it never fails if two units never fail.
     p = 0.9
-    node = StandbyModel([W([100, 2], p=p)] * 3, k=2, seed=2)
+    node = StandbyModel([W([100, 2], p=p)] * 3, k=2)
     never = 3 * (1 - p) ** 2 * p + (1 - p) ** 3
     x = node.random(40_000, seed=11)
     assert within(np.mean(np.isinf(x)), never, len(x))
@@ -342,7 +342,9 @@ def test_long_run_availability_with_absorbing_ends():
     assert rbd.mean_availability() == pytest.approx(exact, rel=1e-12)
     # Over a long window, the fraction of it up is close to that (the
     # time before the unit settles is short).
-    result = rbd.availability(5_000.0, mc_samples=2_000, seed=14)
+    result = rbd.availability(
+        5_000.0, mc_samples=2_000, seed=14, control_variate=False
+    )
     window = result.mean_availability_interval()
     assert abs(window.estimate - exact) < 4 * window.standard_error + 0.01
 
@@ -482,19 +484,6 @@ def test_cold_standby_when_the_mean_is_infinite(monkeypatch):
         assert float(np.ravel(pair.sf(t))[0]) == pytest.approx(
             expected, abs=2e-4
         )
-
-
-def test_simulated_standby_never_failing_units_are_censored():
-    from repyability.rbd.standby_node import _kaplan_meier
-
-    km = _kaplan_meier(np.array([1.0, 2.0, 3.0, 4.0, np.inf, np.inf]), 0.0)
-    np.testing.assert_allclose(
-        km.sf(np.array([0.5, 2.5, 4.0, 5.0, 1e9])),
-        [1.0, 4 / 6, 2 / 6, 2 / 6, 2 / 6],
-    )
-    # None fails at all.
-    km = _kaplan_meier(np.array([np.inf, np.inf]), 0.0)
-    np.testing.assert_allclose(km.sf(np.array([0.5, 1e9])), [1.0, 1.0])
 
 
 def test_no_replacement_pays_when_units_may_never_fail(monkeypatch):

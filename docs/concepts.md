@@ -52,9 +52,11 @@ Given each node's reliability, the system reliability is computed
    direct edge is dropped, as it is irrelevant. This repeats until nothing
    more reduces; a series-parallel diagram becomes a single module.
 2. **Pivotal decomposition.** Whatever is left, the *core* (a bridge, a
-   shared node), is evaluated from its minimal path sets by a pivotal
-   (Shannon) decomposition, over its modules and nodes. Only the core pays
-   the combinatorial price.
+   shared node), is evaluated by a pivotal (Shannon) decomposition over its
+   modules and nodes: from its minimal path sets when it has few, and
+   otherwise from a binary decision diagram built from its graph, whose
+   size grows with how wide the mesh is rather than with how many paths it
+   has. Only the core pays the combinatorial price.
 
 Both stages depend only on the structure, so they are worked out once per
 RBD and replayed for every evaluation: repeated evaluations (arrays of times,
@@ -66,6 +68,14 @@ fails is computed instead, and its complement returned; the two methods give
 the same value. Every step is a sum of products of node probabilities and
 their complements, so both keep their full relative precision.
 
+A core so meshed that even its decision diagram would take more than
+`repyability.rbd.bdd.STEP_LIMIT` steps to build (25 million, a few seconds)
+is not worked out. The RBD is still built, with
+`structure_check["is_too_meshed"]` set: its simulations follow the graph
+itself (a node works when it has not failed and enough of its inputs work),
+and the exact analyses refuse, saying why, as `analysis_routes()` reports.
+Raise the limit to try harder.
+
 The identity that drives the decomposition, and the importance measures, is
 **pivotal decomposition** around any node *A*:
 
@@ -73,12 +83,11 @@ The identity that drives the decomposition, and the importance measures, is
 R_sys = R_A · R_sys(A working) + (1 − R_A) · R_sys(A failed)
 ```
 
-The engine is exact *given the node reliabilities*. When a node's reliability
-is itself an estimate (a simulated standby or load-sharing arrangement, or a
-Kaplan–Meier fit), the system value inherits that estimate's error, and
-`is_analytically_solvable()` flags the simulation-backed nodes. Both kinds
-of estimate are deprecated and go in 0.12: the analyses that need such a
-node's reliability will refuse, and the system's simulations simulate it.
+The engine is exact *given the node reliabilities*. A node with no exact or
+numerical reliability (a standby or load-sharing arrangement only a
+simulation works out) has none to give it: the analyses that need it
+refuse, the system's simulations draw its lifetimes, and
+`is_analytically_solvable()` flags it.
 `analysis_routes()` says how each analysis is computed, and why.
 
 The other time functions follow from the reliability: `F = 1 − R`, the
@@ -159,7 +168,8 @@ block, and a VOTE gate on `k` of `n` failures a block needing `n − k + 1` of
 evaluated by the same engine: each gate below which no event or gate is
 shared with the rest of the tree is a module with a closed form, and what the
 repeated events tie together is a core, solved exactly by the pivotal
-decomposition over its minimal path sets. The measures of importance are the
+decomposition, on a binary decision diagram built from its gates (its cut
+sets are listed only when asked for). The measures of importance are the
 diagram's, with the top event as the system failing.
 
 ### Parameter uncertainty
@@ -180,7 +190,14 @@ the uncertainty away. The same draws give the MTTF's, a B*X* life's and the
 time to a reliability's uncertainty (`mean_uncertainty`,
 `bx_life_uncertainty`, `time_to_reliability_uncertainty`): each draw's value
 is the exact one for its models, the area under its reliability or the root
-of its reliability less the target.
+of its reliability less the target. A repairable system's availability and
+cost rate are uncertain in the same way, through its components' lives,
+repairs and maintenance times: each draw rebuilds the diagram with its
+models and works its value out as the diagram's own
+(`mean_availability_uncertainty` and the rest). The draws can be
+quasi-random (`sampling="sobol"`), the points of a scrambled Sobol
+sequence, which cover the parameters more evenly than random draws and so
+settle the summaries with fewer of them.
 
 ## Reliability vs availability
 
@@ -222,6 +239,31 @@ ranking at an operating point:
   `∂R/∂θ = I_B · ∂R_i/∂θ`, computed numerically. Where Birnbaum says *which
   component* matters, this says *which fitted parameter* matters, so you know
   where more data would most change the answer.
+- **Differential importance** `differential_importance` (DIM): each node's
+  or parameter's share of the change in the system when they all change
+  together, `I_i dθ_i / Σ_j I_j dθ_j`. The other measures do not add up; the
+  shares do, so a group's share is the sum of its members': what share of a
+  possible gain lies in the pumps, or in the repair times against the
+  maintenance intervals. A uniform change (every `dθ` equal) shares out the
+  Birnbaum importance, a proportional one (every `dθ / θ` equal) the
+  criticality.
+- **Uncertainty importance** `uncertainty_importance`: each uncertain
+  input's share of the variance of a system quantity (the reliability, the
+  MTTF, a B-life, the availability, the cost rate) over the fitted models'
+  parameter uncertainty, by the
+  delta method or as Sobol indices: where more data would narrow the answer
+  most.
+- **Joint importance** `joint_importance`: the second-order Birnbaum
+  measure, `∂²R/∂R_i ∂R_j`, for each pair. Positive for complements
+  (series: improving one makes improving the other worth more), negative
+  for substitutes (parallel): whether to bundle two improvements.
+- **Rates and Barlow–Proschan** `availability_rate`, `reliability_rate`,
+  `barlow_proschan_importance`: with independent components the system's
+  rate of change is the sum of each one's Birnbaum importance times its own
+  rate, so it splits into what each component is doing to the system now.
+  Integrated over time, a component's part gives the probability that it
+  caused the system's failure (Barlow–Proschan), the exact counterpart of
+  the simulated failure criticality index.
 
 A rule of thumb: **Birnbaum** for "where does an improvement help most",
 **risk achievement worth** for "what must not be allowed to fail",
@@ -229,7 +271,15 @@ A rule of thumb: **Birnbaum** for "where does an improvement help most",
 when deciding where to spend a testing budget.
 
 On a repairable system the same measures are evaluated with long-run
-availabilities in place of reliabilities.
+availabilities in place of reliabilities, or with the point availabilities
+from new (or from the components' current states) over time.
+
+Read together, the sensitivity measures are the system's *Greeks*, named
+after an option's: delta (Birnbaum), the levers' deltas (parameter
+sensitivity), their shares (differential importance), gamma (joint
+importance), theta (the rate of change and Barlow–Proschan) and vega
+(uncertainty importance). [Sensitivities: the Greeks](guide/greeks.md)
+runs one pumping station through all of them.
 
 ## Condition-based evaluation
 
@@ -361,16 +411,20 @@ least `k` of the `n` units survive. This is the **cumulative-exposure** model:
 a unit's *virtual age* is the integral of `φ(load(t))` over real time, and it
 fails when that virtual age reaches its baseline failure age.
 
-Two regimes:
+Three regimes:
 
 - **Closed form.** Identical units with an **Exponential** baseline give a
   group lifetime that is a sum of exponential stages (each stage the time for
   the next unit to fail at the current shared load), i.e. a
   **hypoexponential** distribution, evaluated exactly with no simulation
   (`is_simulated == False`).
-- **Simulation.** Otherwise the survival curve is a Kaplan–Meier fit to
-  lifetimes drawn from the cumulative-exposure event loop (seeded;
-  `is_simulated == True`).
+- **Numerical.** Other identical units all age alike, so they fail in the
+  order of their exposures to failure, and a recursion over the failures
+  gives the lifetime's distribution (`is_simulated == False`).
+- **Simulation only.** Different units have no survival curve: the group
+  draws lifetimes from the cumulative-exposure event loop for the system's
+  simulations, and the analyses that need its reliability refuse
+  (`is_simulated == True`).
 
 As a check, with no load effect (`φ ≡ 1`) the survivors do not accelerate and
 the group reduces *exactly* to the ordinary *k*-out-of-*n* parallel result.
@@ -684,7 +738,9 @@ exact rate.
 
 The **total cost of ownership** over a horizon `H` adds the one-off cost of
 buying the components, `Σ a_i`, to `H` times the long-run cost rate
-(undiscounted). Redundancy that minimises it trades copies against downtime:
+(undiscounted; with a continuous `discount_rate` `r`, the present value,
+`H` counting as `(1 − e^{−rH}) / r`). Redundancy that minimises it trades
+copies against downtime:
 `n_i` independently repaired active copies of component *i* each cost
 `a_i + H · r_i` (`r_i` its own running cost rate) and are all down
 `(1 − A_i)^{n_i}` of the time, so a design costs

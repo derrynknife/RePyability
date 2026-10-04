@@ -34,7 +34,7 @@ path = Path(tempfile.mkdtemp()) / "plant.json"
 rbd.to_json(path)                       # written; returns None
 NonRepairableRBD.from_json(path).sf(30) == rbd.sf(30)   # True
 type(RBD.from_dict(data)).__name__   # 'NonRepairableRBD': the base class dispatches on type
-data["type"], data["repyability_version"]   # ('NonRepairableRBD', '0.11')
+data["type"], data["repyability_version"]   # ('NonRepairableRBD', '0.12')
 ```
 
 What is saved:
@@ -45,9 +45,8 @@ What is saved:
   distributions and acquisition costs, preventive and inspection schedules,
   maintenance groups and their set-up costs, `"instant"` repairs and
   `NonRepairable` components;
-- the node models: surpyval models, parametric (including
-  `FixedEventProbability`) and non-parametric (Kaplan–Meier and friends), in
-  surpyval's own format (`model.to_dict()`, loaded with `surpyval.from_dict`),
+- the node models: surpyval's parametric models (including
+  `FixedEventProbability`), in surpyval's own format (`model.to_dict()`, loaded with `surpyval.from_dict`),
   so everything surpyval keeps round-trips: an offset, a
   limited-failure-population or zero-inflation parameter, and a fit's
   covariance, so parameter uncertainty can still be propagated after
@@ -61,16 +60,12 @@ into a list, and loading turns it back). Loading with the wrong class
 (`NonRepairableRBD.from_dict` on a `RepairableRBD` document) raises
 `ValueError`; `RBD.from_dict` and `RBD.from_json` always pick the right one.
 
-!!! note "Two limits"
-    - **Models surpyval does not know** (your own class with an `sf`) cannot
-      be saved: `to_dict` raises `NotImplementedError`.
-    - **Simulation-backed standby and load-sharing nodes** are saved by their
-      inputs (`mc_samples`, `dormancy_factor`, ...) but not their `seed`, and are
-      re-simulated when loaded. A reloaded simulated node's reliability can
-      therefore differ from the original within Monte-Carlo error. Nodes with
-      an exact or numerical reliability (cold standby with one or two units
-      operating, or more identical ones; warm standby with one operating;
-      hot standby; load sharing of identical units) reload exactly.
+!!! note "One limit"
+    **Models surpyval does not know** (your own class with an `sf`) cannot
+    be saved: `to_dict` raises `NotImplementedError`. Standby and
+    load-sharing nodes are saved by their inputs (units, `k`,
+    `dormancy_factor`, switching, load) and reload exactly, those only a
+    simulation works out included: they hold no fitted curve.
 
 Condition-based state (`NodeState`) is not part of the RBD and is not saved.
 
@@ -82,7 +77,7 @@ Every Monte-Carlo method takes a `seed`:
 |---|---|
 | `NonRepairableRBD` | `random`, `mean` and `mean_time_to_failure` with `method="simulate"`, `mean_time_to_failure_interval`, `compare` |
 | `RepairableRBD` | `availability`, `cost`, `compare`, `spares_demand` with `method="simulate"` |
-| Node models | `StandbyModel(seed=...)`, `LoadSharingModel(seed=...)`, `RepeatedNode.random`, `RepeatedNode.mean` with `method="simulate"`, `RepeatedStandbyNode.random`, `StandbyModel.random`, `LoadSharingModel.random` |
+| Node models | `RepeatedNode.random`, `RepeatedNode.mean` with `method="simulate"`, `RepeatedStandbyNode.random`, `StandbyModel.random`, `LoadSharingModel.random`, and the `mean(mc_samples=..., seed=...)` of a simulated `StandbyModel` or `LoadSharingModel` |
 | `PhasedMission` | `reliability`, `unreliability` and `phase_failure_probabilities` with `method="simulate"`, `reliability_interval` |
 | `Network` | `sf`, `ff` and `mean` with `method="simulate"`, `random` |
 | `Repairable` | every simulation-backed method |
@@ -106,19 +101,9 @@ processors. So on another machine, the same seed can give times that differ
 in their last digits, and rarely a different count, where two events
 nearly coincide.
 
-Simulations involving non-parametric nodes (Kaplan–Meier and the other
-surpyval non-parametric fits) are reproducible too: surpyval seeds their
-draws from the global generator
-([surpyval issue #361](https://github.com/derrynknife/SurPyval/issues/361)).
-Non-parametric nodes are deprecated, though, and go in 0.12.
-
 The simulations draw the same random numbers in the same order however they
 are computed internally (in blocks for speed, or one at a time), so seeded
-results do not depend on which internal path a model takes. Non-parametric
-nodes are the exception: surpyval takes one seed from the global generator
-for each call rather than one random number for each draw, so a block of
-their draws differs from the same draws made one at a time. Their results
-are still reproducible. A parallel run of a `NonRepairableRBD` (`n_jobs`)
+results do not depend on which internal path a model takes. A parallel run of a `NonRepairableRBD` (`n_jobs`)
 seeds each block of simulations in turn from `seed`, so its results do not
 depend on the number of processes; they differ from a run without
 `n_jobs`. A `RepairableRBD`'s results are the same with `n_jobs` or
@@ -146,16 +131,19 @@ maintenance or hidden failures):
 
 | Quantity | Route | How it is computed |
 |---|---|---|
-| `sf`, `ff`, `Hf`, `cs`, `birnbaum_importance` and the other importance measures, `sf_given_state`, `structural_importance` | exact | From the node reliabilities. |
+| `sf`, `ff`, `Hf`, `cs`, `birnbaum_importance` and the other importance measures (`differential_importance` and `joint_importance` among them), `sf_given_state`, `structural_importance` | exact | From the node reliabilities. |
 | `df`, `hf` | numerical | The exact reliability, differentiated numerically. |
 | `time_to_reliability`, `bx_life`, `remaining_life` | numerical | The exact reliability, inverted by root-finding. |
-| `parameter_sensitivity` | numerical | The exact Birnbaum importance times a numerical parameter derivative. |
+| `parameter_sensitivity` | numerical | The exact Birnbaum importance times a numerical parameter derivative; a repairable diagram's, central differences of its long-run values in each lever. |
+| `reliability_rate` | exact | Each node's Birnbaum importance times its own failure density: the system's density, split by node. |
+| `NonRepairableRBD.barlow_proschan_importance` | numerical | Each node's part of the system's failure density, integrated over time by adaptive quadrature (to about `1e-9`). |
 | `mean`, `mean_time_to_failure` | numerical | The exact reliability, integrated over time by quadrature (to about `1e-10`). |
 | `random`, `mean_time_to_failure_interval` | simulated | Monte Carlo. |
-| `mean_availability`, `system_failure_frequency`, `mean_up_time`, `mean_down_time`, `mean_time_between_failures`, `expected_cost_rate`, `total_cost`, and the repairable importance measures | exact | From the long-run node availabilities. |
+| `mean_availability`, `system_failure_frequency`, `mean_up_time`, `mean_down_time`, `mean_time_between_failures`, `expected_cost_rate`, `total_cost`, and the repairable importance measures (`RepairableRBD.barlow_proschan_importance` among them, from the failure frequency's terms) | exact | From the long-run node availabilities. |
 | `capacity_distribution`, `system_capacity` | exact | From the node reliabilities (at a time) or long-run availabilities. |
 | `point_capacity`, `mission_capacity` | numerical | The capacity distribution at each component's availability over time from new or from its state (each solved on a grid, to about `1e-7`), and its mean over a window. |
 | `point_availability`, `mission_availability` | numerical | Each component's renewal equation, from new or from its state, solved numerically (to about `1e-7`), and the system at its components' availabilities at each time; with repair crews, and for a standby group, a Markov chain followed by uniformization (to about `1e-13`). |
+| `availability_rate` | numerical | Each component's point availability differentiated on the grid it is solved on, times its Birnbaum importance; the jumps at scheduled events split along the path between the values either side. With limited repair crews or common-cause groups, their chains' transitions split by the component or cause that makes each (exact), and a hidden group's tests' jumps by the Shapley value. |
 | `expected_failures`, `expected_events` | numerical | Each component's expected events from its renewal equation, on the grid of its availability (to about `1e-7`), and the system's failures by the time-dependent Birnbaum/Vesely formula; `expected_cost` prices them, numerically when anything is priced. |
 | `availability` (with the capacity over time and the delivered fraction), `cost`, `compare` | simulated | Discrete-event simulation. |
 | `spares_demand`, `spares_stock` | numerical | Each component's replacements, a renewal process, counted on a grid (to about `1e-6`); `spares_demand(method="simulate")` counts them in simulations instead. |
@@ -169,18 +157,20 @@ The nodes can change a route:
   models](redundancy-models.md#how-the-survival-function-is-obtained)). The
   analyses built on such a node are then simulated too.
 - **Maintenance.** Preventive maintenance makes the long-run values numerical,
-  replacement on condition (`"policy": "condition"`) too, though its values
-  over time are simulated and the exact ones refuse it (#161). The exact
+  and the values over time too, replacement on condition (`"policy":
+  "condition"`) among it (#161). The exact
   values refuse a component renewed early at its maintenance group's stops
   (an `"opportunity"`). A group's set-up cost is
   exact when no member is renewed early, unless two members are replaced on
   a clock (block replacement, or never failing before an instant age
   replacement): their replacements can share a stop, and `cost()` counts
   that.
-- **Hidden failures.** Their exact values need instant tests and repairs:
-  in closed form for a constant failure rate, and numerical for any other
-  life (summed over the test intervals). Tests or repairs that take time,
-  and tests that miss failures of a life that is not exponential, make the
+- **Hidden failures.** Their values are exact in closed form for a
+  constant failure rate and tests and repairs in no time, and numerical
+  otherwise: summed over the test intervals for any other life, and, with
+  tests or repairs that take time or tests that miss failures, the cycle
+  from one test that finds a failure to the next followed test by test on
+  a grid (#159). A test that can last as long as its interval makes the
   exact methods refuse.
 - **Standby groups.** A group's long-run values are exact from its own
   Markov chain when its units' lives and repair times are exponential, and
@@ -190,17 +180,20 @@ The nodes can change a route:
   for each other. With exponential lives and repairs, the long-run values
   and the importance measures are then exact from a Markov chain of the
   components' states and the repair queue (up to 15,000 states), and the
-  values over time numerical, the chain followed by uniformization (around
-  a nested RBD, the expected events and the capacity over time refuse, as
-  yet: #162); otherwise they refuse. The allocations refuse, and the
-  simulations follow the queue, in Python.
+  values over time numerical, the chain followed by uniformization, around
+  nested RBDs too (#162); otherwise they refuse. The allocations refuse,
+  and the simulations follow the queue, in Python.
 - **Spares.** The spares counts need each component's replacements to be a
   renewal process, or to fall on a calendar: under block replacement they
-  are counted block interval by block interval (the stock refuses, #160),
-  and with hidden failures on the tests, when the tests and repairs take no
-  time. Standby groups, renewals at a maintenance group's stops, waiting for
-  repair crews, and tests or repairs that take time make them refuse, and
-  `spares_demand(method="simulate")` counts them instead.
+  are counted block interval by block interval (the stock too, #160: with
+  repairs and block replacements that take time, from a typical
+  replacement in the long run; refused for a unit dead on arrival while
+  they may take none, whose replacements can come several at one instant),
+  and with hidden failures on the tests that find them, whatever the tests
+  and repairs take (with tests that can miss a failure, over where each
+  cycle starts between the full tests). Standby groups, renewals at a
+  maintenance group's stops and waiting for repair crews make them refuse,
+  and `spares_demand(method="simulate")` counts them instead.
 - **Imperfect repair.** `Repairable` policies are analytic for a power-law
   process and simulated for imperfect repair.
 
@@ -219,12 +212,15 @@ tested = RepairableRBD(
         "pump": {
             "reliability": surv.Weibull.from_params([500, 1.5]),
             "repairability": "instant",
-            "inspection": {"interval": 720},
+            "inspection": {
+                "interval": 720,
+                "duration": surv.Exponential.from_params([0.001]),  # 1,000 h on average
+            },
         }
     },
 )
 routes = tested.analysis_routes()
-routes["mean_availability"].route  # 'refused': a Weibull life, found by tests
+routes["mean_availability"].route  # 'refused': a test can outlast its interval
 routes["mean_availability"].nodes  # ('pump',)
 routes["availability"].route       # 'simulated'
 routes["availability"].engine      # 'numba' with numba installed, else 'python'
@@ -242,28 +238,53 @@ routes["availability"].engine      # 'numba' with numba installed, else 'python'
   reduce to a single module, and their path sets are never listed. Thirty
   duplicated stages in series have `2**30` minimal path sets, yet `sf` over
   400 times takes milliseconds. The cost is in the part that does not reduce
-  (bridges, cross-ties, shared nodes): it grows with that part's number of
-  minimal path sets, which multiplies with meshing, so a long chain of
-  bridges gets expensive. Only `get_min_path_sets()`, `path_set_probabilities`
-  and `fussell_vesely(fv_type="p")` list every path set, and
-  `get_all_path_sets()` every simple path: avoid them on large redundant
-  diagrams. `fussell_vesely` lists the part's minimal cut sets, as
-  `get_min_cut_sets()` does, and on first use decomposes, for each of its
-  nodes, the cut sets through it (all in one plan, kept for later calls):
-  on a densely meshed part (a 4 × 8 grid of nodes, a thousand cut sets)
-  that takes a few seconds, where the rare-event sum
-  (`method="rare_event"`) takes a tenth.
+  (bridges, cross-ties, shared nodes), the *core*: a core with few minimal
+  path sets is pivoted on them, and one with more is decided by a decision
+  diagram (below). Its minimal path and cut sets multiply with meshing, and
+  only `get_min_path_sets()`, `path_set_probabilities` and
+  `fussell_vesely(fv_type="p")` list every path set, and
+  `get_min_cut_sets()` and `fussell_vesely(method="rare_event")` every cut
+  set. They are read off the core's plan, one lookup each, so the 40,000
+  minimal cut sets of a ladder of a hundred bridges take under a second.
+  `get_all_path_sets()` lists every simple path: avoid it on large
+  redundant diagrams. The exact `fussell_vesely` lists no cut sets: on
+  first use it builds from the core's plan, for each node, the decision
+  diagram of some minimal cut set through the node having failed (kept for
+  later calls), so a ladder of thirty bridges, with 3,600 minimal cut sets,
+  takes a fifth of a second, and a 4 × 8 grid of nodes about as long as the
+  rare-event sum.
 - **Meshed diagrams: a decision diagram.** A part that does not reduce
   and may have more than a hundred minimal path sets is decided by a
   binary decision diagram built from its graph instead, without listing
-  them. Its size grows with how wide the mesh is, not with how many paths
-  it has. Six bridges in series (4,096 minimal path sets) take about 9
-  seconds by their path sets and 0.06 seconds this way; eight or more, or
-  a grid of 5 × 12 nodes, take longer than 40 seconds by path sets, while
-  fifty bridges take 0.01 seconds and a 10 × 10 grid 0.2. Every result is
-  the same to rounding either way (the whole test suite passes with
-  either forced). To force one, set `repyability.rbd.modular.CORE_METHOD`
-  to `"paths"` or `"bdd"` (by default `"auto"`) before building the RBD.
+  them: its nodes are decided one at a time, in an order that keeps the
+  mesh's frontier narrow, and each sub-problem is known by how many
+  working inputs each node still to come already has. Its size grows with
+  how wide the mesh is, not with how many paths it has. Six bridges in
+  series (4,096 minimal path sets) take 1.5 seconds by their path sets and
+  0.003 seconds this way, and seven 25 seconds by path sets, while fifty
+  bridges take 0.02 seconds, a 10 × 10 grid of nodes 0.04, and a random
+  mesh of 60 nodes and 345 links 2. Every result is the same to rounding
+  either way (the whole test suite passes with either forced). To force
+  one, set `repyability.rbd.modular.CORE_METHOD` to `"paths"` or `"bdd"`
+  (by default `"auto"`) before building the RBD.
+- **Too meshed to work out.** A core whose decision diagram would take
+  more than `repyability.rbd.bdd.STEP_LIMIT` steps to build (25 million,
+  about five seconds: a random mesh of 70 nodes and 485 links needs more)
+  is not worked out. The RBD is still built, with
+  `structure_check["is_too_meshed"]` set, and its simulations follow the
+  graph itself, a node working while it has not failed and enough of its
+  inputs work: a `NonRepairableRBD`'s `random`, `mean(method="simulate")`
+  and `unreliability_interval`, and a `RepairableRBD`'s `availability`,
+  `cost` and `simulate_timelines`, on the Python engine. The exact and
+  numerical analyses refuse, saying why (`analysis_routes()` lists them).
+  Raise the limit to try harder: the mesh of 70 nodes takes 45 seconds.
+  With numba installed (`pip install "repyability[fast]"`), a large
+  decision diagram is built, and its probabilities and their gradient
+  worked out, compiled, with the same plan and the same values to the
+  last bit: a 12 × 24 grid (288 nodes, 86 566 decisions) is built in 0.19
+  seconds rather than 0.9, its reliability at 200 times takes 0.03
+  seconds rather than 0.17, its Birnbaum importances 0.03 rather than
+  0.65, and its mean time to failure 5.2 seconds rather than 53.
 - **Simulations** are vectorised where the models allow it: `mean()` of a
   system of parametric components draws 100 000 lifetimes in well under a
   second. Availability simulations step through events, so their cost grows
@@ -288,6 +309,6 @@ routes["availability"].engine      # 'numba' with numba installed, else 'python'
     `sys.setrecursionlimit(10_000)` handles paths of several thousand nodes.
     A mesh with more than a hundred minimal path sets is decided by its
     decision diagram (above), which builds without recursion: four hundred
-    bridges in series, 2,000 nodes, take 0.13 seconds. Series chains and
+    bridges in series, 2,000 nodes, take 0.16 seconds. Series chains and
     parallel groups are reduced first, so long chains and wide systems are
     not affected.

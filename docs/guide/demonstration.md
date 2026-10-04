@@ -82,3 +82,35 @@ mtbf_pass_probability(3000.0, 2302.6)                  # -> 0.4642   three times
 A test that allows no failures often fails a good design: the one above
 would reject a design of 99% reliability 45% of the time. Allowing a
 failure, with the more units that needs, cuts that to 24%.
+
+## Plans that keep both risks
+
+`demonstration_plan` and `mtbf_demonstration_plan` design the test from both
+risks at once (#184): the smallest test that a design at the target passes
+with a chance of at most `1 − confidence`, and that a good design, which
+should pass, fails with a chance of at most `producer_risk`:
+
+```python
+from repyability import demonstration_plan, mtbf_demonstration_plan
+
+plan = demonstration_plan(0.9, 0.95, confidence=0.9, producer_risk=0.2)
+plan.n, plan.failures            # (128, 8)   128 units, at most 8 failing
+plan.consumer_risk               # -> 0.097   a design at 90% passes
+plan.producer_risk               # -> 0.192   one at 95% fails
+demonstration_pass_probability(0.95, 22)   # -> 0.324   the success run of 22 units passes it a third of the time
+mtbf = mtbf_demonstration_plan(1000.0, 2000.0, confidence=0.9, producer_risk=0.2)
+mtbf.test_time, mtbf.failures    # about 14,206 unit hours, at most 9 failures
+mtbf.test_time                   # -> 14206
+```
+
+For each number of failures allowed, from none, the fewest units (or the
+least test time) that keep the consumer's risk pass a good design most
+often; the first that keeps the producer's risk too is the smallest plan of
+all. A good design close to the target needs many failures allowed, and
+many units: the closer, the more. Given `n=` and the lifetime's `shape`,
+`demonstration_plan` searches the test length instead, and with
+`test_multiple` and `shape`, it plans an extended (Weibayes) test of that
+length. The MTBF plans are MIL-HDBK-781's fixed-length plans, for a
+discrimination ratio `good_mtbf / mtbf`; the handbook lets some of its plans
+exceed a risk a little for a shorter test, where these keep both. The
+result is a [`DemonstrationPlan`][repyability.DemonstrationPlan].

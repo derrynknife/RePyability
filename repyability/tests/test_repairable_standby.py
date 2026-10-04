@@ -115,7 +115,9 @@ def test_a_switch_that_always_fails_leaves_a_single_unit():
     lam, mu = 0.01, 0.5
     rbd = group(lam, mu, switching_probability=0.0)
     assert rbd.mean_availability() == pytest.approx(mu / (lam + mu), rel=1e-12)
-    run = rbd.availability(t_simulation=100_000.0, mc_samples=40, seed=2)
+    run = rbd.availability(
+        t_simulation=100_000.0, mc_samples=40, seed=2, control_variate=False
+    )
     interval = run.mean_availability_interval(confidence=0.999)
     assert interval.lower <= mu / (lam + mu) <= interval.upper
 
@@ -134,7 +136,9 @@ def test_a_switch_that_always_fails_leaves_a_single_unit():
 def test_the_simulation_agrees_with_the_chain(crews, standby):
     rbd = group(0.02, 0.25, crews, **standby)
     window, samples = 50_000.0, 40
-    run = rbd.availability(t_simulation=window, mc_samples=samples, seed=4)
+    run = rbd.availability(
+        t_simulation=window, mc_samples=samples, seed=4, control_variate=False
+    )
     interval = run.mean_availability_interval(confidence=0.999)
     assert interval.lower <= rbd.mean_availability() <= interval.upper
     spread = math.sqrt(run.system_failures) / (samples * window)
@@ -208,7 +212,9 @@ def test_costs_are_charged_per_unit_repair():
     expected = 10.0 * lam * up + (3.0 + 50.0) * (1 - up)
     assert rbd.expected_cost_rate() == pytest.approx(expected, rel=1e-12)
     window = 50_000.0
-    cost = rbd.cost(t_simulation=window, mc_samples=100, seed=6)
+    cost = rbd.cost(
+        t_simulation=window, mc_samples=100, seed=6, control_variate=False
+    )
     interval = cost.mean_interval(confidence=0.999)
     assert interval.lower / window <= expected <= interval.upper / window
 
@@ -281,7 +287,9 @@ def test_a_group_inside_a_nested_rbd():
     )
     exact = outer.mean_availability()
     assert exact == pytest.approx(inner.mean_availability() / 1.02, rel=1e-12)
-    run = outer.availability(t_simulation=50_000.0, mc_samples=40, seed=5)
+    run = outer.availability(
+        t_simulation=50_000.0, mc_samples=40, seed=5, control_variate=False
+    )
     interval = run.mean_availability_interval(confidence=0.999)
     assert interval.lower <= exact <= interval.upper
 

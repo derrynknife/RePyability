@@ -185,16 +185,6 @@ def test_every_surpyval_distribution_round_trips(name, params, extras):
         np.testing.assert_allclose(back.sf(t), rbd.sf(t), rtol=0, atol=1e-14)
 
 
-@pytest.mark.parametrize("fit", ["KaplanMeier", "NelsonAalen"])
-def test_non_parametric_models_round_trip(fit):
-    x = np.array([12.0, 30.0, 41.0, 55.0, 60.0, 72.0, 88.0, 95.0])
-    model = getattr(surv, fit).fit(x, c=(x > 80).astype(int))
-    rbd = NonRepairableRBD([("s", 1), (1, "t")], {1: model})
-    back = NonRepairableRBD.from_json(rbd.to_json())
-    t = np.array([0.0, 20.0, 50.0, 70.0, 90.0])
-    np.testing.assert_allclose(back.sf(t), rbd.sf(t), rtol=0, atol=1e-14)
-
-
 def test_a_fit_keeps_its_covariance():
     # So parameter uncertainty can still be propagated after loading.
     with numpy_seed(3):

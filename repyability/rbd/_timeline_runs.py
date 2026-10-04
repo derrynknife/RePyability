@@ -213,13 +213,14 @@ def simulate(
     engine: str,
     n_jobs,
     start: int,
+    state=None,
 ):
     """``simulate_timelines``: validated, run, and returned as a
     ``TimelineSimulation``."""
     from repyability.rbd.repairable_rbd import _UNSTREAMED
     from repyability.rbd.results import TimelineSimulation
 
-    rbd._require_no_ccf("the simulation", nested=True)
+    rbd._require_groups_simulated()
     if (
         isinstance(t_simulation, bool)
         or not isinstance(t_simulation, (int, float, np.integer, np.floating))
@@ -258,17 +259,23 @@ def simulate(
     working = set() if working_nodes is None else set(working_nodes)
     broken = set() if broken_nodes is None else set(broken_nodes)
     rbd._validate_node_overrides(working, broken)
-    state = np.random.get_state()
-    after = state
+    # The components' states at 0, as availability takes them (#163).
+    states = rbd._simulation_states(state, working | broken)
+    rng = np.random.get_state()
+    after = rng
     try:
         entropy = _streams.entropy_of(seed)
         if seed is None:
             after = np.random.get_state()
-        plan, complete = rbd._stream_plan(t_simulation, entropy, antithetic)
+        plan, complete = rbd._stream_plan(
+            t_simulation, entropy, antithetic, states=states
+        )
         if antithetic and not complete:
             raise NotImplementedError(_UNSTREAMED)
-        chosen = _engine(rbd, plan, engine, N)
-        if chosen == "python" and independent(rbd, plan):
+        chosen = _engine(rbd, plan, engine, N, states)
+        # The streams draw new units' histories; a run from states is the
+        # loop's.
+        if chosen == "python" and not states and independent(rbd, plan):
             method = "streams"
             data, system = _streamed(
                 rbd,
@@ -293,6 +300,7 @@ def simulate(
                 engine=chosen,
                 entropy=entropy,
                 first=start,
+                states=states,
                 histories=True,
             )
             parts, recorded = tally.histories.data(t_simulation)
@@ -314,19 +322,80 @@ def simulate(
     )
 
 
-def _engine(rbd, plan: _streams.Plan, engine: str, N: int) -> str:
+def with_costs(
+    rbd,
+    t_simulation: float,
+    N: int,
+    seed: Optional[int],
+    antithetic: bool,
+    engine: str,
+    n_jobs,
+    start: int,
+    states: Optional[dict] = None,
+    entropy: Optional[int] = None,
+    widths: Optional[dict] = None,
+):
+    """Simulations ``start`` to ``start + N - 1`` of the run ``seed``
+    seeds (or of the run of ``entropy``, a shard's), from new or from the
+    components' checked ``states``, in the event loop: each component's
+    histories (as ``simulate`` has them) and the run's tally, which keeps
+    each simulation's cost beside them (for a conditional run's modules,
+    see ``RepairableRBD._conditional_run``). With ``widths``, its streams
+    take those widths, to draw what another system's take (common random
+    numbers, see ``RepairableRBD._common_widths``)."""
+    from repyability.rbd.repairable_rbd import _UNSTREAMED
+
+    if engine not in ("auto", "python", "numba"):
+        raise ValueError(
+            f"engine must be 'auto', 'python' or 'numba' (the engines that "
+            f"record histories) for a conditional run, got {engine!r}."
+        )
+    jobs = None if n_jobs is None else montecarlo.jobs(n_jobs)
+    if entropy is None:
+        entropy = _streams.entropy_of(seed)
+    states = states or {}
+    plan, complete = rbd._stream_plan(
+        t_simulation, entropy, antithetic, widths, states
+    )
+    if antithetic and not complete:
+        raise NotImplementedError(_UNSTREAMED)
+    tally = rbd._run(
+        t_simulation,
+        set(),
+        set(),
+        "p",
+        N,
+        False,
+        seed,
+        antithetic,
+        jobs=jobs,
+        engine=_engine(rbd, plan, engine, N, states=states),
+        entropy=entropy,
+        widths=widths,
+        common=widths is not None,
+        first=start,
+        states=states,
+        histories=True,
+    )
+    parts, _ = tally.histories.data(t_simulation)
+    return dict(zip(rbd.components, parts)), tally
+
+
+def _engine(rbd, plan: _streams.Plan, engine: str, N: int, states=None) -> str:
     """The engine that records the run: ``"python"`` or ``"numba"``, as
-    ``availability`` would choose between them (another package's engine
-    records no histories)."""
+    ``availability`` would choose between them for a run from the
+    components' ``states`` (another package's engine records no
+    histories)."""
     from repyability.rbd import _compiled
 
     if engine == "python":
         return engine
     if engine == "numba":
-        return rbd._simulation_engine("numba", plan, None, N)
+        return rbd._simulation_engine("numba", plan, None, N, states=states)
     if (
         _compiled.available()
-        and _compiled.unsupported(rbd, plan, None, numba=True) is None
+        and _compiled.unsupported(rbd, plan, None, numba=True, states=states)
+        is None
         and _compiled.worthwhile(plan, N, "numba")
     ):
         return _compiled.ready("numba", auto=True)
@@ -368,17 +437,21 @@ def _named(rbd, data: _Data) -> _Data:
 def independent(rbd, plan: _streams.Plan, prefix: tuple = ()) -> bool:
     """Whether each component's history follows from its own draws alone:
     plain units with streamed lives and repairs, and nested RBDs of them,
-    with no crew a job can wait for and nothing scheduled."""
+    with no crew a job can wait for, nothing scheduled and no common cause
+    shared; and a structure worked out (one too meshed is followed in the
+    loop)."""
     from repyability.non_repairable import NonRepairable
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     if (
-        rbd._preventive
+        rbd._too_meshed() is not None
+        or rbd._preventive
         or rbd._inspection
         or rbd._standby
         or rbd._imperfect
         or rbd._maintenance
         or rbd._crews_limited()
+        or rbd.ccf_groups
     ):
         return False
     for name, component in rbd.components.items():

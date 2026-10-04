@@ -76,7 +76,7 @@ def test_hot_standby_is_k_out_of_n_of_any_units():
         p * q * r + p * q * (1 - r) + p * (1 - q) * r + (1 - p) * q * r,
         rtol=1e-13,
     )
-    assert not two.is_simulated and two.model is None
+    assert not two.is_simulated
     assert routes.model_route(two)[0] == routes.EXACT
     # A small probability of failing keeps its precision.
     assert parallel.ff(1e-3) == pytest.approx(a.ff(1e-3) * b.ff(1e-3), 1e-12)
@@ -251,16 +251,12 @@ def test_two_operating_of_one_kind_by_the_pair_recursion_too():
     )
 
 
-def test_three_different_cold_units_operating_are_still_simulated():
-    with pytest.warns(FutureWarning, match="3 different units"):
-        model = StandbyModel(
-            [PUMP, W([80.0, 1.5]), PUMP, W([90.0, 3.0])],
-            k=3,
-            mc_samples=500,
-            seed=1,
-        )
+def test_three_different_cold_units_operating_are_only_simulated():
+    model = StandbyModel([PUMP, W([80.0, 1.5]), PUMP, W([90.0, 3.0])], k=3)
     assert model.is_simulated
-    assert routes.model_route(model)[0] == routes.SIMULATED
+    assert routes.model_route(model)[0] == routes.REFUSED
+    with pytest.raises(NotImplementedError, match="3 different units"):
+        model.sf(10.0)
 
 
 # -- load sharing of identical units -----------------------------------------
@@ -317,15 +313,11 @@ def test_weibull_units_sharing_a_load():
     agrees_with_simulation(group)
 
 
-def test_different_units_sharing_a_load_are_still_simulated():
-    with pytest.warns(FutureWarning, match="units that are different"):
-        group = LoadSharingModel(
-            [aft("weibull"), aft("exponential")],
-            load=2.0,
-            mc_samples=500,
-            seed=3,
-        )
+def test_different_units_sharing_a_load_are_only_simulated():
+    group = LoadSharingModel([aft("weibull"), aft("exponential")], load=2.0)
     assert group.is_simulated
+    with pytest.raises(NotImplementedError, match="units that are different"):
+        group.sf(10.0)
 
 
 # -- in a diagram, and saved -------------------------------------------------

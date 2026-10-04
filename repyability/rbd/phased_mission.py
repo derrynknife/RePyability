@@ -653,6 +653,11 @@ class PhasedMission:
         """
         return self._outcome(method, mc_samples, seed)[1]
 
+    #: The mission's reliability, by the name the diagrams give it (#179).
+    sf = reliability
+    #: The mission's unreliability, by the name the diagrams give it.
+    ff = unreliability
+
     def phase_failure_probabilities(
         self,
         method: str = "exact",

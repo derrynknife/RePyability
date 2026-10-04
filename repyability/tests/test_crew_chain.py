@@ -279,7 +279,9 @@ def bridge(crews, instant=False, **changes):
 def test_the_exact_values_agree_with_the_simulation(crews, instant):
     rbd = bridge(crews, instant)
     window, samples = 10_000.0, 40
-    run = rbd.availability(t_simulation=window, mc_samples=samples, seed=11)
+    run = rbd.availability(
+        t_simulation=window, mc_samples=samples, seed=11, control_variate=False
+    )
     interval = run.mean_availability_interval(confidence=0.999)
     assert interval.lower <= rbd.mean_availability() <= interval.upper
     spread = math.sqrt(run.system_failures) / (samples * window)

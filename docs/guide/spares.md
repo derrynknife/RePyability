@@ -23,10 +23,10 @@ seal = {"reliability": surv.Exponential.from_params([1 / 4000.0]),   # MTTF 4,00
 edges = [("s", "pump"), ("pump", "seal"), ("seal", "t")]
 rbd = RepairableRBD(edges, {"pump": pump, "seal": seal})
 demand = rbd.spares_demand(8760.0, fleet=20)    # a year, from new
-demand["pump"].mean()          # -> 90.17
-demand["pump"].std()           # -> 4.47
+demand["pump"].mean            # -> 90.17
+demand["pump"].std             # -> 4.47
 demand["pump"].stock(0.95)     # -> 98   pumps last the year with probability 0.95
-demand["seal"].mean()          # -> 43.80   Poisson: 20 x 8,760 / 4,000
+demand["seal"].mean            # -> 43.80   Poisson: 20 x 8,760 / 4,000
 demand["seal"].stock(0.95)     # -> 55
 ```
 
@@ -56,7 +56,7 @@ of age nearly doubles the pumps used (see
 renewed = dict(pump, preventive={"interval": 1000.0,
                                  "duration": surv.Exponential.from_params([1 / 4.0])})
 maintained = RepairableRBD(edges, {"pump": renewed, "seal": seal})
-maintained.spares_demand(8760.0, fleet=20, nodes=["pump"])["pump"].mean()   # -> 172.34
+maintained.spares_demand(8760.0, fleet=20, nodes=["pump"])["pump"].mean   # -> 172.34
 ```
 
 ## Stock with a lead time
@@ -98,6 +98,39 @@ stock["pump"].fill_rate_for(26)       # -> 0.8870
 - **A fleet** shares one store, its systems' independent demands adding
   up.
 
+## One shelf for interchangeable parts
+
+The same part often serves several positions: the seals of a station's
+three pumps come from one bin. `parts={part: [nodes]}` pools their spares
+under the part's name (#183), for `spares_demand` and `spares_stock` alike.
+A pooled shelf needs fewer spares than one for each position, as the
+positions seldom all draw on it at once:
+
+```python
+seal = {"reliability": surv.Weibull.from_params([4000.0, 1.8]),
+        "repairability": surv.LogNormal.from_params([2.0, 0.5])}
+station = RepairableRBD(
+    [("s", f"seal{i}") for i in (1, 2, 3)] + [(f"seal{i}", "t") for i in (1, 2, 3)],
+    {f"seal{i}": dict(seal) for i in (1, 2, 3)}, k={"t": 2})   # 2 of 3 trains
+six_weeks = 6 * 168.0
+each = station.spares_stock(six_weeks, fill_rate=0.95, fleet=13)
+sum(s.stock for s in each.values())   # -> 21   7 for each position
+shelf = station.spares_stock(six_weeks, fill_rate=0.95, fleet=13,
+                             parts={"seal": ["seal1", "seal2", "seal3"]})
+shelf["seal"].stock                   # -> 17
+shelf["seal"].fill_rate               # -> 0.9704
+```
+
+The positions' demands are independent, so a part's is their sum: for its
+stock, a demand comes from position `i` with its share of the long-run
+replacement rates, and finds `i`'s spares on order as its own demands do
+and the others' as at a random time. The positions may differ, one under
+age replacement and the others not. A node is in one part at most, and a
+part is named apart from the components; given with `parts`, `nodes` (by
+default none then) still counts components on their own. Two members of
+one common-cause group are refused, as their shared causes replace them
+together.
+
 ## Block replacement and proof tests
 
 Two kinds of component replace on a calendar, and are counted their own way
@@ -114,7 +147,7 @@ Two kinds of component replace on a calendar, and are counted their own way
   blocked = dict(pump, preventive={"interval": 1000.0, "policy": "block",
                                    "duration": surv.Exponential.from_params([1 / 4.0])})
   calendar = RepairableRBD(edges, {"pump": blocked, "seal": seal})
-  calendar.spares_demand(8760.0, fleet=20, nodes=["pump"])["pump"].mean()   # -> 187.32
+  calendar.spares_demand(8760.0, fleet=20, nodes=["pump"])["pump"].mean   # -> 187.32
   ```
 
 - **Hidden failures found by proof tests**, tested and repaired in no time,
@@ -128,15 +161,53 @@ Two kinds of component replace on a calendar, and are counted their own way
            "inspection": {"interval": 8760.0}}
   valves = RepairableRBD([("s", "v"), ("v", "t")], {"v": valve})
   used = valves.spares_demand(20 * 8760.0, fleet=50)["v"]
-  used.mean()       # -> 41.21
+  used.mean         # -> 41.21
   used.stock(0.95)  # -> 48
   valves.spares_stock(26 * 7 * 24.0, fill_rate=0.95, fleet=50)["v"].stock   # -> 5
   ```
 
-A block-replaced component's stock is refused as yet (#160): its demand in a
-lead time depends on where in the block interval the lead time falls. Proof
-tests that take time, repairs that take time, and tests that can miss a
-failure are refused too (#159).
+A block-replaced component's stock is worked out too (#160). With its
+repairs and block replacements in no time, each block interval starts with
+a new unit, so the demand repeats every interval, and a lead time's is
+averaged over where in the interval it starts. Pumps swapped in no time
+every 1,000 hours of the calendar need more on the shelf than the 46 for
+pumps swapped at 1,000 hours of their age, as young pumps are swapped too:
+
+```python
+swapped = dict(pump, repairability="instant",
+               preventive={"interval": 1000.0, "policy": "block"})
+shelf = RepairableRBD(edges, {"pump": swapped, "seal": seal})
+stock = shelf.spares_stock(2016.0, fill_rate=0.95, fleet=20, nodes=["pump"])["pump"]
+stock.stock       # -> 52
+stock.fill_rate   # -> 0.9596
+```
+
+A demand finds at least two pumps of its own system on order: those swapped
+at the two block times in the 12 weeks before it. When repairs or block
+replacements take time, a pump down at a block time is not swapped there,
+and one still being repaired or swapped carries over into the next
+interval, which then need not start with a new pump. The demand is then
+counted from a typical replacement in the long run: a failure at some
+point of the interval, or a block replacement. The `calendar` pumps above,
+repaired in about 8 hours and swapped in about 4:
+
+```python
+stock = calendar.spares_stock(2016.0, fill_rate=0.95, fleet=20, nodes=["pump"])["pump"]
+stock.stock       # -> 52
+stock.fill_rate   # -> 0.9667
+```
+
+Their time out of service lowers their demand a little (1.160 replacements
+every 1,000 hours, against 1.165), and the same stock fills more of it.
+
+A fleet's systems are taken as on block schedules of their own, out of step
+with each other; two block-replaced components in one part are refused, as
+their block times keep step, and so is a unit that can be dead on arrival
+while its repairs or block replacements may take no time, as its
+replacements can then come several at one instant. A tested component's
+spares are counted whatever its tests and repairs take, and whether or not
+its tests can miss a failure: the replacements still fall on the tests that
+find failures (#159).
 
 ## How it is computed
 
@@ -165,19 +236,63 @@ if that comes before the next block time, and at the block time otherwise.
 So each replacement's time follows from the one before, block interval by
 block interval, on a grid with the block times on it. A repair or
 replacement still going on at a block time carries the next unit's start
-past it, as in the simulation. With proof tests, every replacement falls on
-a test, and the count is that of a discrete renewal process on the tests:
-exact, with no grid. A unit renewed at a test is renewed again `k` tests
-later with probability `R((k − 1)τ) − R(kτ)`. From a random time, the next
-replacement is `j` tests on with probability `R((j − 1)τ) / S`, `S` being
-the mean cycle in tests.
+past it, as in the simulation. A horizon on a block time is read just
+before it, where the replacements' distributions start afresh. In a lead
+time in the long run, with repairs and block replacements in no time, the
+failures within an interval are a renewal process from new; a lead time
+that runs past the interval's end adds the block replacement there and the
+count from new past it. Averaged over where the lead time starts, in
+exchanged order (over the phase, and over where the unit then in service
+started), this needs only sums over one grid of the interval. Before a
+replacement the count is that after one, as the times between replacements
+are stationary from one: after a failure, at the renewal density, or after
+a block replacement.
+
+With repairs or block replacements that take time, an interval need not
+start with a new unit, and the count is taken from a typical replacement in
+the long run (its Palm distribution): a failure at each point of the
+interval, weighted by the long-run failures there, or a block replacement,
+weighted by its chance an interval, the weights coming from intervals
+followed one after another until they settle. Each is followed block
+interval by block interval, all of them at once on one grid, which gives
+the chance that the `s`-th replacement after it falls within the lead time,
+`G_s(τ)`: the count before a replacement. From a random time, the chance of
+`s` or more is the long-run rate `λ` times the integral of `G_{s−1} − G_s`
+over the lead time (Campbell's formula). Only the life is rounded: the
+repairs and block replacements, often far shorter than an interval, are
+shared between the grid points either side of each value, keeping their
+mean. The grids are refined by halving the step and extrapolated, their
+error falling as its square, until two extrapolations agree to `1e-5`,
+which leaves about `1e-6`. The `calendar` pumps' stock takes about
+3 seconds.
+
+With proof tests, every replacement falls on a test, and the count is that
+of a discrete renewal process on the tests. Tested and repaired in no time,
+it is exact, with no grid: a unit renewed at a test is renewed again `k`
+tests later with probability `R((k − 1)τ) − R(kτ)`. With tests or repairs
+that take time, the chances of each cycle's length in tests come from the
+cycle followed test by test on a grid (see [tests and repairs that take
+time](costs.md#tests-and-repairs-that-take-time)). From a random time, the
+next replacement is `j` tests on with probability `P(C ≥ j) / S`, `C` being
+a cycle's length in tests and `S` its mean.
+
+With tests that can miss a failure, but a full test every so often that
+finds every one, a cycle's length depends on where the test that starts it
+falls between the full tests: the replacements are a Markov renewal
+process over those places, counted the same way, each test's place known
+from the first's. From a random time, its next test at each place as
+often, the next replacement ends the cycle then in progress; before a
+replacement, the cycles back are those of the process reversed, from each
+place in proportion to its share of the replacements.
 
 Some components' replacements are not counted this way, and the counts
 refuse, with the reason:
 
-- a component with **hidden failures** whose tests or repairs take time, or
-  whose tests can miss a failure (#159), and the stock of one under
-  **block replacement** (#160);
+- the stock of a component under **block replacement** that can be dead on
+  arrival while its repairs or block replacements may take no time, as its
+  replacements can then come several at one instant;
+- a component with **hidden failures** whose tests can last as long as
+  their interval;
 - a **standby group**, whose units' failures depend on each other;
 - any component while **repair crews** can keep components waiting.
 
@@ -190,7 +305,7 @@ takes over at once:
 ```python
 paired = RepairableRBD(edges, {"pump": dict(pump, standby={"units": 2}), "seal": seal})
 used = paired.spares_demand(8760.0, fleet=20, method="simulate", seed=1)
-used["pump"].mean()    # -> 90.38   simulated
+used["pump"].mean      # -> 90.38   simulated
 ```
 
 The stock needs the long run, which the simulations from new do not reach,

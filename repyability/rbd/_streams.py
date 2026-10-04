@@ -55,6 +55,10 @@ START = 9
 #: The uniforms that decide whether a test that can miss a hidden failure
 #: (a coverage below 1) finds it: one per failure.
 TEST = 10
+#: The times between a shared common cause's strikes (#158), and the
+#: uniforms that decide whether the tests that can miss its failures find
+#: them (one per strike: they are found, or missed, alike).
+CAUSE, CAUSE_TEST = 11, 12
 #: The kind of each cost that can be a distribution, by its cost key.
 COST_KINDS = {
     "repair_cost": 3,

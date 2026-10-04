@@ -266,8 +266,8 @@ components are in states $x$, 0 otherwise. [Lesson 3](structure.md)
 the system failing. [Lesson 3](structure.md)
 
 **Total cost of ownership.** What owning a system costs over a horizon $H$:
-buying it plus $H$ times its cost rate (a *life-cycle cost*, here
-undiscounted). [Lesson 7](costs.md)
+buying it plus $H$ times its cost rate (a *life-cycle cost*, undiscounted
+unless a `discount_rate` is given). [Lesson 7](costs.md)
 
 **Unreliability.** $F(t) = 1 - R(t)$: the probability that a unit has failed
 by age $t$. [Lesson 1](lifetimes.md)

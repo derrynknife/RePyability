@@ -298,9 +298,9 @@ def test_failure_limit_costs_required():
 
 
 def test_the_simulations_seed_goes_by_random_state():
-    """surpyval 0.21 renamed the simulations' ``seed`` to ``random_state``
-    (``seed`` warns until 0.22 removes it): the seed goes by the new name,
-    so nothing warns, and it reaches the model."""
+    """surpyval 0.21 renamed the simulations' ``seed`` to ``random_state``,
+    and 0.22 removed ``seed``: the seed goes by the new name, so nothing
+    warns, and it reaches the model."""
     rep = Repairable(_gr(0.5))
     rep.set_repair_and_overhaul_costs(1.0, 10.0)
     with warnings.catch_warnings():

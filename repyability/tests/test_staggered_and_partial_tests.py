@@ -218,7 +218,9 @@ def test_simulated_as_the_exact_values(inspection):
     spec["repair_cost"] = 10.0
     rbd = RepairableRBD(SINGLE, {"a": spec})
     window = 1230.0
-    result = rbd.availability(window, mc_samples=20000, seed=11)
+    result = rbd.availability(
+        window, mc_samples=20000, seed=11, control_variate=False
+    )
     interval = result.mean_availability_interval()
     exact = rbd.mission_availability(window)
     assert abs(interval.estimate - exact) < 4 * interval.standard_error
@@ -240,7 +242,9 @@ def test_a_staggered_pair_simulated_as_the_exact_values():
         },
     )
     window = 7200.0
-    result = rbd.availability(window, mc_samples=4000, seed=5)
+    result = rbd.availability(
+        window, mc_samples=4000, seed=5, control_variate=False
+    )
     interval_ = result.mean_availability_interval()
     exact = rbd.mission_availability(window)
     assert abs(interval_.estimate - exact) < 4 * interval_.standard_error
@@ -273,7 +277,9 @@ def test_a_state_places_a_staggered_calendar():
         rtol=1e-14,
     )
     simulated = [
-        rbd.availability(300.0, mc_samples=200, seed=1, state=state)
+        rbd.availability(
+            300.0, mc_samples=200, seed=1, state=state, control_variate=False
+        )
         .mean_availability_interval()
         .estimate
         for rbd in (staggered, plain)

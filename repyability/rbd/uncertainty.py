@@ -24,8 +24,16 @@ in surpyval, already provides. A node's uncertainty is one of
 
 A common-cause group's model may be uncertain too (``draw_ccf_models``):
 distributions over its parameters, or a sequence of models.
+
+The draws take their randomness from a numpy generator, or (``sampling=
+"sobol"``, #200) from a scrambled Sobol sequence: each draw is one of its
+points, each parameter (or choice from a list) one of its dimensions, in
+the order the draws take them. Quasi-random points cover the parameters
+more evenly than random ones, which shrinks the error of the summaries
+over the draws, and of the Sobol indices, for the same number of draws.
 """
 
+import warnings
 from collections.abc import Mapping, Sequence
 from typing import Any, List, Optional
 
@@ -33,6 +41,86 @@ import numpy as np
 
 #: The draws of a node's model that ``"fit"`` asks for.
 FIT = "fit"
+#: Where the draws' randomness comes from (see the module docstring).
+SAMPLINGS = ("random", "sobol")
+
+
+def check_sampling(sampling) -> str:
+    """``sampling``, checked: one of ``SAMPLINGS``."""
+    if sampling not in SAMPLINGS:
+        raise ValueError(
+            f"sampling must be one of {list(SAMPLINGS)}, got {sampling!r}."
+        )
+    return sampling
+
+
+class Counter:
+    """Stands in for a generator, to count the dimensions a set of draws
+    takes (one for each column of normals or uniforms, and each choice
+    from a list), with the shapes a numpy generator gives."""
+
+    def __init__(self):
+        self.dimensions = 0
+
+    def standard_normal(self, shape) -> np.ndarray:
+        n, k = shape
+        self.dimensions += k
+        return np.zeros((n, k))
+
+    def random(self, n) -> np.ndarray:
+        self.dimensions += 1
+        return np.full(n, 0.5)
+
+    def integers(self, high, size) -> np.ndarray:
+        self.dimensions += 1
+        return np.zeros(size, dtype=int)
+
+
+class SobolPoints:
+    """A scrambled Sobol sequence's points (rows of ``table``), handed out
+    a dimension at a time as the draws take them, in the shapes a numpy
+    generator gives: normals through the normal quantile function, and a
+    choice from a list as the uniform's share of it."""
+
+    def __init__(self, table: np.ndarray):
+        # Kept off 0 and 1, where a quantile function is infinite.
+        self.table = np.clip(table, 2.0**-53, 1.0 - 2.0**-53)
+        self.used = 0
+
+    def _take(self, k: int) -> np.ndarray:
+        if self.used + k > self.table.shape[1]:
+            raise RuntimeError("The draws took more dimensions than counted.")
+        out = self.table[:, self.used : self.used + k]  # noqa: E203
+        self.used += k
+        return out
+
+    def standard_normal(self, shape) -> np.ndarray:
+        from scipy.special import ndtri
+
+        n, k = shape
+        return ndtri(self._take(k)[:n])
+
+    def random(self, n) -> np.ndarray:
+        return self._take(1)[:n, 0].copy()
+
+    def integers(self, high, size) -> np.ndarray:
+        u = self._take(1)[:size, 0]
+        return np.minimum((u * high).astype(int), int(high) - 1)
+
+
+def sobol_table(n: int, dimensions: int, rng) -> np.ndarray:
+    """``n`` points of a scrambled Sobol sequence in ``dimensions``
+    dimensions, scrambled by ``rng`` (numpy's generator). Its balance is
+    best for a power of 2 points; others are taken as they come."""
+    if dimensions == 0:
+        return np.empty((n, 0))
+    from scipy.stats import qmc
+
+    engine = qmc.Sobol(dimensions, scramble=True, seed=rng)
+    with warnings.catch_warnings():
+        # The warning that n is not a power of 2.
+        warnings.simplefilter("ignore", UserWarning)
+        return engine.random(n)
 
 
 def _parametric(model, label: str):
@@ -87,7 +175,9 @@ class _Scale:
         return a + (b - a) / (1.0 + np.exp(-z))
 
 
-def _fit_draws(model, n: int, rng: np.random.Generator, label: str) -> list:
+def _fit_covariance(model, label: str):
+    """The fitted model's distribution, parameters, parameter covariance
+    (surpyval's ``hess_inv``) and the parameters' bounds, checked."""
     dist = _parametric(model, label)
     covariance = getattr(model, "hess_inv", None)
     params = np.atleast_1d(np.asarray(model.params, dtype=float))
@@ -107,7 +197,6 @@ def _fit_draws(model, n: int, rng: np.random.Generator, label: str) -> list:
             "parameters or a list of models instead."
         )
     bounds = list(getattr(dist, "bounds", [(None, None)] * k))[:k]
-    scales = [_Scale(lower, upper) for lower, upper in bounds]
     for (lower, upper), value in zip(bounds, params):
         if (lower is not None and value <= lower) or (
             upper is not None and value >= upper
@@ -118,6 +207,13 @@ def _fit_draws(model, n: int, rng: np.random.Generator, label: str) -> list:
                 "approximation there; give distributions over its "
                 "parameters or a list of models instead."
             )
+    return dist, params, covariance, bounds
+
+
+def _fit_draws(model, n: int, rng: np.random.Generator, label: str) -> list:
+    _, params, covariance, bounds = _fit_covariance(model, label)
+    k = len(params)
+    scales = [_Scale(lower, upper) for lower, upper in bounds]
     # The delta method: the covariance on the unbounded scale.
     slopes = np.array([sc.slope(v) for sc, v in zip(scales, params)])
     centre = np.array([sc.forward(v) for sc, v in zip(scales, params)])
@@ -130,6 +226,16 @@ def _fit_draws(model, n: int, rng: np.random.Generator, label: str) -> list:
         [sc.inverse(z[:, j]) for j, sc in enumerate(scales)]
     )
     return [model.with_params(list(row)) for row in drawn]
+
+
+def is_fit(model) -> bool:
+    """Whether ``"fit"`` can draw ``model``: a surpyval parametric fit with
+    a finite parameter covariance, its parameters inside their ranges."""
+    try:
+        _fit_draws(model, 0, np.random.default_rng(0), "")
+    except (ValueError, TypeError, AttributeError):
+        return False
+    return True
 
 
 def _quantiles(
@@ -153,7 +259,7 @@ def _parameter_draws(
     model, priors: Mapping, n: int, rng: np.random.Generator, label: str
 ) -> list:
     dist = _parametric(model, label)
-    names = list(getattr(dist, "param_names", []))
+    names = list(getattr(dist, "parameter_names", []))
     unknown = [p for p in priors if p not in names]
     if unknown:
         raise ValueError(
@@ -266,15 +372,131 @@ def draw_ccf_models(
                 not isinstance(m, (BetaFactor, MGL))
                 or size not in (None, len(group.members))
                 or m.basis != model.basis
+                or m.shocks != model.shocks
             ):
                 raise ValueError(
                     f"{label}: every alternative model must be a "
                     f"BetaFactor or an MGL model for {len(group.members)} "
                     f"members, splitting the {model.basis} as its model "
-                    f"does; got {m!r}."
+                    f"does, with {model.shocks} shocks; got {m!r}."
                 )
         return [spec[i] for i in rng.integers(len(spec), size=n)]
     raise ValueError(
         f"{label}: its uncertainty must be a dict of distributions over its "
         f"model's parameters ({names}) or a list of models, got {spec!r}."
+    )
+
+
+def _variance(prior, label: str, name) -> float:
+    """The variance of a parameter's distribution: its own (``var``), or
+    from its quantile function on a fine grid of probabilities."""
+    own = getattr(prior, "var", None)
+    if callable(own):
+        try:
+            value = float(np.ravel(own())[0])
+        except (TypeError, ValueError, AttributeError):
+            value = float("nan")
+        if np.isfinite(value) and value >= 0.0:
+            return value
+    u = (np.arange(4096) + 0.5) / 4096
+    values = _quantiles_at(prior, u, label, name)
+    return float(np.var(values))
+
+
+def _quantiles_at(prior, u: np.ndarray, label: str, name) -> np.ndarray:
+    if hasattr(prior, "qf"):
+        values = prior.qf(u)
+    elif hasattr(prior, "ppf"):
+        values = prior.ppf(u)
+    else:
+        raise ValueError(
+            f"{label}: the distribution for {name!r} needs a quantile "
+            "function (qf, as surpyval's, or ppf, as scipy.stats')."
+        )
+    return np.asarray(values, dtype=float).reshape(-1)
+
+
+def varied_parameters(model, spec: Any, label: str):
+    """For the delta method (#196): the parameters a node's uncertainty
+    varies, as their positions among the model's parameters, their values,
+    their covariance (a fit's ``hess_inv``, or the variances of the
+    distributions given) and their bounds. A list of models has no
+    parameters to vary."""
+    if isinstance(spec, str):
+        if spec != FIT:
+            raise ValueError(
+                f"{label}: unknown uncertainty {spec!r}; give 'fit', a dict "
+                "of parameter distributions or a list of models."
+            )
+        _, params, covariance, bounds = _fit_covariance(model, label)
+        return list(range(len(params))), params, covariance, bounds
+    if isinstance(spec, Mapping):
+        if not spec:
+            raise ValueError(f"{label}: no parameter distributions given.")
+        dist = _parametric(model, label)
+        names = list(getattr(dist, "parameter_names", []))
+        unknown = [p for p in spec if p not in names]
+        if unknown:
+            raise ValueError(
+                f"{label}: {sorted(map(str, unknown))} are not parameters of "
+                f"its {getattr(dist, 'name', 'model')} model, whose "
+                f"parameters are {names}."
+            )
+        params = np.atleast_1d(np.asarray(model.params, dtype=float))
+        bounds = list(getattr(dist, "bounds", [(None, None)] * len(names)))
+        positions = [names.index(name) for name in spec]
+        covariance = np.diag(
+            [_variance(prior, label, name) for name, prior in spec.items()]
+        )
+        return (
+            positions,
+            params[positions],
+            covariance,
+            [
+                bounds[j] if j < len(bounds) else (None, None)
+                for j in positions
+            ],
+        )
+    if isinstance(spec, Sequence):
+        raise ValueError(
+            f"{label}: a list of models has no parameters for the delta "
+            "method to vary; method='sobol' draws from the list."
+        )
+    raise ValueError(
+        f"{label}: the uncertainty must be 'fit', a dict of parameter "
+        f"distributions or a list of models, got {spec!r}."
+    )
+
+
+def varied_ccf_parameters(group, spec: Any):
+    """``varied_parameters`` for a common-cause group's model: the names
+    of the parameters its uncertainty varies, their values, their
+    covariance (the distributions' variances) and their bounds, [0, 1]."""
+    from .ccf import parameters
+
+    model = group.model
+    label = f"Common-cause group {list(group.members)!r}"
+    names = list(parameters(model))
+    if not isinstance(spec, Mapping):
+        raise ValueError(
+            f"{label}: a list of models has no parameters for the delta "
+            "method to vary; method='sobol' draws from the list."
+        )
+    if not spec:
+        raise ValueError(f"{label}: no parameter distributions given.")
+    unknown = [p for p in spec if p not in names]
+    if unknown:
+        raise ValueError(
+            f"{label}: {sorted(map(str, unknown))} are not parameters of its "
+            f"model, {model!r}, whose parameters are {names}."
+        )
+    values = parameters(model)
+    chosen = list(spec)
+    return (
+        chosen,
+        np.array([float(values[name]) for name in chosen]),
+        np.diag(
+            [_variance(prior, label, name) for name, prior in spec.items()]
+        ),
+        [(0.0, 1.0)] * len(chosen),
     )

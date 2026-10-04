@@ -48,7 +48,10 @@ class CrewChain(NamedTuple):
     ``states`` are the states themselves (the first with every component
     up), and ``generator`` the rates between them (a sparse matrix, ``[s,
     t]`` the rate from ``s`` to ``t``), for the chain over time (see
-    ``_chain_transient``).
+    ``_chain_transient``). ``transitions`` are its transitions one by one,
+    ``(sources, targets, rates, components)``: each a component's failure
+    or the end of its repair (with the jobs the crew then takes that are
+    done at once), labelled with that component's position (#199).
     """
 
     nodes: Tuple[Hashable, ...]
@@ -56,11 +59,27 @@ class CrewChain(NamedTuple):
     probabilities: np.ndarray
     states: Tuple[State, ...] = ()
     generator: Any = None
+    transitions: Any = None
 
     def availability(self, node) -> float:
         """The long-run probability that ``node`` is up."""
         column = self.up[:, self.nodes.index(node)]
         return float(self.probabilities @ column)
+
+    def split(self, vector: np.ndarray) -> np.ndarray:
+        """``Q_i v`` for each component ``i`` (columns), ``Q_i`` the part of
+        the generator made of its transitions: ``Q = sum_i Q_i``, so that
+        ``p(t) Q_i v`` is the part of ``d/dt p(t) v`` the component's
+        failures and repairs make (#199)."""
+        sources, targets, rates, components = self.transitions
+        out = np.zeros((len(self.probabilities), len(self.nodes)))
+        vector = np.asarray(vector, dtype=float)
+        np.add.at(
+            out,
+            (sources, components),
+            rates * (vector[targets] - vector[sources]),
+        )
+        return out
 
 
 def _queues(r: int) -> int:
@@ -122,9 +141,10 @@ def _enumerate(
     repair_rates: Sequence[float],
     priorities: Sequence[float],
     crews: int,
-) -> Tuple[List[State], List[int], List[int], List[float]]:
+) -> Tuple[List[State], List[int], List[int], List[float], List[int]]:
     """The states reached from the one with every component up, and the
-    transitions between them: sources, targets and rates."""
+    transitions between them: sources, targets, rates, and the component
+    whose failure or repair each is."""
     instant = [math.isinf(rate) for rate in repair_rates]
     start: State = ((), ())
     index = {start: 0}
@@ -132,8 +152,9 @@ def _enumerate(
     sources: List[int] = []
     targets: List[int] = []
     rates: List[float] = []
+    components: List[int] = []
 
-    def reach(source: int, state: State, rate: float) -> None:
+    def reach(source: int, state: State, rate: float, component: int) -> None:
         target = index.get(state)
         if target is None:
             target = index[state] = len(states)
@@ -141,6 +162,7 @@ def _enumerate(
         sources.append(source)
         targets.append(target)
         rates.append(rate)
+        components.append(component)
 
     source = 0
     while source < len(states):
@@ -152,14 +174,17 @@ def _enumerate(
             if len(serving) < crews:
                 if instant[i]:
                     continue  # repaired at once: nothing changes
-                reach(source, (tuple(sorted(serving + (i,))), queue), rate)
+                reach(source, (tuple(sorted(serving + (i,))), queue), rate, i)
                 continue
             # Behind every waiting job of the same priority or higher.
             place = len(queue)
             while place and priorities[queue[place - 1]] < priorities[i]:
                 place -= 1
             reach(
-                source, (serving, queue[:place] + (i,) + queue[place:]), rate
+                source,
+                (serving, queue[:place] + (i,) + queue[place:]),
+                rate,
+                i,
             )
         for i in serving:
             rest = tuple(j for j in serving if j != i)
@@ -171,9 +196,9 @@ def _enumerate(
                 if not instant[head]:
                     rest = tuple(sorted(rest + (head,)))
                     break
-            reach(source, (rest, waiting), repair_rates[i])
+            reach(source, (rest, waiting), repair_rates[i], i)
         source += 1
-    return states, sources, targets, rates
+    return states, sources, targets, rates, components
 
 
 def solve(
@@ -207,7 +232,7 @@ def solve(
     from scipy import sparse
     from scipy.sparse.linalg import splu
 
-    states, sources, targets, rates = _enumerate(
+    states, sources, targets, rates, components = _enumerate(
         failure_rates, repair_rates, priorities, crews
     )
     size = len(states)
@@ -220,9 +245,20 @@ def solve(
     generator = (
         generator - sparse.diags(np.asarray(generator.sum(axis=1)).ravel())
     ).tocsr()
+    transitions = (
+        np.array(sources, dtype=np.intp),
+        np.array(targets, dtype=np.intp),
+        np.array(rates, dtype=float),
+        np.array(components, dtype=np.intp),
+    )
     if size == 1:
         return CrewChain(
-            tuple(nodes), up, np.ones(1), tuple(states), generator
+            tuple(nodes),
+            up,
+            np.ones(1),
+            tuple(states),
+            generator,
+            transitions,
         )
     # The most components down first; within a level, by the queue. The
     # state with every component up, the only one with none down, is last.
@@ -253,4 +289,6 @@ def solve(
     weights = np.append(np.maximum(relative, 0.0), 1.0)
     probabilities = np.empty(size)
     probabilities[order] = weights / weights.sum()
-    return CrewChain(tuple(nodes), up, probabilities, tuple(states), generator)
+    return CrewChain(
+        tuple(nodes), up, probabilities, tuple(states), generator, transitions
+    )

@@ -85,22 +85,24 @@ Warm or hot standby with imperfect switching raises `NotImplementedError`.
 | Cold, `k ≥ 2`, identical units (including imperfect switching) | Numerical: each operating position runs a renewal process of the units' lives, and the arrangement fails at the `n − k + 1`-th failure in all; the counts come from the same convolution. |
 | Cold, `k = 2`, different units (including imperfect switching) | Numerical: a recursion over the switch-ins on the time and the other operating unit's start (the newcomer starts new), accurate to about 1e-4 (1e-3 for lives with a steep start, such as a Weibull of shape below 1). |
 | Warm, `k = 1` (any units) | Numerical: a recursion over the spares' switch-ins on a time grid (a spare switched in at `τ` has aged `dormancy_factor · τ`), accurate to about 1e-5. |
-| Everything else (warm with `k ≥ 2`, cold `k ≥ 3` of different units) | Simulation: a Kaplan–Meier fit to `mc_samples` simulated lifetimes (default 10 000), seeded by `seed`, with `lower` passed as the fit's lower limit. |
+| Everything else (warm with `k ≥ 2`, cold `k ≥ 3` of different units) | None: the arrangement draws lifetimes for the system's simulations, and `is_simulated` is `True`. |
 
-The simulated cases carry Monte-Carlo error, and their `sf` returns
-one-element arrays even for a scalar time. **The fit to simulated
-lifetimes is deprecated** (such a model warns when built): in 0.12 these
-arrangements will still draw lifetimes for simulations, but have no `sf`,
-so the analyses that need one will refuse and point to the system's
-simulations.
+An arrangement with no exact or numerical survival function is simulated
+where it is used. Its `sf`, `ff`, `cs` and `mean()` raise
+`NotImplementedError`, as do the analyses of a diagram that need its
+reliability, naming the simulations that take it: `random`,
+`mean(method="simulate")` and `unreliability_interval` of a
+`NonRepairableRBD`, or `availability` and `cost` of a `RepairableRBD`.
+Until 0.12 such an arrangement was given a Kaplan–Meier fit to simulated
+lifetimes, which carried their Monte-Carlo error into every exact analysis
+of the system; the `mc_samples`, `lower` and `seed` that set the fit are
+now ignored, and warn until 0.13 refuses them.
 
 `mean()` and `random(size, seed=None)` give the arrangement's mean lifetime
 and draw lifetimes; `cs(x, X)` is its conditional survival. A standby node
 cannot take a [condition-based state](condition-based.md). When the
-arrangement is simulated, `mean()` is the mean of the lifetimes its fit is made
-from, the same on every call, so the exact long-run values of a repairable RBD
-it is part of are too; `mean(mc_samples=..., seed=...)` makes a fresh estimate from new
-draws.
+arrangement is simulated, `mean(mc_samples=..., seed=...)` estimates its
+mean life from that many new draws.
 
 A `StandbyModel` is one lifetime: in a repairable RBD the whole arrangement
 is replaced as one unit when it fails. For a duty unit and a standby that
@@ -137,9 +139,6 @@ one model with `k = 1`, and computed by the same numerical convolution.
 RepeatedStandbyNode(pump, 2).sf(150)                            # -> 0.6342
 RepeatedStandbyNode(pump, 2, switching_probability=0.9).sf(150) # -> 0.5813
 ```
-
-Its `N` and `lower` arguments are ignored, and deprecated: passing them
-warns.
 
 ## Load sharing
 
@@ -180,10 +179,11 @@ p = RegressionNode(unit, covariates=[1.0]).sf(50)
   in the order of their exposures to failure, and a recursion over the
   failures on a grid of exposure and time gives the lifetime's
   distribution, to about 1e-4. Either way `is_simulated` is `False`.
-- Different units' survival function is a Kaplan–Meier fit to
-  `mc_samples` simulated lifetimes (seeded by `seed`), and `is_simulated`
-  is `True`. That fit is deprecated, as for standby: from 0.12 such a group
-  has no `sf`, and is simulated only in the system's simulations.
+- Different units have no exact or numerical survival function, and
+  `is_simulated` is `True`: as for [standby](#how-the-survival-function-is-obtained),
+  the group draws lifetimes for the system's simulations, its `sf`, `ff`,
+  `cs` and `mean()` raise `NotImplementedError`, and
+  `mean(mc_samples=..., seed=...)` estimates its mean life.
 - With no load effect the units neither share stress nor accelerate, and the
   group reduces exactly to `k`-out-of-`n` parallel.
 - The units must be AFT models (they need the time-scaling `phi(load)`);
@@ -203,8 +203,7 @@ line.sf(50)   # -> 0.9798
 line.is_analytically_solvable()   # True: no node's reliability is simulated
 ```
 
-`is_analytically_solvable()` is `False` only when some node's reliability is
-fitted to simulated lifetimes, and `get_non_analytic_nodes()` names those
-nodes; `analysis_routes()` says how each analysis is computed (see
+`is_analytically_solvable()` is `False` only when some node has no exact or
+numerical reliability, and `get_non_analytic_nodes()` names those nodes; `analysis_routes()` says how each analysis is computed (see
 [Is the system time-dependent, and is it exact?](building.md#is-the-system-time-dependent-and-is-it-exact)).
 All of these models save with the RBD.

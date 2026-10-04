@@ -321,7 +321,9 @@ def test_a_tested_unit_was_last_known_up_at_its_last_test():
         (head + (T - 70.0) * whole) / T, rel=1e-12
     )
     # The simulation draws whether it has failed since, unseen.
-    run = rbd.availability(250.0, mc_samples=4000, seed=5, state=state)
+    run = rbd.availability(
+        250.0, mc_samples=4000, seed=5, state=state, control_variate=False
+    )
     up = np.exp(-lam * 30.0)
     assert abs(run.availability[0] - up) < 4.0 * np.sqrt(up * (1 - up) / 4000)
     mission = rbd.mission_availability(250.0, state=state)
@@ -333,7 +335,9 @@ def check_against_simulation(rbd, state, T, mc_samples=4000, seed=7):
     """The exact methods from ``state`` within the simulation's
     intervals (and its point availabilities within five standard
     errors)."""
-    run = rbd.availability(T, mc_samples=mc_samples, seed=seed, state=state)
+    run = rbd.availability(
+        T, mc_samples=mc_samples, seed=seed, state=state, control_variate=False
+    )
     mission = rbd.mission_availability(T, state=state)
     interval = run.mean_availability_interval(0.999)
     assert interval.lower <= mission <= interval.upper
@@ -365,7 +369,9 @@ def check_against_simulation(rbd, state, T, mc_samples=4000, seed=7):
 def test_maintained_pumps_are_what_the_simulation_estimates(state):
     rbd = maintained_pair()
     check_against_simulation(rbd, state, 2000.0)
-    cost = rbd.cost(2000.0, mc_samples=4000, seed=7, state=state)
+    cost = rbd.cost(
+        2000.0, mc_samples=4000, seed=7, state=state, control_variate=False
+    )
     interval = cost.mean_interval(0.999)
     exact = rbd.expected_cost(2000.0, state=state).mean
     assert interval.lower <= exact <= interval.upper

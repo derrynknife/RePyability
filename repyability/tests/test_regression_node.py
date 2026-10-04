@@ -13,22 +13,9 @@ import json
 import numpy as np
 import pytest
 import surpyval as surv
+from surpyval.univariate.regression import StepSchedule
 
 from repyability import NodeState, NonRepairableRBD, RegressionNode
-
-# The time-varying-covariate (schedule) mode needs a surpyval build exposing
-# sf_tvc / StepSchedule; skip those tests on older builds so CI stays green.
-try:
-    from surpyval.univariate.regression import StepSchedule
-
-    _HAS_TVC = True
-except ImportError:  # pragma: no cover
-    StepSchedule = None
-    _HAS_TVC = False
-
-needs_tvc = pytest.mark.skipif(
-    not _HAS_TVC, reason="surpyval build lacks sf_tvc / StepSchedule"
-)
 
 
 @pytest.fixture(scope="module")
@@ -206,7 +193,6 @@ def test_requires_exactly_one_of_covariates_or_schedule(models):
 # -- time-varying covariate (schedule) mode, issue #37 ---------------------
 
 
-@needs_tvc
 @pytest.mark.parametrize("family", ["aft", "ph"])
 def test_schedule_sf_matches_sf_tvc(models, family):
     sched = StepSchedule.from_changepoints([0, 50], [[0.0], [0.8]])
@@ -215,7 +201,6 @@ def test_schedule_sf_matches_sf_tvc(models, family):
     assert np.allclose(node.sf(xt), np.ravel(models[family].sf_tvc(xt, sched)))
 
 
-@needs_tvc
 def test_schedule_condition_based_is_given(models):
     # The condition-based `age` path must equal surpyval's sf_tvc(given=age):
     # forward reliability from the component's current life under the schedule.
@@ -233,7 +218,6 @@ def test_schedule_condition_based_is_given(models):
         assert got == pytest.approx(want)
 
 
-@needs_tvc
 def test_schedule_more_load_lowers_reliability(models):
     # A schedule ramping to a higher load is less reliable than a benign one.
     low = RegressionNode(
@@ -248,7 +232,6 @@ def test_schedule_more_load_lowers_reliability(models):
     assert high.sf(xt)[0] < low.sf(xt)[0]
 
 
-@needs_tvc
 def test_po_schedule_follows_surpyval(models):
     # A proportional-odds node on a covariate path gives exactly surpyval's
     # survival along it.
@@ -260,7 +243,6 @@ def test_po_schedule_follows_surpyval(models):
     np.testing.assert_allclose(node.sf(x), expected)
 
 
-@needs_tvc
 def test_schedule_serialisation_roundtrip(models):
     sched = StepSchedule.from_changepoints([0, 50, 120], [[0.0], [0.8], [0.3]])
     node = RegressionNode(models["aft"], schedule=sched)
@@ -269,7 +251,6 @@ def test_schedule_serialisation_roundtrip(models):
     assert np.allclose(node.sf(xt), node2.sf(xt))
 
 
-@needs_tvc
 def test_rbd_with_schedule_node_json_roundtrip(models):
     sched = StepSchedule.from_changepoints([0, 50], [[0.0], [0.8]])
     rbd = NonRepairableRBD(
@@ -280,7 +261,6 @@ def test_rbd_with_schedule_node_json_roundtrip(models):
     assert np.isclose(float(rbd.sf(80.0)), float(restored.sf(80.0)))
 
 
-@needs_tvc
 def test_schedule_mean_and_random(models):
     node = RegressionNode(
         models["aft"],

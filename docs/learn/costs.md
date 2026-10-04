@@ -265,10 +265,15 @@ independent windows of
 `t_simulation` hours, each starting with every component new and working. It
 charges every price as it falls due and returns a
 [`CostResult`][repyability.CostResult] holding one total cost per window in
-`samples`. Take `N = 400` years:
+`samples`. Take `N = 400` years. (The plant's expected cost over a window
+is exact too, `plant.expected_cost(8760.0)`, and by default a run's
+`mean_interval` is that cost, with no error; this lesson is about the
+simulation's own error, so its runs pass `control_variate=False`, which
+keeps the simulations' own.)
 
 ```python
-year = plant.cost(t_simulation=8760.0, mc_samples=400, seed=0)
+year = plant.cost(t_simulation=8760.0, mc_samples=400, seed=0,
+                  control_variate=False)
 year.mean              # -> 1058918.3   mean cost of a year
 year.cost_rate         # -> 120.88      the mean per hour, against the exact 121.23
 year.std               # -> 58061.7     how much one year's cost varies
@@ -333,7 +338,8 @@ Run a quick 100 years with the same seed, which are the first 100 of the
 400, and compare them with the 400:
 
 ```python
-quick = plant.cost(t_simulation=8760.0, mc_samples=100, seed=0)
+quick = plant.cost(t_simulation=8760.0, mc_samples=100, seed=0,
+                   control_variate=False)
 quick.std              # -> 56910.1
 quick.percentile(90)   # -> 1128018.5
 quick.mean_se          # -> 5691.0
@@ -372,7 +378,8 @@ per hour. For this plant the first effect is larger, so a short window costs
 less per hour. An 8-hour shift shows it:
 
 ```python
-shift = plant.cost(t_simulation=8.0, mc_samples=10_000, seed=0)
+shift = plant.cost(t_simulation=8.0, mc_samples=10_000, seed=0,
+                   control_variate=False)
 shift.cost_rate                             # -> 111.5   per hour, against 121.23
 shift.by_category["system_downtime"] / 8    # -> 35.7    lost production per hour, against 46.41
 shift_interval = shift.mean_interval(0.95)
@@ -535,15 +542,20 @@ line.allocate_redundancy(87600, min_availability=0.99999).units   # {'pump': 3}
 
 Two cautions. The copies are assumed to fail independently: a common cause
 (Lesson 5) sets a floor that no number of copies gets below, so price it in
-before trusting a design with many copies. And money spent in ten years
-counts the same as money spent now (see the pitfall below).
+before trusting a design with many copies. And unless you give a
+`discount_rate`, money spent in ten years counts the same as money spent now
+(see the pitfall below).
 
 ## Pitfalls
 
-!!! warning "Costs are not discounted"
-    A cost next year counts the same as one today. That is fine for a year's
-    budget; to compare designs over a 20-year life, discount each year's
-    expected cost yourself.
+!!! warning "Costs are not discounted unless you ask"
+    By default a cost next year counts the same as one today. That is fine
+    for a year's budget; to compare designs over a 20-year life, give
+    `total_cost` and `allocate_redundancy` a `discount_rate`: a continuous
+    rate per unit time of the models, `math.log(1.07) / 8760` for 7% a year
+    with lives in hours. It can change which design wins, as a copy bought
+    now saves money later. The rest (`expected_cost`, the cost rates, the
+    simulated costs) stays undiscounted.
 
 !!! warning "A mean alone hides risk"
     Designs with the same `expected_cost_rate()` can have very different bad

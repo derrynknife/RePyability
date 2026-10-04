@@ -298,7 +298,9 @@ def test_mean_interval_covers_the_exact_expected_cost():
     )
     exact = 500.0 * lam * uptime + (22.0 + 50.0) * (T - uptime)
 
-    result = full_cost_rbd().cost(t_simulation=T, mc_samples=400, seed=2)
+    result = full_cost_rbd().cost(
+        t_simulation=T, mc_samples=400, seed=2, control_variate=False
+    )
     interval = result.mean_interval(0.99)
     assert interval.lower < exact < interval.upper
     assert interval.estimate == result.mean
@@ -317,7 +319,9 @@ def test_more_replications_sharpen_the_mean_but_not_the_spread():
 
 
 def test_mean_interval_confidence():
-    result = full_cost_rbd().cost(t_simulation=50.0, mc_samples=20, seed=0)
+    result = full_cost_rbd().cost(
+        t_simulation=50.0, mc_samples=20, seed=0, control_variate=False
+    )
 
     def width(interval):
         return interval.upper - interval.lower

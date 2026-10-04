@@ -49,7 +49,7 @@ def pumps(n, lam, mu, crews, k=1):
 )
 def test_parallel_units_match_the_machine_repair_model(n, lam, mu, crews, k):
     result = pumps(n, lam, mu, crews, k).availability(
-        t_simulation=20_000.0, mc_samples=40, seed=1
+        t_simulation=20_000.0, mc_samples=40, seed=1, control_variate=False
     )
     interval = result.mean_availability_interval(confidence=0.999)
     # Over so long a window the start from new hardly counts.
@@ -242,7 +242,9 @@ def test_a_nested_rbd_has_crews_of_its_own():
     assert not outer._crews_limited()
     with pytest.raises(NotImplementedError, match="repair crew"):
         outer.mean_availability()
-    result = outer.availability(t_simulation=300.0, mc_samples=50, seed=2)
+    result = outer.availability(
+        t_simulation=300.0, mc_samples=50, seed=2, control_variate=False
+    )
     assert 0.0 < result.mean_availability_interval().estimate < 1.0
 
 

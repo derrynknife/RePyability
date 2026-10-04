@@ -62,15 +62,16 @@ from typing import (
 
 import numpy as np
 
-from repyability.rbd import bdd
+from repyability.rbd import _compiled, bdd
+from repyability.rbd._ordered_bdd import FALSE, TRUE, OrderedBDD
 from repyability.rbd.min_path_sets import min_path_sets as find_min_path_sets
 from repyability.rbd.rbd_graph import RBDGraph
 from repyability.rbd.shannon import (
     _minimal_cut_sets,
     _shannon_plan,
     _shannon_value_and_gradient,
-    _union_plan,
 )
+from repyability.utils.checks import structure_method
 
 # The kinds of term.
 NODE, SERIES, PARALLEL, KOON = 0, 1, 2, 3
@@ -99,6 +100,11 @@ CORE_METHOD = "auto"
 #: smaller and the listing slows (a hundred take about a tenth of a second
 #: to decompose, four thousand about nine).
 AUTO_PATHS = 100
+#: The fewest steps in a core's plan for which, with numba installed, its
+#: probabilities (and their gradient) are worked out compiled
+#: (``_bdd_kernel``): the same products and sums in the same order, so the
+#: same values; below, replaying it in Python takes a few milliseconds.
+COMPILED_STEPS = 5000
 
 
 class FlowGraph:
@@ -204,6 +210,10 @@ class Decomposition:
         # term (see ``failed_cut_sets``), and the dual decomposition.
         self._cut_plan: Optional[tuple] = None
         self._dual: Optional["Decomposition"] = None
+        # The core's plan as arrays, for ``_bdd_kernel`` (``_compiled_plan``),
+        # and the kernel's working memory.
+        self._plan_arrays: Optional[tuple] = None
+        self._buffers: Optional[tuple] = None
 
     @property
     def core(self) -> Optional[List[tuple]]:
@@ -222,6 +232,7 @@ class Decomposition:
         # compiled again on first use.
         state = dict(self.__dict__)
         state["_functions"] = {}
+        state["_buffers"] = None  # working memory, made again when needed
         return state
 
     # -- the core ----------------------------------------------------------
@@ -283,11 +294,77 @@ class Decomposition:
                 R[i], Q[i] = above, sum(below)
         return R, Q
 
+    def _compiled_plan(self, R: list, Q: list, shape) -> Optional[tuple]:
+        """The core's plan as arrays for ``_bdd_kernel`` (its pivots as rows
+        of the terms it branches on), with those terms' probabilities of
+        working and failing, a column per value; None if it is not worth
+        compiling, or the probabilities are not plain numbers (traced by
+        autograd, say)."""
+        steps, root = self.core_plan()
+        if len(steps) < COMPILED_STEPS or not _compiled.available():
+            return None
+        # (A decomposition saved before the arrays were kept has none.)
+        arrays = getattr(self, "_plan_arrays", None)
+        if arrays is None:
+            used = sorted({pivot for pivot, _, _ in steps})
+            row = {t: j for j, t in enumerate(used)}
+            arrays = self._plan_arrays = (
+                np.array([row[pivot] for pivot, _, _ in steps], np.int64),
+                np.array([a for _, a, _ in steps], np.int64),
+                np.array([b for _, _, b in steps], np.int64),
+                used,
+            )
+        pivots, actives, inactives, used = arrays
+        size = 1 if shape is None else int(np.prod(shape))
+        works = np.empty((len(used), size))
+        fails = np.empty((len(used), size))
+        for j, t in enumerate(used):
+            for table, value in ((works, R[t]), (fails, Q[t])):
+                if not isinstance(
+                    value, (float, int, np.floating, np.ndarray)
+                ):
+                    return None
+                array = np.asarray(value)
+                if array.dtype != np.float64 and array.dtype.kind != "i":
+                    return None
+                table[j] = np.broadcast_to(array, shape or ()).reshape(-1)
+        return pivots, actives, inactives, root, works, fails, used
+
+    def _replay_buffers(self) -> tuple:
+        """Two buffers of a row per slot of the core's plan and
+        ``_bdd_kernel.COLUMNS`` columns, kept for the next call."""
+        from repyability.rbd import _bdd_kernel
+
+        buffers = getattr(self, "_buffers", None)
+        if buffers is None:
+            rows = len(self.core_plan()[0]) + 2
+            buffers = self._buffers = tuple(
+                np.empty((rows, _bdd_kernel.COLUMNS)) for _ in range(2)
+            )
+        return buffers
+
     def _core_value(self, R: list, Q: list, fails: bool, shape) -> Any:
         """The core's probability of working (or, with ``fails``, of
         failing), from its terms' probabilities. The complement uses the
         same decomposition with the outcomes swapped, so it too is a sum of
-        products and keeps its relative precision."""
+        products and keeps its relative precision. Compiled for a large
+        plan (``COMPILED_STEPS``), with the same values."""
+        compiled = self._compiled_plan(R, Q, shape)
+        if compiled is not None:
+            from repyability.rbd import _bdd_kernel
+
+            pivots, actives, inactives, root, works, failing, _ = compiled
+            value = _bdd_kernel.replay(
+                pivots,
+                actives,
+                inactives,
+                root,
+                works,
+                failing,
+                fails,
+                self._replay_buffers()[0],
+            )
+            return float(value[0]) if shape is None else value.reshape(shape)
         steps, root = self.core_plan()
         zero: Any = 0.0 if shape is None else np.zeros(shape)
         one: Any = 1.0 if shape is None else np.ones(shape)
@@ -352,11 +429,8 @@ class Decomposition:
             works, fails = R[self.root], Q[self.root]
             adjoint[self.root] = 1.0
         else:
-            plan = self.core_plan()
-            works, d_works = _shannon_value_and_gradient(plan, R, Q)
-            fails, d_fails = _shannon_value_and_gradient(
-                plan, R, Q, (1.0, 0.0)
-            )
+            works, d_works = self._core_gradient(R, Q, (0.0, 1.0), shape)
+            fails, d_fails = self._core_gradient(R, Q, (1.0, 0.0), shape)
             # From whichever end is accurate: a difference of two values
             # near 1 would cancel.
             if np.ndim(works) == 0 and np.ndim(fails) == 0:
@@ -392,6 +466,39 @@ class Decomposition:
             for c, d in zip(children, partials):
                 adjoint[c] = a * d
         return works, fails, gradient
+
+    def _core_gradient(self, R: list, Q: list, terminals, shape) -> tuple:
+        """``_shannon_value_and_gradient`` of the core's plan (compiled for a
+        large plan, with the same values)."""
+        compiled = self._compiled_plan(R, Q, shape)
+        if compiled is None:
+            return _shannon_value_and_gradient(
+                self.core_plan(), R, Q, terminals
+            )
+        from repyability.rbd import _bdd_kernel
+
+        pivots, actives, inactives, root, works, fails, used = compiled
+        value, gradient, has = _bdd_kernel.value_and_gradient(
+            pivots,
+            actives,
+            inactives,
+            root,
+            works,
+            fails,
+            terminals[0],
+            terminals[1],
+            len(used),
+            *self._replay_buffers(),
+        )
+        if shape is None:
+            return float(value[0]), {
+                used[j]: float(gradient[j, 0])
+                for j in np.flatnonzero(has).tolist()
+            }
+        return value.reshape(shape), {
+            used[j]: gradient[j].reshape(shape)
+            for j in np.flatnonzero(has).tolist()
+        }
 
     def failed_cut_sets(
         self, p: Dict[Any, Any], q: Dict[Any, Any], shape=None
@@ -459,18 +566,23 @@ class Decomposition:
         return out
 
     def _core_cut_plan(self) -> tuple[list, list, list]:
-        """The core's terms in some minimal cut set, and one Shannon
-        decomposition of, for each, the probability that for some minimal
-        cut set of the core containing it every other term in it has
-        failed (a set's terms *satisfied* when failed): ``(terms, steps,
-        roots)``, as :func:`shannon._union_plan` gives them."""
+        """The core's terms in some minimal cut set, and one decision
+        diagram of, for each, the probability that for some minimal cut set
+        of the core containing it every other term in it has failed:
+        ``(terms, steps, roots)``, each step ``(term, slot if it failed,
+        slot if it works)``.
+
+        Such a cut set exists when the term is critical (the core works
+        with it and fails without it) with some of the failed terms
+        working again: the term's *critical* function, ``φ(t works) and
+        not φ(t fails)``, closed upward (``ψ(x) = 1`` when ``ψ(x') = 1`` for
+        some ``x'`` with every working term of ``x`` working). Both are
+        worked out on the core's ordered decision diagram (see
+        ``_ordered_bdd``), which stays small where the cut sets multiply:
+        thirty rungs of a ladder of bridges took 19 seconds through the
+        union of each term's cut sets (before #172)."""
         if self._cut_plan is None:
-            cuts = [frozenset(cut) for cut in self.core_cut_sets()]
-            terms = sorted({c for cut in cuts for c in cut})
-            steps, roots = _union_plan(
-                [[cut - {t} for cut in cuts if t in cut] for t in terms]
-            )
-            self._cut_plan = (terms, steps, roots)
+            self._cut_plan = _critical_closures(self.core_plan())
         return self._cut_plan
 
     def dual(self) -> "Decomposition":
@@ -512,6 +624,7 @@ class Decomposition:
         """The compiled structure function behind :meth:`works`, for callers
         (the simulations) that evaluate it at every event: ``function(status)``
         is ``works(status, method)``."""
+        method = structure_method(method)
         function = self._functions.get(method)
         if function is None:
             function = self._functions[method] = self._structure_function(
@@ -681,6 +794,108 @@ class Decomposition:
         return self._sets(False)
 
 
+def _critical_closures(plan: tuple) -> tuple[list, list, list]:
+    """For the structure a plan decides (``core_plan``'s format), each
+    variable it depends on, and one plan, in ``failed_cut_sets``' format
+    (``(variable, slot if failed, slot if working)``), of the probability
+    that some minimal cut set holding it has every other member failed:
+    ``(variables, steps, roots)``. See ``Decomposition._core_cut_plan``."""
+    from collections import deque
+
+    steps, top = plan
+    # The variables in the order a walk from the root first meets them:
+    # a plan built from the graph is ordered so, and stays as small.
+    order: Dict[Any, int] = {}
+    queue, seen = deque([top]), {0, 1}
+    while queue:
+        slot = queue.popleft()
+        if slot in seen:
+            continue
+        seen.add(slot)
+        pivot, active, inactive = steps[slot - 2]
+        order.setdefault(pivot, len(order))
+        queue.extend((active, inactive))
+    named = {i: v for v, i in order.items()}
+    d = OrderedBDD()
+    made = [FALSE, TRUE]
+    for pivot, active, inactive in steps:
+        made.append(
+            d.ite(
+                d.node(order[pivot], FALSE, TRUE), made[active], made[inactive]
+            )
+        )
+    structure = made[top]
+
+    def mapped(f: int, rule: Callable[[int, int, int], int], memo: dict):
+        """``f``'s diagram rebuilt bottom up, each node by ``rule(node,
+        new low, new high)``, constants kept."""
+        stack = [f]
+        while stack:
+            n = stack[-1]
+            if n in memo:
+                stack.pop()
+                continue
+            if n <= TRUE:
+                memo[n] = n
+                stack.pop()
+                continue
+            pending = [c for c in (d.low[n], d.high[n]) if c not in memo]
+            if pending:
+                stack.extend(pending)
+                continue
+            stack.pop()
+            memo[n] = rule(n, memo[d.low[n]], memo[d.high[n]])
+        return memo[f]
+
+    def cofactor(f: int, v: int, works: bool) -> int:
+        def rule(n, low, high):
+            if d.var[n] == v:
+                return high if works else low
+            return d.node(int(d.var[n]), low, high)
+
+        return mapped(f, rule, {})
+
+    closed: dict = {}
+
+    def closure(f: int) -> int:
+        # Upward: a variable failed may as well have worked.
+        def rule(n, low, high):
+            return d.node(int(d.var[n]), d.ite(low, TRUE, high), high)
+
+        return mapped(f, rule, closed)
+
+    variables = sorted(
+        {int(d.var[n]) for n in _reachable(d, structure)},
+    )
+    roots = []
+    for v in variables:
+        critical = d.ite(
+            cofactor(structure, v, True),
+            d.ite(cofactor(structure, v, False), FALSE, TRUE),
+            FALSE,
+        )
+        roots.append(closure(critical))
+    plan_steps, slots = d.plan(roots, named.__getitem__)
+    return (
+        [named[v] for v in variables],
+        [(p, inactive, active) for p, active, inactive in plan_steps],
+        slots,
+    )
+
+
+def _reachable(d: OrderedBDD, f: int) -> List[int]:
+    """The nodes of ``f``'s diagram, constants left out."""
+    out, stack, seen = [], [f], set()
+    while stack:
+        n = stack.pop()
+        if n <= TRUE or n in seen:
+            continue
+        seen.add(n)
+        out.append(n)
+        stack.extend((d.low[n], d.high[n]))
+    return out
+
+
 def _minimal_sets(sets: Iterable[frozenset]) -> list:
     """The distinct sets that contain no other."""
     kept: list = []
@@ -760,6 +975,112 @@ def _koon_cut_shares(R: Sequence[Any], Q: Sequence[Any], k: int) -> list:
     ``k - 1`` of the others work (at least ``n - k`` have failed): with a
     cut set of the member failed, one of the module's has then failed."""
     return [sum(exactly) for exactly in _others_working(R, Q, range(k))]
+
+
+class GraphStructure(Decomposition):
+    """The structure of a diagram whose core is too meshed to work out
+    exactly (its decision diagram needs more than ``bdd.STEP_LIMIT``
+    states, #172), from its graph alone: whether the system works, and
+    how long it lasts, by following the diagram from the input (a node is
+    reached while it works and at least ``k`` of its predecessors are),
+    which is all the simulations need. Everything exact (the
+    probabilities, the importance measures, the path and cut sets, the
+    capacity) refuses, with ``reason``.
+
+    ``aliases`` maps a repeated node to the component it stands for, and
+    the ``perfect`` nodes (a ``RepairableRBD``'s junctions) always work.
+    It stands in for a ``Decomposition``, every method of which that needs
+    the structure worked out refusing.
+    """
+
+    always_works = False
+    root = None
+    from_graph = False
+    flow = None
+
+    def __init__(
+        self,
+        graph: RBDGraph,
+        input_node,
+        output_node,
+        aliases: Optional[Dict[Hashable, Hashable]],
+        perfect: Iterable[Hashable],
+        reason: str,
+    ):
+        import networkx as nx
+
+        aliases = aliases or {}
+        always = frozenset(perfect) | {output_node}
+        self.reason = reason
+        self.terms: list = []
+        self._input, self._output = input_node, output_node
+        self._order = [
+            v for v in nx.topological_sort(graph) if v != input_node
+        ]
+        self._preds = [tuple(graph.predecessors(v)) for v in self._order]
+        self._k = [graph.nodes[v]["k"] for v in self._order]
+        # The component each vertex stands for; None for one always working.
+        self._of = [
+            (
+                None
+                if v in always or aliases.get(v, v) in always
+                else aliases.get(v, v)
+            )
+            for v in self._order
+        ]
+        self.nodes = frozenset(c for c in self._of if c is not None)
+
+    def _refuse(self, *args, **kwargs):
+        raise NotImplementedError(self.reason)
+
+    probabilities = value_and_gradient = failed_cut_sets = _refuse
+    path_sets = cut_sets = core_plan = core_cut_sets = dual = _refuse
+
+    @property
+    def core(self):
+        raise NotImplementedError(self.reason)
+
+    def works(self, status, method: str = "p") -> bool:
+        """Whether the system works, given whether each node works."""
+        return self.structure_function(method)(status)
+
+    def structure_function(self, method: str = "p") -> Callable:
+        """``function(status)``, whether the system works given whether
+        each node works (``method`` changes nothing here)."""
+        steps = list(zip(self._order, self._preds, self._k, self._of))
+        source, output = self._input, self._output
+
+        def works(s) -> bool:
+            reached = {source: True}
+            for v, preds, k, component in steps:
+                reached[v] = sum(1 for u in preds if reached[u]) >= k and (
+                    component is None or bool(s[component])
+                )
+            return reached[output]
+
+        return works
+
+    def lifetime(self, lifetimes: Dict, size: int) -> np.ndarray:
+        """The system's lifetime in each sample, from each node's: a node
+        is reached until it fails or fewer than ``k`` of its predecessors
+        are, the ``k``-th latest of their times."""
+        reach: Dict[Hashable, np.ndarray] = {
+            self._input: np.full(size, np.inf)
+        }
+        for v, preds, k, component in zip(
+            self._order, self._preds, self._k, self._of
+        ):
+            times = [reach[u] for u in preds]
+            if len(times) == 1:
+                kth = times[0]
+            else:
+                kth = np.sort(times, axis=0)[len(times) - k]
+            reach[v] = (
+                kth
+                if component is None
+                else np.minimum(kth, lifetimes[component])
+            )
+        return np.asarray(reach[self._output], dtype=float)
 
 
 class _Reduction:
@@ -1130,6 +1451,103 @@ def decompose(
         )
     decomposition.flow = flow
     return decomposition
+
+
+#: A term that always works, while folding (see ``fold``).
+_WORKS = -1
+
+
+def fold(decomposition: Decomposition, perfect: Iterable) -> Decomposition:
+    """``decomposition`` with the ``perfect`` nodes, which always work (a
+    ``RepairableRBD``'s junctions, #182), folded in: a series module leaves
+    them out, a parallel one with one always works, and a k-out-of-n one
+    needs one fewer of the rest for each; the core's path sets leave them
+    out, and its decision diagram takes each one's working branch. What is
+    left names none of them, so nothing that evaluates the structure (the
+    probabilities, the simulations' structure function, the path and cut
+    sets) needs them. The reduced diagram for the capacity analysis keeps
+    them, as nodes that pass what reaches them, up to their capacity."""
+    perfect = frozenset(perfect)
+    if not perfect & decomposition.nodes:
+        return decomposition
+    folded: list = []
+
+    def needing(members: tuple, k: int) -> int:
+        """The term (or _WORKS) that works when ``k`` of ``members``
+        do."""
+        if k <= 0:
+            return _WORKS
+        if len(members) == 1:
+            return members[0]
+        kind = PARALLEL if k == 1 else SERIES if k == len(members) else KOON
+        if kind != KOON:
+            # Members of the same kind are merged in, as the reduction does.
+            members = tuple(
+                c
+                for m in members
+                for c in (folded[m][1] if folded[m][0] == kind else (m,))
+            )
+        folded.append((kind, members, k) if kind == KOON else (kind, members))
+        return len(folded) - 1
+
+    position: Dict[int, int] = {}
+    for i, term in enumerate(decomposition.terms):
+        if term[0] == NODE:
+            if term[1] in perfect:
+                position[i] = _WORKS
+            else:
+                folded.append(term)
+                position[i] = len(folded) - 1
+            continue
+        members = [position[c] for c in term[1]]
+        rest = tuple(m for m in members if m != _WORKS)
+        working = len(members) - len(rest)
+        if term[0] == SERIES:
+            k = len(rest)
+        elif term[0] == PARALLEL:
+            k = 0 if working else 1
+        else:
+            k = term[2] - working
+        position[i] = needing(rest, k)
+
+    flow = decomposition.flow
+    if decomposition.root is not None:
+        root = position[decomposition.root]
+        if root == _WORKS:
+            return Decomposition([], flow=flow)
+        tree, renumbered = _tree(folded, [root])
+        return Decomposition(tree, root=renumbered[root], flow=flow)
+    if decomposition.from_graph:
+        # A step on a node that always works is its working branch; one
+        # whose branches are now the same is either.
+        steps, top = decomposition.core_plan()
+        slot = {bdd.FAIL: bdd.FAIL, bdd.WORK: bdd.WORK}
+        kept: list = []
+        for j, (pivot, active, inactive) in enumerate(steps):
+            on, off = slot[active], slot[inactive]
+            if position[pivot] == _WORKS or on == off:
+                slot[j + 2] = on
+            else:
+                kept.append((position[pivot], on, off))
+                slot[j + 2] = len(kept) + 1
+        top = slot[top]
+        if top == bdd.WORK:
+            return Decomposition([], flow=flow)
+        tree, renumbered = _tree(folded, sorted({p for p, _, _ in kept}))
+        plan = ([(renumbered[p], a, b) for p, a, b in kept], top)
+        return Decomposition(tree, plan=plan, flow=flow)
+    core = _minimal_sets(
+        frozenset(position[c] for c in path_set if position[c] != _WORKS)
+        for path_set in decomposition.core or ()
+    )
+    if frozenset() in core:
+        return Decomposition([], flow=flow)
+    tree, renumbered = _tree(folded, sorted(set().union(*core)))
+    return Decomposition(
+        tree,
+        core=[sorted(renumbered[c] for c in ps) for ps in core],
+        flow=flow,
+    )
 
 
 def _path_count(reduction: "_Reduction", cap: int = 10**15) -> int:

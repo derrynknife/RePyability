@@ -41,7 +41,7 @@ is a planned extension.
 
 from itertools import combinations
 from math import comb
-from typing import Any, Collection, Dict, Hashable, List, Tuple
+from typing import Any, Collection, Dict, Hashable, List, Optional, Tuple
 
 import numpy as np
 
@@ -84,25 +84,58 @@ def _rate_outcomes(
     """A rate-based split at cumulative hazards ``H``: each member's
     probability of failing on its own and of not doing so, and the
     probability of each set of members the shared causes fail together
-    (mutually exclusive outcomes, the union of the causes that struck,
-    smaller sets first, then in the members' order; none for the empty
-    set).
-
-    Each cause fires by then with probability ``1 - exp(-c H)``,
-    independently of the others, ``c`` its fraction of the members'
-    hazard. Summed outcome by outcome, without differences, so a small
-    probability keeps its precision."""
-    zero = np.zeros_like(H)
+    (see ``_union_outcomes``). Each cause fires by then with probability
+    ``1 - exp(-c H)``, independently of the others, ``c`` its fraction of
+    the members' hazard."""
     if independent > 0.0:
         r_independent = np.exp(-independent * H)
         q_independent = -np.expm1(-independent * H)
     else:
-        r_independent, q_independent = np.ones_like(H), zero
-    unions: Dict[frozenset, np.ndarray] = {frozenset(): np.ones_like(H)}
-    for struck, c in causes:
-        if c <= 0.0:
-            continue
-        holds, fires = np.exp(-c * H), -np.expm1(-c * H)
+        r_independent, q_independent = np.ones_like(H), np.zeros_like(H)
+    fired = [
+        (struck, -np.expm1(-c * H), np.exp(-c * H))
+        for struck, c in causes
+        if c > 0.0
+    ]
+    return _union_outcomes(members, q_independent, r_independent, fired)
+
+
+def _event_outcomes(
+    members: tuple,
+    independent: float,
+    causes: List[Tuple[frozenset, float]],
+    Q: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, List[Tuple[frozenset, np.ndarray]]]:
+    """A probability split whose shocks are independent basic events, as
+    PRA codes take them (#180): each member fails on its own with
+    probability ``independent * Q``, and each shared cause, a fraction
+    ``c`` of ``Q``, fires with probability ``c * Q``, independently of the
+    others (see ``_union_outcomes``)."""
+    fired = [(struck, c * Q, 1.0 - c * Q) for struck, c in causes if c > 0.0]
+    return _union_outcomes(
+        members, independent * Q, 1.0 - independent * Q, fired
+    )
+
+
+def _union_outcomes(
+    members: tuple,
+    q_independent: np.ndarray,
+    r_independent: np.ndarray,
+    fired: List[Tuple[frozenset, np.ndarray, np.ndarray]],
+) -> Tuple[np.ndarray, np.ndarray, List[Tuple[frozenset, np.ndarray]]]:
+    """Each member's probability of failing on its own and of not doing
+    so, and the probability of each set of members the shared causes fail
+    together (mutually exclusive outcomes, the union of the causes that
+    struck, smaller sets first, then in the members' order; none for the
+    empty set), from each cause's probability of firing and of not, as
+    ``(members it fails, fires, holds)``, independently of the others.
+    Summed outcome by outcome, without differences, so a small
+    probability keeps its precision."""
+    zero = np.zeros_like(q_independent)
+    unions: Dict[frozenset, np.ndarray] = {
+        frozenset(): np.ones_like(q_independent)
+    }
+    for struck, fires, holds in fired:
         after: Dict[frozenset, np.ndarray] = {}
         for union, p in unions.items():
             after[union] = after.get(union, zero) + p * holds
@@ -126,10 +159,23 @@ class _Model:
     def _causes(self, members) -> Tuple[float, list]:
         raise NotImplementedError
 
+    @property
+    def shocks(self) -> str:
+        """How the shared causes combine: ``"independent"`` events (by
+        rate, always), or ``"exclusive"`` ones (the probability split's
+        default; see ``MGL``)."""
+        return "independent" if self.basis == "rate" else "exclusive"
+
     def _no_shock(self, members, Q, R) -> np.ndarray:
-        """By rate: the probability that no shared cause has struck, at
-        the members' probabilities of failing ``Q`` and surviving ``R``."""
+        """With independent causes: the probability that no shared cause
+        has struck, at the members' probabilities of failing ``Q`` and
+        surviving ``R``, as a product (never one less the shocks')."""
         _, causes = self._causes(members)
+        if self.basis != "rate":
+            out = np.ones_like(Q)
+            for _, c in causes:
+                out = out * (1.0 - c * Q)
+            return out
         total = sum(c for _, c in causes)
         if total <= 0.0:
             return np.ones_like(Q)
@@ -313,8 +359,21 @@ class MGL(_Model):
     strikes fail together. Every member keeps its own life distribution,
     and the model holds over the whole life.
 
+    **How the shocks combine, splitting the probability.** By default
+    (``shocks="exclusive"``) the outcomes are mutually exclusive: the
+    group is struck by one shared cause at most, set ``S`` with
+    probability ``Q_k``, so each member fails with probability ``Q``
+    exactly. PRA codes (SAPHIRE, CAFTA, RiskSpectrum) instead take each
+    ``Q_k`` as a basic event of its own, independent of the others, so
+    that several may strike: ``shocks="independent"``. The two differ at
+    second order in ``Q`` (a 2-out-of-3 group of ``MGL(0.2, 0.3)`` at
+    ``Q = 0.031`` fails with probability 0.010219 one way and 0.010192
+    the other), so match the tool you check against (#180). A
+    ``BetaFactor``, or an ``MGL`` model with one shared cause, has one
+    shock, and both agree. By rate, the causes strike independently.
+
     Use it through a [`CCFGroup`][repyability.CCFGroup]; models with equal
-    letters and ``basis`` compare equal.
+    letters, ``basis`` and ``shocks`` compare equal.
 
     Parameters
     ----------
@@ -324,12 +383,19 @@ class MGL(_Model):
     basis : {"probability", "rate"}, optional
         What the letters split, by default ``"probability"`` (keyword
         only).
+    shocks : {"exclusive", "independent"}, optional
+        How the shared causes combine when the letters split the
+        probability (keyword only): by default ``"exclusive"``, one at
+        most; ``"independent"``, as independent basic events. By rate
+        they are always independent.
 
     Raises
     ------
     ValueError
-        If no letters are given, any is outside ``[0, 1]``, or ``basis`` is
-        neither ``"probability"`` nor ``"rate"``.
+        If no letters are given, any is outside ``[0, 1]``, ``basis`` is
+        neither ``"probability"`` nor ``"rate"``, or ``shocks`` is
+        neither ``"exclusive"`` nor ``"independent"`` (``"exclusive"`` by
+        rate).
 
     Examples
     --------
@@ -351,7 +417,12 @@ class MGL(_Model):
     ['a', 'b', 'c'] 0.003
     """
 
-    def __init__(self, *letters: float, basis: str = "probability"):
+    def __init__(
+        self,
+        *letters: float,
+        basis: str = "probability",
+        shocks: Optional[str] = None,
+    ):
         if len(letters) < 1:
             raise ValueError("MGL needs at least one parameter (beta).")
         for value in letters:
@@ -361,6 +432,26 @@ class MGL(_Model):
                 )
         self.letters = tuple(float(v) for v in letters)
         self.basis = _check_basis(basis)
+        if shocks is None:
+            shocks = "independent" if self.basis == "rate" else "exclusive"
+        if shocks not in ("exclusive", "independent"):
+            raise ValueError(
+                "shocks must be 'exclusive' or 'independent', got "
+                f"{shocks!r}."
+            )
+        if self.basis == "rate" and shocks != "independent":
+            raise ValueError(
+                "By rate, every cause strikes independently: shocks="
+                "'exclusive' splits the probability (basis='probability')."
+            )
+        self._shocks = shocks
+
+    @property
+    def shocks(self) -> str:
+        """How the shared causes combine: ``"exclusive"`` (one at most,
+        the probability split's default) or ``"independent"`` (as
+        independent basic events; by rate, always)."""
+        return self._shocks
 
     @property
     def group_size(self) -> int:
@@ -399,10 +490,11 @@ class MGL(_Model):
         evaluation time with ``Q``, the probability that the group's first
         member has failed by then.
 
-        By rate, the shocks are the sets of members the causes that have
-        struck fail between them: several causes may strike, and a member
-        fails if any of its causes has, so these are the distinct unions,
-        mutually exclusive as the RBD needs, each with its probability.
+        By rate, or with ``shocks="independent"``, the shocks are the sets
+        of members the causes that have struck fail between them: several
+        causes may strike, and a member fails if any of its causes has, so
+        these are the distinct unions, mutually exclusive as the RBD needs,
+        each with its probability.
 
         Parameters
         ----------
@@ -436,6 +528,9 @@ class MGL(_Model):
         if self.basis == "rate":
             independent, causes = self._causes(members)
             return _rate_outcomes(members, independent, causes, _hazard(Q, R))
+        if self.shocks == "independent":
+            independent, causes = self._causes(members)
+            return _event_outcomes(members, independent, causes, Q)
         m = len(members)
         q_independent = self._specific_set_prob(m, 1, Q)
         shocks: List[Tuple[frozenset, np.ndarray]] = []
@@ -463,15 +558,20 @@ class MGL(_Model):
             isinstance(other, MGL)
             and other.letters == self.letters
             and other.basis == self.basis
+            and other.shocks == self.shocks
         )
 
     def __hash__(self) -> int:
-        return hash((type(self).__name__, self.letters, self.basis))
+        return hash(
+            (type(self).__name__, self.letters, self.basis, self.shocks)
+        )
 
     def __repr__(self) -> str:
         parts = [repr(letter) for letter in self.letters]
         if self.basis == "rate":
             parts.append("basis='rate'")
+        elif self.shocks == "independent":
+            parts.append("shocks='independent'")
         return f"MGL({', '.join(parts)})"
 
 
@@ -529,7 +629,7 @@ def with_parameters(model, values: Dict[str, float]) -> "_Model":
     current.update({name: float(v) for name, v in values.items()})
     if isinstance(model, BetaFactor):
         return BetaFactor(current["beta"], basis=model.basis)
-    return MGL(*current.values(), basis=model.basis)
+    return MGL(*current.values(), basis=model.basis, shocks=model.shocks)
 
 
 def validity_warning(group: "CCFGroup", Q: float) -> None:
@@ -662,3 +762,86 @@ class CCFGroup:
 
     def __repr__(self) -> str:
         return f"CCFGroup(members={list(self.members)}, model={self.model!r})"
+
+
+def shock_outcomes(groups, base_probabilities, base_failures, check=None):
+    """Every combination of the common-cause ``groups``' mutually exclusive
+    shock outcomes: for each, its probability, the nodes' probabilities of
+    working given it (``base_probabilities`` with the members' changed), and
+    of failing (from ``base_failures``, each node's own ``ff``, so that a
+    small one keeps its precision; None without it). Given an outcome, the
+    nodes are independent. ``check(index, group, Q)`` sees each group's
+    members' probability of failing (the RBD warns past ``VALIDITY``)."""
+    from itertools import product
+
+    # Each group's mutually-exclusive shock outcomes: (weight, {member:
+    # reliability}, {member: unreliability}) for every subset that can
+    # fail together plus the no-shock case, from the model's
+    # decomposition of Q(t) (taken from a representative member, since
+    # groups are symmetric).
+    group_outcomes = []
+    for index, group in enumerate(groups):
+        first = group.members[0]
+        R = np.atleast_1d(np.asarray(base_probabilities[first], float))
+        Q = (
+            1.0 - np.atleast_1d(base_probabilities[first])
+            if base_failures is None
+            else np.atleast_1d(np.asarray(base_failures[first], float))
+        )
+        if check is not None:
+            check(index, group, Q)
+        q_independent, r_independent, shocks = group.model._split(
+            group.members, Q, R
+        )
+        outcomes = []
+        total_shock = np.zeros_like(Q)
+        for subset, prob in shocks:
+            total_shock = total_shock + prob
+            outcomes.append(
+                (
+                    prob,
+                    {
+                        member: (
+                            np.zeros_like(Q)
+                            if member in subset
+                            else r_independent
+                        )
+                        for member in group.members
+                    },
+                    {
+                        member: (
+                            np.ones_like(Q)
+                            if member in subset
+                            else q_independent
+                        )
+                        for member in group.members
+                    },
+                )
+            )
+        # No common-cause shock: every member fails only independently.
+        # With independent causes (by rate, or as basic events), no
+        # cause has struck: its own probability keeps its precision
+        # where one less the shocks' would not.
+        outcomes.append(
+            (
+                (
+                    group.model._no_shock(group.members, Q, R)
+                    if group.model.shocks == "independent"
+                    else 1.0 - total_shock
+                ),
+                {member: r_independent for member in group.members},
+                {member: q_independent for member in group.members},
+            )
+        )
+        group_outcomes.append(outcomes)
+
+    for combo in product(*group_outcomes):
+        node_probabilities = dict(base_probabilities)
+        node_failures = None if base_failures is None else dict(base_failures)
+        weight: Any = 1.0
+        for outcome_weight, member_probs, member_fails in combo:
+            weight = weight * outcome_weight
+            node_probabilities.update(member_probs)
+            if node_failures is not None:
+                node_failures.update(member_fails)
+        yield weight, node_probabilities, node_failures

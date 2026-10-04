@@ -54,6 +54,13 @@ jobs:
           pip install -e .[dev]
 
       - name: pytest (under coverage)
+        # From Python 3.12 coverage can measure through sys.monitoring,
+        # which counts the same lines as its default tracer (sys.settrace)
+        # several times faster: under the tracer, Python 3.12's job took
+        # over an hour. Python 3.11 has no sys.monitoring, and an empty
+        # COVERAGE_CORE leaves it the default tracer.
+        env:
+          COVERAGE_CORE: ${{ matrix.python-version != '3.11' && 'sysmon' || '' }}
         run: coverage run -m pytest
 
       - name: coverage report (enforces the fail_under gate)

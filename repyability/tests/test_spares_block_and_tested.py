@@ -1,15 +1,18 @@
 """Spares of block-replaced and tested components (#147): a block-replaced
 component's replacements counted block interval by block interval, and a
-tested one's on the lattice of its tests; checked against counts built from
-the plain renewal count, binomial closed forms for a constant failure rate,
-a Monte Carlo of the replacements, and the RBD's own simulation."""
+tested one's on the lattice of its tests (whatever its tests and repairs
+take, and over the places in the full tests' period when its tests can miss
+a failure, #159); checked against counts built from the plain renewal
+count, binomial closed forms for a constant failure rate, a Monte Carlo of
+the replacements, and the RBD's own simulation."""
 
 import numpy as np
 import pytest
 import surpyval as surv
-from scipy.stats import binom
+from scipy.stats import binom, poisson
 
 from repyability import RepairableRBD
+from repyability.rbd import _spares
 from repyability.rbd import routes as r
 
 E, W = surv.Exponential.from_params, surv.Weibull.from_params
@@ -82,18 +85,340 @@ def test_repairs_and_replacements_that_take_time_against_the_simulation():
     )["c"]
     got, want = padded(exact.probabilities, simulated.probabilities)
     np.testing.assert_allclose(got, want, atol=0.01)
-    assert exact.mean() == pytest.approx(simulated.mean(), rel=0.01)
+    assert exact.mean == pytest.approx(simulated.mean, rel=0.01)
     assert exact.probabilities.sum() == pytest.approx(1.0, abs=1e-9)
 
 
-def test_the_stock_of_a_block_replaced_component_is_refused():
-    rbd = single(block(W([100.0, 2.0]), 60.0))
-    with pytest.raises(NotImplementedError, match="#160") as error:
+def test_a_horizon_on_a_block_time_counts_what_comes_before_it():
+    # The new unit put in at the horizon fails in its first step with a
+    # large chance for a falling hazard; none of that is before the horizon
+    # (the count read there took in part of it before #160).
+    life, interval = W([100.0, 0.5]), 30.0
+    demand = single(block(life, interval)).spares_demand(3 * interval)["c"]
+    plain = single({"reliability": life, "repairability": "instant"})
+    whole = plain.spares_demand(interval)["c"].probabilities
+    # Three whole intervals' failures, and the block replacements at T, 2T.
+    want = np.concatenate(
+        [np.zeros(2), np.convolve(np.convolve(whole, whole), whole)]
+    )
+    got, want = padded(demand.probabilities, want)
+    np.testing.assert_allclose(got, want, atol=3e-6)
+
+
+# -- block replacement: the stock (#160) --------------------------------------
+
+
+def poisson_with_blocks(rate, interval, lead):
+    """A constant failure rate under block replacement: its failures are
+    Poisson whatever the block times, which a lead time takes in ``m`` or
+    ``m + 1`` of (``lead = m T + rho``, one more with chance ``rho / T``)
+    from a random time and from a failure; and ``m`` from a block
+    replacement (``m - 1`` if the lead time ends on a block time)."""
+    m, rho = divmod(lead, interval)
+    m = int(m)
+    failures = poisson.pmf(np.arange(80), rate * lead)
+    blocks = np.zeros(m + 2)
+    blocks[m] += 1.0 - rho / interval
+    blocks[m + 1] += rho / interval
+    random = np.convolve(failures, blocks)
+    after_block = np.concatenate([np.zeros(m if rho else m - 1), failures])
+    random, after_block = padded(random, after_block)
+    # A replacement is a failure with its share of the rate, rate + 1 / T.
+    share = rate * interval / (rate * interval + 1.0)
+    return random, share * random + (1.0 - share) * after_block
+
+
+@pytest.mark.parametrize("lead", [30.0, 100.0, 120.0])
+def test_a_constant_rate_under_block_replacement_stocks_in_closed_form(lead):
+    rate, interval = 0.02, 60.0
+    stock = single(block(E([rate]), interval)).spares_stock(
+        lead, fill_rate=0.95
+    )["c"]
+    random, arrival = poisson_with_blocks(rate, interval, lead)
+    got, want = padded(stock.on_order, random)
+    np.testing.assert_allclose(got, want, atol=2e-6)
+    got, want = padded(stock.on_order_at_demand, arrival)
+    np.testing.assert_allclose(got, want, atol=2e-6)
+
+
+def block_history(life, interval, periods, rng, width=24):
+    """The replacement times of a unit under block replacement, repaired
+    and replaced in no time: in each interval, a new unit's failures, and
+    the block replacement at its end."""
+    ends = np.cumsum(life.qf(rng.uniform(size=(periods, width))), axis=1)
+    assert (ends[:, -1] >= interval).all()
+    starts = interval * np.arange(periods)[:, None]
+    failures = (starts + ends)[ends < interval]
+    blocks = interval * np.arange(1, periods + 1)
+    return np.sort(np.concatenate([failures, blocks]))
+
+
+@pytest.mark.parametrize(
+    "life, lead",
+    [(W([100.0, 2.0]), 45.0), (W([100.0, 0.7]), 150.0)],
+    ids=["wearing, within an interval", "falling hazard, over intervals"],
+)
+def test_a_block_replaced_stock_against_a_long_history(life, lead):
+    interval = 60.0
+    stock = single(block(life, interval)).spares_stock(lead, fill_rate=0.9)[
+        "c"
+    ]
+    rng = np.random.default_rng(6)
+    times = block_history(life, interval, 400_000, rng)
+    inner = times[
+        (times > 10 * interval) & (times < times[-1] - lead - 10 * interval)
+    ]
+    # From a random time, the replacements in the lead time after it.
+    starts = rng.uniform(inner[0], inner[-1], 400_000)
+    on_order = np.searchsorted(times, starts + lead) - np.searchsorted(
+        times, starts
+    )
+    got, want = padded(stock.on_order, np.bincount(on_order) / len(on_order))
+    np.testing.assert_allclose(got, want, atol=0.005)
+    # At a replacement, those in the lead time before it.
+    before = np.searchsorted(times, inner) - np.searchsorted(
+        times, inner - lead, side="right"
+    )
+    got, want = padded(
+        stock.on_order_at_demand, np.bincount(before) / len(before)
+    )
+    np.testing.assert_allclose(got, want, atol=0.005)
+
+
+@pytest.mark.parametrize("beta", [2.0, 0.5])
+def test_the_mean_on_order_is_the_long_run_rate_times_the_lead_time(beta):
+    # Each block interval has its block replacement and M(T) failures, M(T)
+    # the mean count over one interval from new.
+    rbd = single(block(W([100.0, beta]), 30.0))
+    failures = rbd.spares_demand(30.0)["c"].mean
+    stock = rbd.spares_stock(70.0, fill_rate=0.9)["c"]
+    mean = np.arange(len(stock.on_order)) @ stock.on_order
+    assert mean == pytest.approx((failures + 1.0) / 30.0 * 70.0, rel=3e-6)
+
+
+def test_a_long_block_interval_stocks_as_a_renewal_process():
+    # Many lives to an interval, and a lead time much shorter: mostly a
+    # settled renewal process, which needs the same stock.
+    life = W([10.0, 2.0])
+    blocked = single(block(life, 400.0)).spares_stock(
+        20.0, fill_rate=0.95, stockout_probability=0.01
+    )["c"]
+    plain = single({"reliability": life, "repairability": "instant"})
+    renewal = plain.spares_stock(
+        20.0, fill_rate=0.95, stockout_probability=0.01
+    )["c"]
+    assert blocked.stock == renewal.stock
+    got, want = padded(blocked.on_order, renewal.on_order)
+    np.testing.assert_allclose(got, want, atol=0.01)
+
+
+def test_a_part_with_one_block_replaced_member():
+    # Pooled with a pump replaced at a constant rate of 0.01: the shelf's
+    # demands come from the block-replaced one with its share of the
+    # long-run rates, 0.02 + 1 / 60 against 0.01.
+    rbd = RepairableRBD(
+        [("s", "a"), ("a", "b"), ("b", "t")],
+        {
+            "a": block(E([0.02]), 60.0),
+            "b": {"reliability": E([0.01]), "repairability": "instant"},
+        },
+    )
+    stock = rbd.spares_stock(30.0, fill_rate=0.9, parts={"p": ["a", "b"]})["p"]
+    random, arrival = poisson_with_blocks(0.02, 60.0, 30.0)
+    other = poisson.pmf(np.arange(40), 0.3)
+    share = (0.02 + 1 / 60) / (0.02 + 1 / 60 + 0.01)
+    got, want = padded(stock.on_order, np.convolve(random, other))
+    np.testing.assert_allclose(got, want, atol=2e-6)
+    at_a, at_b = padded(
+        np.convolve(arrival, other), np.convolve(random, other)
+    )
+    got, want = padded(
+        stock.on_order_at_demand, share * at_a + (1 - share) * at_b
+    )
+    np.testing.assert_allclose(got, want, atol=2e-6)
+    # Two on block schedules keep step: their demands are not independent.
+    both = RepairableRBD(
+        [("s", "a"), ("a", "b"), ("b", "t")],
+        {"a": block(E([0.02]), 60.0), "b": block(E([0.01]), 90.0)},
+    )
+    with pytest.raises(NotImplementedError, match="keep step"):
+        both.spares_stock(30.0, fill_rate=0.9, parts={"p": ["a", "b"]})
+
+
+def block_history_with_work(life, repair, duration, interval, chains, rng):
+    """The replacement times of units under block replacement whose repairs
+    and block replacements take time, ``chains`` histories of 1500 each: a
+    unit up at a block time is replaced there, one down is not."""
+    start = np.zeros(chains)
+    times = np.empty((chains, 1500))
+    for k in range(1500):
+        due = (np.floor(start / interval + 1e-12) + 1.0) * interval
+        end = start + life.qf(rng.uniform(size=chains))
+        fails = end < due
+        times[:, k] = np.where(fails, end, due)
+        start = times[:, k] + np.where(
+            fails,
+            repair.qf(rng.uniform(size=chains)),
+            duration.qf(rng.uniform(size=chains)),
+        )
+    return times
+
+
+@pytest.mark.parametrize(
+    "life, repair, lead",
+    [
+        (W([100.0, 2.0]), W([8.0, 1.5]), 45.0),
+        (W([100.0, 2.0]), W([40.0, 1.5]), 45.0),
+        (W([100.0, 0.7]), W([8.0, 1.5]), 150.0),
+        (W([100.0, 2.0], f0=0.1), W([8.0, 1.5]), 120.0),
+    ],
+    ids=[
+        "within an interval",
+        "repairs often over a block time",
+        "over intervals",
+        "dead on arrival",
+    ],
+)
+def test_a_stock_whose_work_takes_time_against_long_histories(
+    life, repair, lead
+):
+    # #160: a unit down at a block time is not replaced there, so an
+    # interval need not start with a new one.
+    interval, duration = 60.0, W([5.0, 2.0])
+    stock = single(
+        block(life, interval, repair=repair, duration=duration)
+    ).spares_stock(lead, fill_rate=0.9)["c"]
+    rng = np.random.default_rng(11)
+    times = block_history_with_work(life, repair, duration, interval, 800, rng)
+    random, arrival = [], []
+    for row in times:
+        lo, hi = 20 * interval, row[-1] - lead - 20 * interval
+        starts = rng.uniform(lo, hi, 600)
+        random.append(
+            np.searchsorted(row, starts + lead) - np.searchsorted(row, starts)
+        )
+        inner = row[(row > lo + lead) & (row < hi)]
+        arrival.append(
+            np.searchsorted(row, inner)
+            - np.searchsorted(row, inner - lead, side="right")
+        )
+    for got, sample in (
+        (stock.on_order, np.concatenate(random)),
+        (stock.on_order_at_demand, np.concatenate(arrival)),
+    ):
+        got, want = padded(got, np.bincount(sample) / len(sample))
+        np.testing.assert_allclose(got, want, atol=0.006)
+
+
+def test_a_lead_time_on_block_times_is_read_at_its_jump():
+    # From a typical failure, the block times fall a whole number of
+    # intervals on less its phase, so their distribution jumps at each
+    # interval: read on its own, each rounding takes it exactly, where
+    # their mean blurred it over a step (an error of the step's order).
+    model = single(
+        block(W([100.0, 2.5]), 60.0, repair=W([4.0, 1.5]), duration=E([0.5]))
+    )._replacements("c", True)
+    coarse, fine = (
+        np.array(_spares._palm(model, 120.0, steps)[1]) for steps in (256, 512)
+    )
+    coarse, fine = padded(coarse, fine)
+    assert np.abs(fine - coarse).max() < 2e-6
+
+
+def test_the_long_run_is_an_interval_settled_from_new():
+    # Counted from new, interval after interval settles into the long run:
+    # its replacements in an interval, the rate times the interval.
+    rbd = single(
+        block(W([100.0, 2.0]), 60.0, repair=W([40.0, 1.5]), duration=E([0.2]))
+    )
+    settled = (
+        rbd.spares_demand(21 * 60.0)["c"].mean
+        - rbd.spares_demand(20 * 60.0)["c"].mean
+    )
+    model = rbd._replacements("c", True)
+    assert _spares.rate(model) * 60.0 == pytest.approx(settled, rel=2e-6)
+    # From a random time, the mean on order is the rate times the lead time.
+    stock = rbd.spares_stock(45.0, fill_rate=0.9)["c"]
+    mean = np.arange(len(stock.on_order)) @ stock.on_order
+    assert mean == pytest.approx(_spares.rate(model) * 45.0, rel=3e-6)
+
+
+@pytest.mark.parametrize("kind", ["random", "arrival"])
+def test_renewals_in_no_time_through_a_typical_replacement(kind):
+    # The typical replacement's counts take renewals in no time too, where
+    # each interval starts new: they are the averages over the phase.
+    model = single(block(W([100.0, 2.0]), 60.0))._replacements("c", True)
+    assert not _spares.carries_over(model)
+    tails = np.minimum.accumulate(
+        np.clip(_spares._palm_tails(model, 45.0, kind), 0.0, 1.0)
+    )
+    got = -np.diff(np.concatenate(([1.0], tails, [0.0])))
+    got, want = padded(got, _spares.count(model, 45.0, kind))
+    np.testing.assert_allclose(got, want, atol=2e-6)
+
+
+def test_a_part_with_a_member_whose_work_takes_time():
+    # Its demands come with its share of the long-run rates.
+    rbd = RepairableRBD(
+        [("s", "a"), ("a", "b"), ("b", "t")],
+        {
+            "a": block(E([0.02]), 60.0, repair=E([0.2]), duration=E([0.5])),
+            "b": {"reliability": E([0.01]), "repairability": "instant"},
+        },
+    )
+    stock = rbd.spares_stock(30.0, fill_rate=0.9, parts={"p": ["a", "b"]})["p"]
+    alone = rbd.spares_stock(30.0, fill_rate=0.9)["a"]
+    other = poisson.pmf(np.arange(40), 0.3)
+    got, want = padded(stock.on_order, np.convolve(alone.on_order, other))
+    np.testing.assert_allclose(got, want, atol=2e-6)
+    rate = _spares.rate(rbd._replacements("a", True))
+    share = rate / (rate + 0.01)
+    at_a, at_b = padded(
+        np.convolve(alone.on_order_at_demand, other),
+        np.convolve(alone.on_order, other),
+    )
+    got, want = padded(
+        stock.on_order_at_demand, share * at_a + (1 - share) * at_b
+    )
+    np.testing.assert_allclose(got, want, atol=2e-6)
+
+
+@pytest.mark.parametrize(
+    "spec, reason",
+    [
+        (
+            block(W([100.0, 2.0], f0=0.1), 60.0, duration=E([0.5])),
+            "while its repairs may take no time",
+        ),
+        (
+            block(W([100.0, 2.0], f0=0.1), 60.0, repair=E([0.5])),
+            "while its block replacements may take no time",
+        ),
+    ],
+    ids=["repairs in no time", "block replacements in no time"],
+)
+def test_dead_on_arrival_with_renewals_in_no_time_is_refused(spec, reason):
+    # Replacements could come several at one instant.
+    rbd = single(spec)
+    with pytest.raises(NotImplementedError, match="one instant") as error:
         rbd.spares_stock(30.0, fill_rate=0.9)
+    assert reason in str(error.value)
     report = rbd.analysis_routes()
     assert report["spares_stock"].route == r.REFUSED
     assert report["spares_stock"].reason == str(error.value)
     assert report["spares_demand"].route == r.NUMERICAL
+    # Taking time, a unit dead on arrival is counted.
+    timed = single(
+        block(
+            W([100.0, 2.0], f0=0.1), 60.0, repair=E([0.5]), duration=E([0.5])
+        )
+    )
+    routes = timed.analysis_routes()
+    assert routes["spares_stock"].route == r.NUMERICAL
+    assert "a typical replacement" in routes["spares_stock"].reason
+    routes = single(block(W([100.0, 2.0]), 60.0)).analysis_routes()
+    assert routes["spares_stock"].route == r.NUMERICAL
+    assert "where the lead time falls" in routes["spares_stock"].reason
 
 
 # -- hidden failures found by tests -------------------------------------------
@@ -197,19 +522,139 @@ def test_the_simulation_agrees_for_a_tested_component():
     assert exact.method == "exact"
 
 
-def test_tests_that_take_time_or_miss_failures_are_refused():
-    life = W([100.0, 2.0])
-    for spec in (
-        inspected(life, 20.0, duration=E([1.0])),
-        inspected(life, 20.0, coverage=0.5, full_test=100.0),
-        {**inspected(life, 20.0), "repairability": E([1.0])},
-    ):
-        rbd = single(spec)
-        with pytest.raises(NotImplementedError, match="#159") as error:
-            rbd.spares_demand(100.0)
-        assert rbd.analysis_routes()["spares_demand"].reason == str(
-            error.value
+def missing(life, interval, first, per, coverage, size, rng, place):
+    """Replacement times of a unit tested in no time by tests that find a
+    failure with probability ``coverage``, but every ``per``-th (at place
+    0, the first test at ``place``), which finds every one: a failure the
+    first test after it misses waits for the next full test."""
+    times, start, k_next = [], 0.0, 0
+    lives = life.qf(rng.uniform(size=size))
+    for life_k, coin in zip(lives, rng.uniform(size=size)):
+        failure = start + life_k
+        k = max(k_next, int(np.ceil((failure - first) / interval - 1e-12)))
+        at = (place + k) % per
+        if at and coin >= coverage:
+            k += -at % per
+        start = first + k * interval
+        times.append(start)
+        k_next = k + 1
+    return np.array(times)
+
+
+@pytest.mark.parametrize(
+    "life, offset, coverage, full",
+    [
+        (W([100.0, 2.0]), 0.0, 0.5, 100.0),
+        (W([100.0, 2.0]), 7.0, 0.6, 60.0),
+        (E([0.02]), 0.0, 0.3, 80.0),
+        (W([60.0, 3.0]), 5.0, 0.0, 40.0),
+    ],
+)
+def test_tests_that_miss_against_a_monte_carlo_of_the_replacements(
+    life, offset, coverage, full
+):
+    # A cycle depends on where the test that starts it falls in the full
+    # tests' period: the replacements are a Markov renewal process over the
+    # places (#159).
+    interval = 20.0
+    per = int(round(full / interval))
+    spec = inspected(life, interval, coverage=coverage, full_test=full)
+    if offset:
+        spec["inspection"]["offset"] = offset
+    rbd = single(spec)
+    first, place = (offset, 0) if offset else (interval, 1 % per)
+    rng = np.random.default_rng(6)
+    counts = [
+        int(
+            np.sum(
+                missing(life, interval, first, per, coverage, 15, rng, place)
+                < 250.0
+            )
         )
-    routes = single(inspected(life, 20.0)).analysis_routes()
+        for _ in range(20_000)
+    ]
+    got, want = padded(
+        rbd.spares_demand(250.0)["c"].probabilities,
+        np.bincount(counts) / len(counts),
+    )
+    np.testing.assert_allclose(got, want, atol=0.012)
+    # In the long run: one long history.
+    times = missing(life, interval, first, per, coverage, 200_000, rng, place)
+    starts = rng.uniform(times[100], times[-100], 200_000)
+    on_order = np.searchsorted(times, starts + 45.0) - np.searchsorted(
+        times, starts
+    )
+    stock = rbd.spares_stock(45.0, fill_rate=0.9)["c"]
+    got, want = padded(stock.on_order, np.bincount(on_order) / len(on_order))
+    np.testing.assert_allclose(got, want, atol=0.005)
+    inner = times[100:-100]
+    before = np.arange(100, len(times) - 100) - np.searchsorted(
+        times, inner - 45.0, side="right"
+    )
+    got, want = padded(
+        stock.on_order_at_demand, np.bincount(before) / len(before)
+    )
+    np.testing.assert_allclose(got, want, atol=0.005)
+    rate = (len(inner) - 1) / (inner[-1] - inner[0])
+    mean = np.arange(len(stock.on_order)) @ stock.on_order
+    assert mean == pytest.approx(45.0 * rate, rel=0.01)
+
+
+@pytest.mark.parametrize(
+    "spec",
+    [
+        {
+            "reliability": W([100.0, 2.0]),
+            "repairability": surv.LogNormal.from_params([1.0, 0.5]),
+            "inspection": {
+                "interval": 20.0,
+                "coverage": 0.5,
+                "full_test": 60.0,
+                "duration": surv.ExactEventTime.from_params([1.5]),
+            },
+        },
+        {
+            "reliability": E([0.02]),
+            "repairability": E([0.2]),
+            "inspection": {
+                "interval": 20.0,
+                "coverage": 0.4,
+                "full_test": 80.0,
+                "offset": 7.0,
+                "duration": surv.LogNormal.from_params([0.0, 0.3]),
+            },
+        },
+        {**inspected(W([100.0, 2.0]), 20.0), "repairability": E([1.0])},
+    ],
+)
+def test_tests_and_repairs_that_take_time_against_the_simulation(spec):
+    # The replacements still fall on the tests that find failures, whatever
+    # the tests and repairs take (#159).
+    rbd = single(spec)
+    routes = rbd.analysis_routes()
+    assert routes["spares_demand"].route == r.NUMERICAL
+    assert routes["spares_stock"].route == r.NUMERICAL
+    exact = rbd.spares_demand(300.0)["c"]
+    simulated = rbd.spares_demand(
+        300.0, method="simulate", mc_samples=40_000, seed=7
+    )["c"]
+    got, want = padded(exact.probabilities, simulated.probabilities)
+    np.testing.assert_allclose(got, want, atol=0.01)
+    assert exact.mean == pytest.approx(
+        simulated.mean, abs=4 * exact.std / np.sqrt(40_000)
+    )
+
+
+def test_tests_that_can_last_as_long_as_their_interval_are_refused():
+    rbd = single(inspected(W([100.0, 2.0]), 20.0, duration=E([0.05])))
+    with pytest.raises(
+        NotImplementedError, match="within its test interval"
+    ) as error:
+        rbd.spares_demand(100.0)
+    assert "spares_demand(method='simulate')" in str(error.value)
+    routes = rbd.analysis_routes()
+    assert routes["spares_demand"].reason == str(error.value)
+    assert routes["spares_stock"].route == r.REFUSED
+    routes = single(inspected(W([100.0, 2.0]), 20.0)).analysis_routes()
     assert routes["spares_demand"].route == r.NUMERICAL
     assert routes["spares_stock"].route == r.NUMERICAL

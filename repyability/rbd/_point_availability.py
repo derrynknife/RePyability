@@ -51,8 +51,10 @@ maintenance that follows a failure falls at times spread over the lives,
 which the grid holds.
 
 A unit under block replacement is followed interval by interval instead
-(``_block_replacement.block_availability``, a ``BlockCurve``), and a unit
-with hidden failures by its closed form (an ``InspectionCurve``). Every
+(``_block_replacement.block_availability``, a ``BlockCurve``), a unit
+with hidden failures by its closed form (an ``InspectionCurve``), and a
+unit minimally repaired in no time by its life's cumulative hazard (a
+``MinimalRepairCurve``). Every
 curve is constant (``period`` None) or repeats with ``period`` after
 ``settle``, which is what lets a mission average over many years integrate
 one period and repeat it.
@@ -776,14 +778,16 @@ class ChainDips:
             kept += len(values)
             if cdfs:
                 # P(T_n < s) at the fine points: the masses before each,
-                # half of its own, and the Euler-Maclaurin correction.
+                # half of its own, and the Euler-Maclaurin correction, which
+                # where the time's density jumps (at 0, for an exponential
+                # one) can overshoot below 0 or above the mass: a count of
+                # them would dip there (#164).
                 mass = float(total.sum())
                 running = np.cumsum(total) - 0.5 * total
                 padded = np.concatenate([[0.0], running, [mass]])
                 second = padded[2:] - 2.0 * padded[1:-1] + padded[:-2]
-                self.cdfs.append(
-                    (first * step, step, running - second / 12.0, mass)
-                )
+                cdf = np.clip(running - second / 12.0, 0.0, mass)
+                self.cdfs.append((first * step, step, cdf, mass))
                 kept += len(running)
             if kept > _CHAIN_VALUES:
                 raise NotImplementedError(self._too_many)
@@ -887,7 +891,10 @@ class ChainDips:
                 position = (ordered[a:b] - due - start) / step
                 extended = np.concatenate([values, [mass, mass]])
                 position = np.minimum(position, len(extended) - 1.0)
-                out[order[a:b]] += weight * _cubic(extended, position)
+                # Clipped: a cubic undershoots where the sum's CDF rises
+                # off 0 (#164).
+                cdf = np.clip(_cubic(extended, position), 0.0, mass)
+                out[order[a:b]] += weight * cdf
             past[b] += weight * mass
         out[order] += np.cumsum(past)[:-1]
         return out
@@ -902,10 +909,16 @@ class ChainDips:
                 continue
             begin, step, values = self.windows[n - 1]
             stride = max(1, len(values) // 256)
-            index = np.append(
-                np.arange(-1, len(values) + 1, stride), len(values)
+            # The window's ends too: where it starts, the dip rises from
+            # nothing (a kink, as the maintenance starts at once).
+            index = np.concatenate(
+                [
+                    [-1, 0],
+                    np.arange(-1, len(values) + 1, stride),
+                    [len(values) - 1, len(values)],
+                ]
             )
-            parts.append(due + begin + step * index)
+            parts.append(due + begin + step * np.unique(index))
         if not parts:
             return np.empty(0)
         times = np.concatenate(parts)
@@ -1141,6 +1154,23 @@ class StageCurves:
         )
 
 
+def curve_breaks(curve, start: float, stop: float) -> np.ndarray:
+    """The times in ``[start, stop]`` at which ``curve`` may bend or jump
+    other than on its grids (see ``curve_grids``): all its knots, for a
+    curve that has none."""
+    breaks = getattr(curve, "breaks", None)
+    return curve.knots(start, stop) if breaks is None else breaks(start, stop)
+
+
+def curve_grids(curve) -> list:
+    """The grids ``curve`` is linear on between its breaks (see
+    ``curve_breaks``): ``(step, until)`` for each, ``until`` the time after
+    which the curve no longer changes on it. None (an empty list), for a
+    curve whose knots are all breaks."""
+    grids = getattr(curve, "grids", None)
+    return [] if grids is None else grids()
+
+
 class GridCurve:
     """A unit's point availability on a grid from 0, linear between its
     points, less its dips: ``(probability, start, sf, splits)`` for a down
@@ -1213,7 +1243,14 @@ class GridCurve:
     def knots(self, start: float, stop: float) -> np.ndarray:
         """The times in ``[start, stop]`` between which the curve is
         smooth."""
-        parts = [self.times]
+        times = np.concatenate([self.times, self.breaks(start, stop)])
+        return times[(times >= start) & (times <= stop)]
+
+    def breaks(self, start: float, stop: float) -> np.ndarray:
+        """The times in ``[start, stop]`` at which the curve bends other
+        than at its grid's points (see ``curve_breaks``): the grid's ends,
+        and its dips'."""
+        parts = [self.times[[0, -1]]]
         for _, begin, _, splits in self.dips:
             parts.append(begin + np.append(0.0, splits))
         if self.chain is not None:
@@ -1221,13 +1258,21 @@ class GridCurve:
         times = np.concatenate(parts)
         return times[(times >= start) & (times <= stop)]
 
+    def grids(self) -> list:
+        """Its grid, to its end (see ``curve_grids``)."""
+        if len(self.times) < 2:
+            return []
+        return [(float(self.times[1]), float(self.times[-1]))]
+
 
 class BlockCurve:
     """A unit's point availability under block replacement, from new (see
     ``_block_replacement.BlockAvailability``), the last interval repeating
     once it has settled. ``duration_knots`` are quantiles of the time a
     replacement takes. After a head (not ``fresh``), the curve starts at a
-    block time, with the replacement due there."""
+    block time, with the replacement due there. Replaced on condition (see
+    ``_condition_replacement.condition_availability``), the block times
+    are its inspections, which it counts too."""
 
     def __init__(self, result, duration_knots):
         self.interval = float(result.interval)
@@ -1238,6 +1283,7 @@ class BlockCurve:
         self.replace = result.replace
         self.failures = result.failures
         self.fresh = result.fresh
+        self.inspected = result.inspected
         knots = np.asarray(duration_knots, dtype=float)
         self.duration_knots = knots[(knots > 0.0) & (knots < self.interval)]
         last = len(self.replaced) - 1
@@ -1256,7 +1302,8 @@ class BlockCurve:
         """The unit's expected events before each time ``x`` (see
         ``GridCurve.events``): its failures, interval by interval, and its
         replacements at the block times, which take it down if they take
-        time (have a time model)."""
+        time (have a time model); replaced on condition, its inspections,
+        one at each block time it is up at."""
         x = np.asarray(x, dtype=float)
         k = np.floor(x / self.interval)
         s = x - k * self.interval
@@ -1280,9 +1327,15 @@ class BlockCurve:
         replaced = self.replaced.copy()
         if self.fresh:
             replaced[0] = 0.0
-        preventive = self._whole(replaced, np.where(x > 0.0, due + 1.0, 0.0))
+        before = np.where(x > 0.0, due + 1.0, 0.0)
+        preventive = self._whole(replaced, before)
         planned = preventive if self.replace.model is not None else None
-        return _events(failures, planned, preventive=preventive)
+        inspections = None
+        if self.inspected is not None:
+            inspections = self._whole(self.inspected, before)
+        return _events(
+            failures, planned, preventive=preventive, inspections=inspections
+        )
 
     def atoms(self, stop: float) -> Atoms:
         """The replacements at the block times before ``stop`` (see
@@ -1337,6 +1390,23 @@ class BlockCurve:
             + offsets[None, :]
         ).ravel()
         return times[(times >= start) & (times <= stop)]
+
+    def breaks(self, start: float, stop: float) -> np.ndarray:
+        """The times in ``[start, stop]`` at which the curve bends other
+        than at its grid's points (see ``curve_breaks``): the block times,
+        and where the replacement at each is likely to end."""
+        first = int(np.floor(start / self.interval))
+        last = int(np.floor(stop / self.interval))
+        offsets = np.append(0.0, self.duration_knots)
+        times = (
+            self.interval * np.arange(first, last + 1)[:, None]
+            + offsets[None, :]
+        ).ravel()
+        return times[(times >= start) & (times <= stop)]
+
+    def grids(self) -> list:
+        """Its grid, in every interval (see ``curve_grids``)."""
+        return [(self.step, np.inf)]
 
 
 class InspectionCurve:
@@ -1590,6 +1660,68 @@ class SteadyCurve:
         return self.fractions[:, None] * self.at(np.atleast_1d(x))[None, :]
 
 
+class MinimalRepairCurve:
+    """A unit minimally repaired in no time (Kijima's models with ``q = 1``
+    and an instant repair): up throughout, and its failures a
+    non-homogeneous Poisson process whose intensity is its life's hazard at
+    its age, so that it fails ``H(x)`` times before ``x`` on average, ``H``
+    the life's cumulative hazard, exactly.
+
+    Its counts never settle (with a wearing-out life they grow ever faster),
+    so it is followed to the horizon; for the integrals of its counts it
+    declares a grid of ``steps`` steps over its first ``scale`` past the
+    life's ``offset``, whose step doubles each time that span does
+    (``grids``): a piece then spans the same share of the time it starts at
+    however far on it is, as many pieces for each doubling of the window.
+    The offset, before which the unit cannot fail, is a break. ``counts``
+    False, only its availability is asked for, which is 1 from the start.
+    """
+
+    period = None
+
+    def __init__(self, life, scale: float, steps: int, counts: bool):
+        self.life = life
+        self.offset = max(float(getattr(life, "gamma", 0.0) or 0.0), 0.0)
+        self.scale = float(scale)
+        self.steps = int(steps)
+        self.counts = counts
+        self.settle = np.inf if counts else 0.0
+
+    def at(self, x: np.ndarray) -> np.ndarray:
+        return np.ones(np.shape(x))
+
+    def knots(self, start: float, stop: float) -> np.ndarray:
+        return self.breaks(start, stop)
+
+    def breaks(self, start: float, stop: float) -> np.ndarray:
+        times = np.array([self.offset]) if self.offset > 0.0 else np.empty(0)
+        return times[(times >= start) & (times <= stop)]
+
+    def grids(self) -> list:
+        """Its grids (see ``curve_grids``): to the offset plus ``scale``
+        doubled ``k`` times, a step of that time over ``steps``."""
+        if not self.counts:
+            return []
+        ends = self.offset + self.scale * 2.0 ** np.arange(64)
+        return [(float(end) / self.steps, float(end)) for end in ends]
+
+    def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
+        """The unit's expected failures before each time ``x``: its life's
+        cumulative hazard there (from its survival function where the
+        model gives no hazard, or a NaN one), each a repair."""
+        x = np.asarray(x, dtype=float)
+        with np.errstate(divide="ignore", invalid="ignore", over="ignore"):
+            hazard = np.asarray(self.life.Hf(x), dtype=float).reshape(x.shape)
+            missing = np.isnan(hazard)
+            if missing.any():
+                survival = np.asarray(self.life.sf(x[missing]), dtype=float)
+                hazard[missing] = -np.log(np.clip(survival, 0.0, 1.0))
+        return _events(np.maximum(hazard, 0.0))
+
+    def atoms(self, stop: float) -> Atoms:
+        return Atoms.none()
+
+
 class ShiftedCurve:
     """A unit on a calendar in its long-run state, ``shift`` into ``curve``
     (one settled into repeating with its ``period``): from new, then far
@@ -1624,6 +1756,17 @@ class ShiftedCurve:
         times = self.curve.knots(start + self.shift, stop + self.shift)
         times = times - self.shift
         return times[(times >= start) & (times <= stop)]
+
+    def breaks(self, start: float, stop: float) -> np.ndarray:
+        times = curve_breaks(self.curve, start + self.shift, stop + self.shift)
+        times = times - self.shift
+        return times[(times >= start) & (times <= stop)]
+
+    def grids(self) -> list:
+        return [
+            (step, until - self.shift)
+            for step, until in curve_grids(self.curve)
+        ]
 
     def _past(self) -> Atoms:
         """The curve's events at the start itself, which are past (the
@@ -1714,14 +1857,33 @@ class StartedBlockCurve:
         )
 
     def knots(self, start: float, stop: float) -> np.ndarray:
-        parts = [self.head.knots(start, min(stop, self.length))]
+        return self._joined(start, stop, lambda curve, a, b: curve.knots(a, b))
+
+    def breaks(self, start: float, stop: float) -> np.ndarray:
+        return self._joined(start, stop, curve_breaks)
+
+    def _joined(self, start: float, stop: float, times_of) -> np.ndarray:
+        """``times_of(curve, start, stop)`` of the head to its end and of
+        the tail after it, with the time between them."""
+        parts = [times_of(self.head, start, min(stop, self.length))]
         if stop >= self.length:
-            later = self.tail.knots(
-                max(start - self.length, 0.0), stop - self.length
+            later = times_of(
+                self.tail, max(start - self.length, 0.0), stop - self.length
             )
             parts += [np.array([self.length]), later + self.length]
         times = np.concatenate(parts)
         return times[(times >= start) & (times <= stop)]
+
+    def grids(self) -> list:
+        head = [
+            (step, min(until, self.length))
+            for step, until in curve_grids(self.head)
+        ]
+        tail = [
+            (step, until + self.length)
+            for step, until in curve_grids(self.tail)
+        ]
+        return head + tail
 
 
 class SystemCurve:
@@ -1755,3 +1917,12 @@ class SystemCurve:
     def knots(self, start: float, stop: float) -> np.ndarray:
         parts = [curve.knots(start, stop) for curve in self.curves.values()]
         return np.concatenate(parts) if parts else np.array([start])
+
+    def breaks(self, start: float, stop: float) -> np.ndarray:
+        parts = [curve_breaks(c, start, stop) for c in self.curves.values()]
+        return np.concatenate(parts) if parts else np.array([start])
+
+    def grids(self) -> list:
+        return [
+            g for curve in self.curves.values() for g in curve_grids(curve)
+        ]

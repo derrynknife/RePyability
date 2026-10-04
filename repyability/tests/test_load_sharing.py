@@ -81,30 +81,28 @@ def weibull_aft():
 @pytest.fixture(scope="module")
 def other_aft():
     """A different Weibull-AFT unit: with ``weibull_aft``, a group of
-    different units, which is simulated (a Kaplan-Meier fit)."""
+    different units, which only the simulations take."""
     return _weibull_aft(2, 120.0)
 
 
-def test_reproducible_with_seed(weibull_aft, other_aft):
+def test_draws_are_reproducible_with_a_seed(weibull_aft, other_aft):
     units = [weibull_aft, other_aft]
-    a = LoadSharingModel(units, load=2.0, k=1, mc_samples=500, seed=7)
-    b = LoadSharingModel(units, load=2.0, k=1, mc_samples=500, seed=7)
-    assert a.is_simulated is True
-    t = np.array([30.0, 90.0])
-    assert np.allclose(a.sf(t), b.sf(t))
+    group = LoadSharingModel(units, load=2.0, k=1)
+    assert group.is_simulated is True
+    assert np.array_equal(group.random(50, seed=7), group.random(50, seed=7))
 
 
-def test_a_simulated_group_has_one_mean(weibull_aft, other_aft):
-    # The mean of the lifetimes its fit is made from, the same at every
-    # call, and made without touching numpy's global RNG.
-    group = LoadSharingModel(
-        [weibull_aft, other_aft], load=2.0, k=1, mc_samples=500, seed=7
-    )
+def test_a_group_of_different_units_estimates_its_mean(weibull_aft, other_aft):
+    # From new draws, asked for, without touching numpy's global RNG.
+    group = LoadSharingModel([weibull_aft, other_aft], load=2.0, k=1)
     assert group.is_simulated
+    with pytest.raises(NotImplementedError, match=r"mean\(mc_samples="):
+        group.mean()
     before = np.random.get_state()[1].copy()
-    assert group.mean() == group.mean() == group.random(500, seed=7).mean()
+    estimate = group.mean(mc_samples=500, seed=7)
+    assert estimate == group.random(500, seed=7).mean()
     assert np.array_equal(np.random.get_state()[1], before)
-    assert group.mean(mc_samples=500, seed=8) != group.mean()
+    assert group.mean(mc_samples=500, seed=8) != estimate
 
 
 # -- dependent failure: sharing shortens life -----------------------------
@@ -152,11 +150,7 @@ def test_rbd_is_time_varying_and_analytic(rbd, weibull_aft, other_aft):
     assert numerical.is_analytically_solvable() is True
     simulated = NonRepairableRBD(
         [("s", "g"), ("g", "t")],
-        {
-            "g": LoadSharingModel(
-                [weibull_aft, other_aft], load=2.0, mc_samples=500
-            )
-        },
+        {"g": LoadSharingModel([weibull_aft, other_aft], load=2.0)},
     )
     assert simulated.get_non_analytic_nodes() == {"g": "LoadSharingModel"}
 
@@ -212,14 +206,12 @@ def test_empty_units_rejected():
         ([[30.0], [90.0]], (2, 1)),
     ],
 )
-@pytest.mark.parametrize("simulated", [True, False])
-def test_a_group_gives_the_shape_it_is_given(x, shape, simulated):
-    """A group, simulated (a Kaplan-Meier fit) or numerical, answers in the
-    shape of its query, a float for one time, as the closed forms do
-    (surpyval#381)."""
-    units = [_weibull_aft(1, 80.0), _weibull_aft(2 if simulated else 1, 80.0)]
-    group = LoadSharingModel(units, load=2.0, k=1, mc_samples=500, seed=7)
-    assert group.is_simulated is simulated
+def test_a_group_gives_the_shape_it_is_given(x, shape):
+    """A numerical group answers in the shape of its query, a float for one
+    time, as the closed forms do (surpyval#381)."""
+    units = [_weibull_aft(1, 80.0), _weibull_aft(1, 80.0)]
+    group = LoadSharingModel(units, load=2.0, k=1)
+    assert group.is_simulated is False
     for function in (group.sf, group.ff):
         assert np.shape(function(x)) == shape
     assert isinstance(group.sf(60.0), float)

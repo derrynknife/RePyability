@@ -255,7 +255,9 @@ def test_a_nested_rbd_s_twin():
     assert outer.analysis_routes()["availability"].twin == (
         "the system without the limit on repair crews in 'N'."
     )
-    plain = outer.availability(1000.0, mc_samples=1000, seed=1)
+    plain = outer.availability(
+        1000.0, mc_samples=1000, seed=1, conditional=False
+    )
     controlled = outer.availability(
         1000.0, mc_samples=1000, seed=1, control_variate=True
     )
@@ -309,4 +311,203 @@ def test_a_control_of_values_that_do_not_vary():
     assert control.coefficient == 0.0 and control.correlation == 0.0
     np.testing.assert_array_equal(control.controlled([0.9, 0.9, 0.9]), 0.9)
     assert control.variance_reduction == 1.0
-    assert set(control) == {"twin", "exact", "coefficient", "correlation"}
+    assert set(control) == {
+        "twin",
+        "exact",
+        "coefficient",
+        "correlation",
+        "itself",
+    }
+
+
+def test_a_system_that_is_its_own_twin_is_simulated_once(monkeypatch):
+    # Its twin's run, drawn from the same streams, is its own to the last
+    # bit (#186): one run a round, where a twin that differs runs beside it.
+    runs = []
+    plain = RepairableRBD._run
+
+    def counted(self, *args, **kwargs):
+        runs.append(self)
+        return plain(self, *args, **kwargs)
+
+    monkeypatch.setattr(RepairableRBD, "_run", counted)
+    own = RepairableRBD(EDGES, {n: unit() for n in "ABC"})
+    result = own.availability(
+        300.0, mc_samples=100, seed=3, control_variate=True
+    )
+    assert runs == [own]
+    np.testing.assert_array_equal(
+        result.control_variate.twin, result.uptimes / 300.0
+    )
+    runs.clear()
+    crewed().availability(300.0, mc_samples=100, seed=3, control_variate=True)
+    assert len(runs) == 2
+
+
+def test_minimal_repair_in_no_time_is_kept_by_the_twin():
+    # Its values over a window are exact (#179), so the twin keeps it, and
+    # a system of it and plain components is its own twin.
+    pump = {
+        "reliability": surv.Weibull.from_params([100.0, 2.5]),
+        "repairability": "instant",
+        "repair": {"model": "kijima2", "q": 1.0},
+        "repair_cost": 1.0,
+    }
+    rbd = RepairableRBD(EDGES, {"A": pump, "B": unit(), "C": unit()})
+    assert rbd.analysis_routes()["availability"].twin.startswith(
+        "the system itself"
+    )
+    result = rbd.availability(
+        300.0, mc_samples=100, seed=1, control_variate=True
+    )
+    assert result.mean_availability_interval().method == "exact"
+    assert result.cost.mean_interval().estimate == pytest.approx(
+        rbd.expected_cost(300.0).mean, rel=1e-12
+    )
+    # Repaired otherwise, it is left out.
+    partly = RepairableRBD(
+        EDGES,
+        {"A": dict(pump, repair={"model": "kijima2", "q": 0.5}), "B": unit()}
+        | {"C": unit()},
+    )
+    assert "imperfect repair" in partly.analysis_routes()["availability"].twin
+
+
+def test_the_twin_builds_each_curve_once(monkeypatch):
+    # Its exact cost and availability share the components' curves (#185),
+    # and give what they give apart.
+    rbd = RepairableRBD(EDGES, {n: unit() for n in "ABC"})
+    twin, _ = rbd._twin()
+    apart = (twin.expected_cost(300.0).mean, twin.mission_availability(300.0))
+    built = []
+    plain = RepairableRBD._unit_curve
+
+    def counted(self, node, *args, **kwargs):
+        built.append(node)
+        return plain(self, node, *args, **kwargs)
+
+    monkeypatch.setattr(RepairableRBD, "_unit_curve", counted)
+    with twin._sharing_curves():
+        together = (
+            twin.expected_cost(300.0).mean,
+            twin.mission_availability(300.0),
+        )
+    assert sorted(built) == ["A", "B", "C"]
+    assert together == apart
+    assert twin._curve_memo is None
+    built.clear()
+    rbd.availability(300.0, mc_samples=20, seed=1, control_variate=True)
+    assert sorted(built) == ["A", "B", "C"]
+
+
+def test_a_run_takes_exact_values_by_default(monkeypatch):
+    # #187: a system that is its own twin has exact expected values over the
+    # window, which every run takes; one to a tolerance stops at once.
+    rbd = RepairableRBD(EDGES, {n: unit() for n in "ABC"})
+    run = rbd.availability(300.0, mc_samples=50, seed=3, tolerance=1e-6)
+    assert run.n_simulations == 50
+    interval = run.mean_availability_interval()
+    assert interval.method == "exact"
+    assert interval.estimate == rbd.mission_availability(300.0)
+    cost = rbd.cost(300.0, mc_samples=50, seed=3, tolerance=1e-6)
+    assert cost.mean_interval().method == "exact"
+    assert cost.mean_interval().estimate == pytest.approx(
+        rbd.expected_cost(300.0).mean, rel=1e-12
+    )
+    # Without a tolerance too; its simulations are a plain run's, and False
+    # simulates to the end.
+    fixed = rbd.availability(300.0, mc_samples=50, seed=3)
+    assert fixed.control_variate.itself
+    assert fixed.mean_availability_interval() == interval
+    plain = rbd.availability(
+        300.0, mc_samples=50, seed=3, control_variate=False
+    )
+    assert plain.control_variate is None
+    assert plain.mean_availability_interval().method is None
+    for other in (run, fixed):
+        np.testing.assert_array_equal(other.uptimes, plain.uptimes)
+        np.testing.assert_array_equal(other.availability, plain.availability)
+    with pytest.warns(RuntimeWarning, match="did not converge"):
+        forced = rbd.availability(
+            300.0,
+            mc_samples=50,
+            seed=3,
+            tolerance=1e-6,
+            max_samples=100,
+            control_variate=False,
+        )
+    assert forced.n_simulations == 100
+    assert forced.control_variate is None
+    # As shards, and from chunks of the run.
+    sharded = rbd.availability(300.0, mc_samples=50, seed=3, shard_map=map)
+    assert sharded.mean_availability_interval() == interval
+    chunks = [
+        rbd.simulate_chunk(300.0, a, b, seed=3) for a, b in ((0, 20), (20, 50))
+    ]
+    merged = rbd.availability_from_chunks(chunks)
+    assert merged.mean_availability_interval() == interval
+    # With a twin that differs, it is as before.
+    with pytest.warns(RuntimeWarning, match="did not converge"):
+        crewed_run = crewed().availability(
+            300.0, mc_samples=50, seed=3, tolerance=1e-6, max_samples=100
+        )
+    assert crewed_run.control_variate is None
+
+    # Should its exact values be out of reach, it simulates.
+    def refuse(*args, **kwargs):
+        raise NotImplementedError("too many grid points")
+
+    monkeypatch.setattr(RepairableRBD, "_twin_exact", refuse)
+    with pytest.warns(RuntimeWarning, match="did not converge"):
+        fallen = rbd.availability(
+            300.0, mc_samples=50, seed=3, tolerance=1e-6, max_samples=100
+        )
+    assert fallen.control_variate is None
+    assert fallen.n_simulations == 100
+    with pytest.raises(NotImplementedError, match="too many grid points"):
+        rbd.availability(300.0, mc_samples=50, seed=3, control_variate=True)
+
+
+def test_a_run_takes_the_exact_values_of_a_system_tied_together():
+    # Exponential units sharing a crew are not their own twin, but the
+    # crews' chain works out their expected values, which a run takes.
+    exponential = {
+        "reliability": E([0.01]),
+        "repairability": E([0.2]),
+        "repair_cost": 10.0,
+    }
+    rbd = RepairableRBD(
+        EDGES,
+        {n: exponential for n in "ABC"},
+        repair_crews=1,
+        downtime_cost_rate=5.0,
+    )
+    assert rbd.analysis_routes()["availability"].twin.startswith(
+        "the system without the limit on repair crews"
+    )
+    run = rbd.availability(300.0, mc_samples=50, seed=3)
+    assert run.control_variate.itself
+    interval = run.mean_availability_interval()
+    assert interval.method == "exact"
+    assert interval.estimate == rbd.mission_availability(300.0)
+    assert run.cost.mean_interval().estimate == pytest.approx(
+        rbd.expected_cost(300.0).mean, rel=1e-12
+    )
+    # control_variate=True takes the twin, without the crews' limit.
+    twin = rbd.availability(300.0, mc_samples=50, seed=3, control_variate=True)
+    assert not twin.control_variate.itself
+    np.testing.assert_array_equal(twin.uptimes, run.uptimes)
+
+
+def test_the_route_says_the_expected_values_need_no_simulation():
+    own = RepairableRBD(EDGES, {n: unit() for n in "ABC"}).analysis_routes()
+    for name in ("availability", "cost"):
+        assert "mission_availability, expected_events" in own[name].reason
+        assert "by default a run's mean intervals are theirs" in (
+            own[name].reason
+        )
+    # Weibull lives sharing a crew have no exact values over a window.
+    assert (
+        "mission_availability"
+        not in crewed().analysis_routes()["availability"].reason
+    )

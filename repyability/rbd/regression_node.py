@@ -37,12 +37,10 @@ def _is_semiparametric(model) -> bool:
     Cox model): its baseline is an estimate on the observed range only,
     with no tail beyond it. (Recognised by its type, not by its survival
     curve.)"""
-    try:
-        from surpyval.univariate.regression import (
-            semi_parametric_regression_model as semiparametric,
-        )
-    except ImportError:  # pragma: no cover
-        return False
+    from surpyval.univariate.regression import (
+        semi_parametric_regression_model as semiparametric,
+    )
+
     return isinstance(model, semiparametric.SemiParametricRegressionModel)
 
 
@@ -209,10 +207,9 @@ class RegressionNode:
 
         ``model.ff(x, Z)`` at the fixed covariates, or
         ``-expm1(-model.Hf_tvc(x, schedule))`` along the schedule: worked
-        out in its own right, so that a small one keeps its precision.
-        Along a schedule that is the precision of the model's ``Hf_tvc``,
-        which for a proportional-odds model loses it where the cumulative
-        hazard is small (surpyval #528).
+        out in its own right, so that a small one keeps its precision (for
+        a proportional-odds model along a schedule too, from surpyval 0.22:
+        surpyval #528).
 
         Parameters
         ----------

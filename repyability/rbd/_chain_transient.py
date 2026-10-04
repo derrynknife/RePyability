@@ -41,11 +41,11 @@ within ``MAX_WORK`` is refused.
 """
 
 import math
-from typing import Dict, List, Sequence
+from typing import Any, Dict, List, Sequence
 
 import numpy as np
 
-from ._point_availability import Atoms, _events
+from ._point_availability import Atoms, _events, curve_breaks, curve_grids
 
 #: How close (in total variation) the chain must come to its long run to be
 #: taken to have reached it; or, if rounding in its steps keeps it further
@@ -284,6 +284,111 @@ def pattern_weights(availabilities: Sequence[np.ndarray]) -> np.ndarray:
     return weights
 
 
+def pattern_importances(
+    ups: np.ndarray, available: Sequence[np.ndarray]
+) -> List[np.ndarray]:
+    """For independent nodes up with the probabilities ``available`` (one
+    array over the rows of ``ups`` each), and ``ups[:, m]`` the system's
+    availability with them in pattern ``m`` (see ``pattern_weights``):
+    each node's Birnbaum importance, the difference that it being up
+    makes, over the patterns of the others."""
+    count = len(available)
+    rest = np.arange(2 ** max(count - 1, 0))
+    out = []
+    for j in range(count):
+        others = list(available[:j]) + list(available[j + 1 :])  # noqa
+        # Each pattern of the others, with node j down and up.
+        down = ((rest >> j) << (j + 1)) | (rest & ((1 << j) - 1))
+        out.append(
+            np.sum(
+                pattern_weights(others)
+                * (ups[:, down | (1 << j)] - ups[:, down]),
+                axis=1,
+            )
+        )
+    return out
+
+
+class CrewSystem:
+    """A system whose components wait for repair crews, as the analyses
+    over a window evaluate it at given times (see
+    ``RepairableRBD._window_counts``, #162). Its crews' ``Uniformized``
+    chain has, for each pattern of its nested RBDs up and down (``2 **
+    len(nested)`` of them, see ``pattern_weights``), whether it is up in
+    each state, then for each pattern the rate of its failures by the
+    chain's components in each state, then whether each of the chain's
+    ``served`` components is up; with ``causes``, then for each pattern
+    the rate of its failures by each of them (#199). The nested RBDs have
+    crews of their own, so they are independent of the chain: at a time,
+    the system is up with probability ``sum_m p(t) u_m w_m(t)``, ``w_m``
+    the pattern's probability from their availabilities then, and a nested
+    RBD's Birnbaum importance is the difference that it being up makes."""
+
+    def __init__(
+        self, chain: Uniformized, nested: Sequence, served=(), causes=False
+    ):
+        self.chain = chain
+        self.nested = list(nested)
+        self.served = list(served)
+        self.patterns = 2 ** len(self.nested)
+        #: The chain's components whose failures are counted apart.
+        self.cause_keys = list(self.served) if causes else []
+        #: For the pieces of the integrals: the chain's knots and settling.
+        self.curve = ChainCurve(chain)
+
+    def evaluate(self, values: dict, x: np.ndarray):
+        """At the times ``x``, with each nested RBD up with the probability
+        ``values[node]`` (an array over ``x``): each nested RBD's Birnbaum
+        importance (a dict), the system's availability and unavailability,
+        the rate of its failures by the chain's components, and each of
+        those components' availability (a dict)."""
+        x = np.asarray(x, dtype=float).ravel()
+        columns = self.chain.values(x)
+        count = self.patterns
+        ups, rates = columns[:, :count], columns[:, count : 2 * count]
+        own = columns[:, 2 * count : 2 * count + len(self.served)]  # noqa
+        available = [
+            np.broadcast_to(np.asarray(values[node], dtype=float), x.shape)
+            for node in self.nested
+        ]
+        weights = pattern_weights(available)
+        up = np.sum(ups * weights, axis=1)
+        rate = np.sum(rates * weights, axis=1)
+        importance = dict(
+            zip(self.nested, pattern_importances(ups, available))
+        )
+        chain_up = {node: own[:, k] for k, node in enumerate(self.served)}
+        up = np.clip(up, 0.0, 1.0)
+        return importance, up, 1.0 - up, np.maximum(rate, 0.0), chain_up
+
+    def caused(self, values: dict, x: np.ndarray) -> dict:
+        """The rate of the system's failures by each of the chain's
+        components at the times ``x`` (with ``causes``; else none), the
+        nested RBDs up with the probabilities ``values[node]``."""
+        if not self.cause_keys:
+            return {}
+        x = np.asarray(x, dtype=float).ravel()
+        columns = self.chain.values(x)
+        weights = pattern_weights(
+            [
+                np.broadcast_to(np.asarray(values[node], dtype=float), x.shape)
+                for node in self.nested
+            ]
+        )
+        base, count = 2 * self.patterns + len(self.served), len(self.served)
+        return {
+            node: np.maximum(
+                np.sum(
+                    columns[:, base + k + count * np.arange(self.patterns)]
+                    * weights,
+                    axis=1,
+                ),
+                0.0,
+            )
+            for k, node in enumerate(self.served)
+        }
+
+
 class CrewCurve:
     """A system whose components wait for repair crews, over time, from the
     crews' ``Uniformized`` chain: its point availability is ``sum_m p(t)
@@ -294,9 +399,12 @@ class CrewCurve:
     own, so they are independent of the chain. It is constant after
     ``settle``, or repeats with ``period`` with the nested RBDs'.
 
-    With no nested RBDs the chain's second vector is the rate of the
-    system's failures in each state, and its integrals give the system's
-    uptime and failures from 0 exactly (``integral``, ``events``)."""
+    The chain's next vectors are the rates of the system's failures by its
+    components, a pattern at a time (see ``CrewSystem``). With no nested
+    RBDs, its integrals give the system's uptime and failures from 0
+    exactly (``integral``, ``events``); with them, its events are counted
+    as another RBD counts its nodes', with the nested RBDs' importance
+    taken over the chain (#162)."""
 
     def __init__(self, rbd, chain: Uniformized, nested: dict):
         from .repairable_rbd import _settling
@@ -305,6 +413,10 @@ class CrewCurve:
         self.chain = chain
         self.nested = nested
         self.patterns = 2 ** len(nested)
+        self.system = CrewSystem(chain, list(nested))
+        #: As a node with capacities of another RBD, its capacity over time
+        #: (``repairable_rbd._CrewCapacity``, set by ``_nested_curve``).
+        self.capacity: Any = None
         self.settle, self.period = _settling(
             [ChainCurve(chain), *nested.values()]
         )
@@ -325,31 +437,45 @@ class CrewCurve:
         assert not self.nested, "the nested RBDs' curves need quadrature"
         return np.maximum(self.chain.integrals(x)[:, 0], 0.0)
 
-    def _require_alone(self) -> None:
-        """Raise unless the chain counts the system's events: there are
-        no nested RBDs."""
-        if self.nested:
-            self.rbd._no_crew_window(next(iter(self.nested)))
-
     def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
         """The system's expected failures before each time ``x``, and its
-        planned outages: none, as the crews' components have no scheduled
-        maintenance."""
-        self._require_alone()
+        planned outages: the chain's components have no scheduled
+        maintenance, but its nested RBDs may."""
         x = np.asarray(x, dtype=float)
+        if self.nested:
+            counts = self.rbd._window_counts(
+                self.nested, x.ravel(), set(), set(), "p", crew=self.system
+            )
+            return _events(
+                counts["failures"].reshape(x.shape),
+                counts["planned"].reshape(x.shape),
+            )
         failures = np.maximum(self.chain.integrals(x.ravel())[:, 1], 0.0)
         failures = failures.reshape(x.shape)
         return _events(failures, np.zeros_like(failures))
 
     def atoms(self, stop: float) -> Atoms:
-        """None: the chain moves only at random times."""
-        self._require_alone()
-        return Atoms.none()
+        """The system's failures and planned outages at exact times before
+        ``stop``: its nested RBDs', which the chain's do not share (it
+        moves only at random times)."""
+        if not self.nested:
+            return Atoms.none()
+        return self.rbd._system_atoms(self.nested, stop, crew=self.system)
 
     def knots(self, start: float, stop: float) -> np.ndarray:
         parts = [self.chain.knots(start, stop)]
         parts += [curve.knots(start, stop) for curve in self.nested.values()]
         return np.concatenate(parts)
+
+    def breaks(self, start: float, stop: float) -> np.ndarray:
+        parts = [self.chain.knots(start, stop)]
+        parts += [curve_breaks(c, start, stop) for c in self.nested.values()]
+        return np.concatenate(parts)
+
+    def grids(self) -> list:
+        return [
+            g for curve in self.nested.values() for g in curve_grids(curve)
+        ]
 
 
 class CrewNodeEvents:
