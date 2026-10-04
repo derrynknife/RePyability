@@ -1,7 +1,18 @@
 import functools
+import threading
 from contextlib import contextmanager
 
 import numpy as np
+
+#: Held while a simulation runs, in whichever thread (#216). The event loop
+#: keeps a run's state on the diagram (and its nested diagrams and
+#: components), and draws that cannot be streamed come from numpy's global
+#: RNG, which a seeded run seeds and restores, so two runs at once would
+#: cross. Simulations called from several threads run one at a time, each
+#: as it would alone: the Python loop holds the GIL anyway, and ``n_jobs``
+#: runs on processes, each with a lock of its own, or (numba's loop) on
+#: threads that do not take it. Re-entrant: a run may start others.
+SIMULATIONS = threading.RLock()
 
 
 @contextmanager
@@ -17,21 +28,24 @@ def numpy_seed(seed):
     simulation with ``seed=...`` is reproducible *without* disturbing the
     surrounding program's random stream. ``seed=None`` is a no-op (i.e. the
     simulation stays non-reproducible, using whatever global state exists).
+    Either way it holds ``SIMULATIONS``, so that another thread's draws
+    cannot come between a seeded simulation's.
 
     Parameters
     ----------
     seed : int or None
         The seed to apply, or None to leave the global RNG untouched.
     """
-    if seed is None:
-        yield
-        return
-    state = np.random.get_state()
-    try:
-        np.random.seed(seed)
-        yield
-    finally:
-        np.random.set_state(state)
+    with SIMULATIONS:
+        if seed is None:
+            yield
+            return
+        state = np.random.get_state()
+        try:
+            np.random.seed(seed)
+            yield
+        finally:
+            np.random.set_state(state)
 
 
 def check_probability(func):

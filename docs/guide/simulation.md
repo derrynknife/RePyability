@@ -487,6 +487,19 @@ affinity, where the platform reports one). A container limited by a CPU
 quota rather than by affinity can report more CPUs than it may use: set
 `n_jobs` explicitly there.
 
+### From several threads
+
+A diagram kept in memory may be simulated from several threads at once,
+as a tool or a web server does: each call gives what it gives alone, the
+same for the same seed. The simulations take turns, one run at a time in
+the process, since the event loop keeps a run's state on the diagram and
+draws that cannot be streamed come from numpy's global random number
+generator. (Python threads do not run the event loop side by side anyway;
+for that, use `n_jobs`, which runs processes, or the compiled engine's
+threads.) The exact methods need no turns. The event-stepping methods
+(`initialize_event_queue`, `next_event`) keep their state on the diagram
+between calls: one thread at a time may step a diagram through.
+
 ## A large run's curve
 
 `availability()`'s curve has a point at every time a simulated system

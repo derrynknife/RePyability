@@ -153,6 +153,7 @@ if TYPE_CHECKING:
 
 from repyability.rbd.routes import AnalysisRoute
 from repyability.utils.checks import structure_method
+from repyability.utils.wrappers import SIMULATIONS
 
 
 class _StreamedRBD:
@@ -17067,7 +17068,19 @@ class RepairableRBD(RBD):
             first, count = first + count, more
         return tally, (control, cost_control)
 
-    def _run(
+    def _run(self, *args, **kwargs) -> "_Tally":
+        """A run of simulations (see ``_run_alone``), one at a time in the
+        process (``SIMULATIONS``, #216): the event loop keeps its state on
+        the diagram, and draws that cannot be streamed come from numpy's
+        global RNG. Not a ``sharded`` run, whose shards each run (and take
+        it) where they are sent: a ``shard_map`` on threads would wait for
+        it."""
+        if kwargs.get("sharded") is not None:
+            return self._run_alone(*args, **kwargs)
+        with SIMULATIONS:
+            return self._run_alone(*args, **kwargs)
+
+    def _run_alone(
         self,
         t_simulation: float,
         working_nodes,
@@ -17211,7 +17224,10 @@ class RepairableRBD(RBD):
         finally:
             if runner is not None:
                 runner.close()
-            np.random.set_state(after)
+            if sharded is None:
+                # A sharded run draws nothing here, and another thread's
+                # run may have the global RNG now.
+                np.random.set_state(after)
             self._forget_run()
         return tally
 

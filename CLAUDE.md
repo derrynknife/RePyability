@@ -44,6 +44,17 @@
   system's own events (`_simulate`) and a nested RBD's (`_advance`, which
   copies `RepairableRBD.next_event`) are written out separately, for speed:
   a change to one goes into the other too.
+- **Simulations take turns across threads (#216).** The event loop keeps
+  a run's state on the diagram (`_RUN_STATE`) and draws that cannot be
+  streamed come from numpy's global RNG, so a run holds
+  `repyability.utils.wrappers.SIMULATIONS`, a process-wide `RLock`:
+  `RepairableRBD._run` (but a sharded run's parent, whose shards take it
+  where they run, so a `shard_map` on threads cannot wait on it),
+  `numpy_seed`, and `_timeline_runs._looped`. New code that runs the loop
+  or seeds the global RNG goes through one of these; threads that work
+  for a run (numba's, the timelines' stream draws) must not take it.
+  `test_threads.py` checks seeded calls on threads give their serial
+  results.
 - **CI's plain test jobs have no numba.** A test that asks for
   `engine="numba"` skips without it (`pytest.importorskip("numba")`, or
   `needs_numba`), unless what it checks comes before numba is needed: a

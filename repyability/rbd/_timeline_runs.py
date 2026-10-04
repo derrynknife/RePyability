@@ -39,6 +39,7 @@ from repyability.timelines import (
     _stacked,
     _system_merge,
 )
+from repyability.utils.wrappers import SIMULATIONS
 
 #: The most simulations whose draws are laid out at once.
 _BATCH = 4096
@@ -554,15 +555,24 @@ def _looped(
     run in the event loop, which takes changes at the same time in its own
     order."""
     t_end, working, broken, entropy, antithetic = run
-    ctx = rbd._context(
-        t_end, working, broken, "p", None, entropy, antithetic, history=True
-    )
     records = Records(len(rbd.components))
-    try:
-        for r in tied.tolist():
-            records.add(rbd._replicate(ctx, first + r).history)
-    finally:
-        rbd._forget_run()
+    # The loop keeps its state on the diagram: one run at a time (#216).
+    with SIMULATIONS:
+        ctx = rbd._context(
+            t_end,
+            working,
+            broken,
+            "p",
+            None,
+            entropy,
+            antithetic,
+            history=True,
+        )
+        try:
+            for r in tied.tolist():
+                records.add(rbd._replicate(ctx, first + r).history)
+        finally:
+            rbd._forget_run()
     parts, recorded = records.data(t_end)
     data = {
         node: _spliced(data[node], tied, part)

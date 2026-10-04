@@ -34,6 +34,13 @@ other release, fixes included, the minor.
 
 ### Fixed
 
+- **Simulations of one diagram from several threads (#216)** crashed
+  (`AttributeError: ... '_cancelled'`) or returned another seed's result:
+  the event loop keeps a run's state on the diagram, and draws that cannot
+  be streamed come from numpy's global RNG. The simulations now take turns,
+  one run at a time in the process, so each call gives what it gives
+  alone; the exact methods, and `n_jobs`' processes and the compiled
+  engine's threads, are not held up.
 - **`NonRepairableRBD.node_mttf()` leaves junctions out (#228)**, as the
   importance measures do, where it raised an `AttributeError` on a
   `PerfectReliability` node though `analysis_routes()` reported it exact;
