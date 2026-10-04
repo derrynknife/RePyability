@@ -523,8 +523,11 @@ result.mean_up_time      # -> 27.20    against the exact 27.27
 result.failure_frequency # -> 0.035075 against the exact 0.03497
 ```
 
-The result also behaves as a read-only mapping (`result["availability"]`,
-`result.keys()`, `dict(result)`), so dict-style code keeps working.
+Its values are attributes and properties; what takes a confidence level,
+an interval, is a method. The result also behaves as a read-only mapping
+(`result["availability"]`, `result.keys()`, `dict(result)`), so dict-style
+code keeps working, and `result.to_dict()` gives it as plain data, ready for
+`json.dumps` (#235).
 
 ### Criticality measures
 

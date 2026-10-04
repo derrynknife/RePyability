@@ -95,8 +95,9 @@ def assert_same_rng_state(a, b):
 def no_fast_path(monkeypatch):
     """Force every sampler back onto its original draw-at-a-time code."""
     monkeypatch.setattr(non_repairable_rbd, "row_sampler", lambda model: None)
-    for module in (standby_node, repairable_rbd):
-        monkeypatch.setattr(module, "inverse_sampler", lambda model: None)
+    monkeypatch.setattr(standby_node, "inverse_sampler", lambda model: None)
+    # A repairable diagram's streams sample through stream_sampler (#227).
+    monkeypatch.setattr(repairable_rbd, "stream_sampler", lambda model: None)
 
 
 def assert_same(a, b, path="result"):
