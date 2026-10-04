@@ -146,10 +146,15 @@ follow_imports = 'skip'
 # Coverage
 [tool.coverage.run]
 source = ["repyability"]
-# The compiled loop, and the compiled sorting of a run's changes, run as
+# The compiled loop, decision diagram and sorting of a run's changes run as
 # machine code, which coverage cannot trace (their equivalence with the
-# Python loop, and with numpy's sorting, is tested instead).
-omit = ["*/tests/*", "*/rbd/_kernel.py", "*/rbd/_time_order.py"]
+# Python code, and with numpy's sorting, is tested instead).
+omit = [
+    "*/tests/*",
+    "*/rbd/_kernel.py",
+    "*/rbd/_bdd_kernel.py",
+    "*/rbd/_time_order.py",
+]
 
 [tool.coverage.report]
 # The library (excluding tests) must stay above this bar.

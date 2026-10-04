@@ -38,8 +38,9 @@ intervals are chosen for limited crews and staggered tests, total costs are
 discounted and redundancy is allocated a train at a time (#184). Meshed
 diagrams, networks and fault trees are worked out in a fraction of the
 time, and a core too meshed to work out is simulated rather than built
-without end (#171, #172, #173); the analyses over a window cost little more
-than the point curve (#164); and a capacity run's curve follows
+without end (#171, #172, #173); with numba, large decision diagrams are
+built and replayed compiled (#202); the analyses over a window cost little
+more than the point curve (#164); and a capacity run's curve follows
 `curve_points` (#190) and is built in linear passes (#201). Everything 0.11
 deprecated is gone (#149).
 
@@ -703,6 +704,22 @@ properties, and calling them, like `StandbyModel`'s and
   Python engine. The exact and numerical analyses refuse, saying why, as
   `analysis_routes()` reports, and so does the compiled engine. Raise the
   limit to try harder.
+- **Large decision diagrams are built and replayed compiled, with numba
+  (#202).** With numba installed, a meshed core whose search may be long
+  (`bdd.COMPILED`, `"auto"`) has its decision diagram built by the same
+  search compiled (`_bdd_kernel.build`), each state two integers: each
+  undecided vertex's count of reached predecessors in a field of its own,
+  laid out alike for every state at a step, and the values of the
+  repeated components still to come in bits. A plan of 5,000 steps or more
+  is replayed compiled for its probabilities and their gradient, 16
+  columns at a time, into buffers kept with the decomposition
+  (`modular.COMPILED_STEPS`). The plan is the same step for step, the
+  steps counted against `STEP_LIMIT` are the same (so a core is too meshed
+  on both paths or neither), and the values are the same to the last bit.
+  A 12 × 24 grid of 288 nodes is built in 0.19 s rather than 0.9, its
+  reliability at 200 times takes 0.03 s rather than 0.17, its Birnbaum
+  importances 0.03 s rather than 0.65, and its mean time to failure 5.2 s
+  rather than 53. Without numba nothing changes.
 - **A network's decision diagram is worked out a decision at a time, so a
   10 × 10 grid is exact (#173).** The states before each decision (each a
   way the frontier can be joined up) were found one by one; they are now

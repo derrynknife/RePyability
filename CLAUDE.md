@@ -114,6 +114,15 @@
   changes or more. A change to how either orders, groups or adds up the
   changes goes into both: `test_time_order.py` checks them against each
   other, with the sort's blocks of every size.
+- **A core's decision diagram is built and replayed on two paths that
+  must agree step for step** (#202): `bdd._build` and, where numba is
+  installed and the core's search may be long, `_bdd_kernel.build`, whose
+  states `bdd._compiled_build` packs into integers; and a plan's
+  probabilities and gradient by `modular.Decomposition._core_value` and
+  `_core_gradient` or `_bdd_kernel.replay` and `value_and_gradient`. A
+  change to the search (its states, its order, the steps it counts
+  against `STEP_LIMIT`) or to the replay's arithmetic goes into both:
+  `test_bdd_compiled.py` checks them against each other.
 - **The random streams (`repyability/rbd/_streams.py`) define every seeded
   result.** Changing how a stream is named, seeded or laid out (its width,
   `BLOCK_DRAWS`, `MAX_WIDTH`, `first_rows`, the expected draws in

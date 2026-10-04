@@ -278,6 +278,13 @@ routes["availability"].engine      # 'numba' with numba installed, else 'python'
   `cost` and `simulate_timelines`, on the Python engine. The exact and
   numerical analyses refuse, saying why (`analysis_routes()` lists them).
   Raise the limit to try harder: the mesh of 70 nodes takes 45 seconds.
+  With numba installed (`pip install "repyability[fast]"`), a large
+  decision diagram is built, and its probabilities and their gradient
+  worked out, compiled, with the same plan and the same values to the
+  last bit: a 12 × 24 grid (288 nodes, 86 566 decisions) is built in 0.19
+  seconds rather than 0.9, its reliability at 200 times takes 0.03
+  seconds rather than 0.17, its Birnbaum importances 0.03 rather than
+  0.65, and its mean time to failure 5.2 seconds rather than 53.
 - **Simulations** are vectorised where the models allow it: `mean()` of a
   system of parametric components draws 100 000 lifetimes in well under a
   second. Availability simulations step through events, so their cost grows

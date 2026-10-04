@@ -46,6 +46,8 @@ from typing import (
 
 import numpy as np
 
+from repyability.rbd import _compiled
+
 # Value slots 0 and 1 of a plan: the system fails, the system works.
 FAIL, WORK = 0, 1
 
@@ -62,6 +64,23 @@ STEP_LIMIT = 25_000_000
 class TooLarge(NotImplementedError):
     """A core whose decision diagram needs more than ``STEP_LIMIT``
     steps."""
+
+
+#: Whether ``build`` runs compiled (``_bdd_kernel``, with numba installed):
+#: ``"auto"`` (the default) for a core whose diagram may be large (its
+#: order's ``_cost`` at least ``COMPILED_COST``), True for every core, False
+#: for none. The plan is the same either way, step for step.
+COMPILED: Any = "auto"
+#: The ``_cost`` from which ``"auto"`` compiles: below it the search takes a
+#: few hundredths of a second in Python, less than loading numba does. (A
+#: 10 by 20 grid's, ``2**17.4``, is built, with its first probabilities, in
+#: 0.17 s in Python and 0.07 s compiled; a 12 by 24 grid's, ``2**19.9``, in
+#: 0.9 s and 0.19 s.)
+COMPILED_COST = 2.0**15
+#: The bits of each of the two integers a compiled state is: the counts'
+#: fields, and the values of the variables drawn in several places still to
+#: come. A core whose states need more is built in Python.
+COMPILED_WIDTH = 62
 
 
 def order(
@@ -177,7 +196,9 @@ def build(
     """The decision diagram of the core whose vertices are ``sequence``, a
     topological order, as a plan (see the module docstring). ``variable``
     names the random variable each vertex stands for: two vertices with the
-    same variable are one component, drawn in two places.
+    same variable are one component, drawn in two places. Compiled when
+    numba is installed and the diagram may be large (see ``COMPILED``),
+    with the same plan.
 
     Returns
     -------
@@ -185,6 +206,179 @@ def build(
         ``(steps, root)``, each step ``(variable, active slot, inactive
         slot)``; ``root`` is 0 or 1 if the system never or always works.
     """
+    if COMPILED and _compiled.available():
+        if COMPILED is True or (
+            _cost(sequence, pred, succ, source, sink) >= COMPILED_COST
+        ):
+            plan = _compiled_build(
+                sequence, pred, succ, k, source, sink, variable
+            )
+            if plan is not None:
+                return plan
+    return _build(sequence, pred, succ, k, source, sink, variable)
+
+
+def _compiled_build(
+    sequence: Sequence[int],
+    pred: Mapping[int, Iterable[int]],
+    succ: Mapping[int, Iterable[int]],
+    k: Mapping[int, int],
+    source: int,
+    sink: int,
+    variable: Mapping[int, Hashable],
+) -> Optional[tuple]:
+    """``_build``, compiled (``_bdd_kernel.build``): the same plan, step for
+    step, and the same steps taken (``TooLarge`` past ``STEP_LIMIT``); None
+    for a core whose states do not fit in two integers (``COMPILED_WIDTH``
+    bits each).
+
+    A state's counts are an integer's fields: each position (the output's
+    is ``n``) has a field wide enough for its ``k``, from the step after its
+    first predecessor is decided (from the start for the input's
+    successors) until it is decided itself, and a position decided gives
+    its field up to those that come in after it. A variable drawn in several
+    places has a bit of a second integer, its value, from the step after
+    its first appearance until its last. At each step every state lays its
+    fields out alike, so equal states are equal integers."""
+    from repyability.rbd import _bdd_kernel
+
+    n = len(sequence)
+    position = {v: i for i, v in enumerate(sequence)}
+    position[sink] = n
+    needs = [k[v] for v in sequence] + [k[sink]]
+    if min(needs) < 1:
+        return None
+    later = [[position[w] for w in succ.get(v, ())] for v in sequence]
+    from_input = [position[w] for w in succ.get(source, ())]
+    # The step from which each position has a field (n + 1 for none).
+    alive_from = [n + 1] * (n + 1)
+    for w in from_input:
+        alive_from[w] = 0
+    for u, ends in enumerate(later):
+        for w in ends:
+            alive_from[w] = min(alive_from[w], u + 1)
+    bits = [need.bit_length() for need in needs]
+    names = list(dict.fromkeys(variable[v] for v in sequence))
+    index = {name: j for j, name in enumerate(names)}
+    variables = [index[variable[v]] for v in sequence]
+    first = [n] * len(names)
+    final = [-1] * len(names)
+    for i, x in enumerate(variables):
+        first[x] = min(first[x], i)
+        final[x] = i
+    # Lay the fields and the bits out, step by step, first fit: a field is
+    # given up after its position is decided, and a bit after its
+    # variable's last appearance.
+    entering: List[List[int]] = [[] for _ in range(n + 2)]
+    for w in range(n + 1):
+        if alive_from[w] <= n:
+            entering[alive_from[w]].append(w)
+    starting: List[List[int]] = [[] for _ in range(n + 2)]
+    ending: List[List[int]] = [[] for _ in range(n + 2)]
+    for x in range(len(names)):
+        if first[x] < final[x]:
+            starting[first[x] + 1].append(x)
+            ending[final[x] + 1].append(x)
+    offset = [0] * (n + 1)
+    name_bit = [0] * len(names)
+    used = names_used = 0
+    alive: List[List[int]] = []
+    pending = [0] * (n + 1)
+    current: List[int] = []
+    held = 0
+    for i in range(n + 1):
+        if i and alive_from[i - 1] <= i - 1:
+            used &= ~(((1 << bits[i - 1]) - 1) << offset[i - 1])
+            current.remove(i - 1)
+        for w in entering[i]:
+            mask = (1 << bits[w]) - 1
+            at = next(
+                (
+                    o
+                    for o in range(COMPILED_WIDTH - bits[w] + 1)
+                    if not used & (mask << o)
+                ),
+                None,
+            )
+            if at is None:
+                return None
+            offset[w] = at
+            used |= mask << at
+            current.append(w)
+        alive.append(sorted(current))
+        for x in ending[i]:
+            names_used &= ~(1 << name_bit[x])
+            held -= 1
+        for x in starting[i]:
+            at = next(
+                (o for o in range(COMPILED_WIDTH) if not names_used >> o & 1),
+                None,
+            )
+            if at is None:
+                return None
+            name_bit[x] = at
+            names_used |= 1 << at
+            held += 1
+        pending[i] = held
+    expiring: List[List[int]] = [[] for _ in range(n)]
+    for x in range(len(names)):
+        if first[x] < final[x]:
+            expiring[final[x]].append(x)
+
+    def packed(lists: List[List[int]]) -> tuple:
+        pointer = np.zeros(len(lists) + 1, np.int64)
+        pointer[1:] = np.cumsum([len(items) for items in lists])
+        ids = np.array([u for items in lists for u in items], np.int64)
+        return pointer, ids
+
+    succ_ptr, succ_ids = packed(later)
+    alive_ptr, alive_ids = packed(alive)
+    expire_ptr, expire_ids = packed(expiring)
+    out_var, out_active, out_inactive, root, too_large = _bdd_kernel.build(
+        n,
+        np.array(variables, np.int64),
+        np.array(first, np.int64),
+        np.array(final, np.int64),
+        np.array(needs, np.int64),
+        succ_ptr,
+        succ_ids,
+        np.array(from_input, np.int64),
+        np.array(alive_from, np.int64),
+        np.array(offset, np.int64),
+        np.array(bits, np.int64),
+        np.array(name_bit, np.int64),
+        expire_ptr,
+        expire_ids,
+        alive_ptr,
+        alive_ids,
+        np.array(pending, np.int64),
+        STEP_LIMIT,
+    )
+    if too_large:
+        raise TooLarge(
+            "The diagram is too meshed to work out exactly: its decision "
+            f"diagram takes more than {STEP_LIMIT:,} steps "
+            "(repyability.rbd.bdd.STEP_LIMIT)."
+        )
+    steps = [
+        (names[x], a, b)
+        for x, a, b in zip(
+            out_var.tolist(), out_active.tolist(), out_inactive.tolist()
+        )
+    ]
+    return steps, int(root)
+
+
+def _build(
+    sequence: Sequence[int],
+    pred: Mapping[int, Iterable[int]],
+    succ: Mapping[int, Iterable[int]],
+    k: Mapping[int, int],
+    source: int,
+    sink: int,
+    variable: Mapping[int, Hashable],
+) -> tuple:
+    """``build`` in Python."""
     n = len(sequence)
     position = {v: i for i, v in enumerate(sequence)}
     position[sink] = n
