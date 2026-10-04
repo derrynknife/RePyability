@@ -3753,9 +3753,33 @@ def time_at_status(timeline, status):
 #: Grid steps over a component's typical up time, for its point
 #: availability (see ``_point_availability``): the error falls as the
 #: square of the step, to about 1e-8 here.
-_POINT_STEPS = 2000
+_POINT_STEPS = 500
 #: The most grid points for one component's point availability.
 _POINT_MAX = 2**22
+
+
+def _settling_end(curve, long_run: Optional[float], cycle: float, end: float):
+    """How far to follow a component's curve that has not settled at its
+    long-run value ``long_run`` by ``end`` (see ``_unit_curve``). Its
+    distance from that value falls by about the same factor each
+    ``cycle`` (an up and a down time), so the largest distances in its
+    last two cycles say when it will be within 1e-10: the curve is followed
+    until that point is three quarters of the way along, as the check
+    wants, and a cycle more. Four times as far where they do not say (a
+    distance that does not fall, or too few cycles followed)."""
+    grow = 4.0 * end
+    if long_run is None or not (np.isfinite(cycle) and 0.0 < 2.0 * cycle < end):
+        return grow
+    t = curve.times
+    off = np.abs(curve.at(t) - long_run)
+    last = t[-1]
+    recent = float(off[t > last - cycle].max())
+    before = float(off[(t > last - 2.0 * cycle) & (t <= last - cycle)].max())
+    if not 0.0 < recent < before:
+        return grow
+    cycles = max(math.log(1e-10 / recent) / math.log(recent / before), 0.0)
+    settled = last + cycles * cycle
+    return min(grow, max(1.25 * end, settled / 0.75 + cycle))
 #: The most pieces ``mission_availability`` integrates over.
 _MISSION_POINTS = 5_000_000
 
@@ -12225,6 +12249,8 @@ class RepairableRBD(RBD):
         curves: dict = {}
         degrading = self._capacity_models() if stages else {}
         memo = self._curve_memo
+        # The plain units whose curves are built, for their twins.
+        plain: list = []
         for node, component in self.components.items():
             if node in skip:
                 continue
@@ -12242,18 +12268,61 @@ class RepairableRBD(RBD):
                 if found is not None:
                     curves[node] = found
                     continue
-            curves[node] = self._node_curve(
-                node,
-                component,
-                horizon,
-                counts,
-                node in degrading,
-                stages,
-                start,
-            )
+            twin = self._curve_twin(node, start, node in degrading, plain)
+            if twin is not None:
+                curves[node] = curves[twin]
+            else:
+                curves[node] = self._node_curve(
+                    node,
+                    component,
+                    horizon,
+                    counts,
+                    node in degrading,
+                    stages,
+                    start,
+                )
+                if self._plain_unit(node):
+                    plain.append((node, start, node in degrading))
             if memo is not None and key is not None:
                 memo[(key, counts)] = curves[node]
         return curves
+
+    def _plain_unit(self, node) -> bool:
+        """Whether a component's curve follows from its life and repair
+        models alone (and its state at 0): a unit with no schedule, tests,
+        imperfect repair or maintenance group, not a nested RBD or a
+        standby group. Another with the same models has the same curve."""
+        return not (
+            isinstance(self.components[node], RepairableRBD)
+            or node in self._standby
+            or node in self._inspection
+            or node in self._preventive
+            or node in self._imperfect
+            or node in self._member_group
+        )
+
+    def _curve_twin(self, node, start, degrading: bool, plain: list):
+        """A component among ``plain`` (each ``(node, start, degrading)``,
+        a plain unit whose curve is built) whose curve is ``node``'s: the
+        same life and repair models, the same state at 0 and stages followed
+        alike; or None. Identical components (a bank of pumps) then share
+        one curve."""
+        if not plain or not self._plain_unit(node):
+            return None
+        from repyability.rbd.non_repairable_rbd import NonRepairableRBD
+
+        same = NonRepairableRBD._same_model
+        component = self.components[node]
+        for other, other_start, other_degrading in plain:
+            known = self.components[other]
+            if (
+                other_degrading == degrading
+                and other_start == start
+                and same(known.reliability, component.reliability)
+                and same(known.time_to_replace, component.time_to_replace)
+            ):
+                return other
+        return None
 
     @contextmanager
     def _sharing_curves(self):
@@ -13288,7 +13357,7 @@ class RepairableRBD(RBD):
                 and (curve.stages is None or curve.stages.settled())
             ):
                 break
-            end = min(horizon, 4.0 * end)
+            end = min(horizon, _settling_end(curve, long_run, cycle, end))
         curve.long_run = long_run
         if curve.unit_events is not None and long_run is None:
             # Followed to the horizon: no rates past it.
