@@ -773,11 +773,11 @@ def test_simulated_timelines_are_the_simulations_availability_runs(
 def every_architecture():
     """The routes' diagrams of every kind, but those the simulations
     refuse."""
-    from repyability.tests.test_analysis_routes import repairable_rbds
+    from repyability.tests.catalogue import repairable_kinds
 
     return {
         name: rbd
-        for name, rbd in repairable_rbds().items()
+        for name, rbd in repairable_kinds().items()
         if not rbd._has_ccf()
     }
 
@@ -1014,9 +1014,9 @@ def test_simulated_timelines_check_their_arguments(arguments, error, match):
 
 @pytest.mark.filterwarnings("ignore::FutureWarning")
 def test_numba_is_asked_for_only_where_it_simulates(monkeypatch):
-    from repyability.tests.test_analysis_routes import repairable_rbds
+    from repyability.tests.catalogue import repairable_kinds
 
-    imperfect = repairable_rbds()["imperfect repair"]
+    imperfect = repairable_kinds()["imperfect repair"]
     route = imperfect.analysis_routes()["simulate_timelines"]
     assert route.engine == "python"
     assert route.engine_reason.startswith("the compiled engine does not")

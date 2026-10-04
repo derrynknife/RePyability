@@ -174,7 +174,13 @@
   or changes how it computes, update `analysis_routes`:
   `test_analysis_routes.py` checks that it covers every public method, that
   each method does what it says on diagrams of every kind, and that the
-  saving guide's table agrees with it.
+  saving guide's table agrees with it. It calls every method the report
+  lists (a new one needs its call in `NONREPAIRABLE_CALLS` or
+  `REPAIRABLE_CALLS`) on every diagram of `tests/catalogue.py`, the one
+  registry of diagram kinds, which the engines' agreement and the
+  exact-against-simulated checks (`test_catalogue.py`) share. A new node
+  class, spec key, policy or diagram option needs a diagram there:
+  `test_the_catalogue_has_every_kind` names what no diagram uses.
 - **The README's "When is a simulation needed?" table follows the routes.**
   It says, by what is asked, the components and the maintenance, what is
   simulated and whether it must be (or could be exact, with the issue).
@@ -185,9 +191,10 @@
   is a `modular.GraphStructure`, which works out a state and a lifetime
   from the graph, for the simulations, and refuses the rest with the
   reason. Both classes' `analysis_routes` end with `_meshed_routes(out,
-  free)`, which refuses every exact or numerical analysis but those in
-  `free`, which need no structure: a new method that needs none (a node's
-  own values) goes in `free`. The compiled engine and the timelines'
+  free, drawn)`, which refuses every exact or numerical analysis but those
+  in `free`, which need no structure, and the simulated ones in `drawn`,
+  which work the structure out for each draw of parameters: a new method
+  that needs none (a node's own values) goes in `free`. The compiled engine and the timelines'
   streams (`_compiled.unsupported`, `_timeline_runs.independent`) leave such
   a diagram to the Python loop. `test_meshed_structures.py` checks the
   stand-in against the structure worked out, and `test_analysis_routes.py`

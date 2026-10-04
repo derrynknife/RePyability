@@ -22,11 +22,45 @@ other release, fixes included, the minor.
   failing of 0 (as a `node_availability()` of 1 gives), may still be given
   for an end, and `on_infeasible_rbd="warn"` keeps the old behaviour.
 
+- **A fixed-probability node's simulated lifetime is 0 or infinite.**
+  `NonRepairableRBD.random()` took surpyval's draw for it, a 0/1 event
+  indicator, as a time, so the samples of a diagram with one did not
+  follow its `sf` (the docstring called them "not meaningful"): the node
+  now fails at the start with its probability, and otherwise never, as
+  `sf` takes it. Seeded draws of such a diagram change. An MTTF estimate
+  (`mean_time_to_failure_interval`, `mean(method="simulate")`) refuses a
+  diagram of fixed probabilities alone, as the exact `mean` does: it fails
+  at the start or never, and has no lifetimes to average.
+
 ### Fixed
 
 - **`NonRepairableRBD.node_mttf()` leaves junctions out (#228)**, as the
   importance measures do, where it raised an `AttributeError` on a
-  `PerfectReliability` node though `analysis_routes()` reported it exact.
+  `PerfectReliability` node though `analysis_routes()` reported it exact;
+  a `PerfectUnreliability` node's is 0. Both helpers have a `mean()`, as
+  surpyval's models do: `inf` and 0.
+- **`analysis_routes()` says what each method does on every kind of
+  diagram (#239).** The routes test now calls every analysis the report
+  lists (27 were never called) on a catalogue of 22 non-repairable and 49
+  repairable diagrams, with junctions, k-out-of-n votes, every node class,
+  every spec key, policy and option, and a guard that fails when a new one
+  has no diagram. It found the report calling exact or simulated what the
+  method refuses: `NonRepairableRBD`'s parameter-uncertainty methods on a
+  diagram with a node that has no reliability or a structure too meshed to
+  work out; `minimum_effort_allocation` off a series system (now found
+  from the graph, a pass per node, rather than from the cut sets); a
+  `system_capacity` whose nodes take their capacity from their models;
+  and a repairable availability allocation with no component to allocate.
+  Each is now refused in the report with the method's own message. The
+  catalogue is shared by the engines' test, which checks that numba's loop
+  agrees with the Python one on every diagram it runs, and the exact and
+  numerical routes are checked against the simulation of the same
+  quantity on each diagram (MTTF, reliability, availability over a window,
+  expected cost).
+- **A surpyval `MixtureModel` node** no longer breaks `analysis_routes()`
+  or saving: its `dist` is only its components' distribution, so it was
+  taken for a plain distribution of that name. It is saved with
+  surpyval's `to_dict()`.
 
 ## [0.12] - 2026-10-04
 

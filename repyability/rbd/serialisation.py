@@ -31,7 +31,11 @@ from typing import Any
 
 from repyability._version import __version__
 from repyability.non_repairable import NonRepairable
-from repyability.rbd._model_utils import distribution_name, lfp_extras
+from repyability.rbd._model_utils import (
+    distribution_name,
+    is_mixture,
+    lfp_extras,
+)
 from repyability.rbd.degrading_node import DegradingNode
 from repyability.rbd.helper_classes import (
     PerfectReliability,
@@ -164,9 +168,10 @@ def _serialise_model(model: Any) -> dict:
             "load": model.load,
             "k": model.k,
         }
-    if distribution_name(model) is not None:
+    if distribution_name(model) is not None or is_mixture(model):
         # surpyval's own format: everything surpyval keeps (an offset, p,
-        # f0, a fit's covariance) round-trips, whatever it adds later.
+        # f0, a fit's covariance, a mixture's components) round-trips,
+        # whatever it adds later.
         return {"kind": "surpyval", "model": model.to_dict()}
     raise NotImplementedError(
         f"Cannot serialise a node model of type {type(model).__name__}. "

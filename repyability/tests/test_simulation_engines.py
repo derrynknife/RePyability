@@ -29,10 +29,10 @@ from repyability.non_repairable import NonRepairable
 from repyability.rbd import _compiled, _streams, repairable_rbd
 from repyability.rbd._model_utils import lfp_extras
 from repyability.rbd.repairable_rbd import Event
+from repyability.tests.catalogue import systems_of_every_kind
 from repyability.tests.keyed_draws import KeyedDraws, reference_draw
 from repyability.tests.test_performance_equivalence import (
     binomial_first,
-    instrument_air,
     overlaps_one_at_a_time,
     pumps_with_capacities,
     repairable_rbds,
@@ -389,41 +389,6 @@ def test_plain_simulation_matches_the_reference(name, options):
 
 
 # -- how the run is cut up ----------------------------------------------------
-
-
-def systems_of_every_kind():
-    systems = dict(repairable_rbds())
-    systems["instrument air"] = instrument_air()
-    systems["capacities"] = pumps_with_capacities()
-    # A maintenance time that cannot be streamed, likewise.
-    systems["unstreamable maintenance"] = RepairableRBD(
-        [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
-        {
-            name: {
-                "reliability": W([70, 2]),
-                "repairability": E([0.8]),
-                "preventive": {
-                    "interval": 30.0,
-                    "duration": binomial_first([2, 1.5]),
-                    "cost": 5.0,
-                },
-            }
-            for name in "ab"
-        },
-    )
-    # A component whose draws cannot be streamed draws from numpy's global
-    # RNG, seeded for each simulation; the others still stream.
-    systems["unstreamable"] = RepairableRBD(
-        [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
-        {
-            "a": {"reliability": W([70, 1.5]), "repairability": E([0.8])},
-            "b": {
-                "reliability": binomial_first([40, 2]),
-                "repairability": E([0.5]),
-            },
-        },
-    )
-    return systems
 
 
 @pytest.mark.parametrize("name", sorted(systems_of_every_kind()))

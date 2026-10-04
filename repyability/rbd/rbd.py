@@ -1603,18 +1603,24 @@ class RBD:
             )
         return fold(modules, folded) if folded else modules
 
-    def _meshed_routes(self, out: dict, free: Iterable[str]) -> dict:
+    def _meshed_routes(
+        self, out: dict, free: Iterable[str], drawn: Iterable[str] = ()
+    ) -> dict:
         """A route report (see ``analysis_routes``), sorted, with every
         exact or numerical analysis but those in ``free``, which need no
         structure, refused when the core is too meshed to work out (see
-        ``_too_meshed``): the simulations alone run."""
+        ``_too_meshed``), and the simulated ones in ``drawn``, which work
+        the structure out for each draw of the nodes' parameters: the
+        simulations alone run."""
         from repyability.rbd import routes as r
 
         meshed = self._too_meshed()
         if meshed is not None:
-            free = set(free)
+            free, drawn = set(free), set(drawn)
             for name, route in out.items():
-                if route.route in (r.EXACT, r.NUMERICAL) and name not in free:
+                if (
+                    route.route in (r.EXACT, r.NUMERICAL) and name not in free
+                ) or (route.route == r.SIMULATED and name in drawn):
                     out[name] = r.refused(meshed)
         return dict(sorted(out.items()))
 
@@ -1808,6 +1814,18 @@ class RBD:
 
         The pipe, not the pumps, limits the plant when both run.
         """
+        self._require_numbered_capacities()
+        scalar = all(np.ndim(node_probabilities[n]) == 0 for n in self.nodes)
+        arrays, size = self._node_arrays(node_probabilities)
+        levels, probabilities = self._capacity_arrays(arrays, size)
+        return CapacityDistribution(
+            levels, probabilities[:, 0] if scalar else probabilities
+        )
+
+    def _require_numbered_capacities(self) -> None:
+        """Raise if a node takes its capacity from its model (a
+        ``DegradingNode``'s stages, or a nested diagram's capacities), which
+        a probability of working does not describe (``system_capacity``)."""
         own = self._capacity_models()
         if own:
             raise ValueError(
@@ -1815,12 +1833,6 @@ class RBD:
                 "their models, which a probability of working does not "
                 "describe: use capacity_distribution()."
             )
-        scalar = all(np.ndim(node_probabilities[n]) == 0 for n in self.nodes)
-        arrays, size = self._node_arrays(node_probabilities)
-        levels, probabilities = self._capacity_arrays(arrays, size)
-        return CapacityDistribution(
-            levels, probabilities[:, 0] if scalar else probabilities
-        )
 
     def _capacity_arrays(
         self, arrays: Dict, size: int, own: Optional[Dict] = None
@@ -2402,19 +2414,31 @@ class RBD:
     def _require_series(self) -> None:
         """A ValueError unless the diagram is a series system, as the
         minimum-effort algorithm needs: in series, every node alone is a cut
-        set (and so is in the only path set)."""
-        cut_sets = self.get_min_cut_sets()
+        set (and so is in the only path set). Each node is failed alone on
+        the graph itself, a pass apiece, so that ``analysis_routes`` can ask
+        of a diagram of any size, without its cut sets."""
         junctions = self._junctions()
-        if any(
-            frozenset([node]) not in cut_sets
-            for node in self.nodes
-            if node not in junctions
-        ):
-            raise ValueError(
-                "the minimum-effort algorithm applies to a series system (a "
-                "single path through every intermediate node); use "
-                "cost_based_allocation for other structures."
-            )
+        works = GraphStructure(
+            self.G,
+            self.input_node,
+            self.output_node,
+            self._component_aliases(),
+            junctions,
+            "",
+        ).structure_function()
+        status = dict.fromkeys(self.nodes, True)
+        for node in self.nodes:
+            if node in junctions:
+                continue
+            status[node] = False
+            alone = works(status)
+            status[node] = True
+            if alone:
+                raise ValueError(
+                    "the minimum-effort algorithm applies to a series system "
+                    "(a single path through every intermediate node); use "
+                    "cost_based_allocation for other structures."
+                )
 
     @leaves_out_junctions
     @check_probability

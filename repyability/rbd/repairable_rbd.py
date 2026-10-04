@@ -4655,6 +4655,9 @@ class RepairableRBD(RBD):
         "inspection_cost",
         "opportunity",
     )
+    #: The policies a ``"preventive"`` spec can name: replacement at an
+    #: age, on a calendar (block), or on the condition an inspection finds.
+    PREVENTIVE_POLICIES = ("age", "block", "condition")
     #: The keys of a maintenance group's options.
     GROUP_KEYS = ("setup_cost", "system_down")
     #: The keys of a component's ``"inspection"`` spec.
@@ -5727,7 +5730,7 @@ class RepairableRBD(RBD):
                 f"positive number (inf for none), got {spec['interval']!r}."
             )
         policy = spec.get("policy", "age")
-        if policy not in ("age", "block", "condition"):
+        if policy not in cls.PREVENTIVE_POLICIES:
             raise ValueError(
                 f"Component {node!r}: the preventive policy must be 'age', "
                 f"'block' or 'condition', got {policy!r}."
@@ -8460,7 +8463,6 @@ class RepairableRBD(RBD):
         ``fixed``); and the set of the others, which keep theirs."""
         self._require_unlimited_crews(*_ALLOCATION_CREWS)
         self._require_ccf_long_run()
-        members = {m for group in self.ccf_groups for m in group.members}
         held = set()
         if fixed is not None:
             held = set(fixed)
@@ -8470,10 +8472,27 @@ class RepairableRBD(RBD):
                     f"fixed names {sorted(unknown, key=str)}, which are not "
                     "components of this RBD."
                 )
-        current: Dict[Hashable, float] = {}
+        current = {
+            node: self._node_availability(node) for node in self.components
+        }
+        free = self._allocated_levers(held)
+        for node, (mttf, mttr) in free.items():
+            current[node] = mttf / (mttf + mttr)
+        return current, free, held
+
+    def _allocated_levers(
+        self, held: set
+    ) -> Dict[Hashable, Tuple[float, float]]:
+        """The MTTF and MTTR of each component an availability allocation
+        allocates one: those with corrective repair alone (they fail and
+        take time to repair, with no preventive or inspection schedule),
+        not nested, not in a common-cause group (whose members' MTTF and
+        MTTR are the group's) and not in ``held``, which gains the others.
+        Raises if there are none: ``analysis_routes`` asks it, as it follows
+        from the diagram."""
+        members = {m for group in self.ccf_groups for m in group.members}
         free: Dict[Hashable, Tuple[float, float]] = {}
         for node, component in self.components.items():
-            current[node] = self._node_availability(node)
             if (
                 node in held
                 or isinstance(component, RepairableRBD)
@@ -8491,7 +8510,6 @@ class RepairableRBD(RBD):
                 held.add(node)
                 continue
             free[node] = (mttf, mttr)
-            current[node] = mttf / (mttf + mttr)
         if not free:
             raise ValueError(
                 "No component can be allocated an availability: only "
@@ -8499,7 +8517,7 @@ class RepairableRBD(RBD):
                 "time to repair, with no preventive or inspection schedule), "
                 "not in fixed, can."
             )
-        return current, free, held
+        return free
 
     def _allocation_option(self, name: str, mapping, held: set) -> dict:
         """A per-component option of an availability allocation, checked to
@@ -10059,7 +10077,9 @@ class RepairableRBD(RBD):
                 ),
             )
         )
-        no_capacity = r.refusal(self._require_capacity)
+        no_capacity = r.refusal(self._require_numbered_capacities) or (
+            r.refusal(self._require_capacity)
+        )
         out["system_capacity"] = (
             r.refused(no_capacity)
             if no_capacity
@@ -10166,6 +10186,15 @@ class RepairableRBD(RBD):
                 "exact long-run values." + held_members,
             )
         )
+        if out["availability_allocation"].route != r.REFUSED:
+            # Which components are allocated one follows from the diagram
+            # (and fixed, which only holds more).
+            none = r.refusal(partial(self._allocated_levers, set()))
+            if none:
+                give(
+                    ("availability_allocation", "mttf_mttr_allocation"),
+                    r.refused(none),
+                )
         # The optimisers, called for every node they can choose for.
         targets = r.refusal(partial(self._interval_targets, None, None))
         interval_crews = r.refusal(self._require_interval_crews)
@@ -10409,19 +10438,23 @@ class RepairableRBD(RBD):
         out["path_set_probabilities"] = r.AnalysisRoute(
             r.EXACT, "From the node probabilities given."
         )
+        allocation_by_probability = r.AnalysisRoute(
+            r.NUMERICAL,
+            "A solver over the exact system probability, from the node "
+            "probabilities given (not the component models).",
+        )
         give(
             (
                 "improvement_allocation",
                 "equal_allocation",
                 "simple_allocation",
-                "minimum_effort_allocation",
                 "cost_based_allocation",
             ),
-            r.AnalysisRoute(
-                r.NUMERICAL,
-                "A solver over the exact system probability, from the node "
-                "probabilities given (not the component models).",
-            ),
+            allocation_by_probability,
+        )
+        series = r.refusal(self._require_series)
+        out["minimum_effort_allocation"] = (
+            r.refused(series) if series else allocation_by_probability
         )
         # Each component's own values, and the long-run costs but the
         # system's downtime, need no structure; nor the expected cost when

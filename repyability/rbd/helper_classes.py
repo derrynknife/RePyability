@@ -91,6 +91,17 @@ class PerfectReliability:
         return np.ones_like(np.atleast_1d(x)).astype(float)
 
     @classmethod
+    def mean(cls):
+        """Return the mean life: infinite, as the node never fails.
+
+        Returns
+        -------
+        float
+            ``inf``.
+        """
+        return np.inf
+
+    @classmethod
     def random(cls, size):
         """Draw failure times: all infinite, as the node never fails.
 
@@ -191,6 +202,17 @@ class PerfectUnreliability:
         """
         # Never working -> conditional survival is always 0.
         return np.zeros_like(np.atleast_1d(x)).astype(float)
+
+    @classmethod
+    def mean(cls):
+        """Return the mean life: 0, as the node has always failed.
+
+        Returns
+        -------
+        float
+            ``0.0``.
+        """
+        return 0.0
 
     @classmethod
     def random(cls, size):

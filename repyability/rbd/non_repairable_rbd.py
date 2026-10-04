@@ -5093,7 +5093,9 @@ class NonRepairableRBD(RBD):
                 "node reliabilities.",
             )
         )
-        no_capacity = r.refusal(self._require_capacity)
+        no_capacity = r.refusal(self._require_numbered_capacities) or (
+            r.refusal(self._require_capacity)
+        )
         out["system_capacity"] = (
             r.refused(no_capacity)
             if no_capacity
@@ -5110,19 +5112,23 @@ class NonRepairableRBD(RBD):
         out["path_set_probabilities"] = r.AnalysisRoute(
             r.EXACT, "From the node probabilities given."
         )
+        allocation = r.AnalysisRoute(
+            r.NUMERICAL,
+            "A solver over the exact system probability, from the node "
+            "probabilities given (not the node models).",
+        )
         give(
             (
                 "improvement_allocation",
                 "equal_allocation",
                 "simple_allocation",
-                "minimum_effort_allocation",
                 "cost_based_allocation",
             ),
-            r.AnalysisRoute(
-                r.NUMERICAL,
-                "A solver over the exact system probability, from the node "
-                "probabilities given (not the node models).",
-            ),
+            allocation,
+        )
+        series = r.refusal(self._require_series)
+        out["minimum_effort_allocation"] = (
+            r.refused(series) if series else allocation
         )
         groups_drawn = (
             " The common-cause groups are in each draw, and their models may "
@@ -5130,12 +5136,14 @@ class NonRepairableRBD(RBD):
             if grouped
             else ""
         )
-        out["sf_uncertainty"] = r.AnalysisRoute(
+        # Each draw is worked out exactly, from the drawn nodes'
+        # reliabilities: refused, as sf is, where a node has none.
+        out["sf_uncertainty"] = built(
             r.SIMULATED,
             "The node parameters drawn from their uncertainty, and the exact "
             "system reliability for each draw." + groups_drawn,
         )
-        out["uncertainty_importance"] = r.AnalysisRoute(
+        out["uncertainty_importance"] = built(
             r.NUMERICAL,
             "The delta method: the exact quantity's derivative in each "
             "uncertain parameter, by central differences, with their "
@@ -5146,7 +5154,7 @@ class NonRepairableRBD(RBD):
         out["mean_uncertainty"] = (
             r.refused(no_lifetimes)
             if no_lifetimes
-            else r.AnalysisRoute(
+            else built(
                 r.SIMULATED,
                 "The node parameters drawn from their uncertainty, and the "
                 "exact MTTF for each draw (the area under its reliability)."
@@ -5159,7 +5167,7 @@ class NonRepairableRBD(RBD):
             (
                 r.refused(no_time)
                 if no_time
-                else r.AnalysisRoute(
+                else built(
                     r.SIMULATED,
                     "The node parameters drawn from their uncertainty, and "
                     "the time found exactly for each draw, by root-finding "
@@ -5234,9 +5242,10 @@ class NonRepairableRBD(RBD):
                 "n_jobs." + independent,
             )
         )
+        no_lives = r.refusal(self._require_varying_lifetimes)
         out["mean_time_to_failure_interval"] = (
-            r.refused(draws)
-            if draws
+            r.refused(no_lives or draws or "")
+            if no_lives or draws
             else r.AnalysisRoute(
                 r.SIMULATED,
                 "The mean of Monte-Carlo lifetimes (see random), with its "
@@ -5293,8 +5302,18 @@ class NonRepairableRBD(RBD):
                 else ""
             ),
         )
-        # Each node's own values need no structure.
-        return self._meshed_routes(out, ("node_sf", "node_ff", "node_mttf"))
+        # Each node's own values need no structure; the uncertainty's draws
+        # are each worked out exactly.
+        return self._meshed_routes(
+            out,
+            ("node_sf", "node_ff", "node_mttf"),
+            drawn=(
+                "sf_uncertainty",
+                "mean_uncertainty",
+                "time_to_reliability_uncertainty",
+                "bx_life_uncertainty",
+            ),
+        )
 
     def random(
         self,
@@ -5330,9 +5349,8 @@ class NonRepairableRBD(RBD):
         ``Q = 1``. The same applies to ``mean(method="simulate")``,
         ``mean_time_to_failure_interval`` and ``compare``; the exact
         ``mean`` refuses such a group.
-        Fixed-probability nodes have no lifetime (surpyval draws 0/1 event
-        indicators for them), so the samples are not meaningful for an RBD
-        containing any.
+        A fixed-probability node fails at the start (a lifetime of 0), with
+        its probability, or never (``inf``), as ``sf`` takes it.
 
         Parameters
         ----------
@@ -5727,8 +5745,13 @@ class NonRepairableRBD(RBD):
                 # the event time orders the PriorityQueue and assigns into
                 # ``out`` (NumPy >= 2 rejects assigning a 1-element array to
                 # a scalar).
-                one = np.asarray(self.reliabilities[drawn].random(1))
+                model = self.reliabilities[drawn]
+                one = np.asarray(model.random(1))
                 time = float(one.reshape(-1)[0])
+                if is_fixed_probability(model):
+                    # surpyval draws an event indicator: the node fails at
+                    # the start (a lifetime of 0) or never, as sf takes it.
+                    time = 0.0 if time else np.inf
                 event_queue.put(NodeFailure(time, drawn))
 
             working_nodes = {k: True for k in self._components()}
@@ -5908,15 +5931,20 @@ class NonRepairableRBD(RBD):
             lambda t: self.sf(t), np.concatenate([np.empty(0), *knots])
         )
 
-    def _require_lifetimes(self) -> None:
-        """Raise unless the system's exact mean lifetime is defined: its
-        reliability must vary with time, and hold over whole lifetimes,
-        which common-cause groups that split a probability do not."""
+    def _require_varying_lifetimes(self) -> None:
+        """Raise if every node is a fixed probability: the system then fails
+        at the start or never, and has no lifetimes to average."""
         if self.is_fixed:
             raise ValueError(
                 "System reliability does not vary with time (all nodes are "
                 "fixed-probability): the system has no lifetimes to average."
             )
+
+    def _require_lifetimes(self) -> None:
+        """Raise unless the system's exact mean lifetime is defined: its
+        reliability must vary with time, and hold over whole lifetimes,
+        which common-cause groups that split a probability do not."""
+        self._require_varying_lifetimes()
         if self._grouped("probability"):
             raise NotImplementedError(
                 "The exact MTTF does not account for common-cause (CCF) "
@@ -6353,6 +6381,7 @@ class NonRepairableRBD(RBD):
         n_jobs,
     ) -> np.ndarray:
         """The simulated lifetimes an MTTF estimate is the mean of."""
+        self._require_varying_lifetimes()
         if (
             tolerance is None
             and max_samples is None
