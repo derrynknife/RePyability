@@ -704,6 +704,59 @@ def _cubic(values: np.ndarray, position: np.ndarray) -> np.ndarray:
     )
 
 
+def _cubic_slope(values: np.ndarray, position: np.ndarray) -> np.ndarray:
+    """The rate of change of ``_cubic(values, position)`` in ``position``:
+    the derivative of the same 4-point Lagrange interpolation."""
+    padded = np.concatenate([[0.0, 0.0], values, [0.0, 0.0]])
+    j = np.clip(np.floor(position).astype(int), -1, len(values) - 1) + 2
+    u = position - (j - 2)
+    return (
+        -(3.0 * u**2 - 6.0 * u + 2.0) / 6.0 * padded[j - 1]
+        + (3.0 * u**2 - 4.0 * u - 1.0) / 2.0 * padded[j]
+        - (3.0 * u**2 - 2.0 * u - 2.0) / 2.0 * padded[j + 1]
+        + (3.0 * u**2 - 1.0) / 6.0 * padded[j + 2]
+    )
+
+
+def _density(sf: Callable, u: np.ndarray, splits) -> np.ndarray:
+    """The density at each ``u >= 0`` of a time with survival function
+    ``sf`` (quantiles ``splits``): its differences over a millionth of the
+    time's own scale (its median, or ``u``), central where they fit after
+    0 and one-sided, second order, where they do not. A down time far
+    shorter than a curve's grid step is differentiated as finely as a long
+    one (see ``GridCurve.derivative``)."""
+    u = np.asarray(u, dtype=float)
+    knots = np.asarray(splits, dtype=float)
+    knots = knots[knots > 0.0]
+    typical = float(np.median(knots)) if knots.size else 0.0
+    h = 1e-6 * np.maximum(np.maximum(u, typical), 1e-300)
+    central = u >= h
+    out = np.empty(u.shape)
+    if central.any():
+        a, b = u[central] - h[central], u[central] + h[central]
+        out[central] = (sf(a) - sf(b)) / (2.0 * h[central])
+    if (~central).any():
+        v, k = u[~central], h[~central]
+        out[~central] = (3.0 * sf(v) - 4.0 * sf(v + k) + sf(v + 2.0 * k)) / (
+            2.0 * k
+        )
+    return out
+
+
+class _GridPart:
+    """A curve's part on its grid, linear between its points, as
+    ``_rates.differences`` takes a curve: its values (``at``), the times
+    it bends other than on its grid (``breaks``) and its grids."""
+
+    def __init__(self, at: Callable, breaks: Callable, grids: list):
+        self.at = at
+        self.breaks = breaks
+        self._grids = grids
+
+    def grids(self) -> list:
+        return self._grids
+
+
 def chain_due(first_due: float, age: float, n):
     """When the ``n``-th of the units that each reach their age after the
     first (whose maintenance is due at ``first_due``) is due, but for the
@@ -893,6 +946,28 @@ class ChainDips:
             if b > a:
                 position = (ordered[a:b] - lo) / step
                 out[order[a:b]] += weight * _cubic(values, position)
+        return out
+
+    def rate(self, x: np.ndarray) -> np.ndarray:
+        """The rate at which ``at`` changes at each ``x``: the derivative of
+        each maintenance's interpolation on its own fine grid (none for a
+        fixed time, constant between its ends)."""
+        out = np.zeros(len(x))
+        if self.fixed is not None:
+            return out
+        order = np.argsort(x, kind="stable")
+        ordered = x[order]
+        for n in range(1, self.count + 1):
+            due, weight = self._due(n)
+            start, step, values = self.windows[n - 1]
+            lo = due + start
+            hi = lo + step * len(values)
+            a, b = np.searchsorted(ordered, [lo - step, hi])
+            if b > a:
+                position = (ordered[a:b] - lo) / step
+                out[order[a:b]] += (
+                    weight * _cubic_slope(values, position) / step
+                )
         return out
 
     def before(self, x: np.ndarray) -> np.ndarray:
@@ -1288,6 +1363,43 @@ class GridCurve:
             return []
         return [(float(self.times[1]), float(self.times[-1]))]
 
+    def _grid_at(self, x: np.ndarray) -> np.ndarray:
+        """Its values on its grid alone, without its dips."""
+        out = np.interp(x, self.times, self.smooth)
+        if self.long_run is not None:
+            out[x > self.times[-1]] = self.long_run
+        return out
+
+    def derivative(self, x: np.ndarray, scale: float) -> np.ndarray:
+        """Its rate of change at each ``x`` (see ``_rates.derivative``): its
+        grid's by differences (see ``_rates.differences``), which are
+        second order a step apart, less its dips' exactly, each from its
+        down time's density (``_density``), and those of ``chain`` on
+        their own fine grids. A dip far shorter than a step (a few hours'
+        maintenance on a grid of days) would be smoothed over by the
+        differences of the whole curve."""
+        from repyability.rbd._rates import differences
+
+        ends = self.times[[0, -1]]
+
+        def breaks(start: float, stop: float) -> np.ndarray:
+            return ends[(ends >= start) & (ends <= stop)]
+
+        out = differences(
+            _GridPart(self._grid_at, breaks, self.grids()), x, scale
+        )
+        for probability, start, sf, splits in self.dips:
+            after = x >= start
+            if after.any():
+                out[after] += probability * _density(
+                    sf, x[after] - start, splits
+                )
+        if self.chain is not None:
+            out -= self.chain.rate(x)
+        if self.long_run is not None:
+            out[x > self.times[-1]] = 0.0
+        return out
+
 
 class BlockCurve:
     """A unit's point availability under block replacement, from new (see
@@ -1379,9 +1491,10 @@ class BlockCurve:
             drop = weights * (1.0 - float(self.replace.cdf(np.zeros(1))[0]))
         return Atoms(times, np.zeros(count), planned, weights, drop)
 
-    def at(self, x: np.ndarray) -> np.ndarray:
-        # The interval each time falls in, and the time since its start (in
-        # [0, interval): a block time starts its interval).
+    def _place(self, x: np.ndarray) -> tuple:
+        """The interval each time falls in (``k``), the time since its
+        start (``s``, in ``[0, interval)``: a block time starts its
+        interval), and the curve's values on its grid there."""
         k = np.floor(x / self.interval)
         s = x - k * self.interval
         over, under = s >= self.interval, s < 0.0
@@ -1397,10 +1510,42 @@ class BlockCurve:
             self.smooth[row, j] * (1.0 - fraction)
             + self.smooth[row, j + 1] * fraction
         )
+        return k, s, row, smooth
+
+    def at(self, x: np.ndarray) -> np.ndarray:
+        k, s, row, smooth = self._place(x)
         back = self.replace.cdf(s)
         if self.fresh:
             back = np.where(k == 0.0, 1.0, back)
         return np.clip(smooth + self.replaced[row] * back, 0.0, 1.0)
+
+    def derivative(self, x: np.ndarray, scale: float) -> np.ndarray:
+        """Its rate of change at each ``x`` (see ``GridCurve.derivative``): its
+        grid's by differences, and the return of the units replaced at the
+        block time before it exactly, from the replacement time's density
+        (none from new, in the first interval)."""
+        from repyability.rbd._rates import differences
+
+        def blocks(start: float, stop: float) -> np.ndarray:
+            first = int(np.floor(start / self.interval))
+            last = int(np.floor(stop / self.interval))
+            times = self.interval * np.arange(first, last + 1, dtype=float)
+            return times[(times >= start) & (times <= stop)]
+
+        out = differences(
+            _GridPart(lambda t: self._place(t)[3], blocks, self.grids()),
+            x,
+            scale,
+        )
+        if self.replace.model is None:
+            return out
+        k, s, row, _ = self._place(x)
+        back = _density(
+            lambda u: 1.0 - self.replace.cdf(u), s, self.duration_knots
+        )
+        if self.fresh:
+            back = np.where(k == 0.0, 0.0, back)
+        return out + self.replaced[row] * back
 
     def knots(self, start: float, stop: float) -> np.ndarray:
         """The times in ``[start, stop]`` between which the curve is smooth:
@@ -1776,6 +1921,12 @@ class ShiftedCurve:
     def at(self, x: np.ndarray) -> np.ndarray:
         return self.curve.at(self._position(x))
 
+    def derivative(self, x: np.ndarray, scale: float) -> np.ndarray:
+        """Its curve's rate (see ``_rates.derivative``), ``shift`` on."""
+        from repyability.rbd._rates import derivative
+
+        return derivative(self.curve, self._position(x), scale)
+
     def knots(self, start: float, stop: float) -> np.ndarray:
         times = self.curve.knots(start + self.shift, stop + self.shift)
         times = times - self.shift
@@ -1854,6 +2005,21 @@ class StartedBlockCurve:
             out[~before] = self.tail.at(x[~before] - self.length)
         return out
 
+    def derivative(self, x: np.ndarray, scale: float) -> np.ndarray:
+        """The head's rate before its end and the tail's from it (see
+        ``_rates.derivative``)."""
+        from repyability.rbd._rates import derivative
+
+        before = x < self.length
+        out = np.empty(x.shape)
+        if before.any():
+            out[before] = derivative(self.head, x[before], scale)
+        if (~before).any():
+            out[~before] = derivative(
+                self.tail, x[~before] - self.length, scale
+            )
+        return out
+
     def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
         """The unit's expected events before each time ``x``: the head's,
         to its end, and the tail's after it."""
@@ -1923,6 +2089,22 @@ class SystemCurve:
 
     def at(self, x: np.ndarray) -> np.ndarray:
         return self.rbd._curves_at(self.curves, x, set(), set(), "p")
+
+    def derivative(self, x: np.ndarray, scale: float) -> np.ndarray:
+        """Its rate of change at each ``x``: each of its nodes' (see
+        ``_rates.derivative``) times that node's Birnbaum importance there,
+        the system being multilinear in its nodes' availabilities (see
+        ``_rates``)."""
+        from repyability.rbd._rates import derivative
+
+        values = {node: c.at(x) for node, c in self.curves.items()}
+        importance = self.rbd._importances(
+            self.rbd._filled(values, len(x), set(), set())
+        )[0]
+        out = np.zeros(len(x))
+        for node, curve in self.curves.items():
+            out += importance[node] * derivative(curve, x, scale)
+        return out
 
     def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
         """The nested RBD's expected failures and planned outages before

@@ -192,7 +192,7 @@ are reported apart, split among the components that make them:
 ```python
 rate.jump_times[0]           # -> 80.0
 rate.node_jumps["valve"][0]  # -> -0.7017
-rate.node_rate["valve"][1]   # -> 0.0509
+rate.node_rate["valve"][1]   # -> 0.0518
 ```
 
 Just after 80 days the station is down for the replacement with
