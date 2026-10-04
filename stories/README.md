@@ -2,12 +2,13 @@
 
 The questions people (and the agents working for them) bring to RePyability
 that it should be able to answer. These files record *what* is wanted and
-*how we will know it is answered*. Units of work go in issues; the outcomes
-they serve go here.
+*how we will know it is answered*. Units of work go in issues, the larger
+ideas and their designs in [ROADMAP.md](../ROADMAP.md), and the outcomes
+they serve here.
 
 | File | Area | Stories |
 |---|---|---|
-| [maintenance-economics.md](maintenance-economics.md) | The net present value of maintenance plans, designs and crews | MX-01 to MX-17 |
+| [maintenance-economics.md](maintenance-economics.md) | The net present value of maintenance plans, designs and crews, kept current as the plant changes | MX-01 to MX-25 |
 
 ## Format
 

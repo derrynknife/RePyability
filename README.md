@@ -382,6 +382,14 @@ mkdocs serve            # then open http://127.0.0.1:8000
 
 The source lives in `docs/` and `mkdocs.yml`; start with `docs/index.md`.
 
+## Roadmap
+
+Where RePyability is going, beyond the issue tracker: [ROADMAP.md](ROADMAP.md)
+holds the larger ideas and their designs (first among them a net present
+value simulator for maintenance plans, kept current as the plant changes),
+and [`stories/`](stories/README.md) the questions users and agents should be
+able to answer, with how we will know they are answered.
+
 ## Related
 
 [Reliafy](https://reliafy.com) is a hosted, browser-based app built on RePyability and SurPyval, for building reliability block diagrams and analysing their reliability and availability without writing code.
