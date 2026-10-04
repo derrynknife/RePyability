@@ -276,9 +276,9 @@ other release, fixes included, the minor.
   `mean(method="simulate", ...)` simulates it.
 - **The private names callers used for the levers (#244).**
   `repyability.rbd._sensitivity`'s `levers` and `Lever`, and its
-  `_calendar_lever` and `_as_spec`, stay as they were for 0.13, and may
-  change or go in 0.14: use `levers()`, `Lever` (its `calendar` and
-  `value`) and `with_levers`.
+  `_calendar_lever` and `_as_spec`, stay for 0.13 (its `Lever` tuple with
+  a `bounds` field at its end), and may change or go in 0.14: use
+  `levers()`, `Lever` (its `calendar` and `value`) and `with_levers`.
 ### Fixed
 
 - **`availability_rate` just after a scheduled maintenance** (#240). A
