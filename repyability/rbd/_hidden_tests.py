@@ -493,6 +493,34 @@ def _merge(lo_a: int, a: np.ndarray, lo_b: int, b: np.ndarray):
     return lo, out
 
 
+#: A convolution with an operand this short or shorter is worked out
+#: directly, as scipy chooses to, and a longer one by FFT: without scipy's
+#: choosing each time, which cost as much as the walk's convolutions in an
+#: interval search (#229).
+_DIRECT = 64
+
+
+def _convolve(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """``a`` convolved with ``b`` (see ``_DIRECT``)."""
+    if not (len(a) and len(b)):
+        return np.zeros(max(len(a) + len(b) - 1, 0))
+    if min(len(a), len(b)) <= _DIRECT:
+        return np.convolve(a, b)
+    from scipy.signal import fftconvolve
+
+    return fftconvolve(a, b)
+
+
+def _correlate(a: np.ndarray, v: np.ndarray) -> np.ndarray:
+    """``a`` correlated with the shorter ``v``, where ``v`` lies within
+    ``a`` (see ``_DIRECT``)."""
+    if min(len(a), len(v)) <= _DIRECT:
+        return np.correlate(a, v, mode="valid")
+    from scipy.signal import fftconvolve
+
+    return fftconvolve(a, v[::-1], mode="valid")
+
+
 def _trimmed(lo: int, ages: np.ndarray):
     """Masses on the age grid without those below the rounding of the
     convolutions that made them (relative to the largest), and without
@@ -522,8 +550,6 @@ def _walk(
     test with probability ``weight`` times its survival to that age (from
     a state: on an age grid through it). It is followed until the unit has
     surely failed; ``failures`` keeps the first ``keep`` lags'."""
-    from scipy.signal import convolve, correlate
-
     steps = setup.steps
     g = setup.g
     reach = len(g) - 1
@@ -548,13 +574,13 @@ def _walk(
         p = 0.0
         if ages.size:
             window = survival.window(lo, lo + len(ages) + steps)
-            Q = correlate(window, ages, mode="valid")
+            Q = _correlate(window, ages)
             p = float(Q[0])
-            failures = np.maximum(convolve(g, p - Q)[: steps + 1], 0.0)
+            failures = np.maximum(_convolve(g, p - Q)[: steps + 1], 0.0)
         w = None
         if restart is not None and lag < restart.lags:
             w = restart.masses[lag]
-            failures = failures + convolve(w, setup.F)[: steps + 1]
+            failures = failures + _convolve(w, setup.F)[: steps + 1]
         p_list.append(p)
         fail_list.append(float(failures[-1]))
         if lag < keep:
@@ -565,7 +591,7 @@ def _walk(
             break
         # The ages at the next test.
         if ages.size:
-            lo, ages = lo - reach + steps, convolve(ages, g[::-1])
+            lo, ages = lo - reach + steps, _convolve(ages, g[::-1])
         if w is not None:
             lo, ages = _merge(lo, ages, 0, w[::-1])
         ages = np.maximum(ages, 0.0)
@@ -655,15 +681,13 @@ class _Chain:
     interval's row (see ``_Rows``) and the next test's state follow."""
 
     def __init__(self, setup: _Setup, coverage: float, per: int, first=None):
-        from scipy.signal import convolve
-
         self.setup, self.coverage, self.per = setup, coverage, per
         F = setup.F
         restart = setup.restart
-        self.tf = convolve(setup.g, F)[: setup.steps + 1]
+        self.tf = _convolve(setup.g, F)[: setup.steps + 1]
         self.kappa = 1.0 - float(self.tf[-1])
         self.rf = np.array(
-            [convolve(w, F)[: setup.steps + 1] for w in restart.masses]
+            [_convolve(w, F)[: setup.steps + 1] for w in restart.masses]
         )
         share = restart.masses.sum(axis=1)
         self.a = share - self.rf[:, -1]
@@ -674,7 +698,7 @@ class _Chain:
         self.first = first
         if first is not None:
             self.rf0 = np.array(
-                [convolve(w, F)[: setup.steps + 1] for w in first.masses]
+                [_convolve(w, F)[: setup.steps + 1] for w in first.masses]
             )
             self.a0 = first.masses.sum(axis=1) - self.rf0[:, -1]
 

@@ -246,6 +246,16 @@
   dips integrates out, where clipping made the total depend on the pieces.
   `test_quadrature.py` checks the pieces against summing between every
   knot.
+- **An MTTF is integrated on pieces that start at its models' kinks**
+  (`repyability/rbd/_mean_lifetime.py`, #229): every kink
+  (`model_kinks`: a numerical curve's grid, where a support starts)
+  starts a piece, the other knots (quantiles) are thinned to
+  `_PER_DECADE` a decade, and each piece is integrated by the
+  Gauss-Kronrod (7, 15) rule and halved until `|K15 - G7|` is within
+  `RTOL`. A new numerical model class gives its grid to `_collect`'s
+  kinks: without them its bends fall inside pieces, which then take many
+  halvings (right, but slow). `test_evaluation_costs.py` checks the
+  points an MTTF takes and its accuracy.
 
 ## API conventions
 
@@ -281,6 +291,14 @@
   than about 10,000 terms, at milliseconds a call; a loop of thousands of
   them (a renewal sum, a band of a grid) then runs hundreds of times
   slower. Matrix products are left to BLAS.
+
+## Testing
+
+- **Test what a change touches; the full suite only when asked.** Work
+  going into dev is checked by the tests of what it changes (the files
+  that exercise the code touched, and new tests for it). The full suite
+  runs only when the maintainer asks for it, and before merging to main
+  (master).
 
 ## Releasing
 

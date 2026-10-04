@@ -337,6 +337,11 @@ class Timing(NamedTuple):
         return self.test.takes_time or self.repair.takes_time
 
 
+#: The most memory a chain's transitions over the steps it has taken more
+#: than once may hold (see ``_Hidden.evolve``).
+_TRANSITION_BYTES = 1 << 26
+
+
 class _Hidden:
     """The chain of a group whose members' failures are hidden, found by
     their tests (see ``hidden``): its states, a step of the uniformized
@@ -400,8 +405,27 @@ class _Hidden:
         self.combinations, self.combination = space.combinations()
 
     def evolve(self, v: np.ndarray, dt: float) -> np.ndarray:
-        """``v exp(G dt)``, by uniformization, in steps short enough for
-        ``exp(-x)`` not to underflow."""
+        """``v exp(G dt)``, by uniformization: ``exp(G dt)`` worked out as
+        a matrix and kept once ``dt`` comes again (#229), as the steps
+        between tests and times repeat, period after period."""
+        if not (dt > 0.0 and self.pace > 0.0):
+            return v
+        kept = self.__dict__.setdefault("_transitions", {})
+        found = kept.get(dt)
+        if found is None:
+            # The first time, the vector alone.
+            if len(kept) * 8 * self.size**2 >= _TRANSITION_BYTES:
+                kept.clear()
+            kept[dt] = False
+            return self._uniformized(v, dt)
+        if found is False:
+            found = kept[dt] = self._uniformized(np.eye(self.size), dt)
+        return v @ found
+
+    def _uniformized(self, v: np.ndarray, dt: float) -> np.ndarray:
+        """``v exp(G dt)`` (``v`` a vector, or a matrix's rows), by
+        uniformization, in steps short enough for ``exp(-x)`` not to
+        underflow."""
         pace, step = self.pace, self.step
         while dt > 0.0 and pace > 0.0:
             piece = min(dt, 8.0 / pace)

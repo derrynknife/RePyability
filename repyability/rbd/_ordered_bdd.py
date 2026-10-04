@@ -16,6 +16,10 @@ from typing import Callable, Dict, Hashable, List, Optional, Sequence, Tuple
 
 #: The two constant diagrams.
 FALSE, TRUE = 0, 1
+#: The most combinations the computed table keeps: past this it starts
+#: again (#229), as a combination worked out again gives the same node.
+#: Fussell-Vesely's closures over a meshed core kept 1.6 million (250 MB).
+COMPUTED_LIMIT = 1 << 19
 
 
 class OrderedBDD:
@@ -75,6 +79,8 @@ class OrderedBDD:
                 # Both branches are done: make the node.
                 otherwise, then = results.pop(), results.pop()
                 made = self.node(f, otherwise, then)
+                if len(self._computed) >= COMPUTED_LIMIT:
+                    self._computed.clear()
                 self._computed[key] = made
                 results.append(made)
                 continue

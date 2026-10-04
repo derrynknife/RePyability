@@ -3520,6 +3520,25 @@ def _choose_intervals(
 #: by a local search beyond.
 _MAX_COMBINATIONS = 2000
 
+#: Plans whose costs are within this share of each other, or whose
+#: availabilities are within this of each other, are as good: which is
+#: chosen does not hang on the last bits of their arithmetic (#229), as it
+#: did for identical members' intervals in turn, and of plans that cost the
+#: same the most available is chosen however their costs' last bits fall.
+_AS_GOOD = 1e-10
+
+
+def _lower(a: tuple, b: tuple) -> bool:
+    """Whether merit ``a`` is lower than merit ``b``: their ``(value,
+    size)`` pairs compared in turn, values within ``_AS_GOOD`` of their
+    size taken as equal."""
+    for (x, size_x), (y, size_y) in zip(a, b):
+        if x == y:
+            continue
+        if abs(x - y) > _AS_GOOD * max(size_x, size_y) or math.isinf(x - y):
+            return x < y
+    return False
+
 
 def _divides(interval: float, full: float) -> bool:
     """Whether ``interval`` divides ``full`` a whole number of times."""
@@ -3586,38 +3605,44 @@ def _choose_from(
     every combination when there are at most 2000, a local search (one
     interval changed at a time, from several starts) otherwise. Of plans
     that cost the same, the most available is chosen (and of those as
-    available, the cheapest): tests' offsets change no cost. A ValueError
-    if none meets the target, giving the best any does."""
+    available, the cheapest): tests' offsets change no cost. Of plans as
+    good (``_AS_GOOD``), the first tried is kept. A ValueError if none
+    meets the target, giving the best any does."""
 
-    def merit(intervals: dict) -> Tuple[float, float, float]:
-        """(How far from the target, the objective, the other one): lower
-        is better."""
+    def merit(intervals: dict) -> tuple:
+        """(How far from the target, the objective, the other one), each
+        with the size its differences are measured against: lower is
+        better."""
         cost, availability = evaluate(intervals)
+        priced = abs(cost)
         if min_availability is not None:
-            short = max(0.0, min_availability - availability)
+            short = (max(0.0, min_availability - availability), 1.0)
         elif max_cost_rate is not None:
-            short = max(0.0, cost - max_cost_rate)
+            short = (max(0.0, cost - max_cost_rate), priced)
         else:
-            short = 0.0
-        other = 1.0 - availability if max_cost_rate is None else cost
-        return short, _objective(cost, availability, max_cost_rate), other
+            short = (0.0, 1.0)
+        down = (1.0 - availability, 1.0)
+        if max_cost_rate is None:
+            return short, (cost, priced), down
+        return short, down, (cost, priced)
 
     count = math.prod(len(options[node]) for node in nodes)
+    best: Optional[dict] = None
+    best_value: tuple = ()
     if count <= _MAX_COMBINATIONS:
-        candidates = (
-            dict(zip(nodes, combination))
-            for combination in itertools.product(
-                *(options[node] for node in nodes)
-            )
-        )
-        best = min(candidates, key=merit)
+        for combination in itertools.product(
+            *(options[node] for node in nodes)
+        ):
+            candidate = dict(zip(nodes, combination))
+            candidate_value = merit(candidate)
+            if best is None or _lower(candidate_value, best_value):
+                best, best_value = candidate, candidate_value
     else:
         starts = [
             {node: options[node][0] for node in nodes},
             {node: options[node][-1] for node in nodes},
             {node: options[node][len(options[node]) // 2] for node in nodes},
         ]
-        best = None
         for current in starts:
             value = merit(current)
             improved = True
@@ -3627,11 +3652,11 @@ def _choose_from(
                     for option in options[node]:
                         candidate = {**current, node: option}
                         candidate_value = merit(candidate)
-                        if candidate_value < value:
+                        if _lower(candidate_value, value):
                             current, value = candidate, candidate_value
                             improved = True
-            if best is None or value < merit(best):
-                best = current
+            if best is None or _lower(value, best_value):
+                best, best_value = current, value
     assert best is not None
     cost, availability = evaluate(best)
     if not _meets(cost, availability, min_availability, max_cost_rate):
@@ -5752,9 +5777,14 @@ class RepairableRBD(RBD):
         q = self._failures_with_overrides(
             self._unavailabilities_at(times), working_nodes, broken_nodes
         )
-        tables = [
-            self._group_states(group, times) for group in self.ccf_groups
-        ]
+        # The groups' chains, kept for the other long-run values (#229):
+        # a choice of intervals asks for the cost rate and the
+        # availability of each plan.
+        tables = self.__dict__.get("_ccf_tables")
+        if tables is None:
+            tables = self.__dict__["_ccf_tables"] = [
+                self._group_states(group, times) for group in self.ccf_groups
+            ]
         return times, weights, (p, q, tables)
 
     def _ccf_long_run_measure(
@@ -9069,6 +9099,7 @@ class RepairableRBD(RBD):
                 what="The availability allocation",
             )
         view = copy(self)
+        view.__dict__.pop("_ccf_tables", None)
         view.__dict__["_allocation_calendar"] = (
             weights,
             {node: profiles[node] for node in held},
@@ -9203,7 +9234,10 @@ class RepairableRBD(RBD):
         inspected components' first tests as shares of their intervals."""
         self.__dict__.setdefault("_age_cycles", {})
         self.__dict__.setdefault("_block_cycles", {})
+        self.__dict__.setdefault("_tested_units", {})
         plan = copy(self)
+        # What its own schedules decide is worked out again.
+        plan.__dict__.pop("_ccf_tables", None)
         if preventive:
             plan._preventive = dict(self._preventive)
             for node, interval in preventive.items():

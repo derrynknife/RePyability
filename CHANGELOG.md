@@ -76,6 +76,43 @@ other release, fixes included, the minor.
   (`mean_time_to_failure_interval`, `mean(method="simulate")`) refuses a
   diagram of fixed probabilities alone, as the exact `mean` does: it fails
   at the start or never, and has no lifetimes to average.
+- **An MTTF takes a few hundred evaluations of the survival function
+  (#229),** where it took thousands: the integral split at every knot of
+  every node model (127 quantiles each) and doubled into the tail up
+  to 1e300 at once. It now starts from a few pieces a decade (one up to
+  where the curve first falls by 1e-6), the knots thinned to two a decade
+  but every kink kept (a numerical curve's grid, where a support starts),
+  each piece integrated by the Gauss-Kronrod (7, 15) rule, whose Gauss
+  points bound its error at no extra cost, and the tail followed only
+  until it is 0. A diagram of 20 different Weibulls in series takes 513
+  points where it took 63,100, to the same 1e-10. `Network.mean()` on the
+  issue's 10x10 grid takes 7 s, where it took 209: its replay evaluates
+  more times at once too (11 a chunk, at 12 ms a time, where two took 28
+  ms), as does `sf` at many times.
+- **A network refused as too meshed is refused at once after (#229)**:
+  each call repeated the search that refused it (seven seconds on an 11x11
+  grid).
+- **Fussell-Vesely on a meshed structure takes half the memory (#229)**:
+  the decision diagrams' table of combinations worked out starts again
+  past half a million, where it kept 1.6 million (250 MB) for a mesh of
+  50 nodes; a cofactor leaves the nodes after its variable alone.
+- **Choosing the test intervals of a common-cause group, or of a unit
+  whose tests take time, is faster (#229).** A group's chain keeps
+  `exp(G dt)` for the steps it takes again, period after period, where it
+  summed the series anew each time (48,000 times for one plan of a 2oo3
+  group); a plan keeps its groups' states for its cost rate and its
+  availability, and the plans of one search share the tested units'
+  models. Each plan of the issue's 2oo3 group takes 0.2 to 0.3 s where it
+  took 1.4 to 6.5, and its choice among five intervals 32 s where it took
+  506. A tested unit's walk convolves directly or by FFT without scipy's
+  choosing each time.
+- **Of interval plans as good, the search keeps the first it tried
+  (#229)**: plans whose cost rates are within 1e-10 of each other's, or
+  whose availabilities are within 1e-10, are as good, where the last bits
+  of their arithmetic chose between them. Which of identical members is
+  tested more often no longer turns on them, and of plans that cost the
+  same, the most available is chosen however their costs' last bits fall
+  (as a stagger's offsets, which change no cost, are chosen).
 
 ### Deprecated
 

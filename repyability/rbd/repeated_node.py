@@ -3,7 +3,7 @@ import numpy as np
 from repyability.utils.checks import simulation_options, whole_number
 from repyability.utils.wrappers import numpy_seed
 
-from ._mean_lifetime import mean_lifetime, model_knots
+from ._mean_lifetime import mean_lifetime, model_kinks, model_knots
 from ._sampling import RowSampler, inverse_sampler
 
 REPEATED_NODE_TYPES = {"parallel", "series"}
@@ -163,7 +163,9 @@ class RepeatedNode:
             simulation_options(
                 "RepeatedNode.mean()", {"mc_samples": mc_samples, "seed": seed}
             )
-            return mean_lifetime(self.sf, model_knots(self.model))
+            return mean_lifetime(
+                self.sf, model_knots(self.model), model_kinks(self.model)
+            )
         if method != "simulate":
             raise ValueError(
                 f"method must be 'exact' or 'simulate', got {method!r}."

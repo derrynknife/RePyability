@@ -41,7 +41,7 @@ from . import _ccf_modules
 from . import _montecarlo as montecarlo
 from . import capacity as _capacity
 from . import redundancy_allocation
-from ._mean_lifetime import mean_lifetime, model_knots
+from ._mean_lifetime import mean_lifetime, model_kinks, model_knots
 from ._model_utils import (
     is_fixed_probability,
     is_mixture,
@@ -1882,9 +1882,10 @@ class NonRepairableRBD(RBD):
             samples = np.empty(n)
             for i in range(n):
                 sf, models = self._drawn_sf(drawn, i, drawn_groups)
-                knots = [model_knots(model) for model in models.values()]
                 samples[i] = mean_lifetime(
-                    sf, np.concatenate([np.empty(0), *knots])
+                    sf,
+                    [model_knots(model) for model in models.values()],
+                    [model_kinks(model) for model in models.values()],
                 )
             return samples
         value = np.asarray(value, dtype=float)
@@ -6112,9 +6113,11 @@ class NonRepairableRBD(RBD):
     def _exact_mean(self) -> float:
         """The exact MTTF: the area under the system reliability."""
         self._require_lifetimes()
-        knots = [model_knots(m) for m in self.reliabilities.values()]
+        models = self.reliabilities.values()
         return mean_lifetime(
-            lambda t: self.sf(t), np.concatenate([np.empty(0), *knots])
+            lambda t: self.sf(t),
+            [model_knots(m) for m in models],
+            [model_kinks(m) for m in models],
         )
 
     def _require_varying_lifetimes(self) -> None:
@@ -7211,16 +7214,20 @@ class NonRepairableRBD(RBD):
         self._require_no_ccf_for_states()
         self._require_lifetimes()
         # Each model's knots, moved back by its age where it has one.
-        knots = [np.empty(0)]
+        knots, kinks = [np.empty(0)], [np.empty(0)]
         for node, model in self.reliabilities.items():
             own = np.asarray(model_knots(model), dtype=float)
+            bends = np.asarray(model_kinks(model), dtype=float)
             knots.append(own)
+            kinks.append(bends)
             age = getattr(state.get(node), "age", None)
             if age:
                 knots.append(own - float(age))
+                kinks.append(bends - float(age))
         return mean_lifetime(
             lambda t: np.asarray(self.sf_given_state(t, state), dtype=float),
-            np.concatenate(knots),
+            knots,
+            kinks,
         )
 
     @leaves_out_junctions
