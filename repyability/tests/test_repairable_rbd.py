@@ -40,7 +40,7 @@ def test_a_component_is_a_spec_a_unit_or_an_rbd():
     with pytest.raises(TypeError, match="'a' is a Repairable.*imperfect"):
         RepairableRBD(edges, {"a": unit})
     life = surv.Weibull.from_params([10.0, 2.0])
-    with pytest.raises(TypeError, match="spec dict"):
+    with pytest.raises(TypeError, match="needs its repairs too"):
         RepairableRBD(edges, {"a": life})
 
 

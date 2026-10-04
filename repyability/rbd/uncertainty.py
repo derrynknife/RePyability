@@ -33,11 +33,14 @@ more evenly than random ones, which shrinks the error of the summaries
 over the draws, and of the Sobol indices, for the same number of draws.
 """
 
+import difflib
 import warnings
 from collections.abc import Mapping, Sequence
 from typing import Any, List, Optional
 
 import numpy as np
+
+from repyability.rbd._model_utils import is_mixture
 
 #: The draws of a node's model that ``"fit"`` asks for.
 FIT = "fit"
@@ -126,6 +129,15 @@ def sobol_table(n: int, dimensions: int, rng) -> np.ndarray:
 def _parametric(model, label: str):
     """The model's distribution, or a ValueError for a model whose
     parameters cannot be redrawn."""
+    if is_mixture(model):
+        # Its dist is its components' alone (#227).
+        raise ValueError(
+            f"{label}: its model is a surpyval MixtureModel, whose "
+            "parameters are its components' and their weights, with no "
+            "parameter covariance (expectation-maximisation leaves none), "
+            "so they cannot be drawn. Give a list of alternative models "
+            "instead (fitted to resampled data, say)."
+        )
     dist = getattr(model, "dist", None)
     if dist is None or not hasattr(dist, "from_params"):
         raise ValueError(
@@ -255,6 +267,16 @@ def _quantiles(
     return np.asarray(values, dtype=float).reshape(-1)
 
 
+def _closest(unknown: list, names: list) -> str:
+    """ " Did you mean ...?" for the first of ``unknown`` close to one of
+    ``names`` (#232), or ""."""
+    for key in unknown:
+        close = difflib.get_close_matches(str(key), [str(n) for n in names], 1)
+        if close:
+            return f" Did you mean {close[0]!r}?"
+    return ""
+
+
 def _parameter_draws(
     model, priors: Mapping, n: int, rng: np.random.Generator, label: str
 ) -> list:
@@ -265,7 +287,7 @@ def _parameter_draws(
         raise ValueError(
             f"{label}: {sorted(map(str, unknown))} are not parameters of its "
             f"{getattr(dist, 'name', 'model')} model, whose parameters are "
-            f"{names}."
+            f"{names}.{_closest(unknown, names)}"
         )
     params = np.atleast_1d(np.asarray(model.params, dtype=float))
     bounds = list(getattr(dist, "bounds", [(None, None)] * len(names)))
@@ -489,6 +511,7 @@ def varied_ccf_parameters(group, spec: Any):
         raise ValueError(
             f"{label}: {sorted(map(str, unknown))} are not parameters of its "
             f"model, {model!r}, whose parameters are {names}."
+            f"{_closest(unknown, names)}"
         )
     values = parameters(model)
     chosen = list(spec)

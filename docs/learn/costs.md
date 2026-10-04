@@ -442,7 +442,8 @@ Three things follow:
   prices differ, which makes the comparison fair.
 
 ```python
-priced = variable.cost(t_simulation=8760.0, mc_samples=100, seed=0)
+priced = variable.cost(t_simulation=8760.0, mc_samples=100, seed=0,
+                       control_variate=False)
 priced.by_category["system_downtime"] == quick.by_category["system_downtime"]   # True
 priced.std             # -> 57088.0   against 56910.1 at a fixed 200
 ```

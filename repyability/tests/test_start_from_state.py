@@ -514,7 +514,12 @@ def test_compare_from_a_state_draws_the_same_numbers():
         "b": NodeState(alive=False, down_for=1.0),
     }
     difference = maintained_pair().compare(
-        maintained_pair(), 500.0, mc_samples=200, seed=2, state=state
+        maintained_pair(),
+        500.0,
+        mc_samples=200,
+        seed=2,
+        state=state,
+        control_variate=False,
     )
     assert difference.estimate == 0.0
     assert difference.standard_error == 0.0

@@ -334,4 +334,6 @@ def _run_key(settings: Dict[str, Any]) -> tuple:
         settings["fingerprint"],
         settings.get("state"),
         settings.get("curve_points"),
+        settings.get("control_variate"),
+        settings.get("conditional"),
     )

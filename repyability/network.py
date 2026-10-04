@@ -49,6 +49,7 @@ from repyability.rbd._model_utils import is_fixed_probability
 from repyability.rbd._sampling import lifetime_sampler
 from repyability.rbd.non_repairable_rbd import check_x
 from repyability.rbd.shannon import _minimal_cut_sets, _shannon_plan
+from repyability.utils.deprecation import refuse_removed_names
 from repyability.utils.wrappers import numpy_seed
 
 #: How the exact values are worked out: ``"bdd"`` (the default), by the
@@ -74,6 +75,7 @@ _FAIL, _WORK = 0, 1
 _NONE_FAIL, _NONE_WORK = -1, -2
 
 
+@refuse_removed_names
 class Network:
     """An undirected network whose links, and optionally nodes, fail, and
     the reliability of the connection between two of its nodes.
@@ -207,6 +209,9 @@ class Network:
         )
         self._paths: Optional[List[frozenset]] = None
         self._plan: Optional[_Plan] = None
+        # Why the exact values were refused, once found (#229): the search
+        # that found it is not repeated.
+        self._refused: Optional[str] = None
 
     @staticmethod
     def _model(what: str, model):
@@ -326,25 +331,31 @@ class Network:
                     f"network.METHOD must be 'bdd' or 'paths', got "
                     f"{METHOD!r}."
                 )
-            if METHOD == "paths":
-                paths = self._simple_paths()
-                # Nothing joins the terminals: they are always parted.
-                self._plan = (
-                    _plan_from_steps(*_shannon_plan(paths))
-                    if paths
-                    else _constant(_FAIL)
-                )
-            else:
-                order = _link_order(
-                    self.links, self._adjacent, self.source, self.target
-                )
-                self._plan = _frontier_plan(
-                    order,
-                    self.links,
-                    set(self.nodes),
-                    self.source,
-                    self.target,
-                )
+            if self._refused is not None:
+                raise NotImplementedError(self._refused)
+            try:
+                if METHOD == "paths":
+                    paths = self._simple_paths()
+                    # Nothing joins the terminals: they are always parted.
+                    self._plan = (
+                        _plan_from_steps(*_shannon_plan(paths))
+                        if paths
+                        else _constant(_FAIL)
+                    )
+                else:
+                    order = _link_order(
+                        self.links, self._adjacent, self.source, self.target
+                    )
+                    self._plan = _frontier_plan(
+                        order,
+                        self.links,
+                        set(self.nodes),
+                        self.source,
+                        self.target,
+                    )
+            except NotImplementedError as refusal:
+                self._refused = str(refusal)
+                raise
         return self._plan
 
     # ------------------------------------------------------------------
@@ -543,11 +554,17 @@ class Network:
                 10_000 if mc_samples is None else mc_samples, seed
             )
             return float(np.mean(lives))
-        from repyability.rbd._mean_lifetime import mean_lifetime, model_knots
+        from repyability.rbd._mean_lifetime import (
+            mean_lifetime,
+            model_kinks,
+            model_knots,
+        )
 
-        knots = np.concatenate([model_knots(m) for m in self.models.values()])
+        models = self.models.values()
         return mean_lifetime(
-            lambda t: self._value(np.asarray(t, float)), knots
+            lambda t: self._value(np.asarray(t, float)),
+            [model_knots(m) for m in models],
+            [model_kinks(m) for m in models],
         )
 
     # ------------------------------------------------------------------
@@ -774,8 +791,11 @@ def _plan_from_steps(steps: list, root: int) -> _Plan:
 
 
 #: The most values a plan's evaluation holds at once (its slots, times the
-#: times evaluated together): more times are evaluated in turn.
-_EVALUATION_SIZE = 4_000_000
+#: times evaluated together; 128 MB): more times are evaluated in turn. A
+#: level's rows are gathered faster the more times each holds (#229): a
+#: plan of 1.4 million slots evaluates a time in 12 ms with eleven at once,
+#: 28 ms with two.
+_EVALUATION_SIZE = 16_000_000
 
 
 def _rows(plan: _Plan, values: dict, size: int) -> np.ndarray:

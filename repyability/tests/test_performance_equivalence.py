@@ -95,8 +95,9 @@ def assert_same_rng_state(a, b):
 def no_fast_path(monkeypatch):
     """Force every sampler back onto its original draw-at-a-time code."""
     monkeypatch.setattr(non_repairable_rbd, "row_sampler", lambda model: None)
-    for module in (standby_node, repairable_rbd):
-        monkeypatch.setattr(module, "inverse_sampler", lambda model: None)
+    monkeypatch.setattr(standby_node, "inverse_sampler", lambda model: None)
+    # A repairable diagram's streams sample through stream_sampler (#227).
+    monkeypatch.setattr(repairable_rbd, "stream_sampler", lambda model: None)
 
 
 def assert_same(a, b, path="result"):
@@ -1033,10 +1034,18 @@ def seeded_runs():
             ),
         )
         if rbd.has_costs:
+            # The simulations' own breakdown, which a run whose mean is
+            # exact replaces with the exact one (#223).
             runs[f"{name}, cost"] = (
                 rbd,
                 "cost",
-                dict(t_simulation=200.0, mc_samples=20, seed=25),
+                dict(
+                    t_simulation=200.0,
+                    mc_samples=20,
+                    seed=25,
+                    control_variate=False,
+                    conditional=False,
+                ),
             )
     air = instrument_air()
     runs["instrument air"] = (

@@ -32,15 +32,18 @@ different units only the simulations take it (like some ``StandbyModel``
 arrangements).
 """
 
+from typing import Any
+
 import numpy as np
 from surpyval import Hypoexponential
 
-from repyability.utils.deprecation import ignored
+from repyability.utils.deprecation import ignored, refuse_removed_names
 from repyability.utils.wrappers import conditional_survival, numpy_seed
 
 from ._dependent_lifetimes import LoadSharingSurvival
 from ._model_utils import is_exponential
 from ._sampling import RowSampler, column, inverse_sampler
+from .standby_node import drawn_mean
 
 _AFT_KIND = "Accelerated Failure Time"
 
@@ -89,6 +92,7 @@ def _identical_exponential_stage_rates(models, load, k, baselines, phi_table):
     return np.asarray(rates, dtype=float)
 
 
+@refuse_removed_names
 class LoadSharingModel:
     """A load-sharing arrangement of coupled AFT units as one RBD node.
 
@@ -117,9 +121,9 @@ class LoadSharingModel:
       by ``random``, so a diagram with it is simulated: ``random``,
       ``mean(method="simulate")`` and ``unreliability_interval`` of a
       ``NonRepairableRBD``, and ``availability`` and ``cost`` of a
-      ``RepairableRBD``. ``mean(mc_samples=..., seed=...)`` estimates its
-      own mean from new draws. (Until 0.12 its ``sf`` was a Kaplan-Meier
-      fit to simulated lifetimes.)
+      ``RepairableRBD``. ``mean(method="simulate", mc_samples=...,
+      seed=...)`` estimates its own mean from new draws. (Until 0.12 its
+      ``sf`` was a Kaplan-Meier fit to simulated lifetimes.)
 
     As an RBD node, ``sf``/``ff`` give its reliability, ``random`` its
     lifetimes for Monte-Carlo system simulation and ``mean`` its MTTF.
@@ -394,7 +398,7 @@ class LoadSharingModel:
             out[j] = t
         return out
 
-    def mean(self, mc_samples=None, seed=None):
+    def mean(self, mc_samples=None, seed=None, *, method=None):
         """Mean lifetime (MTTF) of the group.
 
         Exact (the hypoexponential mean, the sum of the stage means) when
@@ -402,15 +406,20 @@ class LoadSharingModel:
         integral of the survival function). A group of different units has
         neither (see ``is_simulated``), and refuses, unless asked for an
         estimate: the mean of ``mc_samples`` new draws of ``random``.
+        ``method="simulate"`` estimates it so whatever the group (#233).
 
         Parameters
         ----------
         mc_samples : int, optional
-            For a group with no exact mean: the number of draws to estimate
-            it from (10_000 if only ``seed`` is given). Ignored otherwise.
+            The number of draws to estimate the mean from, 10_000 by
+            default: with ``method="simulate"``, or for a group with no
+            exact mean. An exact mean draws nothing, and ignores it with a
+            ``FutureWarning`` (0.14 will refuse it).
         seed : int or None, optional
             Seed for those draws (see ``random``), by default None.
             Ignored as ``mc_samples`` is.
+        method : {None, "exact", "simulate"}, optional
+            As for ``StandbyModel.mean``.
 
         Returns
         -------
@@ -421,14 +430,22 @@ class LoadSharingModel:
         ------
         NotImplementedError
             If the group has no exact mean and neither ``mc_samples`` nor
-            ``seed`` is given.
+            ``seed`` is given (or ``method="exact"``).
+        ValueError
+            If ``method`` is not one of these.
+        TypeError
+            If ``method="exact"`` is given with ``mc_samples`` or ``seed``.
         """
-        if self._sf_model is not None:
-            return float(np.ravel(self._sf_model.mean())[0])
-        if mc_samples is None and seed is None:
-            raise self._no_reliability("mean life")
-        count = 10_000 if mc_samples is None else mc_samples
-        return float(self.random(count, seed=seed).mean())
+
+        def exact() -> float:
+            model: Any = self._sf_model
+            if model is None:
+                raise self._no_reliability("mean life")
+            return float(np.ravel(model.mean())[0])
+
+        return drawn_mean(
+            self, "LoadSharingModel", exact, mc_samples, seed, method
+        )
 
     def sf(self, x, *args, **kwargs):
         """Survival function (reliability) of the group.
@@ -520,7 +537,8 @@ class LoadSharingModel:
         """The refusal of a group with no exact or numerical ``what`` (see
         ``is_simulated``)."""
         own = (
-            " Estimate it with mean(mc_samples=..., seed=...)."
+            " Estimate it with mean(method='simulate', mc_samples=..., "
+            "seed=...)."
             if what == "mean life"
             else ""
         )

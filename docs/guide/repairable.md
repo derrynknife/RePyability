@@ -18,7 +18,10 @@ Theory: [Concepts](../concepts.md#availability).
 ## Components
 
 Each component needs a reliability (time-to-failure) model and a
-repairability (time-to-repair) model:
+repairability (time-to-repair) model. A life is a surpyval distribution,
+fitted or built with `from_params`, or a surpyval `MixtureModel` (a
+population of two or more modes, such as infant mortality and wear-out),
+whose lives the simulations draw by inverting its distribution function:
 
 ```python
 import numpy as np
@@ -173,6 +176,37 @@ scheduled replacements), what happens faster than a step, such as a short
 repair, is smoothed over it, so a point value there can be off by up to
 about the probability that the component is under repair; mission averages
 are not affected.
+
+A small unavailability, a redundant safety function's `1e-16`, say, is lost
+below one less a number next to 1: `1 - point_availability(t)` cannot hold
+it. `point_unavailability` and `mission_unavailability` (#237) work it out
+in its own right, as `mean_unavailability` does in the long run, each
+component down with one less its availability, or in closed form for one
+with an exponential life and repair (and no maintenance or tests), new at 0:
+
+```python
+valve = {
+    "reliability": surv.Exponential.from_params([1e-9]),
+    "repairability": surv.Exponential.from_params([1 / 8]),
+}
+pair = RepairableRBD(
+    [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")], {"a": valve, "b": valve}
+)
+1 - pair.point_availability(1000.0)   # -> 1.11e-16   the floor of a float
+pair.point_unavailability(1000.0)     # -> 6.4e-17    (8e-9 squared)
+pair.mission_unavailability(8760.0)   # -> 6.391e-17  from new, over a year
+```
+
+!!! note "A window's length, by its name"
+    The methods name a window's length for what it is to them: `t`, the
+    times (or missions' lengths) of the exact values over time
+    (`point_availability`, `mission_availability`, `expected_events`,
+    `expected_cost`); `t_simulation`, the window a simulation runs over
+    (`availability`, `cost`, `compare`, `simulate_timelines`); `horizon`,
+    the time a count or a cost is totalled over (`spares_demand`,
+    `total_cost`, `allocate_redundancy`); and `window`, the window an
+    importance measure is averaged over (#235). Each runs from 0, every
+    component new, unless a `state` is given.
 
 ## Expected events over a window (exact)
 
@@ -458,10 +492,11 @@ window.estimate                   # -> 0.9542   simulated
 window.lower, window.upper        # (0.9526, 0.9558)
 ```
 
-To compare two designs, simulate them with common random numbers:
-`faster.compare(plant, t_simulation)` estimates how much more of the window
-one is up than the other far more precisely than two separate runs (see
-[Comparing two designs](simulation.md#comparing-two-designs)).
+To compare two designs, `faster.compare(plant, t_simulation)` gives how
+much more of the window one is up than the other: exactly where both
+designs' mission availabilities are worked out, and otherwise by simulating
+them with common random numbers, far more precisely than two separate runs
+(see [Comparing two designs](simulation.md#comparing-two-designs)).
 
 ### What the result holds
 
@@ -488,8 +523,11 @@ result.mean_up_time      # -> 27.20    against the exact 27.27
 result.failure_frequency # -> 0.035075 against the exact 0.03497
 ```
 
-The result also behaves as a read-only mapping (`result["availability"]`,
-`result.keys()`, `dict(result)`), so dict-style code keeps working.
+Its values are attributes and properties; what takes a confidence level,
+an interval, is a method. The result also behaves as a read-only mapping
+(`result["availability"]`, `result.keys()`, `dict(result)`), so dict-style
+code keeps working, and `result.to_dict()` gives it as plain data, ready for
+`json.dumps` (#235).
 
 ### Criticality measures
 
@@ -823,7 +861,7 @@ plant.initialize_event_queue(100.0)
 events = [plant.next_event()]
 while events[-1][0] < 100.0:
     events.append(plant.next_event())
-events[0]   # (15.06..., False): the plant first went down at t = 15.06
+events[0]   # (17.18..., False): the plant first went down at t = 17.19
 ```
 
 `initialize_event_queue(t_simulation, state=...)` starts the history from

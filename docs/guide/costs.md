@@ -93,12 +93,12 @@ total cost per simulated window.
 
 ```python
 costs = plant.cost(t_simulation=1000.0, mc_samples=500, seed=0)
-costs.mean              # mean total cost of a window
-costs.cost_rate         # mean / t_simulation: converges to expected_cost_rate()
+costs.mean              # the expected cost of a window: exact here
+costs.cost_rate         # mean / t_simulation: tends to expected_cost_rate()
 costs.percentile(90)    # a planning budget: 9 windows in 10 cost less
 costs.std               # how much a window's cost varies
-costs.by_category       # mean repair, replace, preventive, inspection, component_downtime, system_downtime, setup
-costs.by_component      # mean cost attributable to each costed component
+costs.by_category       # mean split: repair, replace, preventive, inspection, component_downtime, system_downtime, setup
+costs.by_component      # the part of mean each costed component accounts for
 ```
 
 `cost()` takes the same arguments as `availability()` (`working_nodes`,
@@ -108,23 +108,49 @@ costs.by_component      # mean cost attributable to each costed component
 `availability(...)` as `result.cost`, so one simulation gives both answers.
 With nothing priced, `cost()` returns `None` and `result.cost` is `None`.
 
+### One expected value
+
+`mean` is the run's estimate of a window's expected cost, the one
+`mean_interval()` gives an interval for, and `cost_rate` and the breakdowns
+follow it. By default it is exact where the exact methods work it out, as
+here (`expected_cost`, below), and otherwise taken given the histories of
+the system's dependent modules, or the simulations' own (see
+[exact or simulated?](simulation.md#exact-or-simulated)). The
+simulations' own mean, the average of `samples`, is `sample_mean`; the repr
+shows both:
+
+```python
+costs.mean_interval().method              # 'exact'
+costs.mean == plant.expected_cost(1000.0).mean   # True
+round(costs.mean, 1)                      # -> 121155.1
+round(costs.sample_mean, 1)               # -> 121702.6   the 500 windows' own
+```
+
 ### Two different uncertainties
 
 - `std` and `percentile` describe how much a window's cost **varies**. That
   is a property of the system; more simulations will not shrink it.
 - `mean_se` and `mean_interval(confidence)` describe how precisely the
-  **expected** cost has been estimated. They shrink like `1/√N`; check them
-  before quoting the mean, or pass `tolerance` to `cost()` to simulate until
-  the interval is narrow enough.
+  **expected** cost has been estimated: exactly, here, with no error; for a
+  mean that is simulated they shrink like `1/√N`. Check them before quoting
+  the mean, or pass `tolerance` to `cost()` to simulate until the interval
+  is narrow enough. With `control_variate=False` (and `conditional=False`),
+  the mean and its interval are the simulations' own:
 
 ```python
-interval = costs.mean_interval(confidence=0.95)
-interval.lower < plant.expected_cost_rate() * 1000.0 < interval.upper   # True
+own = plant.cost(t_simulation=1000.0, mc_samples=500, seed=0, control_variate=False)
+interval = own.mean_interval(confidence=0.95)
+interval.method                                                       # 'simulated'
+round(interval.standard_error, 1)                                     # -> 850.0
+interval.lower < plant.expected_cost(1000.0).mean < interval.upper    # True
 ```
 
 `by_category` sums to `mean`; `by_component` covers each component's repair,
-replace, preventive and own downtime cost (lost production is a system cost
-and is not attributed to components).
+replace, preventive, inspection and own downtime cost (lost production is a
+system cost, and a maintenance group's set-up cost the group's: neither is
+attributed to a component). Under `control_variate=True`, whose twin
+controls only the total, the breakdowns are the simulations' own, and sum
+to `sample_mean`.
 
 ## The expected cost of a window (exact)
 
@@ -302,6 +328,24 @@ no intervals can meet raises `ValueError`, with the best they can do. The
 cost rate is usually flat near its minimum, so an interval some way from the
 one found costs almost the same.
 
+Replacements are often made on a calendar. `allowed` gives the intervals to
+choose from (#230), one list for every component or a dict of a list each
+(`inf` among them for never), and every combination is tried, as
+`optimal_inspection_intervals` chooses tests':
+
+```python
+weeks = [336.0, 672.0, 1008.0, 1344.0]    # every 2, 4, 6 or 8 weeks
+plan = with_standby(1000).optimal_replacement_intervals(allowed=weeks)
+plan.intervals          # {'a': 672.0, 'b': 672.0}
+plan.cost_rate          # -> 7.405   against 6.985 at 497 h
+```
+
+The plan is the best for the long run. A new plant's units all start new,
+so the first replacements of redundant units fall due together, and where
+they take the system down together its first years cost more than the
+plan's rate: `expected_cost` gives the cost from new, and from units of
+other ages (`state`) the cost of a staggered start.
+
 With limited `repair_crews` a component can wait for a crew, and the exact
 long-run values the search uses no longer hold, so the choice is refused.
 `assume_unlimited_crews=True` (#184) chooses the intervals as if every repair
@@ -363,15 +407,16 @@ density (no units dead on arrival), and repairs that always end; otherwise
 they raise `NotImplementedError`, and the simulation still applies.
 
 The simulation prices both policies. A replacement's cost is in
-`by_category["preventive"]`, and a planned outage counts as downtime, but not
-as a failure: `system_planned_outages` counts the times one took the system
-down.
+`by_category["preventive"]` (the expected cost, exact here, as the cost's
+`mean` is), and a planned outage counts as downtime, but not as a failure:
+`system_planned_outages` counts the times one took the system down in the
+simulations.
 
 ```python
 year = alone(580).availability(t_simulation=8760.0, mc_samples=500, seed=0)
 year.system_failures / year.n_simulations          # -> 3.518
 year.system_planned_outages / year.n_simulations   # -> 11.92
-year.cost.by_category["preventive"]                # -> 11918.0   1000 each
+year.cost.by_category["preventive"]                # -> 11886.8   1000 each, expected
 ```
 
 ### Replacement on condition
@@ -403,7 +448,8 @@ inspected = RepairableRBD([("s", "p"), ("p", "t")],
                           downtime_cost_rate=500.0)
 inspected.expected_cost_rate()              # -> 13.37   per hour
 run = inspected.cost(200_000.0, mc_samples=20, seed=1)
-run.mean / 200_000.0                        # -> 13.28   simulated, ± 0.2
+run.cost_rate                               # -> 13.36   exact over the window
+run.sample_mean / 200_000.0                 # -> 13.28   the 20 simulations', ± 0.2
 ```
 
 | Threshold | 0.05 | 0.1 | 0.15 | 0.2 | 0.25 | 0.3 |
@@ -548,7 +594,7 @@ component's dict makes its failures hidden:
 | `interval` | Required: the time `τ` between inspections, positive and finite. The component is inspected at `τ, 2τ, 3τ, …`, or from its `offset`. |
 | `duration` | `"instant"` (the default): the test takes no time. Or a time-to-test model: the component is off-line while it is tested (a planned outage), and does not age meanwhile. |
 | `cost` | Charged at each inspection: a number or a distribution. |
-| `offset` | The time of the first test, from 0 to less than `τ` (by default 0): tests at `offset, offset + τ, …`, so that redundant components can be tested apart (staggered). |
+| `offset` | The time of the first test, from 0 to less than `τ`: tests at `offset, offset + τ, …`, so that redundant components can be tested apart (staggered). By default 0, no offset: the first test at `τ`, none at the start. A positive offset puts one there, so an offset just above 0 adds a test (and its outage and cost) at the start; one within a billionth of `τ` of 0 is taken as 0. |
 | `coverage` | The chance that a test finds a failure, from 0 to 1 (by default 1): its *proof-test coverage*. A failure a test misses stays hidden until a full test. |
 | `full_test` | With a coverage below 1, required: the time between full tests, which find every failure, a whole multiple of `τ` (the tests at `offset` and every `full_test` after it). Often the mission time, after which the component is renewed. |
 
@@ -729,9 +775,9 @@ valve(0.7).expected_events(10 * 8760.0).system_planned_outages   # -> 8.750
 `spares_demand` and `spares_stock` count such a valve's spares on the
 tests that find its failures (see [how spares are
 counted](spares.md#how-it-is-computed)). Only a test that can last as long
-as its interval stays simulated; a common-cause group's members are
-simulated when their tests or repairs take time (their group's chain needs
-them in no time).
+as its interval stays simulated. A common-cause group's members' tests and
+repairs may take time too, of a fixed length or an exponential one (see
+[below](#common-cause-staggered-tests-and-test-coverage)).
 
 ### Common cause, staggered tests and test coverage
 
@@ -747,6 +793,11 @@ place in the diagram:
 - **Staggered tests.** An `"offset"` tests one valve half an interval after
   the other: a shared failure is then found by whichever test comes first,
   and the independent term falls from `(λτ)²/3` to about `5(λτ)²/24`.
+  Each valve is restored by its own test alone: the first test restores
+  its valve, and with it the pair, and the other stays down until its own
+  test (where practice has the first test find and restore both, the
+  value is a little less, the pair then not left on one valve until the
+  second test).
 - **Test coverage.** A proof test that finds only a share `c` of the
   failures (a `"coverage"`) leaves the rest hidden until a full test
   (`"full_test"`), say the ten-year overhaul: about `(1 − c)λT/2` more,
@@ -785,9 +836,27 @@ All three are exact with constant failure rates and instant tests and
 repairs, and staggered tests and test coverage are numerical with any life
 too, and with tests and repairs that take time (see [tests and repairs that
 take time](#tests-and-repairs-that-take-time)). With common causes, a
-group's members, tested and repaired in no time, are a Markov chain of
-which of them are down, with each member found by its own tests, and a
-shared failure found alike by every test (the coverage is the group's).
+group's members are a Markov chain of which of them are down, with each
+member found by its own tests, and a shared failure found alike by every
+test (the coverage is the group's), each member it struck restored by its
+own test, as in the simulations (#237). Their tests and repairs may take no
+time, a fixed time or an exponential one (#220): a working member is off
+line while it is tested, and neither ages nor fails meanwhile, a failure a
+test finds is repaired once the test is over, and a test that falls in a
+member's own test or repair is not done, as in the simulations. IEC
+61508-6's 1oo2 with an eight-hour mean repair time:
+
+```python
+repaired = {**proof_tested(), "repairability": surv.ExactEventTime.from_params([8.0])}
+mrt = RepairableRBD(
+    redundant_edges, {"v1": repaired, "v2": repaired}, ccf_groups=common
+)
+mrt.mean_unavailability()           # -> 5.300e-4   IEC 61508-6: 5.316e-4
+```
+
+A test of an exponential length followed by a repair of a fixed one, or
+fixed lengths that run into the member's next test, are refused, saying
+so: estimate those by simulation.
 The importance measures take the groups in, a member's conditioned on its
 state at each time, and so do the allocations, the values over time from
 new (the chain followed through the tests from every member up) and the
@@ -863,7 +932,8 @@ PFDavg at most `10⁻³`, two in parallel every two years. The result is a
 
 When the valves are tested matters as well. Tested together, both are down
 for as long as a common-cause failure stays hidden; tested half an interval
-apart, it is found twice as soon. `offsets` chooses the times of the first
+apart, it is found twice as soon (and the valve it found restored, the
+other waiting for its own test). `offsets` chooses the times of the first
 tests with the intervals (#184), as shares of each interval in [0, 1): a
 list for every component, a dict of one per component, or `"stagger"`, the
 shares `0, 1/n, …, (n − 1)/n` of `n` components, among which are tests of
@@ -881,7 +951,7 @@ together = paired.optimal_inspection_intervals(
 together.intervals        # {'v1': 4380.0, 'v2': 8760.0}
 together.cost_rate        # -> 0.1712
 apart = paired.optimal_inspection_intervals(
-    allowed=calendar, min_availability=1 - 5e-4, offsets="stagger")
+    allowed=calendar, min_availability=1 - 5e-4, offset_shares="stagger")
 apart.intervals           # {'v1': 8760.0, 'v2': 8760.0}
 apart.offsets             # {'v1': 0.0, 'v2': 4380.0}   six months apart
 apart.cost_rate           # -> 0.1142   a third less
@@ -890,8 +960,10 @@ apart.cost_rate           # -> 0.1142   a third less
 Shifting every test by one time changes nothing in the long run, so the
 first component's tests stay from 0, unless other tested components keep
 their schedules (then its offset is chosen too). Offsets change no cost, so
-of plans that cost the same the most available is chosen. The result's
-`offsets` gives the times of the first tests.
+of plans that cost the same the most available is chosen. The
+`offset_shares` searched are shares of the interval; the result's
+`offsets` are the times of the first tests, as `with_intervals(offsets=)`
+takes them, and a plan has them whether they were searched or not.
 
 ## The total cost of ownership
 
@@ -944,13 +1016,28 @@ with models in hours, is `math.log(1.07) / 8760`.
 import math
 seven = math.log(1.07) / 8760
 line.total_cost(87600.0, discount_rate=seven)   # -> 114538   ten years count as 63,656 hours
+line.total_cost(math.inf, discount_rate=seven)  # -> 212287   owned for ever: 1 / r hours
+line.total_cost([8760.0, 87600.0], discount_rate=seven)   # one total for each horizon
+```
+
+A rate per year given with the models in hours (`0.07`) discounts every cost
+after the first few hours away: a warning says so, and how to convert it
+(#231).
+
+`total_cost` spends the long-run cost rate from the start. The exact present
+value from new discounts each cost when it falls, which matters most in the
+early years, where the two differ: `expected_cost` takes a `discount_rate`
+too (#231), and is then a present value, `acquisition_cost` (paid at the
+start) beside it:
+
+```python
+line.expected_cost(87600.0, discount_rate=seven).total   # -> 114528   from new
 ```
 
 Discounting favours what is cheaper to buy and dearer to run, as the running
 costs it saves come later: it can change which design wins (see the
 [fourth pump train](#whole-trains) below, which no longer pays at 15% a
-year). `expected_cost`, the cost rates and the simulated costs stay
-undiscounted.
+year). The cost rates and the simulated costs stay undiscounted.
 
 ### Buying redundancy
 

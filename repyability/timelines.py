@@ -47,6 +47,8 @@ from typing import (
 
 import numpy as np
 
+from repyability.utils.checks import number_or_nan
+
 #: The most members the core's path sets may hold in all for the core to be
 #: merged path set by path set (a series merge of each, and a parallel
 #: merge of those); a larger core is decided at each of its members'
@@ -656,6 +658,47 @@ def k_out_of_n(k: int, *timelines, name: Optional[Hashable] = None):
     return _combine(timelines, need, name, "k_out_of_n")
 
 
+def _checked_outage(outage, end: float) -> Tuple[float, float]:
+    """An outage log's record, ``(start, stop)``, as floats in the window
+    ``[0, end]`` (a stop of None, or past ``end``, at ``end``), or a
+    ValueError saying what is wrong with it (#232)."""
+    try:
+        start, stop = outage
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Each outage is a (start, end) pair, got {outage!r}."
+        ) from None
+    first = number_or_nan(start)
+    if math.isnan(first):
+        raise ValueError(
+            f"Outage ({start}, {stop}) starts at {start!r}, which is not a "
+            f"time: give its start as a number from 0 to the window's end "
+            f"({end:g})."
+        )
+    if first < 0.0:
+        raise ValueError(
+            f"Outage ({start}, {stop}) starts before the window's start, "
+            "0: give the times from the window's start."
+        )
+    if first > end:
+        raise ValueError(
+            f"Outage ({first}, {stop}) starts after the window's end "
+            f"({end})."
+        )
+    if stop is None:
+        return first, end
+    last = number_or_nan(stop)
+    if math.isnan(last):
+        raise ValueError(
+            f"Outage ({start}, {stop}) ends at {stop!r}, which is not a "
+            "time: give its end as a number, or None for an outage that "
+            "runs to the window's end."
+        )
+    if last < first:
+        raise ValueError(f"Outage ({start}, {stop}) ends before it starts.")
+    return first, min(last, end)
+
+
 def _merged_outages(outages: list, flags: list, end: float):
     """``outages`` (with their ``planned`` flags) sorted by start, each run
     that overlaps or touches joined into one: planned only if all of it
@@ -818,7 +861,7 @@ class Timeline:
         (2, 40.0)
         """
         end = _check_end(end)
-        outages = list(outages)
+        outages = [_checked_outage(outage, end) for outage in outages]
         flags = (
             [False] * len(outages)
             if planned is None
@@ -835,24 +878,11 @@ class Timeline:
         marks: list = []
         last = 0.0
         for (start, stop), flag in zip(outages, flags):
-            start = float(start)
-            if start > end:
-                raise ValueError(
-                    f"Outage ({start}, {stop}) starts after the window's end "
-                    f"({end})."
-                )
-            stop = end if stop is None else min(float(stop), end)
-            if not (math.isfinite(start) and start >= last and stop >= start):
+            if start < last:
                 raise ValueError(
                     f"Outage ({start}, {stop}) is out of order: each starts "
-                    "no earlier than the one before ends, and ends no "
-                    "earlier than it starts."
-                    + (
-                        " Give merge=True to join outages that overlap or "
-                        "touch."
-                        if math.isfinite(start) and stop >= start
-                        else ""
-                    )
+                    "no earlier than the one before ends. Give merge=True to "
+                    "join outages that overlap or touch."
                 )
             changes += [start, stop]
             marks += [flag, False]
@@ -1068,6 +1098,27 @@ class Timeline:
         if not isinstance(other, Timeline):
             return NotImplemented
         return _same(self, other)
+
+    def to_dict(self) -> dict:
+        """The history as plain data, ready for ``json.dumps`` (#235).
+
+        Returns
+        -------
+        dict
+            ``end``, ``up`` (at 0), ``name``, ``changes`` (the times it
+            changes state), ``causes`` (each change's cause) and
+            ``planned`` (whether each is a planned change down).
+        """
+        from repyability.rbd.results import plain
+
+        return {
+            "end": self.end,
+            "up": bool(self.up),
+            "name": plain(self.name),
+            "changes": self.changes.tolist(),
+            "causes": plain(self.causes),
+            "planned": [bool(p) for p in self.planned],
+        }
 
     def __repr__(self) -> str:
         shown = ", ".join(f"{t:g}" for t in self._data.times[:6])
@@ -1313,6 +1364,23 @@ class Timelines:
         if not isinstance(other, Timelines):
             return NotImplemented
         return _same(self, other)
+
+    def to_dict(self) -> dict:
+        """The histories as plain data, ready for ``json.dumps`` (#235).
+
+        Returns
+        -------
+        dict
+            ``end``, ``name`` and ``timelines``, each history's
+            ``Timeline.to_dict()``, in order.
+        """
+        from repyability.rbd.results import plain
+
+        return {
+            "end": self.end,
+            "name": plain(self.name),
+            "timelines": [history.to_dict() for history in self],
+        }
 
     def __repr__(self) -> str:
         label = "" if self._name is None else f", name={self._name!r}"

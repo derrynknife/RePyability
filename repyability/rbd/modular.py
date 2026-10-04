@@ -826,16 +826,22 @@ def _critical_closures(plan: tuple) -> tuple[list, list, list]:
         )
     structure = made[top]
 
-    def mapped(f: int, rule: Callable[[int, int, int], int], memo: dict):
+    def mapped(
+        f: int,
+        rule: Callable[[int, int, int], int],
+        memo: dict,
+        after: float = float("inf"),
+    ):
         """``f``'s diagram rebuilt bottom up, each node by ``rule(node,
-        new low, new high)``, constants kept."""
+        new low, new high)``, constants kept, and the nodes of variables
+        ``after`` or later in the order kept as they are, unvisited."""
         stack = [f]
         while stack:
             n = stack[-1]
             if n in memo:
                 stack.pop()
                 continue
-            if n <= TRUE:
+            if n <= TRUE or d.var[n] > after:
                 memo[n] = n
                 stack.pop()
                 continue
@@ -853,7 +859,8 @@ def _critical_closures(plan: tuple) -> tuple[list, list, list]:
                 return high if works else low
             return d.node(int(d.var[n]), low, high)
 
-        return mapped(f, rule, {})
+        # The nodes after ``v`` in the order do not depend on it.
+        return mapped(f, rule, {}, after=v)
 
     closed: dict = {}
 
@@ -869,10 +876,9 @@ def _critical_closures(plan: tuple) -> tuple[list, list, list]:
     )
     roots = []
     for v in variables:
+        # Works with it, and fails without it.
         critical = d.ite(
-            cofactor(structure, v, True),
-            d.ite(cofactor(structure, v, False), FALSE, TRUE),
-            FALSE,
+            cofactor(structure, v, False), FALSE, cofactor(structure, v, True)
         )
         roots.append(closure(critical))
     plan_steps, slots = d.plan(roots, named.__getitem__)

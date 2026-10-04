@@ -158,14 +158,17 @@ def test_a_threshold_of_one_is_run_to_failure():
         dict(spec, preventive=on_condition(1.0, inspection_cost=0.0))
     )
     unmaintained = single(spec)
-    difference = inspected.compare(
-        unmaintained, 2000.0, mc_samples=200, seed=3
-    )
-    assert difference.estimate == 0.0 and difference.standard_error == 0.0
-    difference = inspected.compare(
-        unmaintained, 2000.0, mc_samples=200, seed=3, quantity="cost"
-    )
-    assert difference.estimate == 0.0 and difference.standard_error == 0.0
+    for quantity in ("availability", "cost"):
+        difference = inspected.compare(
+            unmaintained,
+            2000.0,
+            mc_samples=200,
+            seed=3,
+            quantity=quantity,
+            control_variate=False,
+        )
+        assert difference.estimate == 0.0
+        assert difference.standard_error == 0.0
 
 
 @pytest.mark.parametrize("threshold, replaced", [(0.2, False), (0.1, True)])

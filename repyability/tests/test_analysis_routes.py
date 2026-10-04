@@ -16,10 +16,7 @@ import scipy.stats as st
 import surpyval as surv
 
 from repyability import (
-    MGL,
     AnalysisRoute,
-    BetaFactor,
-    CCFGroup,
     DegradingNode,
     LoadSharingModel,
     NonRepairableRBD,
@@ -29,385 +26,55 @@ from repyability import (
     StandbyModel,
     network,
 )
-from repyability.rbd import (
-    _repairable_uncertainty,
-    bdd,
-    modular,
-    phased_mission,
-    routes,
-)
+from repyability.rbd import _repairable_uncertainty, phased_mission, routes
 from repyability.rbd._model_utils import parametric_spec
-from repyability.tests.repository import source
-from repyability.tests.test_performance_equivalence import binomial_first
-from repyability.tests.test_simulation_engines import (
-    identical,
-    systems_of_every_kind,
+from repyability.tests.catalogue import (
+    EDGES,
+    E,
+    W,
+    nonrepairable_kinds,
+    repairable_kinds,
 )
-
-W = surv.Weibull.from_params
-E = surv.Exponential.from_params
-L = surv.LogNormal.from_params
-FIXED = surv.FixedEventProbability.from_params
-EDGES = [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")]
-BRIDGE = [
-    ("s", "a"),
-    ("s", "b"),
-    ("a", "c"),
-    ("b", "c"),
-    ("a", "d"),
-    ("c", "d"),
-    ("b", "e"),
-    ("c", "e"),
-    ("d", "t"),
-    ("e", "t"),
-]
-
-
-def too_meshed(build):
-    """``build()``, its core given up on as too meshed to work out (see
-    ``modular.GraphStructure``), as a far larger one would be (#172)."""
-    limit, method = bdd.STEP_LIMIT, modular.CORE_METHOD
-    bdd.STEP_LIMIT, modular.CORE_METHOD = 2, "bdd"
-    try:
-        rbd = build()
-    finally:
-        bdd.STEP_LIMIT, modular.CORE_METHOD = limit, method
-    assert rbd.structure_check["is_too_meshed"]
-    return rbd
-
-
-def nonrepairable_rbds():
-    unit = W([100, 2])
-    rest = {"b": W([80, 1.5]), "c": E([0.002])}
-    return {
-        "plain": NonRepairableRBD(EDGES, {"a": unit, **rest}),
-        "convolved standby": NonRepairableRBD(
-            EDGES, {"a": StandbyModel([unit, unit]), **rest}
-        ),
-        "simulated standby": NonRepairableRBD(
-            EDGES,
-            {
-                "a": StandbyModel([unit] * 3, k=2, dormancy_factor=0.5),
-                **rest,
-            },
-        ),
-        "repeated standby": NonRepairableRBD(
-            EDGES, {"a": RepeatedStandbyNode(unit, 2), **rest}
-        ),
-        "repeated": NonRepairableRBD(
-            EDGES, {"a": RepeatedNode(unit, 2, "parallel"), **rest}
-        ),
-        "common cause": NonRepairableRBD(
-            EDGES,
-            {"a": unit, "b": unit, "c": E([0.002])},
-            ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
-        ),
-        "common cause by rate": NonRepairableRBD(
-            EDGES,
-            {"a": unit, "b": unit, "c": E([0.002])},
-            ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1, basis="rate"))],
-        ),
-        "fixed": NonRepairableRBD(
-            EDGES, {"a": FIXED(0.1), "b": FIXED(0.2), "c": FIXED(0.05)}
-        ),
-        "capacities": NonRepairableRBD(
-            EDGES,
-            {"a": unit, **rest},
-            capacity={"a": 5.0, "b": 5.0, "c": 10.0},
-        ),
-        "unreplayable": NonRepairableRBD(
-            EDGES, {"a": binomial_first([100, 2]), **rest}
-        ),
-        "nested": NonRepairableRBD(
-            EDGES,
-            {
-                "a": NonRepairableRBD(
-                    [("s", "x"), ("x", "t")],
-                    {"x": StandbyModel([unit] * 3, k=2, dormancy_factor=0.5)},
-                ),
-                **rest,
-            },
-        ),
-        "too meshed": too_meshed(
-            lambda: NonRepairableRBD(
-                BRIDGE,
-                {"a": unit, "b": unit, "c": E([0.002]), "d": unit, "e": unit},
-            )
-        ),
-        "too meshed, with capacities": too_meshed(
-            lambda: NonRepairableRBD(
-                BRIDGE,
-                {"a": unit, "b": unit, "c": E([0.002]), "d": unit, "e": unit},
-                capacity={"a": 5.0, "b": 5.0, "c": 5.0, "d": 5.0, "e": 5.0},
-            )
-        ),
-    }
-
-
-def repairable_rbds():
-    life, repair = W([500, 1.5]), E([0.5])
-
-    def unit(**more):
-        return {"reliability": life, "repairability": repair, **more}
-
-    def system(a, **options):
-        return RepairableRBD(
-            EDGES, {"a": a, "b": unit(), "c": unit()}, **options
-        )
-
-    out = dict(systems_of_every_kind())
-    out.update(
-        {
-            "age replacement, priced": system(
-                unit(preventive={"interval": 300.0}, replace_cost=10.0),
-            ),
-            "block replacement": system(
-                unit(preventive={"interval": 300.0, "policy": "block"})
-            ),
-            "block replacement, in no time": system(
-                unit(
-                    repairability="instant",
-                    preventive={"interval": 300.0, "policy": "block"},
-                )
-            ),
-            "replaced on condition": system(
-                unit(
-                    preventive={
-                        "interval": 100.0,
-                        "policy": "condition",
-                        "threshold": 0.1,
-                        "inspection_cost": 1.0,
-                    },
-                    replace_cost=10.0,
-                )
-            ),
-            "opportunistic maintenance": RepairableRBD(
-                EDGES,
-                {
-                    node: unit(
-                        preventive={"interval": 300.0, "opportunity": 200.0},
-                        group="train",
-                        replace_cost=10.0,
-                    )
-                    for node in "abc"
-                },
-                maintenance_groups={
-                    "train": {"setup_cost": 50.0, "system_down": True}
-                },
-            ),
-            "grouped, no opportunities": RepairableRBD(
-                EDGES,
-                {
-                    "a": unit(preventive={"interval": 300.0}, group="train"),
-                    "b": unit(group="train"),
-                    "c": unit(),
-                },
-                maintenance_groups={"train": {"setup_cost": 50.0}},
-            ),
-            "grouped block replacements": RepairableRBD(
-                EDGES,
-                {
-                    node: unit(
-                        preventive={"interval": 300.0, "policy": "block"},
-                        group="train",
-                    )
-                    for node in "ab"
-                }
-                | {"c": unit()},
-                maintenance_groups={"train": {"setup_cost": 50.0}},
-            ),
-            "imperfect repair": system(
-                unit(
-                    repair={"model": "kijima1", "q": 0.5},
-                    repair_cost=1.0,
-                    replace_cost=10.0,
-                )
-            ),
-            "minimal repair in no time": system(
-                {
-                    "reliability": life,
-                    "repairability": "instant",
-                    "repair": {"model": "kijima1", "q": 1.0},
-                    "repair_cost": 1.0,
-                    "replace_cost": 10.0,
-                }
-            ),
-            "imperfect repair, replaced and maintained": system(
-                unit(
-                    repair={"model": "kijima2", "q": 0.8},
-                    replace_after=3,
-                    preventive={"interval": 300.0},
-                    replace_cost=10.0,
-                )
-            ),
-            "tested, constant rate": system(
-                {
-                    "reliability": E([0.002]),
-                    "repairability": "instant",
-                    "inspection": {"interval": 100.0},
-                }
-            ),
-            "tested, Weibull": system(
-                unit(repairability="instant", inspection={"interval": 100.0})
-            ),
-            "tested, taking time": system(
-                unit(
-                    repairability="instant",
-                    inspection={"interval": 100.0, "duration": E([2.0])},
-                )
-            ),
-            "tested, missing": system(
-                unit(
-                    inspection={
-                        "interval": 100.0,
-                        "coverage": 0.6,
-                        "full_test": 300.0,
-                    },
-                )
-            ),
-            "tested, as long as the interval": system(
-                unit(
-                    repairability="instant",
-                    inspection={"interval": 100.0, "duration": E([0.01])},
-                )
-            ),
-            "simulated standby life": system(
-                {
-                    "reliability": StandbyModel(
-                        [life] * 3, k=2, dormancy_factor=0.5
-                    ),
-                    "repairability": repair,
-                }
-            ),
-            "fixed probability": system(
-                {"reliability": FIXED(0.1), "repairability": repair}
-            ),
-            "degrading capacity": system(
-                {
-                    "reliability": DegradingNode(
-                        [(100.0, E([0.004])), (50.0, E([0.004]))]
-                    ),
-                    "repairability": repair,
-                },
-                capacity={"b": 100.0, "c": 100.0},
-            ),
-            "one repair crew": system(
-                unit(priority=1), repair_crews=1, downtime_cost_rate=5.0
-            ),
-            "enough repair crews": system(unit(), repair_crews=3),
-            "too meshed": too_meshed(
-                lambda: RepairableRBD(
-                    BRIDGE, {n: unit(repair_cost=2.0) for n in "abcde"}
-                )
-            ),
-            "too meshed, downtime priced": too_meshed(
-                lambda: RepairableRBD(
-                    BRIDGE,
-                    {n: unit(repair_cost=2.0) for n in "abcde"},
-                    downtime_cost_rate=5.0,
-                    capacity={n: 5.0 for n in "abcde"},
-                )
-            ),
-            "standby group": system(
-                {
-                    "reliability": E([0.002]),
-                    "repairability": E([0.5]),
-                    "standby": {"units": 3, "switching_probability": 0.95},
-                    "repair_cost": 3.0,
-                },
-                downtime_cost_rate=5.0,
-            ),
-            "standby group, Weibull": system(
-                unit(standby={"dormancy_factor": 0.5}, repair_cost=3.0),
-                downtime_cost_rate=5.0,
-            ),
-            "common cause, tested": RepairableRBD(
-                EDGES,
-                {
-                    "a": {
-                        "reliability": E([0.002]),
-                        "repairability": "instant",
-                        "inspection": {
-                            "interval": 100.0,
-                            "coverage": 0.8,
-                            "full_test": 300.0,
-                        },
-                    },
-                    "b": {
-                        "reliability": E([0.002]),
-                        "repairability": "instant",
-                        "inspection": {
-                            "interval": 100.0,
-                            "offset": 50.0,
-                            "coverage": 0.8,
-                            "full_test": 300.0,
-                        },
-                    },
-                    "c": unit(repair_cost=2.0),
-                },
-                ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
-                downtime_cost_rate=5.0,
-            ),
-            "common cause, revealed": RepairableRBD(
-                EDGES,
-                {
-                    node: {
-                        "reliability": E([0.002]),
-                        "repairability": E([0.5]),
-                    }
-                    for node in "ab"
-                }
-                | {
-                    "c": unit(
-                        preventive={"interval": 300.0, "policy": "block"}
-                    )
-                },
-                ccf_groups=[CCFGroup(["a", "b"], MGL(0.2))],
-            ),
-            "common cause, Weibull": system(
-                unit(), ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))]
-            ),
-            "common cause, timed block replacement": RepairableRBD(
-                EDGES,
-                {
-                    node: {
-                        "reliability": E([0.002]),
-                        "repairability": E([0.5]),
-                    }
-                    for node in "ab"
-                }
-                | {
-                    "c": unit(
-                        preventive={
-                            "interval": 300.0,
-                            "policy": "block",
-                            "duration": E([2.0]),
-                        }
-                    )
-                },
-                ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
-            ),
-            "one repair crew, exponential": RepairableRBD(
-                EDGES,
-                {
-                    node: {
-                        "reliability": E([0.002]),
-                        "repairability": E([0.5]),
-                        "priority": priority,
-                        "repair_cost": 3.0,
-                    }
-                    for node, priority in zip("abc", (1, 0, 0))
-                },
-                repair_crews=1,
-                downtime_cost_rate=5.0,
-                capacity={"a": 5.0, "b": 5.0, "c": 10.0},
-            ),
-        }
-    )
-    return out
-
+from repyability.tests.repository import source
+from repyability.tests.test_simulation_engines import identical
 
 X = 30.0
+
+
+def outside_groups(rbd) -> set:
+    """The nodes of no common-cause group."""
+    members = {m for g in rbd.ccf_groups for m in g.members}
+    return {node for node in rbd.nodes if node not in members}
+
+
+def uncertain_node(rbd):
+    """A node's life scale known to within 5%: the first node, outside
+    the common-cause groups, whose model has parameters."""
+    free = outside_groups(rbd)
+    for node, model in rbd.reliabilities.items():
+        spec = parametric_spec(model)
+        if spec is not None and node in free:
+            name, value = spec[2][0], spec[1][0]
+            return {node: {name: st.uniform(0.95 * value, 0.1 * value)}}
+    raise AssertionError("No node's model has parameters.")
+
+
+def copied(rbd):
+    """A node to give copies: 'b', unless only a BetaFactor group's member
+    could be (an MGL group's refuses, its letters for a larger group being
+    unknown)."""
+    for group in rbd.ccf_groups:
+        if "b" in group.members and type(group.model).__name__ != "BetaFactor":
+            return "c"
+    return "b"
+
+
+def probabilities(rbd):
+    """Each node's probability of working, for the methods that take
+    them."""
+    return {node: 0.9 for node in rbd.nodes}
+
+
 NONREPAIRABLE_CALLS = {
     **{
         name: (lambda name: lambda rbd: getattr(rbd, name)(X))(name)
@@ -458,10 +125,38 @@ NONREPAIRABLE_CALLS = {
     "compare": lambda rbd: rbd.compare(rbd, 2000, seed=1),
     "node_mttf": lambda rbd: rbd.node_mttf(),
     "allocate_redundancy": lambda rbd: rbd.allocate_redundancy(
-        {"b": 1.0}, budget=2, t=X
+        {copied(rbd): 1.0}, budget=2, t=X
     ),
     "system_probability": lambda rbd: rbd.system_probability(
         {node: 0.9 for node in rbd.reliabilities}
+    ),
+    "redundancy_front": lambda rbd: rbd.redundancy_front(
+        {copied(rbd): 1.0}, budget=3, t=X
+    ),
+    "allocate_reliability_redundancy": (
+        lambda rbd: rbd.allocate_reliability_redundancy(
+            {"c": lambda r, n: n * (1.0 + 10.0 * r)},
+            budget=30.0,
+            bounds=(0.5, 0.99),
+            t=X,
+        )
+    ),
+    "sf_uncertainty": lambda rbd: rbd.sf_uncertainty(
+        X, uncertain_node(rbd), n_draws=2, seed=1
+    ),
+    "mean_uncertainty": lambda rbd: rbd.mean_uncertainty(
+        uncertain_node(rbd), n_draws=2, seed=1
+    ),
+    "time_to_reliability_uncertainty": (
+        lambda rbd: rbd.time_to_reliability_uncertainty(
+            0.5, uncertain_node(rbd), n_draws=2, seed=1
+        )
+    ),
+    "bx_life_uncertainty": lambda rbd: rbd.bx_life_uncertainty(
+        10, uncertain_node(rbd), n_draws=2, seed=1
+    ),
+    "uncertainty_importance": lambda rbd: rbd.uncertainty_importance(
+        X, uncertain_node(rbd)
     ),
 }
 
@@ -478,6 +173,37 @@ def uncertain(rbd):
             spread = st.uniform(0.95 * value, 0.1 * value)
             return {node: {"reliability": {name: spread}}}
     raise AssertionError("No component's life has parameters.")
+
+
+def held_back(rbd):
+    """A component that may be given copies: of no common-cause group, and
+    not a nested diagram, whose costs are its own."""
+    free = outside_groups(rbd)
+    return next(
+        node
+        for node, component in rbd.components.items()
+        if node in free and not isinstance(component, RepairableRBD)
+    )
+
+
+def a_little_better(rbd):
+    """A system availability a little above the current one."""
+    try:
+        now = rbd.mean_availability()
+    except (NotImplementedError, ValueError):
+        return 0.5  # the allocation refuses as the long run does
+    return now + 0.01 * (1.0 - now)
+
+
+def stepped(rbd):
+    """One simulation stepped through by hand, from numpy's seeded global
+    generator."""
+    np.random.seed(1)
+    rbd.initialize_event_queue(200.0)
+    changes = [rbd.next_event()]
+    while changes[-1][0] < 200.0:
+        changes.append(rbd.next_event())
+    return changes
 
 
 REPAIRABLE_CALLS = {
@@ -512,8 +238,12 @@ REPAIRABLE_CALLS = {
     "spares_demand": lambda rbd: rbd.spares_demand(200.0),
     "spares_stock": lambda rbd: rbd.spares_stock(50.0, fill_rate=0.9),
     "point_availability": lambda rbd: rbd.point_availability([10.0, 200.0]),
+    "point_unavailability": (
+        lambda rbd: rbd.point_unavailability([10.0, 200.0])
+    ),
     "availability_rate": lambda rbd: rbd.availability_rate([10.0, 200.0]),
     "mission_availability": lambda rbd: rbd.mission_availability(200.0),
+    "mission_unavailability": (lambda rbd: rbd.mission_unavailability(200.0)),
     "expected_failures": lambda rbd: rbd.expected_failures([10.0, 200.0]),
     "expected_events": lambda rbd: rbd.expected_events(200.0),
     "expected_cost": lambda rbd: rbd.expected_cost(200.0),
@@ -553,7 +283,47 @@ REPAIRABLE_CALLS = {
     "uncertainty_importance": lambda rbd: rbd.uncertainty_importance(
         uncertainty=uncertain(rbd)
     ),
+    "system_probability": lambda rbd: rbd.system_probability(
+        probabilities(rbd)
+    ),
+    "allocate_redundancy": lambda rbd: rbd.allocate_redundancy(
+        1000.0, nodes=[held_back(rbd)], max_units=2
+    ),
+    "availability_allocation": lambda rbd: rbd.availability_allocation(
+        a_little_better(rbd)
+    ),
+    "mttf_mttr_allocation": lambda rbd: rbd.mttf_mttr_allocation(
+        a_little_better(rbd)
+    ),
+    "initialize_event_queue": stepped,
+    "next_event": stepped,
 }
+# What the two classes share: the methods on node probabilities.
+for calls in (NONREPAIRABLE_CALLS, REPAIRABLE_CALLS):
+    calls.update(
+        {
+            "path_set_probabilities": lambda rbd: rbd.path_set_probabilities(
+                probabilities(rbd)
+            ),
+            "system_capacity": lambda rbd: rbd.system_capacity(
+                probabilities(rbd)
+            ),
+            "equal_allocation": lambda rbd: rbd.equal_allocation(0.95),
+            "simple_allocation": lambda rbd: rbd.simple_allocation(0.95),
+            **{
+                name: (
+                    lambda name: lambda rbd: getattr(rbd, name)(
+                        0.95, probabilities(rbd)
+                    )
+                )(name)
+                for name in (
+                    "improvement_allocation",
+                    "minimum_effort_allocation",
+                    "cost_based_allocation",
+                )
+            },
+        }
+    )
 
 
 def behaves_as_reported(route: AnalysisRoute, call) -> None:
@@ -567,20 +337,33 @@ def behaves_as_reported(route: AnalysisRoute, call) -> None:
             identical(call(), call())
 
 
-@pytest.mark.parametrize("name", sorted(nonrepairable_rbds()))
+@pytest.mark.parametrize("name", sorted(nonrepairable_kinds()))
 def test_every_nonrepairable_method_does_what_the_report_says(name):
-    rbd = nonrepairable_rbds()[name]
+    rbd = nonrepairable_kinds()[name]
     report = rbd.analysis_routes()
     for method, call in NONREPAIRABLE_CALLS.items():
         behaves_as_reported(report[method], lambda: call(rbd))
 
 
-@pytest.mark.parametrize("name", sorted(repairable_rbds()))
+@pytest.mark.parametrize("name", sorted(repairable_kinds()))
 def test_every_repairable_method_does_what_the_report_says(name):
-    rbd = repairable_rbds()[name]
+    rbd = repairable_kinds()[name]
     report = rbd.analysis_routes()
     for method, call in REPAIRABLE_CALLS.items():
         behaves_as_reported(report[method], lambda: call(rbd))
+
+
+@pytest.mark.parametrize(
+    "kinds, calls",
+    [
+        (nonrepairable_kinds, NONREPAIRABLE_CALLS),
+        (repairable_kinds, REPAIRABLE_CALLS),
+    ],
+)
+def test_every_analysis_is_called(kinds, calls):
+    # The checks above call every analysis the report gives a route (#239).
+    report = next(iter(kinds().values())).analysis_routes()
+    assert set(calls) == set(report)
 
 
 @pytest.mark.parametrize("cls", [NonRepairableRBD, RepairableRBD])
@@ -613,9 +396,9 @@ def test_the_report_covers_every_public_analysis(cls):
     rbd = next(
         iter(
             (
-                nonrepairable_rbds()
+                nonrepairable_kinds()
                 if cls is NonRepairableRBD
-                else repairable_rbds()
+                else repairable_kinds()
             ).values()
         )
     )
@@ -641,7 +424,7 @@ def test_nodes_are_routed_by_how_their_reliability_is_found():
 
 
 def test_a_node_with_no_reliability_is_named_and_the_rest_stay_exact():
-    rbd = nonrepairable_rbds()["simulated standby"]
+    rbd = nonrepairable_kinds()["simulated standby"]
     report = rbd.analysis_routes()
     assert report["sf"].route == routes.REFUSED
     assert report["sf"].nodes == ("a",)
@@ -650,13 +433,13 @@ def test_a_node_with_no_reliability_is_named_and_the_rest_stay_exact():
     assert report["unreliability_interval"].route == routes.SIMULATED
     assert report["structural_importance"].route == routes.EXACT
     assert rbd.get_non_analytic_nodes() == {"a": "StandbyModel"}
-    exact = nonrepairable_rbds()["convolved standby"]
+    exact = nonrepairable_kinds()["convolved standby"]
     assert exact.analysis_routes()["sf"].route == routes.NUMERICAL
     assert exact.is_analytically_solvable()
 
 
 def test_common_cause_groups_refuse_what_does_not_model_them():
-    report = nonrepairable_rbds()["common cause"].analysis_routes()
+    report = nonrepairable_kinds()["common cause"].analysis_routes()
     assert report["sf"].route == routes.EXACT
     assert report["birnbaum_importance"].route == routes.EXACT
     assert report["allocate_redundancy"].route == routes.EXACT
@@ -673,7 +456,7 @@ def test_the_repairable_report_names_the_refusing_component(monkeypatch):
     from repyability.rbd import _compiled
 
     monkeypatch.setattr(_compiled, "available", lambda: True)
-    report = repairable_rbds()[
+    report = repairable_kinds()[
         "tested, as long as the interval"
     ].analysis_routes()
     assert report["mean_availability"].route == routes.REFUSED
@@ -681,7 +464,7 @@ def test_the_repairable_report_names_the_refusing_component(monkeypatch):
     assert report["availability"].route == routes.SIMULATED
     # numba's own loop simulates tests (#155), not imperfect repair.
     assert report["availability"].engine == "numba"
-    imperfect = repairable_rbds()["imperfect repair"].analysis_routes()
+    imperfect = repairable_kinds()["imperfect repair"].analysis_routes()
     assert imperfect["availability"].engine == "python"
     assert "imperfect repair" in imperfect["availability"].engine_reason
 
@@ -692,19 +475,20 @@ def test_maintenance_makes_the_long_run_numerical():
         "block replacement",
         "tested, Weibull",
     ):
-        report = repairable_rbds()[name].analysis_routes()
+        report = repairable_kinds()[name].analysis_routes()
         assert report["mean_availability"].route == routes.NUMERICAL
         assert report["mean_availability"].nodes == ("a",)
-    report = repairable_rbds()["tested, constant rate"].analysis_routes()
+    report = repairable_kinds()["tested, constant rate"].analysis_routes()
     assert report["mean_availability"].route == routes.EXACT
 
 
 def test_a_life_with_no_mean_refuses_the_long_run():
-    report = repairable_rbds()["simulated standby life"].analysis_routes()
+    report = repairable_kinds()["simulated standby life"].analysis_routes()
     assert report["mean_availability"].route == routes.REFUSED
     assert report["mean_availability"].nodes == ("a",)
     assert (
-        "mean(mc_samples=..., seed=...)" in report["mean_availability"].reason
+        "mean(method='simulate', mc_samples=..., seed=...)"
+        in report["mean_availability"].reason
     )
     assert report["availability"].route == routes.SIMULATED
 
@@ -712,14 +496,14 @@ def test_a_life_with_no_mean_refuses_the_long_run():
 def test_the_engine_is_the_one_auto_would_run(monkeypatch):
     from repyability.rbd import _compiled
 
-    plain = repairable_rbds()["koon"]
+    plain = repairable_kinds()["koon"]
     monkeypatch.setattr(_compiled, "available", lambda: False)
     route = plain.analysis_routes()["availability"]
     assert route.engine == "python"
     assert "not installed" in route.engine_reason
     monkeypatch.setattr(_compiled, "available", lambda: True)
     assert plain.analysis_routes()["availability"].engine == "numba"
-    capacities = repairable_rbds()["capacities"].analysis_routes()
+    capacities = repairable_kinds()["capacities"].analysis_routes()
     # numba's own loop follows capacities (#155).
     assert capacities["availability"].engine == "numba"
     assert capacities["cost"].engine == "numba"
@@ -759,7 +543,7 @@ def test_the_guide_s_table_agrees_with_the_report():
     life, repair = W([500, 1.5]), E([0.5])
     capacity = {"a": 5.0, "b": 5.0, "c": 10.0}
     plain = {
-        NonRepairableRBD: nonrepairable_rbds()["capacities"],
+        NonRepairableRBD: nonrepairable_kinds()["capacities"],
         RepairableRBD: RepairableRBD(
             EDGES,
             {n: {"reliability": life, "repairability": repair} for n in "abc"},
@@ -785,7 +569,7 @@ def test_the_readme_says_what_is_simulated():
     # routed as it says, on a diagram of that kind. When a route changes
     # (say, warm standby made exact), the README must change with it.
     readme = source("README.md").read_text()
-    nonrepairable, repairable = nonrepairable_rbds(), repairable_rbds()
+    nonrepairable, repairable = nonrepairable_kinds(), repairable_kinds()
 
     def alone(node):
         return NonRepairableRBD([("s", "a"), ("a", "t")], {"a": node})
@@ -806,6 +590,7 @@ def test_the_readme_says_what_is_simulated():
     minimal = repairable["minimal repair in no time"]
     tested_group = repairable["common cause, tested"]
     revealed_group = repairable["common cause, revealed"]
+    timed_group = repairable["common cause, timed tests and repairs"]
     claims = {
         "Sampled lifetimes or histories, and distributions or percentiles "
         "of an outcome over a window": [
@@ -818,8 +603,10 @@ def test_the_readme_says_what_is_simulated():
             (repairable["capacities"], "mission_capacity", "numerical"),
         ],
         "Comparing two designs (`compare`)": [
-            (plain, "compare", "simulated"),
-            (repairable["costed_pairs"], "compare", "simulated"),
+            (plain, "compare", "numerical"),
+            (repairable["costed_pairs"], "compare", "numerical"),
+            (nonrepairable["simulated standby"], "compare", "simulated"),
+            (repairable["imperfect repair"], "compare", "simulated"),
         ],
         "The uncertainty from fitted component parameters "
         "(`sf_uncertainty`, `mean_uncertainty`, `bx_life_uncertainty`, "
@@ -927,6 +714,11 @@ def test_the_readme_says_what_is_simulated():
             (repairable["too meshed"], "point_availability", "refused"),
         ],
         "Common-cause groups in a repairable diagram": [
+            (timed_group, "mean_availability", "numerical"),
+            (timed_group, "birnbaum_importance", "numerical"),
+            (timed_group, "point_availability", "numerical"),
+            (timed_group, "system_failure_frequency", "refused"),
+            (timed_group, "availability", "simulated"),
             (tested_group, "mean_availability", "exact"),
             (tested_group, "system_failure_frequency", "exact"),
             (tested_group, "birnbaum_importance", "exact"),

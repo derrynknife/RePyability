@@ -1,5 +1,5 @@
 """Choosing when redundant components are tested, with their intervals
-(#184): ``optimal_inspection_intervals(offsets=...)``.
+(#184): ``optimal_inspection_intervals(offset_shares=...)``.
 
 The reference is every plan on the grid, built as a diagram of its own with
 the offsets in its schedules, and its exact long-run cost rate and
@@ -55,7 +55,7 @@ def cheapest(plans, target):
 def test_the_grid_is_searched(target, beta):
     shares = [0.0, 0.25, 0.5, 0.75]
     plan = valves([(8760.0, 0.0)] * 2, beta).optimal_inspection_intervals(
-        allowed=CALENDAR, min_availability=1 - target, offsets=shares
+        allowed=CALENDAR, min_availability=1 - target, offset_shares=shares
     )
     # The first valve's tests stay from 0: shifting both changes nothing.
     plans = {
@@ -84,9 +84,10 @@ def test_staggering_beats_testing_together():
         allowed=CALENDAR, min_availability=1 - 5e-4
     )
     staggered = together.optimal_inspection_intervals(
-        allowed=CALENDAR, min_availability=1 - 5e-4, offsets="stagger"
+        allowed=CALENDAR, min_availability=1 - 5e-4, offset_shares="stagger"
     )
-    assert plain.offsets is None
+    # A plan has the offsets it keeps, searched or not (#222).
+    assert plain.offsets == {"v1": 0.0, "v2": 0.0}
     assert staggered.intervals == {"v1": 8760.0, "v2": 8760.0}
     assert staggered.offsets == {"v1": 0.0, "v2": 4380.0}
     assert staggered.cost_rate < 0.7 * plain.cost_rate
@@ -95,7 +96,7 @@ def test_staggering_beats_testing_together():
 def test_three_valves_are_spread_over_the_interval():
     trio = valves([(8760.0, 0.0)] * 3, beta=0.2, rate=1e-5)
     plan = trio.optimal_inspection_intervals(
-        allowed=[8760.0], min_availability=0.9, offsets="stagger"
+        allowed=[8760.0], min_availability=0.9, offset_shares="stagger"
     )
     # Only the offsets are free: the cheapest plan is the most available
     # one at the same cost, its tests a third of a year apart.
@@ -123,7 +124,7 @@ def test_with_other_tests_fixed_the_first_offset_is_chosen_too():
         nodes=["v2"],
         allowed=[8760.0],
         max_cost_rate=1e9,
-        offsets=[0.0, 0.5],
+        offset_shares=[0.0, 0.5],
     )
     assert plan.offsets == {"v2": 4380.0}
     assert plan.availability == pytest.approx(
@@ -139,7 +140,7 @@ def test_with_other_tests_fixed_the_first_offset_is_chosen_too():
 def test_a_cost_cap():
     pair = valves([(8760.0, 0.0)] * 2)
     plan = pair.optimal_inspection_intervals(
-        allowed=CALENDAR, max_cost_rate=0.12, offsets=[0.0, 0.5]
+        allowed=CALENDAR, max_cost_rate=0.12, offset_shares=[0.0, 0.5]
     )
     plans = {
         (a, b, s): valves([(a, 0.0), (b, s * b)])
@@ -158,13 +159,13 @@ def test_a_cost_cap():
 @pytest.mark.parametrize(
     "kwargs, match",
     [
-        ({"offsets": "stagger"}, "give allowed"),
-        ({"allowed": CALENDAR, "offsets": "even"}, "or 'stagger'"),
-        ({"allowed": CALENDAR, "offsets": [0.0, 1.0]}, r"in \[0, 1\)"),
-        ({"allowed": CALENDAR, "offsets": [-0.1]}, r"in \[0, 1\)"),
-        ({"allowed": CALENDAR, "offsets": [True]}, r"in \[0, 1\)"),
-        ({"allowed": CALENDAR, "offsets": []}, "no shares"),
-        ({"allowed": CALENDAR, "offsets": {"v1": [0.0]}}, "no shares"),
+        ({"offset_shares": "stagger"}, "give allowed"),
+        ({"allowed": CALENDAR, "offset_shares": "even"}, "or 'stagger'"),
+        ({"allowed": CALENDAR, "offset_shares": [0.0, 1.0]}, r"in \[0, 1\)"),
+        ({"allowed": CALENDAR, "offset_shares": [-0.1]}, r"in \[0, 1\)"),
+        ({"allowed": CALENDAR, "offset_shares": [True]}, r"in \[0, 1\)"),
+        ({"allowed": CALENDAR, "offset_shares": []}, "no share"),
+        ({"allowed": CALENDAR, "offset_shares": {"v1": [0.0]}}, "no share"),
     ],
 )
 def test_offsets_are_checked(kwargs, match):
@@ -177,6 +178,56 @@ def test_offsets_are_checked(kwargs, match):
 def test_a_single_share_is_a_number_too():
     pair = valves([(8760.0, 0.0)] * 2)
     plan = pair.optimal_inspection_intervals(
-        allowed=[8760.0], min_availability=0.99, offsets={"v1": 0, "v2": 0.5}
+        allowed=[8760.0],
+        min_availability=0.99,
+        offset_shares={"v1": 0, "v2": 0.5},
     )
     assert plan.offsets == {"v1": 0.0, "v2": 4380.0}
+
+
+def test_offsets_is_the_old_name_of_offset_shares():
+    # Its values are shares, where with_intervals' offsets are times (#222).
+    pair = valves([(8760.0, 0.0), (8760.0, 0.0)])
+    plan = pair.optimal_inspection_intervals(
+        allowed=[8760.0], min_availability=0.99, offset_shares=[0.0, 0.5]
+    )
+    with pytest.warns(FutureWarning, match="renamed offset_shares"):
+        old = pair.optimal_inspection_intervals(
+            allowed=[8760.0], min_availability=0.99, offsets=[0.0, 0.5]
+        )
+    assert old == plan
+    with pytest.raises(ValueError, match="offset_shares alone"):
+        pair.optimal_inspection_intervals(
+            allowed=[8760.0], offsets=[0.0], offset_shares=[0.0]
+        )
+
+
+def test_unknown_nodes_are_named():
+    pair = valves([(8760.0, 0.0), (8760.0, 0.0)])
+    with pytest.raises(ValueError, match=r"names \['V3'\]"):
+        pair.optimal_inspection_intervals(
+            allowed=[8760.0],
+            offset_shares={"v1": [0.0], "v2": [0.5], "V3": [0.25]},
+        )
+    with pytest.raises(ValueError, match=r"names \['V3'\]"):
+        pair.optimal_inspection_intervals(
+            allowed={"v1": [8760.0], "v2": [8760.0], "V3": [8760.0]}
+        )
+    with pytest.raises(ValueError, match="Its components are"):
+        pair.optimal_inspection_intervals(["V2"], allowed=[8760.0])
+    with pytest.raises(ValueError, match="Its components are"):
+        pair.with_intervals({"v1": 8760.0}, offsets={"V2": 0.0})
+
+
+def test_an_offset_needs_a_test_schedule():
+    # Also when the node's interval is given (#222).
+    seal = {
+        "reliability": surv.Weibull.from_params([6000.0, 2.5]),
+        "repairability": surv.Exponential.from_params([1 / 8.0]),
+        "replace_cost": 3000.0,
+        "preventive": {"interval": 3000.0, "cost": 800.0},
+    }
+    rbd = RepairableRBD([("s", "seal"), ("seal", "t")], {"seal": seal})
+    for intervals in ({"seal": 3000.0}, {}):
+        with pytest.raises(ValueError, match="offset but no test schedule"):
+            rbd.with_intervals(intervals, offsets={"seal": 10.0})

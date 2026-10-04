@@ -31,7 +31,9 @@ for vega); this page runs one system through all of them.
   `[0, window)`, and `state=` starts from the components' current states,
   as `point_availability` and `mission_availability` take them (theta,
   a rate, needs its times; vega names its quantity, `of=`, and takes its
-  times as `x`). On a `NonRepairableRBD` they take the time `x`. All but
+  times as `x`). On a `NonRepairableRBD` they take the time `x`. On
+  either, the times may come first, as `birnbaum_importance(5.0)` (and
+  Barlow–Proschan's window, `barlow_proschan_importance(100.0)`). All but
   vega take `working_nodes` and `broken_nodes`, which hold nodes working
   or failed as for every importance measure.
 - **Exact where the structure is.** With independent components the

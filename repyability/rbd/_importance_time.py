@@ -8,10 +8,11 @@ given probabilities, as in the long run (see
 points' averages (``RAW_i``, the system's unavailability with node ``i``
 down over its unavailability, both averaged), not an average of ratios.
 At a time ``t`` the points are the nodes' point availabilities then (one
-point); with common-cause groups, that point split by the groups' joint
-states, each with its probability at ``t`` (from the groups' chains, see
-``_ccf_chain.OverTime``); with limited repair crews, the states of the
-crews' chain, each with its probability at ``t`` (see
+point); with common-cause groups, with the groups' joint states then
+(from their chains, see ``_ccf_chain.OverTime``), each group conditioned
+on within its module as in the long run (see
+``RepairableRBD._ccf_measure``); with limited repair crews, the states of
+the crews' chain, each with its probability at ``t`` (see
 ``_chain_transient.Uniformized``). Over a window ``[0, T)`` the points are
 those at the times of the window's quadrature (see ``_quadrature``), each
 weighted by its share of the window, so that a measure is a ratio of the
@@ -127,19 +128,35 @@ def _base(rbd, spec: Spec, p: dict, q: dict, weights) -> dict:
     return RBD._fussell_vesely(rbd, p, spec.fv_type, spec.method, weights, q)
 
 
-def _grouped(rbd, spec: Spec, p, q, weights, index) -> dict:
-    """The measure over points split by the common-cause groups' joint
-    states (see ``RepairableRBD._with_ccf_groups``), averaged with
-    ``weights``: as in the long run, a member's (but for Fussell-Vesely)
-    conditioned on its state at each time (``index``, each point's)."""
-    values = dict(_base(rbd, spec, p, q, weights))
-    if spec.name != FUSSELL_VESELY:
-        values.update(
-            rbd._ccf_member_importance(
-                spec.name, p, q, weights, index, kind=spec.kind
-            )
+def _grouped(rbd, spec: Spec, groups: list, p: dict, q: dict, x, weights):
+    """The measure with common-cause groups (their chains over time,
+    ``groups``, see ``_ccf_chain.OverTime``) at the times ``x``: averaged
+    with ``weights``, or at each time without (see
+    ``RepairableRBD._ccf_measure``)."""
+    from . import _ccf_chain
+
+    tables = [
+        _ccf_chain.GroupStates(
+            tuple(group.members), group.down, group.probabilities(x)
         )
-    return values
+        for group in groups
+    ]
+    for table in tables:
+        for k, member in enumerate(table.members):
+            p[member] = table.probabilities @ np.where(
+                table.down[:, k], 0.0, 1.0
+            )
+            q[member] = table.probabilities @ np.where(
+                table.down[:, k], 1.0, 0.0
+            )
+    return rbd._ccf_measure(
+        spec.name,
+        (p, q, tables),
+        weights,
+        spec.kind,
+        spec.fv_type,
+        spec.method,
+    )
 
 
 def _independent(rbd, curves: dict, x, working, broken) -> Tuple[dict, dict]:
@@ -152,21 +169,6 @@ def _independent(rbd, curves: dict, x, working, broken) -> Tuple[dict, dict]:
         {node: 1.0 - value for node, value in p.items()}, working, broken
     )
     return p, q
-
-
-def _split(rbd, groups: list, p: dict, q: dict, x, weights):
-    """The points at the times ``x`` (with ``weights``) split by the
-    common-cause groups' joint states then (``groups``, their chains over
-    time, see ``_ccf_chain.OverTime``)."""
-    from . import _ccf_chain
-
-    states = [
-        _ccf_chain.GroupStates(
-            tuple(group.members), group.down, group.probabilities(x)
-        )
-        for group in groups
-    ]
-    return rbd._with_ccf_groups(x, p, q, weights, states_by_group=states)
 
 
 # -- at times ---------------------------------------------------------------
@@ -183,21 +185,11 @@ def _at(rbd, spec, times, working, broken, states, state) -> dict:
     if rbd.ccf_groups:
         grouped = rbd._groups_curve(horizon, working, broken, "p", states)
         p, q = _independent(rbd, grouped.curves, times, working, broken)
-        out: Dict = {node: np.empty(len(times)) for node in rbd.nodes}
-        for k in range(len(times)):
-            at = slice(k, k + 1)
-            split = _split(
-                rbd,
-                grouped.system.groups,
-                {n: v[at] for n, v in p.items()},
-                {n: v[at] for n, v in q.items()},
-                times[at],
-                np.ones(1),
-            )
-            values = _grouped(rbd, spec, *split)
-            for node, value in values.items():
-                out[node][k] = float(np.ravel(value)[0])
-        return out
+        values = _grouped(rbd, spec, grouped.system.groups, p, q, times, None)
+        return {
+            node: np.asarray(value, dtype=float)
+            for node, value in values.items()
+        }
     curves = rbd._availability_curves(horizon, forced, state=states)
     p, q = _independent(rbd, curves, times, working, broken)
     return {
@@ -291,8 +283,9 @@ def _over(rbd, spec, end, working, broken, states, state) -> dict:
 
         x, weights = window_points([grouped], end, system, _MISSION_POINTS)
         p, q = _independent(rbd, grouped.curves, x, working, broken)
-        split = _split(rbd, grouped.system.groups, p, q, x, weights / end)
-        return _grouped(rbd, spec, *split)
+        return _grouped(
+            rbd, spec, grouped.system.groups, p, q, x, weights / end
+        )
     curves = rbd._availability_curves(end, forced, state=states)
 
     def integrands(x):

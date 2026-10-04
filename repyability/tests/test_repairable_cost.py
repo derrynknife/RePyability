@@ -272,7 +272,7 @@ def test_cost_breakdowns_are_internally_consistent():
 
 def test_repair_and_replace_are_charged_separately_at_each_failure():
     result = full_cost_rbd().availability(
-        t_simulation=200.0, mc_samples=100, seed=4
+        t_simulation=200.0, mc_samples=100, seed=4, control_variate=False
     )
     # One component in series: every component failure is a system failure.
     failures_per_replication = result.system_failures / 100
@@ -310,8 +310,9 @@ def test_mean_interval_covers_the_exact_expected_cost():
 
 
 def test_more_replications_sharpen_the_mean_but_not_the_spread():
-    few = full_cost_rbd().cost(t_simulation=100.0, mc_samples=100, seed=1)
-    many = full_cost_rbd().cost(t_simulation=100.0, mc_samples=400, seed=1)
+    plain = dict(t_simulation=100.0, seed=1, control_variate=False)
+    few = full_cost_rbd().cost(mc_samples=100, **plain)
+    many = full_cost_rbd().cost(mc_samples=400, **plain)
     # The mean's standard error shrinks like 1/sqrt(N)...
     assert few.mean_se / many.mean_se == pytest.approx(2.0, rel=0.3)
     # ...while how much a window's cost varies is a property of the system.

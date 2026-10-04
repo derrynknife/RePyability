@@ -17,6 +17,7 @@ import surpyval as surv
 from surpyval import FixedEventProbability
 
 from repyability import FaultTree, NonRepairableRBD, PerfectReliability
+from repyability.rbd.ccf import shock_outcomes
 from repyability.tests.test_rbd_modular import random_diagram
 
 W = surv.Weibull.from_params
@@ -601,7 +602,7 @@ def test_diagrams_that_cannot_fail_or_be_converted():
         (
             {"g": ("or", ["h"]), "h": ("or", ["g"])},
             {},
-            "Give the top event",
+            "gates form a loop through",
         ),
     ],
 )
@@ -784,7 +785,7 @@ def test_random_trees_with_groups_agree_with_their_diagrams(seed, kind):
     # A cut set's probability is its events' occurring together, enumerated
     # over the groups' outcomes.
     p, qs = tree._event_probabilities(np.array([1.0]))
-    outcomes = list(tree._outcomes(p, qs))
+    outcomes = list(shock_outcomes(tree.ccf_groups, p, qs))
     for cut, value in tree.ranked_cut_sets():
         together = sum(
             float(np.ravel(w)[0]) * math.prod(f[e][0] for e in cut)
@@ -794,18 +795,15 @@ def test_random_trees_with_groups_agree_with_their_diagrams(seed, kind):
 
     # Back to a tree, and saved and restored. An event the logic absorbs
     # is left out of the diagram's tree, and so is a group of only such
-    # events; one with some refuses.
+    # events; one with some keeps them, as events the logic absorbs (#237).
     relevant = set().union(*tree.minimal_cut_sets())
     some = [g for g in groups if relevant & set(g.members)]
-    if any(not relevant.issuperset(g.members) for g in some):
-        with pytest.raises(NotImplementedError, match="cannot affect"):
-            FaultTree.from_rbd(rbd)
-    else:
-        back = FaultTree.from_rbd(rbd)
-        assert same_groups(back.ccf_groups, some)
-        assert back.top_event_probability() == pytest.approx(
-            probability, rel=1e-12, abs=1e-16
-        )
+    back = FaultTree.from_rbd(rbd)
+    assert same_groups(back.ccf_groups, some)
+    assert set(back.events) == relevant.union(*(g.members for g in some))
+    assert back.top_event_probability() == pytest.approx(
+        probability, rel=1e-12, abs=1e-16
+    )
     restored = FaultTree.from_json(tree.to_json())
     assert same_groups(restored.ccf_groups, groups)
     assert restored.top_event_probability() == probability
@@ -975,8 +973,9 @@ def test_a_diagrams_groups_become_the_trees():
     for e, v in tree.criticality_importance().items():
         assert v == pytest.approx(rbd.criticality_importance()[e], rel=1e-9)
 
-    # A member that cannot affect the system is no event of the tree, but
-    # the group's shocks would still strike it with the others.
+    # A member that cannot affect the system stays an event of the tree,
+    # one its logic absorbs, for the group's shocks to strike it with the
+    # others (#237).
     irrelevant = NonRepairableRBD(
         [("s", "x"), ("s", "j"), ("x", "m"), ("j", "m"), ("m", "a")]
         + [("a", "t")],
@@ -984,8 +983,14 @@ def test_a_diagrams_groups_become_the_trees():
         | {"a": p(0.05)},
         ccf_groups=[CCFGroup(["a", "x"], MGL(0.1))],
     )
-    with pytest.raises(NotImplementedError, match="cannot affect"):
-        FaultTree.from_rbd(irrelevant)
+    kept = FaultTree.from_rbd(irrelevant)
+    assert set(kept.events) == {"a", "x"}
+    assert kept.minimal_cut_sets() == [frozenset({"a"})] or set(
+        map(frozenset, kept.minimal_cut_sets())
+    ) == {frozenset({"a"})}
+    assert kept.top_event_probability() == pytest.approx(
+        irrelevant.ff(), rel=1e-13
+    )
     # A group none of whose members can is left out with them.
     p2 = {n: p(0.05) for n in ("x", "y")}
     unaffected = NonRepairableRBD(

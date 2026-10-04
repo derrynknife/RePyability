@@ -26,10 +26,10 @@ where its exact methods take it: only their spread does.
 
 | Question | Exact, no simulation | Simulated (`availability`, `cost`) |
 |---|---|---|
-| The mean availability over a window | `mission_availability(t)` | `mean_availability_interval()` |
+| The mean availability over a window | `mission_availability(t)` | `mean_availability`, `mean_availability_interval()` |
 | The availability at given times | `point_availability(times)` | the result's curve, `availability` |
 | The expected failures, planned outages and down time | `expected_failures(t)`, `expected_events(t)` | the totals over the simulations (`system_failures`, ...) |
-| The expected cost, by category and component | `expected_cost(t)` | `cost.mean_interval()` |
+| The expected cost, by category and component | `expected_cost(t)` | `cost.mean`, `cost.by_category`, `cost.mean_interval()` |
 | The long run | `mean_availability()`, `system_failure_frequency()`, ... | |
 | How a window varies: each simulation's up time and cost, percentiles, the chance of no failure | | `uptimes`, `cost.samples`, `cost.percentile(q)` |
 
@@ -37,15 +37,20 @@ The exact methods take independent components, with their maintenance and
 tests, and repair crews and standby groups where their Markov chains do;
 `analysis_routes()` says which a system's take, and its `availability`
 route says whether its expected values need a simulation. Where they take
-it, `availability` and `cost` take them too: by default a run's mean
-intervals (`mean_availability_interval`, the cost's `mean_interval`) are
-the exact values, with no error, and a run to a `tolerance` stops at once;
-the simulations give the rest. Where a system has a few nodes the exact
-methods do not take, its means are by default taken given their histories,
-the rest exact (see [Conditional runs](#conditional-runs)).
-`control_variate=False` keeps the simulations' own means, for a quick run
-that should not wait for the exact part (a few tenths of a second, more
-than a few hundred simulations of a small system take).
+it, `availability` and `cost` take them too: by default a run's means
+(`mean_availability`, the cost's `mean`, `cost_rate` and breakdowns) and
+their intervals (`mean_availability_interval`, the cost's `mean_interval`)
+are the exact values, with no error, and a run to a `tolerance` stops at
+once; the simulations give the rest. Where a system has a few nodes the
+exact methods do not take, its means are by default taken given their
+histories, the rest exact (see [Conditional runs](#conditional-runs)). The
+simulations' own means are beside them, whatever the method
+(`sample_mean_availability`, the cost's `sample_mean`), and the interval's
+`method` says which the means are: `"exact"`, `"conditional"`,
+`"control_variate"` or `"simulated"`. `control_variate=False` keeps the
+simulations' own means, for a quick run that should not wait for the exact
+part (a few tenths of a second, more than a few hundred simulations of a
+small system take).
 
 | Option | Where | What it does |
 |---|---|---|
@@ -374,10 +379,12 @@ would simulate.
 
 By default a run of such a system takes these means too, from its own
 simulations: it simulates the whole system, as a plain run does, then its
-modules again alone, drawing what they drew, and its mean intervals are
-those of each simulation's expected values given its modules' histories.
-Everything else in its result (each simulation's values, the curve, the
-totals, the percentiles, the criticalities) is its simulations' own:
+modules again alone, drawing what they drew, and its means
+(`mean_availability`, the cost's `mean` and breakdowns) and their intervals
+are those of each simulation's expected values given its modules'
+histories. Everything else in its result (each simulation's values, the
+curve, the totals, the percentiles, the criticalities) is its simulations'
+own:
 
 ```python
 line_default = line_plant.availability(t_simulation=5000.0, mc_samples=2_000, seed=1)
@@ -406,6 +413,16 @@ without the spread.
   antithetic pairs if asked, so a conditional run's modules are a plain
   run's, and their own costs too. A run to a `tolerance` is judged on the
   conditional means, in rounds of `mc_samples`.
+- **Modules that never change state.** If the modules never leave the
+  state they start in, in any of the simulations (a standby pair that
+  never goes down in the window, say), their outages were not sampled, and
+  every simulation's expected values given them are the same: their spread
+  says nothing of the error (#215). The run then warns; a default run's
+  means are its simulations' own (`method="simulated"`), and a
+  `tolerance` is judged on those; a run of the modules alone has no error
+  to give (its intervals are `nan`), and a `tolerance` runs it on to
+  `max_samples`. `conditional.states` counts the joint states met. Run
+  more simulations to sample the outages.
 - **The exact part.** Each joint state of the modules the simulations meet
   (each up or down) is worked out once: the system's expected up time,
   failures and planned outages with the modules held so, on a grid of
@@ -487,6 +504,19 @@ affinity, where the platform reports one). A container limited by a CPU
 quota rather than by affinity can report more CPUs than it may use: set
 `n_jobs` explicitly there.
 
+### From several threads
+
+A diagram kept in memory may be simulated from several threads at once,
+as a tool or a web server does: each call gives what it gives alone, the
+same for the same seed. The simulations take turns, one run at a time in
+the process, since the event loop keeps a run's state on the diagram and
+draws that cannot be streamed come from numpy's global random number
+generator. (Python threads do not run the event loop side by side anyway;
+for that, use `n_jobs`, which runs processes, or the compiled engine's
+threads.) The exact methods need no turns. The event-stepping methods
+(`initialize_event_queue`, `next_event`) keep their state on the diagram
+between calls: one thread at a time may step a diagram through.
+
 ## A large run's curve
 
 `availability()`'s curve has a point at every time a simulated system
@@ -541,6 +571,11 @@ bool((merged.availability == whole.availability).all())   # True
 merged.system_uptime == whole.system_uptime          # True: the totals too
 ```
 
+- **The same means.** Merged chunks take the means `availability` takes by
+  default, exact or given the modules where they apply. For those of
+  `availability(..., control_variate=False)` (or `conditional=False`), give
+  that to `availability_from_chunks`, or to each `simulate_chunk`, which
+  keeps it with the chunk (#236).
 - **The same run.** Chunks of simulations `0` to `N - 1` give the result of
   `availability(..., mc_samples=N)`: the same per-simulation values
   (`uptimes`, the cost `samples`) and timeline, and the same totals, to
@@ -709,27 +744,42 @@ of the exact value in every case.
 
 ## Comparing two designs
 
-Two designs are best compared with **common random numbers**: simulate both
-with the same random numbers, so that the differences between their results
-come from the designs rather than from chance. `a.compare(b, ...)` does that
-component by component: a component with the same name in both draws the
-same random numbers in both. It returns a
-[`ConfidenceInterval`][repyability.ConfidenceInterval] of the mean
-difference, `a`'s result minus `b`'s, which can be negative.
-
-For a `RepairableRBD`, a component gets the same failures and repairs in
-both where it is modelled the same way, and matching ones (the same
-quantiles of its own models) where it is not; components of nested RBDs are
-matched by their place. The difference is in the fraction of the window the
-system is up (`quantity="availability"`, the default) or in its cost
-(`quantity="cost"`):
+`a.compare(b, ...)` gives how much better (or worse) design `a` is than
+`b`, as a [`ConfidenceInterval`][repyability.ConfidenceInterval] of the
+difference, `a`'s result minus `b`'s, which can be negative. Where the exact
+methods work out both designs' expected values (a `NonRepairableRBD`'s mean
+time to failure, a `RepairableRBD`'s mission availability and expected cost)
+it is their difference, exact, with no simulation (#236), as `availability`
+and `cost` take their means:
 
 ```python
 faster = RepairableRBD(
     edges,
     {"A": repairable(0.1, 2.0), "B": repairable(0.1, 2.0), "C": repairable(0.02, 0.5)},
 )
-gain = faster.compare(plant, t_simulation=100.0, mc_samples=2_000, seed=0)
+gain = faster.compare(plant, t_simulation=100.0)
+gain.estimate          # -> 0.00568   of the window more up
+gain.method            # 'exact'
+```
+
+Otherwise, and on request (`control_variate=False` for a `RepairableRBD`,
+`method="simulate"` for a `NonRepairableRBD`), the two designs are
+simulated with **common random numbers**: with the same random numbers, so
+that the differences between their results come from the designs rather
+than from chance. A component with the same name in both draws the same
+random numbers in both.
+
+For a `RepairableRBD`, a component gets the same failures and repairs in
+both where it is modelled the same way, and matching ones (the same
+quantiles of its own models) where it is not; components of nested RBDs are
+matched by their place. The difference is in the fraction of the window the
+system is up (`quantity="availability"`, the default) or in what owning it
+for the window costs (`quantity="cost"`: its running cost and its
+components' `acquisition_cost`, #234):
+
+```python
+gain = faster.compare(plant, t_simulation=100.0, mc_samples=2_000, seed=0,
+                      control_variate=False)
 gain.estimate          # -> 0.0058    the exact difference is 0.00568
 gain.standard_error    # -> 0.00017
 ```
@@ -740,17 +790,18 @@ times the simulations to match. The valve fails and is repaired alike in
 both designs, so its outages, most of the plant's downtime, cancel; the
 pumps have the same up times in both, and only their repairs differ.
 
-For a `NonRepairableRBD`, `compare` estimates the difference in mean time to
-failure:
+For a `NonRepairableRBD`, `compare` gives the difference in mean time to
+failure, exactly by default, and simulated on request:
 
 ```python
-gain = parallel(3).compare(pair, mc_samples=20_000, seed=0)
+parallel(3).compare(pair).estimate     # -> 14.46   the exact difference
+gain = parallel(3).compare(pair, mc_samples=20_000, seed=0, method="simulate")
 gain.estimate          # -> 14.8    a third unit adds about 15 hours
 gain.standard_error    # -> 0.21    two separate estimates: about 0.42
 ```
 
-The exact difference, the integral of the difference in reliability, is
-14.46. The reliabilities themselves need no simulation: compare `sf`.
+The exact difference is the integral of the difference in reliability. The
+reliabilities themselves need no simulation: compare `sf`.
 
 Both kinds need every component's draws to be replayable, as antithetic
 pairs do. A model whose draws do not follow numpy's uniforms (a class of your

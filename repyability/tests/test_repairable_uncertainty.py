@@ -168,7 +168,13 @@ def test_a_common_cause_group_s_model_is_an_input():
     [
         ({"pump": {"preventive.duration": [E([1.0])]}}, "no preventive"),
         ({"nowhere": "fit"}, "not a component"),
-        ({"valve": [E([0.004])], ("valve",): "fit"}, "twice"),
+        (
+            {
+                "valve": [E([0.004])],
+                ("valve",): {"reliability": [E([0.005])]},
+            },
+            "twice",
+        ),
         ({}, "Give the uncertain nodes"),
     ],
 )

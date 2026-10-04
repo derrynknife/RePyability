@@ -21,15 +21,24 @@ FIXED_PROBABILITY_DIST_NAMES = frozenset(
 )
 
 
+def is_mixture(model) -> bool:
+    """Whether ``model`` is a surpyval ``MixtureModel``: its ``dist`` is
+    only its components' distribution, and its parameters one row per
+    component, so it is no single distribution of that name."""
+    return type(model).__name__ == "MixtureModel"
+
+
 def distribution_name(model) -> Optional[str]:
     """Return the surpyval distribution name of ``model``.
 
     Returns ``None`` for models that do not expose a surpyval distribution
     (e.g. a ``StandbyModel``, ``RepeatedNode``, nested RBD, or the perfect
-    reliability/unreliability helpers).
+    reliability/unreliability helpers), and for a ``MixtureModel``, whose
+    ``dist`` is only its components': a mixture of exponentials is not
+    memoryless, nor is it rebuilt by ``from_params``.
     """
     dist = getattr(model, "dist", None)
-    if dist is None:
+    if dist is None or is_mixture(model):
         return None
     return getattr(dist, "name", None)
 

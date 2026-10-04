@@ -88,8 +88,28 @@ def test_acquisition_cost_alone_prices_no_running_cost():
     )
     assert not rbd.has_costs
     assert rbd.expected_cost_rate() == 0.0
-    assert rbd.cost(t_simulation=10.0, mc_samples=5, seed=0) is None
+    # No running cost, exactly, and the acquisition beside it (#234), as
+    # total_cost and expected_cost count it.
+    for result in (
+        rbd.cost(t_simulation=10.0, mc_samples=5, seed=0),
+        rbd.availability(t_simulation=10.0, mc_samples=5, seed=0).cost,
+        rbd.availability(
+            t_simulation=10.0,
+            mc_samples=5,
+            seed=0,
+            control_variate=False,
+            conditional=False,
+        ).cost,
+    ):
+        assert result.mean == 0.0 and result.acquisition_cost == 7.0
+        assert result.mean_interval().method == "exact"
+        assert list(result.samples) == [0.0] * 5
+        assert result.by_category["repair"] == 0.0
+    assert rbd.expected_cost(10.0).total == 7.0
     assert rbd.total_cost(1e6) == 7.0
+    # With nothing priced at all, there is no cost to give.
+    unpriced = RepairableRBD(SERIES, {"pump": spec(1e-3, 0.1)})
+    assert unpriced.cost(t_simulation=10.0, mc_samples=5, seed=0) is None
     # A cost of 0 is left out.
     free = RepairableRBD(SERIES, {"pump": spec(1e-3, 0.1, acquisition_cost=0)})
     assert free.acquisition_costs == {}

@@ -28,10 +28,10 @@ from repyability import NodeState, PerfectReliability, RepairableRBD
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import _compiled, _streams, repairable_rbd
 from repyability.rbd.repairable_rbd import Event
+from repyability.tests.catalogue import systems_of_every_kind
 from repyability.tests.keyed_draws import KeyedDraws, reference_draw
 from repyability.tests.test_performance_equivalence import (
     binomial_first,
-    instrument_air,
     overlaps_one_at_a_time,
     pumps_with_capacities,
     repairable_rbds,
@@ -390,41 +390,6 @@ def test_plain_simulation_matches_the_reference(name, options):
 # -- how the run is cut up ----------------------------------------------------
 
 
-def systems_of_every_kind():
-    systems = dict(repairable_rbds())
-    systems["instrument air"] = instrument_air()
-    systems["capacities"] = pumps_with_capacities()
-    # A maintenance time that cannot be streamed, likewise.
-    systems["unstreamable maintenance"] = RepairableRBD(
-        [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
-        {
-            name: {
-                "reliability": W([70, 2]),
-                "repairability": E([0.8]),
-                "preventive": {
-                    "interval": 30.0,
-                    "duration": binomial_first([2, 1.5]),
-                    "cost": 5.0,
-                },
-            }
-            for name in "ab"
-        },
-    )
-    # A component whose draws cannot be streamed draws from numpy's global
-    # RNG, seeded for each simulation; the others still stream.
-    systems["unstreamable"] = RepairableRBD(
-        [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
-        {
-            "a": {"reliability": W([70, 1.5]), "repairability": E([0.8])},
-            "b": {
-                "reliability": binomial_first([40, 2]),
-                "repairability": E([0.5]),
-            },
-        },
-    )
-    return systems
-
-
 @pytest.mark.parametrize("name", sorted(systems_of_every_kind()))
 def test_a_simulation_is_the_same_however_the_run_is_cut_up(name):
     rbd = systems_of_every_kind()[name]
@@ -516,7 +481,9 @@ def test_an_unstreamable_component_leaves_the_others_alone():
     with pytest.raises(NotImplementedError):
         mixed.availability(100.0, mc_samples=10, seed=1, antithetic=True)
     with pytest.raises(NotImplementedError):
-        mixed.compare(plain, 100.0, mc_samples=10, seed=1)
+        mixed.compare(
+            plain, 100.0, mc_samples=10, seed=1, control_variate=False
+        )
 
 
 @pytest.mark.parametrize("name", ["costed_pairs", "maintained", "nested_koon"])
@@ -599,7 +566,10 @@ def test_a_subclassed_component_runs_in_python(monkeypatch):
         },
     )
     plan, _ = rbd._stream_plan(100.0, 1, False)
-    assert _compiled.unsupported(rbd, plan, None) == "node 'sub''s LoggedUnit"
+    assert (
+        _compiled.unsupported(rbd, plan, None)
+        == "the LoggedUnit of node 'sub'"
+    )
 
     def compiled(*args, **kwargs):
         raise AssertionError("compiled")
@@ -959,9 +929,9 @@ def test_what_numbas_loop_runs_besides_plain_components():
     for rbd, reason in [
         (on_condition(), "replacement on condition"),
         (systems_of_every_kind()["unstreamable maintenance"], "maintenance"),
-        (inspected_unit(timed), "node 'a''s test time"),
+        (inspected_unit(timed), "the test time of node 'a'"),
         # Its test time could be streamed, its life cannot.
-        (unstreamed, "node 'a''s models"),
+        (unstreamed, "the models of node 'a'"),
     ]:
         plan, _ = rbd._stream_plan(100.0, 1, False)
         assert reason in _compiled.unsupported(rbd, plan, None, numba=True)
@@ -1555,7 +1525,7 @@ def test_what_numba_does_not_run_inside_a_nested_rbd():
         {"a": {**unit, "repair": {"model": "kijima1", "q": 0.5}}},
     )
     for inner, reason in [
-        (wide, "22 components (a nested RBD of more than 20)"),
+        (wide, "the 22 components of node 'm' (a nested RBD of more than 20)"),
         (imperfect, "imperfect repair"),
         (on_condition(), "replacement on condition"),
     ]:
@@ -1753,6 +1723,7 @@ def test_the_engines_agree_on_costs_and_comparisons():
                 seed=6,
                 quantity=quantity,
                 engine="python",
+                control_variate=False,
             ),
             rbd.compare(
                 faster,
@@ -1761,6 +1732,7 @@ def test_the_engines_agree_on_costs_and_comparisons():
                 seed=6,
                 quantity=quantity,
                 engine="numba",
+                control_variate=False,
             ),
         )
 

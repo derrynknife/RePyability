@@ -34,28 +34,40 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.optimize import brentq
 
+from repyability.utils.checks import (
+    no_distribution,
+    real_array,
+)
+from repyability.utils.checks import seed as check_seed
 from repyability.utils.checks import simulation_options, structure_method
 from repyability.utils.wrappers import conditional_survival, numpy_seed
 
+from . import _ccf_modules
 from . import _montecarlo as montecarlo
 from . import capacity as _capacity
 from . import redundancy_allocation
-from ._mean_lifetime import mean_lifetime, model_knots
+from ._mean_lifetime import mean_lifetime, model_kinks, model_knots
 from ._model_utils import (
     is_fixed_probability,
+    is_mixture,
     lfp_p,
     model_mean,
     parametric_spec,
     refuse_nonparametric,
 )
 from ._sampling import RowSampler, column, inverse_sampler, row_sampler
-from .ccf import VALIDITY, BetaFactor, CCFGroup
+from .ccf import VALIDITY, BetaFactor, CCFGroup, as_groups
 from .ccf import parameters as ccf_parameters
 from .ccf import shock_outcomes, validity_warning
 from .ccf import with_parameters as with_ccf_parameters
 from .degrading_node import DegradingNode
-from .helper_classes import PerfectReliability, PerfectUnreliability
+from .helper_classes import (
+    PerfectReliability,
+    PerfectUnreliability,
+    perfect_class,
+)
 from .load_sharing_node import LoadSharingModel
+from .modular import GraphStructure
 from .node_state import NodeState
 from .rbd import RBD, _check_on_infeasible_rbd, leaves_out_junctions
 from .redundancy_allocation import ComponentOption, active_unreliability
@@ -197,7 +209,7 @@ def _times(obj, x) -> tuple:
                 "node model's probability depends on time)."
             )
     scalar_in = np.ndim(x) == 0
-    return np.atleast_1d(np.asarray(x, dtype=float)), scalar_in
+    return np.atleast_1d(real_array(x, "x")), scalar_in
 
 
 def _dsf_dparam(cls, params, j, x_arr, rel_step, extras=None) -> np.ndarray:
@@ -264,9 +276,26 @@ def _system_difference(at, theta, rel_step, base) -> np.ndarray:
     return np.where(fails <= works, -d_fails, d_works)
 
 
+def _never_fails(model) -> bool:
+    """Whether ``model`` never fails, so that giving it for the input or
+    output node changes nothing (#217): ``PerfectReliability``, or a fixed
+    probability of failing of 0 (as a ``node_availability`` of 1 gives)."""
+    if model is PerfectReliability or isinstance(model, PerfectReliability):
+        return True
+    if is_fixed_probability(model):
+        try:
+            return float(np.ravel(model.ff(1.0))[0]) == 0.0
+        except Exception:
+            return False
+    return False
+
+
 def _check_model(node, model) -> None:
-    """Raise if a node's model is not one (it has no ``sf``), saying what
-    to give instead; a number most likely means a probability."""
+    """Raise if a node's model is not one (it has no ``sf``, or it is a
+    surpyval distribution itself, whose ``sf`` needs parameters, #233),
+    saying what to give instead; a number most likely means a
+    probability."""
+    no_distribution(model, f"The model of node {node!r}")
     if callable(getattr(model, "sf", None)):
         return
     if isinstance(model, (int, float)) and not isinstance(model, bool):
@@ -347,8 +376,10 @@ class NonRepairableRBD(RBD):
         It stays where it is drawn, and every appearance is the one
         component: it works, or has failed, in all of them at once. That
         node cannot itself be a repeat. The input and output nodes need no
-        entry: they are always perfectly reliable, and a model given for
-        them is replaced.
+        entry: they are always perfectly reliable. A model given for one
+        (other than ``PerfectReliability``) is refused as an invalid
+        structure, since it would be ignored: most likely a component's
+        edge to the output node, or from the input node, is missing.
     k : dict[Any, int], optional
         ``{node: k}`` for k-out-of-n nodes: a node with ``n`` predecessors
         is reached only when at least ``k`` of them are reached through
@@ -514,7 +545,11 @@ class NonRepairableRBD(RBD):
         # Capture the constructor inputs verbatim (before any mutation) so the
         # RBD can be faithfully serialised via to_dict()/to_json().
         edges = list(edges)
-        ccf_groups = list(ccf_groups) if ccf_groups else []
+        ccf_groups = as_groups(ccf_groups)
+        # PerfectReliability() stands for the class (#232).
+        reliabilities = {
+            node: perfect_class(model) for node, model in reliabilities.items()
+        }
         self._init_args = {
             "edges": [tuple(e) for e in edges],
             "reliabilities": dict(reliabilities),
@@ -570,6 +605,11 @@ class NonRepairableRBD(RBD):
         # with the names given models, which it checks against the edges.
         self._aliases = dict(repeated)
         self._models_given = list(reliabilities) + list(repeated)
+        self._perfect_given = frozenset(
+            name
+            for name, model in reliabilities.items()
+            if _never_fails(model)
+        )
         super().__init__(
             edges,
             None,
@@ -688,9 +728,11 @@ class NonRepairableRBD(RBD):
         computed exactly from each node's reliability ``sf(x)`` by a
         Shannon decomposition over the minimal path sets (``method="p"``)
         or cut sets (``method="c"``). Nodes are independent apart from any
-        common-cause groups: with ``ccf_groups`` the result sums one exact
-        evaluation per combination of the groups' shared-cause outcomes,
-        so the cost grows with the number and size of the groups.
+        common-cause groups: with ``ccf_groups`` each group is conditioned
+        on within the smallest module holding its members, or its shared
+        causes written out as events of their own where a module's groups
+        would multiply their outcomes (#219, see the common-cause guide),
+        so the cost grows with the number of groups rather than doubling.
 
         ``working_nodes`` and ``broken_nodes`` condition on the state of
         some components by setting their reliability to 1 or 0, e.g. to
@@ -825,14 +867,9 @@ class NonRepairableRBD(RBD):
         nodes' probabilities of working ``p`` and of failing ``q``: sums
         over the groups' outcomes of products, so that a small one keeps
         its precision."""
-        up: Any = 0.0
-        down: Any = 0.0
-        for weight, given, failing in self._ccf_outcomes(
+        up, down = self._ccf_evaluation(
             p, q, set(working_nodes), set(broken_nodes), groups
-        ):
-            works, fails = self._system_probabilities(given, failing)
-            up = up + weight * works
-            down = down + weight * fails
+        ).system()
         return np.atleast_1d(up), np.atleast_1d(down)
 
     def _ccf_group_sensitivity(
@@ -904,57 +941,34 @@ class NonRepairableRBD(RBD):
         it working and with it failed; and the system's own.
 
         A group member works when neither its own failure nor a shock that
-        strikes it has happened. Given the groups' shock outcomes (see
-        ``_ccf_outcomes``) the nodes are independent, so each joint
-        probability is a sum over the outcomes of the outcome's probability
-        times the member's and the system's given it. A node outside the
-        groups is independent of them, so its "given" values are the
-        system's with it held working or failed. Every term is a product
-        of probabilities, the system's worked out as for ``ff``, so a small
-        one keeps its precision."""
+        strikes it has happened. Given its group's shock outcome (see
+        ``_ccf_modules.group_outcomes``) the member is independent of every
+        other node, so each joint probability is a sum over its group's
+        outcomes of the outcome's probability times the member's and the
+        system's given it, the other groups conditioned on within their
+        modules (#219). A node outside the groups is independent of them,
+        so its "given" values are the system's with it held working or
+        failed. A member of a group written out as shock events (see
+        ``_ccf_modules.Plan``) works while neither its own causes nor its
+        shocks have fired. Every term is a product of probabilities, the
+        system's worked out as for ``ff``, so a small one keeps its
+        precision (see ``_ccf_modules.Evaluation.joints``)."""
         working, broken = set(working_nodes or ()), set(broken_nodes or ())
         p, q = self._importance_inputs(x, working, broken)
+        evaluation = self._ccf_evaluation(p, q, working, broken)
         grouped = {m for group in self.ccf_groups for m in group.members}
         keys = ("works", "fails", "up_ok", "down_ok", "up_bad", "down_bad")
         sums: Dict[str, dict] = {key: {} for key in keys}
-        system: Dict[str, Any] = {"R": 0.0, "Q": 0.0}
-        outcomes: list = []
-
-        def add(table: dict, node, value) -> None:
-            table[node] = table.get(node, 0.0) + value
-
-        for weight, given, failing in self._ccf_outcomes(
-            p, q, working, broken
-        ):
-            outcomes.append((weight, given, failing))
-            up, down = self._system_probabilities(given, failing)
-            system["R"] = system["R"] + weight * up
-            system["Q"] = system["Q"] + weight * down
-            for node in self.nodes:
-                works = np.atleast_1d(np.asarray(given[node], dtype=float))
-                fails = np.atleast_1d(np.asarray(failing[node], dtype=float))
-                one, zero = np.ones_like(works), np.zeros_like(works)
-                up_1, down_1 = self._system_probabilities(
-                    {**given, node: one}, {**failing, node: zero}
-                )
-                up_0, down_0 = self._system_probabilities(
-                    {**given, node: zero}, {**failing, node: one}
-                )
-                # A member weighs each outcome by its own state's chance in
-                # it; a node outside the groups is held (see above).
-                on, off = (works, fails) if node in grouped else (1.0, 1.0)
-                add(sums["works"], node, weight * works)
-                add(sums["fails"], node, weight * fails)
-                add(sums["up_ok"], node, weight * on * up_1)
-                add(sums["down_ok"], node, weight * on * down_1)
-                add(sums["up_bad"], node, weight * off * up_0)
-                add(sums["down_bad"], node, weight * off * down_0)
+        R, Q = evaluation.system()
+        for node in self.nodes:
+            values, _ = evaluation.joints(node)
+            for key in keys:
+                sums[key][node] = values[key]
         return {
             **sums,
-            "R": np.atleast_1d(system["R"]),
-            "Q": np.atleast_1d(system["Q"]),
+            "R": np.atleast_1d(R),
+            "Q": np.atleast_1d(Q),
             "grouped": grouped,
-            "outcomes": outcomes,
         }
 
     def _ccf_measure(
@@ -987,18 +1001,19 @@ class NonRepairableRBD(RBD):
             raise ValueError(
                 f"method must be 'exact' or 'rare_event', got {method!r}."
             )
+        if measure == "fussell_vesely":
+            working = set(working_nodes or ())
+            broken = set(broken_nodes or ())
+            p, q = self._importance_inputs(x, working, broken)
+            shares = self._ccf_fv_numerators(
+                p, q, working, broken, fv_type, method
+            )
+            _, Q = self._ccf_system_pair(p, q, working, broken)
+            with np.errstate(divide="ignore", invalid="ignore"):
+                return {node: shares[node] / Q for node in self.nodes}
         c = self._ccf_importances(x, working_nodes, broken_nodes)
         R, Q = c["R"], c["Q"]
         out: Dict[Any, Union[float, np.ndarray]] = {}
-        if measure == "fussell_vesely":
-            shares: dict = {}
-            for weight, given, failing in c["outcomes"]:
-                p, q, size = self._node_pairs(given, failing)
-                numerators = self._fv_numerators(p, q, size, fv_type, method)
-                for node, value in numerators.items():
-                    shares[node] = shares.get(node, 0.0) + weight * value
-            with np.errstate(divide="ignore", invalid="ignore"):
-                return {node: shares[node] / Q for node in self.nodes}
         with np.errstate(divide="ignore", invalid="ignore"):
             for node in self.nodes:
                 works, fails = c["works"][node], c["fails"][node]
@@ -1113,21 +1128,177 @@ class NonRepairableRBD(RBD):
         ``beta * Q``, failing every member) or does not (each member fails only
         independently, reliability ``1 - (1 - beta) * Q``). Conditioning on the
         independent shared-cause events of every group and summing over the
-        ``2 ** len(groups)`` combinations gives the exact result — each term a
-        call to the ordinary independent engine. ``beta = 0`` recovers it
+        combinations gives the exact result. Each group is conditioned on
+        only within the smallest module holding its members (#219, see
+        ``_ccf_modules``), so groups in separate modules cost a sum each,
+        not a product. ``beta = 0`` recovers the independent engine
         exactly. ``groups`` replaces the RBD's groups (see
         ``_ccf_outcomes``).
         """
-        terms = [
-            np.asarray(weight)
-            * np.asarray(
-                self.system_probability(node_probabilities, method=method)
+        works, fails = self._ccf_evaluation(
+            base_probabilities, None, working_nodes, broken_nodes, groups
+        ).system()
+        if structure_method(method) == "p":
+            return np.atleast_1d(np.asarray(works, dtype=float))
+        return np.atleast_1d(1.0 - np.asarray(fails, dtype=float))
+
+    def _ccf_evaluation(
+        self,
+        base_probabilities,
+        base_failures,
+        working_nodes,
+        broken_nodes,
+        groups=None,
+        structure=None,
+    ) -> "_ccf_modules.Evaluation":
+        """The system's probabilities at the nodes' ``base_probabilities``
+        of working (and ``base_failures`` of failing, each node's own
+        ``ff``, so that a small one keeps its precision; or one less the
+        first), with the common-cause groups (``groups``, the RBD's by
+        default) each conditioned on within the smallest module holding its
+        members, or written out as shock events where those would multiply
+        (#219, see ``_ccf_modules``). With ``structure`` (the structure the
+        path and cut sets are read from, or its dual), over it, the groups
+        conditioned on."""
+        groups = self.ccf_groups if groups is None else groups
+        self._require_ccf_free(working_nodes, broken_nodes, groups)
+        p, q, size = self._node_pairs(base_probabilities, base_failures)
+        return _ccf_modules.Evaluation(
+            self._ccf_plan(groups, structure),
+            groups,
+            p,
+            q,
+            size,
+            self._check_ccf_validity,
+        )
+
+    def _ccf_plan(self, groups, structure=None) -> "_ccf_modules.Plan":
+        """How the groups are worked out (see ``_ccf_modules.Plan``) on
+        ``structure``, by default the decomposition, whose groups may be
+        written out as shock events: once for each structure and the
+        groups' members and causes."""
+        expand = structure is None
+        structure = self._decomposition() if structure is None else structure
+        key = (id(structure), _ccf_modules.Plan.key(groups), expand)
+        cache = self.__dict__.setdefault("_ccf_plans", {})
+        entry = cache.get(key)
+        if entry is None or entry[0] is not structure:
+            plan = _ccf_modules.Plan(
+                structure,
+                groups,
+                (
+                    (lambda chosen: self._ccf_expanded(chosen, groups))
+                    if expand
+                    else None
+                ),
             )
-            for weight, node_probabilities in self._ccf_conditions(
-                base_probabilities, working_nodes, broken_nodes, groups
+            entry = cache[key] = (structure, plan)
+        return entry[1]
+
+    def _ccf_expanded(self, chosen: dict, groups) -> Optional[Any]:
+        """The diagram's structure with the causes of the groups ``chosen``
+        (each group's, as the members each fails) written out as events of
+        their own (#219): after each appearance of a member, one node for
+        each cause that strikes it, every one a repeat of the cause
+        (``_ccf_modules.Shock``), so that the member's place works while it
+        does and none of those causes has fired. None if the structure is
+        too meshed to work out."""
+        graph = self.G.copy()
+        aliases = dict(self._component_aliases())
+        places: Dict[Any, list] = {}
+        for node, target in aliases.items():
+            places.setdefault(target, []).append(node)
+        for g, sets in chosen.items():
+            for member in groups[g].members:
+                strikes = [
+                    _ccf_modules.Shock(g, k)
+                    for k, struck in enumerate(sets)
+                    if member in struck
+                ]
+                for place in [member] + places.get(member, []):
+                    successors = list(graph.successors(place))
+                    graph.remove_edges_from((place, s) for s in successors)
+                    last = place
+                    for shock in strikes:
+                        appearance = _ccf_modules.Struck(shock, place)
+                        graph.add_node(appearance)
+                        graph.add_edge(last, appearance)
+                        aliases[appearance] = shock
+                        last = appearance
+                    graph.add_edges_from((last, s) for s in successors)
+        structure = self._decompose_graph(graph, aliases)
+        if isinstance(structure, GraphStructure):
+            return None
+        return structure
+
+    def _ccf_fv_numerators(
+        self, p, q, working, broken, fv_type: str, method: str
+    ) -> Dict[Any, np.ndarray]:
+        """The numerators of the Fussell-Vesely importances (see
+        ``_fv_numerators``) with the common-cause groups: exactly, each
+        group conditioned on within the smallest module holding its
+        members (#219); as rare events, each set's probability of having
+        failed over its groups' outcomes (see
+        ``_ccf_modules.expected_product``)."""
+        if method == "exact":
+            structure = self._set_structure()
+            if structure.always_works:
+                failed: dict = {}
+                size = self._node_arrays(p)[1]
+            else:
+                if fv_type == "p":
+                    structure = structure.dual()
+                evaluation = self._ccf_evaluation(
+                    p, q, working, broken, structure=structure
+                )
+                failed = evaluation.failed_cut_sets()
+                size = evaluation.shape
+            zero = np.zeros(size)
+            return {
+                node: np.broadcast_to(
+                    np.asarray(failed.get(node, zero), dtype=float), (size,)
+                )
+                for node in self.nodes
+            }
+        self._require_ccf_free(working, broken, self.ccf_groups)
+        outcomes = _ccf_modules.group_outcomes(
+            self.ccf_groups, p, q, self._check_ccf_validity
+        )
+        _, failing, size = self._node_pairs(p, q)
+        if fv_type == "c":
+            node_sets = self.get_min_cut_sets()
+        else:
+            node_sets = {
+                frozenset(path_set)
+                for path_set in self.get_min_path_sets(
+                    include_in_out_nodes=False
+                )
+            }
+        out: Dict[Any, np.ndarray] = {
+            node: np.zeros(size) for node in self.nodes
+        }
+        for node_set in node_sets:
+            value = np.broadcast_to(
+                np.asarray(
+                    _ccf_modules.expected_product(node_set, failing, outcomes),
+                    dtype=float,
+                ),
+                (size,),
             )
-        ]
-        return np.sum(terms, axis=0)
+            for node in node_set:
+                out[node] = out[node] + value
+        return out
+
+    def _require_ccf_free(self, working_nodes, broken_nodes, groups) -> None:
+        """Raise if a common-cause group's member is held working or
+        broken."""
+        forced = set(working_nodes or ()) | set(broken_nodes or ())
+        for group in groups:
+            if forced.intersection(group.members):
+                raise NotImplementedError(
+                    "Forcing a CCF group member via working_nodes / "
+                    "broken_nodes is not supported yet."
+                )
 
     def _ccf_conditions(
         self, base_probabilities, working_nodes, broken_nodes, groups=None
@@ -1154,14 +1325,7 @@ class NonRepairableRBD(RBD):
         None). ``groups``, the RBD's groups by default, may give them other
         models (as a parameter's draws or perturbations do)."""
         groups = self.ccf_groups if groups is None else groups
-        forced = set(working_nodes) | set(broken_nodes)
-        for group in groups:
-            if forced.intersection(group.members):
-                raise NotImplementedError(
-                    "Forcing a CCF group member via working_nodes / "
-                    "broken_nodes is not supported yet."
-                )
-
+        self._require_ccf_free(working_nodes, broken_nodes, groups)
         yield from shock_outcomes(
             groups, base_probabilities, base_failures, self._check_ccf_validity
         )
@@ -1262,7 +1426,7 @@ class NonRepairableRBD(RBD):
                     "Common random numbers need every node's draws to be "
                     "replayable from uniforms (surpyval parametric "
                     f"distributions and the composite nodes built from "
-                    f"them); node {node!r}'s are not."
+                    f"them); those of node {node!r} are not."
                 )
 
     def _require_capacity_outside_groups(self) -> None:
@@ -1382,18 +1546,13 @@ class NonRepairableRBD(RBD):
             return self._system_probabilities(
                 node_probabilities, node_failures, works=sf
             )
-        up: Any = 0.0
-        down: Any = 0.0
-        for weight, probabilities, failures in self._ccf_outcomes(
+        up, down = self._ccf_evaluation(
             node_probabilities, node_failures, working_nodes, broken_nodes
-        ):
-            works, fails = self._system_probabilities(
-                probabilities, failures, works=sf
-            )
-            weight = np.asarray(weight)
-            up = up + weight * works if sf else None
-            down = down + weight * fails
-        return up, down
+        ).system()
+        return (
+            np.array(up, dtype=float) if sf else None,
+            np.array(down, dtype=float),
+        )
 
     def capacity_distribution(
         self,
@@ -1471,7 +1630,7 @@ class NonRepairableRBD(RBD):
         [0.0, 50.0, 100.0, 120.0]
         >>> round(capacity.meets(100), 4)  # two pumps or more
         0.972
-        >>> round(capacity.mean(), 2)
+        >>> round(capacity.mean, 2)
         113.13
         """
         x, scalar = _times(self, x)
@@ -1549,7 +1708,9 @@ class NonRepairableRBD(RBD):
         same data, share their uncertainty: give them together as a tuple
         of node names, and each draw gives them the same model. Drawing
         them independently would understate the uncertainty, which is
-        about the one population's parameters.
+        about the one population's parameters; so would drawing one and
+        leaving the others as fitted, which is warned about when they hold
+        the same model object (#214).
 
         With common-cause groups, each draw is worked out as ``sf`` works
         it out, with the groups. A group's members carry one model, so
@@ -1673,7 +1834,9 @@ class NonRepairableRBD(RBD):
                 )
             x = 1.0
         scalar = np.ndim(x) == 0
-        times = np.atleast_1d(np.asarray(x, dtype=float))
+        # Times of any shape, as ``sf`` takes them (#226): worked out
+        # flat, and each draw's row put back in their shape.
+        times = np.atleast_1d(np.asarray(x, dtype=float)).ravel()
         samples = self._quantity_samples(
             "sf", times, drawn, drawn_groups, n_draws
         )
@@ -1685,7 +1848,9 @@ class NonRepairableRBD(RBD):
                 n_draws=n_draws,
             )
         return UncertaintyResult(
-            samples=samples, nominal=nominal, n_draws=n_draws
+            samples=samples.reshape((n_draws,) + np.shape(x)),
+            nominal=nominal.reshape(np.shape(x)),
+            n_draws=n_draws,
         )
 
     def _quantity_samples(
@@ -1733,21 +1898,27 @@ class NonRepairableRBD(RBD):
             samples = np.empty(n)
             for i in range(n):
                 sf, models = self._drawn_sf(drawn, i, drawn_groups)
-                knots = [model_knots(model) for model in models.values()]
                 samples[i] = mean_lifetime(
-                    sf, np.concatenate([np.empty(0), *knots])
+                    sf,
+                    [model_knots(model) for model in models.values()],
+                    [model_kinks(model) for model in models.values()],
                 )
             return samples
-        target = value if of == "time_to_reliability" else 1.0 - value / 100.0
-        return np.array(
-            [
-                self._invert_reliability(
-                    self._drawn_sf(drawn, i, drawn_groups)[0],
-                    target,
-                    upper_bound,
+        value = np.asarray(value, dtype=float)
+        targets = value if of == "time_to_reliability" else 1.0 - value / 100.0
+        flat = np.atleast_1d(targets).ravel()
+        out = np.empty((n, len(flat)))
+        for i in range(n):
+            sf = self._drawn_sf(drawn, i, drawn_groups)[0]
+            for j, target in enumerate(flat):
+                out[i, j] = self._invert_reliability(
+                    sf, float(target), upper_bound
                 )
-                for i in range(n)
-            ]
+        # A row of draws for each target, in its shape (#226).
+        return (
+            out[:, 0]
+            if np.ndim(value) == 0
+            else out.reshape((n,) + np.shape(value))
         )
 
     def _drawn_ccf_samples(
@@ -1873,7 +2044,7 @@ class NonRepairableRBD(RBD):
 
     def time_to_reliability_uncertainty(
         self,
-        target: float,
+        target: ArrayLike,
         uncertainty: Optional[Dict[Hashable, Any]] = None,
         *,
         n_draws: int = 1000,
@@ -1892,8 +2063,9 @@ class NonRepairableRBD(RBD):
 
         Parameters
         ----------
-        target : float
-            The reliability level, in (0, 1).
+        target : float or array_like
+            The reliability level, in (0, 1), or levels (#226): each a row
+            of draws, from the same parameter draws.
         uncertainty : dict, optional
             ``{node or tuple of nodes: uncertainty}`` for the uncertain
             nodes, as for ``sf_uncertainty`` (by default, every fitted
@@ -1949,8 +2121,12 @@ class NonRepairableRBD(RBD):
         (21.6, 49.3)
         """
         self._require_time_varying()
-        if not 0.0 < target < 1.0:
-            raise ValueError("target reliability must be in (0, 1).")
+        targets = np.asarray(target, dtype=float)
+        if not np.all((targets > 0.0) & (targets < 1.0)):
+            raise ValueError(
+                "target reliability must be in (0, 1) (or an array of "
+                f"such), got {target!r}."
+            )
         drawn, drawn_groups = self._uncertain_draws(
             uncertainty, n_draws, seed, sampling
         )
@@ -1969,7 +2145,7 @@ class NonRepairableRBD(RBD):
 
     def bx_life_uncertainty(
         self,
-        x: float,
+        x: ArrayLike,
         uncertainty: Optional[Dict[Hashable, Any]] = None,
         *,
         n_draws: int = 1000,
@@ -1986,8 +2162,9 @@ class NonRepairableRBD(RBD):
 
         Parameters
         ----------
-        x : float
-            The percentage failed, in (0, 100).
+        x : float or array_like
+            The percentage failed, in (0, 100), or percentages (#226): each
+            a row of draws, from the same parameter draws.
         uncertainty : dict, optional
             ``{node or tuple of nodes: uncertainty}`` for the uncertain
             nodes, as for ``sf_uncertainty`` (by default, every fitted
@@ -2033,10 +2210,18 @@ class NonRepairableRBD(RBD):
         >>> round(b10.nominal, 2)  # the same as the time to 90% reliability
         33.64
         """
-        if not 0.0 < x < 100.0:
-            raise ValueError("x must be a percentage in (0, 100).")
+        percent = np.asarray(x, dtype=float)
+        if not np.all((percent > 0.0) & (percent < 100.0)):
+            raise ValueError(
+                "x must be a percentage in (0, 100) (or an array of such), "
+                f"got {x!r}."
+            )
         return self.time_to_reliability_uncertainty(
-            1.0 - x / 100.0,
+            (
+                1.0 - percent / 100.0
+                if percent.ndim
+                else 1.0 - float(percent) / 100.0
+            ),
             uncertainty,
             n_draws=n_draws,
             seed=seed,
@@ -2060,6 +2245,9 @@ class NonRepairableRBD(RBD):
         """Which input's parameter uncertainty makes a system quantity
         uncertain: each uncertain input's share of the quantity's variance
         (#196), the inputs as for ``sf_uncertainty``.
+
+        In the guide's Greeks it is *vega*: whose uncertainty widens the answer
+        (see [Sensitivities: the Greeks](guide/greeks.md)).
 
         ``of`` is the quantity: ``"sf"``, the reliability at the time/s
         ``x`` (as ``sf_uncertainty``); ``"mean"``, the MTTF (as
@@ -2430,7 +2618,7 @@ class NonRepairableRBD(RBD):
             raise ValueError(f"n_draws must be at least 1, got {n_draws}.")
         check_sampling(sampling)
         sources, ccf_specs = self._uncertainty_sources(uncertainty)
-        rng = np.random.default_rng(seed)
+        rng = np.random.default_rng(check_seed(seed))
 
         def draw(n: int, source) -> Tuple[Dict[Hashable, list], list]:
             drawn: Dict[Hashable, list] = {}
@@ -2482,7 +2670,10 @@ class NonRepairableRBD(RBD):
         node or tuple of nodes given, its key, its nodes and its
         uncertainty; and for each common-cause group whose model is
         uncertain, by its index, its key and its uncertainty. By default,
-        every fitted node (``_fitted_uncertainty``)."""
+        every fitted node (``_fitted_uncertainty``). Given, a node drawn
+        without other nodes holding the same model object, which are left
+        as they are, is warned about (#214)."""
+        given = uncertainty is not None
         if uncertainty is None:
             uncertainty = self._fitted_uncertainty()
             if not uncertainty:
@@ -2553,6 +2744,30 @@ class NonRepairableRBD(RBD):
                     "uncertainty together, in one tuple of nodes (e.g. "
                     f"{{{tuple(group.members)!r}: 'fit'}})."
                 )
+        if given:
+            from repyability.rbd._repairable_uncertainty import half_named
+
+            for _, members, _ in sources:
+                model = self.reliabilities[members[0]]
+                others = [
+                    node
+                    for node in self.nodes
+                    if node not in seen
+                    and node not in self.repeated
+                    and self.reliabilities[node] is model
+                ]
+                if others:
+                    label = (
+                        f"Node {members[0]!r}"
+                        if len(members) == 1
+                        else f"Nodes {list(members)!r}"
+                    )
+                    half_named(
+                        label,
+                        others,
+                        "model",
+                        {tuple(members) + tuple(others): "fit"},
+                    )
         return sources, ccf_specs
 
     def _fitted_uncertainty(self) -> Dict[Hashable, str]:
@@ -2648,6 +2863,18 @@ class NonRepairableRBD(RBD):
         same way, as two equal standby groups do (#179)."""
         if a is b:
             return True
+        if is_mixture(a) or is_mixture(b):
+            # Its dist is its components' alone, and its p their
+            # responsibilities (#227).
+            return (
+                is_mixture(a)
+                and is_mixture(b)
+                and a.dist.name == b.dist.name
+                and np.array_equal(
+                    np.asarray(a.params, float), np.asarray(b.params, float)
+                )
+                and np.array_equal(np.ravel(a.w), np.ravel(b.w))
+            )
         name_a = getattr(getattr(a, "dist", None), "name", None)
         name_b = getattr(getattr(b, "dist", None), "name", None)
         if name_a is None and name_b is None:
@@ -5072,7 +5299,9 @@ class NonRepairableRBD(RBD):
                 "node reliabilities.",
             )
         )
-        no_capacity = r.refusal(self._require_capacity)
+        no_capacity = r.refusal(self._require_numbered_capacities) or (
+            r.refusal(self._require_capacity)
+        )
         out["system_capacity"] = (
             r.refused(no_capacity)
             if no_capacity
@@ -5089,19 +5318,23 @@ class NonRepairableRBD(RBD):
         out["path_set_probabilities"] = r.AnalysisRoute(
             r.EXACT, "From the node probabilities given."
         )
+        allocation = r.AnalysisRoute(
+            r.NUMERICAL,
+            "A solver over the exact system probability, from the node "
+            "probabilities given (not the node models).",
+        )
         give(
             (
                 "improvement_allocation",
                 "equal_allocation",
                 "simple_allocation",
-                "minimum_effort_allocation",
                 "cost_based_allocation",
             ),
-            r.AnalysisRoute(
-                r.NUMERICAL,
-                "A solver over the exact system probability, from the node "
-                "probabilities given (not the node models).",
-            ),
+            allocation,
+        )
+        series = r.refusal(self._require_series)
+        out["minimum_effort_allocation"] = (
+            r.refused(series) if series else allocation
         )
         groups_drawn = (
             " The common-cause groups are in each draw, and their models may "
@@ -5109,12 +5342,14 @@ class NonRepairableRBD(RBD):
             if grouped
             else ""
         )
-        out["sf_uncertainty"] = r.AnalysisRoute(
+        # Each draw is worked out exactly, from the drawn nodes'
+        # reliabilities: refused, as sf is, where a node has none.
+        out["sf_uncertainty"] = built(
             r.SIMULATED,
             "The node parameters drawn from their uncertainty, and the exact "
             "system reliability for each draw." + groups_drawn,
         )
-        out["uncertainty_importance"] = r.AnalysisRoute(
+        out["uncertainty_importance"] = built(
             r.NUMERICAL,
             "The delta method: the exact quantity's derivative in each "
             "uncertain parameter, by central differences, with their "
@@ -5125,7 +5360,7 @@ class NonRepairableRBD(RBD):
         out["mean_uncertainty"] = (
             r.refused(no_lifetimes)
             if no_lifetimes
-            else r.AnalysisRoute(
+            else built(
                 r.SIMULATED,
                 "The node parameters drawn from their uncertainty, and the "
                 "exact MTTF for each draw (the area under its reliability)."
@@ -5138,7 +5373,7 @@ class NonRepairableRBD(RBD):
             (
                 r.refused(no_time)
                 if no_time
-                else r.AnalysisRoute(
+                else built(
                     r.SIMULATED,
                     "The node parameters drawn from their uncertainty, and "
                     "the time found exactly for each draw, by root-finding "
@@ -5213,9 +5448,10 @@ class NonRepairableRBD(RBD):
                 "n_jobs." + independent,
             )
         )
+        no_lives = r.refusal(self._require_varying_lifetimes)
         out["mean_time_to_failure_interval"] = (
-            r.refused(draws)
-            if draws
+            r.refused(no_lives or draws or "")
+            if no_lives or draws
             else r.AnalysisRoute(
                 r.SIMULATED,
                 "The mean of Monte-Carlo lifetimes (see random), with its "
@@ -5223,15 +5459,27 @@ class NonRepairableRBD(RBD):
             )
         )
         replay = r.refusal(self._require_replayable)
-        out["compare"] = (
-            r.refused(replay)
-            if replay
-            else r.AnalysisRoute(
+        # A diagram too meshed to work out has no exact MTTF, so compare
+        # simulates it (#236).
+        if (
+            out["mean"].route in (r.EXACT, r.NUMERICAL)
+            and self._too_meshed() is None
+        ):
+            out["compare"] = r.AnalysisRoute(
+                out["mean"].route,
+                "The difference of the two systems' MTTFs (see mean), where "
+                "the other's is worked out too (#236); otherwise, or with "
+                "method='simulate', Monte-Carlo lifetimes of both systems, "
+                "with common random numbers.",
+            )
+        elif replay:
+            out["compare"] = r.refused(replay)
+        else:
+            out["compare"] = r.AnalysisRoute(
                 r.SIMULATED,
                 "Monte-Carlo lifetimes of both systems, with common random "
                 "numbers." + independent,
             )
-        )
         means = {n: r.mean_route(m) for n, m in self.reliabilities.items()}
         refusals = {
             n: how for n, (route, how) in means.items() if route == r.REFUSED
@@ -5272,8 +5520,18 @@ class NonRepairableRBD(RBD):
                 else ""
             ),
         )
-        # Each node's own values need no structure.
-        return self._meshed_routes(out, ("node_sf", "node_ff", "node_mttf"))
+        # Each node's own values need no structure; the uncertainty's draws
+        # are each worked out exactly.
+        return self._meshed_routes(
+            out,
+            ("node_sf", "node_ff", "node_mttf"),
+            drawn=(
+                "sf_uncertainty",
+                "mean_uncertainty",
+                "time_to_reliability_uncertainty",
+                "bx_life_uncertainty",
+            ),
+        )
 
     def random(
         self,
@@ -5309,9 +5567,8 @@ class NonRepairableRBD(RBD):
         ``Q = 1``. The same applies to ``mean(method="simulate")``,
         ``mean_time_to_failure_interval`` and ``compare``; the exact
         ``mean`` refuses such a group.
-        Fixed-probability nodes have no lifetime (surpyval draws 0/1 event
-        indicators for them), so the samples are not meaningful for an RBD
-        containing any.
+        A fixed-probability node fails at the start (a lifetime of 0), with
+        its probability, or never (``inf``), as ``sf`` takes it.
 
         Parameters
         ----------
@@ -5664,8 +5921,9 @@ class NonRepairableRBD(RBD):
                     f"Common-cause group {list(group.members)} splits the "
                     "failure rate: a simulation draws its members' "
                     "lifetimes, with their shared shocks, through their "
-                    f"model's quantile function, and node {first!r}'s model "
-                    "has none (surpyval parametric distributions do). The "
+                    f"model's quantile function, and the model of node "
+                    f"{first!r} has none (surpyval parametric distributions "
+                    "do). The "
                     "exact sf, ff and mean include the group."
                 )
         for model in self.reliabilities.values():
@@ -5706,8 +5964,13 @@ class NonRepairableRBD(RBD):
                 # the event time orders the PriorityQueue and assigns into
                 # ``out`` (NumPy >= 2 rejects assigning a 1-element array to
                 # a scalar).
-                one = np.asarray(self.reliabilities[drawn].random(1))
+                model = self.reliabilities[drawn]
+                one = np.asarray(model.random(1))
                 time = float(one.reshape(-1)[0])
+                if is_fixed_probability(model):
+                    # surpyval draws an event indicator: the node fails at
+                    # the start (a lifetime of 0) or never, as sf takes it.
+                    time = 0.0 if time else np.inf
                 event_queue.put(NodeFailure(time, drawn))
 
             working_nodes = {k: True for k in self._components()}
@@ -5882,20 +6145,27 @@ class NonRepairableRBD(RBD):
     def _exact_mean(self) -> float:
         """The exact MTTF: the area under the system reliability."""
         self._require_lifetimes()
-        knots = [model_knots(m) for m in self.reliabilities.values()]
+        models = self.reliabilities.values()
         return mean_lifetime(
-            lambda t: self.sf(t), np.concatenate([np.empty(0), *knots])
+            lambda t: self.sf(t),
+            [model_knots(m) for m in models],
+            [model_kinks(m) for m in models],
         )
 
-    def _require_lifetimes(self) -> None:
-        """Raise unless the system's exact mean lifetime is defined: its
-        reliability must vary with time, and hold over whole lifetimes,
-        which common-cause groups that split a probability do not."""
+    def _require_varying_lifetimes(self) -> None:
+        """Raise if every node is a fixed probability: the system then fails
+        at the start or never, and has no lifetimes to average."""
         if self.is_fixed:
             raise ValueError(
                 "System reliability does not vary with time (all nodes are "
                 "fixed-probability): the system has no lifetimes to average."
             )
+
+    def _require_lifetimes(self) -> None:
+        """Raise unless the system's exact mean lifetime is defined: its
+        reliability must vary with time, and hold over whole lifetimes,
+        which common-cause groups that split a probability do not."""
+        self._require_varying_lifetimes()
         if self._grouped("probability"):
             raise NotImplementedError(
                 "The exact MTTF does not account for common-cause (CCF) "
@@ -6332,6 +6602,7 @@ class NonRepairableRBD(RBD):
         n_jobs,
     ) -> np.ndarray:
         """The simulated lifetimes an MTTF estimate is the mean of."""
+        self._require_varying_lifetimes()
         if (
             tolerance is None
             and max_samples is None
@@ -6374,17 +6645,25 @@ class NonRepairableRBD(RBD):
         seed=None,
         *,
         confidence: float = 0.95,
+        method: Optional[str] = None,
     ) -> ConfidenceInterval:
         """How much longer (or shorter) this system's mean time to failure
-        is than ``other``'s, by simulation with common random numbers.
+        is than ``other``'s: exactly where both MTTFs are worked out
+        exactly, and otherwise by simulation with common random numbers.
 
-        Both systems' lifetimes are simulated ``mc_samples`` times, and in
-        each sample a component with the same name in both draws the same
-        random numbers in both: the same lifetime where its model is the
-        same, and a matching one (the same quantile of its own model) where
-        it is not. The differences between the two systems' lifetimes then
-        come from how the systems differ, not from chance, so their mean is
-        a more precise estimate of the difference in MTTF than the
+        By default, where ``mean`` works out both systems' MTTFs (exactly
+        or numerically), the difference is theirs, with no error
+        (``method="exact"`` in the result), and nothing is simulated
+        (#236), as ``mean`` is exact by default. ``method="simulate"``
+        simulates it whatever.
+
+        Simulated, both systems' lifetimes are drawn ``mc_samples`` times,
+        and in each sample a component with the same name in both draws the
+        same random numbers in both: the same lifetime where its model is
+        the same, and a matching one (the same quantile of its own model)
+        where it is not. The differences between the two systems' lifetimes
+        then come from how the systems differ, not from chance, so their
+        mean is a more precise estimate of the difference in MTTF than the
         difference of two independent estimates of the same size (the more
         the systems share, the more precise). The reliabilities themselves
         need no simulation: compare ``sf`` for those.
@@ -6394,18 +6673,26 @@ class NonRepairableRBD(RBD):
         other : NonRepairableRBD
             The system to compare with.
         mc_samples : int, optional
-            The number of lifetimes of each system, by default 100_000.
+            Simulated, the number of lifetimes of each system, by default
+            100_000. An exact difference simulates nothing.
         seed : int, optional
-            Seed for a reproducible comparison, by default None.
+            Simulated, the seed for a reproducible comparison, by default
+            None.
         confidence : float, optional
             The confidence level of the interval, by default 0.95.
+        method : str, optional
+            None (the default): the exact difference where ``mean`` works
+            out both MTTFs, else simulated. ``"exact"``: the exact
+            difference, refused where a ``mean`` is. ``"simulate"``: the
+            simulated difference, whatever.
 
         Returns
         -------
         ConfidenceInterval
-            The mean difference (this system's lifetime minus ``other``'s)
-            over the samples, with its standard error and a normal
-            confidence interval (not clipped: the difference may be
+            The difference in MTTF (this system's minus ``other``'s): exact
+            (``method="exact"``), or the mean difference of the simulated
+            lifetimes (``"simulated"``), with its standard error and a
+            normal confidence interval (not clipped: the difference may be
             negative). Common-cause groups that split a probability are
             left out, as by ``random``; a group splitting the failure rate
             draws each member's own causes from the member's own random
@@ -6414,11 +6701,12 @@ class NonRepairableRBD(RBD):
         Raises
         ------
         ValueError
-            If ``mc_samples`` or ``confidence`` is invalid.
+            If ``mc_samples``, ``confidence`` or ``method`` is invalid.
         NotImplementedError
-            If a node's draws cannot be replayed from uniforms (a node
-            model sampled its own way, whose random numbers the two systems
-            would not share).
+            Simulated, if a node's draws cannot be replayed from uniforms (a
+            node model sampled its own way, whose random numbers the two
+            systems would not share); with ``method="exact"``, as for
+            ``mean``.
 
         Examples
         --------
@@ -6431,16 +6719,45 @@ class NonRepairableRBD(RBD):
         ...     names = [f"u{i}" for i in range(n)]
         ...     edges = [("s", u) for u in names] + [(u, "t") for u in names]
         ...     return NonRepairableRBD(edges, {u: unit for u in names})
-        >>> gain = parallel(3).compare(parallel(2), mc_samples=20_000, seed=0)
+        >>> gain = parallel(3).compare(parallel(2))
+        >>> round(gain.estimate, 2), gain.method
+        (14.46, 'exact')
+
+        The integral of the difference in reliability. Simulated with
+        common random numbers:
+
+        >>> gain = parallel(3).compare(
+        ...     parallel(2), mc_samples=20_000, seed=0, method="simulate"
+        ... )
         >>> round(gain.estimate, 1), round(gain.standard_error, 2)
         (14.8, 0.21)
 
-        The exact difference, the integral of the difference in
-        reliability, is 14.46. Two independent estimates from 20_000
-        lifetimes each would give it with a standard error of about 0.42.
+        Two independent estimates from 20_000 lifetimes each would give it
+        with a standard error of about 0.42.
         """
+        if method not in (None, "exact", "simulate"):
+            raise ValueError(
+                "method must be None (exact where both MTTFs are), 'exact' "
+                f"or 'simulate', got {method!r}."
+            )
         montecarlo.check_count(mc_samples, False, "mc_samples")
         montecarlo.check_confidence(confidence)
+        if method != "simulate":
+            try:
+                exact = float(self._exact_mean() - other._exact_mean())
+            except (NotImplementedError, ValueError):
+                if method == "exact":
+                    raise
+            else:
+                return ConfidenceInterval(
+                    estimate=exact,
+                    lower=exact,
+                    upper=exact,
+                    confidence=confidence,
+                    standard_error=0.0,
+                    n_samples=0,
+                    method="exact",
+                )
         key = int(np.random.SeedSequence(seed).generate_state(1, np.uint64)[0])
         differences = self._keyed_lifetimes(
             mc_samples, key
@@ -6455,6 +6772,7 @@ class NonRepairableRBD(RBD):
             confidence=confidence,
             standard_error=standard_error,
             n_samples=mc_samples,
+            method="simulated",
         )
 
     def _keyed_lifetimes(self, n: int, key: int) -> np.ndarray:
@@ -6794,8 +7112,8 @@ class NonRepairableRBD(RBD):
         Raises
         ------
         TypeError
-            If ``state`` is not a dict, or one of its values is not a
-            ``NodeState``.
+            If ``state`` is not a dict, or one of its values is neither a
+            ``NodeState`` nor a number (the node's age).
         ValueError
             If ``x`` is omitted for a time-varying RBD, or ``state`` names
             the input or output node, an unknown node (including a repeated
@@ -6880,7 +7198,8 @@ class NonRepairableRBD(RBD):
             ``upper_bound`` is still above ``target``; or if ``state`` is
             invalid (as for ``sf_given_state``).
         TypeError
-            If ``state`` is not a dict of ``NodeState`` values.
+            If ``state`` is not a dict of ``NodeState`` values (or numbers,
+            the nodes' ages).
         NotImplementedError
             If the RBD has common-cause (CCF) groups.
 
@@ -6948,6 +7267,9 @@ class NonRepairableRBD(RBD):
 
         Raises
         ------
+        TypeError
+            As for ``sf_given_state``: ``state`` is not a dict of
+            ``NodeState`` values (or numbers, the nodes' ages).
         ValueError
             If the RBD is fixed-probability (its reliability does not
             change with time), or as for ``sf_given_state``.
@@ -6975,16 +7297,20 @@ class NonRepairableRBD(RBD):
         self._require_no_ccf_for_states()
         self._require_lifetimes()
         # Each model's knots, moved back by its age where it has one.
-        knots = [np.empty(0)]
+        knots, kinks = [np.empty(0)], [np.empty(0)]
         for node, model in self.reliabilities.items():
             own = np.asarray(model_knots(model), dtype=float)
+            bends = np.asarray(model_kinks(model), dtype=float)
             knots.append(own)
+            kinks.append(bends)
             age = getattr(state.get(node), "age", None)
             if age:
                 knots.append(own - float(age))
+                kinks.append(bends - float(age))
         return mean_lifetime(
             lambda t: np.asarray(self.sf_given_state(t, state), dtype=float),
-            np.concatenate(knots),
+            knots,
+            kinks,
         )
 
     @leaves_out_junctions
@@ -7114,19 +7440,21 @@ class NonRepairableRBD(RBD):
           ``mean()`` of one is the *defective* mean, its failing units' mean
           weighted by their fraction.)
 
-        Common-cause groups do not affect a node's own MTTF.
+        Common-cause groups do not affect a node's own MTTF. A junction (a
+        node given [`PerfectReliability`][repyability.PerfectReliability],
+        such as a k-out-of-n vote point) never fails and is left out, as
+        from the importance measures.
 
         Returns
         -------
         dict[Any, float]
             ``{node: MTTF}`` over the component nodes (not the input or
-            output node).
+            output node, nor a junction).
 
         Raises
         ------
         AttributeError
-            If a node's model has no ``mean()`` method (e.g.
-            [`PerfectReliability`][repyability.PerfectReliability]).
+            If a node's model has no ``mean()`` method.
         NotImplementedError
             If a nested RBD has common-cause groups that split a
             probability (see ``mean``).
@@ -7146,7 +7474,10 @@ class NonRepairableRBD(RBD):
         {'a': 100.0, 'b': 0.0}
         """
         out: dict[Any, float] = {}
+        junctions = self._junctions()
         for node in self.nodes:
+            if node in junctions:
+                continue  # never fails: no component (#228)
             model = self.reliabilities[node]
             if isinstance(
                 model,
@@ -7175,6 +7506,9 @@ class NonRepairableRBD(RBD):
         broken_nodes: Optional[Collection[Hashable]] = None,
     ) -> dict[Any, Union[float, np.ndarray]]:
         """Birnbaum importance of each node at time/s ``x``.
+
+        In the guide's Greeks it is *delta*: how far the system moves with each
+        node (see [Sensitivities: the Greeks](guide/greeks.md)).
 
         ``B_i = R_sys(i working) - R_sys(i failed)``: the rate at which the
         system reliability changes with node ``i``'s reliability, which is
@@ -7729,6 +8063,9 @@ class NonRepairableRBD(RBD):
     ) -> Dict[Any, Dict[str, Union[float, np.ndarray]]]:
         """Sensitivity of system reliability to each node's parameters.
 
+        In the guide's Greeks it is the levers' *deltas* (see [Sensitivities:
+        the Greeks](guide/greeks.md)).
+
         For node ``i`` with parameter ``theta``, the sensitivity at time/s
         ``x`` is
 
@@ -7928,6 +8265,9 @@ class NonRepairableRBD(RBD):
         reliability when they all change together: the differential
         importance measure (DIM, Borgonovo & Apostolakis, 2001; #193).
 
+        In the guide's Greeks it is *DIM*, the shares of a change (see
+        [Sensitivities: the Greeks](guide/greeks.md)).
+
         ``DIM_i = dR/dtheta_i dtheta_i / sum_j dR/dtheta_j dtheta_j``, so
         the shares add up to 1, and a group's share is the sum of its
         members' (``groups``): what share of a possible gain lies in the
@@ -8069,6 +8409,9 @@ class NonRepairableRBD(RBD):
         """The joint (second-order) importance of each pair of nodes:
         whether improving the two together is worth more than improving
         each (Hong & Lie, 1993; Armstrong, 1995; #194).
+
+        In the guide's Greeks it is *gamma*: complements or substitutes (see
+        [Sensitivities: the Greeks](guide/greeks.md)).
 
         ``JRI(i, j) = d2R / dR_i dR_j = R(1_i, 1_j) - R(1_i, 0_j) -
         R(0_i, 1_j) + R(0_i, 0_j)``, with ``R(1_i, 0_j)`` the system
@@ -8215,6 +8558,9 @@ class NonRepairableRBD(RBD):
         """How fast the system reliability is falling at each time ``x``,
         and which nodes are bringing it down (#195).
 
+        In the guide's Greeks it is *theta*: what is moving the system now (see
+        [Sensitivities: the Greeks](guide/greeks.md)).
+
         The nodes failing independently, the system reliability is
         multilinear in theirs, so
 
@@ -8303,6 +8649,9 @@ class NonRepairableRBD(RBD):
         """Each node's Barlow-Proschan importance: the probability that the
         system's failure is caused by the node's (Barlow & Proschan, 1975;
         #195), given that the system fails by ``x``, or over its whole life.
+
+        In the guide's Greeks it is *theta*, integrated: who caused the
+        failures (see [Sensitivities: the Greeks](guide/greeks.md)).
 
         A node's failure fails the system when the node is critical then,
         so the probability that the system has failed by ``x``, through

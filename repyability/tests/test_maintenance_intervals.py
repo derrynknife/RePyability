@@ -195,6 +195,60 @@ def test_what_it_refuses(plant):
         unpriced.optimal_replacement_intervals()
 
 
+# -- replacement on a calendar (#230) -----------------------------------------
+
+CALENDAR = [250.0, 500.0, 750.0, math.inf]
+
+
+def calendar_best(plant, allowed, feasible=lambda rbd: True):
+    """The cheapest combination of ``allowed`` intervals, by brute force."""
+    best = (math.inf, None)
+    for combination in itertools.product(allowed, repeat=3):
+        intervals = dict(zip(["a", "b1", "b2"], combination))
+        rbd = plant._with_intervals(preventive=intervals)
+        if feasible(rbd):
+            best = min(best, (rbd.expected_cost_rate(), combination))
+    return best
+
+
+def test_replacement_intervals_from_a_calendar(plant):
+    plan = plant.optimal_replacement_intervals(allowed=CALENDAR)
+    cost, combination = calendar_best(plant, CALENDAR)
+    assert tuple(plan.intervals.values()) == combination
+    assert plan.cost_rate == pytest.approx(cost, rel=1e-12)
+    # The calendar's best costs no less than the continuous search's.
+    assert plan.cost_rate >= plant.optimal_replacement_intervals().cost_rate
+
+
+def test_replacement_intervals_from_a_calendar_per_node(plant):
+    allowed = {"a": [750.0], "b1": CALENDAR, "b2": [500.0, math.inf]}
+    plan = plant.optimal_replacement_intervals(allowed=allowed)
+    assert plan.intervals["a"] == 750.0
+    assert plan.intervals["b2"] in (500.0, math.inf)
+    target = plant.optimal_replacement_intervals(
+        allowed=CALENDAR, min_availability=0.98
+    )
+    _, combination = calendar_best(
+        plant, CALENDAR, lambda rbd: rbd.mean_availability() >= 0.98
+    )
+    assert target.availability >= 0.98
+    assert tuple(target.intervals.values()) == combination
+
+
+@pytest.mark.parametrize(
+    "allowed, match",
+    [
+        ([0.0, 500.0], "positive numbers \\(inf for never\\)"),
+        ([-1.0], "positive numbers"),
+        ({"a": [500.0]}, "no intervals for node 'b1'"),
+        ({"a": [500.0], "b1": [], "b2": [500.0]}, "no intervals"),
+    ],
+)
+def test_what_a_calendar_refuses(plant, allowed, match):
+    with pytest.raises(ValueError, match=match):
+        plant.optimal_replacement_intervals(allowed=allowed)
+
+
 def test_integer_node_names():
     rbd = RepairableRBD(
         [("s", 1), (1, "t")], {1: pump()}, downtime_cost_rate=500.0
@@ -325,7 +379,7 @@ def test_a_cost_cap_on_the_tests():
 def test_what_the_inspection_choice_refuses():
     with pytest.raises(ValueError, match="More than one component"):
         two_valves().optimal_inspection_intervals()
-    with pytest.raises(ValueError, match="has no hidden failures"):
+    with pytest.raises(ValueError, match="not a component of the RBD"):
         two_valves().optimal_inspection_intervals(
             nodes=["s"], allowed=CALENDAR
         )

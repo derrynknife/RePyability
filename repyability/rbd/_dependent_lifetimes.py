@@ -133,12 +133,13 @@ class KOutOfNSurvival:
         return self._shaped(self._counts(x)[allowed + 1 :].sum(axis=0), x)
 
     def mean(self, *args, **kwargs) -> float:
-        from ._mean_lifetime import mean_lifetime, model_knots
+        from ._mean_lifetime import mean_lifetime, model_kinks, model_knots
 
-        knots = np.concatenate(
-            [np.empty(0)] + [model_knots(m) for m in self.models]
+        return mean_lifetime(
+            lambda t: self.sf(t),
+            [model_knots(m) for m in self.models],
+            [model_kinks(m) for m in self.models],
         )
-        return mean_lifetime(lambda t: self.sf(t), knots)
 
 
 class WarmStandbySurvival(_Gridded):
