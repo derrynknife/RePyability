@@ -482,7 +482,9 @@ def test_an_unstreamable_component_leaves_the_others_alone():
     with pytest.raises(NotImplementedError):
         mixed.availability(100.0, mc_samples=10, seed=1, antithetic=True)
     with pytest.raises(NotImplementedError):
-        mixed.compare(plain, 100.0, mc_samples=10, seed=1)
+        mixed.compare(
+            plain, 100.0, mc_samples=10, seed=1, control_variate=False
+        )
 
 
 @pytest.mark.parametrize("name", ["costed_pairs", "maintained", "nested_koon"])
@@ -1719,6 +1721,7 @@ def test_the_engines_agree_on_costs_and_comparisons():
                 seed=6,
                 quantity=quantity,
                 engine="python",
+                control_variate=False,
             ),
             rbd.compare(
                 faster,
@@ -1727,6 +1730,7 @@ def test_the_engines_agree_on_costs_and_comparisons():
                 seed=6,
                 quantity=quantity,
                 engine="numba",
+                control_variate=False,
             ),
         )
 

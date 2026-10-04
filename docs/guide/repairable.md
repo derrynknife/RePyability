@@ -461,10 +461,11 @@ window.estimate                   # -> 0.9542   simulated
 window.lower, window.upper        # (0.9526, 0.9558)
 ```
 
-To compare two designs, simulate them with common random numbers:
-`faster.compare(plant, t_simulation)` estimates how much more of the window
-one is up than the other far more precisely than two separate runs (see
-[Comparing two designs](simulation.md#comparing-two-designs)).
+To compare two designs, `faster.compare(plant, t_simulation)` gives how
+much more of the window one is up than the other: exactly where both
+designs' mission availabilities are worked out, and otherwise by simulating
+them with common random numbers, far more precisely than two separate runs
+(see [Comparing two designs](simulation.md#comparing-two-designs)).
 
 ### What the result holds
 

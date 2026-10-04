@@ -481,7 +481,7 @@ class MGL(_Model):
     ``Q_k`` as a basic event of its own, independent of the others, so
     that several may strike: ``shocks="independent"``. The two differ at
     second order in ``Q`` (a 2-out-of-3 group of ``MGL(0.2, 0.3)`` at
-    ``Q = 0.031`` fails with probability 0.010219 one way and 0.010192
+    ``Q = 0.0311`` fails with probability 0.010219 one way and 0.010192
     the other), so match the tool you check against (#180). A
     ``BetaFactor``, or an ``MGL`` model with one shared cause, has one
     shock, and both agree. By rate, the causes strike independently.
@@ -750,8 +750,9 @@ def validity_warning(group: "CCFGroup", Q: float) -> None:
     """Warn that ``group``'s probability split is used at a probability of
     failing ``Q`` beyond ``VALIDITY``, and name the rate-based model to
     use over a lifetime."""
-    import sys
     import warnings
+
+    from repyability.utils.wrappers import outside_level
 
     model = group.model
     rate: _Model = (
@@ -759,15 +760,6 @@ def validity_warning(group: "CCFGroup", Q: float) -> None:
         if isinstance(model, BetaFactor)
         else MGL(*model.letters, basis="rate")
     )
-    # Point at the first caller outside the package.
-    level, frame = 2, sys._getframe(1)
-    while frame.f_back is not None:
-        name = frame.f_globals.get("__name__", "")
-        if not name.startswith("repyability.") or name.startswith(
-            "repyability.tests"
-        ):
-            break
-        frame, level = frame.f_back, level + 1
     warnings.warn(
         f"Common-cause group {list(group.members)} ({model!r}): its "
         f"members' probability of failing reaches Q = {Q:.3g} at the times "
@@ -777,7 +769,8 @@ def validity_warning(group: "CCFGroup", Q: float) -> None:
         "redundant group more reliable than an independent one. Over a "
         f"lifetime, split the failure rate: {rate!r}.",
         UserWarning,
-        stacklevel=level,
+        # Point at the first caller outside the package.
+        stacklevel=outside_level(),
     )
 
 

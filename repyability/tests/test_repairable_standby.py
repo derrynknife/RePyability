@@ -327,7 +327,7 @@ def test_runs_with_groups_are_reproducible_and_compiled(monkeypatch):
     monkeypatch.setattr(_compiled, "available", lambda: True)
     assert alone.analysis_routes()["availability"].engine == "numba"
     gain = group(0.02, 0.25, 2, units=3).compare(
-        rbd, 2_000.0, mc_samples=200, seed=9
+        rbd, 2_000.0, mc_samples=200, seed=9, control_variate=False
     )
     assert gain.estimate > 0.0
 

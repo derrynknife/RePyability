@@ -1,4 +1,5 @@
 import functools
+import sys
 import threading
 from contextlib import contextmanager
 
@@ -13,6 +14,22 @@ import numpy as np
 #: runs on processes, each with a lock of its own, or (numba's loop) on
 #: threads that do not take it. Re-entrant: a run may start others.
 SIMULATIONS = threading.RLock()
+
+
+def outside_level() -> int:
+    """The ``stacklevel`` at which a warning raised by the caller of this
+    function points at the first frame outside the package (its tests
+    count as outside): through however many of its own calls and wrappers
+    the warning was reached."""
+    level, frame = 2, sys._getframe(2)
+    while frame.f_back is not None:
+        name = frame.f_globals.get("__name__", "")
+        if not name.startswith("repyability.") or name.startswith(
+            "repyability.tests"
+        ):
+            break
+        frame, level = frame.f_back, level + 1
+    return level
 
 
 @contextmanager

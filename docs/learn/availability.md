@@ -310,11 +310,14 @@ so their difference carries both. Instead, simulate both with the *same*
 random numbers: in each history the pump runs for the same up times in both
 designs, and only the repairs differ. The chance in the histories is then
 common to both designs and cancels in the difference. This is called
-**common random numbers**, and `compare` does it:
+**common random numbers**, and `compare` does it (here asked to simulate,
+with `control_variate=False`: for designs this simple it gives the exact
+difference, 0.0314, by default):
 
 ```python
 quick = RepairableRBD([("in", "pump"), ("pump", "out")], {"pump": unit(0.1, 2.0)})
-gain = quick.compare(one_pump, t_simulation=5.0, mc_samples=10_000, seed=0)
+gain = quick.compare(one_pump, t_simulation=5.0, mc_samples=10_000, seed=0,
+                     control_variate=False)
 gain.estimate         # -> 0.0314   exactly: 0.9569 - 0.9256 = 0.0314
 gain.standard_error   # -> 0.00063
 ```

@@ -598,8 +598,10 @@ def test_the_readme_says_what_is_simulated():
             (repairable["capacities"], "mission_capacity", "numerical"),
         ],
         "Comparing two designs (`compare`)": [
-            (plain, "compare", "simulated"),
-            (repairable["costed_pairs"], "compare", "simulated"),
+            (plain, "compare", "numerical"),
+            (repairable["costed_pairs"], "compare", "numerical"),
+            (nonrepairable["simulated standby"], "compare", "simulated"),
+            (repairable["imperfect repair"], "compare", "simulated"),
         ],
         "The uncertainty from fitted component parameters "
         "(`sf_uncertainty`, `mean_uncertainty`, `bx_life_uncertainty`, "

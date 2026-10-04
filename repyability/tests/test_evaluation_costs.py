@@ -28,8 +28,12 @@ from scipy.signal import convolve, correlate
 
 from repyability import MGL, CCFGroup, Network, NonRepairableRBD, RepairableRBD
 from repyability import network as network_module
-from repyability.rbd import _ccf_chain, _hidden_tests, _ordered_bdd
-from repyability.rbd import repairable_rbd
+from repyability.rbd import (
+    _ccf_chain,
+    _hidden_tests,
+    _ordered_bdd,
+    repairable_rbd,
+)
 from repyability.rbd._mean_lifetime import (
     mean_lifetime,
     model_kinks,
@@ -317,8 +321,7 @@ def test_identical_members_plans_do_not_turn_on_their_last_bits(search):
 
     options = {"a": [1.0, 2.0], "b": [1.0, 2.0]}
     chosen = [
-        search(options, evaluate_with(noise))
-        for noise in (1e-15, 0.0, -1e-15)
+        search(options, evaluate_with(noise)) for noise in (1e-15, 0.0, -1e-15)
     ]
     assert chosen[0] == chosen[1] == chosen[2]
     assert sorted(chosen[0].values()) == [1.0, 2.0]

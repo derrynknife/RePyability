@@ -409,3 +409,73 @@ def test_the_totals_are_rounded_once():
     assert math.fsum(costs.samples) == pytest.approx(
         500 * sum(costs.by_category.values()), rel=1e-14
     )
+
+
+# -- #236: chunks of a plain run --------------------------------------------
+
+
+def modular():
+    """A plant with a module the exact methods do not take (imperfect
+    repair of a unit that wears): its runs' means are conditional by
+    default."""
+    worn = {
+        "reliability": W([10.0, 2.0]),
+        "repairability": E([1.0]),
+        "repair": {"model": "kijima1", "q": 0.5},
+        "repair_cost": 5.0,
+    }
+    plain = {"reliability": E([0.05]), "repairability": E([1.0])}
+    return RepairableRBD(
+        [("s", "a"), ("a", "b"), ("b", "t")],
+        {"a": worn, "b": plain},
+        downtime_cost_rate=2.0,
+    )
+
+
+@pytest.mark.parametrize(
+    "rbd, options",
+    [
+        (plant(), {"control_variate": False}),
+        (modular(), {"control_variate": False}),
+        (modular(), {"conditional": False}),
+    ],
+)
+def test_chunks_merge_into_a_plain_run(rbd, options):
+    whole = rbd.availability(30.0, mc_samples=40, seed=4, **options)
+    chunks = [
+        rbd.simulate_chunk(30.0, a, b, seed=4) for a, b in ((0, 25), (25, 40))
+    ]
+    assert same_result(rbd.availability_from_chunks(chunks, **options), whole)
+    # Or kept with the chunks, through their saved form too.
+    kept = [
+        SimulationChunk.from_dict(
+            rbd.simulate_chunk(30.0, a, b, seed=4, **options).to_dict()
+        )
+        for a, b in ((0, 25), (25, 40))
+    ]
+    assert same_result(rbd.availability_from_chunks(kept), whole)
+    # By default, the means availability takes by default.
+    default = rbd.availability(30.0, mc_samples=40, seed=4)
+    assert same_result(rbd.availability_from_chunks(chunks), default)
+    assert whole.mean_availability_interval().method == "simulated"
+
+
+def test_chunks_with_other_means_do_not_merge():
+    rbd = plant()
+    first = rbd.simulate_chunk(30.0, 0, 10, seed=4, control_variate=False)
+    rest = rbd.simulate_chunk(30.0, 10, 20, seed=4)
+    with pytest.raises(ValueError, match="different runs"):
+        rbd.availability_from_chunks([first, rest])
+    # A chunk made with the defaults is saved as before them.
+    assert "control_variate" not in rest.settings
+
+
+@pytest.mark.parametrize("name", ["control_variate", "conditional"])
+@pytest.mark.parametrize("value", [True, 1, "no"])
+def test_a_chunk_holds_no_twin_or_modules_alone(name, value):
+    rbd = plant()
+    with pytest.raises(ValueError, match=f"{name} must be None or False"):
+        rbd.simulate_chunk(30.0, 0, 10, seed=4, **{name: value})
+    chunk = rbd.simulate_chunk(30.0, 0, 10, seed=4)
+    with pytest.raises(ValueError, match=f"{name} must be None or False"):
+        rbd.availability_from_chunks([chunk], **{name: value})

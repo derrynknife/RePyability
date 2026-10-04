@@ -385,10 +385,16 @@ def test_compare_against_the_exact_difference():
     exact = window_mean(
         lambda t: plant_availability(1.0, t) - plant_availability(2.0, t)
     )
-    gain = plant(1.0).compare(plant(2.0), T, mc_samples=2000, seed=5)
+    gain = plant(1.0).compare(
+        plant(2.0), T, mc_samples=2000, seed=5, control_variate=False
+    )
     assert abs(gain.estimate - exact) < 4 * gain.standard_error
     assert gain.lower < gain.estimate < gain.upper
-    assert gain.n_samples == 2000
+    assert gain.n_samples == 2000 and gain.method == "simulated"
+    # By default, the exact difference (#236).
+    default = plant(1.0).compare(plant(2.0), T, mc_samples=2000, seed=5)
+    assert default.estimate == pytest.approx(exact, rel=1e-6)
+    assert default.standard_error == 0.0 and default.method == "exact"
     # Two independent runs of the same size are far less precise.
     a = plant(1.0).availability(
         T, mc_samples=2000, seed=5, control_variate=False
@@ -415,9 +421,18 @@ def test_compare_costs_against_the_exact_difference():
 
     exact = expected(1.0) - expected(2.0)
     gain = plant(1.0, cost=100.0).compare(
-        plant(2.0, cost=100.0), T, mc_samples=2000, seed=7, quantity="cost"
+        plant(2.0, cost=100.0),
+        T,
+        mc_samples=2000,
+        seed=7,
+        quantity="cost",
+        control_variate=False,
     )
     assert abs(gain.estimate - exact) < 4 * gain.standard_error
+    default = plant(1.0, cost=100.0).compare(
+        plant(2.0, cost=100.0), T, quantity="cost"
+    )
+    assert default.estimate == pytest.approx(exact, rel=1e-6)
 
 
 def keyed_uptimes(rbd, n, key, widths):
@@ -481,7 +496,10 @@ def test_nested_components_are_matched_by_their_place():
     same = outer.compare(outer, T, mc_samples=100, seed=8)
     assert same.estimate == 0.0
     # The nested component "x" is not the flat "n": they are not paired.
-    assert outer.compare(flat, T, mc_samples=100, seed=8).standard_error > 0
+    unpaired = outer.compare(
+        flat, T, mc_samples=100, seed=8, control_variate=False
+    )
+    assert unpaired.standard_error > 0
 
 
 @pytest.mark.parametrize(
@@ -502,7 +520,62 @@ def test_invalid_comparisons(options):
 def test_comparing_needs_replayable_draws():
     rbd = RepairableRBD([("s", "c"), ("c", "t")], {"c": standby_pair()})
     with pytest.raises(NotImplementedError):
-        rbd.compare(rbd, T, mc_samples=10, seed=0)
+        rbd.compare(rbd, T, mc_samples=10, seed=0, control_variate=False)
+
+
+def test_compare_costs_with_the_acquisition():
+    # Is a second pump worth buying? Its price counts (#234): what owning
+    # each for the window from new costs, as total_cost counts it.
+    pump = {
+        "reliability": E([1e-3]),
+        "repairability": E([0.1]),
+        "repair_cost": 500.0,
+        "acquisition_cost": 20000.0,
+    }
+    one = RepairableRBD(
+        [("s", "p"), ("p", "t")], {"p": pump}, downtime_cost_rate=100.0
+    )
+    two = RepairableRBD(
+        [("s", "p"), ("s", "q"), ("p", "t"), ("q", "t")],
+        {"p": pump, "q": pump},
+        downtime_cost_rate=100.0,
+    )
+    owning = one.expected_cost(8760.0).total - two.expected_cost(8760.0).total
+    exact = one.compare(two, 8760.0, quantity="cost")
+    assert exact.estimate == pytest.approx(owning, rel=1e-12)
+    assert exact.estimate < 0  # one pump is cheaper to own for a year
+    simulated = one.compare(
+        two,
+        8760.0,
+        mc_samples=400,
+        seed=0,
+        quantity="cost",
+        control_variate=False,
+    )
+    assert abs(simulated.estimate - owning) < 4 * simulated.standard_error
+    # A system priced by its purchase alone compares too.
+    bought = {k: v for k, v in pump.items() if k != "repair_cost"}
+    plain = RepairableRBD([("s", "p"), ("p", "t")], {"p": bought})
+    assert plain.compare(plain, 100.0, quantity="cost").estimate == 0.0
+
+
+@pytest.mark.parametrize("value", [True, 1, "no"])
+def test_compare_takes_no_twin(value):
+    with pytest.raises(ValueError, match="control_variate=None"):
+        plant().compare(plant(2.0), T, mc_samples=10, control_variate=value)
+
+
+def test_compare_simulates_what_is_not_exact():
+    # The exact methods do not take imperfect repair of a unit that wears:
+    # the difference is the simulations'.
+    worn = {
+        "reliability": surv.Weibull.from_params([10.0, 2.0]),
+        "repairability": E([1.0]),
+        "repair": {"model": "kijima1", "q": 0.5},
+    }
+    imperfect = RepairableRBD([("s", "p"), ("p", "t")], {"p": worn})
+    gain = plant(1.0).compare(imperfect, T, mc_samples=200, seed=0)
+    assert gain.method == "simulated" and gain.standard_error > 0
 
 
 # -- NonRepairableRBD: MTTF ---------------------------------------------------
@@ -690,7 +763,7 @@ def test_an_rbd_compared_with_itself():
 
 def test_compare_mttf_against_the_exact_difference():
     three, two = parallel(3), parallel(2)
-    gain = three.compare(two, mc_samples=20_000, seed=2)
+    gain = three.compare(two, mc_samples=20_000, seed=2, method="simulate")
     exact = mttf(three) - mttf(two)
     assert abs(gain.estimate - exact) < 4 * gain.standard_error
     a = three.mean_time_to_failure_interval(mc_samples=20_000, seed=2)
@@ -713,7 +786,9 @@ def test_compare_matches_nodes_by_name():
         assert more.min() >= 0 and more.max() > 0
         up = upgraded._keyed_lifetimes(2000, key) - base
         assert up.min() >= 0 and up.max() > 0
-    gain = upgraded.compare(parallel(2), mc_samples=20_000, seed=3)
+    gain = upgraded.compare(
+        parallel(2), mc_samples=20_000, seed=3, method="simulate"
+    )
     exact = mttf(upgraded) - mttf(parallel(2))
     assert abs(gain.estimate - exact) < 4 * gain.standard_error
 
@@ -737,7 +812,7 @@ def test_compare_with_repeated_nodes():
     )
     lifetimes = shared._keyed_lifetimes(2000, 4)
     assert (lifetimes >= series._keyed_lifetimes(2000, 4)).all()
-    gain = shared.compare(series, mc_samples=20_000, seed=4)
+    gain = shared.compare(series, mc_samples=20_000, seed=4, method="simulate")
     exact = mttf(shared) - mttf(series)
     assert abs(gain.estimate - exact) < 4 * gain.standard_error
 
@@ -749,7 +824,9 @@ def test_compare_a_standby_node():
     standby = NonRepairableRBD(
         [("s", "u0"), ("u0", "t")], {"u0": StandbyModel([unit, unit])}
     )
-    gain = standby.compare(parallel(2), mc_samples=20_000, seed=5)
+    gain = standby.compare(
+        parallel(2), mc_samples=20_000, seed=5, method="simulate"
+    )
     exact = mttf(standby) - mttf(parallel(2))
     assert abs(gain.estimate - exact) < 4 * gain.standard_error
 
@@ -759,7 +836,9 @@ def test_each_uniform_of_a_node_has_its_own_stream():
     # system as the flat pair, so the difference is zero (were the two
     # uniforms the same, the nested pair would be a single unit).
     nested = NonRepairableRBD([("s", "n"), ("n", "t")], {"n": parallel(2)})
-    gain = nested.compare(parallel(2), mc_samples=20_000, seed=6)
+    gain = nested.compare(
+        parallel(2), mc_samples=20_000, seed=6, method="simulate"
+    )
     assert abs(gain.estimate) < 4 * gain.standard_error
 
 
@@ -770,7 +849,7 @@ def test_invalid_mttf_comparisons():
         parallel(2).compare(parallel(3), mc_samples=10, confidence=0.0)
     drawn = NonRepairableRBD([("s", "c"), ("c", "t")], {"c": Drawn(100.0)})
     with pytest.raises(NotImplementedError):
-        drawn.compare(parallel(2), mc_samples=10, seed=0)
+        drawn.compare(parallel(2), mc_samples=10, seed=0, method="simulate")
 
 
 # -- the shared helpers -------------------------------------------------------

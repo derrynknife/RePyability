@@ -35,6 +35,35 @@ other release, fixes included, the minor.
   criticality, improvement potential, risk achievement and reduction
   worth, Fussell–Vesely, joint and differential) and
   `parameter_sensitivity`; node names are node names, as before.
+- **Replacement intervals from a calendar (#230).**
+  `optimal_replacement_intervals(allowed=...)` chooses each component's
+  age-replacement interval from a list (one for every component, or a dict
+  of a list each; `inf` among them for never), every combination tried
+  when there are at most 2000, as `optimal_inspection_intervals` chooses
+  tests': replacement every four weeks, say, rather than at 497 hours. The
+  0.12 notes said it took `allowed` already; it did not. Its docstring now
+  says the plan is the best for the long run, and that a new plant, whose
+  units' first replacements fall together, can cost more in its first years
+  (#234).
+- **The discounted expected cost from new (#231).** `expected_cost(t,
+  discount_rate=r)` discounts each cost when it falls, where `total_cost`
+  spends the long-run rate from the start: `exp(-r t) C(t) + r * integral
+  of exp(-r s) C(s)`, by parts from the expected cost from new, on
+  Gauss-Kronrod pieces halved until within 1e-8 (closing in on the jumps
+  of scheduled tests and replacements). The ten-year pump of `total_cost`'s
+  example is worth 114,528 from new against 114,538 at the long-run rate.
+  The result's `discount_rate` says it is a present value.
+- **Endless and many horizons (#231).** `total_cost` (and
+  `allocate_redundancy`) take an endless horizon when the costs are
+  discounted: the acquisition and `rate / r`. `total_cost` takes an array of
+  horizons too, as `expected_cost` does.
+- **Chunks of a plain run (#236).** `simulate_chunk` and
+  `availability_from_chunks` take `control_variate=False` and
+  `conditional=False`, so a split run gives the means
+  `availability(..., control_variate=False)` gives, where merged chunks
+  always took the default ones. Given to `simulate_chunk`, it is kept with
+  the chunk (and its saved form); chunks made with different ones do not
+  merge. True, which simulates a twin or the modules alone, is refused.
 
 ### Changed
 
@@ -113,6 +142,29 @@ other release, fixes included, the minor.
   tested more often no longer turns on them, and of plans that cost the
   same, the most available is chosen however their costs' last bits fall
   (as a stagger's offsets, which change no cost, are chosen).
+- **`compare` is exact where both designs' expected values are (#236).**
+  It simulated both designs with common random numbers even where the
+  exact methods give the difference: two pump trains' availability
+  0.005787 ± 0.000172 against the exact 0.005676. Now, as `availability`
+  and `cost` take their means, where both `RepairableRBD`s' mission
+  availability (and expected cost) are worked out, `compare` gives their
+  difference with no error and no simulation (`method="exact"` on the
+  result); `control_variate=False` simulates it as before
+  (`method="simulated"`). A `NonRepairableRBD`'s `compare` gives the exact
+  difference of the MTTFs where `mean` works both out, and simulates on
+  request (`method="simulate"`, or where a `mean` is refused).
+  `analysis_routes()` and the README's table say so.
+- **`compare(quantity="cost")` counts the components' acquisition (#234).**
+  It compared the running costs alone, so "is a second pump worth buying?"
+  overstated the saving by its price: a second 20,000 pump "saved" 4,273 a
+  year where it costs some 15,750 more to own. The cost compared is now what
+  owning each design for the window costs, as `total_cost` and
+  `expected_cost(...).total` count it, and a design priced by its purchase
+  alone can be compared.
+- **`cost()` with only an acquisition cost (#234)** gives a `CostResult`
+  with no running cost, exactly, and the acquisition beside it, where it
+  gave None (and `.mean` raised); so does `availability()`'s result. A
+  system with nothing priced at all still gives None.
 
 ### Deprecated
 
@@ -281,6 +333,21 @@ other release, fixes included, the minor.
   range is refused naming its argument. A life some of whose units never
   fail has an infinite mean in every draw, and `mean_uncertainty` infinite
   bounds, where it gave `nan` with numpy's warning.
+- **A discount rate given per year with models in hours is warned of
+  (#231).** `discount_rate=0.07` with models in hours discounts every cost
+  after the first fourteen hours away: owning a 20,000 pump for ten years
+  came to 20,021 where it is 114,538 at 7% a year. `total_cost`,
+  `allocate_redundancy` and `expected_cost` now warn when the rate
+  discounts the components' shortest mean life by more than `exp(-20)`, or
+  a horizon by more than `exp(-1000)`, saying how to convert an annual
+  rate (`math.log(1 + i) / 8760`). A long horizon at a high rate is no
+  mistake, and is not warned of.
+- **0.12's notes corrected (#230).** Its behaviour changes said an MGL group
+  splitting a probability takes PRA's independent shocks: the default is
+  mutually exclusive shocks, as before, and `shocks="independent"` is asked
+  for. Its staggered-tests entry gave `optimal_replacement_intervals` an
+  `allowed` it did not have (it has now, see Added), and the MGL example's
+  probability is 0.0311.
 
 ## [0.12] - 2026-10-04
 
@@ -328,15 +395,13 @@ leaving it to the simulations, where a fit to simulated lifetimes stood in;
 `availability_from_chunks` refuses chunks with simulations missing, unless
 `allow_gaps=True` (#176); a simulation over a window that is not positive
 and finite is refused (#174), and so are bad counts and structures (#168,
-#169, #178) and a count of `True` in the demonstration functions (#179); an
-MGL group splitting a probability takes PRA's independent shocks, which
-moves its results by O(Q²) (#180); junctions leave the minimal cut and path
-sets (#198); the window analyses move by a few parts in 10^9, and the fixed
-planned outages after age replacement and expected failures of hidden
-failures by up to a few in 10^4 (#164); `SparesDemand.mean` and `std` are
-properties, and calling them, like `StandbyModel`'s and
-`LoadSharingModel`'s `mc_samples`, `lower` and `seed`, warns until 0.13
-(#184, #149); and surpyval 0.22 is required.
+#169, #178) and a count of `True` in the demonstration functions (#179);
+junctions leave the minimal cut and path sets (#198); the window analyses
+move by a few parts in 10^9, and the fixed planned outages after age
+replacement and expected failures of hidden failures by up to a few in
+10^4 (#164); `SparesDemand.mean` and `std` are properties, and calling
+them, like `StandbyModel`'s and `LoadSharingModel`'s `mc_samples`, `lower`
+and `seed`, warns until 0.13 (#184, #149); and surpyval 0.22 is required.
 
 ### Added
 
@@ -398,7 +463,7 @@ properties, and calling them, like `StandbyModel`'s and
   searched with the intervals; the plan's `offsets` gives them. At a
   PFDavg of 5e-4 that plan costs a third less than the best tested
   together. Of plans that cost the same, the most available is now chosen
-  (it was the first found), for replacement intervals from `allowed` too.
+  (it was the first found).
 - **Discounted total costs (#184).** `total_cost` and
   `allocate_redundancy` were undiscounted, so over a 20-year life a copy
   bought now weighed the same as the running costs it saves later.
@@ -433,8 +498,9 @@ properties, and calling them, like `StandbyModel`'s and
   probability, an MGL group's shocks were mutually exclusive (one shared
   cause at most), where PRA codes (SAPHIRE, CAFTA, RiskSpectrum) take each
   specific set's `Q_k` as an independent basic event: the two differ at
-  second order in `Q` (a 2-out-of-3 group of `MGL(0.2, 0.3)` at `Q = 0.031`
-  fails with probability 0.010219 one way and 0.010192 the other).
+  second order in `Q` (a 2-out-of-3 group of `MGL(0.2, 0.3)` at
+  `Q = 0.0311` fails with probability 0.010219 one way and 0.010192 the
+  other).
   `MGL(..., shocks="independent")` combines them as PRA codes do (exact,
   over the unions of the causes that strike), to check a result against
   one; the default is as before. It is saved, kept by parameter changes

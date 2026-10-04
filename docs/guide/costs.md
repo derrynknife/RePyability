@@ -328,6 +328,24 @@ no intervals can meet raises `ValueError`, with the best they can do. The
 cost rate is usually flat near its minimum, so an interval some way from the
 one found costs almost the same.
 
+Replacements are often made on a calendar. `allowed` gives the intervals to
+choose from (#230), one list for every component or a dict of a list each
+(`inf` among them for never), and every combination is tried, as
+`optimal_inspection_intervals` chooses tests':
+
+```python
+weeks = [336.0, 672.0, 1008.0, 1344.0]    # every 2, 4, 6 or 8 weeks
+plan = with_standby(1000).optimal_replacement_intervals(allowed=weeks)
+plan.intervals          # {'a': 672.0, 'b': 672.0}
+plan.cost_rate          # -> 7.405   against 6.985 at 497 h
+```
+
+The plan is the best for the long run. A new plant's units all start new,
+so the first replacements of redundant units fall due together, and where
+they take the system down together its first years cost more than the
+plan's rate: `expected_cost` gives the cost from new, and from units of
+other ages (`state`) the cost of a staggered start.
+
 With limited `repair_crews` a component can wait for a crew, and the exact
 long-run values the search uses no longer hold, so the choice is refused.
 `assume_unlimited_crews=True` (#184) chooses the intervals as if every repair
@@ -991,13 +1009,28 @@ with models in hours, is `math.log(1.07) / 8760`.
 import math
 seven = math.log(1.07) / 8760
 line.total_cost(87600.0, discount_rate=seven)   # -> 114538   ten years count as 63,656 hours
+line.total_cost(math.inf, discount_rate=seven)  # -> 212287   owned for ever: 1 / r hours
+line.total_cost([8760.0, 87600.0], discount_rate=seven)   # one total for each horizon
+```
+
+A rate per year given with the models in hours (`0.07`) discounts every cost
+after the first few hours away: a warning says so, and how to convert it
+(#231).
+
+`total_cost` spends the long-run cost rate from the start. The exact present
+value from new discounts each cost when it falls, which matters most in the
+early years, where the two differ: `expected_cost` takes a `discount_rate`
+too (#231), and is then a present value, `acquisition_cost` (paid at the
+start) beside it:
+
+```python
+line.expected_cost(87600.0, discount_rate=seven).total   # -> 114528   from new
 ```
 
 Discounting favours what is cheaper to buy and dearer to run, as the running
 costs it saves come later: it can change which design wins (see the
 [fourth pump train](#whole-trains) below, which no longer pays at 15% a
-year). `expected_cost`, the cost rates and the simulated costs stay
-undiscounted.
+year). The cost rates and the simulated costs stay undiscounted.
 
 ### Buying redundancy
 

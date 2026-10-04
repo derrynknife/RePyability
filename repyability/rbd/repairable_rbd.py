@@ -159,7 +159,9 @@ if TYPE_CHECKING:
 from repyability.rbd.routes import AnalysisRoute
 from repyability.utils.checks import structure_method
 from repyability.utils.deprecation import renamed
-from repyability.utils.wrappers import SIMULATIONS
+from repyability.utils.wrappers import SIMULATIONS, outside_level
+
+from ._mean_lifetime import _G7_W, _GK_W, _GK_X
 
 
 class _StreamedRBD:
@@ -1177,7 +1179,7 @@ class _ModuleRun:
         }
         record = ConditionalRun(tuple(self.modules), len(self.given), square)
         control, cost_control = self.controls()
-        cost_result = None
+        cost_result = _acquisition_only(rbd, n, T, self.antithetic)
         if self.priced:
             by_category, by_component = self.breakdown()
             cost_result = CostResult(
@@ -1265,6 +1267,57 @@ def _exact_controls(
             costs, costs, exact_cost, antithetic, itself=True
         )
     return control, cost_control
+
+
+def _chunk_means(control_variate, conditional) -> Dict[str, Optional[bool]]:
+    """A chunk's (or a merge's) ``control_variate`` and ``conditional``,
+    checked (#236): None, the means ``availability`` takes by default, or
+    False, the simulations' own; a chunk holds the system's simulations
+    alone, not a twin's or its modules' alone, which True would take."""
+    out: Dict[str, Optional[bool]] = {}
+    for name, value, alone in (
+        ("control_variate", control_variate, "its exact twin's"),
+        ("conditional", conditional, "its modules' alone"),
+    ):
+        if isinstance(value, (bool, np.bool_)) and not value:
+            value = False
+        elif value is not None:
+            raise ValueError(
+                f"{name} must be None or False for chunks, got {value!r}: a "
+                f"chunk holds the system's simulations, not {alone}, which "
+                f"{name}=True simulates. Run the whole run with "
+                "availability() for that."
+            )
+        out[name] = value
+    return out
+
+
+def _acquisition_only(
+    rbd: "RepairableRBD", N: int, t_simulation: float, antithetic: bool
+) -> Optional[CostResult]:
+    """The cost result of ``N`` simulations of ``rbd`` when nothing but its
+    ``acquisition_cost`` is priced (#234): no running cost, exactly (its
+    mean interval ``"exact"``), with the acquisition beside it; None when
+    nothing at all is."""
+    if not rbd.acquisition_cost:
+        return None
+    zeros = np.zeros(N)
+    return CostResult(
+        samples=zeros,
+        t_simulation=t_simulation,
+        n_simulations=N,
+        acquisition_cost=rbd.acquisition_cost,
+        by_category={category: 0.0 for category in _CATEGORIES},
+        by_component={},
+        antithetic=antithetic,
+        control_variate=ControlVariate(
+            twin=zeros,
+            exact=0.0,
+            coefficient=0.0,
+            correlation=0.0,
+            itself=True,
+        ),
+    )
 
 
 def _shard_bytes(template: dict, start: int, stop: int) -> bytes:
@@ -3354,11 +3407,9 @@ def _horizon(horizon) -> float:
     return value
 
 
-def _present_horizon(horizon: float, discount_rate) -> float:
-    """What a unit cost rate over ``[0, horizon)`` is worth at the start,
-    discounted continuously at ``discount_rate`` per unit time (#184):
-    ``(1 - exp(-r * horizon)) / r``, the ``horizon`` itself undiscounted;
-    a ValueError for a rate that is not a finite, non-negative number."""
+def _discount_rate(discount_rate) -> float:
+    """``discount_rate`` as a float: a ValueError unless it is a finite,
+    non-negative number (#184)."""
     number = isinstance(
         discount_rate, (int, float, np.integer, np.floating)
     ) and not isinstance(discount_rate, bool)
@@ -3369,9 +3420,92 @@ def _present_horizon(horizon: float, discount_rate) -> float:
             "continuous rate per unit time of the component models), got "
             f"{discount_rate!r}."
         )
+    return rate
+
+
+def _horizons(horizon, rate: float) -> np.ndarray:
+    """``horizon``, a number or an array of them, as an array of
+    non-negative floats: finite, unless costs are discounted at ``rate``
+    (#231), where an endless horizon is worth ``1 / rate`` of a steady
+    cost rate. Else a ValueError."""
+    try:
+        values = np.asarray(horizon, dtype=float)
+    except (TypeError, ValueError):
+        values = np.array(np.nan)
+    if values.size and np.all(values >= 0.0) and np.all(values < np.inf):
+        return values
+    if values.size and np.all(values >= 0.0):
+        if rate > 0.0:
+            return values
+        raise ValueError(
+            "horizon must be finite without a discount_rate: an undiscounted "
+            f"cost over an endless horizon is endless; got {horizon!r}."
+        )
+    raise ValueError(
+        "horizon must be a finite, non-negative number (or an array of "
+        f"them; inf with a discount_rate), got {horizon!r}."
+    )
+
+
+#: A discount rate times the shortest of the components' mean lives
+#: beyond which their failures' costs are discounted to almost nothing
+#: (``exp(-20)``, 2e-9), and times a horizon beyond which the whole time
+#: scale is: a rate given per year with the models in hours, say (#231).
+#: A long horizon is no mistake in itself.
+_DISCOUNTED_AWAY = 20.0
+_HORIZON_AWAY = 1000.0
+
+
+def _present_horizon(
+    horizons: np.ndarray,
+    rate: float,
+    lives: Callable[[], List[float]] = list,
+) -> np.ndarray:
+    """What a unit cost rate over ``[0, horizon)`` is worth at the start,
+    discounted continuously at ``rate`` per unit time (#184): ``(1 -
+    exp(-rate * horizon)) / rate``, the horizon itself undiscounted, and
+    ``1 / rate`` for an endless one; for each of ``horizons``. Warns where
+    the rate discounts the costs away (#231): times the shortest of the
+    components' mean ``lives`` more than ``_DISCOUNTED_AWAY``, or times a
+    horizon more than ``_HORIZON_AWAY``."""
     if rate == 0.0:
-        return horizon
-    return -math.expm1(-rate * horizon) / rate
+        return horizons
+    known = [life for life in lives() if 0.0 < life < math.inf]
+    finite = horizons[np.isfinite(horizons)]
+    span, what = 0.0, ""
+    if known and rate * min(known) > _DISCOUNTED_AWAY:
+        span, what = min(known), "the components' shortest mean life"
+    elif finite.size and rate * float(finite.max()) > _HORIZON_AWAY:
+        span, what = float(finite.max()), "the horizon"
+    if what:
+        warnings.warn(
+            f"discount_rate {rate:g} discounts the costs at {what} "
+            f"({span:g}) by a factor of exp(-{rate * span:.3g}), to "
+            "almost nothing: it is a continuous rate per unit time of the "
+            "component models. For an annual rate i with models in hours, "
+            "give math.log(1 + i) / 8760 (7% a year: "
+            f"{math.log(1.07) / 8760:.3g} an hour).",
+            stacklevel=outside_level(),
+        )
+    return -np.expm1(-rate * horizons) / rate
+
+
+#: How closely a discounted expected cost from new is worked out (#231):
+#: its integral by parts, to this share of itself.
+_DISCOUNT_TOLERANCE = 1e-8
+#: The most rounds of halving its pieces: a jump of the expected cost (a
+#: scheduled event's) is closed in on by a half each round.
+_DISCOUNT_ROUNDS = 60
+
+
+def _discount_pieces(ends: np.ndarray, horizon: float):
+    """The first pieces of a discounted cost's integral (see
+    ``RepairableRBD._discounted_cost``): from 0 to ``horizon`` in 32,
+    and split at each window's end, as ``(starts, stops)``."""
+    edges = np.unique(
+        np.concatenate(([0.0], ends, np.linspace(0.0, horizon, 33)))
+    )
+    return edges[:-1], edges[1:]
 
 
 def _objective(cost: float, availability: float, max_cost_rate) -> float:
@@ -6559,9 +6693,10 @@ class RepairableRBD(RBD):
         ``"acquisition_cost"`` (a one-off cost, see ``total_cost``). When
         nothing is priced there is no cost model to evaluate, so the cost
         methods short-circuit rather than doing the work:
-        ``expected_cost_rate`` returns 0.0, ``cost`` returns None, and
-        ``availability`` skips the cost accounting (its result's ``cost`` is
-        None).
+        ``expected_cost_rate`` returns 0.0, and ``cost`` and the ``cost`` of
+        ``availability``'s result have no running cost, exactly, with the
+        acquisition cost beside it (#234), or are None if that is not
+        given either.
 
         Returns
         -------
@@ -7175,12 +7310,12 @@ class RepairableRBD(RBD):
 
     def total_cost(
         self,
-        horizon: float,
+        horizon,
         working_nodes: Optional[Collection[Hashable]] = None,
         broken_nodes: Optional[Collection[Hashable]] = None,
         *,
         discount_rate: float = 0.0,
-    ) -> float:
+    ) -> Union[float, np.ndarray]:
         """Returns the total cost of owning the system for ``horizon``.
 
         The life-cycle cost: buying the components, then running the system
@@ -7204,9 +7339,11 @@ class RepairableRBD(RBD):
 
         Parameters
         ----------
-        horizon : float
+        horizon : float or array-like
             How long the system is owned, in the time unit of the component
-            models: finite and non-negative.
+            models: non-negative, and finite unless the costs are discounted
+            (``inf``, owned for ever, #231). An array of horizons gives a
+            total for each.
         working_nodes : Collection[Hashable], optional
             As for ``expected_cost_rate``, by default None.
         broken_nodes : Collection[Hashable], optional
@@ -7214,19 +7351,21 @@ class RepairableRBD(RBD):
         discount_rate : float, optional
             The continuous discount rate per unit time of the component
             models, by default 0 (undiscounted): for an annual rate of 7%
-            with models in hours, ``math.log(1.07) / 8760``.
+            with models in hours, ``math.log(1.07) / 8760``. A rate that
+            discounts the costs away (one per year with models in hours,
+            say) is warned of (#231).
 
         Returns
         -------
-        float
-            The total cost over the horizon.
+        float or numpy.ndarray
+            The total cost over the horizon, or over each.
 
         Raises
         ------
         ValueError
-            If ``horizon`` is not finite and non-negative, ``discount_rate``
-            is not a finite, non-negative number, or as for
-            ``expected_cost_rate``.
+            If ``horizon`` is negative, or infinite without a
+            ``discount_rate``; if ``discount_rate`` is not a finite,
+            non-negative number; or as for ``expected_cost_rate``.
         NotImplementedError
             As for ``expected_cost_rate``.
 
@@ -7263,10 +7402,23 @@ class RepairableRBD(RBD):
         >>> round(rbd.total_cost(87600.0, discount_rate=r))
         114538
         """
-        present = _present_horizon(_horizon(horizon), discount_rate)
-        return self.acquisition_cost + present * self.expected_cost_rate(
+        rate = _discount_rate(discount_rate)
+        present = _present_horizon(
+            _horizons(horizon, rate), rate, self._mean_lives
+        )
+        total = self.acquisition_cost + present * self.expected_cost_rate(
             working_nodes, broken_nodes
         )
+        return float(total) if np.ndim(total) == 0 else total
+
+    def _mean_lives(self) -> List[float]:
+        """The components' mean lives (their failure-time scales), against
+        which an endless horizon's discount rate is judged (#231)."""
+        return [
+            failure_time_scale(component.reliability)
+            for component in self.components.values()
+            if isinstance(component, NonRepairable)
+        ]
 
     def _spares_nodes(self, nodes) -> list:
         """The components whose spares are counted: ``nodes`` checked, or
@@ -8122,9 +8274,17 @@ class RepairableRBD(RBD):
         >>> best.units, round(best.total_cost)
         ({'train 1': 2}, 295306)
         """
-        horizon = _horizon(horizon)
+        rate = _discount_rate(discount_rate)
+        if np.ndim(horizon) != 0:
+            raise ValueError(
+                f"horizon must be a number for allocate_redundancy, got "
+                f"{horizon!r}."
+            )
+        horizon = float(_horizons(horizon, rate))
         # The running costs count over the horizon's present value.
-        present = _present_horizon(horizon, discount_rate)
+        present = float(
+            _present_horizon(np.array(horizon), rate, self._mean_lives)
+        )
         if method not in ("exact", "greedy"):
             raise ValueError(
                 f"method must be 'exact' or 'greedy', got {method!r}."
@@ -9294,6 +9454,7 @@ class RepairableRBD(RBD):
         self,
         nodes: Optional[Collection[Hashable]] = None,
         *,
+        allowed=None,
         min_availability: Optional[float] = None,
         max_cost_rate: Optional[float] = None,
         assume_unlimited_crews: bool = False,
@@ -9325,6 +9486,20 @@ class RepairableRBD(RBD):
         usually flat near its minimum, so intervals some way from the ones
         found cost almost the same.
 
+        Replacements are often made on a calendar (quarterly, yearly): the
+        intervals are then chosen from ``allowed`` (#230), as
+        ``optimal_inspection_intervals`` chooses tests', every combination
+        tried when there are at most 2000 of them, which gives the
+        optimum, and a local search (one interval changed at a time, from
+        several starting points) made otherwise.
+
+        The plan is the best for the long run. A plant starts with every
+        unit new, so the units' first replacements fall due together, and
+        where they take the system down together (redundant units whose
+        replacements take time) its first years cost more than the plan's
+        cost rate says: ``expected_cost`` gives the cost from new, and from
+        units of other ages (``state``) a staggered start (#234).
+
         With limited ``repair_crews`` a component can wait for a crew, and
         the exact long-run values do not hold: the choice is refused unless
         ``assume_unlimited_crews`` (#184), which chooses the intervals as if
@@ -9339,6 +9514,11 @@ class RepairableRBD(RBD):
             "age"``; its interval is one of the starting points). By default
             every component under age replacement. The others keep their
             schedules.
+        allowed : sequence of float or dict, optional
+            The intervals to choose from: one sequence for every node, or a
+            dict of a sequence per node; ``inf`` among them is never
+            replacing the component. By default None: each interval is
+            searched continuously.
         min_availability : float, optional
             The least long-run system availability allowed, in (0, 1).
         max_cost_rate : float, optional
@@ -9360,8 +9540,9 @@ class RepairableRBD(RBD):
         ValueError
             If a node is not a component under age replacement; if nothing
             is priced; if both targets are given, or one is out of range;
-            or if no intervals meet the target (the message gives the best
-            they can do).
+            if ``allowed`` gives a node no intervals, or one that is not a
+            positive number; or if no intervals meet the target (the
+            message gives the best they can do).
         NotImplementedError
             If the long-run values are not known exactly (see
             ``expected_cost_rate``), or a component can wait for a repair
@@ -9410,9 +9591,44 @@ class RepairableRBD(RBD):
                 self._require_interval_crews()
             return self._unlimited_crews().optimal_replacement_intervals(
                 chosen,
+                allowed=allowed,
                 min_availability=min_availability,
                 max_cost_rate=max_cost_rate,
             )
+
+        def evaluate(intervals: dict) -> Tuple[float, float]:
+            plan = self._with_intervals(preventive=intervals)
+            return plan.expected_cost_rate(), plan.mean_availability()
+
+        if allowed is not None:
+            best = _choose_from(
+                chosen,
+                self._allowed_intervals(allowed, chosen, never=True),
+                evaluate,
+                min_availability,
+                max_cost_rate,
+            )
+        else:
+            best = self._searched_replacements(
+                chosen, evaluate, min_availability, max_cost_rate
+            )
+        cost, availability = evaluate(best)
+        return MaintenancePlan(
+            {node: float(best[node]) for node in chosen}, cost, availability
+        )
+
+    def _searched_replacements(
+        self,
+        chosen: list,
+        evaluate: Callable[[dict], Tuple[float, float]],
+        min_availability: Optional[float],
+        max_cost_rate: Optional[float],
+    ) -> dict:
+        """The age-replacement intervals of ``chosen`` that
+        ``optimal_replacement_intervals`` gives without ``allowed``: by a
+        gradient search over their logarithms, each from a thousandth to a
+        thousand times its component's mean life, one at the top of its
+        range compared with never replacing it."""
         scale = {}
         for node in chosen:
             life = failure_time_scale(self.components[node].reliability)
@@ -9429,11 +9645,6 @@ class RepairableRBD(RBD):
             np.array([math.log(0.3 * scale[n]) for n in chosen]),
             high.copy(),
         ]
-
-        def evaluate(intervals: dict) -> Tuple[float, float]:
-            plan = self._with_intervals(preventive=intervals)
-            return plan.expected_cost_rate(), plan.mean_availability()
-
         best = _choose_intervals(
             chosen,
             evaluate,
@@ -9455,10 +9666,7 @@ class RepairableRBD(RBD):
                     *evaluate(best), max_cost_rate
                 ):
                     best = never
-        cost, availability = evaluate(best)
-        return MaintenancePlan(
-            {node: float(best[node]) for node in chosen}, cost, availability
-        )
+        return best
 
     def optimal_inspection_intervals(
         self,
@@ -10008,8 +10216,9 @@ class RepairableRBD(RBD):
             )
 
     @staticmethod
-    def _allowed_intervals(allowed, chosen: list) -> dict:
-        """``allowed`` as a sorted tuple of intervals per chosen node."""
+    def _allowed_intervals(allowed, chosen: list, never: bool = False) -> dict:
+        """``allowed`` as a sorted tuple of intervals per chosen node; with
+        ``never``, ``inf`` among them (never replacing a component)."""
         per_node = (
             allowed
             if isinstance(allowed, dict)
@@ -10028,10 +10237,17 @@ class RepairableRBD(RBD):
                     interval = float(value)
                 except (TypeError, ValueError):
                     interval = float("nan")
-                if not 0.0 < interval < math.inf:
+                if not (
+                    0.0 < interval < math.inf or (never and interval > 0.0)
+                ):
+                    kind = (
+                        "positive numbers (inf for never)"
+                        if never
+                        else "positive, finite numbers"
+                    )
                     raise ValueError(
-                        "allowed intervals must be positive, finite "
-                        f"numbers, got {value!r} for node {node!r}."
+                        f"allowed intervals must be {kind}, got {value!r} "
+                        f"for node {node!r}."
                     )
                 values.append(interval)
             if not values:
@@ -11049,20 +11265,39 @@ class RepairableRBD(RBD):
                 out[name] = dataclasses.replace(
                     out[name], reason=out[name].reason + exact_means, twin=twin
                 )
-        out["compare"] = (
-            r.refused(groups)
-            if groups
-            else (
-                r.AnalysisRoute(
-                    r.SIMULATED,
-                    "The two systems simulated with common random numbers.",
-                    engine=engine,
-                    engine_reason=why,
-                )
-                if streamed
-                else r.refused(_UNSTREAMED)
-            )
+        # The difference of exact expected values needs no simulation
+        # (#236): where _exact_means works them out.
+        needed = [out["mission_availability"]] + (
+            [out["expected_cost"]] if self.has_costs else []
         )
+        # A diagram too meshed to work out has no exact expected values,
+        # so compare simulates it.
+        if self._too_meshed() is None and all(
+            route.route in (r.EXACT, r.NUMERICAL) for route in needed
+        ):
+            out["compare"] = r.AnalysisRoute(
+                (
+                    r.NUMERICAL
+                    if any(route.route == r.NUMERICAL for route in needed)
+                    else r.EXACT
+                ),
+                "The difference of the two systems' expected values over "
+                "the window (mission_availability, and expected_cost their "
+                "costs), where the other's are worked out too (#236); "
+                "otherwise, or with control_variate=False, the two systems "
+                "simulated with common random numbers.",
+            )
+        elif groups:
+            out["compare"] = r.refused(groups)
+        elif streamed:
+            out["compare"] = r.AnalysisRoute(
+                r.SIMULATED,
+                "The two systems simulated with common random numbers.",
+                engine=engine,
+                engine_reason=why,
+            )
+        else:
+            out["compare"] = r.refused(_UNSTREAMED)
         give(
             ("initialize_event_queue", "next_event"),
             (
@@ -12273,6 +12508,8 @@ class RepairableRBD(RBD):
         broken_nodes: Optional[Collection[Hashable]] = None,
         method: str = "p",
         state=None,
+        *,
+        discount_rate: float = 0.0,
     ) -> ExpectedCost:
         """The expected cost of running the system for ``t``, from new:
         exact, with no simulation.
@@ -12296,6 +12533,17 @@ class RepairableRBD(RBD):
         a nested ``RepairableRBD``. With nothing priced (see
         ``has_costs``), every category is 0, without any checks.
 
+        With a ``discount_rate`` ``r`` each value is its present value
+        (#231), the costs discounted continuously from when they fall:
+        ``integral from 0 to t of exp(-r s) dC(s)``, ``C`` the expected
+        cost from new, worked out by parts, ``exp(-r t) C(t) + r *
+        integral from 0 to t of exp(-r s) C(s) ds``, the integral by
+        Gauss-Kronrod quadrature on pieces halved until the total is
+        within 1e-8 of itself. It is the exact form of ``total_cost``'s
+        discounted value, which spends the long-run rate from the start:
+        the early years, which count most, are those that differ from it.
+        The acquisition cost, at the start, is not discounted.
+
         Parameters
         ----------
         t : float or array-like
@@ -12318,12 +12566,16 @@ class RepairableRBD(RBD):
             dict for a nested RBD, or ``"stationary"`` for every component
             in its long-run state. A component left out starts new. By
             default None: every component new at 0.
+        discount_rate : float, optional
+            The continuous discount rate per unit time of the component
+            models, as for ``total_cost``, by default 0 (undiscounted).
 
         Returns
         -------
         ExpectedCost
             The expected cost of each window, by category and component,
-            with the acquisition cost beside it.
+            with the acquisition cost beside it: present values with a
+            ``discount_rate``.
 
         Raises
         ------
@@ -12355,7 +12607,24 @@ class RepairableRBD(RBD):
         (13000, 33000)
         >>> round(rbd.total_cost(8760.0))  # at the long-run rate
         33010
+
+        Owned for ten years at 7% a year, from new and at the long-run rate:
+
+        >>> import math
+        >>> r = math.log(1.07) / 8760  # per hour
+        >>> round(rbd.expected_cost(87600.0, discount_rate=r).total)
+        114528
+        >>> round(rbd.total_cost(87600.0, discount_rate=r))
+        114538
         """
+        rate = _discount_rate(discount_rate)
+        if rate > 0.0 and self.has_costs:
+            _present_horizon(
+                _horizons(t, 0.0), rate, self._mean_lives
+            )  # warns of a rate that discounts the costs away
+            return self._discounted_cost(
+                t, rate, working_nodes, broken_nodes, method, state
+            )
         if not self.has_costs:
             windows = _check_times(t)
             zero = _shaped(np.zeros(windows.size), t, windows)
@@ -12447,6 +12716,94 @@ class RepairableRBD(RBD):
             },
             by_component=by_component,
             acquisition_cost=self.acquisition_cost,
+        )
+
+    def _discounted_cost(
+        self, t, rate: float, working_nodes, broken_nodes, method: str, state
+    ) -> ExpectedCost:
+        """``expected_cost`` at ``t`` discounted at ``rate`` (#231): each
+        window's ``exp(-r T) C(T) + r * integral_0^T exp(-r s) C(s) ds``,
+        ``C`` the expected cost from new, the integral by the Gauss-Kronrod
+        (7, 15) rule on pieces from 0, with the windows among their ends.
+        The pieces whose two rules differ most are halved until the
+        differences add up to ``_DISCOUNT_TOLERANCE`` of the integral:
+        ``C`` jumps at scheduled events (tests, block replacements), where
+        a piece's error only halves with it."""
+        windows = _check_times(t)
+        ends = windows.ravel()
+        horizon = float(ends.max()) if ends.size else 0.0
+        keys: list = []
+
+        def values(times: np.ndarray) -> np.ndarray:
+            """``C`` at ``times``: its mean, each category's and each
+            component's, as rows. The longest window is worked out too, so
+            that every call's curves reach it, and are shared."""
+            got = self.expected_cost(
+                np.append(times, horizon),
+                working_nodes,
+                broken_nodes,
+                method,
+                state,
+            )
+            if not keys:
+                keys.extend(got.by_component)
+            rows = [got.mean]
+            rows += [got.by_category[category] for category in _CATEGORIES]
+            rows += [got.by_component[node] for node in keys]
+            return np.vstack([np.ravel(row)[:-1] for row in rows])
+
+        def rules(a: np.ndarray, b: np.ndarray):
+            """The pieces' integrals of ``exp(-r s) C(s)`` by the Kronrod
+            rule, as rows, and the mean's error, against the Gauss rule."""
+            half = 0.5 * (b - a)
+            x = (0.5 * (a + b))[:, None] + half[:, None] * _GK_X
+            g = np.exp(-rate * x) * values(x.ravel()).reshape(-1, *x.shape)
+            kronrod = (g @ _GK_W) * half
+            return kronrod, np.abs(kronrod[0] - (g[0] @ _G7_W) * half)
+
+        with self._sharing_curves():
+            at_ends = values(ends)
+            a, b = _discount_pieces(ends, horizon)
+            pieces, error = rules(a, b)
+            for _ in range(_DISCOUNT_ROUNDS):
+                budget = _DISCOUNT_TOLERANCE * abs(float(pieces[0].sum()))
+                if error.sum() <= budget:
+                    break
+                # Halve the pieces over their share of the error allowed.
+                split = error > budget / error.size
+                middle = 0.5 * (a + b)[split]
+                halves, errors = rules(
+                    np.concatenate([a[split], middle]),
+                    np.concatenate([middle, b[split]]),
+                )
+                a = np.concatenate([a[~split], a[split], middle])
+                b = np.concatenate([b[~split], middle, b[split]])
+                pieces = np.concatenate([pieces[:, ~split], halves], axis=1)
+                error = np.concatenate([error[~split], errors])
+        order = np.argsort(b, kind="stable")
+        running = np.concatenate(
+            [np.zeros((len(at_ends), 1)), np.cumsum(pieces[:, order], axis=1)],
+            axis=1,
+        )
+        # Every window is a piece's end: the pieces up to it are within it.
+        upto = np.searchsorted(b[order], ends, side="right")
+        present = np.exp(-rate * ends) * at_ends + rate * running[:, upto]
+        rows = iter(present)
+        mean = next(rows)
+        categories = {category: next(rows) for category in _CATEGORIES}
+        components = {node: next(rows) for node in keys}
+        return ExpectedCost(
+            window=_shaped(ends, t, windows),
+            mean=_shaped(mean, t, windows),
+            by_category={
+                category: _shaped(v, t, windows)
+                for category, v in categories.items()
+            },
+            by_component={
+                node: _shaped(v, t, windows) for node, v in components.items()
+            },
+            acquisition_cost=self.acquisition_cost,
+            discount_rate=rate,
         )
 
     def _filled(
@@ -15983,6 +16340,8 @@ class RepairableRBD(RBD):
         verbose: bool = False,
         state=None,
         curve_points: Optional[int] = None,
+        control_variate: Optional[bool] = None,
+        conditional: Optional[bool] = None,
     ) -> "SimulationChunk":
         """Run simulations ``start`` to ``stop - 1`` of the run
         ``availability(t_simulation, mc_samples=N, seed=seed, ...)`` makes,
@@ -16041,6 +16400,18 @@ class RepairableRBD(RBD):
             Count the curve on a grid, as for ``availability`` (the chunks
             of a run share it): the chunk then holds the grid's counts
             rather than every change. By default None: every change.
+        control_variate : bool, optional
+            None (the default) or False, as for ``availability`` (#236):
+            the means the merged result takes, kept with the chunk (the
+            chunks of a run share it). The simulations are the same either
+            way; False gives the merged result the simulations' own means.
+            True, which simulates a twin alongside the system, is not taken
+            by a chunk.
+        conditional : bool, optional
+            None (the default) or False, as for ``availability``, kept with
+            the chunk likewise: False leaves the merged result's means the
+            simulations' own where no exact ones are taken. True, which
+            simulates the modules alone, is not taken by a chunk.
 
         Returns
         -------
@@ -16099,11 +16470,12 @@ class RepairableRBD(RBD):
                 "With antithetic pairs, start and stop must be even, so that "
                 "the chunk holds whole pairs."
             )
+        means = _chunk_means(control_variate, conditional)
         working = set() if working_nodes is None else set(working_nodes)
         broken = set() if broken_nodes is None else set(broken_nodes)
         self._validate_node_overrides(working, broken)
         states = self._simulation_states(state, working | broken)
-        return self._chunk(
+        chunk = self._chunk(
             t_simulation,
             int(start),
             int(stop),
@@ -16119,6 +16491,12 @@ class RepairableRBD(RBD):
             states,
             _curve_points(curve_points),
         )
+        # Kept only where they differ from availability's defaults, so that
+        # a chunk is saved as it was before them.
+        chunk.settings.update(
+            {name: value for name, value in means.items() if value is False}
+        )
+        return chunk
 
     def _chunk(
         self,
@@ -16410,6 +16788,8 @@ class RepairableRBD(RBD):
         mc_samples: Optional[int] = None,
         *,
         allow_gaps: bool = False,
+        control_variate: Optional[bool] = None,
+        conditional: Optional[bool] = None,
     ) -> AvailabilityResult:
         """The result of the simulations of ``chunks`` (see
         ``simulate_chunk``, and the partials ``run_shard`` gives back from
@@ -16443,6 +16823,17 @@ class RepairableRBD(RBD):
         allow_gaps : bool, optional
             Take chunks with simulations missing between or before them,
             for the result of those they hold. By default False.
+        control_variate : bool, optional
+            None (the default): the means ``availability`` takes by
+            default, exact where the exact methods work them out (#187).
+            False: the simulations' own, as ``availability(...,
+            control_variate=False)`` gives them (#236). Chunks made with
+            False keep it.
+        conditional : bool, optional
+            None (the default) or False, as for ``availability``: False
+            leaves the means the simulations' own where no exact ones are
+            taken, rather than those given the modules' histories. Chunks
+            made with False keep it.
 
         Returns
         -------
@@ -16493,6 +16884,10 @@ class RepairableRBD(RBD):
                 "the simulations held."
             )
         settings = chunk.settings
+        means = _chunk_means(control_variate, conditional)
+        for name in ("control_variate", "conditional"):
+            if settings.get(name) is False:
+                means[name] = False
         fingerprint = self._fingerprint()
         if (
             settings["fingerprint"] is not None
@@ -16525,6 +16920,7 @@ class RepairableRBD(RBD):
             bool(settings["antithetic"]),
             _states_from_key(self, settings.get("state")),
             chunk.ranges,
+            **means,
         )
         return self._availability_result(
             chunk._tally,
@@ -16548,6 +16944,8 @@ class RepairableRBD(RBD):
         antithetic: bool,
         state,
         ranges: List[Tuple[int, int]],
+        control_variate: Optional[bool] = None,
+        conditional: Optional[bool] = None,
     ) -> Tuple[
         Tuple[Optional[ControlVariate], ...],
         Optional[ConditionalRun],
@@ -16560,8 +16958,12 @@ class RepairableRBD(RBD):
         ``_exact_controls``), or given the histories of its modules,
         simulated again from the run's ``entropy`` (#189, see
         ``_conditioned_run``), with the expected cost's split found so;
-        else none."""
+        else none. ``control_variate=False`` takes neither, and
+        ``conditional=False`` not the second (#236), as ``availability``
+        does."""
         T = t_simulation
+        if control_variate is False:
+            return (None, None), None, None
         exact_means = self._exact_means(T, working, broken, method, state)
         if exact_means is not None:
             return (
@@ -16569,6 +16971,8 @@ class RepairableRBD(RBD):
                 None,
                 exact_means.breakdown,
             )
+        if conditional is False:
+            return (None, None), None, None
         modules = self._conditional_applies(working, broken, state)
         if not modules:
             return (None, None), None, None
@@ -16617,9 +17021,18 @@ class RepairableRBD(RBD):
         n_jobs: Optional[int] = None,
         engine: str = "auto",
         state=None,
+        control_variate: Optional[bool] = None,
     ) -> ConfidenceInterval:
-        """How much better (or worse) this system is than ``other``, by
-        simulation with common random numbers.
+        """How much better (or worse) this system is than ``other``: exactly
+        where the exact methods work out both systems' expected values, and
+        otherwise by simulation with common random numbers.
+
+        By default, as ``availability`` and ``cost`` take their means (#187,
+        #236), where the exact methods work out both systems' expected
+        values over the window (``mission_availability``, and
+        ``expected_cost`` their costs), the difference is theirs, exact,
+        with no error (``method="exact"``), and nothing is simulated.
+        ``control_variate=False`` simulates it whatever.
 
         Both systems are simulated ``mc_samples`` times over
         ``[0, t_simulation]`` (every component working and new at the start,
@@ -16648,9 +17061,11 @@ class RepairableRBD(RBD):
             drawn from numpy's global RNG (see ``availability``).
         quantity : str, optional
             ``"availability"`` (the default): the fraction of the window the
-            system is up. ``"cost"``: its total cost over the window (both
-            systems must be priced; a cost given as a distribution draws
-            the same numbers in both too, from a stream of its own).
+            system is up. ``"cost"``: what owning it for the window from new
+            costs, its running cost and its components' ``acquisition_cost``
+            (#234), as ``total_cost`` counts them (both systems must be
+            priced; a cost given as a distribution draws the same numbers in
+            both too, from a stream of its own).
         confidence : float, optional
             The confidence level of the interval, by default 0.95.
         n_jobs : int, optional
@@ -16663,13 +17078,20 @@ class RepairableRBD(RBD):
             The components' states at the start, as for ``availability``,
             in both systems: each must have the components it names. By
             default None: new.
+        control_variate : bool, optional
+            By default None: the exact difference where the exact methods
+            work out both systems' expected values. False: the simulated
+            difference, whatever. (True, which controls ``availability``'s
+            run by a twin, is not taken: the common random numbers are the
+            comparison's own.)
 
         Returns
         -------
         ConfidenceInterval
-            The mean difference (this system's quantity minus ``other``'s)
-            over the simulations, with its standard error and a normal
-            confidence interval (not clipped: the difference may be
+            The expected difference (this system's quantity minus
+            ``other``'s): exact (``method="exact"``), or the mean over the
+            simulations (``"simulated"``), with its standard error and a
+            normal confidence interval (not clipped: the difference may be
             negative).
 
         Raises
@@ -16703,17 +17125,24 @@ class RepairableRBD(RBD):
         ...         [("s", "p1"), ("s", "p2"), ("p1", "t"), ("p2", "t")],
         ...         {"p1": pump, "p2": pump},
         ...     )
-        >>> gain = pumps(1.0).compare(
-        ...     pumps(2.0), 100.0, mc_samples=2000, seed=0
+        >>> gain = pumps(1.0).compare(pumps(2.0), 100.0)
+        >>> round(gain.estimate, 4), gain.method
+        (0.0189, 'exact')
+
+        Each pump is up ``mu / (lambda + mu) + lambda / (lambda + mu) *
+        exp(-(lambda + mu) t)`` of the time at ``t``, which the exact
+        methods average over the window. Simulated with common random
+        numbers:
+
+        >>> simulated = pumps(1.0).compare(
+        ...     pumps(2.0), 100.0, mc_samples=2000, seed=0,
+        ...     control_variate=False,
         ... )
-        >>> round(gain.estimate, 4), round(gain.standard_error, 5)
+        >>> round(simulated.estimate, 4), round(simulated.standard_error, 5)
         (0.0196, 0.00042)
 
-        The exact difference is 0.0189 (each pump is up
-        ``mu / (lambda + mu) + lambda / (lambda + mu) * exp(-(lambda + mu) t)``
-        of the time at ``t``, averaged over the window). Two independent
-        runs of 2000 simulations would estimate it with a standard error of
-        about 0.00058.
+        Two independent runs of 2000 simulations would estimate it with a
+        standard error of about 0.00058.
         """
         N = 10_000 if mc_samples is None else mc_samples
         t_simulation = _check_window(t_simulation)
@@ -16725,12 +17154,34 @@ class RepairableRBD(RBD):
             )
         montecarlo.check_confidence(confidence)
         montecarlo.check_count(N, False, "mc_samples")
+        if control_variate not in (None, False):
+            raise ValueError(
+                "compare takes control_variate=None (the exact difference "
+                "where the exact methods work out both systems' expected "
+                "values) or False (the simulated difference), got "
+                f"{control_variate!r}: its common random numbers are its "
+                "own variance reduction."
+            )
         if quantity == "cost":
             for rbd in (self, other):
-                if not rbd.has_costs:
+                if not (rbd.has_costs or rbd.acquisition_cost):
                     raise ValueError(
                         "Both systems must be priced to compare their costs."
                     )
+        if control_variate is None:
+            exact = self._exact_difference(
+                other, t_simulation, quantity, state
+            )
+            if exact is not None:
+                return ConfidenceInterval(
+                    estimate=exact,
+                    lower=exact,
+                    upper=exact,
+                    confidence=confidence,
+                    standard_error=0.0,
+                    n_samples=0,
+                    method="exact",
+                )
         jobs = None if n_jobs is None else montecarlo.jobs(n_jobs)
         states = [rbd._simulation_states(state) for rbd in (self, other)]
         entropy = _streams.entropy_of(seed)
@@ -16753,7 +17204,12 @@ class RepairableRBD(RBD):
                 states=start,
             )
             if quantity == "cost":
-                values.append(np.asarray(tally.cost_samples, dtype=float))
+                running = (
+                    np.asarray(tally.cost_samples, dtype=float)
+                    if rbd.has_costs
+                    else np.zeros(N)
+                )
+                values.append(running + rbd.acquisition_cost)
             else:
                 values.append(np.asarray(tally.uptimes) / t_simulation)
         differences = values[0] - values[1]
@@ -16767,7 +17223,36 @@ class RepairableRBD(RBD):
             confidence=confidence,
             standard_error=standard_error,
             n_samples=N,
+            method="simulated",
         )
+
+    def _exact_difference(
+        self,
+        other: "RepairableRBD",
+        t_simulation: float,
+        quantity: str,
+        state,
+    ) -> Optional[float]:
+        """``compare``'s difference worked out exactly (#236): this
+        system's expected value of ``quantity`` over the window less
+        ``other``'s, where the exact methods work out both (see
+        ``_exact_means``); else None."""
+        values = []
+        for rbd in (self, other):
+            exacts = rbd._exact_means(t_simulation, set(), set(), "p", state)
+            if exacts is None:
+                return None
+            if quantity == "availability":
+                values.append(exacts.availability)
+                continue
+            if exacts.cost is not None:
+                running = exacts.cost
+            elif rbd.has_costs:
+                return None
+            else:
+                running = 0.0
+            values.append(running + rbd.acquisition_cost)
+        return float(values[0] - values[1])
 
     def _common_widths(
         self,
@@ -18450,7 +18935,7 @@ class RepairableRBD(RBD):
             )
         system_availability = working / N
 
-        cost_result = None
+        cost_result = _acquisition_only(self, N, t_simulation, antithetic)
         if self.has_costs:
             # Per-component means cover each node's repair, replace,
             # preventive and own downtime cost. (System downtime is a
@@ -18590,10 +19075,13 @@ class RepairableRBD(RBD):
         the exact ``expected_cost_rate`` as the window grows, which is the
         cross-check to reach for.
 
-        Returns None when nothing is priced (see ``has_costs``): there is
-        no cost model to evaluate. (The same result is available as
-        ``availability(...).cost`` if you also want the availability outputs
-        from the same simulations.)
+        When nothing is priced but the components' ``acquisition_cost``
+        (see ``has_costs``), the result has no running cost, exactly, and
+        the acquisition beside it, without a simulation (#234); when
+        nothing at all is priced, it is None: there is no cost model to
+        evaluate. (The same result is available as ``availability(...).cost``
+        if you also want the availability outputs from the same
+        simulations.)
 
         Parameters
         ----------
@@ -18681,13 +19169,15 @@ class RepairableRBD(RBD):
         Returns
         -------
         CostResult or None
-            The simulated costs, or None if nothing is priced.
+            The simulated costs, or None if nothing is priced (not even an
+            ``acquisition_cost``).
 
         Raises
         ------
         ValueError
             As for ``availability``, when something is priced. (With nothing
-            priced this returns None without any checks.)
+            priced this returns None without any checks; with only an
+            ``acquisition_cost``, only ``mc_samples`` is checked.)
         NotImplementedError
             As for ``availability``.
         ImportError
@@ -18725,7 +19215,9 @@ class RepairableRBD(RBD):
         t_simulation = _check_window(t_simulation)
 
         if not self.has_costs:
-            return None
+            if self.acquisition_cost:
+                montecarlo.check_count(N, antithetic, "mc_samples")
+            return _acquisition_only(self, N, t_simulation, antithetic)
         return self._simulated(
             t_simulation,
             working_nodes,

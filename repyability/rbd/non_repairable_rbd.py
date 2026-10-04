@@ -5440,15 +5440,27 @@ class NonRepairableRBD(RBD):
             )
         )
         replay = r.refusal(self._require_replayable)
-        out["compare"] = (
-            r.refused(replay)
-            if replay
-            else r.AnalysisRoute(
+        # A diagram too meshed to work out has no exact MTTF, so compare
+        # simulates it (#236).
+        if (
+            out["mean"].route in (r.EXACT, r.NUMERICAL)
+            and self._too_meshed() is None
+        ):
+            out["compare"] = r.AnalysisRoute(
+                out["mean"].route,
+                "The difference of the two systems' MTTFs (see mean), where "
+                "the other's is worked out too (#236); otherwise, or with "
+                "method='simulate', Monte-Carlo lifetimes of both systems, "
+                "with common random numbers.",
+            )
+        elif replay:
+            out["compare"] = r.refused(replay)
+        else:
+            out["compare"] = r.AnalysisRoute(
                 r.SIMULATED,
                 "Monte-Carlo lifetimes of both systems, with common random "
                 "numbers." + independent,
             )
-        )
         means = {n: r.mean_route(m) for n, m in self.reliabilities.items()}
         refusals = {
             n: how for n, (route, how) in means.items() if route == r.REFUSED
@@ -6613,17 +6625,25 @@ class NonRepairableRBD(RBD):
         seed=None,
         *,
         confidence: float = 0.95,
+        method: Optional[str] = None,
     ) -> ConfidenceInterval:
         """How much longer (or shorter) this system's mean time to failure
-        is than ``other``'s, by simulation with common random numbers.
+        is than ``other``'s: exactly where both MTTFs are worked out
+        exactly, and otherwise by simulation with common random numbers.
 
-        Both systems' lifetimes are simulated ``mc_samples`` times, and in
-        each sample a component with the same name in both draws the same
-        random numbers in both: the same lifetime where its model is the
-        same, and a matching one (the same quantile of its own model) where
-        it is not. The differences between the two systems' lifetimes then
-        come from how the systems differ, not from chance, so their mean is
-        a more precise estimate of the difference in MTTF than the
+        By default, where ``mean`` works out both systems' MTTFs (exactly
+        or numerically), the difference is theirs, with no error
+        (``method="exact"`` in the result), and nothing is simulated
+        (#236), as ``mean`` is exact by default. ``method="simulate"``
+        simulates it whatever.
+
+        Simulated, both systems' lifetimes are drawn ``mc_samples`` times,
+        and in each sample a component with the same name in both draws the
+        same random numbers in both: the same lifetime where its model is
+        the same, and a matching one (the same quantile of its own model)
+        where it is not. The differences between the two systems' lifetimes
+        then come from how the systems differ, not from chance, so their
+        mean is a more precise estimate of the difference in MTTF than the
         difference of two independent estimates of the same size (the more
         the systems share, the more precise). The reliabilities themselves
         need no simulation: compare ``sf`` for those.
@@ -6633,18 +6653,26 @@ class NonRepairableRBD(RBD):
         other : NonRepairableRBD
             The system to compare with.
         mc_samples : int, optional
-            The number of lifetimes of each system, by default 100_000.
+            Simulated, the number of lifetimes of each system, by default
+            100_000. An exact difference simulates nothing.
         seed : int, optional
-            Seed for a reproducible comparison, by default None.
+            Simulated, the seed for a reproducible comparison, by default
+            None.
         confidence : float, optional
             The confidence level of the interval, by default 0.95.
+        method : str, optional
+            None (the default): the exact difference where ``mean`` works
+            out both MTTFs, else simulated. ``"exact"``: the exact
+            difference, refused where a ``mean`` is. ``"simulate"``: the
+            simulated difference, whatever.
 
         Returns
         -------
         ConfidenceInterval
-            The mean difference (this system's lifetime minus ``other``'s)
-            over the samples, with its standard error and a normal
-            confidence interval (not clipped: the difference may be
+            The difference in MTTF (this system's minus ``other``'s): exact
+            (``method="exact"``), or the mean difference of the simulated
+            lifetimes (``"simulated"``), with its standard error and a
+            normal confidence interval (not clipped: the difference may be
             negative). Common-cause groups that split a probability are
             left out, as by ``random``; a group splitting the failure rate
             draws each member's own causes from the member's own random
@@ -6653,11 +6681,12 @@ class NonRepairableRBD(RBD):
         Raises
         ------
         ValueError
-            If ``mc_samples`` or ``confidence`` is invalid.
+            If ``mc_samples``, ``confidence`` or ``method`` is invalid.
         NotImplementedError
-            If a node's draws cannot be replayed from uniforms (a node
-            model sampled its own way, whose random numbers the two systems
-            would not share).
+            Simulated, if a node's draws cannot be replayed from uniforms (a
+            node model sampled its own way, whose random numbers the two
+            systems would not share); with ``method="exact"``, as for
+            ``mean``.
 
         Examples
         --------
@@ -6670,16 +6699,45 @@ class NonRepairableRBD(RBD):
         ...     names = [f"u{i}" for i in range(n)]
         ...     edges = [("s", u) for u in names] + [(u, "t") for u in names]
         ...     return NonRepairableRBD(edges, {u: unit for u in names})
-        >>> gain = parallel(3).compare(parallel(2), mc_samples=20_000, seed=0)
+        >>> gain = parallel(3).compare(parallel(2))
+        >>> round(gain.estimate, 2), gain.method
+        (14.46, 'exact')
+
+        The integral of the difference in reliability. Simulated with
+        common random numbers:
+
+        >>> gain = parallel(3).compare(
+        ...     parallel(2), mc_samples=20_000, seed=0, method="simulate"
+        ... )
         >>> round(gain.estimate, 1), round(gain.standard_error, 2)
         (14.8, 0.21)
 
-        The exact difference, the integral of the difference in
-        reliability, is 14.46. Two independent estimates from 20_000
-        lifetimes each would give it with a standard error of about 0.42.
+        Two independent estimates from 20_000 lifetimes each would give it
+        with a standard error of about 0.42.
         """
+        if method not in (None, "exact", "simulate"):
+            raise ValueError(
+                "method must be None (exact where both MTTFs are), 'exact' "
+                f"or 'simulate', got {method!r}."
+            )
         montecarlo.check_count(mc_samples, False, "mc_samples")
         montecarlo.check_confidence(confidence)
+        if method != "simulate":
+            try:
+                exact = float(self._exact_mean() - other._exact_mean())
+            except (NotImplementedError, ValueError):
+                if method == "exact":
+                    raise
+            else:
+                return ConfidenceInterval(
+                    estimate=exact,
+                    lower=exact,
+                    upper=exact,
+                    confidence=confidence,
+                    standard_error=0.0,
+                    n_samples=0,
+                    method="exact",
+                )
         key = int(np.random.SeedSequence(seed).generate_state(1, np.uint64)[0])
         differences = self._keyed_lifetimes(
             mc_samples, key
@@ -6694,6 +6752,7 @@ class NonRepairableRBD(RBD):
             confidence=confidence,
             standard_error=standard_error,
             n_samples=mc_samples,
+            method="simulated",
         )
 
     def _keyed_lifetimes(self, n: int, key: int) -> np.ndarray:

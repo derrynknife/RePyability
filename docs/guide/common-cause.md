@@ -120,7 +120,7 @@ others, so several can strike at once. The two differ at second order in
 `MGL(..., shocks="independent")`:
 
 ```python
-W = surv.Weibull.from_params([1000, 1.5])          # Q = 0.031 at t = 100
+W = surv.Weibull.from_params([1000, 1.5])          # Q = 0.0311 at t = 100
 parallel = [("s", x) for x in "abc"] + [(x, "t") for x in "abc"]
 
 def vote(model):

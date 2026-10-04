@@ -280,7 +280,9 @@ def test_compare_shares_each_members_own_causes():
         {"a": W, "b": W, "c": W, "v": PerfectReliability},
         k={"v": 2},
     )
-    same = grouped.compare(independent, mc_samples=5000, seed=1)
+    same = grouped.compare(
+        independent, mc_samples=5000, seed=1, method="simulate"
+    )
     assert abs(same.estimate) < 1e-9
     # A shared cause shortens a parallel group's life.
     names = ["a", "b", "c"]
@@ -291,7 +293,9 @@ def test_compare_shares_each_members_own_causes():
         {n: W for n in names},
         ccf_groups=[CCFGroup(names, MGL(0.2, 0.5, basis="rate"))],
     )
-    worse = coupled.compare(alone, mc_samples=20_000, seed=1)
+    worse = coupled.compare(
+        alone, mc_samples=20_000, seed=1, method="simulate"
+    )
     exact = coupled.mean() - alone.mean()
     assert exact < 0
     assert abs(worse.estimate - exact) < 4 * worse.standard_error
@@ -306,7 +310,7 @@ def test_a_group_that_cannot_be_drawn_is_refused():
     for call in (
         lambda: rbd.random(10, seed=1),
         lambda: rbd.mean(method="simulate", mc_samples=10),
-        lambda: rbd.compare(rbd, mc_samples=10),
+        lambda: rbd.compare(rbd, mc_samples=10, method="simulate"),
         lambda: rbd.unreliability_interval(10.0),
     ):
         with pytest.raises(NotImplementedError, match="quantile function"):

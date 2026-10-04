@@ -571,6 +571,11 @@ bool((merged.availability == whole.availability).all())   # True
 merged.system_uptime == whole.system_uptime          # True: the totals too
 ```
 
+- **The same means.** Merged chunks take the means `availability` takes by
+  default, exact or given the modules where they apply. For those of
+  `availability(..., control_variate=False)` (or `conditional=False`), give
+  that to `availability_from_chunks`, or to each `simulate_chunk`, which
+  keeps it with the chunk (#236).
 - **The same run.** Chunks of simulations `0` to `N - 1` give the result of
   `availability(..., mc_samples=N)`: the same per-simulation values
   (`uptimes`, the cost `samples`) and timeline, and the same totals, to
@@ -739,27 +744,42 @@ of the exact value in every case.
 
 ## Comparing two designs
 
-Two designs are best compared with **common random numbers**: simulate both
-with the same random numbers, so that the differences between their results
-come from the designs rather than from chance. `a.compare(b, ...)` does that
-component by component: a component with the same name in both draws the
-same random numbers in both. It returns a
-[`ConfidenceInterval`][repyability.ConfidenceInterval] of the mean
-difference, `a`'s result minus `b`'s, which can be negative.
-
-For a `RepairableRBD`, a component gets the same failures and repairs in
-both where it is modelled the same way, and matching ones (the same
-quantiles of its own models) where it is not; components of nested RBDs are
-matched by their place. The difference is in the fraction of the window the
-system is up (`quantity="availability"`, the default) or in its cost
-(`quantity="cost"`):
+`a.compare(b, ...)` gives how much better (or worse) design `a` is than
+`b`, as a [`ConfidenceInterval`][repyability.ConfidenceInterval] of the
+difference, `a`'s result minus `b`'s, which can be negative. Where the exact
+methods work out both designs' expected values (a `NonRepairableRBD`'s mean
+time to failure, a `RepairableRBD`'s mission availability and expected cost)
+it is their difference, exact, with no simulation (#236), as `availability`
+and `cost` take their means:
 
 ```python
 faster = RepairableRBD(
     edges,
     {"A": repairable(0.1, 2.0), "B": repairable(0.1, 2.0), "C": repairable(0.02, 0.5)},
 )
-gain = faster.compare(plant, t_simulation=100.0, mc_samples=2_000, seed=0)
+gain = faster.compare(plant, t_simulation=100.0)
+gain.estimate          # -> 0.00568   of the window more up
+gain.method            # 'exact'
+```
+
+Otherwise, and on request (`control_variate=False` for a `RepairableRBD`,
+`method="simulate"` for a `NonRepairableRBD`), the two designs are
+simulated with **common random numbers**: with the same random numbers, so
+that the differences between their results come from the designs rather
+than from chance. A component with the same name in both draws the same
+random numbers in both.
+
+For a `RepairableRBD`, a component gets the same failures and repairs in
+both where it is modelled the same way, and matching ones (the same
+quantiles of its own models) where it is not; components of nested RBDs are
+matched by their place. The difference is in the fraction of the window the
+system is up (`quantity="availability"`, the default) or in what owning it
+for the window costs (`quantity="cost"`: its running cost and its
+components' `acquisition_cost`, #234):
+
+```python
+gain = faster.compare(plant, t_simulation=100.0, mc_samples=2_000, seed=0,
+                      control_variate=False)
 gain.estimate          # -> 0.0058    the exact difference is 0.00568
 gain.standard_error    # -> 0.00017
 ```
@@ -770,17 +790,18 @@ times the simulations to match. The valve fails and is repaired alike in
 both designs, so its outages, most of the plant's downtime, cancel; the
 pumps have the same up times in both, and only their repairs differ.
 
-For a `NonRepairableRBD`, `compare` estimates the difference in mean time to
-failure:
+For a `NonRepairableRBD`, `compare` gives the difference in mean time to
+failure, exactly by default, and simulated on request:
 
 ```python
-gain = parallel(3).compare(pair, mc_samples=20_000, seed=0)
+parallel(3).compare(pair).estimate     # -> 14.46   the exact difference
+gain = parallel(3).compare(pair, mc_samples=20_000, seed=0, method="simulate")
 gain.estimate          # -> 14.8    a third unit adds about 15 hours
 gain.standard_error    # -> 0.21    two separate estimates: about 0.42
 ```
 
-The exact difference, the integral of the difference in reliability, is
-14.46. The reliabilities themselves need no simulation: compare `sf`.
+The exact difference is the integral of the difference in reliability. The
+reliabilities themselves need no simulation: compare `sf`.
 
 Both kinds need every component's draws to be replayable, as antithetic
 pairs do. A model whose draws do not follow numpy's uniforms (a class of your

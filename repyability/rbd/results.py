@@ -1384,6 +1384,10 @@ class ExpectedCost(_ResultMapping):
         repair, replace, preventive, inspection and own downtime cost).
     acquisition_cost : float
         The one-off cost of buying the components, not in ``mean``.
+    discount_rate : float
+        The continuous rate the costs were discounted at (#231): with one
+        above 0, every value but ``acquisition_cost`` (paid at the start)
+        is a present value. By default 0.
 
     Examples
     --------
@@ -1419,6 +1423,7 @@ class ExpectedCost(_ResultMapping):
     by_category: Dict[str, Any]
     by_component: Dict[Hashable, Any]
     acquisition_cost: float = 0.0
+    discount_rate: float = 0.0
 
     @property
     def total(self) -> Any:
@@ -1436,7 +1441,8 @@ class ExpectedCost(_ResultMapping):
     def cost_rate(self) -> Any:
         """The mean cost per unit time over the window, ``mean / window``
         (nan for a window of 0); it approaches
-        ``RepairableRBD.expected_cost_rate()`` as the window grows.
+        ``RepairableRBD.expected_cost_rate()`` as the window grows (but
+        for a discounted cost, whose rate falls away).
 
         Returns
         -------
