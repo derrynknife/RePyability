@@ -170,7 +170,7 @@ some (see [a life that wears out](costs.md#a-life-that-wears-out) and
 [tests and repairs that take
 time](costs.md#tests-and-repairs-that-take-time)). A test that can last as
 long as its interval raises `NotImplementedError`; simulate it. Each component's curve is
-computed on a grid of 2,000 steps over its typical up time: within one step
+computed on a grid of 1,000 steps over its typical up time: within one step
 of a time at which its units start or stop on a schedule (at 0, and at its
 scheduled replacements), what happens faster than a step, such as a short
 repair, is smoothed over it, so a point value there can be off by up to

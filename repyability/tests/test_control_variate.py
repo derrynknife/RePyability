@@ -380,7 +380,9 @@ def test_minimal_repair_in_no_time_is_kept_by_the_twin():
 def test_the_twin_builds_each_curve_once(monkeypatch):
     # Its exact cost and availability share the components' curves (#185),
     # and give what they give apart.
-    rbd = RepairableRBD(EDGES, {n: unit() for n in "ABC"})
+    rbd = RepairableRBD(
+        EDGES, {n: unit(scale) for n, scale in zip("ABC", (90, 100, 110))}
+    )
     twin, _ = rbd._twin()
     apart = (twin.expected_cost(300.0).mean, twin.mission_availability(300.0))
     built = []

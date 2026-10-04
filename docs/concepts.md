@@ -575,8 +575,8 @@ value, possibly overshooting. A component alternates up periods `U` and down
 periods `D`, as good as new after each: an alternating renewal process, whose
 point availability `A_i(t)` solves the renewal equation. There is a closed
 form only for exponential times; `point_availability` solves the equation
-numerically, on a grid of 2,000 steps over the component's typical up time
-(an error of about `1e-7`). Components that fail and are repaired
+numerically, on a grid of 1,000 steps over the component's typical up time
+(an error of about `4e-7`). Components that fail and are repaired
 independently are up or down independently at every time, so the system's
 `A(t)` is its system probability at the `A_i(t)`, and
 `mission_availability` is its mean over `[0, T]`. For a long mission that

@@ -90,6 +90,32 @@ other release, fixes included, the minor.
   draws' options.
 ### Changed
 
+- **surpyval 0.23 or later is required** (0.22 was). Its next release drops
+  0.22's name for a limited-failure population's share that ever fails,
+  `p`, for `lfp_p`, which 0.22 does not know, so no example could be
+  written for both; 0.23 also pickles its fits (SurPyval#573) and takes
+  `success_run`'s level as `alpha_ci` (SurPyval#580). RePyability's
+  workarounds for 0.22 are gone: a system of fitted models goes to `n_jobs`'
+  worker processes as it is, rather than in its saved form, and models are
+  read by `lfp_p` alone. Files saved before 0.10 with `p` in a model's
+  extras still load.
+- **The exact curves are built several times as fast** (`point_availability`,
+  `mission_availability`, `expected_events`, `expected_cost` and the exact
+  means a simulation run takes by default, #187). A 12-component system's
+  exact mission availability over 5,000 h takes 0.33 s rather than 1.76 s,
+  and a 70-component one's 0.86 s rather than 3.7 s:
+  - each component's curve is built on a grid of 1,000 steps over its
+    typical up time, rather than 2,000. The error falls as the square of
+    the step: about 4e-7 at a point (up to 4e-6 soon after the start), and
+    about 4e-8 in a mission average, four times what it was. Exact values
+    change in their seventh or eighth significant figure;
+  - a curve that has not settled at its long-run value is followed to
+    where, judging by how fast it is settling, it will have, rather than
+    four times as far: most of the work went on curves that had long since
+    settled;
+  - identical components (the same life and repair models, the same state
+    at 0, with no schedule, tests or imperfect repair) share one curve;
+  - each series in a curve's convolutions is transformed once.
 - **A model given for the input or output node is refused (#217).** The
   input and output nodes are inferred from the edges and never fail, so a
   model given for one was dropped: forgetting a component's edge to the
@@ -238,6 +264,18 @@ other release, fixes included, the minor.
   `mean(method="simulate", ...)` simulates it.
 ### Fixed
 
+- **`availability_rate` just after a scheduled maintenance** (#240). A
+  component's rate was its whole curve differenced over its grid's step,
+  which smoothed over a down time far shorter than a step: the greeks
+  guide's valve, maintained for about 6 h on a grid of 0.04 to 0.08 days,
+  had its rate a day after its replacement 1-2% low (0.0514, or 0.0509 on
+  the coarser grid, for 0.0518). The down times a curve keeps off its grid
+  (its dips, the later maintenances of an age-replaced unit and the return
+  from a block replacement) are now differentiated on their own scale, and
+  only the grid is differenced; a nested RBD's rate is its nodes' times
+  their importance. The two guides' quoted rates change (0.0509 to 0.0518,
+  0.07493 to 0.07491), each now within 1e-4 of its value on grids sixteen
+  times finer.
 - **`optimal_inspection_intervals` chooses the intervals of tests that can
   miss a failure (#221),** which 0.12 listed as numerical but refused: a
   component whose tests have a `coverage` below 1 keeps its full tests'

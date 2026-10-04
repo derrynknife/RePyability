@@ -10,7 +10,9 @@ exactly, ``I_B^i`` the Birnbaum importance at the components' availabilities
 then: each term is what component ``i`` does to the system, and the terms
 add up to the whole. A component's own curve is worked out numerically
 (see ``_point_availability``); ``derivative`` takes its rate of change by
-differences that keep to its pieces.
+differences that keep to its pieces, and the parts the curve keeps off its
+grid (its dips: down times that start at a known time, however short)
+exactly, each on its own scale (#240).
 
 At a scheduled event (a block replacement or test that takes the unit off
 line, a planned outage) a component's availability jumps, and so may the
@@ -38,7 +40,19 @@ JUMP = 1e-12
 
 def derivative(curve, x: np.ndarray, scale: float) -> np.ndarray:
     """``curve``'s rate of change at each time ``x``: after a jump or a
-    bend at ``x``, its rate from then on.
+    bend at ``x``, its rate from then on. A curve that knows parts of its
+    rate exactly gives it (its ``derivative``: the down times it keeps off
+    its grid, which may be far shorter than a step, see ``GridCurve``);
+    any other is differenced (``differences``)."""
+    own = getattr(curve, "derivative", None)
+    if callable(own):
+        return own(np.asarray(x, dtype=float).ravel(), scale)
+    return differences(curve, x, scale)
+
+
+def differences(curve, x: np.ndarray, scale: float) -> np.ndarray:
+    """``curve``'s rate of change at each time ``x`` by differences of its
+    values (see ``derivative``).
 
     A curve linear on a grid (see ``curve_grids``) is differenced a grid
     step either side, which is second order between its points as at them;

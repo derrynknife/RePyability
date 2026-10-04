@@ -196,7 +196,7 @@ def test_two_votes_in_series_are_nested_votes():
         flat.point_availability(t), nested.point_availability(t), rtol=1e-9
     )
     np.testing.assert_allclose(
-        flat.expected_failures(t), nested.expected_failures(t), rtol=1e-9
+        flat.expected_failures(t), nested.expected_failures(t), rtol=4e-9
     )
     assert flat.system_failure_frequency() == pytest.approx(
         nested.system_failure_frequency(), rel=1e-12

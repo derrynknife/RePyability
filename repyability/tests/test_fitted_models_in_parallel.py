@@ -1,9 +1,8 @@
 """Systems of models fitted in surpyval run in worker processes (#181).
 
-A surpyval fit holds a closure, so pickle cannot take it (SurPyval#573),
-and ``n_jobs`` could not send such a system to its workers. A model that
-pickle refuses is sent in its saved form instead (``montecarlo.dumps``),
-and rebuilt there: the results are those of the run in one process."""
+A surpyval fit held a closure, so pickle could not take it and ``n_jobs``
+could not send such a system to its workers; from surpyval 0.23 a fit
+pickles (SurPyval#573): the results are those of the run in one process."""
 
 import pickle
 
@@ -22,17 +21,11 @@ def fits():
     return surv.Weibull.fit(DATA), surv.Gamma.fit(DATA)
 
 
-def test_a_fit_does_not_pickle_but_goes_to_a_worker_all_the_same():
+def test_a_fit_goes_to_a_worker_as_it_is():
     weibull, _ = fits()
-    try:
-        pickle.dumps(weibull)
-    except Exception:
-        pass
-    else:  # pragma: no cover - once surpyval's fits pickle (SurPyval#573)
-        pytest.skip("this surpyval's fits pickle")
     rbd = NonRepairableRBD(PARALLEL, {"a": weibull, "b": weibull})
     loaded = pickle.loads(montecarlo.dumps(rbd))
-    # One model for both nodes still, rebuilt from its saved form.
+    # One model for both nodes still.
     assert loaded.reliabilities["a"] is loaded.reliabilities["b"]
     x = np.array([50.0, 200.0, 400.0])
     np.testing.assert_array_equal(loaded.sf(x), rbd.sf(x))

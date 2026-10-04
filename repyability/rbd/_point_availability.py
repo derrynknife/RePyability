@@ -37,10 +37,10 @@ at its units' (see ``RepairableRBD.point_availability``).
   replacement age -- are kept out of the grid (a ``GridCurve``'s dips):
   their survival functions are exact at any time, however short they are.
 
-The error falls as the square of the step. With the default of 2,000 steps
-over a unit's typical up time it is about 1e-7 (up to 1e-6 soon after the
+The error falls as the square of the step. With the default of 1,000 steps
+over a unit's typical up time it is about 4e-7 (up to 4e-6 soon after the
 start, for a unit whose repairs last some dozens of steps); a mission
-average over more than a few steps is exact to about 1e-8, and the
+average over more than a few steps is exact to about 4e-8, and the
 long-run value is reached to about 1e-12.
 
 Under age replacement, the units that each reach their replacement age are
@@ -226,22 +226,52 @@ def _survival_weights(sf: Callable, t: np.ndarray, splits):
 def _series_inverse(p: np.ndarray, n: int) -> np.ndarray:
     """The first ``n`` coefficients of the power series ``1 / p``: Newton's
     iteration, with FFT products."""
-    from scipy.signal import fftconvolve
-
     q = np.array([1.0 / p[0]])
     m = 1
     while m < n:
         m = min(2 * m, n)
-        e = -fftconvolve(p[:m], q)[:m]
+        e = -_convolve(p[:m], q, m)
         e[0] += 2.0
-        q = fftconvolve(q, e)[:m]
+        q = _convolve(q, e, m)
     return q
 
 
 def _convolve(a: np.ndarray, b: np.ndarray, n: int) -> np.ndarray:
-    from scipy.signal import fftconvolve
+    """The first ``n`` terms of the convolution of ``a`` and ``b``, by
+    FFT."""
+    from scipy import fft
 
-    return fftconvolve(a, b)[:n]
+    length = fft.next_fast_len(len(a) + len(b) - 1, real=True)
+    return fft.irfft(fft.rfft(a, length) * fft.rfft(b, length), length)[:n]
+
+
+class _Spectra:
+    """Convolutions of series of at most ``size`` terms, by FFT at one
+    length, each series transformed once however many convolutions it is
+    in (a series is not changed once it has been in one)."""
+
+    def __init__(self, size: int):
+        from scipy import fft
+
+        self._fft = fft
+        self.size = size
+        self.length = fft.next_fast_len(2 * size - 1, real=True)
+        self._known: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
+
+    def _of(self, x: np.ndarray) -> np.ndarray:
+        known = self._known.get(id(x))
+        if known is None or known[0] is not x:
+            known = self._known[id(x)] = (x, self._fft.rfft(x, self.length))
+        return known[1]
+
+    def convolve(
+        self, a: np.ndarray, b: np.ndarray, n: Optional[int] = None
+    ) -> np.ndarray:
+        """The first ``n`` (by default ``size``) terms of the convolution
+        of ``a`` and ``b``."""
+        product = self._of(a) * self._of(b)
+        out = self._fft.irfft(product, self.length)
+        return out[: self.size if n is None else n]
 
 
 def _running(lattice: np.ndarray) -> np.ndarray:
@@ -370,6 +400,7 @@ def unit_curve(
     """
     t = step * np.arange(n + 1)
     size = n + 1
+    convolve = _Spectra(size).convolve
     # Units still up at ``limit`` are maintained (none within the grid if
     # there is no age replacement, or it comes after the grid's end).
     limit = np.inf if age is None else float(age)
@@ -429,7 +460,7 @@ def unit_curve(
 
             _, mass1, position1 = _cells(spread_cdf, t, first_splits)
     repairs = _lattice(*_cells(repair_cdf, t, repair_splits))
-    cycle = _convolve(fails, repairs, size)
+    cycle = convolve(fails, repairs)
     flat, slope, hat = _survival_weights(repair_sf, t, repair_splits)
 
     maintains = np.zeros(size)
@@ -442,7 +473,7 @@ def unit_curve(
                     lambda s: 1.0 - maintenance_sf(s), t, maintenance_splits
                 )
             )
-            cycle = cycle + _convolve(maintains, done, size)
+            cycle = cycle + convolve(maintains, done)
         else:
             cycle = cycle + maintains
     elif first_survive > 0.0 and maintenance_sf is not None:
@@ -458,7 +489,7 @@ def unit_curve(
         """The renewals after the maintenance of ``lattice``'s starts."""
         if done is None:
             return lattice
-        return _convolve(lattice, done, size)
+        return convolve(lattice, done)
 
     # Renewals: u = delta_0 + u * cycle. The later ones (after the first
     # unit's start at 0) are u less the atom at 0.
@@ -471,7 +502,7 @@ def unit_curve(
         # maintenance; or what is left of its down time), and new units'
         # renewals after it.
         if first_cdf is not None:
-            cycle1 = _convolve(fails1, repairs, size)
+            cycle1 = convolve(fails1, repairs)
             if first_survive > 0.0:
                 cycle1 = cycle1 + maintained(maintains1)
         else:
@@ -482,19 +513,19 @@ def unit_curve(
                     first.down_splits,
                 )
             )
-        later = cycle1 + _convolve(cycle1, later, size)
+        later = cycle1 + convolve(cycle1, later)
 
     # The first unit: its failures from its continuous distribution, against
     # the repair time's survival function; its preventive maintenance, if
     # any, at exactly ``first_due``.
     down = np.zeros(size)
     if first_cdf is not None:
-        down[1:] = _convolve(mass1, flat, n) + _convolve(
+        down[1:] = convolve(mass1, flat, n) + convolve(
             mass1 * 6.0 * (2.0 * position1 - 1.0), slope, n
         )
     # Later units, through the grid.
-    later_failures = _convolve(later, fails, size)
-    down += _convolve(later_failures, hat, size)
+    later_failures = convolve(later, fails)
+    down += convolve(later_failures, hat)
     chain = None
     chained = None
     # The units that each reach their age, one after another: the n-th
@@ -530,14 +561,10 @@ def unit_curve(
             chained[0] -= 1.0
             if first is not None:
                 started = maintained(maintains1)
-                chained = started + _convolve(started, chained, size)
+                chained = started + convolve(started, chained)
         else:
             chained = np.zeros(size)
-        down += _convolve(
-            _convolve(later - chained, maintains, size),
-            maintenance_hat,
-            size,
-        )
+        down += convolve(convolve(later - chained, maintains), maintenance_hat)
         if count > 0:
             chain = ChainDips(
                 limit,
@@ -585,10 +612,7 @@ def unit_curve(
             t,
             first_stages,
             np.vstack(
-                [
-                    np.maximum(_convolve(later, row, size), 0.0)
-                    for row in occupied
-                ]
+                [np.maximum(convolve(later, row), 0.0) for row in occupied]
             ),
         )
     if not counts:
@@ -605,12 +629,12 @@ def unit_curve(
             chained[0] -= 1.0
             if first is not None:
                 chained = (
-                    maintains1 + _convolve(maintains1, chained, size)
+                    maintains1 + convolve(maintains1, chained)
                     if first_survive > 0.0
                     else np.zeros(size)
                 )
         # The other units' maintenance, through the grid.
-        others = _running(_convolve(later - chained, maintains, size))
+        others = _running(convolve(later - chained, maintains))
         if maintenance_sf is None:
             fixed = 0.0
         elif chain is not None:
@@ -631,7 +655,7 @@ def unit_curve(
         first_cdf if first_cdf is not None else (lambda x: np.zeros(len(x))),
         first_atoms,
         float(repair_sf(np.zeros(1))[0]),
-        np.maximum(_convolve(later, lived, size), 0.0),
+        np.maximum(convolve(later, lived), 0.0),
         age=limit if others is not None else None,
         survive=preventive,
         fixed=fixed,
@@ -678,6 +702,59 @@ def _cubic(values: np.ndarray, position: np.ndarray) -> np.ndarray:
         - (u + 1.0) * u * (u - 2.0) / 2.0 * padded[j + 1]
         + (u + 1.0) * u * (u - 1.0) / 6.0 * padded[j + 2]
     )
+
+
+def _cubic_slope(values: np.ndarray, position: np.ndarray) -> np.ndarray:
+    """The rate of change of ``_cubic(values, position)`` in ``position``:
+    the derivative of the same 4-point Lagrange interpolation."""
+    padded = np.concatenate([[0.0, 0.0], values, [0.0, 0.0]])
+    j = np.clip(np.floor(position).astype(int), -1, len(values) - 1) + 2
+    u = position - (j - 2)
+    return (
+        -(3.0 * u**2 - 6.0 * u + 2.0) / 6.0 * padded[j - 1]
+        + (3.0 * u**2 - 4.0 * u - 1.0) / 2.0 * padded[j]
+        - (3.0 * u**2 - 2.0 * u - 2.0) / 2.0 * padded[j + 1]
+        + (3.0 * u**2 - 1.0) / 6.0 * padded[j + 2]
+    )
+
+
+def _density(sf: Callable, u: np.ndarray, splits) -> np.ndarray:
+    """The density at each ``u >= 0`` of a time with survival function
+    ``sf`` (quantiles ``splits``): its differences over a millionth of the
+    time's own scale (its median, or ``u``), central where they fit after
+    0 and one-sided, second order, where they do not. A down time far
+    shorter than a curve's grid step is differentiated as finely as a long
+    one (see ``GridCurve.derivative``)."""
+    u = np.asarray(u, dtype=float)
+    knots = np.asarray(splits, dtype=float)
+    knots = knots[knots > 0.0]
+    typical = float(np.median(knots)) if knots.size else 0.0
+    h = 1e-6 * np.maximum(np.maximum(u, typical), 1e-300)
+    central = u >= h
+    out = np.empty(u.shape)
+    if central.any():
+        a, b = u[central] - h[central], u[central] + h[central]
+        out[central] = (sf(a) - sf(b)) / (2.0 * h[central])
+    if (~central).any():
+        v, k = u[~central], h[~central]
+        out[~central] = (3.0 * sf(v) - 4.0 * sf(v + k) + sf(v + 2.0 * k)) / (
+            2.0 * k
+        )
+    return out
+
+
+class _GridPart:
+    """A curve's part on its grid, linear between its points, as
+    ``_rates.differences`` takes a curve: its values (``at``), the times
+    it bends other than on its grid (``breaks``) and its grids."""
+
+    def __init__(self, at: Callable, breaks: Callable, grids: list):
+        self.at = at
+        self.breaks = breaks
+        self._grids = grids
+
+    def grids(self) -> list:
+        return self._grids
 
 
 def chain_due(first_due: float, age: float, n):
@@ -869,6 +946,28 @@ class ChainDips:
             if b > a:
                 position = (ordered[a:b] - lo) / step
                 out[order[a:b]] += weight * _cubic(values, position)
+        return out
+
+    def rate(self, x: np.ndarray) -> np.ndarray:
+        """The rate at which ``at`` changes at each ``x``: the derivative of
+        each maintenance's interpolation on its own fine grid (none for a
+        fixed time, constant between its ends)."""
+        out = np.zeros(len(x))
+        if self.fixed is not None:
+            return out
+        order = np.argsort(x, kind="stable")
+        ordered = x[order]
+        for n in range(1, self.count + 1):
+            due, weight = self._due(n)
+            start, step, values = self.windows[n - 1]
+            lo = due + start
+            hi = lo + step * len(values)
+            a, b = np.searchsorted(ordered, [lo - step, hi])
+            if b > a:
+                position = (ordered[a:b] - lo) / step
+                out[order[a:b]] += (
+                    weight * _cubic_slope(values, position) / step
+                )
         return out
 
     def before(self, x: np.ndarray) -> np.ndarray:
@@ -1264,6 +1363,43 @@ class GridCurve:
             return []
         return [(float(self.times[1]), float(self.times[-1]))]
 
+    def _grid_at(self, x: np.ndarray) -> np.ndarray:
+        """Its values on its grid alone, without its dips."""
+        out = np.interp(x, self.times, self.smooth)
+        if self.long_run is not None:
+            out[x > self.times[-1]] = self.long_run
+        return out
+
+    def derivative(self, x: np.ndarray, scale: float) -> np.ndarray:
+        """Its rate of change at each ``x`` (see ``_rates.derivative``): its
+        grid's by differences (see ``_rates.differences``), which are
+        second order a step apart, less its dips' exactly, each from its
+        down time's density (``_density``), and those of ``chain`` on
+        their own fine grids. A dip far shorter than a step (a few hours'
+        maintenance on a grid of days) would be smoothed over by the
+        differences of the whole curve."""
+        from repyability.rbd._rates import differences
+
+        ends = self.times[[0, -1]]
+
+        def breaks(start: float, stop: float) -> np.ndarray:
+            return ends[(ends >= start) & (ends <= stop)]
+
+        out = differences(
+            _GridPart(self._grid_at, breaks, self.grids()), x, scale
+        )
+        for probability, start, sf, splits in self.dips:
+            after = x >= start
+            if after.any():
+                out[after] += probability * _density(
+                    sf, x[after] - start, splits
+                )
+        if self.chain is not None:
+            out -= self.chain.rate(x)
+        if self.long_run is not None:
+            out[x > self.times[-1]] = 0.0
+        return out
+
 
 class BlockCurve:
     """A unit's point availability under block replacement, from new (see
@@ -1355,9 +1491,10 @@ class BlockCurve:
             drop = weights * (1.0 - float(self.replace.cdf(np.zeros(1))[0]))
         return Atoms(times, np.zeros(count), planned, weights, drop)
 
-    def at(self, x: np.ndarray) -> np.ndarray:
-        # The interval each time falls in, and the time since its start (in
-        # [0, interval): a block time starts its interval).
+    def _place(self, x: np.ndarray) -> tuple:
+        """The interval each time falls in (``k``), the time since its
+        start (``s``, in ``[0, interval)``: a block time starts its
+        interval), and the curve's values on its grid there."""
         k = np.floor(x / self.interval)
         s = x - k * self.interval
         over, under = s >= self.interval, s < 0.0
@@ -1373,10 +1510,42 @@ class BlockCurve:
             self.smooth[row, j] * (1.0 - fraction)
             + self.smooth[row, j + 1] * fraction
         )
+        return k, s, row, smooth
+
+    def at(self, x: np.ndarray) -> np.ndarray:
+        k, s, row, smooth = self._place(x)
         back = self.replace.cdf(s)
         if self.fresh:
             back = np.where(k == 0.0, 1.0, back)
         return np.clip(smooth + self.replaced[row] * back, 0.0, 1.0)
+
+    def derivative(self, x: np.ndarray, scale: float) -> np.ndarray:
+        """Its rate of change at each ``x`` (see ``GridCurve.derivative``): its
+        grid's by differences, and the return of the units replaced at the
+        block time before it exactly, from the replacement time's density
+        (none from new, in the first interval)."""
+        from repyability.rbd._rates import differences
+
+        def blocks(start: float, stop: float) -> np.ndarray:
+            first = int(np.floor(start / self.interval))
+            last = int(np.floor(stop / self.interval))
+            times = self.interval * np.arange(first, last + 1, dtype=float)
+            return times[(times >= start) & (times <= stop)]
+
+        out = differences(
+            _GridPart(lambda t: self._place(t)[3], blocks, self.grids()),
+            x,
+            scale,
+        )
+        if self.replace.model is None:
+            return out
+        k, s, row, _ = self._place(x)
+        back = _density(
+            lambda u: 1.0 - self.replace.cdf(u), s, self.duration_knots
+        )
+        if self.fresh:
+            back = np.where(k == 0.0, 0.0, back)
+        return out + self.replaced[row] * back
 
     def knots(self, start: float, stop: float) -> np.ndarray:
         """The times in ``[start, stop]`` between which the curve is smooth:
@@ -1752,6 +1921,12 @@ class ShiftedCurve:
     def at(self, x: np.ndarray) -> np.ndarray:
         return self.curve.at(self._position(x))
 
+    def derivative(self, x: np.ndarray, scale: float) -> np.ndarray:
+        """Its curve's rate (see ``_rates.derivative``), ``shift`` on."""
+        from repyability.rbd._rates import derivative
+
+        return derivative(self.curve, self._position(x), scale)
+
     def knots(self, start: float, stop: float) -> np.ndarray:
         times = self.curve.knots(start + self.shift, stop + self.shift)
         times = times - self.shift
@@ -1830,6 +2005,21 @@ class StartedBlockCurve:
             out[~before] = self.tail.at(x[~before] - self.length)
         return out
 
+    def derivative(self, x: np.ndarray, scale: float) -> np.ndarray:
+        """The head's rate before its end and the tail's from it (see
+        ``_rates.derivative``)."""
+        from repyability.rbd._rates import derivative
+
+        before = x < self.length
+        out = np.empty(x.shape)
+        if before.any():
+            out[before] = derivative(self.head, x[before], scale)
+        if (~before).any():
+            out[~before] = derivative(
+                self.tail, x[~before] - self.length, scale
+            )
+        return out
+
     def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
         """The unit's expected events before each time ``x``: the head's,
         to its end, and the tail's after it."""
@@ -1899,6 +2089,22 @@ class SystemCurve:
 
     def at(self, x: np.ndarray) -> np.ndarray:
         return self.rbd._curves_at(self.curves, x, set(), set(), "p")
+
+    def derivative(self, x: np.ndarray, scale: float) -> np.ndarray:
+        """Its rate of change at each ``x``: each of its nodes' (see
+        ``_rates.derivative``) times that node's Birnbaum importance there,
+        the system being multilinear in its nodes' availabilities (see
+        ``_rates``)."""
+        from repyability.rbd._rates import derivative
+
+        values = {node: c.at(x) for node, c in self.curves.items()}
+        importance = self.rbd._importances(
+            self.rbd._filled(values, len(x), set(), set())
+        )[0]
+        out = np.zeros(len(x))
+        for node, curve in self.curves.items():
+            out += importance[node] * derivative(curve, x, scale)
+        return out
 
     def events(self, x: np.ndarray) -> Dict[str, np.ndarray]:
         """The nested RBD's expected failures and planned outages before

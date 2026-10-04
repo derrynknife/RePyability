@@ -5,7 +5,7 @@ the expected events and cost -- integrate from 0 the system's point
 availability, its capacity's distribution or its rate of failures, all
 functions of its nodes' curves (see ``_point_availability``). A curve is
 smooth between its *breaks* (where a scheduled replacement or a dip starts,
-say), and between them linear on a grid of 2,000 steps of its typical up
+say), and between them linear on a grid of 1,000 steps of its typical up
 time (``curve_grids``), many more than its shape needs.
 
 The integrals are summed over pieces (``pieces``): the breaks, with the
