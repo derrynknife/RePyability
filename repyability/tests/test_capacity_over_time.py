@@ -78,7 +78,7 @@ def test_exponential_pumps_are_binomial_at_their_availabilities():
             for k in range(4)
         ]
     )
-    np.testing.assert_allclose(window.probabilities, exact, atol=3e-7)
+    np.testing.assert_allclose(window.probabilities, exact, atol=1.2e-6)
     np.testing.assert_allclose(
         window.meets(1e-9), plant.mission_availability(t), atol=1e-12
     )

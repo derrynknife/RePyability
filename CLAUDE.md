@@ -166,6 +166,14 @@
   `_capacity_arrays` passes them as working. `test_junctions.py` checks
   every public method against the same system drawn without a junction.
 
+- **Identical components share one curve** (`_availability_curves`,
+  `_curve_twin`): a plain unit's curve follows from its life and repair
+  models and its state at 0 alone. Anything new that makes a unit's curve
+  depend on more (a schedule, a group, a coupling) must leave it out in
+  `_plain_unit`, or two units would be given one curve that is only one's:
+  `test_identical_components_share_one_curve` checks the shared curves
+  against a curve each.
+
 - **`analysis_routes()` (both RBD classes) must agree with the methods.** It
   says, without running anything, whether each public analysis is exact,
   numerical, simulated or refused. Refusals go through checks the report

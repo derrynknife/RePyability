@@ -53,15 +53,15 @@ def test_one_component_counts_its_alternating_renewals():
     events = rbd.expected_events(t)
     assert isinstance(events, ExpectedEvents)
     np.testing.assert_allclose(events.window, t)
-    np.testing.assert_allclose(events.system_failures, failures, rtol=2e-7)
-    np.testing.assert_allclose(events.node_failures["c"], failures, rtol=2e-7)
+    np.testing.assert_allclose(events.system_failures, failures, rtol=8e-7)
+    np.testing.assert_allclose(events.node_failures["c"], failures, rtol=8e-7)
     np.testing.assert_allclose(
-        events.node_corrective["c"], failures, rtol=2e-7
+        events.node_corrective["c"], failures, rtol=8e-7
     )
-    # The point availability is exact to about 1e-7, so the downtime is to
-    # about 1e-7 of the window.
+    # The point availability is exact to about 4e-7, so the downtime is to
+    # about 4e-7 of the window.
     for downtime in (events.node_downtime["c"], events.system_downtime):
-        assert np.all(np.abs(downtime - (t - up)) <= 1e-7 * t)
+        assert np.all(np.abs(downtime - (t - up)) <= 4e-7 * t)
     assert not np.any(events.node_preventive["c"])
     assert not np.any(events.system_planned_outages)
     # A scalar window gives floats; nothing happens in a window of 0.

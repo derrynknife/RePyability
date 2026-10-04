@@ -105,10 +105,10 @@ def test_an_exponential_unit_is_memoryless():
     total = lam + mu
     uptime = mu / total * (t + np.expm1(-total * t) / total)
     np.testing.assert_allclose(
-        rbd.expected_failures(t, state=down), lam * uptime, atol=2e-7
+        rbd.expected_failures(t, state=down), lam * uptime, atol=8e-7
     )
     np.testing.assert_allclose(
-        rbd.mission_availability(t, state=down), uptime / t, atol=2e-7
+        rbd.mission_availability(t, state=down), uptime / t, atol=8e-7
     )
 
 

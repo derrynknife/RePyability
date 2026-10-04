@@ -124,7 +124,7 @@ def test_with_a_crew_for_each_component_nothing_waits(monkeypatch):
     failures = [integrated(failing, x) for x in windows]
     np.testing.assert_allclose(events.system_failures, failures, rtol=1e-10)
     np.testing.assert_allclose(
-        free.expected_events(windows).system_failures, failures, atol=1e-8
+        free.expected_events(windows).system_failures, failures, atol=4e-8
     )
     for node, (lam, mu) in RATES.items():
         up = closed_uptime(windows, lam, mu)

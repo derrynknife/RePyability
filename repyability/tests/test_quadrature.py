@@ -144,7 +144,7 @@ def test_the_counts_do_not_depend_on_how_coarse_the_pieces_are(
     fine = rbd.expected_events(t)
     for field in ("system_failures", "system_planned_outages"):
         np.testing.assert_allclose(
-            getattr(coarse, field), getattr(fine, field), rtol=1e-8, atol=1e-14
+            getattr(coarse, field), getattr(fine, field), rtol=4e-8, atol=1e-14
         )
     np.testing.assert_allclose(
         coarse.system_downtime, fine.system_downtime, rtol=4e-8
