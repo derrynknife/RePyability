@@ -337,9 +337,15 @@ def test_a_shelf_of_different_positions_by_simulation():
 
 def test_parts_and_nodes_together():
     plant = station()
-    both = plant.spares_demand(8760.0, nodes=["seal1"], parts=PART)
-    assert list(both) == ["seal1", "seal"]
-    assert both["seal1"].members is None
+    pair = {"seal": ["seal1", "seal2"]}
+    both = plant.spares_demand(8760.0, nodes=["seal3"], parts=pair)
+    assert list(both) == ["seal3", "seal"]
+    assert both["seal3"].members is None
+    assert both["seal"].members == ("seal1", "seal2")
+    # A component's spares come from one shelf, its own or its part's
+    # (#233).
+    with pytest.raises(ValueError, match="'seal1' is in nodes and in part"):
+        plant.spares_demand(8760.0, nodes=["seal1"], parts=PART)
 
 
 @pytest.mark.parametrize(

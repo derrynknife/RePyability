@@ -204,7 +204,9 @@ def test_a_model_with_no_reliability_refuses_it(build, case):
     ):
         with pytest.raises(NotImplementedError, match=case):
             call()
-    with pytest.raises(NotImplementedError, match=r"mean\(mc_samples="):
+    with pytest.raises(
+        NotImplementedError, match=r"mean\(method='simulate', mc_samples="
+    ):
         model.mean()
     # It still draws lifetimes, and estimates its mean from new ones.
     draws = model.random(2000, seed=1)
@@ -245,7 +247,9 @@ def test_a_repairable_component_with_one_is_simulated(build, case):
     for name in ("mean_availability", "point_availability", "spares_demand"):
         assert report[name].route == routes.REFUSED
         assert report[name].nodes == ("a",)
-    with pytest.raises(NotImplementedError, match=r"mean\(mc_samples="):
+    with pytest.raises(
+        NotImplementedError, match=r"mean\(method='simulate', mc_samples="
+    ):
         rbd.mean_availability()
     with pytest.raises(NotImplementedError, match=case):
         rbd.point_availability([10.0])

@@ -206,7 +206,7 @@ def test_a_timeline_from_an_outage_log():
 @pytest.mark.parametrize(
     "outages, options, match",
     [
-        ([(2.0, 1.0)], {}, "out of order"),
+        ([(2.0, 1.0)], {}, "ends before it starts"),
         ([(1.0, 3.0), (2.0, 4.0)], {}, "out of order"),
         ([(11.0, 12.0)], {}, "after the window's end"),
         ([(1.0, 2.0)], {"planned": [True, False]}, "one for each outage"),
