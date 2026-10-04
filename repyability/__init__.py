@@ -1,9 +1,31 @@
-"""RePyability — reliability engineering tools for Python.
+"""RePyability: the reliability of systems, built from fitted component
+models.
 
-The most commonly used classes are re-exported here so they can be imported
-directly from the top-level package, e.g.::
+A system is a reliability block diagram over its components' lifetime
+models (surpyval's fits, or anything with ``sf`` and ``ff``), worked out
+exactly or numerically where it can be, and simulated on request:
 
-    from repyability import NonRepairableRBD, StandbyModel
+- ``NonRepairableRBD``: reliability over time, the MTTF, B-lives,
+  importance and the Greeks, allocation, and uncertainty from fitted models.
+- ``RepairableRBD``: availability (long run, over time and over a mission,
+  and the unavailability to its own precision), failures and costs,
+  maintenance, inspections, spares, repair crews, and simulated histories.
+- ``FaultTree``, ``Network`` and ``PhasedMission``: the other ways to draw
+  a system; ``StandbyModel``, ``LoadSharingModel``, ``RepeatedNode`` and
+  ``CCFGroup`` the dependencies within one.
+- ``demonstration_plan`` and the other ``demonstration_*`` and ``mtbf_*``
+  functions: demonstration test planning.
+
+Every class and function here is imported from the top-level package::
+
+    from repyability import NonRepairableRBD, RepairableRBD
+
+Each analysis says whether it is exact, numerical, simulated or refused for
+a diagram: ``rbd.analysis_routes()``. Each result class has ``to_dict()``,
+for ``json.dumps``.
+
+The user guide, the course and the API reference:
+https://derrynknife.github.io/RePyability/
 """
 
 from repyability._version import __version__
@@ -145,3 +167,14 @@ __all__ = [
     "SimulationChunk",
     "run_shard",
 ]
+
+
+def _readable_help() -> None:
+    # The API reference's cross-references read as names in help() (#238).
+    from repyability.rbd.rbd import Pairs
+    from repyability.utils.docs import readable_docstrings
+
+    readable_docstrings([globals()[name] for name in __all__[1:]] + [Pairs])
+
+
+_readable_help()

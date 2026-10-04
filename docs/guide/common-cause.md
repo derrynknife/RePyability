@@ -112,8 +112,10 @@ q_independent        # array([0.009])
 ### Exclusive or independent shocks
 
 By default the shocks are mutually exclusive, as `decompose` gives them:
-one shared cause strikes the group at most, so each member fails with
-probability `Q` exactly. PRA codes (SAPHIRE, CAFTA, RiskSpectrum) take each
+one shared cause strikes the group at most, and a member's own failure is
+a separate event, independent of it, so each member fails with probability
+`Q` to first order, as in PRA's basic events (`βQ + (1 − βQ)(1 − β)Q =
+Q − β(1 − β)Q²` for a `BetaFactor`: 0.0991 at `Q = 0.1`, `β = 0.1`). PRA codes (SAPHIRE, CAFTA, RiskSpectrum) take each
 shock's `Q_k` as a basic event of its own instead, independent of the
 others, so several can strike at once. The two differ at second order in
 `Q`, so to check a result against such a tool, give

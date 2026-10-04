@@ -12151,9 +12151,9 @@ class RepairableRBD(RBD):
             (``"p"`` or ``"paths"``, the default) or the cut sets (``"c"``
             or ``"cuts"``), as for ``point_availability``.
         state : dict or str, optional
-            Start from the components' current states rather than new, as
-            for ``point_availability``: ``{node: NodeState}`` or ``"stationary"``. By
-            default None: every component new at 0.
+            Start from the components' current states rather than new,
+            as for ``point_availability``: ``{node: NodeState}`` or
+            ``"stationary"``. By default None: every component new at 0.
 
         Returns
         -------
@@ -12361,9 +12361,9 @@ class RepairableRBD(RBD):
             (``"p"`` or ``"paths"``, the default) or the cut sets (``"c"``
             or ``"cuts"``), as for ``mission_availability``.
         state : dict or str, optional
-            Start from the components' current states rather than new, as
-            for ``mission_availability``: ``{node: NodeState}`` or ``"stationary"``. By
-            default None: every component new at 0.
+            Start from the components' current states rather than new,
+            as for ``mission_availability``: ``{node: NodeState}`` or
+            ``"stationary"``. By default None: every component new at 0.
 
         Returns
         -------
@@ -16321,21 +16321,11 @@ class RepairableRBD(RBD):
             "repyability[fast]"``) or ``"auto"`` (the default), which
             compiles when numba is installed, the system is one the
             compiled engine simulates, and the run is long enough to pay
-            for loading it (about a third of a second from numba's cache;
-            a minute or two the first time ever, while numba compiles it).
-            The engines give the same
-            results to the last bit. The compiled engine simulates plain
-            components (surpyval parametric models) in any structure, with
-            nodes held working or broken, costs, antithetic pairs and
-            tolerances, under age and block replacement, with hidden
-            failures found by inspections, with repair crews, with standby
-            groups, with nested RBDs of up to 20 components, and with
-            capacities on systems of up to 63 components; replacement on
-            condition, maintenance groups, imperfect repair, other models
-            and runs from a ``state`` run in Python. Another package can
-            add a compiled engine of its own, which ``engine`` then takes
-            by name and ``"auto"`` may prefer (see
-            ``repyability.rbd.engines``). By default ``"auto"``.
+            for loading it. The engines give the same results to the last
+            bit; what the compiled engine does not simulate runs in Python,
+            and another package can add an engine of its own (see
+            ``repyability.rbd.engines``). See
+            [The compiled engine](guide/simulation.md#the-compiled-engine).
         demand : float, optional
             The demand the delivered fraction is measured against, in the
             capacities' units, when nodes have capacities. By default the
@@ -16383,86 +16373,38 @@ class RepairableRBD(RBD):
             ``size``, by default as many as make 1024 or more.
         control_variate : bool, optional
             Control the estimate of the mean availability by the system's
-            exact twin. By default None: where the exact methods work out
-            the system's expected values over the window
-            (``mission_availability``, and ``expected_cost`` its cost), as
-            for independent components, the result's means
+            exact twin: the same diagram, its components failing and
+            repaired independently, whose mean availability over the
+            window is exact, simulated alongside with common random
+            numbers. By default None: where the exact methods work out the
+            system's expected values over the window, the result's means
             (``mean_availability``, the cost's ``mean`` and breakdowns) and
-            their intervals are those values, with no error, its twin being
-            the system itself (#187, #223), and a run to a ``tolerance``
-            stops at once; otherwise its means may be taken given its
-            modules (see ``conditional``). False forces a plain simulation,
-            whose means and intervals are the simulations' own. True
-            controls the run by the twin, whose simulations are then
-            alongside. The twin has
-            the same diagram,
-            components and models, failing and repaired independently:
-            without a limit on repair crews or maintenance groups and,
-            component by component, without what the exact methods over
-            time do not take (a standby group's switching, its units then
-            operating together; imperfect repair; replacement on
-            condition; inspections they do not take). Its mean
-            availability over the window is exact (``mission_availability``,
-            and ``expected_cost`` its cost), and it is simulated alongside
-            the system with common random numbers, as ``compare`` does, so
-            its error against its exact value shows how far the system's
-            own mean is off. ``mean_availability`` and its interval (and
-            the cost's ``mean`` and ``mean_interval``) are then ``mean(x) -
-            b * (mean(twin) - exact)``, with the coefficient ``b`` that
-            leaves the least variance: ``1 - corr**2`` times the plain
-            mean's. A ``tolerance`` is judged on it, so the run stops
-            sooner. The result's ``control_variate`` holds the twin's
-            values, its exact value and ``b`` (see
-            [`ControlVariate`][repyability.ControlVariate]); everything else
-            (the cost's breakdowns too) is the simulations' own. Every draw
-            must come from a stream (surpyval parametric models), the
-            streams are laid out as ``compare`` lays them, so a seeded
-            run's simulations can differ from those of a run without it,
-            and it runs with ``shard_map`` only when the twin is the system
-            itself. See
+            their intervals are those values, with no error, the twin
+            being the system itself (#187, #223); otherwise they may be
+            taken given the modules (see ``conditional``). False forces a
+            plain simulation, whose means are the simulations' own. True
+            controls the run by the twin, whose values the result's
+            ``control_variate`` holds (see
+            [`ControlVariate`][repyability.ControlVariate]); every draw must
+            then come from a stream (surpyval parametric models). See
             [An exact twin](guide/simulation.md#an-exact-twin).
         conditional : bool, optional
             Take the expected values given the histories of the dependent
-            modules (#189). The modules are the nodes whose values over
-            time the exact methods do not work out (a standby group of
-            other lives, a nested RBD that needs simulating, imperfect
-            repair, a maintenance group's members, the nodes limited repair
-            crews serve: ``analysis_routes`` names them); every other node
-            is independent of them, so given their states at ``t`` the
-            system is up with the probability that its availability with
-            them held so gives, and each simulation's expected values given
-            its modules' histories are exact. Their mean is the window's
-            expected value, without bias and with less variance than the
-            simulations' own (the independent nodes' share is gone). By
-            default None: where the system has modules and the exact
-            methods do not take it whole (see ``control_variate``), the
-            whole system is simulated as a plain run simulates it, and its
-            means (``mean_availability``, the cost's ``mean`` and
-            breakdowns) and their intervals are those of its simulations'
-            expected values given their modules, which are simulated again
-            alone, drawing what they drew; a run to a ``tolerance`` is
-            judged on them, and everything else is the simulations' own
-            (see [`ConditionalRun`][repyability.ConditionalRun]). False keeps
-            the simulations' own means. True simulates only the modules,
-            which costs only their events: for a run to a ``tolerance`` on a
-            large system, a fraction of the work. But each simulation's
-            values are then expected values, whose spread is less than a
-            window's own: the result's ``uptimes``, totals and counts
-            (floats), its curve (on a grid of ``curve_points`` steps, by
-            default 1000) and its cost's ``samples`` are means, the cost's
-            ``percentile`` and ``std`` refuse, and ``criticalities`` is
-            None; a ``state``, capacities (each level's expected time, and
-            the delivered fraction), ``shard_map`` and ``control_variate``
-            (by the twin's stand-ins for the modules) are taken too. The
-            modules are simulated as in a plain run with the same seed, by
-            ``engine``, on ``n_jobs``, and in antithetic pairs if asked;
-            the exact part is worked out once for each joint state of the
-            modules the simulations meet, on a grid, to about 1e-8 of the
-            window. Not where limited repair crews serve every component,
-            or a maintenance group stops at every outage of the system
-            (``"system_down"``), when a run's means are its own.
-            See [Conditional runs](guide/simulation.md#conditional-runs).
-
+            modules (#189): the nodes whose values over time the exact
+            methods do not work out (``analysis_routes`` names them), every
+            other node independent of them. Each simulation's expected
+            values given its modules' histories are exact, and their mean
+            has less variance than the simulations' own. By default None:
+            where the system has modules and the exact methods do not take
+            it whole, the result's means and their intervals are those
+            expected values (see
+            [`ConditionalRun`][repyability.ConditionalRun]), the whole
+            system simulated as a plain run simulates it. False keeps the
+            simulations' own means. True simulates only the modules, for a
+            fraction of the work, but each simulation's values are then
+            expected values: the cost's ``percentile`` and ``std`` refuse,
+            and ``criticalities`` is None. See
+            [Conditional runs](guide/simulation.md#conditional-runs).
         Returns
         -------
         AvailabilityResult
@@ -21252,6 +21194,9 @@ class RepairableRBD(RBD):
         """Returns the Birnbaum measure of importance for all nodes,
         evaluated at the nodes' long-run availabilities.
 
+        In the guide's Greeks it is *delta*: how far the system moves with each
+        component (see [Sensitivities: the Greeks](guide/greeks.md)).
+
         Exact, with no simulation: ``I_B(i) = A_sys(A_i = 1) -
         A_sys(A_i = 0)``, the system's long-run availability with node i
         always working minus that with node i always failed. It is the
@@ -21985,6 +21930,9 @@ class RepairableRBD(RBD):
         lever: the derivative in each of its components' parameters, and
         the change one more standby unit or repair crew makes (#192).
 
+        In the guide's Greeks it is the levers' *deltas* (see [Sensitivities:
+        the Greeks](guide/greeks.md)).
+
         The levers are each component's life and repair models'
         parameters (``"reliability.alpha"``, ``"repairability.beta"``,
         ... with surpyval's names), its preventive maintenance's
@@ -22440,6 +22388,9 @@ class RepairableRBD(RBD):
         variance (vega, #200), the inputs as for
         ``mean_availability_uncertainty``.
 
+        In the guide's Greeks it is *vega*: whose uncertainty widens the answer
+        (see [Sensitivities: the Greeks](guide/greeks.md)).
+
         ``of`` is the quantity: ``"mean_availability"`` (the default, the
         long run), ``"point_availability"`` at the times ``x``,
         ``"mission_availability"`` over ``[0, x]``, or
@@ -22595,6 +22546,9 @@ class RepairableRBD(RBD):
         availability when they all change together: the differential
         importance measure (DIM, Borgonovo & Apostolakis, 2001; #193), in
         the long run, at times ``x`` or over a window.
+
+        In the guide's Greeks it is *DIM*, the shares of a change (see
+        [Sensitivities: the Greeks](guide/greeks.md)).
 
         ``DIM_i = dA/dtheta_i dtheta_i / sum_j dA/dtheta_j dtheta_j``, so
         the shares add up to 1, and a group's share is the sum of its
@@ -23067,6 +23021,9 @@ class RepairableRBD(RBD):
         ``x`` from new (or from the components' ``state``), and which
         components are moving it (#195).
 
+        In the guide's Greeks it is *theta*: what is moving the system now (see
+        [Sensitivities: the Greeks](guide/greeks.md)).
+
         The components failing and recovering independently, the system's
         point availability is multilinear in theirs, so
 
@@ -23234,6 +23191,9 @@ class RepairableRBD(RBD):
         Proschan, 1975; #195), in the long run or over a window from new
         (or from the components' ``state``).
 
+        In the guide's Greeks it is *theta*, integrated: who caused the
+        failures (see [Sensitivities: the Greeks](guide/greeks.md)).
+
         A component's failure fails the system when the component is
         critical then, which it is with probability ``I_B^i(t)``, so the
         system's failures are ``sum_i integral I_B^i(t) dM_i(t)``,
@@ -23371,6 +23331,9 @@ class RepairableRBD(RBD):
         """The joint (second-order) importance of each pair of components:
         whether improving the two together is worth more than improving
         each (#194), in the long run, at times ``x`` or over a window.
+
+        In the guide's Greeks it is *gamma*: complements or substitutes (see
+        [Sensitivities: the Greeks](guide/greeks.md)).
 
         ``JRI(i, j) = d2A / dA_i dA_j = A(1_i, 1_j) - A(1_i, 0_j) -
         A(0_i, 1_j) + A(0_i, 0_j)``, the system's availability with

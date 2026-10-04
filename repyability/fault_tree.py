@@ -949,6 +949,9 @@ class FaultTree:
     def birnbaum_importance(self, t: Optional[ArrayLike] = None) -> dict:
         """Birnbaum importance of each basic event.
 
+        In the guide's Greeks it is *delta*: how far the system moves with each
+        basic event (see [Sensitivities: the Greeks](guide/greeks.md)).
+
         ``P(top | e occurred) - P(top | e did not)``: how much the top event
         probability depends on the event, the rate at which it rises with
         the event's probability.
@@ -1179,6 +1182,9 @@ class FaultTree:
         probability when they all change together: the differential
         importance measure (DIM, Borgonovo & Apostolakis, 2001).
 
+        In the guide's Greeks it is *DIM*, the shares of a change (see
+        [Sensitivities: the Greeks](guide/greeks.md)).
+
         ``DIM_e = dP/dq_e dq_e / sum_f dP/dq_f dq_f``, with ``q_e`` the
         events' probabilities, so the shares add up to 1, and a group's
         share is the sum of its members' (``groups``): what share of a
@@ -1247,6 +1253,9 @@ class FaultTree:
         """The joint (second-order) importance of each pair of basic events
         (#194): whether preventing the two together is worth more than
         preventing each.
+
+        In the guide's Greeks it is *gamma*: complements or substitutes (see
+        [Sensitivities: the Greeks](guide/greeks.md)).
 
         ``JRI(e, f) = -d2P / dq_e dq_f``, ``P`` the top event probability
         and ``q`` the events' probabilities: how much event ``f``'s

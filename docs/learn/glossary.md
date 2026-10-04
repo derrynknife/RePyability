@@ -3,6 +3,7 @@
 Short definitions of the terms used in the course, each with the lesson that
 teaches it. Symbols follow the [notation table](index.md#notation).
 
+
 **Acquisition cost.** The one-off price of buying a unit, as opposed to the
 running costs it incurs while owned. [Lesson 7](costs.md)
 
@@ -28,6 +29,12 @@ independent simulations'. [Lesson 6](availability.md#precise-enough-sooner)
 given time (*point availability* $A(t)$), or the long-run fraction of time
 it is working (*long-run* or *steady-state availability* $A$). For one unit,
 $A = \text{MTTF} / (\text{MTTF} + \text{MTTR})$. [Lesson 6](availability.md)
+
+**Barlow–Proschan importance.** The share of a system's failures over a
+window that each component caused: the probability that the component's
+failure is the one that fails the system, given that the system fails. The
+integrated form of theta.
+[The Greeks](../guide/greeks.md#theta-integrated-who-caused-the-failures)
 
 **B-life.** The age by which a given fraction of units has failed: $B_{10}$
 is the age at which $F(t) = 0.1$. [Lesson 1](lifetimes.md)
@@ -73,6 +80,10 @@ the same random numbers, component by component, so that the difference
 between their results comes from the designs rather than from chance.
 [Lesson 6](availability.md#precise-enough-sooner)
 
+**Consumer's risk.** In a demonstration test, the chance of passing a design
+that is as bad as the level the test must reject ($\beta$). Compare
+producer's risk. [Demonstration testing](../guide/demonstration.md#what-a-plan-risks)
+
 **Cost rate.** The long-run cost per unit time of running a system or a
 maintenance policy. [Lessons 7](costs.md) and [8](maintenance.md)
 
@@ -93,8 +104,22 @@ $R(t) = e^{-H(t)}$. [Lesson 1](lifetimes.md)
 cut set has no smaller cut set inside it; a minimal cut set of one component
 is a single point of failure. [Lesson 3](structure.md)
 
+**Delta.** How far a system's reliability or availability moves per unit
+change in a component's: its Birnbaum importance, the first of the Greeks;
+a lever's delta moves a parameter (a life, a repair, an interval) instead.
+[The Greeks](../guide/greeks.md#delta-how-far-each-component-moves-the-station)
+
 **Density.** $f(t) = dF/dt$: the fraction of the original population that
 fails per unit time around age $t$. [Lesson 1](lifetimes.md)
+
+**Differential importance (DIM).** The share of a small change in a
+system's reliability or availability that comes from each component when
+all change together; the shares add up to 1.
+[The Greeks](../guide/greeks.md#dim-shares-of-a-change)
+
+**Discount rate.** The rate $r$ at which money later is worth less now: a
+cost $c$ at time $t$ is worth $c\,e^{-rt}$ today, its *present value*.
+[Costs](../guide/costs.md#discounting)
 
 **Epistemic uncertainty.** Not knowing a model exactly, because its
 parameters are estimated from limited data; more data reduces it.
@@ -112,9 +137,18 @@ $\sum_i I_B(i)\,\omega_i$. [Lesson 6](availability.md)
 through OR, AND and VOTE gates to basic events. The dual of a reliability
 block diagram. [Lesson 3](structure.md)
 
+**Fill rate.** The fraction of demands for a spare met at once from the
+shelf. Compare stock-out probability, the fraction of time the shelf is
+empty. [Spares](../guide/spares.md#stock-with-a-lead-time)
+
 **Fussell–Vesely importance.** The share of the system's unreliability that
 comes through minimal cut sets containing a component.
 [Lesson 4](importance.md)
+
+**Gamma.** The joint (second-order) importance of two components: positive
+when improving both gains more than the two gains apart (complements),
+negative when less (substitutes).
+[The Greeks](../guide/greeks.md#gamma-complements-or-substitutes)
 
 **Hazard rate.** $h(t) = f(t)/R(t)$: the rate at which units that have
 survived to age $t$ fail, per unit time. Also called the failure rate.
@@ -132,9 +166,18 @@ component $i$ were made perfect. [Lesson 4](importance.md)
 the system works when working components connect them.
 [Lesson 2](systems.md)
 
+**Junction.** A node that never fails, where paths of a diagram meet: a
+*k*-out-of-*n* vote point, say (`PerfectReliability`). It is folded out of
+the structure, and is no component to fail, repair or stock.
+[Repairable systems](../guide/repairable.md#junctions)
+
 **$k$-out-of-$n$.** A block that works when at least $k$ of its $n$ units
 work. 1-out-of-$n$ is parallel and $n$-out-of-$n$ is series.
 [Lesson 2](systems.md)
+
+**Lead time.** The time a spare ordered takes to arrive. With one-for-one
+replenishment, the spares on order are those used in the last lead time.
+[Spares](../guide/spares.md#stock-with-a-lead-time)
 
 **Load sharing.** Redundant units that share a load, so that when one fails
 the survivors carry more of it and are more likely to fail.
@@ -194,6 +237,10 @@ counts as downtime in availability, but not as a failure.
 **Preventive maintenance.** Maintenance done before a failure, on a schedule
 (such as age or block replacement), to prevent failures that would cost
 more. It only pays for parts that wear out. [Lesson 8](maintenance.md)
+
+**Producer's risk.** In a demonstration test, the chance of failing a design
+that meets the level it was built to ($\alpha$). Compare consumer's risk.
+[Demonstration testing](../guide/demonstration.md#plans-that-keep-both-risks)
 
 **Proof test.** A periodic inspection that finds a part's hidden failures;
 the part is repaired if it is found failed. [Lesson 8](maintenance.md)
@@ -262,6 +309,10 @@ component is critical. It depends on the diagram alone.
 **Structure function.** $\varphi(x)$: 1 if the system works when its
 components are in states $x$, 0 otherwise. [Lesson 3](structure.md)
 
+**Theta.** The rate at which a system's availability (or reliability) is
+changing now, split by the component moving it.
+[The Greeks](../guide/greeks.md#theta-what-is-moving-the-station-now)
+
 **Top event.** The undesired event at the top of a fault tree, usually
 the system failing. [Lesson 3](structure.md)
 
@@ -269,8 +320,17 @@ the system failing. [Lesson 3](structure.md)
 buying it plus $H$ times its cost rate (a *life-cycle cost*, undiscounted
 unless a `discount_rate` is given). [Lesson 7](costs.md)
 
+**Unavailability.** One less the availability: the probability that a
+system is down at a time (*point unavailability*), or the fraction of a
+mission it is down. For a safety function, its probability of failure on
+demand. [Repairable systems](../guide/repairable.md#availability-over-time-exact)
+
 **Unreliability.** $F(t) = 1 - R(t)$: the probability that a unit has failed
 by age $t$. [Lesson 1](lifetimes.md)
+
+**Vega.** How much each component's parameter uncertainty widens the
+uncertainty of the system's answer.
+[The Greeks](../guide/greeks.md#vega-whose-uncertainty-widens-the-answer)
 
 **Weibull distribution.** A lifetime with $R(t) = \exp[-(t/\alpha)^\beta]$.
 Its shape $\beta$ gives a falling ($\beta < 1$), constant ($\beta = 1$) or

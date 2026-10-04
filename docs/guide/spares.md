@@ -31,7 +31,7 @@ demand["seal"].stock(0.95)     # -> 55
 ```
 
 Each result is the distribution of the spares used: `probabilities` (of 0,
-1, 2, ... spares) with its `mean()` and `std()`, `covered(s)`, the
+1, 2, ... spares) with its `mean` and `std` (properties), `covered(s)`, the
 probability that `s` spares last the horizon, and `stock(p)`, the fewest
 that last it with probability `p`. The components are counted from new, and
 a fleet's systems independently; `nodes` picks the components (by default

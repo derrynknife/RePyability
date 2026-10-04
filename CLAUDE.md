@@ -289,6 +289,13 @@
   counted level, which goes stale as calls are wrapped. A message never
   puts `'s` after a quoted name (`{node!r}'s` reads `'a''s`): write "the
   life of component {node!r}"; `test_messages.py` scans for it.
+- **Docstrings serve the web pages and `help()` (#238).** Cross-reference
+  as ``[`name`][repyability.Class.name]``: mkdocstrings links it from the
+  source, and `repyability/__init__.py` rewrites it at import, for the
+  classes and functions in `__all__`, to ````name```` (`utils.docs`), so a
+  new public class goes in `__all__`. Long explanations belong in the
+  guide, linked, not in a parameter's description; `test_help.py` checks
+  `help()`.
 - **Every result is a `results._ResultMapping` dataclass (#235)**, so it
   has `to_dict()` (through `results.plain`, ready for `json.dumps`); a
   result holding arrays of a run's length gets a summary `__repr__`.

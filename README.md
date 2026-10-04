@@ -13,8 +13,8 @@ taking already-fitted lifetime models (from
 `sf`/`ff`) as its components:
 
 - **Fault trees**: static fault trees (OR, AND and VOTE gates, repeated
-  events) evaluated exactly, with cut sets, importance measures and
-  conversion to and from block diagrams.
+  events) evaluated exactly, with common-cause groups, cut sets, importance
+  measures and conversion to and from block diagrams.
 - **Reliability**: exact system reliability, hazard and conditional survival;
   the exact MTTF (or simulated, with confidence intervals); B*X* life;
   uncertainty intervals on the reliability, MTTF, B*X* life and time to a
@@ -26,7 +26,8 @@ taking already-fitted lifetime models (from
   landing), each with its own diagram over the same components: the exact
   mission reliability and the chance of failing in each phase.
 - **Testing**: demonstration test plans (the units, or the test time, that
-  demonstrate a reliability or an MTBF), what a test demonstrated, and the
+  demonstrate a reliability or an MTBF), plans that keep both the
+  producer's and the consumer's risk, what a test demonstrated, and the
   chance a design passes.
 - **Importance**: Birnbaum, improvement potential, RAW, RRW, criticality,
   Fussell–Vesely, structural importance and parameter sensitivity, on
@@ -41,9 +42,12 @@ taking already-fitted lifetime models (from
 - **Live state**: reliability, remaining life and importance given each
   component's current age, and covariate-dependent components.
 - **Redundancy and dependence**: cold, warm and hot standby; repeated nodes;
-  load sharing; beta-factor and MGL common-cause groups.
+  load sharing; junctions (a vote point that never fails); beta-factor and
+  MGL common-cause groups, splitting a probability or a failure rate, in
+  block diagrams, repairable systems and fault trees.
 - **Repairable systems**: exact long-run availability, failure frequency and
-  MUT/MDT/MTBF; exact availability over time and over a mission; simulated
+  MUT/MDT/MTBF; exact availability over time and over a mission, and the
+  unavailability to its own precision (a PFD of 1e-17); simulated
   histories with criticality measures; shared repair crews, exact for
   exponential components in the long run and numerical over time, with
   their importance; repairable standby groups (a duty unit and its spares,
@@ -57,7 +61,8 @@ taking already-fitted lifetime models (from
   probability of meeting a demand, and the production availability.
 - **Spares**: how many spares each component uses over a horizon, for a
   system or a fleet, and the stock that meets a fill rate or a stock-out
-  target for a replenishment lead time.
+  target for a replenishment lead time, with interchangeable components'
+  spares pooled on one shelf.
 - **Timelines**: up/down histories, from outage logs or simulated, with
   their measures (time up, failures and who caused them, first failure);
   merged as a diagram's structure, so a system's history follows from its
@@ -75,11 +80,15 @@ taking already-fitted lifetime models (from
   maintenance of grouped components at each other's stops,
   with its intervals chosen for a cost or availability target, hidden
   failures found by periodic inspection, with the test intervals chosen for a
-  PFDavg target, the total cost of ownership, optimal redundancy allocation
-  (for the lowest total cost of a repairable system, too), reliability
+  PFDavg target, the total cost of ownership, discounted to a present
+  value from new or in the long run, optimal redundancy allocation (for the
+  lowest total cost of a repairable system, too, with whole trains given
+  copies together), reliability
   allocation by the classic named methods (equal and ARINC-style
   apportionment, minimum effort, cost-based), availability allocation to
   MTTF and MTTR targets, and age-replacement and overhaul policies.
+- **Saving**: diagrams to and from JSON, seeded results that repeat, and
+  every result as plain data (`to_dict()`, ready for `json.dumps`).
 
 ```python
 import surpyval as surv

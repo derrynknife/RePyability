@@ -463,8 +463,10 @@ and the model, passed via `ccf_groups`. Two models:
 Q_k = [ 1 / C(m−1, k−1) ] · (ρ₁ ρ₂ ⋯ ρ_k) · (1 − ρ_{k+1}) · Q
 ```
 
-  with `ρ₁ = 1, ρ₂ = β, ρ₃ = γ, …, ρ_{m+1} = 0`; these partition each unit's
-  `Q` exactly. A group of `m` members takes `m − 1` letters, and `MGL(β)` on
+  with `ρ₁ = 1, ρ₂ = β, ρ₃ = γ, …, ρ_{m+1} = 0`; the `Q_k` of the sets
+  holding a unit sum to its `Q`, so, its own failure and the shared causes
+  being separate events, it fails with probability `Q` to first order (as
+  in PRA's basic events). A group of `m` members takes `m − 1` letters, and `MGL(β)` on
   two members is exactly `BetaFactor(β)`.
 
 **The evaluation is exact, not a correction factor.** Each model's

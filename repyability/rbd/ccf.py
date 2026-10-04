@@ -461,8 +461,11 @@ class MGL(_Model):
     ``Q_k = [1 / C(m-1, k-1)] * (rho_1 * ... * rho_k) * (1 - rho_{k+1}) * Q``
 
     with ``rho_1 = 1``, ``rho_2 = beta``, ``rho_3 = gamma``, ..., and
-    ``rho_{m+1} = 0``. These partition each component's total failure
-    probability ``Q`` exactly.
+    ``rho_{m+1} = 0``. Those of the sets holding a component sum to its
+    total failure probability ``Q``; its own failure and the shared causes
+    being separate events, it fails with probability ``Q`` to first order
+    (``Q - beta (1 - beta) Q**2`` for one shared cause), as in PRA's basic
+    events.
 
     That is the default ``basis``, ``"probability"``: the PRA basic-event
     model, for a small ``Q`` (see [`BetaFactor`][repyability.BetaFactor]).
@@ -476,8 +479,8 @@ class MGL(_Model):
     **How the shocks combine, splitting the probability.** By default
     (``shocks="exclusive"``) the outcomes are mutually exclusive: the
     group is struck by one shared cause at most, set ``S`` with
-    probability ``Q_k``, so each member fails with probability ``Q``
-    exactly. PRA codes (SAPHIRE, CAFTA, RiskSpectrum) instead take each
+    probability ``Q_k``, so each member fails with probability ``Q`` to
+    first order. PRA codes (SAPHIRE, CAFTA, RiskSpectrum) instead take each
     ``Q_k`` as a basic event of its own, independent of the others, so
     that several may strike: ``shocks="independent"``. The two differ at
     second order in ``Q`` (a 2-out-of-3 group of ``MGL(0.2, 0.3)`` at

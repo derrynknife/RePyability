@@ -456,6 +456,32 @@ other release, fixes included, the minor.
   whichever test comes first" and "twice as soon", as if a test restored
   both, which gives a little less (practice that restores both channels
   at the first test is not modelled).
+- **The docs after 0.12 (#238).** The saving guide said a standby or
+  load-sharing node with no exact reliability was fitted to simulated
+  lifetimes, which 0.12 removed; the spares guide described `mean()` and
+  `std()`, properties since 0.12; the common-cause guide, the concepts and
+  `MGL`'s docstring said a member fails with probability `Q` exactly, where
+  it is `Q` to first order (`Q - β(1 - β)Q²` for one shared cause, as in
+  PRA's basic events: 0.0991 at `Q = 0.1`, `β = 0.1`); and
+  `sf_given_state`, `remaining_life` and `mean_residual_life` said a
+  number given as a node's state is refused, where it is its age.
+- **0.12's features are easier to find (#238).** Junctions, pooled spares,
+  discounting, whole trains, plans that keep both risks, common causes in
+  fault trees and the unavailability over time are in the README's list,
+  the docs' home table and the guide's index; the glossary defines
+  junction, delta, gamma, theta, vega, differential and Barlow–Proschan
+  importance, discount rate, fill rate, lead time, producer's and
+  consumer's risk, and unavailability.
+- **`help()` reads well (#238).** The package's docstring says where to
+  start (the diagram classes, `analysis_routes()`, the docs); the API
+  reference's cross-references read in `help()` as the names they link,
+  where they showed as markup (the web pages, built from the source, keep
+  their links); the sensitivity
+  measures name the Greeks the guide calls them by; and `availability`'s
+  longest options (`control_variate`, `conditional`, `engine`) point to the
+  guide rather than repeat it. `initialize_event_queue` stays public, as
+  the guide steps a simulation by hand with it, and the wheel keeps its
+  tests (#167).
 
 ## [0.12] - 2026-10-04
 

@@ -2246,6 +2246,9 @@ class NonRepairableRBD(RBD):
         uncertain: each uncertain input's share of the quantity's variance
         (#196), the inputs as for ``sf_uncertainty``.
 
+        In the guide's Greeks it is *vega*: whose uncertainty widens the answer
+        (see [Sensitivities: the Greeks](guide/greeks.md)).
+
         ``of`` is the quantity: ``"sf"``, the reliability at the time/s
         ``x`` (as ``sf_uncertainty``); ``"mean"``, the MTTF (as
         ``mean_uncertainty``; no ``x``); ``"bx_life"``, the time by which
@@ -7109,8 +7112,8 @@ class NonRepairableRBD(RBD):
         Raises
         ------
         TypeError
-            If ``state`` is not a dict, or one of its values is not a
-            ``NodeState``.
+            If ``state`` is not a dict, or one of its values is neither a
+            ``NodeState`` nor a number (the node's age).
         ValueError
             If ``x`` is omitted for a time-varying RBD, or ``state`` names
             the input or output node, an unknown node (including a repeated
@@ -7195,7 +7198,8 @@ class NonRepairableRBD(RBD):
             ``upper_bound`` is still above ``target``; or if ``state`` is
             invalid (as for ``sf_given_state``).
         TypeError
-            If ``state`` is not a dict of ``NodeState`` values.
+            If ``state`` is not a dict of ``NodeState`` values (or numbers,
+            the nodes' ages).
         NotImplementedError
             If the RBD has common-cause (CCF) groups.
 
@@ -7263,6 +7267,9 @@ class NonRepairableRBD(RBD):
 
         Raises
         ------
+        TypeError
+            As for ``sf_given_state``: ``state`` is not a dict of
+            ``NodeState`` values (or numbers, the nodes' ages).
         ValueError
             If the RBD is fixed-probability (its reliability does not
             change with time), or as for ``sf_given_state``.
@@ -7499,6 +7506,9 @@ class NonRepairableRBD(RBD):
         broken_nodes: Optional[Collection[Hashable]] = None,
     ) -> dict[Any, Union[float, np.ndarray]]:
         """Birnbaum importance of each node at time/s ``x``.
+
+        In the guide's Greeks it is *delta*: how far the system moves with each
+        node (see [Sensitivities: the Greeks](guide/greeks.md)).
 
         ``B_i = R_sys(i working) - R_sys(i failed)``: the rate at which the
         system reliability changes with node ``i``'s reliability, which is
@@ -8053,6 +8063,9 @@ class NonRepairableRBD(RBD):
     ) -> Dict[Any, Dict[str, Union[float, np.ndarray]]]:
         """Sensitivity of system reliability to each node's parameters.
 
+        In the guide's Greeks it is the levers' *deltas* (see [Sensitivities:
+        the Greeks](guide/greeks.md)).
+
         For node ``i`` with parameter ``theta``, the sensitivity at time/s
         ``x`` is
 
@@ -8252,6 +8265,9 @@ class NonRepairableRBD(RBD):
         reliability when they all change together: the differential
         importance measure (DIM, Borgonovo & Apostolakis, 2001; #193).
 
+        In the guide's Greeks it is *DIM*, the shares of a change (see
+        [Sensitivities: the Greeks](guide/greeks.md)).
+
         ``DIM_i = dR/dtheta_i dtheta_i / sum_j dR/dtheta_j dtheta_j``, so
         the shares add up to 1, and a group's share is the sum of its
         members' (``groups``): what share of a possible gain lies in the
@@ -8393,6 +8409,9 @@ class NonRepairableRBD(RBD):
         """The joint (second-order) importance of each pair of nodes:
         whether improving the two together is worth more than improving
         each (Hong & Lie, 1993; Armstrong, 1995; #194).
+
+        In the guide's Greeks it is *gamma*: complements or substitutes (see
+        [Sensitivities: the Greeks](guide/greeks.md)).
 
         ``JRI(i, j) = d2R / dR_i dR_j = R(1_i, 1_j) - R(1_i, 0_j) -
         R(0_i, 1_j) + R(0_i, 0_j)``, with ``R(1_i, 0_j)`` the system
@@ -8539,6 +8558,9 @@ class NonRepairableRBD(RBD):
         """How fast the system reliability is falling at each time ``x``,
         and which nodes are bringing it down (#195).
 
+        In the guide's Greeks it is *theta*: what is moving the system now (see
+        [Sensitivities: the Greeks](guide/greeks.md)).
+
         The nodes failing independently, the system reliability is
         multilinear in theirs, so
 
@@ -8627,6 +8649,9 @@ class NonRepairableRBD(RBD):
         """Each node's Barlow-Proschan importance: the probability that the
         system's failure is caused by the node's (Barlow & Proschan, 1975;
         #195), given that the system fails by ``x``, or over its whole life.
+
+        In the guide's Greeks it is *theta*, integrated: who caused the
+        failures (see [Sensitivities: the Greeks](guide/greeks.md)).
 
         A node's failure fails the system when the node is critical then,
         so the probability that the system has failed by ``x``, through

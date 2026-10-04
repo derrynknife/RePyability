@@ -153,10 +153,14 @@ maintenance or hidden failures):
 The nodes can change a route:
 
 - **Standby and load-sharing nodes.** Their reliability is exact or numerical
-  where a closed form or convolution applies, and is otherwise fitted to
-  simulated lifetimes (see [Redundancy
-  models](redundancy-models.md#how-the-survival-function-is-obtained)). The
-  analyses built on such a node are then simulated too.
+  where a closed form or convolution applies (see [Redundancy
+  models](redundancy-models.md#how-the-survival-function-is-obtained)).
+  Otherwise the node is simulated (`is_simulated`): it refuses `sf`, `ff`,
+  `cs` and `mean()`, and so do the exact and numerical analyses of a
+  diagram that holds it, saying why, while its lifetimes are still drawn,
+  so the simulations take it (`random`, `mean(method="simulate")` and
+  `unreliability_interval`, or a repairable diagram's `availability` and
+  `cost`). Until 0.12 its reliability was fitted to simulated lifetimes.
 - **Maintenance.** Preventive maintenance makes the long-run values numerical,
   and the values over time too, replacement on condition (`"policy":
   "condition"`) among it (#161). The exact
