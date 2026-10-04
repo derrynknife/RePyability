@@ -686,6 +686,22 @@ def _module_shards(
     )
 
 
+#: A window's expected cost split by category and by component (see
+#: ``CostResult.by_category`` and ``by_component``).
+_Breakdown = Tuple[Dict[str, float], Dict[Hashable, float]]
+
+
+class _Exacts(NamedTuple):
+    """A system's expected values over a window, worked out exactly (see
+    ``RepairableRBD._twin_exact``): its mean availability and, if it is
+    priced, its expected cost, with that cost's split (see
+    ``ExpectedCost``)."""
+
+    availability: float
+    cost: Optional[float] = None
+    breakdown: Optional[_Breakdown] = None
+
+
 class _ModuleRun:
     """A system's dependent modules simulated alone, and every other node
     taken exactly given their joint states (#189, see ``_conditional``):
@@ -772,7 +788,7 @@ class _ModuleRun:
         self.twin_sub: Optional["RepairableRBD"] = None
         self.widths: Optional[dict] = None
         self.twin_module_states: dict = {}
-        self.exacts: Tuple[float, Optional[float]] = (0.0, None)
+        self.exacts = _Exacts(0.0)
         if control_variate and self.sub is not None:
             if self.shards is not None:
                 raise ValueError(
@@ -1009,6 +1025,34 @@ class _ModuleRun:
             + self.rbd.downtime_cost_rate * (self.T - self.uptimes())
         )
 
+    def breakdown(self) -> _Breakdown:
+        """The expected cost of a window given the modules' histories (the
+        mean of ``costs``), by category and by component: the modules' own
+        costs in the simulations, the other nodes' expected costs, and the
+        system's expected down time's."""
+        n, exact_cost = self.n, self.exact_cost
+        assert exact_cost is not None
+        by_category = {
+            key: self.own_categories[key] / n
+            + (
+                0.0
+                if key == "system_downtime"
+                else float(np.ravel(exact_cost.by_category.get(key, 0.0))[0])
+            )
+            for key in _CATEGORIES
+        }
+        by_category["system_downtime"] = float(
+            np.mean(self.rbd.downtime_cost_rate * (self.T - self.uptimes()))
+        )
+        by_component = {
+            node: float(np.ravel(value)[0])
+            for node, value in exact_cost.by_component.items()
+            if node not in self.fixed
+        }
+        for node, amount in self.own_components.items():
+            by_component[node] = amount / n
+        return by_category, by_component
+
     def controls(
         self,
     ) -> Tuple[Optional[ControlVariate], Optional[ControlVariate]]:
@@ -1065,11 +1109,21 @@ class _ModuleRun:
         if reason is not None:
             warnings.warn(f"{reason} {instead}", RuntimeWarning, stacklevel=4)
 
+    def split(self, record: ConditionalRun) -> Optional[_Breakdown]:
+        """The expected cost's split a plain run takes with ``record``, its
+        means given the modules (see ``means``): ``breakdown``, where the
+        cost's mean is taken given them (priced, and the modules changed
+        state, see ``ConditionalRun.informative``); else None, and the
+        split is the simulations' own."""
+        if not self.priced or not record.informative:
+            return None
+        return self.breakdown()
+
     def means(self) -> ConditionalRun:
         """The record of a plain run whose means are taken given its
         modules (see ``RepairableRBD._conditioned_run``)."""
         self._warn_unjudged(
-            "The mean intervals are the simulations' own "
+            "The means and their intervals are the simulations' own "
             "(method='simulated')."
         )
         return ConditionalRun(
@@ -1117,31 +1171,9 @@ class _ModuleRun:
         control, cost_control = self.controls()
         cost_result = None
         if self.priced:
-            exact_cost = self.exact_cost
-            assert exact_cost is not None
-            system_down = rbd.downtime_cost_rate * (T - uptimes)
-            samples = self.costs()
-            by_category = {
-                key: self.own_categories[key] / n
-                + (
-                    0.0
-                    if key == "system_downtime"
-                    else float(
-                        np.ravel(exact_cost.by_category.get(key, 0.0))[0]
-                    )
-                )
-                for key in _CATEGORIES
-            }
-            by_category["system_downtime"] = float(np.mean(system_down))
-            by_component = {
-                node: float(np.ravel(value)[0])
-                for node, value in exact_cost.by_component.items()
-                if node not in self.fixed
-            }
-            for node, amount in self.own_components.items():
-                by_component[node] = amount / n
+            by_category, by_component = self.breakdown()
             cost_result = CostResult(
-                samples=samples,
+                samples=self.costs(),
                 t_simulation=T,
                 n_simulations=n,
                 acquisition_cost=rbd.acquisition_cost,
@@ -1205,7 +1237,7 @@ class _ModuleRun:
 def _exact_controls(
     tally: "_Tally",
     t_simulation: float,
-    exacts: Tuple[float, Optional[float]],
+    exacts: _Exacts,
     antithetic: bool,
 ) -> Tuple[ControlVariate, Optional[ControlVariate]]:
     """The controls of a run's fractions up and costs by the system itself,
@@ -1213,7 +1245,7 @@ def _exact_controls(
     its mean availability over the window and its expected cost (None
     unpriced). Its intervals are then those values, with no error (see
     ``ControlVariate.itself``)."""
-    exact, exact_cost = exacts
+    exact, exact_cost = exacts.availability, exacts.cost
     fractions = np.asarray(tally.uptimes, dtype=float) / t_simulation
     control = ControlVariate.of(
         fractions, fractions, exact, antithetic, itself=True
@@ -10556,8 +10588,8 @@ class RepairableRBD(RBD):
             exact_means = (
                 " Its expected values over the window need none: "
                 "mission_availability, expected_events and expected_cost "
-                "work them out, and by default a run's mean intervals are "
-                "theirs, with no error, so a run to a tolerance stops at "
+                "work them out, and by default a run's means are theirs, "
+                "with no error, so a run to a tolerance stops at "
                 "once. Simulate for their spread: each simulation's values, "
                 "percentiles, the chance of no failure."
             )
@@ -10567,7 +10599,7 @@ class RepairableRBD(RBD):
             if modules:
                 names = ", ".join(map(repr, modules))
                 exact_means = (
-                    " By default a run's mean intervals take each "
+                    " By default a run's means take each "
                     "simulation's expected values given the histories of "
                     f"{names}, the rest exact given their states, which "
                     "vary less than its own; with conditional=True only "
@@ -15165,13 +15197,15 @@ class RepairableRBD(RBD):
             exact twin. By default None: where the exact methods work out
             the system's expected values over the window
             (``mission_availability``, and ``expected_cost`` its cost), as
-            for independent components, the result's mean intervals are
-            those values, with no error, its twin being the system itself
-            (#187), and a run to a ``tolerance`` stops at once; otherwise
-            its means may be taken given its modules (see
-            ``conditional``). False forces a plain simulation, whose
-            intervals are the simulations' own. True controls the run by
-            the twin, whose simulations are then alongside. The twin has
+            for independent components, the result's means
+            (``mean_availability``, the cost's ``mean`` and breakdowns) and
+            their intervals are those values, with no error, its twin being
+            the system itself (#187, #223), and a run to a ``tolerance``
+            stops at once; otherwise its means may be taken given its
+            modules (see ``conditional``). False forces a plain simulation,
+            whose means and intervals are the simulations' own. True
+            controls the run by the twin, whose simulations are then
+            alongside. The twin has
             the same diagram,
             components and models, failing and repaired independently:
             without a limit on repair crews or maintenance groups and,
@@ -15183,19 +15217,20 @@ class RepairableRBD(RBD):
             and ``expected_cost`` its cost), and it is simulated alongside
             the system with common random numbers, as ``compare`` does, so
             its error against its exact value shows how far the system's
-            own mean is off. ``mean_availability_interval`` (and the
-            cost's ``mean_interval``) then give ``mean(x) - b * (mean(twin)
-            - exact)``, with the coefficient ``b`` that leaves the least
-            variance: ``1 - corr**2`` times the plain mean's. A
-            ``tolerance`` is judged on it, so the run stops sooner. The
-            result's ``control_variate`` holds the twin's values, its exact
-            value and ``b`` (see
+            own mean is off. ``mean_availability`` and its interval (and
+            the cost's ``mean`` and ``mean_interval``) are then ``mean(x) -
+            b * (mean(twin) - exact)``, with the coefficient ``b`` that
+            leaves the least variance: ``1 - corr**2`` times the plain
+            mean's. A ``tolerance`` is judged on it, so the run stops
+            sooner. The result's ``control_variate`` holds the twin's
+            values, its exact value and ``b`` (see
             [`ControlVariate`][repyability.ControlVariate]); everything else
-            is the simulations' own. Every draw must come from a stream
-            (surpyval parametric models), the streams are laid out as
-            ``compare`` lays them, so a seeded run's simulations can differ
-            from those of a run without it, and it runs with ``shard_map``
-            only when the twin is the system itself. See
+            (the cost's breakdowns too) is the simulations' own. Every draw
+            must come from a stream (surpyval parametric models), the
+            streams are laid out as ``compare`` lays them, so a seeded
+            run's simulations can differ from those of a run without it,
+            and it runs with ``shard_map`` only when the twin is the system
+            itself. See
             [An exact twin](guide/simulation.md#an-exact-twin).
         conditional : bool, optional
             Take the expected values given the histories of the dependent
@@ -15213,12 +15248,12 @@ class RepairableRBD(RBD):
             default None: where the system has modules and the exact
             methods do not take it whole (see ``control_variate``), the
             whole system is simulated as a plain run simulates it, and its
-            mean intervals (``mean_availability_interval``, the cost's
-            ``mean_interval``) are those of its simulations' expected
-            values given their modules, which are simulated again alone,
-            drawing what they drew; a run to a ``tolerance`` is judged on
-            them, and everything else is the simulations' own (see
-            [`ConditionalRun`][repyability.ConditionalRun]). False keeps
+            means (``mean_availability``, the cost's ``mean`` and
+            breakdowns) and their intervals are those of its simulations'
+            expected values given their modules, which are simulated again
+            alone, drawing what they drew; a run to a ``tolerance`` is
+            judged on them, and everything else is the simulations' own
+            (see [`ConditionalRun`][repyability.ConditionalRun]). False keeps
             the simulations' own means. True simulates only the modules,
             which costs only their events: for a run to a ``tolerance`` on a
             large system, a fraction of the work. But each simulation's
@@ -16033,7 +16068,7 @@ class RepairableRBD(RBD):
             )
         )
         # The means the run's result takes by default (#187, #189).
-        controls, record = self._default_means(
+        controls, record, breakdown = self._default_means(
             chunk._tally,
             float(settings["t_simulation"]),
             working,
@@ -16052,6 +16087,7 @@ class RepairableRBD(RBD):
             capacity,
             controls,
             conditional=record,
+            breakdown=breakdown,
         )
 
     def _default_means(
@@ -16065,21 +16101,30 @@ class RepairableRBD(RBD):
         antithetic: bool,
         state,
         ranges: List[Tuple[int, int]],
-    ) -> Tuple[Tuple[Optional[ControlVariate], ...], Optional[ConditionalRun]]:
+    ) -> Tuple[
+        Tuple[Optional[ControlVariate], ...],
+        Optional[ConditionalRun],
+        Optional[_Breakdown],
+    ]:
         """The means the result of a plain run takes by default, for its
         simulations ``ranges`` in ``tally`` (chunks merged, see
         ``availability_from_chunks``), as ``availability`` takes them: the
         exact methods', where they work them out (#187, see
         ``_exact_controls``), or given the histories of its modules,
         simulated again from the run's ``entropy`` (#189, see
-        ``_conditioned_run``); else none."""
+        ``_conditioned_run``), with the expected cost's split found so;
+        else none."""
         T = t_simulation
         exact_means = self._exact_means(T, working, broken, method, state)
         if exact_means is not None:
-            return _exact_controls(tally, T, exact_means, antithetic), None
+            return (
+                _exact_controls(tally, T, exact_means, antithetic),
+                None,
+                exact_means.breakdown,
+            )
         modules = self._conditional_applies(working, broken, state)
         if not modules:
-            return (None, None), None
+            return (None, None), None, None
         run = _ModuleRun(
             self,
             T,
@@ -16097,10 +16142,11 @@ class RepairableRBD(RBD):
         try:
             run.prepare()
         except NotImplementedError:
-            return (None, None), None
+            return (None, None), None, None
         for start, stop in ranges:
             run.simulate(start, stop - start)
-        return (None, None), run.means()
+        record = run.means()
+        return (None, None), record, run.split(record)
 
     def _fingerprint(self) -> Optional[str]:
         """A hash of this system saved as JSON (with the RePyability
@@ -16560,7 +16606,7 @@ class RepairableRBD(RBD):
         )
         twin = None
         changes: List[str] = []
-        exacts: Optional[Tuple[float, Optional[float]]] = None
+        exacts: Optional[_Exacts] = None
         if control_variate:
             twin, changes = self._twin()
             if shard_map is not None and changes:
@@ -16612,6 +16658,8 @@ class RepairableRBD(RBD):
             sharded = (shard_map, template, step)
         jobs = None if n_jobs is None else montecarlo.jobs(n_jobs)
         controls: Tuple[Optional[ControlVariate], ...] = (None, None)
+        # The expected cost's split, where the means are exact (#223).
+        breakdown: Optional[_Breakdown] = None
         if modules:
             done = self._conditioned_run(
                 modules,
@@ -16637,7 +16685,7 @@ class RepairableRBD(RBD):
                 shard_size=shard_size,
             )
             if done is not None:
-                tally, record = done
+                tally, record, breakdown = done
                 return self._availability_result(
                     tally,
                     t_simulation,
@@ -16645,6 +16693,7 @@ class RepairableRBD(RBD):
                     antithetic,
                     capacity,
                     conditional=record,
+                    breakdown=breakdown,
                 )
         if twin is not None:
             assert exacts is not None
@@ -16670,6 +16719,9 @@ class RepairableRBD(RBD):
                 itself=not changes,
                 sharded=sharded,
             )
+            if not changes:
+                # Its means are the system's exact ones (#223).
+                breakdown = exacts.breakdown
         else:
             tally = self._run(
                 t_simulation,
@@ -16694,8 +16746,15 @@ class RepairableRBD(RBD):
                 controls = _exact_controls(
                     tally, t_simulation, exact_means, antithetic
                 )
+                breakdown = exact_means.breakdown
         return self._availability_result(
-            tally, t_simulation, initial_up, antithetic, capacity, controls
+            tally,
+            t_simulation,
+            initial_up,
+            antithetic,
+            capacity,
+            controls,
+            breakdown=breakdown,
         )
 
     def _exact_means(
@@ -16705,7 +16764,7 @@ class RepairableRBD(RBD):
         broken: set,
         method: str,
         state,
-    ) -> Optional[Tuple[float, Optional[float]]]:
+    ) -> Optional[_Exacts]:
         """The system's own expected values over the window, where the
         exact methods work them out (#187): its mean availability and, if
         it is priced, its expected cost (see ``_twin_exact``); else None."""
@@ -17014,7 +17073,7 @@ class RepairableRBD(RBD):
         sharded: Optional[tuple],
         shard_map: Optional[Callable],
         shard_size: Optional[int],
-    ) -> Optional[Tuple["_Tally", ConditionalRun]]:
+    ) -> Optional[Tuple["_Tally", ConditionalRun, Optional[_Breakdown]]]:
         """A plain run whose means are taken given its ``modules``'
         histories (#189), by default where a conditional run applies: the
         simulations, in rounds while ``stop`` asks for more (judged by
@@ -17022,9 +17081,10 @@ class RepairableRBD(RBD):
         time and cost given the histories of its modules, worked out as a
         conditional run works them out (see ``_ModuleRun``): the modules'
         simulations are the plain run's, drawn from the same streams. The
-        simulations' totals, and a record holding those values; or None,
-        before simulating anything, if the rest cannot be worked out
-        exactly given the modules."""
+        simulations' totals, a record holding those values, and the
+        expected cost's split given the modules (None unpriced, or while
+        they have not changed state); or None, before simulating anything,
+        if the rest cannot be worked out exactly given the modules."""
         entropy = _streams.entropy_of(seed)
         run = _ModuleRun(
             self,
@@ -17083,7 +17143,8 @@ class RepairableRBD(RBD):
                 break
             count = more
         assert tally is not None
-        return tally, run.means()
+        record = run.means()
+        return tally, record, run.split(record)
 
     def _twin_exact(
         self,
@@ -17093,20 +17154,17 @@ class RepairableRBD(RBD):
         broken: set,
         method: str,
         state,
-    ) -> Tuple[float, Optional[float]]:
+    ) -> _Exacts:
         """The exact ``twin``'s (see ``_twin``) mean availability over the
-        window and, if both systems are priced, its expected cost (else
-        None), building each component's curve once for both (#185)."""
+        window and, if both systems are priced, its expected cost, by
+        category and by component (else None), building each component's
+        curve once for both (#185)."""
         priced = self.has_costs and twin.has_costs
         # The cost's curves, which count events, serve the availability too.
         with twin._sharing_curves():
-            exact_cost = (
-                float(
-                    np.ravel(
-                        twin.expected_cost(
-                            t_simulation, working, broken, method, state=state
-                        ).mean
-                    )[0]
+            expected = (
+                twin.expected_cost(
+                    t_simulation, working, broken, method, state=state
                 )
                 if priced
                 else None
@@ -17118,12 +17176,25 @@ class RepairableRBD(RBD):
                     )
                 )[0]
             )
-        return exact, exact_cost
+        if expected is None:
+            return _Exacts(exact)
+
+        def first(value) -> float:
+            return float(np.ravel(value)[0])
+
+        return _Exacts(
+            exact,
+            first(expected.mean),
+            (
+                {key: first(v) for key, v in expected.by_category.items()},
+                {node: first(v) for node, v in expected.by_component.items()},
+            ),
+        )
 
     def _controlled_run(
         self,
         twin: "RepairableRBD",
-        exacts: Tuple[float, Optional[float]],
+        exacts: _Exacts,
         t_simulation: float,
         working: set,
         broken: set,
@@ -17156,7 +17227,7 @@ class RepairableRBD(RBD):
         ``_run``)."""
         assert sharded is None or itself
         twin_states = twin._simulation_states(state, working | broken)
-        exact, exact_cost = exacts
+        exact, exact_cost = exacts.availability, exacts.cost
         entropy = _streams.entropy_of(seed)
         widths = self._common_widths(twin, t_simulation, states, twin_states)
         tally: Optional[_Tally] = None
@@ -17845,12 +17916,16 @@ class RepairableRBD(RBD):
         capacity: Optional[_CapacityRecorder] = None,
         controls: Tuple[Optional[ControlVariate], ...] = (None, None),
         conditional: Optional[ConditionalRun] = None,
+        breakdown: Optional[_Breakdown] = None,
     ) -> AvailabilityResult:
         """The ``AvailabilityResult`` of the replications in ``tally``: its
         exact totals rounded, once; with ``controls``, the controls of its
         fractions up and its costs by an exact twin (see
         ``_controlled_run``); with ``conditional``, the record of its means
-        taken given its modules' histories (see ``_conditioned_run``)."""
+        taken given its modules' histories (see ``_conditioned_run``); with
+        ``breakdown``, the split of the expected cost its mean is found
+        with, exact or given the modules (#223), in place of the
+        simulations' own."""
         N = tally.n
         nodes = tally.nodes
         tally._fold()
@@ -17933,17 +18008,27 @@ class RepairableRBD(RBD):
             # Per-component means cover each node's repair, replace,
             # preventive and own downtime cost. (System downtime is a
             # system-level quantity and is not attributed to components.)
+            by_category, by_component = (
+                breakdown
+                if breakdown is not None
+                else (
+                    {
+                        k: float(v) / N
+                        for k, v in tally.cost_by_category.items()
+                    },
+                    {
+                        k: float(v) / N
+                        for k, v in tally.cost_by_component.items()
+                    },
+                )
+            )
             cost_result = CostResult(
                 samples=np.asarray(tally.cost_samples, dtype=float),
                 t_simulation=t_simulation,
                 n_simulations=N,
                 acquisition_cost=self.acquisition_cost,
-                by_category={
-                    k: float(v) / N for k, v in tally.cost_by_category.items()
-                },
-                by_component={
-                    k: float(v) / N for k, v in tally.cost_by_component.items()
-                },
+                by_category=by_category,
+                by_component=by_component,
                 antithetic=antithetic,
                 control_variate=controls[1],
                 conditional=conditional,
@@ -18124,24 +18209,27 @@ class RepairableRBD(RBD):
             ``availability``.
         control_variate : bool, optional
             Control the estimate of the mean cost by the system's exact
-            twin, as for ``availability``: ``mean_interval`` then gives the
-            controlled estimate, from the twin's exact ``expected_cost``,
-            and a ``tolerance`` is judged on it. By default None: where the
-            exact methods work out the system's expected cost over the
-            window, ``mean_interval`` is that cost, with no error (#187), as
-            for ``availability``. False forces a plain simulation.
+            twin, as for ``availability``: the result's ``mean`` and
+            ``mean_interval`` are then the controlled estimate's, from the
+            twin's exact ``expected_cost``, and a ``tolerance`` is judged
+            on it. By default None: where the exact methods work out the
+            system's expected cost over the window, ``mean`` is that cost,
+            with no error, and the breakdowns its split (#187, #223), as
+            for ``availability``. False forces a plain simulation, whose
+            ``mean`` is ``sample_mean``.
         conditional : bool, optional
             Take the expected cost given the histories of the dependent
             modules, as for ``availability`` (#189): each simulation's
             expected cost given them is the modules' own costs as
             simulated, the other nodes' exact expected costs and the
             system downtime's expected cost. By default None: where a
-            system has modules, ``mean_interval`` is that of those
-            expected costs, while ``samples``, ``mean``, ``std`` and
-            ``percentile`` are the simulations' own. False keeps the
-            simulations' own means. True simulates only the modules:
-            ``samples`` are then those expected costs, so ``mean`` and
-            ``mean_interval`` hold and ``percentile`` and ``std`` refuse.
+            system has modules, ``mean``, its interval and the breakdowns
+            are those of these expected costs, while ``samples``,
+            ``sample_mean``, ``std`` and ``percentile`` are the
+            simulations' own. False keeps the simulations' own means. True
+            simulates only the modules: ``samples`` are then those
+            expected costs, so ``sample_mean`` is ``mean``, and
+            ``percentile`` and ``std`` refuse.
 
         Returns
         -------
@@ -18177,12 +18265,14 @@ class RepairableRBD(RBD):
         ...     downtime_cost_rate=50.0,
         ... )
         >>> result = rbd.cost(t_simulation=100.0, mc_samples=200, seed=0)
-        >>> round(result.mean, 2)  # mean cost of a 100-hour window
+        >>> round(result.mean, 2)  # expected cost of a 100-hour window: exact
+        1360.33
+        >>> round(result.sample_mean, 2)  # the 200 windows' own
         1354.77
         >>> round(result.percentile(90), 2)  # 9 windows in 10 cost less
         1961.22
         >>> round(result.cost_rate, 2), round(rbd.expected_cost_rate(), 2)
-        (13.55, 13.64)
+        (13.6, 13.64)
         """
         N = 10_000 if mc_samples is None else mc_samples
         t_simulation = _check_window(t_simulation)

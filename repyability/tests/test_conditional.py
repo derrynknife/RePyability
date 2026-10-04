@@ -915,4 +915,10 @@ def test_modules_that_changed_state_give_the_conditional_error():
     assert cost.conditional.states > 1
     interval = cost.mean_interval()
     assert interval.method == "conditional"
-    assert 0.0 < interval.standard_error < cost.mean_se
+    assert 0.0 < interval.standard_error < cost.sample_se
+    # The result's own mean and error are the interval's (#223); the
+    # simulations' own are beside them.
+    assert cost.mean == interval.estimate
+    assert cost.mean_se == interval.standard_error
+    assert cost.sample_mean == pytest.approx(np.mean(cost.samples))
+    assert math.fsum(cost.by_category.values()) == pytest.approx(cost.mean)

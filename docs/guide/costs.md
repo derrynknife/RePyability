@@ -93,12 +93,12 @@ total cost per simulated window.
 
 ```python
 costs = plant.cost(t_simulation=1000.0, mc_samples=500, seed=0)
-costs.mean              # mean total cost of a window
-costs.cost_rate         # mean / t_simulation: converges to expected_cost_rate()
+costs.mean              # the expected cost of a window: exact here
+costs.cost_rate         # mean / t_simulation: tends to expected_cost_rate()
 costs.percentile(90)    # a planning budget: 9 windows in 10 cost less
 costs.std               # how much a window's cost varies
-costs.by_category       # mean repair, replace, preventive, inspection, component_downtime, system_downtime, setup
-costs.by_component      # mean cost attributable to each costed component
+costs.by_category       # mean split: repair, replace, preventive, inspection, component_downtime, system_downtime, setup
+costs.by_component      # the part of mean each costed component accounts for
 ```
 
 `cost()` takes the same arguments as `availability()` (`working_nodes`,
@@ -108,23 +108,49 @@ costs.by_component      # mean cost attributable to each costed component
 `availability(...)` as `result.cost`, so one simulation gives both answers.
 With nothing priced, `cost()` returns `None` and `result.cost` is `None`.
 
+### One expected value
+
+`mean` is the run's estimate of a window's expected cost, the one
+`mean_interval()` gives an interval for, and `cost_rate` and the breakdowns
+follow it. By default it is exact where the exact methods work it out, as
+here (`expected_cost`, below), and otherwise taken given the histories of
+the system's dependent modules, or the simulations' own (see
+[exact or simulated?](simulation.md#exact-or-simulated)). The
+simulations' own mean, the average of `samples`, is `sample_mean`; the repr
+shows both:
+
+```python
+costs.mean_interval().method              # 'exact'
+costs.mean == plant.expected_cost(1000.0).mean   # True
+round(costs.mean, 1)                      # -> 121155.1
+round(costs.sample_mean, 1)               # -> 121702.6   the 500 windows' own
+```
+
 ### Two different uncertainties
 
 - `std` and `percentile` describe how much a window's cost **varies**. That
   is a property of the system; more simulations will not shrink it.
 - `mean_se` and `mean_interval(confidence)` describe how precisely the
-  **expected** cost has been estimated. They shrink like `1/√N`; check them
-  before quoting the mean, or pass `tolerance` to `cost()` to simulate until
-  the interval is narrow enough.
+  **expected** cost has been estimated: exactly, here, with no error; for a
+  mean that is simulated they shrink like `1/√N`. Check them before quoting
+  the mean, or pass `tolerance` to `cost()` to simulate until the interval
+  is narrow enough. With `control_variate=False` (and `conditional=False`),
+  the mean and its interval are the simulations' own:
 
 ```python
-interval = costs.mean_interval(confidence=0.95)
-interval.lower < plant.expected_cost_rate() * 1000.0 < interval.upper   # True
+own = plant.cost(t_simulation=1000.0, mc_samples=500, seed=0, control_variate=False)
+interval = own.mean_interval(confidence=0.95)
+interval.method                                                       # 'simulated'
+round(interval.standard_error, 1)                                     # -> 850.0
+interval.lower < plant.expected_cost(1000.0).mean < interval.upper    # True
 ```
 
 `by_category` sums to `mean`; `by_component` covers each component's repair,
-replace, preventive and own downtime cost (lost production is a system cost
-and is not attributed to components).
+replace, preventive, inspection and own downtime cost (lost production is a
+system cost, and a maintenance group's set-up cost the group's: neither is
+attributed to a component). Under `control_variate=True`, whose twin
+controls only the total, the breakdowns are the simulations' own, and sum
+to `sample_mean`.
 
 ## The expected cost of a window (exact)
 
@@ -363,15 +389,16 @@ density (no units dead on arrival), and repairs that always end; otherwise
 they raise `NotImplementedError`, and the simulation still applies.
 
 The simulation prices both policies. A replacement's cost is in
-`by_category["preventive"]`, and a planned outage counts as downtime, but not
-as a failure: `system_planned_outages` counts the times one took the system
-down.
+`by_category["preventive"]` (the expected cost, exact here, as the cost's
+`mean` is), and a planned outage counts as downtime, but not as a failure:
+`system_planned_outages` counts the times one took the system down in the
+simulations.
 
 ```python
 year = alone(580).availability(t_simulation=8760.0, mc_samples=500, seed=0)
 year.system_failures / year.n_simulations          # -> 3.518
 year.system_planned_outages / year.n_simulations   # -> 11.92
-year.cost.by_category["preventive"]                # -> 11918.0   1000 each
+year.cost.by_category["preventive"]                # -> 11886.8   1000 each, expected
 ```
 
 ### Replacement on condition
@@ -403,7 +430,8 @@ inspected = RepairableRBD([("s", "p"), ("p", "t")],
                           downtime_cost_rate=500.0)
 inspected.expected_cost_rate()              # -> 13.37   per hour
 run = inspected.cost(200_000.0, mc_samples=20, seed=1)
-run.mean / 200_000.0                        # -> 13.28   simulated, ± 0.2
+run.cost_rate                               # -> 13.36   exact over the window
+run.sample_mean / 200_000.0                 # -> 13.28   the 20 simulations', ± 0.2
 ```
 
 | Threshold | 0.05 | 0.1 | 0.15 | 0.2 | 0.25 | 0.3 |

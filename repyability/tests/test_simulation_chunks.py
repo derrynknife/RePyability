@@ -405,7 +405,7 @@ def test_the_totals_are_rounded_once():
     result = rbd.availability(100.0, mc_samples=500, seed=3)
     assert result.system_uptime == math.fsum(result.uptimes)
     assert result.system_downtime == math.fsum(100.0 - result.uptimes)
-    costs = rbd.cost(100.0, mc_samples=500, seed=3)
+    costs = rbd.cost(100.0, mc_samples=500, seed=3, control_variate=False)
     assert math.fsum(costs.samples) == pytest.approx(
         500 * sum(costs.by_category.values()), rel=1e-14
     )

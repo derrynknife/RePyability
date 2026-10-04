@@ -297,14 +297,16 @@ def test_antithetic_cost_is_unbiased_and_tighter():
             + 0.02 * window_mean(lambda t: marginal(0.02, 0.5, t))
         )
     )
-    paired = rbd.cost(T, mc_samples=4000, seed=4, antithetic=True)
+    paired = rbd.cost(
+        T, mc_samples=4000, seed=4, antithetic=True, control_variate=False
+    )
     assert paired.antithetic
     assert abs(paired.mean - exact) < 4 * paired.mean_se
     pairs = (paired.samples[0::2] + paired.samples[1::2]) / 2
     assert paired.mean_se == pytest.approx(
         np.std(pairs, ddof=1) / np.sqrt(2000), rel=1e-12
     )
-    independent = rbd.cost(T, mc_samples=4000, seed=4)
+    independent = rbd.cost(T, mc_samples=4000, seed=4, control_variate=False)
     assert paired.mean_se < 0.8 * independent.mean_se
 
 
@@ -335,18 +337,15 @@ def test_parallel_results_do_not_depend_on_the_processes():
         T, mc_samples=600, seed=4, n_jobs=1, control_variate=False
     )
     assert one.n_simulations == 600
-    assert_same_results(
-        one, rbd.availability(T, mc_samples=600, seed=4, n_jobs=2)
-    )
-    assert_same_results(
-        one, rbd.availability(T, mc_samples=600, seed=4, n_jobs=-1)
-    )
+    plain = dict(mc_samples=600, seed=4, control_variate=False)
+    assert_same_results(one, rbd.availability(T, n_jobs=2, **plain))
+    assert_same_results(one, rbd.availability(T, n_jobs=-1, **plain))
     exact = window_mean(lambda t: plant_availability(1.0, t))
     interval = one.mean_availability_interval()
     assert abs(interval.estimate - exact) < 4 * interval.standard_error
     # Nor on whether it runs in processes at all: each simulation is the
     # same however the run is cut up, so the first 250 are a run of 250.
-    assert_same_results(one, rbd.availability(T, mc_samples=600, seed=4))
+    assert_same_results(one, rbd.availability(T, **plain))
     first = rbd.availability(T, mc_samples=250, seed=4, n_jobs=2)
     np.testing.assert_array_equal(one.uptimes[:250], first.uptimes)
     assert not np.array_equal(one.uptimes[:250], one.uptimes[250:500])

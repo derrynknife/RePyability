@@ -823,7 +823,7 @@ plant.initialize_event_queue(100.0)
 events = [plant.next_event()]
 while events[-1][0] < 100.0:
     events.append(plant.next_event())
-events[0]   # (15.06..., False): the plant first went down at t = 15.06
+events[0]   # (17.18..., False): the plant first went down at t = 17.19
 ```
 
 `initialize_event_queue(t_simulation, state=...)` starts the history from

@@ -1034,10 +1034,18 @@ def seeded_runs():
             ),
         )
         if rbd.has_costs:
+            # The simulations' own breakdown, which a run whose mean is
+            # exact replaces with the exact one (#223).
             runs[f"{name}, cost"] = (
                 rbd,
                 "cost",
-                dict(t_simulation=200.0, mc_samples=20, seed=25),
+                dict(
+                    t_simulation=200.0,
+                    mc_samples=20,
+                    seed=25,
+                    control_variate=False,
+                    conditional=False,
+                ),
             )
     air = instrument_air()
     runs["instrument air"] = (

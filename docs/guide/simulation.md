@@ -26,10 +26,10 @@ where its exact methods take it: only their spread does.
 
 | Question | Exact, no simulation | Simulated (`availability`, `cost`) |
 |---|---|---|
-| The mean availability over a window | `mission_availability(t)` | `mean_availability_interval()` |
+| The mean availability over a window | `mission_availability(t)` | `mean_availability`, `mean_availability_interval()` |
 | The availability at given times | `point_availability(times)` | the result's curve, `availability` |
 | The expected failures, planned outages and down time | `expected_failures(t)`, `expected_events(t)` | the totals over the simulations (`system_failures`, ...) |
-| The expected cost, by category and component | `expected_cost(t)` | `cost.mean_interval()` |
+| The expected cost, by category and component | `expected_cost(t)` | `cost.mean`, `cost.by_category`, `cost.mean_interval()` |
 | The long run | `mean_availability()`, `system_failure_frequency()`, ... | |
 | How a window varies: each simulation's up time and cost, percentiles, the chance of no failure | | `uptimes`, `cost.samples`, `cost.percentile(q)` |
 
@@ -37,15 +37,20 @@ The exact methods take independent components, with their maintenance and
 tests, and repair crews and standby groups where their Markov chains do;
 `analysis_routes()` says which a system's take, and its `availability`
 route says whether its expected values need a simulation. Where they take
-it, `availability` and `cost` take them too: by default a run's mean
-intervals (`mean_availability_interval`, the cost's `mean_interval`) are
-the exact values, with no error, and a run to a `tolerance` stops at once;
-the simulations give the rest. Where a system has a few nodes the exact
-methods do not take, its means are by default taken given their histories,
-the rest exact (see [Conditional runs](#conditional-runs)).
-`control_variate=False` keeps the simulations' own means, for a quick run
-that should not wait for the exact part (a few tenths of a second, more
-than a few hundred simulations of a small system take).
+it, `availability` and `cost` take them too: by default a run's means
+(`mean_availability`, the cost's `mean`, `cost_rate` and breakdowns) and
+their intervals (`mean_availability_interval`, the cost's `mean_interval`)
+are the exact values, with no error, and a run to a `tolerance` stops at
+once; the simulations give the rest. Where a system has a few nodes the
+exact methods do not take, its means are by default taken given their
+histories, the rest exact (see [Conditional runs](#conditional-runs)). The
+simulations' own means are beside them, whatever the method
+(`sample_mean_availability`, the cost's `sample_mean`), and the interval's
+`method` says which the means are: `"exact"`, `"conditional"`,
+`"control_variate"` or `"simulated"`. `control_variate=False` keeps the
+simulations' own means, for a quick run that should not wait for the exact
+part (a few tenths of a second, more than a few hundred simulations of a
+small system take).
 
 | Option | Where | What it does |
 |---|---|---|
@@ -374,10 +379,12 @@ would simulate.
 
 By default a run of such a system takes these means too, from its own
 simulations: it simulates the whole system, as a plain run does, then its
-modules again alone, drawing what they drew, and its mean intervals are
-those of each simulation's expected values given its modules' histories.
-Everything else in its result (each simulation's values, the curve, the
-totals, the percentiles, the criticalities) is its simulations' own:
+modules again alone, drawing what they drew, and its means
+(`mean_availability`, the cost's `mean` and breakdowns) and their intervals
+are those of each simulation's expected values given its modules'
+histories. Everything else in its result (each simulation's values, the
+curve, the totals, the percentiles, the criticalities) is its simulations'
+own:
 
 ```python
 line_default = line_plant.availability(t_simulation=5000.0, mc_samples=2_000, seed=1)
@@ -411,7 +418,7 @@ without the spread.
   never goes down in the window, say), their outages were not sampled, and
   every simulation's expected values given them are the same: their spread
   says nothing of the error (#215). The run then warns; a default run's
-  mean intervals are its simulations' own (`method="simulated"`), and a
+  means are its simulations' own (`method="simulated"`), and a
   `tolerance` is judged on those; a run of the modules alone has no error
   to give (its intervals are `nan`), and a `tolerance` runs it on to
   `max_samples`. `conditional.states` counts the joint states met. Run

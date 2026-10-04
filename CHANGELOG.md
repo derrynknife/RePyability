@@ -30,6 +30,24 @@ other release, fixes included, the minor.
   failing of 0 (as a `node_availability()` of 1 gives), may still be given
   for an end, and `on_infeasible_rbd="warn"` keeps the old behaviour.
 
+- **A cost result's `mean` is its run's estimate of the expected cost
+  (#223)**, the value its `mean_interval()` gives: exact where the exact
+  methods work it out (by default since 0.12), taken given the modules'
+  histories where those apply, and otherwise the simulations' own.
+  `mean_se`, `cost_rate`, `by_category` and `by_component` follow it, the
+  breakdowns exact or conditional too (but under `control_variate=True`,
+  whose twin controls only the total). The simulations' own mean and its
+  error are the new `sample_mean` and `sample_se`. Likewise the new
+  `AvailabilityResult.mean_availability` is the estimate
+  `mean_availability_interval()` gives, and `sample_mean_availability`
+  the simulations' own, `system_uptime / (n_simulations *
+  time_simulated_to)`. In 0.12 a result carried two expected values, and
+  `mean`, `cost_rate` and the breakdowns were the noisier one, up to 3%
+  off the exact value in a persona's study. Both results' reprs now
+  summarise the run (the estimate, its standard error and method, the
+  simulations' own mean and spread), where they printed every sample.
+  `control_variate=False` keeps the simulations' own values, as before.
+
 - **A fixed-probability node's simulated lifetime is 0 or infinite.**
   `NonRepairableRBD.random()` took surpyval's draw for it, a 0/1 event
   indicator, as a time, so the samples of a diagram with one did not
@@ -81,7 +99,11 @@ other release, fixes included, the minor.
 - **`ConfidenceInterval.method` names every case of a repairable run's
   mean (#223):** `"simulated"`, `"control_variate"`, `"conditional"` or
   `"exact"`, where the simulations' own mean and a controlled one were
-  both `None`.
+  both `None`. The docs' examples are now checked for the `True` and
+  `False`, strings, tuples and lists they quote, as well as their
+  numbers: the costs guide's check that the interval holds the expected
+  cost printed `False`, and the stepped simulation's first outage was
+  quoted at a stale time.
 - **Simulations of one diagram from several threads (#216)** crashed
   (`AttributeError: ... '_cancelled'`) or returned another seed's result:
   the event loop keeps a run's state on the diagram, and draws that cannot

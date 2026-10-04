@@ -109,7 +109,11 @@ def test_the_controlled_estimate_is_unbiased_and_more_precise():
         plain.cost.mean_interval().standard_error
         > 2 * cost.mean_interval().standard_error
     )
-    assert cost.mean == pytest.approx(np.mean(cost.samples))
+    # Its mean is the controlled estimate (#223); the simulations' own is
+    # beside it, and so is their breakdown, a twin's being only the total's.
+    assert cost.mean == cost.mean_interval().estimate
+    assert cost.sample_mean == pytest.approx(np.mean(cost.samples))
+    assert sum(cost.by_category.values()) == pytest.approx(cost.sample_mean)
 
 
 def test_cost_takes_the_control_too():
@@ -503,9 +507,7 @@ def test_the_route_says_the_expected_values_need_no_simulation():
     own = RepairableRBD(EDGES, {n: unit() for n in "ABC"}).analysis_routes()
     for name in ("availability", "cost"):
         assert "mission_availability, expected_events" in own[name].reason
-        assert "by default a run's mean intervals are theirs" in (
-            own[name].reason
-        )
+        assert "by default a run's means are theirs" in (own[name].reason)
     # Weibull lives sharing a crew have no exact values over a window.
     assert (
         "mission_availability"
