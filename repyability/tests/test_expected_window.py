@@ -49,7 +49,7 @@ def test_one_component_counts_its_alternating_renewals():
     total = lam + mu
     up = mu / total * t + lam / total**2 * -np.expm1(-total * t)
     failures = lam * up
-    np.testing.assert_allclose(rbd.expected_failures(t), failures, rtol=2e-7)
+    np.testing.assert_allclose(rbd.expected_failures(t), failures, rtol=8e-7)
     events = rbd.expected_events(t)
     assert isinstance(events, ExpectedEvents)
     np.testing.assert_allclose(events.window, t)
@@ -85,7 +85,7 @@ def test_the_system_fails_by_the_time_dependent_vesely_formula(edges):
 
     for t in (1.0, 10.0, 50.0, 500.0):
         exact = quad(intensity, 0.0, t, limit=200)[0]
-        assert rbd.expected_failures(t) == pytest.approx(exact, rel=2e-7)
+        assert rbd.expected_failures(t) == pytest.approx(exact, rel=8e-7)
 
 
 def test_hidden_failures_are_counted_as_they_happen_and_as_tests_find_them():

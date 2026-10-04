@@ -3752,10 +3752,14 @@ def time_at_status(timeline, status):
 
 #: Grid steps over a component's typical up time, for its point
 #: availability (see ``_point_availability``): the error falls as the
-#: square of the step, to about 1e-8 here.
-_POINT_STEPS = 500
+#: square of the step, to about 4e-8 here in a mission average.
+_POINT_STEPS = 1000
 #: The most grid points for one component's point availability.
 _POINT_MAX = 2**22
+
+
+#: The most pieces ``mission_availability`` integrates over.
+_MISSION_POINTS = 5_000_000
 
 
 def _settling_end(curve, long_run: Optional[float], cycle: float, end: float):
@@ -3768,7 +3772,9 @@ def _settling_end(curve, long_run: Optional[float], cycle: float, end: float):
     wants, and a cycle more. Four times as far where they do not say (a
     distance that does not fall, or too few cycles followed)."""
     grow = 4.0 * end
-    if long_run is None or not (np.isfinite(cycle) and 0.0 < 2.0 * cycle < end):
+    if long_run is None or not (
+        np.isfinite(cycle) and 0.0 < 2.0 * cycle < end
+    ):
         return grow
     t = curve.times
     off = np.abs(curve.at(t) - long_run)
@@ -3780,8 +3786,6 @@ def _settling_end(curve, long_run: Optional[float], cycle: float, end: float):
     cycles = max(math.log(1e-10 / recent) / math.log(recent / before), 0.0)
     settled = last + cycles * cycle
     return min(grow, max(1.25 * end, settled / 0.75 + cycle))
-#: The most pieces ``mission_availability`` integrates over.
-_MISSION_POINTS = 5_000_000
 
 
 def _check_window(t_simulation) -> float:
@@ -11000,7 +11004,7 @@ class RepairableRBD(RBD):
         Each component's point availability ``A(t)`` follows from the
         distributions of its up and down times by the renewal equation,
         solved numerically (see ``repyability/rbd/_point_availability.py``):
-        its error is about 1e-7 (up to 1e-6 soon after the start). Since
+        its error is about 4e-7 (up to 4e-6 soon after the start). Since
         the components fail and are repaired independently, the system's is
         the structure function evaluated exactly at theirs, at each time.
         It starts at 1 (less any components dead on arrival) and settles at
@@ -11030,7 +11034,7 @@ class RepairableRBD(RBD):
         ``ccf_groups``), followed from every member up through their tests
         or by uniformization, with the system summed over them.
 
-        Each component's curve is computed on a grid of 2,000 steps over its
+        Each component's curve is computed on a grid of 1,000 steps over its
         typical up time. Near a time at which its units start or stop on a
         schedule -- at 0, at its scheduled replacements, and at the failures
         of a lifetime known exactly -- what happens faster than a step, such

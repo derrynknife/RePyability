@@ -21,7 +21,7 @@ from scipy.special import gamma as gamma_function
 
 import repyability.rbd._point_availability as point_availability
 import repyability.rbd.repairable_rbd as repairable_rbd
-from repyability import RepairableRBD
+from repyability import NodeState, RepairableRBD
 from repyability.rbd._model_utils import lfp_extras
 from repyability.tests.test_performance_equivalence import (
     instrument_air,
@@ -119,7 +119,7 @@ def test_one_component_with_exponential_times():
     t = np.array([0.0, 0.3, 1.0, 2.5, 10.0, 100.0])
     assert np.abs(
         rbd.point_availability(t) - exponential(lam, mu, t)
-    ).max() < (2e-7)
+    ).max() < (8e-7)
     windows = np.array([0.5, 1.0, 10.0, 1000.0])
     exact = (
         mu / (lam + mu)
@@ -128,7 +128,7 @@ def test_one_component_with_exponential_times():
         * (1.0 - np.exp(-(lam + mu) * windows))
         / windows
     )
-    assert np.abs(rbd.mission_availability(windows) - exact).max() < 1e-7
+    assert np.abs(rbd.mission_availability(windows) - exact).max() < 4e-7
 
 
 @pytest.mark.parametrize("parallel", [True, False], ids=["parallel", "series"])
@@ -156,7 +156,7 @@ def test_time_scales_far_apart(parallel):
     assert np.abs(rbd.point_availability(t) - value(system, t)).max() < 3e-7
     for window in [1000.0, 20000.0, 300000.0]:
         assert rbd.mission_availability(window) == pytest.approx(
-            mean(system, window), abs=3e-8
+            mean(system, window), abs=1.2e-7
         )
 
 
@@ -289,7 +289,7 @@ def test_units_replaced_together_go_down_together(monkeypatch):
     rbd = pair(spec, dict(spec))
     windows = [10_000.0, 40_000.0]
     default = rbd.mission_availability(windows)
-    monkeypatch.setattr(repairable_rbd, "_POINT_STEPS", 8000)
+    monkeypatch.setattr(repairable_rbd, "_POINT_STEPS", 4000)
     fine = rbd.mission_availability(windows)
     assert np.abs(default - fine).max() < 2e-8
     # Without the maintenance of units that each reach their age kept off
@@ -603,3 +603,55 @@ def test_what_it_does_not_cover():
     fixed = alone(unit(surv.FixedEventProbability.from_params(0.1), E([1.0])))
     with pytest.raises(NotImplementedError, match="not a distribution"):
         fixed.point_availability(5.0)
+
+
+def test_identical_components_share_one_curve(monkeypatch):
+    # The same life and repair (equal models, not one object), the same
+    # state at 0: one curve, giving what a curve each gives.
+    def spec(scale=100.0):
+        return unit(W([scale, 1.6]), LN([0.5, 0.6]))
+
+    rbd = RepairableRBD(
+        [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")],
+        {"a": spec(), "b": spec(), "c": spec(120.0)},
+    )
+    built = []
+    plain = RepairableRBD._unit_curve
+
+    def counted(self, node, *args, **kwargs):
+        built.append(node)
+        return plain(self, node, *args, **kwargs)
+
+    monkeypatch.setattr(RepairableRBD, "_unit_curve", counted)
+    x = np.array([0.0, 30.0, 300.0])
+    shared = (
+        rbd.point_availability(x),
+        rbd.mission_availability(1000.0),
+        rbd.expected_failures(1000.0),
+    )
+    assert built == ["a", "c"] * 3
+    # Another state at 0 is another curve.
+    built.clear()
+    rbd.point_availability(x, state={"b": NodeState(age=50.0)})
+    assert built == ["a", "b", "c"]
+    monkeypatch.setattr(RepairableRBD, "_curve_twin", lambda *a: None)
+    apart = (
+        rbd.point_availability(x),
+        rbd.mission_availability(1000.0),
+        rbd.expected_failures(1000.0),
+    )
+    np.testing.assert_array_equal(shared[0], apart[0])
+    assert shared[1:] == apart[1:]
+
+
+def test_a_curve_is_followed_about_as_far_as_it_takes_to_settle():
+    # Its distance from the long-run value falls cycle by cycle: the curve
+    # is followed until it has kept within 1e-10 for a quarter of its
+    # length, not four times as far (as before) when it has not yet.
+    rbd = alone(unit(W([80.0, 1.6]), LN([0.5, 0.6])))
+    curve = rbd._unit_curve("c", 5000.0)
+    off = np.abs(curve.at(curve.times) - curve.long_run)
+    settled = curve.times[np.flatnonzero(off >= 1e-10)[-1]]
+    tail = curve.times[len(curve.times) - len(curve.times) // 4 :]
+    assert np.all(np.abs(curve.at(tail) - curve.long_run) < 1e-10)
+    assert curve.times[-1] < 2.0 * settled

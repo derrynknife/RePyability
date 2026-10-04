@@ -37,10 +37,10 @@ at its units' (see ``RepairableRBD.point_availability``).
   replacement age -- are kept out of the grid (a ``GridCurve``'s dips):
   their survival functions are exact at any time, however short they are.
 
-The error falls as the square of the step. With the default of 2,000 steps
-over a unit's typical up time it is about 1e-7 (up to 1e-6 soon after the
+The error falls as the square of the step. With the default of 1,000 steps
+over a unit's typical up time it is about 4e-7 (up to 4e-6 soon after the
 start, for a unit whose repairs last some dozens of steps); a mission
-average over more than a few steps is exact to about 1e-8, and the
+average over more than a few steps is exact to about 4e-8, and the
 long-run value is reached to about 1e-12.
 
 Under age replacement, the units that each reach their replacement age are
@@ -564,9 +564,7 @@ def unit_curve(
                 chained = started + convolve(started, chained)
         else:
             chained = np.zeros(size)
-        down += convolve(
-            convolve(later - chained, maintains), maintenance_hat
-        )
+        down += convolve(convolve(later - chained, maintains), maintenance_hat)
         if count > 0:
             chain = ChainDips(
                 limit,
@@ -614,10 +612,7 @@ def unit_curve(
             t,
             first_stages,
             np.vstack(
-                [
-                    np.maximum(convolve(later, row), 0.0)
-                    for row in occupied
-                ]
+                [np.maximum(convolve(later, row), 0.0) for row in occupied]
             ),
         )
     if not counts:

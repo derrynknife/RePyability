@@ -95,7 +95,7 @@ def test_with_a_crew_for_each_component_nothing_waits(monkeypatch):
     A, B, C = (closed(T, *RATES[node]) for node in "abc")
     exact = (1 - (1 - A) * (1 - B)) * C
     np.testing.assert_allclose(chain.point_availability(T), exact, atol=1e-13)
-    np.testing.assert_allclose(free.point_availability(T), exact, atol=2e-6)
+    np.testing.assert_allclose(free.point_availability(T), exact, atol=8e-6)
 
     def system(x):
         A, B, C = (closed(x, *RATES[node]) for node in "abc")

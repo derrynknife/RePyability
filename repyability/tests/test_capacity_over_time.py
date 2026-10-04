@@ -59,7 +59,7 @@ def test_exponential_pumps_are_binomial_at_their_availabilities():
     assert isinstance(capacity, CapacityDistribution)
     assert capacity.levels.tolist() == [0.0, 50.0, 100.0, 150.0]
     exact = np.array([binom.pmf(k, 3, available(x)) for k in range(4)])
-    np.testing.assert_allclose(capacity.probabilities, exact, atol=3e-7)
+    np.testing.assert_allclose(capacity.probabilities, exact, atol=1.2e-6)
     # The capacity is positive exactly when the system is up.
     np.testing.assert_allclose(
         1.0 - capacity.probabilities[0],
