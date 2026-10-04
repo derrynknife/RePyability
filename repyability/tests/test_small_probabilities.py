@@ -21,6 +21,7 @@ from repyability import (
     RepairableRBD,
     RepeatedNode,
 )
+from repyability.rbd._model_utils import lfp_extras
 
 #: Relative error allowed against an exact value: a few roundings.
 RTOL = 1e-14
@@ -354,8 +355,11 @@ def test_the_unit_unavailability_itself():
     assert unit.mean_unavailability() == approx(want)
     assert 1 - unit.mean_availability() != approx(want, 1e-9)
     # A unit some of whose units never fail ends up for good.
-    cured = NonRepairable(E([0.01], p=0.9), E([0.5]))
+    cured = NonRepairable(E([0.01], **lfp_extras(0.9)), E([0.5]))
     assert cured.mean_unavailability() == 0.0
+    # As NonRepairable.mean_availability's example says.
+    assert cured.mean_availability() == 1.0
+    assert cured.failure_frequency() == 0.0
 
 
 @pytest.mark.parametrize("rate", [1e-5, 1e-8, 1e-11])

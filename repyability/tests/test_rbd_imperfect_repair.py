@@ -12,6 +12,7 @@ from surpyval.recurrent.renewal.renewal_model import conditional_gaps
 
 from repyability import RepairableRBD
 from repyability.rbd import routes as r
+from repyability.rbd._model_utils import lfp_extras
 from repyability.rbd.repairable_rbd import _aged_life
 
 E, W, L = (
@@ -348,7 +349,7 @@ def minimal(life, model="kijima1", **more):
     [
         W([100.0, 2.0]),
         W([100.0, 0.7]),
-        W([100.0, 2.0], p=0.9),
+        W([100.0, 2.0], **lfp_extras(0.9)),
         W([100.0, 2.0], gamma=10.0),
         E([0.01]),
         L([4.0, 0.5]),

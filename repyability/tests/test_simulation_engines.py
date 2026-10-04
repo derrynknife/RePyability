@@ -27,6 +27,7 @@ import surpyval as surv
 from repyability import NodeState, PerfectReliability, RepairableRBD
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import _compiled, _streams, repairable_rbd
+from repyability.rbd._model_utils import lfp_extras
 from repyability.rbd.repairable_rbd import Event
 from repyability.tests.keyed_draws import KeyedDraws, reference_draw
 from repyability.tests.test_performance_equivalence import (
@@ -177,7 +178,7 @@ def plain_rbds():
             [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
             {
                 "a": {
-                    "reliability": W([30, 2], p=0.7),
+                    "reliability": W([30, 2], **lfp_extras(0.7)),
                     "repairability": surv.Normal.from_params([2, 0.3]),
                 },
                 "b": {
