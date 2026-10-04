@@ -41,12 +41,12 @@ JUMP = 1e-12
 def derivative(curve, x: np.ndarray, scale: float) -> np.ndarray:
     """``curve``'s rate of change at each time ``x``: after a jump or a
     bend at ``x``, its rate from then on. A curve that knows parts of its
-    rate exactly gives it (its ``rate``: the down times it keeps off its
-    grid, which may be far shorter than a step, see ``GridCurve``); any
-    other is differenced (``differences``)."""
-    rate = getattr(curve, "rate", None)
-    if rate is not None:
-        return rate(np.asarray(x, dtype=float).ravel(), scale)
+    rate exactly gives it (its ``derivative``: the down times it keeps off
+    its grid, which may be far shorter than a step, see ``GridCurve``);
+    any other is differenced (``differences``)."""
+    own = getattr(curve, "derivative", None)
+    if callable(own):
+        return own(np.asarray(x, dtype=float).ravel(), scale)
     return differences(curve, x, scale)
 
 

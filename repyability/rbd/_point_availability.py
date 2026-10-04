@@ -724,7 +724,7 @@ def _density(sf: Callable, u: np.ndarray, splits) -> np.ndarray:
     time's own scale (its median, or ``u``), central where they fit after
     0 and one-sided, second order, where they do not. A down time far
     shorter than a curve's grid step is differentiated as finely as a long
-    one (see ``GridCurve.rate``)."""
+    one (see ``GridCurve.derivative``)."""
     u = np.asarray(u, dtype=float)
     knots = np.asarray(splits, dtype=float)
     knots = knots[knots > 0.0]
@@ -1370,7 +1370,7 @@ class GridCurve:
             out[x > self.times[-1]] = self.long_run
         return out
 
-    def rate(self, x: np.ndarray, scale: float) -> np.ndarray:
+    def derivative(self, x: np.ndarray, scale: float) -> np.ndarray:
         """Its rate of change at each ``x`` (see ``_rates.derivative``): its
         grid's by differences (see ``_rates.differences``), which are
         second order a step apart, less its dips' exactly, each from its
@@ -1519,8 +1519,8 @@ class BlockCurve:
             back = np.where(k == 0.0, 1.0, back)
         return np.clip(smooth + self.replaced[row] * back, 0.0, 1.0)
 
-    def rate(self, x: np.ndarray, scale: float) -> np.ndarray:
-        """Its rate of change at each ``x`` (see ``GridCurve.rate``): its
+    def derivative(self, x: np.ndarray, scale: float) -> np.ndarray:
+        """Its rate of change at each ``x`` (see ``GridCurve.derivative``): its
         grid's by differences, and the return of the units replaced at the
         block time before it exactly, from the replacement time's density
         (none from new, in the first interval)."""
@@ -1921,7 +1921,7 @@ class ShiftedCurve:
     def at(self, x: np.ndarray) -> np.ndarray:
         return self.curve.at(self._position(x))
 
-    def rate(self, x: np.ndarray, scale: float) -> np.ndarray:
+    def derivative(self, x: np.ndarray, scale: float) -> np.ndarray:
         """Its curve's rate (see ``_rates.derivative``), ``shift`` on."""
         from repyability.rbd._rates import derivative
 
@@ -2005,7 +2005,7 @@ class StartedBlockCurve:
             out[~before] = self.tail.at(x[~before] - self.length)
         return out
 
-    def rate(self, x: np.ndarray, scale: float) -> np.ndarray:
+    def derivative(self, x: np.ndarray, scale: float) -> np.ndarray:
         """The head's rate before its end and the tail's from it (see
         ``_rates.derivative``)."""
         from repyability.rbd._rates import derivative
@@ -2090,7 +2090,7 @@ class SystemCurve:
     def at(self, x: np.ndarray) -> np.ndarray:
         return self.rbd._curves_at(self.curves, x, set(), set(), "p")
 
-    def rate(self, x: np.ndarray, scale: float) -> np.ndarray:
+    def derivative(self, x: np.ndarray, scale: float) -> np.ndarray:
         """Its rate of change at each ``x``: each of its nodes' (see
         ``_rates.derivative``) times that node's Birnbaum importance there,
         the system being multilinear in its nodes' availabilities (see
