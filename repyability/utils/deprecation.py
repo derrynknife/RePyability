@@ -10,6 +10,10 @@ Python always shows, as the notice is short:
   and ``seed``, which set a fit to simulated lifetimes that 0.12 removed
   (``ignored``, #149).
 
+What 0.13 deprecates goes in 0.14 (``REMOVAL_AFTER_NEXT``): the
+search's ``offsets`` of ``optimal_inspection_intervals``, renamed
+``offset_shares`` (``renamed``, #222).
+
 What 0.11 deprecated went in 0.12 (#149).
 """
 
@@ -18,6 +22,8 @@ from typing import Any, Dict
 
 #: The release that removes what 0.12 deprecates.
 NEXT_REMOVAL = "0.13"
+#: The release that removes what 0.13 deprecates.
+REMOVAL_AFTER_NEXT = "0.14"
 
 
 class CalledValue(float):
@@ -72,3 +78,15 @@ def ignored(method: str, why: str, given: Dict[str, Any]) -> None:
             FutureWarning,
             stacklevel=3,
         )
+
+
+def renamed(method: str, old: str, new: str, why: str) -> None:
+    """Warn that ``method``'s argument ``old`` is renamed ``new``, for the
+    reason ``why``: deprecated in 0.13, it is refused in
+    ``REMOVAL_AFTER_NEXT``."""
+    warnings.warn(
+        f"{method}'s {old}= is renamed {new}=, as {why}. Passing {old}= is "
+        f"deprecated, and {REMOVAL_AFTER_NEXT} will refuse it.",
+        FutureWarning,
+        stacklevel=3,
+    )

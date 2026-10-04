@@ -33,7 +33,7 @@ from repyability import (
 from repyability._version import __version__
 from repyability.rbd.ccf import with_parameters
 from repyability.rbd.uncertainty import draw_ccf_models
-from repyability.utils.deprecation import NEXT_REMOVAL
+from repyability.utils.deprecation import NEXT_REMOVAL, REMOVAL_AFTER_NEXT
 
 W, E = surv.Weibull.from_params, surv.Exponential.from_params
 F = FixedEventProbability.from_params
@@ -268,6 +268,12 @@ def test_the_calls_go_in_the_release_after_next():
     # When the version reaches NEXT_REMOVAL, what 0.12 deprecates must go.
     version = tuple(map(int, __version__.split(".")))
     assert version < tuple(map(int, NEXT_REMOVAL.split(".")))
+
+
+def test_what_0_13_deprecates_goes_in_0_14():
+    # optimal_inspection_intervals(offsets=), renamed offset_shares (#222).
+    version = tuple(map(int, __version__.split(".")))
+    assert version < tuple(map(int, REMOVAL_AFTER_NEXT.split(".")))
 
 
 def test_an_uncertainty_result_shows_a_summary():

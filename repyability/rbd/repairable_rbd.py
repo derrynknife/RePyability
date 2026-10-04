@@ -153,6 +153,7 @@ if TYPE_CHECKING:
 
 from repyability.rbd.routes import AnalysisRoute
 from repyability.utils.checks import structure_method
+from repyability.utils.deprecation import renamed
 from repyability.utils.wrappers import SIMULATIONS
 
 
@@ -3413,6 +3414,59 @@ def _choose_intervals(
 #: Allowed intervals are chosen by trying every combination, up to this many;
 #: by a local search beyond.
 _MAX_COMBINATIONS = 2000
+
+
+def _divides(interval: float, full: float) -> bool:
+    """Whether ``interval`` divides ``full`` a whole number of times."""
+    count = full / interval
+    return round(count) >= 1 and abs(count - round(count)) <= 1e-9 * count
+
+
+def _require_chosen(per_node, chosen: list, name: str) -> None:
+    """Raise if a dict of per-node options names a node not chosen
+    (#222): a typo would otherwise be dropped."""
+    if isinstance(per_node, dict):
+        others = [node for node in per_node if node not in chosen]
+        if others:
+            raise ValueError(
+                f"{name} names {others}, which are not among the components "
+                f"whose intervals are chosen: {chosen}."
+            )
+
+
+def _choose_divisor(
+    node,
+    full: float,
+    bounds: Tuple[float, float],
+    evaluate,
+    min_availability: Optional[float],
+    max_cost_rate: Optional[float],
+) -> dict:
+    """The interval of a component whose tests can miss a failure (#221),
+    from those that divide its full tests' interval ``full`` (``full /
+    k``) within ``bounds``, as ``_choose_from`` would choose from them all:
+    from some 50 spread evenly in their logarithms, then every one between
+    the best's neighbours among those."""
+    low, high = bounds
+    first = max(1, math.ceil(full / high))
+    last = max(first, math.floor(full / low))
+
+    def best_of(ks) -> int:
+        options = {node: tuple(full / k for k in ks)}
+        chosen = _choose_from(
+            [node], options, evaluate, min_availability, max_cost_rate
+        )
+        return int(round(full / chosen[node]))
+
+    if last - first < 64:
+        return {node: full / best_of(range(first, last + 1))}
+    spread = sorted({int(k) for k in np.round(np.geomspace(first, last, 50))})
+    k = best_of(spread)
+    i = spread.index(k)
+    around = range(
+        spread[max(i - 1, 0)], spread[min(i + 1, len(spread) - 1)] + 1
+    )
+    return {node: full / best_of(around)}
 
 
 def _choose_from(
@@ -8951,6 +9005,7 @@ class RepairableRBD(RBD):
         max_cost_rate: Optional[float] = None,
         offsets=None,
         assume_unlimited_crews: bool = False,
+        offset_shares=None,
     ) -> MaintenancePlan:
         """Choose the proof-test intervals of components with hidden
         failures, for the system as a whole.
@@ -8983,11 +9038,14 @@ class RepairableRBD(RBD):
         When redundant components are tested matters as well: two tested
         at once are down together for as long as a failure of both stays
         hidden, where tests half an interval apart find a common-cause
-        failure twice as soon. ``offsets`` chooses the times of the first
-        tests with the intervals (#184).
+        failure twice as soon. ``offset_shares`` chooses the times of the
+        first tests with the intervals (#184).
 
-        The exact long-run values need a constant failure rate, instant
-        tests and instant repair (see ``node_availability``).
+        A component whose tests can miss a failure (a ``coverage`` below
+        1) keeps its full tests' interval (``full_test``), a whole number
+        of its test intervals: its interval is chosen among those that
+        divide it, from ``allowed`` (which must) or, left out, from every
+        one in range (#221).
 
         Parameters
         ----------
@@ -9005,6 +9063,14 @@ class RepairableRBD(RBD):
             The highest long-run cost rate allowed: the intervals then give
             the highest availability within it.
         offsets : sequence of float, dict or str, optional
+            Deprecated: ``offset_shares``, which it is renamed, as its
+            values are shares of the interval where ``with_intervals``'
+            and the plan's ``offsets`` are times (#222). Refused in 0.14.
+        assume_unlimited_crews : bool, optional
+            With limited ``repair_crews``, choose as if every repair started
+            at once, as ``optimal_replacement_intervals`` does, by default
+            False: refused.
+        offset_shares : sequence of float, dict or str, optional
             Choose each node's offset, the time of its first test, as well:
             as a share of its interval, in [0, 1), from these, one sequence
             for every node or a dict of one per node. ``"stagger"`` with
@@ -9013,29 +9079,29 @@ class RepairableRBD(RBD):
             every test by one time changes no long-run value, so when the
             nodes are all the components with hidden failures, the first
             one's tests stay from 0. Needs ``allowed``. By default each
-            offset keeps its share of the interval.
-        assume_unlimited_crews : bool, optional
-            With limited ``repair_crews``, choose as if every repair started
-            at once, as ``optimal_replacement_intervals`` does, by default
-            False: refused.
+            offset keeps its share of the interval. The plan's ``offsets``
+            are the times they give (shares times the intervals).
 
         Returns
         -------
         MaintenancePlan
-            The interval of each component in ``nodes``, and the system's
-            cost rate and availability (1 - PFDavg) with them; with
-            ``offsets``, the chosen ``offsets`` too.
+            The interval of each component in ``nodes``, its ``offsets``
+            (the time of its first test), and the system's cost rate and
+            availability (1 - PFDavg) with them.
 
         Raises
         ------
         ValueError
-            If a node has no hidden failures; if ``allowed`` is left out
-            with more than one component with hidden failures (or with
-            ``offsets``), or holds something other than positive, finite
-            intervals; if ``offsets`` holds something other than shares in
-            [0, 1); if nothing is priced; if both targets are given, or
-            one is out of range; or if no intervals meet the target (the
-            message gives the best they can do).
+            If a node is not a component, or has no hidden failures; if
+            ``allowed`` is left out with more than one component with
+            hidden failures (or with ``offset_shares``), names a node not
+            chosen, or holds something other than positive, finite
+            intervals, or intervals that do not divide a component's full
+            tests' interval; if ``offset_shares`` names a node not chosen,
+            or holds something other than shares in [0, 1); if nothing is
+            priced; if both targets are given, or one is out of range; or
+            if no intervals meet the target (the message gives the best
+            they can do).
         NotImplementedError
             If a component's hidden failures have no exact long-run values
             (see ``node_availability``), the intervals repeat together only
@@ -9096,13 +9162,28 @@ class RepairableRBD(RBD):
         >>> plan.intervals, round(plan.cost_rate, 4)
         ({'v1': 4380.0, 'v2': 8760.0}, 0.1712)
         >>> staggered = common.optimal_inspection_intervals(
-        ...     allowed=calendar, min_availability=target, offsets="stagger"
+        ...     allowed=calendar,
+        ...     min_availability=target,
+        ...     offset_shares="stagger",
         ... )
         >>> staggered.intervals, staggered.offsets
         ({'v1': 8760.0, 'v2': 8760.0}, {'v1': 0.0, 'v2': 4380.0})
         >>> round(staggered.cost_rate, 4), round(1 - staggered.availability, 7)
         (0.1142, 0.0004925)
         """
+        if offsets is not None:
+            if offset_shares is not None:
+                raise ValueError(
+                    "Give offset_shares alone: offsets is its old name."
+                )
+            renamed(
+                "optimal_inspection_intervals",
+                "offsets",
+                "offset_shares",
+                "its values are shares of the interval, where "
+                "with_intervals' and the plan's offsets are times",
+            )
+            offset_shares = offsets
         chosen = self._inspected(nodes)
         min_availability, max_cost_rate = self._interval_targets(
             min_availability, max_cost_rate
@@ -9115,7 +9196,7 @@ class RepairableRBD(RBD):
                 allowed=allowed,
                 min_availability=min_availability,
                 max_cost_rate=max_cost_rate,
-                offsets=offsets,
+                offset_shares=offset_shares,
             )
         rates = {node: self._tested_scale(node) for node in chosen}
 
@@ -9123,21 +9204,34 @@ class RepairableRBD(RBD):
             plan = self._with_intervals(inspection=intervals)
             return plan.expected_cost_rate(), plan.mean_availability()
 
-        if offsets is not None:
+        if offset_shares is not None:
             if allowed is None:
                 raise ValueError(
-                    "offsets are chosen with intervals from allowed: give "
-                    "allowed (when a lone component is tested changes "
+                    "offset_shares are chosen with intervals from allowed: "
+                    "give allowed (when a lone component is tested changes "
                     "nothing in the long run)."
                 )
             return self._choose_tests(
                 chosen,
-                self._allowed_intervals(allowed, chosen),
-                self._allowed_shares(offsets, chosen),
+                self._dividing(self._allowed_intervals(allowed, chosen)),
+                self._allowed_shares(offset_shares, chosen),
                 min_availability,
                 max_cost_rate,
             )
-        if allowed is None:
+        if allowed is None and self._inspection[chosen[0]].partial:
+            self._require_one_inspected()
+            (node,) = chosen
+            rate = rates[node]
+            best = _choose_divisor(
+                node,
+                # Its full tests' interval (see _Inspection.period).
+                self._inspection[node].period,
+                (1e-4 / rate, 10.0 / rate),
+                evaluate,
+                min_availability,
+                max_cost_rate,
+            )
+        elif allowed is None:
             self._require_one_inspected()
             (node,) = chosen
             rate = rates[node]
@@ -9161,15 +9255,48 @@ class RepairableRBD(RBD):
         else:
             best = _choose_from(
                 chosen,
-                self._allowed_intervals(allowed, chosen),
+                self._dividing(self._allowed_intervals(allowed, chosen)),
                 evaluate,
                 min_availability,
                 max_cost_rate,
             )
         cost, availability = evaluate(best)
+        # The offsets the plan's tests keep: each its share of the interval.
+        offsets_kept = {
+            node: float(best[node])
+            * self._inspection[node].offset
+            / self._inspection[node].interval
+            for node in chosen
+        }
         return MaintenancePlan(
-            {node: float(best[node]) for node in chosen}, cost, availability
+            {node: float(best[node]) for node in chosen},
+            cost,
+            availability,
+            offsets=offsets_kept,
         )
+
+    def _dividing(self, options: dict) -> dict:
+        """``options``, the intervals allowed each chosen component,
+        checked to divide its full tests' interval where its tests can
+        miss a failure (#221): every full test is a whole number of tests
+        on, so an interval that does not divide it cannot be its."""
+        for node, intervals in options.items():
+            schedule = self._inspection[node]
+            if not schedule.partial:
+                continue
+            full = schedule.period
+            bad = [i for i in intervals if not _divides(i, full)]
+            if bad:
+                some = ", ".join(f"{full / k:g}" for k in range(1, 5))
+                raise ValueError(
+                    f"The tests of component {node!r} can miss a failure, so "
+                    f"its full tests' interval, {full:g}, must be a whole "
+                    "number of its test intervals: "
+                    f"{', '.join(map(repr, bad))} "
+                    f"do{'es' if len(bad) == 1 else ''} not divide it. Allow "
+                    f"intervals that do ({some}, ...)."
+                )
+        return options
 
     def _require_interval_crews(self) -> None:
         """Raise if a component can wait for a repair crew, for the interval
@@ -9236,6 +9363,8 @@ class RepairableRBD(RBD):
             intervals = intervals.intervals
         offsets = dict(offsets or {})
         components = dict(self._init_args["components"])
+        for node in list(dict(intervals)) + list(offsets):
+            self._require_component(node, "with_intervals")
         for node, interval in dict(intervals).items():
             spec = components.get(node)
             # A component has one schedule at most (see the constructor).
@@ -9251,6 +9380,11 @@ class RepairableRBD(RBD):
                 )
             (kind,) = kinds
             assert isinstance(spec, dict)
+            if node in offsets and kind != "inspection":
+                raise ValueError(
+                    f"Node {node!r} has an offset but no test schedule: an "
+                    "offset is the time of a component's first test."
+                )
             old = dict(spec[kind])
             interval = float(interval)
             new = {**old, "interval": interval}
@@ -9332,8 +9466,9 @@ class RepairableRBD(RBD):
         if isinstance(offsets, str):
             if offsets != "stagger":
                 raise ValueError(
-                    "offsets must be shares of the interval in [0, 1), a "
-                    f"dict of them per node, or 'stagger', got {offsets!r}."
+                    "offset_shares must be shares of the interval in [0, "
+                    "1), a dict of them per node, or 'stagger', got "
+                    f"{offsets!r}."
                 )
             n = len(chosen)
             return {node: tuple(k / n for k in range(n)) for node in chosen}
@@ -9342,10 +9477,14 @@ class RepairableRBD(RBD):
             if isinstance(offsets, dict)
             else {node: offsets for node in chosen}
         )
+        _require_chosen(per_node, chosen, "offset_shares")
         out = {}
         for node in chosen:
             if node not in per_node:
-                raise ValueError(f"offsets gives no shares for node {node!r}.")
+                raise ValueError(
+                    f"offset_shares gives no share of the interval for node "
+                    f"{node!r}: give one, in [0, 1), for each of {chosen}."
+                )
             given = per_node[node]
             if isinstance(given, (str, bytes)) or not isinstance(
                 given, Collection
@@ -9359,12 +9498,15 @@ class RepairableRBD(RBD):
                 share = float(value) if number else float("nan")
                 if not 0.0 <= share < 1.0:
                     raise ValueError(
-                        "offsets are shares of the interval, in [0, 1), got "
-                        f"{value!r} for node {node!r}."
+                        "offset_shares are shares of the interval, in [0, "
+                        f"1), got {value!r} for node {node!r}."
                     )
                 values.append(share)
             if not values:
-                raise ValueError(f"offsets gives no shares for node {node!r}.")
+                raise ValueError(
+                    f"offset_shares gives no share of the interval for node "
+                    f"{node!r}."
+                )
             out[node] = tuple(sorted(set(values)))
         return out
 
@@ -9383,21 +9525,23 @@ class RepairableRBD(RBD):
             if not chosen:
                 raise ValueError("nodes is empty.")
             for node in chosen:
+                self._require_component(node, "nodes")
                 if node not in self._inspection:
                     raise ValueError(
                         f"Node {node!r} has no hidden failures: give it an "
                         "'inspection' schedule to have its interval chosen."
                     )
-        for node in chosen:
-            if self._inspection[node].partial:
-                raise NotImplementedError(
-                    f"Component {node!r}'s tests can miss a failure (a "
-                    "coverage below 1), and its interval must divide its "
-                    "full tests' interval, so it is not chosen here: "
-                    "compare the intervals that do with mean_availability "
-                    "and expected_cost_rate."
-                )
         return chosen
+
+    def _require_component(self, node, given: str) -> None:
+        """Raise if ``node``, given in ``given``, is not a component,
+        listing those that are (#222)."""
+        if node not in self.components:
+            raise ValueError(
+                f"Unknown node {node!r} given in {given}; it is not a "
+                "component of the RBD. Its components are: "
+                f"{list(self.components)}."
+            )
 
     @staticmethod
     def _allowed_intervals(allowed, chosen: list) -> dict:
@@ -9407,6 +9551,7 @@ class RepairableRBD(RBD):
             if isinstance(allowed, dict)
             else {node: allowed for node in chosen}
         )
+        _require_chosen(per_node, chosen, "allowed")
         options = {}
         for node in chosen:
             if node not in per_node:

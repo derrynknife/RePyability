@@ -1593,9 +1593,11 @@ class MaintenancePlan(_ResultMapping):
         ``mean_availability``. For a safety system, ``1 - availability`` is
         its average probability of failure on demand, PFDavg.
     offsets : dict or None
-        Node name -> the time of its first test, when
-        ``optimal_inspection_intervals`` chose the offsets too; None
-        otherwise.
+        For ``optimal_inspection_intervals``, node name -> the time of its
+        first test (from 0 to less than its interval): those chosen with
+        ``offset_shares``, or else each keeping its share of the interval,
+        so that plans compare as they are (#222). ``with_intervals`` takes
+        them as they are. None for ``optimal_replacement_intervals``.
     """
 
     intervals: Dict[Hashable, float]

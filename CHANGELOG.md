@@ -9,6 +9,14 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+### Deprecated
+
+- **`optimal_inspection_intervals(offsets=)` is renamed `offset_shares=`
+  (#222).** Its values are shares of the interval, where
+  `with_intervals(offsets=)` and the plan's `offsets` are times, so a
+  share passed to `with_intervals` undid a stagger without a word.
+  `offsets=` still works, with a `FutureWarning`; 0.14 refuses it.
+
 ### Changed
 
 - **A model given for the input or output node is refused (#217).** The
@@ -34,6 +42,20 @@ other release, fixes included, the minor.
 
 ### Fixed
 
+- **`optimal_inspection_intervals` chooses the intervals of tests that can
+  miss a failure (#221),** which 0.12 listed as numerical but refused: a
+  component whose tests have a `coverage` below 1 keeps its full tests'
+  interval, and its test interval is chosen among those that divide it,
+  from `allowed` (an interval that does not is refused, by name, with
+  some that do) or, left out, from every one in range.
+- **Offsets and per-node options are checked (#222).** An offset given to
+  `with_intervals` for a component with no tests is refused also when its
+  interval is given (it was dropped); `allowed=` and `offset_shares=`
+  dicts that name a node not chosen are refused, naming it, where a typo
+  was dropped; a node that is not a component, in `nodes=` or
+  `with_intervals`, is refused listing the components; and a plan from
+  `optimal_inspection_intervals` has its `offsets` whether they were
+  searched or not.
 - **Parameter uncertainty draws a shared fitted model once (#214).** In a
   `RepairableRBD`, nodes holding the same fitted life but repair fits of
   their own (one fleet's life fit, repairs recorded by site) had their

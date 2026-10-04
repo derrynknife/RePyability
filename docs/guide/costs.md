@@ -881,7 +881,7 @@ together = paired.optimal_inspection_intervals(
 together.intervals        # {'v1': 4380.0, 'v2': 8760.0}
 together.cost_rate        # -> 0.1712
 apart = paired.optimal_inspection_intervals(
-    allowed=calendar, min_availability=1 - 5e-4, offsets="stagger")
+    allowed=calendar, min_availability=1 - 5e-4, offset_shares="stagger")
 apart.intervals           # {'v1': 8760.0, 'v2': 8760.0}
 apart.offsets             # {'v1': 0.0, 'v2': 4380.0}   six months apart
 apart.cost_rate           # -> 0.1142   a third less
@@ -890,8 +890,10 @@ apart.cost_rate           # -> 0.1142   a third less
 Shifting every test by one time changes nothing in the long run, so the
 first component's tests stay from 0, unless other tested components keep
 their schedules (then its offset is chosen too). Offsets change no cost, so
-of plans that cost the same the most available is chosen. The result's
-`offsets` gives the times of the first tests.
+of plans that cost the same the most available is chosen. The
+`offset_shares` searched are shares of the interval; the result's
+`offsets` are the times of the first tests, as `with_intervals(offsets=)`
+takes them, and a plan has them whether they were searched or not.
 
 ## The total cost of ownership
 

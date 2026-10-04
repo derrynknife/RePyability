@@ -240,7 +240,10 @@
   `deprecation.called`), and those models' `mc_samples`, `lower` and
   `seed`, which set the fit (through `deprecation.ignored`).
   `test_the_calls_go_in_the_release_after_next` fails once the version
-  reaches it.
+  reaches it. What 0.13 deprecates goes in 0.14 (`REMOVAL_AFTER_NEXT`):
+  `optimal_inspection_intervals(offsets=)`, renamed `offset_shares=`
+  (#222, through `deprecation.renamed`), which
+  `test_what_0_13_deprecates_goes_in_0_14` holds to.
 - **Exact by default, simulation on request.** Where an analysis can be
   computed exactly or numerically, that is the default, and the Monte-Carlo
   estimate is a `method="simulate"` away (as for `NonRepairableRBD.mean`).

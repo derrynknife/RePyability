@@ -325,7 +325,7 @@ def test_a_cost_cap_on_the_tests():
 def test_what_the_inspection_choice_refuses():
     with pytest.raises(ValueError, match="More than one component"):
         two_valves().optimal_inspection_intervals()
-    with pytest.raises(ValueError, match="has no hidden failures"):
+    with pytest.raises(ValueError, match="not a component of the RBD"):
         two_valves().optimal_inspection_intervals(
             nodes=["s"], allowed=CALENDAR
         )
