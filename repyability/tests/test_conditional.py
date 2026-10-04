@@ -822,3 +822,97 @@ def test_the_routes_say_when_it_applies():
         "conditional=True"
         not in exact.analysis_routes()["availability"].reason
     )
+
+
+# -- modules that never change state in the run (#215) ------------------------
+
+
+def standby_and_valve(scale: float = 500.0) -> RepairableRBD:
+    """The issue's plant: a pair of pumps on standby (the module) before a
+    valve; the pair rarely goes down in a window of 500."""
+    from surpyval import LogNormal
+
+    def unit(life):
+        return {
+            "reliability": W([life, 2.0]),
+            "repairability": LogNormal.from_params([2.5, 0.5]),
+        }
+
+    return RepairableRBD(
+        [("s", "pp"), ("pp", "v"), ("v", "t")],
+        {"pp": {**unit(scale), "standby": {"units": 2}}, "v": unit(2000.0)},
+        downtime_cost_rate=10000.0,
+    )
+
+
+def test_a_module_that_never_changed_leaves_the_error_to_the_simulations():
+    rbd = standby_and_valve()
+    with pytest.warns(RuntimeWarning, match="never changed state") as caught:
+        cost = rbd.cost(500.0, mc_samples=200, seed=0)
+    assert cost.conditional.states == 1
+    assert "method='simulated'" in str(caught[0].message)
+    interval = cost.mean_interval()
+    # The simulations' own mean and error, not the exact value of the rest
+    # with no error at all.
+    assert interval.method == "simulated"
+    assert interval.estimate == cost.mean
+    assert interval.standard_error == pytest.approx(cost.mean_se)
+    assert interval.standard_error > 0.0
+    with pytest.warns(RuntimeWarning, match="never changed state"):
+        result = rbd.availability(500.0, mc_samples=200, seed=0)
+    interval = result.mean_availability_interval()
+    assert interval.method == "simulated"
+    assert interval.estimate == pytest.approx(
+        np.mean(result.uptimes) / 500.0, abs=1e-15
+    )
+    assert interval.standard_error > 0.0
+
+
+def test_a_tolerance_is_not_met_by_a_module_that_never_changed():
+    rbd = standby_and_valve()
+    with pytest.warns(RuntimeWarning):
+        cost = rbd.cost(
+            500.0, mc_samples=200, seed=0, tolerance=1.0, max_samples=600
+        )
+    # It ran on, judged by the simulations' own costs, to the limit.
+    assert cost.n_simulations == 600
+    with pytest.warns(RuntimeWarning) as caught:
+        alone = rbd.cost(
+            500.0,
+            mc_samples=200,
+            seed=0,
+            tolerance=1.0,
+            max_samples=600,
+            conditional=True,
+        )
+    assert alone.n_simulations == 600
+    assert any(
+        "did not converge" in str(w.message)
+        and "never changed state" in str(w.message)
+        for w in caught
+    )
+
+
+def test_a_run_of_modules_that_never_changed_gives_no_error():
+    rbd = standby_and_valve()
+    with pytest.warns(RuntimeWarning, match="no error to give"):
+        result = rbd.availability(
+            500.0, mc_samples=200, seed=0, conditional=True
+        )
+    interval = result.mean_availability_interval()
+    assert interval.method == "conditional"
+    assert math.isnan(interval.standard_error)
+    assert math.isnan(interval.lower) and math.isnan(interval.upper)
+    assert np.isnan(result.availability_se).all()
+    with pytest.warns(RuntimeWarning, match="no error to give"):
+        cost = rbd.cost(500.0, mc_samples=200, seed=0, conditional=True)
+    assert math.isnan(cost.mean_interval().standard_error)
+
+
+def test_modules_that_changed_state_give_the_conditional_error():
+    rbd = standby_and_valve(scale=60.0)
+    cost = rbd.cost(500.0, mc_samples=200, seed=0)
+    assert cost.conditional.states > 1
+    interval = cost.mean_interval()
+    assert interval.method == "conditional"
+    assert 0.0 < interval.standard_error < cost.mean_se

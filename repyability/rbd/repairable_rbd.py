@@ -1045,9 +1045,32 @@ class _ModuleRun:
         values = self.uptimes() / self.T
         return values if control is None else control.controlled(values)
 
+    def unjudged(self) -> Optional[str]:
+        """Why the spread of the simulations' expected values given the
+        modules does not show the error (#215): they never changed state,
+        so their outages were not sampled, and every simulation's values
+        are the same. None once they have, or with no modules, when the
+        values are exact."""
+        if len(self.given) > 1 or not self.modules:
+            return None
+        return (
+            f"The modules {list(self.modules)} never changed state in the "
+            f"{self.n} simulations, so their outages were not sampled: run "
+            "more simulations to sample them."
+        )
+
+    def _warn_unjudged(self, instead: str) -> None:
+        reason = self.unjudged()
+        if reason is not None:
+            warnings.warn(f"{reason} {instead}", RuntimeWarning, stacklevel=4)
+
     def means(self) -> ConditionalRun:
         """The record of a plain run whose means are taken given its
         modules (see ``RepairableRBD._conditioned_run``)."""
+        self._warn_unjudged(
+            "The mean intervals are the simulations' own "
+            "(method='simulated')."
+        )
         return ConditionalRun(
             tuple(self.modules),
             len(self.given),
@@ -1059,6 +1082,10 @@ class _ModuleRun:
     def result(self) -> AvailabilityResult:
         """The conditional run's result (see
         ``RepairableRBD._conditional_run``)."""
+        self._warn_unjudged(
+            "The mean intervals have no error to give (nan): a plain run "
+            "(conditional=False) gives one."
+        )
         rbd, T, n = self.rbd, self.T, self.n
         parts, curve_x = self.parts, self.curve_x
         uptimes = self.uptimes()
@@ -2572,7 +2599,8 @@ def _stopping_rule(
     the confidence interval of the mean availability over the window, or of
     the mean cost, is at most ``tolerance`` either side, or ``max_N`` have
     run: then with a warning). Given the simulations' ``values`` too (a
-    controlled run's, see ``_controlled_run``), it judges those."""
+    controlled run's, see ``_controlled_run``), it judges those; given why
+    they cannot be judged yet (``unjudged``), it runs on to the limit."""
     montecarlo.check_confidence(confidence)
     limit = montecarlo.sample_limit(
         N, tolerance, max_N, antithetic, ("mc_samples", "max_samples")
@@ -2580,7 +2608,9 @@ def _stopping_rule(
     if limit is None:
         return None
 
-    def stop(tally: "_Tally", values=None) -> int:
+    def stop(
+        tally: "_Tally", values=None, unjudged: Optional[str] = None
+    ) -> int:
         if values is not None:
             # The controlled values of a run with an exact twin.
             values = np.asarray(values, dtype=float)
@@ -2597,6 +2627,7 @@ def _stopping_rule(
             antithetic,
             target,
             "max_samples",
+            unjudged,
         )
 
     return stop
@@ -16807,8 +16838,9 @@ class RepairableRBD(RBD):
             if stop is None:
                 break
             # A run to a tolerance judges the mean asked for (see
-            # _stopping_rule), controlled if it is.
-            count = stop(None, run.judged(target))
+            # _stopping_rule), controlled if it is: not while the modules
+            # have not changed state (#215).
+            count = stop(None, run.judged(target), run.unjudged())
             if not count:
                 break
         return run.result()
@@ -16899,7 +16931,9 @@ class RepairableRBD(RBD):
             first += count
             if stop is None:
                 break
-            more = stop(tally, run.judged(target))
+            # Its means given the modules, or the simulations' own while
+            # the modules have not changed state (#215).
+            more = stop(tally, None if run.unjudged() else run.judged(target))
             if not more:
                 break
             count = more

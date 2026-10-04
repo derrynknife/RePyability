@@ -330,7 +330,8 @@ def test_a_run_controlled_by_itself_is_exact():
     controlled = crewed.availability(
         200.0, mc_samples=100, seed=1, control_variate=True, engine="python"
     ).mean_availability_interval()
-    assert controlled.method is None and controlled.standard_error > 0.0
+    assert controlled.method == "control_variate"
+    assert controlled.standard_error > 0.0
 
 
 # -- outage logs -----------------------------------------------------------

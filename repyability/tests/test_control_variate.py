@@ -423,7 +423,7 @@ def test_a_run_takes_exact_values_by_default(monkeypatch):
         300.0, mc_samples=50, seed=3, control_variate=False
     )
     assert plain.control_variate is None
-    assert plain.mean_availability_interval().method is None
+    assert plain.mean_availability_interval().method == "simulated"
     for other in (run, fixed):
         np.testing.assert_array_equal(other.uptimes, plain.uptimes)
         np.testing.assert_array_equal(other.availability, plain.availability)

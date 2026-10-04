@@ -406,6 +406,16 @@ without the spread.
   antithetic pairs if asked, so a conditional run's modules are a plain
   run's, and their own costs too. A run to a `tolerance` is judged on the
   conditional means, in rounds of `mc_samples`.
+- **Modules that never change state.** If the modules never leave the
+  state they start in, in any of the simulations (a standby pair that
+  never goes down in the window, say), their outages were not sampled, and
+  every simulation's expected values given them are the same: their spread
+  says nothing of the error (#215). The run then warns; a default run's
+  mean intervals are its simulations' own (`method="simulated"`), and a
+  `tolerance` is judged on those; a run of the modules alone has no error
+  to give (its intervals are `nan`), and a `tolerance` runs it on to
+  `max_samples`. `conditional.states` counts the joint states met. Run
+  more simulations to sample the outages.
 - **The exact part.** Each joint state of the modules the simulations meet
   (each up or down) is worked out once: the system's expected up time,
   failures and planned outages with the modules held so, on a grid of

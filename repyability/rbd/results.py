@@ -87,13 +87,18 @@ class ConfidenceInterval(_ResultMapping):
     n_samples : int
         The number of Monte-Carlo samples the estimate was computed from.
     method : str, optional
-        How the estimate was simulated, where the method chooses
-        (``NonRepairableRBD.unreliability_interval``); ``"exact"`` for a
-        run controlled by an exact twin that is the system itself, whose
-        estimate is then its exact value (#179, #187); ``"conditional"``
-        for one from each simulation's expected values given its modules'
+        How the estimate was found. For a ``RepairableRBD`` run's mean
+        (``mean_availability_interval``, the cost's ``mean_interval``):
+        ``"simulated"``, the mean of the simulations' own values;
+        ``"control_variate"``, of their values controlled by an exact twin
+        (see [`ControlVariate`][repyability.ControlVariate]); ``"exact"``,
+        a run controlled by an exact twin that is the system itself, whose
+        estimate is then its exact value (#179, #187); ``"conditional"``,
+        the mean of each simulation's expected values given its modules'
         histories (#189, see
-        [`ConditionalRun`][repyability.ConditionalRun]); None otherwise.
+        [`ConditionalRun`][repyability.ConditionalRun]). Where the method
+        chooses how to simulate (``NonRepairableRBD.unreliability_interval``),
+        the way it chose; None otherwise.
 
     Examples
     --------
@@ -694,7 +699,13 @@ class ConditionalRun(_ResultMapping):
         components.
     states : int
         The joint states of the modules (each up or down) the simulations
-        met: the system was worked out exactly given each.
+        met: the system was worked out exactly given each. Just one, and
+        the modules never changed state in the run: their outages were not
+        sampled, and every simulation's expected values given them are the
+        same, which says nothing of the error (#215). The mean intervals
+        are then the simulations' own (``method="simulated"``) for a whole
+        run, and have no error to give (``nan``) for a run of the modules
+        alone, which a ``tolerance`` does not stop: run more simulations.
     availability_square : numpy.ndarray, optional
         With ``conditional=True``, at each time of the run's curve, the
         mean over the simulations of the square of each one's chance of
@@ -719,6 +730,19 @@ class ConditionalRun(_ResultMapping):
     whole: bool = False
     uptimes: Optional[np.ndarray] = None
     costs: Optional[np.ndarray] = None
+
+    @property
+    def informative(self) -> bool:
+        """Whether the modules changed state in the run, so that the
+        spread of the simulations' expected values given them estimates
+        the error (#215), or there are none, and the values are exact."""
+        return self.states > 1 or not self.modules
+
+    @property
+    def unknown(self) -> bool:
+        """Whether the error of the run's means is unknown: a run of the
+        modules alone in which they never changed state (#215)."""
+        return not self.whole and not self.informative
 
 
 def _no_spread(conditional: Optional["ConditionalRun"], what: str) -> None:
@@ -942,7 +966,7 @@ class CostResult(_ResultMapping):
         if not 0.0 < confidence < 1.0:
             raise ValueError("confidence must be between 0 and 1.")
         conditional = self.conditional
-        method = None if conditional is None else "conditional"
+        method = "simulated"
         if self.control_variate is not None:
             if self.control_variate.itself:
                 return self.control_variate._exactly(
@@ -951,19 +975,32 @@ class CostResult(_ResultMapping):
             values = self.control_variate.controlled(self.samples)
             estimate = float(np.mean(values))
             standard_error = montecarlo.standard_error(values, self.antithetic)
-        elif conditional is not None and conditional.whole:
+            method = "control_variate"
+        elif (
+            conditional is not None
+            and conditional.whole
+            and conditional.informative
+        ):
             assert conditional.costs is not None
             values = np.asarray(conditional.costs, dtype=float)
             estimate = float(np.mean(values))
             standard_error = montecarlo.standard_error(values, self.antithetic)
+            method = "conditional"
         else:
             estimate = self.mean
             standard_error = self.mean_se
+            if conditional is not None and not conditional.whole:
+                method = "conditional"
+        if conditional is not None and conditional.unknown:
+            standard_error = np.nan
         z = float(ndtri(0.5 + confidence / 2.0))
+        unknown = np.isnan(standard_error)
         return ConfidenceInterval(
             estimate=estimate,
-            lower=max(0.0, estimate - z * standard_error),
-            upper=estimate + z * standard_error,
+            lower=(
+                np.nan if unknown else max(0.0, estimate - z * standard_error)
+            ),
+            upper=np.nan if unknown else estimate + z * standard_error,
             confidence=confidence,
             standard_error=standard_error,
             n_samples=len(self.samples),
@@ -2073,28 +2110,40 @@ class AvailabilityResult(_ResultMapping):
             self.time_simulated_to
         )
         conditional = self.conditional
+        method = "simulated"
         if self.control_variate is not None:
             if self.control_variate.itself:
                 return self.control_variate._exactly(
                     confidence, len(fractions)
                 )
             fractions = self.control_variate.controlled(fractions)
-        elif conditional is not None and conditional.whole:
-            assert conditional.uptimes is not None
-            fractions = np.asarray(conditional.uptimes, dtype=float) / (
-                self.time_simulated_to
-            )
+            method = "control_variate"
+        elif conditional is not None and (
+            conditional.informative or not conditional.whole
+        ):
+            # A run of the modules alone: its own values are theirs.
+            method = "conditional"
+            if conditional.whole:
+                assert conditional.uptimes is not None
+                fractions = np.asarray(conditional.uptimes, dtype=float) / (
+                    self.time_simulated_to
+                )
         estimate = float(np.mean(fractions))
-        se = montecarlo.standard_error(fractions, self.antithetic)
+        se = (
+            np.nan
+            if conditional is not None and conditional.unknown
+            else montecarlo.standard_error(fractions, self.antithetic)
+        )
         z = montecarlo.z_value(confidence)
+        unknown = np.isnan(se)
         return ConfidenceInterval(
             estimate=estimate,
-            lower=max(0.0, estimate - z * se),
-            upper=min(1.0, estimate + z * se),
+            lower=np.nan if unknown else max(0.0, estimate - z * se),
+            upper=np.nan if unknown else min(1.0, estimate + z * se),
             confidence=confidence,
             standard_error=se,
             n_samples=len(fractions),
-            method=None if conditional is None else "conditional",
+            method=method,
         )
 
     @property
@@ -2118,6 +2167,9 @@ class AvailabilityResult(_ResultMapping):
         """
         p = np.asarray(self.availability, dtype=float)
         if self.conditional is not None and not self.conditional.whole:
+            if self.conditional.unknown:
+                # The modules never changed state (#215).
+                return np.full_like(p, np.nan)
             square = self.conditional.availability_square
             assert square is not None
             n = self.n_simulations

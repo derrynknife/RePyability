@@ -115,22 +115,29 @@ def more_samples(
     antithetic: bool,
     what: str,
     limit_name: str,
+    unjudged: Optional[str] = None,
 ) -> int:
     """How many more samples a run to ``tolerance`` needs: 0 once the
     confidence interval of the mean of ``values`` is at most ``tolerance``
     either side, or ``limit`` samples have been taken (then with a
     RuntimeWarning); otherwise another ``n``, up to the limit. An
     infinite (or NaN) value stops the run at once: the mean is infinite
-    (or undefined) however many more are taken."""
+    (or undefined) however many more are taken. With ``unjudged``, why
+    the values do not show the error yet (a run of modules that have not
+    changed state, #215): the run goes on, to the limit."""
     if not np.all(np.isfinite(values)):
         return 0
-    if half_width(values, confidence, antithetic) <= tolerance:
+    if (
+        unjudged is None
+        and half_width(values, confidence, antithetic) <= tolerance
+    ):
         return 0
     taken = len(values)
     if taken >= limit:
         warnings.warn(
             f"The {what} did not converge to within {tolerance} in {taken} "
-            f"samples ({limit_name}); the result is from those.",
+            f"samples ({limit_name}); the result is from those."
+            + ("" if unjudged is None else f" {unjudged}"),
             RuntimeWarning,
             stacklevel=4,
         )

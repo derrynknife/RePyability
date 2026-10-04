@@ -34,6 +34,20 @@ other release, fixes included, the minor.
 
 ### Fixed
 
+- **A conditional run whose modules never changed state no longer reports
+  a certain answer (#215).** When the dependent modules met only the state
+  they started in, in every simulation (a standby pair that never went
+  down), each simulation's expected values given them were the same: the
+  run reported a standard error of 0, and a `tolerance` was met after the
+  first batch, for the value of the rest of the system alone. Such a run
+  now warns; a default run's mean intervals are its simulations' own
+  (`method="simulated"`), and judge its `tolerance`; a run of the modules
+  alone (`conditional=True`) has no error to give (`nan`), and runs on to
+  `max_samples`. A run with no modules stays exact.
+- **`ConfidenceInterval.method` names every case of a repairable run's
+  mean (#223):** `"simulated"`, `"control_variate"`, `"conditional"` or
+  `"exact"`, where the simulations' own mean and a controlled one were
+  both `None`.
 - **Simulations of one diagram from several threads (#216)** crashed
   (`AttributeError: ... '_cancelled'`) or returned another seed's result:
   the event loop keeps a run's state on the diagram, and draws that cannot
