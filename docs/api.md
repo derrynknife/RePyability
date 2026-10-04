@@ -143,6 +143,8 @@ Up/down histories over a window (see the
 
 ::: repyability.MaintenancePlan
 
+::: repyability.Lever
+
 ::: repyability.DemonstrationPlan
 
 ::: repyability.AvailabilityAllocation

@@ -88,6 +88,18 @@ other release, fixes included, the minor.
   estimates the mean from `mc_samples` draws (10,000 by default) with
   `seed`, as `NonRepairableRBD.mean` does; `method="exact"` refuses the
   draws' options.
+- **A diagram's levers are public (#244).** `RepairableRBD.levers()` and
+  `NonRepairableRBD.levers()` list what `parameter_sensitivity` moves, in
+  the order it reports them, as `Lever` results: whose each is and its
+  name, as the sensitivities key them, its value, the range of its values
+  (one outside it is refused), whether it is discrete (one more standby
+  unit or repair crew), and whether it moves a calendar its component
+  shares with others (whose long-run sensitivity takes its schedule
+  apart). `with_levers({lever: value})` builds the diagram with levers
+  moved, as the sensitivities move them (a test interval taking its full
+  tests with it, a common-cause group's members moved together), so that
+  a what-if agrees with them. A report or an app no longer needs the
+  private `repyability.rbd._sensitivity` to name, show or move the levers.
 ### Changed
 
 - **surpyval 0.23 or later is required** (0.22 was). Its next release drops
@@ -262,6 +274,11 @@ other release, fixes included, the minor.
   ignored them without a word where the mean is exact (or numerical); they
   now warn, with a `FutureWarning`, and 0.14 refuses them.
   `mean(method="simulate", ...)` simulates it.
+- **The private names callers used for the levers (#244).**
+  `repyability.rbd._sensitivity`'s `levers` and `Lever`, and its
+  `_calendar_lever` and `_as_spec`, stay for 0.13 (its `Lever` tuple with
+  a `bounds` field at its end), and may change or go in 0.14: use
+  `levers()`, `Lever` (its `calendar` and `value`) and `with_levers`.
 ### Fixed
 
 - **`availability_rate` just after a scheduled maintenance** (#240). A
