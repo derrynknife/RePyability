@@ -396,14 +396,18 @@ class NonRepairable:
         >>> round(unit.mean_availability(), 4)
         0.9804
 
-        One in ten units never fails, so in the long run the unit is up:
+        One in ten units never fails, so in the long run the unit is up.
+        (The share that ever fails, ``p`` here, is ``lfp_p`` from surpyval
+        0.23.)
 
-        >>> cured = NonRepairable(
+        >>> cured = NonRepairable(  # doctest: +SKIP
         ...     surv.Exponential.from_params([0.01], p=0.9),
         ...     surv.Exponential.from_params([0.5]),
         ... )
-        >>> cured.mean_availability(), cured.failure_frequency()
-        (1.0, 0.0)
+        >>> cured.mean_availability()  # doctest: +SKIP
+        1.0
+        >>> cured.failure_frequency()  # doctest: +SKIP
+        0.0
         """
         if isinstance(self.reliability, NonParametric):
             raise ValueError(

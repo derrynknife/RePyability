@@ -771,6 +771,15 @@ properties, and calling them, like `StandbyModel`'s and
     with `confidence` otherwise, so the installed tests also pass with
     surpyval's next release, which deprecates `confidence`
     ([SurPyval#580](https://github.com/derrynknife/SurPyval/issues/580)).
+  - A model's limited-failure proportion is read by surpyval 0.23's name
+    for it, `lfp_p`, where the model has it, and by `p` otherwise
+    ([SurPyval#608](https://github.com/derrynknife/SurPyval/issues/608)).
+    Under surpyval 0.23, which renames `p` (the argument, the attribute and
+    the key of `extras`), the exact methods would otherwise take a
+    limited-failure Exponential for a plain one, and the simulations read
+    the proportion with a deprecation warning. A file saved before 0.10
+    that holds `p` loads under either, and the tests build limited-failure
+    models by the name the installed surpyval takes.
 
 
 ### Deprecated

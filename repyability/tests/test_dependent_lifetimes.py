@@ -26,6 +26,7 @@ from repyability.rbd._dependent_lifetimes import (
     LoadSharingSurvival,
     WarmStandbySurvival,
 )
+from repyability.rbd._model_utils import lfp_extras
 from repyability.rbd.numerical_convolution import ConvolvedSurvival
 from repyability.rbd.serialisation import rbd_from_dict, rbd_to_dict
 
@@ -151,7 +152,7 @@ def test_warm_standby_of_different_units_agrees_with_simulation():
 
 
 def test_a_warm_spare_that_never_fails_keeps_the_arrangement_going():
-    lasting = surv.Weibull.from_params([100.0, 2.0], p=0.8)
+    lasting = surv.Weibull.from_params([100.0, 2.0], **lfp_extras(0.8))
     model = StandbyModel([PUMP, lasting], dormancy_factor=0.5)
     # The spare is a never-failing unit with probability 0.2.
     assert model.sf(1e6) == pytest.approx(0.2, abs=1e-4)

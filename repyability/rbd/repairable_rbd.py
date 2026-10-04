@@ -94,6 +94,7 @@ from repyability.rbd._hidden_tests import check as check_tested
 from repyability.rbd._model_utils import (
     failure_time_scale,
     is_fixed_probability,
+    lfp_p,
     model_mean,
     refuse_nonparametric,
 )
@@ -341,7 +342,7 @@ def _aged_life(model, age: float, u: float) -> float:
     name = getattr(dist, "name", None)
     if (
         name in ("Exponential", "Weibull")
-        and getattr(model, "p", None) == 1
+        and lfp_p(model) == 1
         and getattr(model, "f0", None) == 0
         and not getattr(model, "gamma", 0)
     ):
