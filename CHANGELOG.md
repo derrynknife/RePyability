@@ -29,6 +29,21 @@ other release, fixes included, the minor.
     at 0, with no schedule, tests or imperfect repair) share one curve;
   - each series in a curve's convolutions is transformed once.
 
+### Fixed
+
+- **`availability_rate` just after a scheduled maintenance** (#240). A
+  component's rate was its whole curve differenced over its grid's step,
+  which smoothed over a down time far shorter than a step: the greeks
+  guide's valve, maintained for about 6 h on a grid of 0.04 to 0.08 days,
+  had its rate a day after its replacement 1-2% low (0.0514, or 0.0509 on
+  the coarser grid, for 0.0518). The down times a curve keeps off its grid
+  (its dips, the later maintenances of an age-replaced unit and the return
+  from a block replacement) are now differentiated on their own scale, and
+  only the grid is differenced; a nested RBD's rate is its nodes' times
+  their importance. The two guides' quoted rates change (0.0509 to 0.0518,
+  0.07493 to 0.07491), each now within 1e-4 of its value on grids sixteen
+  times finer.
+
 ## [0.12] - 2026-10-04
 
 Exact where there were estimates, and the sensitivities as one family. A

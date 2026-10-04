@@ -21578,9 +21578,11 @@ class RepairableRBD(RBD):
         the system's rate. A component's ``dA_i/dt`` is the rate of change
         of its point availability (see ``point_availability``), by
         differences on the grid that is worked out on, so the rates are
-        numerical: to about ``1e-5`` of their size, less where a curve
-        bends sharply (just after a scheduled event), and at 0 where a
-        life's density is not smooth there.
+        numerical: to about ``1e-5`` of their size, less at 0 where a
+        life's density is not smooth there. The down times kept off the
+        grid (a repair or maintenance that starts at a known time) are
+        differentiated on their own scale, however short (#240), so the
+        rates just after a scheduled event are as close.
 
         At a scheduled event a component's availability can jump: a block
         replacement or test that takes it off line, maintenance due at a
