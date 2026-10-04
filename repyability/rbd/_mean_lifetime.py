@@ -26,6 +26,8 @@ from typing import Callable, List, Set
 
 import numpy as np
 
+from repyability.utils.wrappers import outside_level
+
 from ._point_availability import knots as quantile_knots
 
 #: The Gauss-Kronrod (7, 15) rule on [-1, 1] (QUADPACK's): its 15 points,
@@ -246,7 +248,7 @@ def _integrate(f: Callable, edges: np.ndarray) -> float:
                 f"target accuracy ({RTOL:g}, relative) within "
                 f"{_MAX_PIECES} pieces; the mean may be less accurate.",
                 RuntimeWarning,
-                stacklevel=3,
+                stacklevel=outside_level(),
             )
             return done + float(kronrod[~finished].sum())
         a, b = np.concatenate((a, middle)), np.concatenate((middle, b))

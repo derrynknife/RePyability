@@ -223,7 +223,7 @@ def test_k_identical_units_of_one_kth_capacity(k):
     np.testing.assert_allclose(capacity.probabilities, binomial, rtol=1e-12)
     assert capacity.meets(1.0) == pytest.approx(p**k)
     assert capacity.meets(1 / k) == pytest.approx(1 - (1 - p) ** k)
-    assert capacity.mean() == pytest.approx(p)
+    assert capacity.mean == pytest.approx(p)
     # Against a demand of 1 the fraction delivered is the expected
     # capacity: no state carries more than 1.
     assert capacity.delivered_fraction(1.0) == pytest.approx(p)
@@ -353,7 +353,7 @@ def test_positive_capacity_is_the_reliability_over_time():
     one = rbd.capacity_distribution(500.0)
     np.testing.assert_allclose(one.probabilities, capacity.probabilities[:, 2])
     assert isinstance(one.meets(20), float)
-    assert isinstance(one.mean(), float)
+    assert isinstance(one.mean, float)
 
 
 @pytest.mark.filterwarnings("ignore:Common-cause group:UserWarning")
@@ -410,7 +410,7 @@ def test_repairable_long_run():
         [(1 - a) ** 3, 3 * a * (1 - a) ** 2, 3 * a**2 * (1 - a), a**3],
     )
     assert capacity.meets(1) == pytest.approx(plant.mean_availability())
-    assert capacity.mean() == pytest.approx(150 * a)
+    assert capacity.mean == pytest.approx(150 * a)
     down = plant.capacity_distribution(broken_nodes=["a"])
     assert down.levels.tolist() == [0.0, 50.0, 100.0]
 
@@ -473,7 +473,7 @@ def test_unlimited_capacity():
     capacity = rbd.system_capacity({"a": 0.9, "b": 0.8})
     assert capacity.levels.tolist() == [0.0, 5.0, math.inf]
     assert capacity.meets(math.inf) == pytest.approx(0.8)
-    assert capacity.mean() == math.inf
+    assert capacity.mean == math.inf
     assert capacity.delivered_fraction(10) == pytest.approx(
         0.8 + 0.9 * 0.2 * 0.5
     )
@@ -489,7 +489,7 @@ def test_mean_ignores_unreachable_infinite_levels():
         np.array([0.0, 1.0, math.inf]),
         np.array([[0.5, 0.5], [0.5, 0.0], [0.0, 0.5]]),
     )
-    mean = capacity.mean()
+    mean = capacity.mean
     assert mean[0] == pytest.approx(0.5)
     assert mean[1] == math.inf
 

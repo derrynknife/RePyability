@@ -1142,6 +1142,14 @@ class GroupsCurve:
         values = {node: curve.at(flat) for node, curve in self.curves.items()}
         return self.system.probabilities(values, flat)[0].reshape(x.shape)
 
+    def down_at(self, x: np.ndarray) -> np.ndarray:
+        """The system's point unavailability at the times ``x``, worked
+        out in its own right (#237)."""
+        x = np.asarray(x, dtype=float)
+        flat = x.ravel()
+        values = {node: curve.at(flat) for node, curve in self.curves.items()}
+        return self.system.probabilities(values, flat)[1].reshape(x.shape)
+
     def events(self, x: np.ndarray):
         """The system's expected failures and planned outages before each
         time ``x`` (see ``RepairableRBD._window_counts``)."""

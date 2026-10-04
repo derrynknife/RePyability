@@ -567,7 +567,10 @@ def test_a_subclassed_component_runs_in_python(monkeypatch):
         },
     )
     plan, _ = rbd._stream_plan(100.0, 1, False)
-    assert _compiled.unsupported(rbd, plan, None) == "node 'sub''s LoggedUnit"
+    assert (
+        _compiled.unsupported(rbd, plan, None)
+        == "the LoggedUnit of node 'sub'"
+    )
 
     def compiled(*args, **kwargs):
         raise AssertionError("compiled")
@@ -927,9 +930,9 @@ def test_what_numbas_loop_runs_besides_plain_components():
     for rbd, reason in [
         (on_condition(), "replacement on condition"),
         (systems_of_every_kind()["unstreamable maintenance"], "maintenance"),
-        (inspected_unit(timed), "node 'a''s test time"),
+        (inspected_unit(timed), "the test time of node 'a'"),
         # Its test time could be streamed, its life cannot.
-        (unstreamed, "node 'a''s models"),
+        (unstreamed, "the models of node 'a'"),
     ]:
         plan, _ = rbd._stream_plan(100.0, 1, False)
         assert reason in _compiled.unsupported(rbd, plan, None, numba=True)
@@ -1523,7 +1526,7 @@ def test_what_numba_does_not_run_inside_a_nested_rbd():
         {"a": {**unit, "repair": {"model": "kijima1", "q": 0.5}}},
     )
     for inner, reason in [
-        (wide, "22 components (a nested RBD of more than 20)"),
+        (wide, "the 22 components of node 'm' (a nested RBD of more than 20)"),
         (imperfect, "imperfect repair"),
         (on_condition(), "replacement on condition"),
     ]:

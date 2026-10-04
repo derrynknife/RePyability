@@ -58,7 +58,12 @@ from repyability.rbd.shannon import (
     _shannon_plan,
 )
 from repyability.utils.checks import is_whole, structure_method
-from repyability.utils.wrappers import check_probability, node_names
+from repyability.utils.deprecation import refuse_removed_names
+from repyability.utils.wrappers import (
+    check_probability,
+    node_names,
+    outside_level,
+)
 
 _ON_INFEASIBLE_RBD = ("raise", "warn", "ignore")
 
@@ -110,9 +115,12 @@ def _names(nodes) -> str:
 
 def _close_name(name, candidates) -> Optional[Any]:
     """The one of ``candidates`` whose name is closest to ``name``'s (a
-    likely typo), if any is close."""
-    by_text = {str(c): c for c in candidates}
-    close = difflib.get_close_matches(str(name), list(by_text), n=1)
+    likely typo), if any is close: compared without case, so that ``"V2"``
+    finds ``"v2"`` (#232)."""
+    by_text: dict = {}
+    for candidate in candidates:
+        by_text.setdefault(str(candidate).lower(), candidate)
+    close = difflib.get_close_matches(str(name).lower(), list(by_text), n=1)
     return by_text[close[0]] if close else None
 
 
@@ -527,6 +535,20 @@ class Pairs(dict):
     def get(self, key, default=None):
         return self[key] if key in self else default
 
+    def to_dict(self) -> dict:
+        """The pairs as plain data, ready for ``json.dumps`` (#235): each
+        value under its pair's first name, then its second,
+        ``{"a": {"b": 0.1}}`` for the pair ``("a", "b")``, the names as
+        JSON holds them (see ``RBD`` results' ``to_dict``)."""
+        from repyability.rbd.results import _json_key, plain
+
+        out: dict = {}
+        for (first, second), value in self.items():
+            out.setdefault(_json_key(first), {})[_json_key(second)] = plain(
+                value
+            )
+        return out
+
 
 def _take_node_names(cls) -> None:
     """Wrap ``cls``'s own public methods so that a bare string given where
@@ -707,6 +729,29 @@ class RBD:
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
         _take_node_names(cls)
+        refuse_removed_names(cls)
+
+    #: Methods 0.12 removed (#149), and those that took their place: asked
+    #: for, they are refused in the AttributeError's own words (#232).
+    _REMOVED_METHODS = {"fussel_vesely": "fussell_vesely"}
+
+    def __getattr__(self, name: str):
+        # Only for a name that is not found: a removed method's, refused
+        # with its replacement, and any other, as Python refuses it.
+        instead = RBD._REMOVED_METHODS.get(name)
+        if instead is not None:
+            raise AttributeError(
+                f"{type(self).__name__!r} object has no attribute "
+                f"{name!r}: 0.12 removed this misspelling (#149); call "
+                f"{instead}() instead.",
+                name=name,
+                obj=self,
+            )
+        raise AttributeError(
+            f"{type(self).__name__!r} object has no attribute {name!r}",
+            name=name,
+            obj=self,
+        )
 
     # Constructor inputs, captured verbatim by each subclass's ``__init__`` so
     # the RBD can be re-created (see ``serialisation``); declared here so the
@@ -849,7 +894,7 @@ class RBD:
                 warnings.warn(
                     structure_message(structure_check)
                     + "\n(built anyway, as on_infeasible_rbd='warn' asks)",
-                    stacklevel=2,
+                    stacklevel=outside_level(),
                 )
             elif on_infeasible_rbd == "raise":
                 raise ValueError(structure_message(structure_check))
@@ -2675,7 +2720,7 @@ class RBD:
                 "the cost minimisation stopped before converging "
                 f"({res.message}); the allocation meets the target but may "
                 "not be the cheapest.",
-                stacklevel=3,
+                stacklevel=outside_level(),
             )
         return {n: float(v) for n, v in probabilities(v)[0].items()}
 
@@ -3228,7 +3273,10 @@ class RBD:
             working = self._system_unreliability(
                 {**p, node: one}, {**q, node: zero}
             )
-            node_importance[node] = as_is / _averaged(working, weights)
+            # A node whose working ends the risk (one of two in an AND)
+            # is worth infinitely much, which is no cause for a warning.
+            with np.errstate(divide="ignore", invalid="ignore"):
+                node_importance[node] = as_is / _averaged(working, weights)
         return node_importance
 
     def _criticality_importance(
@@ -3420,3 +3468,4 @@ class RBD:
 
 
 _take_node_names(RBD)
+refuse_removed_names(RBD)

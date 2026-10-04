@@ -54,6 +54,7 @@ from repyability.rbd.modular import (
     SERIES,
     Decomposition,
 )
+from repyability.utils.checks import no_distribution, real_array
 
 if TYPE_CHECKING:  # pragma: no cover
     from repyability.rbd.non_repairable_rbd import NonRepairableRBD
@@ -135,6 +136,7 @@ def _parse_event(name, model):
                 f"{model!r}."
             )
         return probability
+    no_distribution(model, f"Event {name!r}")
     if not hasattr(model, "sf"):
         raise ValueError(
             f"Event {name!r} must be a probability or a lifetime model with "
@@ -256,15 +258,19 @@ class FaultTree:
                 parents.setdefault(x, []).append(name)
         if top is None:
             roots = [g for g in self._gates if g not in parents]
-            if len(roots) != 1:
+            if not roots:
+                # Each gate is another's input, so going up from any gate
+                # comes back round: the gates form a loop (#232).
+                seen_gates: set = set()
+                place: Hashable = next(iter(self._gates))
+                while place not in seen_gates:
+                    seen_gates.add(place)
+                    place = parents[place][0]
+                raise ValueError(f"The gates form a loop through {place!r}.")
+            if len(roots) > 1:
                 raise ValueError(
-                    "Give the top event: "
-                    + (
-                        "every gate is another's input."
-                        if not roots
-                        else f"gates {sorted(map(str, roots))} are no gate's "
-                        "input."
-                    )
+                    f"Give the top event: gates {sorted(map(str, roots))} "
+                    "are no gate's input."
                 )
             top = roots[0]
         elif top not in self._gates:
@@ -294,9 +300,10 @@ class FaultTree:
         """The common-cause groups, checked: each a ``CCFGroup`` of basic
         events, an event in one group at most, and the members of a group
         with one model (a symmetric group, as the models assume)."""
-        from repyability.rbd.ccf import CCFGroup
+        from repyability.rbd.ccf import CCFGroup, as_groups
         from repyability.rbd.serialisation import serialise_model
 
+        groups = as_groups(groups)
         if not groups:
             return []
         seen: set = set()
@@ -573,7 +580,7 @@ class FaultTree:
                 )
             t = 1.0
         scalar = np.ndim(t) == 0
-        return np.atleast_1d(np.asarray(t, dtype=float)), scalar
+        return np.atleast_1d(real_array(t, "t")), scalar
 
     def _event_probabilities(self, t: np.ndarray) -> Tuple[dict, dict]:
         """Each event's probability of not having occurred (``p``) and of
@@ -1455,7 +1462,11 @@ class FaultTree:
         gate. The nodes' models become the events' (a node's failure by
         time ``t`` is the event). Gates are named ``"TOP"`` and ``"G1"``,
         ``"G2"``, ... (renamed if a node has that name). Nodes that cannot
-        affect the system are left out.
+        affect the system are left out, but for a member of a common-cause
+        group with one that can: the tree keeps it, for the group's causes
+        to strike it with the others, as an event its logic makes
+        irrelevant (the top event ``OR(G, AND(G, member))``, which is
+        ``G``, #237).
 
         Parameters
         ----------
@@ -1474,10 +1485,6 @@ class FaultTree:
             If ``rbd`` is not a ``NonRepairableRBD``.
         ValueError
             If the diagram cannot fail (a direct input-to-output edge).
-        NotImplementedError
-            If a common-cause group has a member that cannot affect the
-            system and one that can (the tree's groups are the diagram's,
-            less any whose members none can).
 
         Examples
         --------
@@ -1606,19 +1613,26 @@ class FaultTree:
         events = {
             node: rbd.reliabilities[node] for node in rbd.nodes if node in used
         }
-        groups = []
+        groups, irrelevant = [], []
         for group in rbd.ccf_groups:
             left_out = [m for m in group.members if m not in events]
             if len(left_out) == len(group.members):
                 continue  # none can affect the system, nor can the group
-            if left_out:
-                raise NotImplementedError(
-                    f"Common-cause group {list(group.members)}: "
-                    f"{left_out} cannot affect the system, so they are no "
-                    "events of the tree, but the group's shared causes "
-                    "strike them with the others."
-                )
+            # A member the logic makes irrelevant (b in a OR (a AND b))
+            # stays an event of the tree, for the group's shared causes to
+            # strike it with the others (#237).
+            irrelevant += [m for m in left_out if m not in irrelevant]
             groups.append(group)
+        if irrelevant:
+            # TOP = OR(G, AND(G, members)) is G: the members are in the
+            # tree without changing it.
+            inner, kept = fresh(f"G{len(names) + 1}"), fresh(
+                f"G{len(names) + 2}"
+            )
+            gates[inner] = gates.pop(top)
+            gates[kept] = ("and", [inner, *irrelevant])
+            gates[top] = ("or", [inner, kept])
+            events.update((m, rbd.reliabilities[m]) for m in irrelevant)
         return cls(gates, events, top=top, ccf_groups=groups or None)
 
     # -- saving ------------------------------------------------------------

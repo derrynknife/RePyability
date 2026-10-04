@@ -11,9 +11,9 @@ class PerfectReliability:
     [`NonRepairableRBD`][repyability.NonRepairableRBD] uses it for the
     input and output nodes and for nodes forced working (``working_nodes``),
     and it can be given as a node's model, e.g. for a connection that
-    cannot fail. Pass the class itself, not an instance: its methods are
-    class methods, and the RBD recognises it (as time-invariant, and when
-    serialising) by identity.
+    cannot fail. Its methods are class methods, and the RBD recognises it (as
+    time-invariant, and when serialising) by the class: an instance,
+    ``PerfectReliability()``, is taken as the class itself.
 
     Examples
     --------
@@ -127,9 +127,9 @@ class PerfectUnreliability:
     forced failed (``broken_nodes``) and for failed components in
     condition-based evaluation (a [`NodeState`][repyability.NodeState] with
     ``alive=False``), and it can be given as a node's model, e.g. to study
-    the system with a component missing. Pass the class itself, not an
-    instance: its methods are class methods, and the RBD recognises it (as
-    time-invariant, and when serialising) by identity.
+    the system with a component missing. Its methods are class methods,
+    and the RBD recognises it (as time-invariant, and when serialising) by
+    the class: an instance is taken as the class itself.
 
     Examples
     --------
@@ -229,3 +229,12 @@ class PerfectUnreliability:
             An array of zeros with shape ``size``.
         """
         return np.zeros(size)
+
+
+def perfect_class(model):
+    """``model``, but for an instance of ``PerfectReliability`` or
+    ``PerfectUnreliability`` the class itself, which the diagrams
+    recognise by identity: an instance stands for its class (#232)."""
+    if isinstance(model, (PerfectReliability, PerfectUnreliability)):
+        return type(model)
+    return model

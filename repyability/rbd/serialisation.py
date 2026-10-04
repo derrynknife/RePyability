@@ -276,17 +276,19 @@ def _serialise_component(value) -> dict:
     if isinstance(value, dict):
         from repyability.rbd.repairable_rbd import RepairableRBD
 
-        repairability = value["repairability"]
         out: dict[str, Any] = {
             "kind": "component_spec",
             "reliability": serialise_model(value["reliability"]),
+        }
+        # A junction's spec may give no repair (#232).
+        if "repairability" in value:
+            repairability = value["repairability"]
             # "instant" (repair in zero time) is a sentinel, not a model.
-            "repairability": (
+            out["repairability"] = (
                 "instant"
                 if repairability == "instant"
                 else serialise_model(repairability)
-            ),
-        }
+            )
         for key in RepairableRBD.COST_KEYS:
             cost = value.get(key)
             if hasattr(cost, "qf"):
@@ -366,14 +368,13 @@ def _deserialise_component(d: dict) -> Any:
     if d.get("kind") == "component_spec":
         from repyability.rbd.repairable_rbd import RepairableRBD
 
-        out: Any = {
-            "reliability": deserialise_model(d["reliability"]),
-            "repairability": (
+        out: Any = {"reliability": deserialise_model(d["reliability"])}
+        if "repairability" in d:
+            out["repairability"] = (
                 "instant"
                 if d["repairability"] == "instant"
                 else deserialise_model(d["repairability"])
-            ),
-        }
+            )
         for key in RepairableRBD.COST_KEYS:
             if key in d:
                 cost = d[key]

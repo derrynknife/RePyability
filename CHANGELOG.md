@@ -64,7 +64,30 @@ other release, fixes included, the minor.
   always took the default ones. Given to `simulate_chunk`, it is kept with
   the chunk (and its saved form); chunks made with different ones do not
   merge. True, which simulates a twin or the modules alone, is refused.
-
+- **Unavailability over time to its own precision (#237).**
+  `RepairableRBD.point_unavailability(x)` and `mission_unavailability(t)`
+  take what `point_availability` and `mission_availability` take and work
+  out the probability of being down itself, where one less the
+  availability rounds to 0 below about 1e-16: a component with an
+  exponential life and repair by its closed form, the others from their
+  curves of being down, and repair crews and common-cause groups through
+  their chains. For a pair of valves failing once in 10^9 hours, repaired in
+  8, `1 - point_availability(1000.0)` gave 1.1e-16 and
+  `1 - mission_availability(8760.0)` 0; `point_unavailability(1000.0)`
+  gives the exact 6.4e-17 and `mission_unavailability(8760.0)` 6.391e-17,
+  so a small PFD(t) can be plotted on a log scale.
+- **`to_dict()` on every result (#235)**, ready for `json.dumps`, for a
+  service that hands results on: each field by name, arrays as lists,
+  numpy numbers as Python ones, the results a result holds (its
+  criticalities, cost or control variate) as their own `to_dict()`, and
+  keys JSON cannot hold (tuple node names) as their text. An
+  `AnalysisRoute`, `joint_importance`'s pairs (nested, `{first: {second:
+  value}}`), a `Timeline` and `Timelines` have one too.
+- **A simulated check of an exact mean (#233).** `StandbyModel`,
+  `LoadSharingModel` and `DegradingNode`'s `mean(method="simulate")`
+  estimates the mean from `mc_samples` draws (10,000 by default) with
+  `seed`, as `NonRepairableRBD.mean` does; `method="exact"` refuses the
+  draws' options.
 ### Changed
 
 - **A model given for the input or output node is refused (#217).** The
@@ -165,7 +188,38 @@ other release, fixes included, the minor.
   with no running cost, exactly, and the acquisition beside it, where it
   gave None (and `.mean` raised); so does `availability()`'s result. A
   system with nothing priced at all still gives None.
-
+- **Inputs are refused where they are given (#233).** A cost given as
+  text or as True or False (`repair_cost: "800"` was priced at 800, `True`
+  at 1) is refused, as other non-numbers were, and so are an interval
+  given as text (an inspection's `"interval": "8760"`) and times given as
+  text (`sf("8760")`), with a TypeError naming them. surpyval's
+  distribution itself (`surv.Weibull`) given where a model of it goes,
+  which built and failed in surpyval at the first evaluation, is refused at
+  once by a `NonRepairableRBD`, `RepairableRBD`, `FaultTree` or
+  `NonRepairable`, saying to fit it or give its parameters; a repairable
+  diagram given a life alone says it needs its repairs too. A part of
+  `spares_demand` or `spares_stock` that lists a component twice, or a
+  component in both a part and `nodes`, which stocked its spares on two
+  shelves, is refused, as `allocate_redundancy` refuses a node in a train
+  and `nodes`.
+- **A test offset within a billionth of the interval is no offset
+  (#237).** An offset of 0 puts a component's first test at its interval,
+  but any positive one put a test at the offset, near the start: one more
+  test, its cost and its outage, and a unit off line at once, so an offset
+  worked out as a share of the interval fell on either side of the jump.
+  An offset no more than `1e-9 * interval` is now 0. The constructor's
+  docstring and the costs guide say what 0 and a small offset do.
+- **Seeds are checked where they are given (#232).** A seed is a whole
+  number from 0 to 2**32 - 1, a list of them, or None; a numpy
+  `Generator`, refused deep in numpy before, is refused saying how to draw
+  a seed from it (`seed=int(rng.integers(2**32))`).
+- **Shorter reprs (#235).** A `SparesDemand` prints its mean, standard
+  deviation and how many probabilities it holds, and a `ControlVariate` and
+  a `ConditionalRun` their values and how many simulations, rather than
+  their arrays. (A diagram's repr was already a summary, and so was the
+  bound method printed when `()` is left off.)
+- **Warnings point at the line that called the package (#232)**, where
+  several pointed inside it.
 ### Deprecated
 
 - **`optimal_inspection_intervals(offsets=)` is renamed `offset_shares=`
@@ -173,7 +227,15 @@ other release, fixes included, the minor.
   `with_intervals(offsets=)` and the plan's `offsets` are times, so a
   share passed to `with_intervals` undid a stagger without a word.
   `offsets=` still works, with a `FutureWarning`; 0.14 refuses it.
-
+- **`CapacityDistribution.mean` is a property (#235)**, as the other
+  results' values are and as 0.12 made `SparesDemand.mean`. Called,
+  `mean()`, it still gives the mean, with a `FutureWarning`; 0.14 refuses
+  it.
+- **The simulation options of an exact mean (#233).** `StandbyModel`,
+  `LoadSharingModel` and `DegradingNode`'s `mean(mc_samples, seed)`
+  ignored them without a word where the mean is exact (or numerical); they
+  now warn, with a `FutureWarning`, and 0.14 refuses them.
+  `mean(method="simulate", ...)` simulates it.
 ### Fixed
 
 - **`optimal_inspection_intervals` chooses the intervals of tests that can
@@ -348,6 +410,52 @@ other release, fixes included, the minor.
   for. Its staggered-tests entry gave `optimal_replacement_intervals` an
   `allowed` it did not have (it has now, see Added), and the MGL example's
   probability is 0.0311.
+- **Messages that say what to do (#232).** The names 0.12 removed (`N`,
+  `max_N`, `n_sims`, `n_simulations`) are refused naming what took their
+  place, where Python said only "unexpected keyword argument", and
+  `fussel_vesely` names `fussell_vesely`. A node name with a typo (in a
+  spares part, a train, a common-cause group, a state or an allocation)
+  is answered with the closest name, whatever its case, and the
+  components; a junction given where a component goes is called a
+  junction. A role or parameter with a typo in an uncertainty spec is
+  answered with the closest; a spec mixing the two says so; and
+  `uncertainty_importance(of="cost_rate")` is `expected_cost_rate`. An
+  outage log says which outage is wrong and how (not a pair, a start or
+  end that is not a time, outside the window, ending before it starts)
+  and, out of order, to give `merge=True`. Gates that form a loop say so,
+  naming one, where the tree asked for its top event. `spares_stock` with
+  repair crews says it has no simulation to fall back on, and what gives
+  the stock when a crew is always free. And no message reads "'a''s".
+- **`PerfectReliability()` is `PerfectReliability` (#232).** An instance,
+  as a repairable diagram's node or a spec's `reliability`, is taken as
+  the class, where the diagram refused it (a `NonRepairableRBD` took it
+  already); a junction's spec without repairs is saved and loaded; and a
+  `NonRepairable` given one says a life must end.
+- **A single common-cause group (#232)** is taken by `ccf_groups=` as a
+  list of one, by both diagram classes and `FaultTree`, where it was
+  refused as "not iterable".
+- **`NonRepairable(life, "instant")` (#233)** replaces in no time, as a
+  spec's `"instant"` repairs, where it was taken as a model and failed at
+  its first use; any other text is refused.
+- **`UncertaintyResult.percentile` and `CostResult.percentile` warn of a
+  share (#233)**: a `q` between 0 and 1 is taken on numpy's 0 to 100
+  scale, as before, but warns that `percentile(5)` is the 5th percentile,
+  where `interval()` takes shares.
+- **An infinite risk reduction worth (#235)** no longer warns of dividing
+  by zero in a `NonRepairableRBD` or `RepairableRBD`, as it did not in a
+  `FaultTree`.
+- **`FaultTree.from_rbd` keeps a common-cause member the logic makes
+  irrelevant (#237)**, `b` in `a OR (a AND b)` with `a` and `b` in one
+  group, where it was refused: the tree keeps it under the top event as
+  `OR(G, AND(G, b))`, which is `G`, for the group's shared cause to
+  strike it with `a`. 39 of 150 random trees with one common-cause pair
+  were refused; every one now goes round.
+- **Staggered tests in a common-cause group restore only the member
+  tested (#237)**: each member is restored by its own test, as in the
+  simulations; the costs guide said a shared failure was "found by
+  whichever test comes first" and "twice as soon", as if a test restored
+  both, which gives a little less (practice that restores both channels
+  at the first test is not modelled).
 
 ## [0.12] - 2026-10-04
 

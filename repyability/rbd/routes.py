@@ -62,6 +62,23 @@ class AnalysisRoute:
     engine_reason: str = ""
     twin: str = ""
 
+    def to_dict(self) -> dict:
+        """The route as plain data, ready for ``json.dumps`` (#235): its
+        fields by name, the nodes as a list.
+
+        Returns
+        -------
+        dict
+            ``route``, ``reason``, ``nodes``, ``engine``,
+            ``engine_reason`` and ``twin``.
+        """
+        from repyability.rbd.results import plain
+
+        return {
+            name: plain(getattr(self, name))
+            for name in self.__dataclass_fields__
+        }
+
     def __str__(self) -> str:
         text = f"{self.route}: {self.reason}"
         if self.engine is not None:

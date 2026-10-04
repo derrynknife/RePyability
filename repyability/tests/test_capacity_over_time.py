@@ -201,7 +201,7 @@ def test_the_delivered_fraction_is_what_the_simulation_estimates(t):
     simulated = plant.availability(t, mc_samples=3000, seed=3, demand=100.0)
     interval = simulated.delivered_fraction_interval(0.999)
     assert interval.lower <= exact.delivered_fraction(100.0) <= interval.upper
-    assert exact.mean() == pytest.approx(simulated.mean_capacity, rel=2e-3)
+    assert exact.mean == pytest.approx(simulated.mean_capacity, rel=2e-3)
 
 
 def test_inspected_pumps_settle_into_their_calendar():

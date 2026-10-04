@@ -41,6 +41,9 @@ from typing import Callable, NamedTuple, Tuple
 import numpy as np
 from scipy.special import ndtr, ndtri
 
+from repyability.utils.checks import seed as check_seed
+from repyability.utils.wrappers import outside_level
+
 #: The conditional probability of each level of subset simulation.
 P0 = 0.1
 #: Samples per level of subset simulation: enough that a run's estimate is
@@ -430,7 +433,7 @@ def estimate(
     of ``tolerance`` at ``confidence``, within ``budget`` lifetimes. Warns
     if the budget runs out first. Returns the estimate and the method
     used."""
-    rng = np.random.default_rng(seed)
+    rng = np.random.default_rng(check_seed(seed))
     s = _Sampler(draw, width, float(x), rng)
     z = float(ndtri(0.5 + confidence / 2.0))
     if width == 0:
@@ -452,7 +455,7 @@ def estimate(
             f"The estimate did not reach a relative precision of "
             f"{tolerance:g} within {budget:,} lifetimes (max_samples).",
             RuntimeWarning,
-            stacklevel=3,
+            stacklevel=outside_level(),
         )
     return result, method
 

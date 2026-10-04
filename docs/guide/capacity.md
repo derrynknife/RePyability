@@ -64,7 +64,7 @@ capacity = plant.capacity_distribution(1000)
 capacity.levels                     # array([  0.,  50., 100., 120.])
 capacity.probabilities              # array([0.0361, 0.185 , 0.4361, 0.3428])
 capacity.meets(100)                 # -> 0.7789   at least two pumps, and the pipe
-capacity.mean()                     # -> 93.997   the expected capacity
+capacity.mean                       # -> 93.997   the expected capacity
 capacity.delivered_fraction(100)    # -> 0.8714   E[min(capacity, 100)] / 100
 capacity.meets(50)                  # -> 0.9639   the capacity is positive...
 plant.sf(1000)                      # -> 0.9639   ...exactly when the plant works
@@ -114,7 +114,7 @@ long_run = pumps.capacity_distribution()
 long_run.probabilities              # array([6.0000e-05, 4.2700e-03, 1.0668e-01, 8.8900e-01])
 long_run.meets(100)                 # -> 0.99568   time with two pumps or more up
 long_run.delivered_fraction(100)    # -> 0.99781   the production availability
-long_run.mean()                     # -> 144.23    the average capacity
+long_run.mean                       # -> 144.23    the average capacity
 pumps.mean_availability()           # -> 0.99994   the time with any output at all
 ```
 

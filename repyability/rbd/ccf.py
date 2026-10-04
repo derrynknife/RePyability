@@ -871,6 +871,22 @@ class CCFGroup:
         return f"CCFGroup(members={list(self.members)}, model={self.model!r})"
 
 
+def as_groups(groups) -> list:
+    """A diagram's ``ccf_groups`` as a list: none for None, and one for a
+    single ``CCFGroup`` (#232); else the groups given, which the diagram
+    checks."""
+    if groups is None:
+        return []
+    if isinstance(groups, CCFGroup):
+        return [groups]
+    if isinstance(groups, (str, bytes)) or not isinstance(groups, Collection):
+        raise ValueError(
+            "ccf_groups must be a CCFGroup or a list of them, got "
+            f"{groups!r}."
+        )
+    return list(groups)
+
+
 def shock_outcomes(groups, base_probabilities, base_failures, check=None):
     """Every combination of the common-cause ``groups``' mutually exclusive
     shock outcomes: for each, its probability, the nodes' probabilities of

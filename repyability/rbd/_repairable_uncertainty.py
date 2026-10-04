@@ -27,11 +27,15 @@ the Sobol indices from draws (Jansen's estimators), as
 ``NonRepairableRBD.uncertainty_importance`` does.
 """
 
+import difflib
 import warnings
 from collections.abc import Mapping
 from typing import Any, Dict, Hashable, List, NamedTuple, Optional, Tuple
 
 import numpy as np
+
+from repyability.utils.checks import seed as check_seed
+from repyability.utils.wrappers import outside_level
 
 from .uncertainty import (
     FIT,
@@ -61,6 +65,8 @@ QUANTITIES = (
     "mission_availability",
     "expected_cost_rate",
 )
+#: The quantities' other names: ``parameter_sensitivity``'s (#232).
+QUANTITY_NAMES = {"cost_rate": "expected_cost_rate"}
 
 
 def model_of(spec: dict, role: str):
@@ -141,9 +147,43 @@ def _roles(spec: Any, models: dict, label: str) -> Dict[str, Any]:
                     "model, or it has none)."
                 )
         return dict(spec)
+    if isinstance(spec, Mapping) and spec:
+        _require_parameters_or_roles(spec, models.get("reliability"), label)
     if models.get("reliability") is None:
         raise ValueError(f"{label} has no life model to draw.")
     return {"reliability": spec}
+
+
+def _require_parameters_or_roles(spec: Mapping, life, label: str) -> None:
+    """Raise if ``spec``, distributions by the life's parameter names or
+    uncertainties by role, has a key that is neither one of the life's
+    parameters nor a role: saying which it is likelier meant, and what each
+    may be (#232)."""
+    dist = getattr(life, "dist", None)
+    names = [str(name) for name in getattr(dist, "parameter_names", ())]
+    roles = [key for key in spec if key in ROLES]
+    unknown = [key for key in spec if key not in ROLES and key not in names]
+    if roles and len(roles) < len(spec):
+        raise ValueError(
+            f"{label}: {sorted(map(str, set(spec) - set(roles)))} and "
+            f"{roles} mix roles and parameters: give uncertainties by role "
+            f"({', '.join(ROLES)}), or distributions over the life's "
+            f"parameters ({', '.join(names) or 'none'}), not both."
+        )
+    if unknown:
+        close = [
+            match
+            for key in unknown
+            for match in difflib.get_close_matches(
+                str(key), list(ROLES) + names, n=1
+            )
+        ]
+        hint = f" Did you mean {close[0]!r}?" if close else ""
+        raise ValueError(
+            f"{label}: {sorted(map(str, unknown))} are neither roles "
+            f"({', '.join(ROLES)}) nor parameters of its life's model "
+            f"({', '.join(names) or 'none'}).{hint}"
+        )
 
 
 def fitted(rbd) -> Dict[Hashable, Dict[str, str]]:
@@ -202,7 +242,7 @@ def half_named(label: str, others: list, what: str, together) -> None:
         "population, its uncertainty is understated. Give them together, "
         f"{together!r}, to draw it once for all of them.",
         UserWarning,
-        stacklevel=4,
+        stacklevel=outside_level(),
     )
 
 
@@ -345,7 +385,7 @@ def draws(
     if n < 1:
         raise ValueError(f"n_draws must be at least 1, got {n}.")
     check_sampling(sampling)
-    rng = np.random.default_rng(seed)
+    rng = np.random.default_rng(check_seed(seed))
 
     def draw(count: int, source) -> Tuple[List[Dict[str, list]], list]:
         drawn = []
@@ -355,7 +395,11 @@ def draws(
             drawn.append(
                 {
                     role: draw_models(
-                        models[role], spec, count, source, f"{label}'s {role}"
+                        models[role],
+                        spec,
+                        count,
+                        source,
+                        f"The {role} of {label[0].lower()}{label[1:]}",
                     )
                     for role, spec in item.specs.items()
                 }
@@ -537,7 +581,9 @@ def delta(rbd, of: str, x, state, inputs, groups, rel_step) -> list:
             keys = list(item.members)
         for role, spec in item.specs.items():
             positions, _, covariance, _ = varied_parameters(
-                models[role], spec, f"{label}'s {role}"
+                models[role],
+                spec,
+                f"The {role} of {label[0].lower()}{label[1:]}",
             )
             names = parametric_spec(models[role])[2]
             g = gradient(keys, [f"{role}.{names[p]}" for p in positions])

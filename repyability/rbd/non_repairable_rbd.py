@@ -34,6 +34,11 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.optimize import brentq
 
+from repyability.utils.checks import (
+    no_distribution,
+    real_array,
+)
+from repyability.utils.checks import seed as check_seed
 from repyability.utils.checks import simulation_options, structure_method
 from repyability.utils.wrappers import conditional_survival, numpy_seed
 
@@ -51,12 +56,16 @@ from ._model_utils import (
     refuse_nonparametric,
 )
 from ._sampling import RowSampler, column, inverse_sampler, row_sampler
-from .ccf import VALIDITY, BetaFactor, CCFGroup
+from .ccf import VALIDITY, BetaFactor, CCFGroup, as_groups
 from .ccf import parameters as ccf_parameters
 from .ccf import shock_outcomes, validity_warning
 from .ccf import with_parameters as with_ccf_parameters
 from .degrading_node import DegradingNode
-from .helper_classes import PerfectReliability, PerfectUnreliability
+from .helper_classes import (
+    PerfectReliability,
+    PerfectUnreliability,
+    perfect_class,
+)
 from .load_sharing_node import LoadSharingModel
 from .modular import GraphStructure
 from .node_state import NodeState
@@ -200,7 +209,7 @@ def _times(obj, x) -> tuple:
                 "node model's probability depends on time)."
             )
     scalar_in = np.ndim(x) == 0
-    return np.atleast_1d(np.asarray(x, dtype=float)), scalar_in
+    return np.atleast_1d(real_array(x, "x")), scalar_in
 
 
 def _dsf_dparam(cls, params, j, x_arr, rel_step, extras=None) -> np.ndarray:
@@ -282,8 +291,11 @@ def _never_fails(model) -> bool:
 
 
 def _check_model(node, model) -> None:
-    """Raise if a node's model is not one (it has no ``sf``), saying what
-    to give instead; a number most likely means a probability."""
+    """Raise if a node's model is not one (it has no ``sf``, or it is a
+    surpyval distribution itself, whose ``sf`` needs parameters, #233),
+    saying what to give instead; a number most likely means a
+    probability."""
+    no_distribution(model, f"The model of node {node!r}")
     if callable(getattr(model, "sf", None)):
         return
     if isinstance(model, (int, float)) and not isinstance(model, bool):
@@ -533,7 +545,11 @@ class NonRepairableRBD(RBD):
         # Capture the constructor inputs verbatim (before any mutation) so the
         # RBD can be faithfully serialised via to_dict()/to_json().
         edges = list(edges)
-        ccf_groups = list(ccf_groups) if ccf_groups else []
+        ccf_groups = as_groups(ccf_groups)
+        # PerfectReliability() stands for the class (#232).
+        reliabilities = {
+            node: perfect_class(model) for node, model in reliabilities.items()
+        }
         self._init_args = {
             "edges": [tuple(e) for e in edges],
             "reliabilities": dict(reliabilities),
@@ -1410,7 +1426,7 @@ class NonRepairableRBD(RBD):
                     "Common random numbers need every node's draws to be "
                     "replayable from uniforms (surpyval parametric "
                     f"distributions and the composite nodes built from "
-                    f"them); node {node!r}'s are not."
+                    f"them); those of node {node!r} are not."
                 )
 
     def _require_capacity_outside_groups(self) -> None:
@@ -1614,7 +1630,7 @@ class NonRepairableRBD(RBD):
         [0.0, 50.0, 100.0, 120.0]
         >>> round(capacity.meets(100), 4)  # two pumps or more
         0.972
-        >>> round(capacity.mean(), 2)
+        >>> round(capacity.mean, 2)
         113.13
         """
         x, scalar = _times(self, x)
@@ -2599,7 +2615,7 @@ class NonRepairableRBD(RBD):
             raise ValueError(f"n_draws must be at least 1, got {n_draws}.")
         check_sampling(sampling)
         sources, ccf_specs = self._uncertainty_sources(uncertainty)
-        rng = np.random.default_rng(seed)
+        rng = np.random.default_rng(check_seed(seed))
 
         def draw(n: int, source) -> Tuple[Dict[Hashable, list], list]:
             drawn: Dict[Hashable, list] = {}
@@ -5902,8 +5918,9 @@ class NonRepairableRBD(RBD):
                     f"Common-cause group {list(group.members)} splits the "
                     "failure rate: a simulation draws its members' "
                     "lifetimes, with their shared shocks, through their "
-                    f"model's quantile function, and node {first!r}'s model "
-                    "has none (surpyval parametric distributions do). The "
+                    f"model's quantile function, and the model of node "
+                    f"{first!r} has none (surpyval parametric distributions "
+                    "do). The "
                     "exact sf, ff and mean include the group."
                 )
         for model in self.reliabilities.values():

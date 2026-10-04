@@ -177,6 +177,37 @@ repair, is smoothed over it, so a point value there can be off by up to
 about the probability that the component is under repair; mission averages
 are not affected.
 
+A small unavailability, a redundant safety function's `1e-16`, say, is lost
+below one less a number next to 1: `1 - point_availability(t)` cannot hold
+it. `point_unavailability` and `mission_unavailability` (#237) work it out
+in its own right, as `mean_unavailability` does in the long run, each
+component down with one less its availability, or in closed form for one
+with an exponential life and repair (and no maintenance or tests), new at 0:
+
+```python
+valve = {
+    "reliability": surv.Exponential.from_params([1e-9]),
+    "repairability": surv.Exponential.from_params([1 / 8]),
+}
+pair = RepairableRBD(
+    [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")], {"a": valve, "b": valve}
+)
+1 - pair.point_availability(1000.0)   # -> 1.11e-16   the floor of a float
+pair.point_unavailability(1000.0)     # -> 6.4e-17    (8e-9 squared)
+pair.mission_unavailability(8760.0)   # -> 6.391e-17  from new, over a year
+```
+
+!!! note "A window's length, by its name"
+    The methods name a window's length for what it is to them: `t`, the
+    times (or missions' lengths) of the exact values over time
+    (`point_availability`, `mission_availability`, `expected_events`,
+    `expected_cost`); `t_simulation`, the window a simulation runs over
+    (`availability`, `cost`, `compare`, `simulate_timelines`); `horizon`,
+    the time a count or a cost is totalled over (`spares_demand`,
+    `total_cost`, `allocate_redundancy`); and `window`, the window an
+    importance measure is averaged over (#235). Each runs from 0, every
+    component new, unless a `state` is given.
+
 ## Expected events over a window (exact)
 
 From the same curves, the expected number of system failures in a window

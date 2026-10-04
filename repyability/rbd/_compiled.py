@@ -39,6 +39,7 @@ from typing import Any, Optional
 import numpy as np
 
 from repyability.rbd import _streams, engines
+from repyability.utils.wrappers import outside_level
 
 # The kinds of term of the structure (see ``modular``).
 NODE_TERM, SERIES_TERM, PARALLEL_TERM = 0, 1, 2
@@ -159,11 +160,11 @@ def _unsupported_level(
             if not numba:
                 return "nested RBDs"
             if type(component) is not RepairableRBD:
-                return f"node {name!r}'s {type(component).__name__}"
+                return f"the {type(component).__name__} of node {name!r}"
             if len(component.components) > MAX_TABLED:
                 return (
-                    f"node {name!r}'s {len(component.components)} "
-                    f"components (a nested RBD of more than {MAX_TABLED})"
+                    f"the {len(component.components)} components of node "
+                    f"{name!r} (a nested RBD of more than {MAX_TABLED})"
                 )
             reason = _unsupported_level(
                 component, plan, numba, prefix + (name,)
@@ -172,9 +173,12 @@ def _unsupported_level(
                 return reason
             continue
         if type(component) is not NonRepairable:
-            return f"node {name!r}'s {type(component).__name__}"
+            return f"the {type(component).__name__} of node {name!r}"
         if not _streamed(prefix + (name,), plan, rbd._standby.get(name)):
-            return f"node {name!r}'s models (their draws cannot be streamed)"
+            return (
+                f"the models of node {name!r} (their draws cannot be "
+                "streamed)"
+            )
     return None
 
 
@@ -195,8 +199,8 @@ def _unsupported_maintenance(
             and (path, _streams.DURATION) not in plan.specs
         ):
             return (
-                f"node {node!r}'s maintenance time (its draws cannot be "
-                "streamed)"
+                f"the maintenance time of node {node!r} (its draws cannot "
+                "be streamed)"
             )
     return None
 
@@ -213,7 +217,10 @@ def _unsupported_inspections(
             and _streamed(path, plan)
             and (path, _streams.DURATION) not in plan.specs
         ):
-            return f"node {node!r}'s test time (its draws cannot be streamed)"
+            return (
+                f"the test time of node {node!r} (its draws cannot be "
+                "streamed)"
+            )
     return None
 
 
@@ -311,7 +318,7 @@ def ready(name: str, auto: bool) -> str:
             f"The {name!r} simulation engine could not be loaded, so the "
             f"simulations run on {fallback!r}:\n{error}",
             RuntimeWarning,
-            stacklevel=4,
+            stacklevel=outside_level(),
         )
         return ready(fallback, auto)
     return name

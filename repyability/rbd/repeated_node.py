@@ -1,6 +1,7 @@
 import numpy as np
 
 from repyability.utils.checks import simulation_options, whole_number
+from repyability.utils.deprecation import refuse_removed_names
 from repyability.utils.wrappers import numpy_seed
 
 from ._mean_lifetime import mean_lifetime, model_kinks, model_knots
@@ -11,6 +12,7 @@ PARALLEL = 1
 SERIES = 0
 
 
+@refuse_removed_names
 class RepeatedNode:
     """Independent identical copies of one component, in series or parallel.
 

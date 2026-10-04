@@ -5,6 +5,8 @@ from contextlib import contextmanager
 
 import numpy as np
 
+from repyability.utils.checks import seed as check_seed
+
 #: Held while a simulation runs, in whichever thread (#216). The event loop
 #: keeps a run's state on the diagram (and its nested diagrams and
 #: components), and draws that cannot be streamed come from numpy's global
@@ -53,6 +55,7 @@ def numpy_seed(seed):
     seed : int or None
         The seed to apply, or None to leave the global RNG untouched.
     """
+    seed = check_seed(seed)
     with SIMULATIONS:
         if seed is None:
             yield

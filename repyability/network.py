@@ -49,6 +49,7 @@ from repyability.rbd._model_utils import is_fixed_probability
 from repyability.rbd._sampling import lifetime_sampler
 from repyability.rbd.non_repairable_rbd import check_x
 from repyability.rbd.shannon import _minimal_cut_sets, _shannon_plan
+from repyability.utils.deprecation import refuse_removed_names
 from repyability.utils.wrappers import numpy_seed
 
 #: How the exact values are worked out: ``"bdd"`` (the default), by the
@@ -74,6 +75,7 @@ _FAIL, _WORK = 0, 1
 _NONE_FAIL, _NONE_WORK = -1, -2
 
 
+@refuse_removed_names
 class Network:
     """An undirected network whose links, and optionally nodes, fail, and
     the reliability of the connection between two of its nodes.

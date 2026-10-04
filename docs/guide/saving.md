@@ -77,7 +77,7 @@ Every Monte-Carlo method takes a `seed`:
 |---|---|
 | `NonRepairableRBD` | `random`, `mean`, `mean_time_to_failure` and `compare` with `method="simulate"`, `mean_time_to_failure_interval` |
 | `RepairableRBD` | `availability`, `cost`, `compare` with `control_variate=False` (or where the exact methods do not reach), `spares_demand` with `method="simulate"` |
-| Node models | `RepeatedNode.random`, `RepeatedNode.mean` with `method="simulate"`, `RepeatedStandbyNode.random`, `StandbyModel.random`, `LoadSharingModel.random`, and the `mean(mc_samples=..., seed=...)` of a simulated `StandbyModel` or `LoadSharingModel` |
+| Node models | `RepeatedNode.random`, `RepeatedNode.mean` with `method="simulate"`, `RepeatedStandbyNode.random`, `StandbyModel.random`, `LoadSharingModel.random`, `DegradingNode.random`, and the `mean` of a `StandbyModel`, `LoadSharingModel` or `DegradingNode` with `method="simulate"` (or with `mc_samples` or `seed`, where it has no exact mean) |
 | `PhasedMission` | `reliability`, `unreliability` and `phase_failure_probabilities` with `method="simulate"`, `reliability_interval` |
 | `Network` | `sf`, `ff` and `mean` with `method="simulate"`, `random` |
 | `Repairable` | every simulation-backed method |

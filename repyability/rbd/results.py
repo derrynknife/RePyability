@@ -24,6 +24,7 @@ methods until 0.12 (#184): calling them still works, with a
 
 import dataclasses
 import math
+import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Dict, Hashable, Optional, Tuple
@@ -32,7 +33,62 @@ import numpy as np
 from scipy.special import ndtri
 
 from repyability.rbd import _montecarlo as montecarlo
-from repyability.utils.deprecation import called
+from repyability.utils.deprecation import REMOVAL_AFTER_NEXT, called
+from repyability.utils.wrappers import outside_level
+
+
+def _on_percent_scale(q, name: str) -> None:
+    """Warn when ``q``, a percentile on numpy's scale of 0 to 100, lies
+    strictly between 0 and 1: more likely a fraction meant as a percent
+    (#233)."""
+    values = np.atleast_1d(np.asarray(q, dtype=float))
+    if np.any((values > 0.0) & (values < 1.0)):
+        warnings.warn(
+            f"{name}({q!r}) is a percentile on the scale of 0 to 100, as "
+            "numpy's is: for the 5th percentile give 5, not 0.05 (interval "
+            "takes a level in (0, 1)).",
+            UserWarning,
+            stacklevel=outside_level(),
+        )
+
+
+def _json_key(key) -> Any:
+    """A mapping's key as JSON holds it: as it is if JSON takes it (text, a
+    number, a bool or None), else as its text, such as a tuple node name's
+    ``"('a', 1)"`` (#235)."""
+    if key is None or isinstance(key, (str, int, float, bool)):
+        return key
+    if isinstance(key, np.generic):
+        return key.item()
+    return str(key)
+
+
+def plain(value) -> Any:
+    """``value`` as plain data, for JSON (#235): a result (or anything
+    with a ``to_dict``) as its ``to_dict()``, a dataclass as a dict of its
+    fields, an array or a tuple as a list, a numpy number as a Python one,
+    a mapping with its keys as JSON holds them (see ``_json_key``), and
+    anything else as it is."""
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if callable(getattr(value, "to_dict", None)) and not isinstance(
+        value, type
+    ):
+        return value.to_dict()
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return {
+            f.name: plain(getattr(value, f.name))
+            for f in dataclasses.fields(value)
+        }
+    if isinstance(value, Mapping):
+        return {_json_key(k): plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [plain(v) for v in value]
+    return value
 
 
 class _ResultMapping(Mapping):
@@ -42,6 +98,21 @@ class _ResultMapping(Mapping):
     ``keys``/``items``/``values``, ``in``, ``dict(result)``, iteration) while
     the subclasses add typed, documented attributes.
     """
+
+    def to_dict(self) -> dict:
+        """The result as plain data, ready for ``json.dumps`` (#235): each
+        field by name, arrays as lists, numpy numbers as Python ones, the
+        results it holds as their own ``to_dict()``, and keys JSON cannot
+        hold (tuple node names, say) as their text.
+
+        Returns
+        -------
+        dict
+            The fields, as plain data. Infinite and undefined values stay
+            floats (``inf``, ``nan``), which Python's ``json`` writes as
+            ``Infinity`` and ``NaN``.
+        """
+        return {name: plain(getattr(self, name)) for name in self}
 
     def __getitem__(self, key):
         if key in self._field_names():
@@ -200,6 +271,15 @@ class ControlVariate(_ResultMapping):
     coefficient: float
     correlation: float
     itself: bool = False
+
+    def __repr__(self) -> str:
+        # A summary (#235): each simulation's twin value is in ``twin``.
+        return (
+            f"ControlVariate(exact={self.exact:.6g}, "
+            f"coefficient={self.coefficient:.6g}, "
+            f"correlation={self.correlation:.6g}, itself={self.itself}, "
+            f"n_simulations={len(np.atleast_1d(self.twin))})"
+        )
 
     @classmethod
     def of(
@@ -399,13 +479,19 @@ class UncertaintyResult(_ResultMapping):
         Parameters
         ----------
         q : float
-            The percentile, in [0, 100].
+            The percentile, in [0, 100], as numpy takes it: ``q`` strictly
+            between 0 and 1 warns, as it is more likely a fraction meant
+            (#233).
 
         Returns
         -------
         float or numpy.ndarray
             The percentile of ``samples`` over the draws.
         """
+        _on_percent_scale(q, "percentile")
+        return self._percentile(q)
+
+    def _percentile(self, q: float) -> Any:
         samples = np.asarray(self.samples, dtype=float)
         if np.isfinite(samples).all():
             return self._per_time(np.percentile(samples, q, axis=0))
@@ -443,7 +529,7 @@ class UncertaintyResult(_ResultMapping):
         if not 0.0 < level < 1.0:
             raise ValueError(f"level must be in (0, 1), got {level!r}.")
         tail = 50.0 * (1.0 - level)
-        return self.percentile(tail), self.percentile(100.0 - tail)
+        return self._percentile(tail), self._percentile(100.0 - tail)
 
     def _per_time(self, values: np.ndarray) -> Any:
         return float(values) if np.ndim(values) == 0 else values
@@ -747,6 +833,18 @@ class ConditionalRun(_ResultMapping):
     whole: bool = False
     uptimes: Optional[np.ndarray] = None
     costs: Optional[np.ndarray] = None
+
+    def __repr__(self) -> str:
+        # A summary (#235): each simulation's values are in the arrays.
+        values = self.uptimes if self.uptimes is not None else self.costs
+        parts = [
+            f"modules={self.modules!r}",
+            f"states={self.states}",
+            f"whole={self.whole}",
+        ]
+        if values is not None:
+            parts.append(f"n_simulations={len(np.atleast_1d(values))}")
+        return f"ConditionalRun({', '.join(parts)})"
 
     @property
     def informative(self) -> bool:
@@ -1120,7 +1218,8 @@ class CostResult(_ResultMapping):
         Parameters
         ----------
         q : float
-            The percentile, between 0 and 100.
+            The percentile, between 0 and 100: ``q`` strictly between 0
+            and 1 warns, as it is more likely a fraction meant (#233).
 
         Returns
         -------
@@ -1135,6 +1234,7 @@ class CostResult(_ResultMapping):
             ``conditional``).
         """
         _no_spread(self.conditional, "a percentile of the cost")
+        _on_percent_scale(q, "percentile")
         return float(np.percentile(self.samples, q))
 
     def __repr__(self) -> str:
@@ -1775,7 +1875,7 @@ class CapacityDistribution(_ResultMapping):
 
     >>> round(capacity.meets(100), 4)
     0.972
-    >>> round(capacity.mean(), 4)
+    >>> round(capacity.mean, 4)
     135.0
     >>> round(capacity.delivered_fraction(100), 4)
     0.9855
@@ -1817,11 +1917,15 @@ class CapacityDistribution(_ResultMapping):
         met = _meeting(self.levels, demand)
         return self._per_time(np.sum(self.probabilities[met], axis=0))
 
+    @property
     def mean(self) -> Any:
         """The expected capacity.
 
         In the long run, the average capacity over time. Infinite if the
-        capacity can be infinite (see ``levels``).
+        capacity can be infinite (see ``levels``). A property, as the other
+        results' values are (#235): it was a method until 0.13, and
+        calling it, ``mean()``, still gives it, with a ``FutureWarning``,
+        until 0.14.
 
         Returns
         -------
@@ -1835,7 +1939,11 @@ class CapacityDistribution(_ResultMapping):
             parts = np.where(
                 self.probabilities > 0, levels * self.probabilities, 0.0
             )
-        return self._per_time(np.sum(parts, axis=0))
+        return called(
+            self._per_time(np.sum(parts, axis=0)),
+            "CapacityDistribution.mean",
+            REMOVAL_AFTER_NEXT,
+        )
 
     def delivered_fraction(self, demand: float) -> Any:
         """The expected fraction of a demand the system delivers:
@@ -2112,7 +2220,7 @@ class AvailabilityResult(_ResultMapping):
         """Simulation estimate of the average capacity over the window:
         each capacity times the time spent at it, over
         ``n_simulations * time_simulated_to``. Over a long window it
-        approaches the exact long-run ``capacity_distribution().mean()``.
+        approaches the exact long-run ``capacity_distribution().mean``.
 
         Returns
         -------
@@ -2546,6 +2654,20 @@ class SparesDemand(_ResultMapping):
     fleet: int
     method: str
     members: Optional[tuple] = None
+
+    def __repr__(self) -> str:
+        # A summary (#235): the distribution is in ``probabilities``.
+        parts = [
+            f"mean={float(self.mean):.6g}",
+            f"std={float(self.std):.6g}",
+            f"probabilities=<{len(self.probabilities)} values>",
+            f"horizon={self.horizon:g}",
+            f"fleet={self.fleet}",
+            f"method={self.method!r}",
+        ]
+        if self.members is not None:
+            parts.append(f"members={self.members!r}")
+        return f"{type(self).__name__}({', '.join(parts)})"
 
     @property
     def mean(self) -> float:

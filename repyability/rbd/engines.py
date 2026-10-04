@@ -39,6 +39,8 @@ raised when they change in a way an engine must follow.
 import warnings
 from typing import Any, Dict, List, Optional
 
+from repyability.utils.wrappers import outside_level
+
 #: The version of the engine interface.
 API = 1
 #: The entry point group engines are registered under.
@@ -71,7 +73,7 @@ def _check(engine: Any, origin: str) -> bool:
         warnings.warn(
             f"The simulation engine from {origin} is left out: {problem}.",
             RuntimeWarning,
-            stacklevel=3,
+            stacklevel=outside_level(),
         )
         return False
     return True
@@ -90,7 +92,7 @@ def _discover() -> Dict[str, Any]:
                 f"The simulation engine {entry.name!r} could not be "
                 f"imported: {error}",
                 RuntimeWarning,
-                stacklevel=3,
+                stacklevel=outside_level(),
             )
             continue
         if _check(engine, f"{entry.value!r}"):

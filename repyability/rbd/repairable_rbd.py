@@ -119,11 +119,11 @@ from repyability.rbd._point_availability import knots as point_knots
 from repyability.rbd._point_availability import unit_curve
 from repyability.rbd._sampling import MixtureLife, stream_sampler
 from repyability.rbd.degrading_node import DegradingNode
-from repyability.rbd.helper_classes import PerfectReliability
+from repyability.rbd.helper_classes import PerfectReliability, perfect_class
 from repyability.rbd.load_sharing_node import LoadSharingModel
 from repyability.rbd.modular import GraphStructure
 from repyability.rbd.node_state import NodeState
-from repyability.rbd.rbd import RBD, _check_on_infeasible_rbd
+from repyability.rbd.rbd import RBD, _check_on_infeasible_rbd, _close_name
 from repyability.rbd.redundancy_allocation import (
     lowest_total_cost,
     redundancy_caps,
@@ -157,7 +157,14 @@ if TYPE_CHECKING:
     from repyability.rbd.chunks import SimulationChunk
 
 from repyability.rbd.routes import AnalysisRoute
-from repyability.utils.checks import structure_method
+from repyability.utils.checks import (
+    is_number,
+    no_distribution,
+    number_or_nan,
+    real_array,
+    structure_method,
+    unfitted_distribution,
+)
 from repyability.utils.deprecation import renamed
 from repyability.utils.wrappers import SIMULATIONS, outside_level
 
@@ -1117,7 +1124,11 @@ class _ModuleRun:
     def _warn_unjudged(self, instead: str) -> None:
         reason = self.unjudged()
         if reason is not None:
-            warnings.warn(f"{reason} {instead}", RuntimeWarning, stacklevel=4)
+            warnings.warn(
+                f"{reason} {instead}",
+                RuntimeWarning,
+                stacklevel=outside_level(),
+            )
 
     def split(self, record: ConditionalRun) -> Optional[_Breakdown]:
         """The expected cost's split a plain run takes with ``record``, its
@@ -3304,10 +3315,22 @@ def _whole(name: str, value, least: int = 1) -> int:
     return int(value)
 
 
+#: The share of its interval below which a test offset is taken as 0: the
+#: first test at the interval, not one at the start of a new unit (#237).
+_TINY_OFFSET = 1e-9
+
 #: What the spares counts say when a component can wait for a repair crew.
 _SPARES_CREWS = (
     "the spares counts assume",
     "Count them by simulation: spares_demand(method='simulate').",
+)
+#: What the stock levels say then: they have no simulation of their own to
+#: point to (#232).
+_STOCK_CREWS = (
+    "the stock levels assume",
+    "spares_stock has no simulation to fall back on; the diagram without "
+    "the limit (repair_crews=None) gives the stock when a crew is always "
+    "free.",
 )
 
 #: The most nested RBDs the crews' chain is followed over time with: it
@@ -3395,11 +3418,9 @@ def _is_junction(name, component) -> bool:
 
 
 def _horizon(horizon) -> float:
-    """``horizon`` as a finite, non-negative float, or a ValueError."""
-    try:
-        value = float(horizon)
-    except (TypeError, ValueError):
-        value = float("nan")
+    """``horizon`` as a finite, non-negative float, or a ValueError (text
+    that reads as a number too, #233)."""
+    value = number_or_nan(horizon)
     if not (np.isfinite(value) and value >= 0.0):
         raise ValueError(
             f"horizon must be a finite, non-negative number, got {horizon!r}."
@@ -3429,7 +3450,7 @@ def _horizons(horizon, rate: float) -> np.ndarray:
     (#231), where an endless horizon is worth ``1 / rate`` of a steady
     cost rate. Else a ValueError."""
     try:
-        values = np.asarray(horizon, dtype=float)
+        values = real_array(horizon, "horizon")
     except (TypeError, ValueError):
         values = np.array(np.nan)
     if values.size and np.all(values >= 0.0) and np.all(values < np.inf):
@@ -3532,11 +3553,9 @@ def _allocation_target(target) -> float:
 
 
 def _as_float(value) -> float:
-    """``value`` as a float, or NaN if it is not a number."""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return float("nan")
+    """``value`` as a float, or NaN if it is not a number (text that reads
+    as one included, #233)."""
+    return number_or_nan(value)
 
 
 def _choose_intervals(
@@ -3871,11 +3890,9 @@ def _test_finds(source, coverage: float) -> bool:
 
 
 def _number_or_nan(value) -> float:
-    """``value`` as a float, or nan if it is not a number."""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return float("nan")
+    """``value`` as a float, or nan if it is not a number (text that reads
+    as one included, #233)."""
+    return number_or_nan(value)
 
 
 def _common_period(intervals: Iterable[float]) -> float:
@@ -4126,8 +4143,9 @@ def _check_window(t_simulation) -> float:
 
 
 def _check_times(x) -> np.ndarray:
-    """``x`` as a 1-d float array of times, all finite and non-negative."""
-    times = np.atleast_1d(np.asarray(x, dtype=float))
+    """``x`` as a 1-d float array of times, all finite and non-negative:
+    numbers, not text that reads as them (#233)."""
+    times = np.atleast_1d(real_array(x, "The times"))
     if not np.all(np.isfinite(times)) or np.any(times < 0.0):
         raise ValueError(f"Times must be finite and non-negative, got {x!r}.")
     return times
@@ -4621,9 +4639,13 @@ class RepairableRBD(RBD):
           is a dict with an ``"interval"`` and optional ``"duration"``,
           ``"cost"``, ``"offset"``, ``"coverage"`` and ``"full_test"``: the
           component is inspected at every multiple of the (positive,
-          finite) interval, from time 0, or from its ``"offset"`` (the time
-          of its first test, at least 0 and less than the interval: tests of
-          redundant components staggered). A test finds a failure with
+          finite) interval, the first at the interval, or from its
+          ``"offset"`` (the time of its first test, at least 0 and less than
+          the interval: tests of redundant components staggered). An offset
+          of 0, the default, is no offset, with no test at 0: a positive one
+          puts a test there, near the start, so an offset just above 0 adds
+          one test (one within a billionth of the interval is taken as 0,
+          #237). A test finds a failure with
           probability ``"coverage"`` (by default 1); a failure it misses
           stays hidden until a full test, every ``"full_test"`` (required
           with a coverage below 1, a whole multiple of the interval, from
@@ -5046,6 +5068,22 @@ class RepairableRBD(RBD):
         # Capture the constructor inputs verbatim (before any mutation) so the
         # RBD can be faithfully serialised via to_dict()/to_json().
         edges = list(edges)
+        from repyability.rbd.ccf import as_groups
+
+        # PerfectReliability() stands for the class (#232), given alone or
+        # as a spec's life.
+        components = {
+            name: (
+                {
+                    **component,
+                    "reliability": perfect_class(component["reliability"]),
+                }
+                if isinstance(component, dict) and "reliability" in component
+                else perfect_class(component)
+            )
+            for name, component in components.items()
+        }
+        ccf_groups = as_groups(ccf_groups) or None
         self._init_args = {
             "edges": [tuple(e) for e in edges],
             "components": dict(components),
@@ -5184,12 +5222,20 @@ class RepairableRBD(RBD):
                             "zero time."
                         )
                     repair_model = ExactEventTime.from_params(0)
+                # By the spec's own keys, not the NonRepairable's (#233).
+                no_distribution(
+                    component["reliability"],
+                    f"The reliability of component {name!r}",
+                )
+                no_distribution(
+                    repair_model, f"The repairability of component {name!r}"
+                )
                 try:
                     components[name] = NonRepairable(
                         component["reliability"], repair_model
                     )
-                except ValueError as error:
-                    raise ValueError(f"Component {name!r}: {error}") from None
+                except (TypeError, ValueError) as error:
+                    raise type(error)(f"Component {name!r}: {error}") from None
                 reliability[name] = component["reliability"]
                 repairability[name] = repair_model
             elif isinstance(component, RepairableRBD):
@@ -5296,9 +5342,8 @@ class RepairableRBD(RBD):
                 )
             for member in group.members:
                 if member not in self.components:
-                    raise ValueError(
-                        f"CCF group member {member!r} is not a component of "
-                        "the RBD."
+                    raise self._not_a_component(
+                        member, f"common-cause group {list(group.members)}"
                     )
                 if (
                     isinstance(self.components[member], RepairableRBD)
@@ -6326,6 +6371,25 @@ class RepairableRBD(RBD):
                 "minimal or imperfect repair of a single unit: it cannot be "
                 "a node, whose repairs renew it as new. " + kinds
             )
+        spec = (
+            "{'reliability': <its life>, 'repairability': <its repair "
+            "times, or 'instant'>}"
+        )
+        distribution = unfitted_distribution(component)
+        if distribution is not None:
+            return (
+                f"Component {node!r} is surpyval's {distribution} "
+                f"distribution itself: fit it to data "
+                f"(surv.{distribution}.fit(times)) or give its parameters "
+                f"(surv.{distribution}.from_params([...])), and give it "
+                f"with its repairs, as {spec}."
+            )
+        if callable(getattr(component, "sf", None)):
+            return (
+                f"Component {node!r} is a model of a life alone (a "
+                f"{type(component).__name__}); a repairable component needs "
+                f"its repairs too: give {spec}."
+            )
         return f"Component {node!r} is a {type(component).__name__}. " + kinds
 
     @classmethod
@@ -6388,13 +6452,11 @@ class RepairableRBD(RBD):
                 f"{', '.join(cls.PREVENTIVE_KEYS)}."
             )
         try:
-            interval = float(spec["interval"])
+            interval = number_or_nan(spec["interval"])
         except KeyError:
             raise ValueError(
                 f"Component {node!r}: a preventive spec needs an interval."
             ) from None
-        except (TypeError, ValueError):
-            interval = float("nan")
         if not interval > 0.0:
             raise ValueError(
                 f"Component {node!r}: the preventive interval must be a "
@@ -6562,13 +6624,11 @@ class RepairableRBD(RBD):
                 f"{', '.join(cls.INSPECTION_KEYS)}."
             )
         try:
-            interval = float(spec["interval"])
+            interval = number_or_nan(spec["interval"])
         except KeyError:
             raise ValueError(
                 f"Component {node!r}: an inspection spec needs an interval."
             ) from None
-        except (TypeError, ValueError):
-            interval = float("nan")
         if not (interval > 0.0 and np.isfinite(interval)):
             raise ValueError(
                 f"Component {node!r}: the inspection interval must be a "
@@ -6596,6 +6656,11 @@ class RepairableRBD(RBD):
                 "first test, must be at least 0 and less than its interval, "
                 f"{interval:g}, got {spec['offset']!r}."
             )
+        if offset <= _TINY_OFFSET * interval:
+            # An offset of 0 puts the first test at the interval; one this
+            # close to 0 (a share of the interval worked out as nearly 0,
+            # say) is taken as 0, not as a test at the start (#237).
+            offset = 0.0
         coverage = _number_or_nan(spec.get("coverage", 1.0))
         if not 0.0 <= coverage <= 1.0:
             raise ValueError(
@@ -6639,12 +6704,12 @@ class RepairableRBD(RBD):
                 "the costs charged per action (repair_cost, replace_cost and "
                 "the preventive and inspection costs) may be distributions."
             )
-        try:
-            cost = float(value)
-        except (TypeError, ValueError):
+        if not is_number(value):
+            # Text that reads as a number, and a bool, are refused (#233).
             raise ValueError(
                 f"{node!r}: {key} must be a number, got {value!r}."
-            ) from None
+            )
+        cost = float(value)
         if not np.isfinite(cost) or cost < 0.0:
             raise ValueError(
                 f"{node!r}: {key} must be finite and non-negative, got "
@@ -7420,9 +7485,9 @@ class RepairableRBD(RBD):
             if isinstance(component, NonRepairable)
         ]
 
-    def _spares_nodes(self, nodes) -> list:
-        """The components whose spares are counted: ``nodes`` checked, or
-        every component that is not a nested RBD."""
+    def _spares_nodes(self, nodes, given: str = "nodes") -> list:
+        """The components whose spares are counted: ``nodes`` (given in
+        ``given``) checked, or every component that is not a nested RBD."""
         if nodes is None:
             return [
                 node
@@ -7431,10 +7496,7 @@ class RepairableRBD(RBD):
             ]
         chosen = list(dict.fromkeys(nodes))
         for node in chosen:
-            if node not in self.components:
-                raise ValueError(
-                    f"Node {node!r} in nodes is not a component of this RBD."
-                )
+            self._require_component(node, given)
             if isinstance(self.components[node], RepairableRBD):
                 raise ValueError(
                     f"Node {node!r} is a nested RBD: its spares are its "
@@ -7470,7 +7532,16 @@ class RepairableRBD(RBD):
                     f"Part {part!r}: give the components that use it as a "
                     f"list, got {members!r}."
                 )
-            chosen = self._spares_nodes(list(members))
+            listed = list(members)
+            twice = sorted(
+                {repr(n) for n in listed if listed.count(n) > 1}, key=str
+            )
+            if twice:
+                raise ValueError(
+                    f"Part {part!r} lists {', '.join(twice)} more than once: "
+                    "name each component that uses it once."
+                )
+            chosen = self._spares_nodes(listed, f"part {part!r}")
             if not chosen:
                 raise ValueError(f"Part {part!r} has no components.")
             for node in chosen:
@@ -7499,6 +7570,15 @@ class RepairableRBD(RBD):
         in order."""
         pools = self._spares_parts(parts)
         chosen = [] if (nodes is None and pools) else self._spares_nodes(nodes)
+        if nodes is not None:
+            for part, members in pools.items():
+                both = [node for node in chosen if node in members]
+                if both:
+                    raise ValueError(
+                        f"Node {both[0]!r} is in nodes and in part {part!r}: "
+                        "its spares come from one shelf, the part's or its "
+                        "own."
+                    )
         counted = list(
             dict.fromkeys(
                 [*chosen, *(m for members in pools.values() for m in members)]
@@ -7513,7 +7593,14 @@ class RepairableRBD(RBD):
         if they are not counted exactly. ``long_run``: for the counts in a
         lead time, which need a demand that goes on."""
         simulate = (
-            "count its spares by simulation: spares_demand(method='simulate')."
+            # The stock in a lead time has no simulation of its own to
+            # point to (#232).
+            "spares_stock has no simulation to count them by; "
+            "spares_demand(method='simulate') counts the spares used over a "
+            "window from new."
+            if long_run
+            else "count its spares by simulation: "
+            "spares_demand(method='simulate')."
         )
         self._require_reliabilities(node)
         if node in self._standby:
@@ -7576,7 +7663,8 @@ class RepairableRBD(RBD):
         mean_cycle = up + down
         if long_run and not (0.0 < mean_cycle < math.inf):
             raise NotImplementedError(
-                f"Component {node!r}'s life may never end, or has no mean, "
+                f"The life of component {node!r} may never end, or has no "
+                "mean, "
                 "so its demand has no long run: it has no stock level."
             )
         return _spares.Replacements(
@@ -7993,7 +8081,7 @@ class RepairableRBD(RBD):
             if target is not None and not 0.0 < target < 1.0:
                 raise ValueError(f"{name} must be in (0, 1), got {target!r}.")
         chosen, pools, counted = self._spares_counted(nodes, parts)
-        self._require_unlimited_crews(*_SPARES_CREWS)
+        self._require_unlimited_crews(*_STOCK_CREWS)
         models = {node: self._replacements(node, True) for node in counted}
         for part, members in pools.items():
             blocks = [
@@ -8306,11 +8394,7 @@ class RepairableRBD(RBD):
             if not chosen:
                 raise ValueError("nodes must name at least one component.")
             for node in chosen:
-                if node not in self.components:
-                    raise ValueError(
-                        f"Node {node!r} in nodes is not a component of this "
-                        "RBD."
-                    )
+                self._require_component(node, "nodes")
                 if isinstance(self.components[node], RepairableRBD):
                     raise ValueError(
                         f"Node {node!r} is a nested RepairableRBD, which "
@@ -8588,11 +8672,7 @@ class RepairableRBD(RBD):
             if not members:
                 raise ValueError(f"Train {name!r} has no nodes.")
             for node in members:
-                if node not in self.components:
-                    raise ValueError(
-                        f"Node {node!r} of train {name!r} is not a component "
-                        "of this RBD."
-                    )
+                self._require_component(node, f"train {name!r}")
                 if isinstance(self.components[node], RepairableRBD):
                     raise ValueError(
                         f"Node {node!r} of train {name!r} is a nested "
@@ -9148,7 +9228,7 @@ class RepairableRBD(RBD):
                 "the cost minimisation stopped before converging "
                 f"({res.message}); the design meets the target but may not "
                 "be the cheapest.",
-                stacklevel=2,
+                stacklevel=outside_level(),
             )
         return result(v)
 
@@ -10206,14 +10286,28 @@ class RepairableRBD(RBD):
         return chosen
 
     def _require_component(self, node, given: str) -> None:
-        """Raise if ``node``, given in ``given``, is not a component,
-        listing those that are (#222)."""
+        """Raise if ``node``, given in ``given``, is not a component (see
+        ``_not_a_component``)."""
         if node not in self.components:
-            raise ValueError(
-                f"Unknown node {node!r} given in {given}; it is not a "
-                "component of the RBD. Its components are: "
-                f"{list(self.components)}."
+            raise self._not_a_component(node, given)
+
+    def _not_a_component(self, node, given: str) -> ValueError:
+        """The error for ``node``, given in ``given``, that is not a
+        component: a junction, which never fails, or an unknown name, with
+        the closest component's name if one is close (#232), and those
+        that are (#222)."""
+        if node in self._junction_nodes:
+            return ValueError(
+                f"Node {node!r} given in {given} is a junction "
+                "(PerfectReliability): it never fails, so it is no component "
+                "to fail, repair, maintain or stock spares for."
             )
+        close = _close_name(node, self.components)
+        hint = "" if close is None else f" Did you mean {close!r}?"
+        return ValueError(
+            f"Unknown node {node!r} given in {given}; it is not a component "
+            f"of the RBD.{hint} Its components are: {list(self.components)}."
+        )
 
     @staticmethod
     def _allowed_intervals(allowed, chosen: list, never: bool = False) -> dict:
@@ -10952,7 +11046,15 @@ class RepairableRBD(RBD):
                 "node probabilities given.",
             )
         )
-        give(("point_availability", "mission_availability"), self._over_time())
+        give(
+            (
+                "point_availability",
+                "mission_availability",
+                "point_unavailability",
+                "mission_unavailability",
+            ),
+            self._over_time(),
+        )
         give(
             ("availability_rate",),
             (
@@ -11103,14 +11205,16 @@ class RepairableRBD(RBD):
         )
         # Spares: each component's replacements, counted as a renewal
         # process, in the order the methods check them.
-        crews = r.refusal(
-            partial(self._require_unlimited_crews, *_SPARES_CREWS)
-        )
         for name, long_run_count in (
             ("spares_demand", False),
             ("spares_stock", True),
         ):
-            refusal = crews
+            refusal = r.refusal(
+                partial(
+                    self._require_unlimited_crews,
+                    *(_STOCK_CREWS if long_run_count else _SPARES_CREWS),
+                )
+            )
             which: Tuple[Hashable, ...] = ()
             for node in self._spares_nodes(None):
                 if refusal:
@@ -12004,29 +12108,143 @@ class RepairableRBD(RBD):
         >>> rbd.point_availability([0.0, 1.0, 100.0]).round(4).tolist()
         [1.0, 0.9394, 0.9091]
         """
+        return self._point(x, working_nodes, broken_nodes, method, state)
+
+    def point_unavailability(
+        self,
+        x,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        method: str = "p",
+        state=None,
+    ):
+        """The probability that the system is down at each time ``x``, with
+        every component new at 0: one less ``point_availability``, worked
+        out in its own right so that a small one keeps its precision
+        (#237), as ``mean_unavailability`` is in the long run.
+
+        Each component's probability of being down enters the structure
+        function's sum of products for the system's failing, so that a
+        redundant system's ``1e-16`` is not lost below one less a number
+        next to 1, as ``1 - point_availability(t)`` loses it; a
+        common-cause group's members' joint states enter theirs in the same
+        way. A component new at 0 with an exponential life and an
+        exponential (or instant) repair, and no maintenance or tests, is
+        down with ``lambda / (lambda + mu) (1 - exp(-(lambda + mu) t))``,
+        in closed form; any other, with one less its point availability
+        (see
+        [`point_availability`][repyability.RepairableRBD.point_availability]),
+        whose grid smooths over a step what changes faster than it. With
+        components waiting for repair crews, the crews' chain gives it as
+        one less the availability (to about 1e-13).
+
+        Parameters
+        ----------
+        x : float or array-like
+            Times, from 0 (every component new).
+        working_nodes : Collection[Hashable], optional
+            Nodes that always work (never down), by default None.
+        broken_nodes : Collection[Hashable], optional
+            Nodes that are always failed (always down), by default None.
+        method : str, optional
+            Evaluate the structure function from the minimal path sets
+            (``"p"`` or ``"paths"``, the default) or the cut sets (``"c"``
+            or ``"cuts"``), as for ``point_availability``.
+        state : dict or str, optional
+            Start from the components' current states rather than new, as
+            for ``point_availability``: ``{node: NodeState}`` or ``"stationary"``. By
+            default None: every component new at 0.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The system's point unavailability at each time, in ``x``'s
+            shape.
+
+        Raises
+        ------
+        ValueError, NotImplementedError
+            As for ``point_availability``.
+
+        Examples
+        --------
+        Two valves in parallel, each failing at a rate of ``1e-9`` an hour
+        and repaired in a mean of eight hours: each is down ``8e-9`` of
+        the time, and the pair, both at once, ``6.4e-17``, which one less
+        the availability rounds to 0 or ``1.1e-16``:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> valve = {
+        ...     "reliability": surv.Exponential.from_params([1e-9]),
+        ...     "repairability": surv.Exponential.from_params([1 / 8]),
+        ... }
+        >>> pair = RepairableRBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        ...     {"a": valve, "b": valve},
+        ... )
+        >>> f"{pair.point_unavailability(1000.0):.3e}"
+        '6.400e-17'
+        """
+        return self._point(
+            x, working_nodes, broken_nodes, method, state, down=True
+        )
+
+    def _point(
+        self, x, working_nodes, broken_nodes, method, state, down=False
+    ):
+        """``point_availability``, or with ``down``, ``point_unavailability``
+        (#237)."""
         times = _check_times(x)
         working_nodes = set() if working_nodes is None else set(working_nodes)
         broken_nodes = set() if broken_nodes is None else set(broken_nodes)
         self._validate_node_overrides(working_nodes, broken_nodes)
         horizon = float(times.max()) if times.size else 0.0
-        forced = working_nodes | broken_nodes
-        states = self._states(state, forced)
-        if self._crews_couple():
-            values = self._crew_curve(
-                horizon, working_nodes, broken_nodes, method, states
-            ).at(times.ravel())
-        elif self.ccf_groups:
-            values = self._groups_curve(
-                horizon, working_nodes, broken_nodes, method, states
-            ).at(times.ravel())
-        else:
-            curves = self._availability_curves(horizon, forced, state=states)
-            values = self._curves_at(
-                curves, times.ravel(), working_nodes, broken_nodes, method
-            )
+        states = self._states(state, working_nodes | broken_nodes)
+        system_at, _, _ = self._system_at(
+            horizon, working_nodes, broken_nodes, method, states, down
+        )
+        values = system_at(times.ravel())
         if np.ndim(x) == 0:
             return float(values[0])
         return values.reshape(times.shape)
+
+    def _system_at(
+        self, horizon, working_nodes, broken_nodes, method, states, down=False
+    ):
+        """The system's point availability (with ``down``, unavailability)
+        over ``[0, horizon]``, as a function of the times; the curves whose
+        bends its integral's pieces follow; and the crews' curve, where a
+        component can wait for a crew (else None)."""
+        if self._crews_couple():
+            crew = self._crew_curve(
+                horizon, working_nodes, broken_nodes, method, states
+            )
+            if not down:
+                return crew.at, [crew], crew
+
+            def crew_down(x):
+                return np.clip(1.0 - crew.at(x), 0.0, 1.0)
+
+            return crew_down, [crew], crew
+        if self.ccf_groups:
+            grouped = self._groups_curve(
+                horizon, working_nodes, broken_nodes, method, states
+            )
+            return (grouped.down_at if down else grouped.at), [grouped], None
+        forced = working_nodes | broken_nodes
+        curves = self._availability_curves(horizon, forced, state=states)
+
+        def system_at(x):
+            if down:
+                return self._curves_down_at(
+                    curves, x, working_nodes, broken_nodes, states
+                )
+            return self._curves_at(
+                curves, x, working_nodes, broken_nodes, method
+            )
+
+        return system_at, list(curves.values()), None
 
     def mission_availability(
         self,
@@ -12112,38 +12330,115 @@ class RepairableRBD(RBD):
         >>> round(rbd.mission_availability(10.0), 4)
         0.9174
         """
+        return self._mission(t, working_nodes, broken_nodes, method, state)
+
+    def mission_unavailability(
+        self,
+        t,
+        working_nodes: Optional[Collection[Hashable]] = None,
+        broken_nodes: Optional[Collection[Hashable]] = None,
+        method: str = "p",
+        state=None,
+    ):
+        """The expected fraction of ``[0, t]`` the system is down, with
+        every component new at 0: one less ``mission_availability``, worked
+        out in its own right so that a small one keeps its precision
+        (#237): the mean of
+        [`point_unavailability`][repyability.RepairableRBD.point_unavailability]
+        over the window, integrated as ``mission_availability`` integrates
+        the availability.
+
+        Parameters
+        ----------
+        t : float or array-like
+            The missions' lengths, from 0 (every component new).
+        working_nodes : Collection[Hashable], optional
+            Nodes that always work (never down), by default None.
+        broken_nodes : Collection[Hashable], optional
+            Nodes that are always failed (always down), by default None.
+        method : str, optional
+            Evaluate the structure function from the minimal path sets
+            (``"p"`` or ``"paths"``, the default) or the cut sets (``"c"``
+            or ``"cuts"``), as for ``mission_availability``.
+        state : dict or str, optional
+            Start from the components' current states rather than new, as
+            for ``mission_availability``: ``{node: NodeState}`` or ``"stationary"``. By
+            default None: every component new at 0.
+
+        Returns
+        -------
+        float or numpy.ndarray
+            The expected fraction of each mission the system is down, in
+            ``t``'s shape (its point unavailability at 0 for a mission of
+            length 0).
+
+        Raises
+        ------
+        ValueError, NotImplementedError
+            As for ``mission_availability``.
+
+        Examples
+        --------
+        The pair of valves of ``point_unavailability``, down together
+        ``6.4e-17`` of the time once they settle, from new over a year:
+
+        >>> import surpyval as surv
+        >>> from repyability import RepairableRBD
+        >>> valve = {
+        ...     "reliability": surv.Exponential.from_params([1e-9]),
+        ...     "repairability": surv.Exponential.from_params([1 / 8]),
+        ... }
+        >>> pair = RepairableRBD(
+        ...     [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+        ...     {"a": valve, "b": valve},
+        ... )
+        >>> f"{pair.mission_unavailability(8760.0):.3e}"
+        '6.391e-17'
+        """
+        return self._mission(
+            t, working_nodes, broken_nodes, method, state, down=True
+        )
+
+    def _mission(
+        self, t, working_nodes, broken_nodes, method, state, down=False
+    ):
+        """``mission_availability``, or with ``down``,
+        ``mission_unavailability`` (#237)."""
         windows = _check_times(t)
         working_nodes = set() if working_nodes is None else set(working_nodes)
         broken_nodes = set() if broken_nodes is None else set(broken_nodes)
         self._validate_node_overrides(working_nodes, broken_nodes)
         ends = windows.ravel()
         horizon = float(ends.max()) if ends.size else 0.0
-        forced = working_nodes | broken_nodes
-        states = self._states(state, forced)
-        if self._crews_couple():
-            crew = self._crew_curve(
-                horizon, working_nodes, broken_nodes, method, states
-            )
-            system_at, pieces = crew.at, [crew]  # type: Any, list
-        elif self.ccf_groups:
-            grouped = self._groups_curve(
-                horizon, working_nodes, broken_nodes, method, states
-            )
-            system_at, pieces = grouped.at, [grouped]
-        else:
-            curves = self._availability_curves(horizon, forced, state=states)
-
-            def system_at(x):
-                return self._curves_at(
-                    curves, x, working_nodes, broken_nodes, method
-                )
-
-            pieces = list(curves.values())
-        if self._crews_couple() and not crew.nested:
+        states = self._states(state, working_nodes | broken_nodes)
+        system_at, pieces, crew = self._system_at(
+            horizon, working_nodes, broken_nodes, method, states, down
+        )
+        if crew is not None and not crew.nested:
             # The crews' chain integrates it exactly.
             totals = crew.integral(ends)
+            if down:
+                totals = np.maximum(ends - totals, 0.0)
         else:
-            totals = self._integrated(system_at, pieces, ends, horizon)
+            scale = None
+            if down:
+                # To the unavailability's own size, and the time scale of
+                # the fastest closed form in it (see _closed_form_down); a
+                # unit repaired at once is never down, and sets none.
+                scale = (
+                    min(
+                        [horizon or 1.0]
+                        + [
+                            1.0 / rate
+                            for rate in self._closed_form_rates(
+                                states
+                            ).values()
+                            if 0.0 < rate < math.inf
+                        ]
+                    )
+                    / 4.0
+                )
+            totals = self._integrated(system_at, pieces, ends, horizon, scale)
         averages = np.empty(len(ends))
         positive = ends > 0.0
         averages[positive] = totals[positive] / ends[positive]
@@ -12154,12 +12449,21 @@ class RepairableRBD(RBD):
         return averages.reshape(windows.shape)
 
     def _integrated(
-        self, system_at, curves: list, ends: np.ndarray, horizon: float
+        self,
+        system_at,
+        curves: list,
+        ends: np.ndarray,
+        horizon: float,
+        relative: Optional[float] = None,
     ) -> np.ndarray:
         """The integral from 0 to each of ``ends`` of the system's point
         availability, ``system_at``, from its nodes' ``curves`` (over the
         pieces of ``_quadrature``, and settling into a constant or a period
-        it is extended over: see ``mission_availability``)."""
+        it is extended over: see ``mission_availability``). With
+        ``relative``, a time scale, to a tolerance relative to the integral
+        itself, pieces being halved down to that scale where the grids are
+        coarser: for an unavailability, small, and changing in closed form
+        faster than the grids (#237)."""
         # After ``settle`` the system's availability is constant, or repeats
         # with ``period``: it is integrated up to ``reach``, and extended.
         settle, period = _settling(curves)
@@ -12180,8 +12484,11 @@ class RepairableRBD(RBD):
             edges, finest = _quadrature.pieces(
                 curves, np.concatenate(fixed), reach, _MISSION_POINTS
             )
+            keys: tuple = ()
+            if relative is not None:
+                keys, finest = ("up",), np.minimum(finest, relative)
             edges, integrals = _quadrature.refined(
-                estimate, edges, finest, _MISSION_POINTS
+                estimate, edges, finest, _MISSION_POINTS, keys
             )
         except _quadrature.TooMany as error:
             raise NotImplementedError(
@@ -13471,10 +13778,7 @@ class RepairableRBD(RBD):
         out: dict = {}
         for node, value in state.items():
             if node not in self.components:
-                raise ValueError(
-                    f"state names {node!r}, which is not a component of "
-                    "this RBD."
-                )
+                raise self._not_a_component(node, "state")
             if node in forced:
                 raise ValueError(
                     f"Node {node!r} is held working or broken: give it no "
@@ -13517,7 +13821,8 @@ class RepairableRBD(RBD):
             and (state.phase is not None or not state.new)
         ):
             raise NotImplementedError(
-                f"Component {node!r}'s tests can miss a failure (a coverage "
+                f"The tests of component {node!r} can miss a failure (a "
+                "coverage "
                 "below 1): its state (how long since its last full test, "
                 "and whether a failure its tests missed is waiting) is not "
                 "taken: leave it out (new)."
@@ -13664,6 +13969,86 @@ class RepairableRBD(RBD):
         return np.asarray(
             self.system_probability(probabilities, method=method), dtype=float
         )
+
+    def _curves_down_at(
+        self, curves: dict, x: np.ndarray, working_nodes, broken_nodes, states
+    ) -> np.ndarray:
+        """The system's point unavailability at the times ``x``, from its
+        nodes' curves (the forced nodes held at 1 or 0), and the system's
+        failing worked out in its own right, so that a small value keeps
+        its precision (#237): each node down with one less its
+        availability, or in closed form where it has one (see
+        ``_closed_form_down``)."""
+        failures = {}
+        for node, curve in curves.items():
+            down = self._closed_form_down(node, x, states)
+            failures[node] = 1.0 - curve.at(x) if down is None else down
+        probabilities = {node: 1.0 - q for node, q in failures.items()}
+        for node in list(self.in_or_out) + list(working_nodes | broken_nodes):
+            probabilities[node] = np.ones(len(x))
+            failures[node] = np.zeros(len(x))
+        probabilities = self._probabilities_with_overrides(
+            probabilities, working_nodes, broken_nodes
+        )
+        failures = self._failures_with_overrides(
+            failures, working_nodes, broken_nodes
+        )
+        return np.clip(
+            np.asarray(
+                self._system_unreliability(probabilities, failures),
+                dtype=float,
+            ),
+            0.0,
+            1.0,
+        )
+
+    def _closed_form_down(self, node, x, states) -> Optional[np.ndarray]:
+        """A component's probability of being down at the times ``x``, in
+        closed form where it has one: new at 0, with an exponential life
+        and an exponential or instant repair and nothing else,
+        ``lambda / (lambda + mu) (1 - exp(-(lambda + mu) t))``, which keeps
+        its precision however small, as the curve's grid does not within
+        its first step (#237). Else None: its curve gives it."""
+        rates = self._closed_form_rates(states, (node,)).get(node)
+        if rates is None:
+            return None
+        life, total = self._closed_form_pair(node)
+        if math.isinf(total):
+            return np.zeros(len(x))
+        return -(life / total) * np.expm1(-total * np.asarray(x, float))
+
+    def _closed_form_pair(self, node) -> Tuple[float, float]:
+        """A component's failure rate and the sum of its failure and
+        repair rates (``inf`` for an instant repair), or ``(nan, nan)``
+        where they are not constant."""
+        component = self.components.get(node)
+        if type(component) is not NonRepairable:
+            return math.nan, math.nan
+        life = _constant_rate(component.reliability)
+        repair = _repair_rate(component.time_to_replace)
+        if life is None or repair is None:
+            return math.nan, math.nan
+        return life, life + repair
+
+    def _closed_form_rates(self, states, nodes=None) -> Dict[Hashable, float]:
+        """Of ``nodes`` (by default every component), those whose
+        probability of being down over time has a closed form (see
+        ``_closed_form_down``), with the rate it settles at: the sum of
+        their failure and repair rates (``inf`` for an instant repair)."""
+        out: Dict[Hashable, float] = {}
+        for node in self.components if nodes is None else nodes:
+            if (
+                (states or {}).get(node) is not None
+                or node in self._preventive
+                or node in self._inspection
+                or node in self._imperfect
+                or node in self._standby
+            ):
+                continue
+            life, total = self._closed_form_pair(node)
+            if not math.isnan(total):
+                out[node] = total
+        return out
 
     @staticmethod
     def _uniformized(what: str, generator, start, steady, vectors):
@@ -14528,7 +14913,7 @@ class RepairableRBD(RBD):
         0.9767
         >>> round(capacity.delivered_fraction(100), 4)
         0.988
-        >>> round(capacity.mean(), 2)  # 150 * 10 / 11
+        >>> round(capacity.mean, 2)  # 150 * 10 / 11
         136.36
         """
         probabilities, weights = self._long_run_probabilities(
@@ -15247,13 +15632,13 @@ class RepairableRBD(RBD):
             if life is None:
                 self._no_crew_chain(
                     "it needs exponential lives (a constant failure rate), "
-                    f"and component {node!r}'s is not"
+                    f"and the life of component {node!r} is not one"
                 )
             repair = _repair_rate(component.time_to_replace)
             if repair is None:
                 self._no_crew_chain(
                     "it needs exponential repair times (or instant repair), "
-                    f"and component {node!r}'s are not"
+                    f"and the repair times of component {node!r} are not"
                 )
             rates[node] = (life, repair)
         count = _crew_chain.state_count(
@@ -22058,7 +22443,8 @@ class RepairableRBD(RBD):
         ``of`` is the quantity: ``"mean_availability"`` (the default, the
         long run), ``"point_availability"`` at the times ``x``,
         ``"mission_availability"`` over ``[0, x]``, or
-        ``"expected_cost_rate"``.
+        ``"expected_cost_rate"`` (or ``"cost_rate"``, as
+        ``parameter_sensitivity`` names it).
 
         ``method="delta"`` (the default) linearises the quantity in the
         inputs' parameters: ``Var(Q) ~ sum_k g_k^T Sigma_k g_k``, ``g_k``
@@ -22149,6 +22535,8 @@ class RepairableRBD(RBD):
         """
         from repyability.rbd import _repairable_uncertainty as drawn
 
+        # parameter_sensitivity's name for the cost rate is taken too (#232).
+        of = drawn.QUANTITY_NAMES.get(of, of) if isinstance(of, str) else of
         drawn.check(self, of, x, state)
         if method not in ("delta", "sobol"):
             raise ValueError(

@@ -19,6 +19,8 @@ from typing import Any, List, Optional
 import numpy as np
 from scipy.special import ndtri
 
+from repyability.utils.wrappers import outside_level
+
 
 def check_count(n, antithetic: bool, name: str) -> None:
     """A ValueError unless ``n`` is a positive integer (and even, for
@@ -139,7 +141,7 @@ def more_samples(
             f"samples ({limit_name}); the result is from those."
             + ("" if unjudged is None else f" {unjudged}"),
             RuntimeWarning,
-            stacklevel=4,
+            stacklevel=outside_level(),
         )
         return 0
     return min(n, limit - taken)

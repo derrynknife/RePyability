@@ -594,7 +594,7 @@ component's dict makes its failures hidden:
 | `interval` | Required: the time `τ` between inspections, positive and finite. The component is inspected at `τ, 2τ, 3τ, …`, or from its `offset`. |
 | `duration` | `"instant"` (the default): the test takes no time. Or a time-to-test model: the component is off-line while it is tested (a planned outage), and does not age meanwhile. |
 | `cost` | Charged at each inspection: a number or a distribution. |
-| `offset` | The time of the first test, from 0 to less than `τ` (by default 0): tests at `offset, offset + τ, …`, so that redundant components can be tested apart (staggered). |
+| `offset` | The time of the first test, from 0 to less than `τ`: tests at `offset, offset + τ, …`, so that redundant components can be tested apart (staggered). By default 0, no offset: the first test at `τ`, none at the start. A positive offset puts one there, so an offset just above 0 adds a test (and its outage and cost) at the start; one within a billionth of `τ` of 0 is taken as 0. |
 | `coverage` | The chance that a test finds a failure, from 0 to 1 (by default 1): its *proof-test coverage*. A failure a test misses stays hidden until a full test. |
 | `full_test` | With a coverage below 1, required: the time between full tests, which find every failure, a whole multiple of `τ` (the tests at `offset` and every `full_test` after it). Often the mission time, after which the component is renewed. |
 
@@ -793,6 +793,11 @@ place in the diagram:
 - **Staggered tests.** An `"offset"` tests one valve half an interval after
   the other: a shared failure is then found by whichever test comes first,
   and the independent term falls from `(λτ)²/3` to about `5(λτ)²/24`.
+  Each valve is restored by its own test alone: the first test restores
+  its valve, and with it the pair, and the other stays down until its own
+  test (where practice has the first test find and restore both, the
+  value is a little less, the pair then not left on one valve until the
+  second test).
 - **Test coverage.** A proof test that finds only a share `c` of the
   failures (a `"coverage"`) leaves the rest hidden until a full test
   (`"full_test"`), say the ten-year overhaul: about `(1 − c)λT/2` more,
@@ -833,7 +838,8 @@ too, and with tests and repairs that take time (see [tests and repairs that
 take time](#tests-and-repairs-that-take-time)). With common causes, a
 group's members are a Markov chain of which of them are down, with each
 member found by its own tests, and a shared failure found alike by every
-test (the coverage is the group's). Their tests and repairs may take no
+test (the coverage is the group's), each member it struck restored by its
+own test, as in the simulations (#237). Their tests and repairs may take no
 time, a fixed time or an exponential one (#220): a working member is off
 line while it is tested, and neither ages nor fails meanwhile, a failure a
 test finds is repaired once the test is over, and a test that falls in a
@@ -926,7 +932,8 @@ PFDavg at most `10⁻³`, two in parallel every two years. The result is a
 
 When the valves are tested matters as well. Tested together, both are down
 for as long as a common-cause failure stays hidden; tested half an interval
-apart, it is found twice as soon. `offsets` chooses the times of the first
+apart, it is found twice as soon (and the valve it found restored, the
+other waiting for its own test). `offsets` chooses the times of the first
 tests with the intervals (#184), as shares of each interval in [0, 1): a
 list for every component, a dict of one per component, or `"stagger"`, the
 shares `0, 1/n, …, (n − 1)/n` of `n` components, among which are tests of

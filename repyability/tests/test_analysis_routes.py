@@ -238,8 +238,12 @@ REPAIRABLE_CALLS = {
     "spares_demand": lambda rbd: rbd.spares_demand(200.0),
     "spares_stock": lambda rbd: rbd.spares_stock(50.0, fill_rate=0.9),
     "point_availability": lambda rbd: rbd.point_availability([10.0, 200.0]),
+    "point_unavailability": (
+        lambda rbd: rbd.point_unavailability([10.0, 200.0])
+    ),
     "availability_rate": lambda rbd: rbd.availability_rate([10.0, 200.0]),
     "mission_availability": lambda rbd: rbd.mission_availability(200.0),
+    "mission_unavailability": (lambda rbd: rbd.mission_unavailability(200.0)),
     "expected_failures": lambda rbd: rbd.expected_failures([10.0, 200.0]),
     "expected_events": lambda rbd: rbd.expected_events(200.0),
     "expected_cost": lambda rbd: rbd.expected_cost(200.0),
@@ -483,7 +487,8 @@ def test_a_life_with_no_mean_refuses_the_long_run():
     assert report["mean_availability"].route == routes.REFUSED
     assert report["mean_availability"].nodes == ("a",)
     assert (
-        "mean(mc_samples=..., seed=...)" in report["mean_availability"].reason
+        "mean(method='simulate', mc_samples=..., seed=...)"
+        in report["mean_availability"].reason
     )
     assert report["availability"].route == routes.SIMULATED
 

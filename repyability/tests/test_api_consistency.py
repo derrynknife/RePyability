@@ -271,7 +271,10 @@ def test_the_calls_go_in_the_release_after_next():
 
 
 def test_what_0_13_deprecates_goes_in_0_14():
-    # optimal_inspection_intervals(offsets=), renamed offset_shares (#222).
+    # optimal_inspection_intervals(offsets=), renamed offset_shares (#222);
+    # CapacityDistribution.mean() called, now a property (#235); and the
+    # simulation options of StandbyModel, LoadSharingModel and
+    # DegradingNode's exact mean, which it ignores (#233).
     version = tuple(map(int, __version__.split(".")))
     assert version < tuple(map(int, REMOVAL_AFTER_NEXT.split(".")))
 

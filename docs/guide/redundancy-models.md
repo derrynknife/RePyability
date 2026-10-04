@@ -100,9 +100,10 @@ now ignored, and warn until 0.13 refuses them.
 
 `mean()` and `random(size, seed=None)` give the arrangement's mean lifetime
 and draw lifetimes; `cs(x, X)` is its conditional survival. A standby node
-cannot take a [condition-based state](condition-based.md). When the
-arrangement is simulated, `mean(mc_samples=..., seed=...)` estimates its
-mean life from that many new draws.
+cannot take a [condition-based state](condition-based.md).
+`mean(method="simulate", mc_samples=..., seed=...)` estimates its mean
+life from that many new draws: the way to a simulated arrangement's mean,
+and a check on an exact one.
 
 A `StandbyModel` is one lifetime: in a repairable RBD the whole arrangement
 is replaced as one unit when it fails. For a duty unit and a standby that
@@ -183,7 +184,8 @@ p = RegressionNode(unit, covariates=[1.0]).sf(50)
   `is_simulated` is `True`: as for [standby](#how-the-survival-function-is-obtained),
   the group draws lifetimes for the system's simulations, its `sf`, `ff`,
   `cs` and `mean()` raise `NotImplementedError`, and
-  `mean(mc_samples=..., seed=...)` estimates its mean life.
+  `mean(method="simulate", mc_samples=..., seed=...)` estimates its mean
+  life.
 - With no load effect the units neither share stress nor accelerate, and the
   group reduces exactly to `k`-out-of-`n` parallel.
 - The units must be AFT models (they need the time-scaling `phi(load)`);

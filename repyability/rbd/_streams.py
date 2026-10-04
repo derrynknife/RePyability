@@ -42,6 +42,8 @@ from typing import Callable, Dict, Optional, Tuple
 
 import numpy as np
 
+from repyability.utils.checks import seed as check_seed
+
 # The kinds of quantity a stream draws.
 FAILURE, REPAIR, DURATION = 0, 1, 2
 #: The uniforms a standby group's switches are decided by.
@@ -225,7 +227,7 @@ def entropy_of(seed) -> int:
     seed, from that RNG as the seed would seed it (without touching it).
     So a run with ``seed=s`` is the run ``np.random.seed(s)`` makes
     reproducible, and takes the same seeds (0 to ``2**32 - 1``)."""
-    if seed is None:
+    if check_seed(seed) is None:
         return int(np.random.randint(0, 2**62, dtype=np.int64))
     return int(np.random.RandomState(seed).randint(0, 2**62, dtype=np.int64))
 

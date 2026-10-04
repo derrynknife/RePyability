@@ -246,6 +246,17 @@
   dips integrates out, where clipping made the total depend on the pieces.
   `test_quadrature.py` checks the pieces against summing between every
   knot.
+- **Unavailability over time is worked out as itself (#237)**, not as
+  one less the availability, which rounds to 0 below about 1e-16:
+  `RepairableRBD._system_at(..., down=True)` takes each component's
+  probability of being down from its closed form where it has one
+  (`_closed_form_down`: an exponential life and repair, nothing else
+  about it), from its curve otherwise (`_curves_down_at`), and from the
+  crews' and common-cause groups' chains (`GroupsCurve.down_at`); the
+  mission's integral is refined to its own size (`_integrated(...,
+  relative=)`). A change to how `point_availability` works out a kind of
+  component goes into the down side too: `test_unavailability.py` checks
+  both against closed forms and each other.
 - **An MTTF is integrated on pieces that start at its models' kinks**
   (`repyability/rbd/_mean_lifetime.py`, #229): every kink
   (`model_kinks`: a numerical curve's grid, where a support starts)
@@ -262,7 +273,26 @@
 - **One name for the number of simulations**: `mc_samples`, and `max_samples`
   for its cap in a run to a `tolerance`, in every method and constructor
   that simulates; `seed` seeds it (#105). The old names (`N`, `max_N`,
-  `n_sims`, `n_simulations`) went in 0.12. Use these names in new code.
+  `n_sims`, `n_simulations`) went in 0.12, and are refused naming their
+  replacement (#232): `deprecation.refuse_removed_names` wraps every
+  public function of the classes that simulate (an `RBD` subclass gets it
+  from `RBD.__init_subclass__`); a new class whose methods take
+  `mc_samples` gets `@refuse_removed_names`. A seed goes through
+  `checks.seed` where it is taken.
+- **Inputs are checked where they are given (#233)**: numbers through
+  `checks.is_number`/`number_or_nan` (not `bool`, not text), times through
+  `checks.real_array`, and models through `checks.no_distribution`, which
+  refuses surpyval's distribution itself (`surv.Weibull`) for a model of
+  it. A new argument that takes a number, a time or a model uses them.
+- **Warnings point outside the package (#232)**: `warnings.warn(...,
+  stacklevel=outside_level())` (`repyability/utils/wrappers.py`), never a
+  counted level, which goes stale as calls are wrapped. A message never
+  puts `'s` after a quoted name (`{node!r}'s` reads `'a''s`): write "the
+  life of component {node!r}"; `test_messages.py` scans for it.
+- **Every result is a `results._ResultMapping` dataclass (#235)**, so it
+  has `to_dict()` (through `results.plain`, ready for `json.dumps`); a
+  result holding arrays of a run's length gets a summary `__repr__`.
+  `test_result_objects.py` sends each kind through JSON.
 - **A deprecation gives one minor release's notice.** It warns in one
   minor release and the next removes it, with a `FutureWarning` (always
   shown) through `repyability/utils/deprecation.py`. What 0.11 deprecated
@@ -278,7 +308,12 @@
   `test_the_calls_go_in_the_release_after_next` fails once the version
   reaches it. What 0.13 deprecates goes in 0.14 (`REMOVAL_AFTER_NEXT`):
   `optimal_inspection_intervals(offsets=)`, renamed `offset_shares=`
-  (#222, through `deprecation.renamed`), which
+  (#222, through `deprecation.renamed`); calling
+  `CapacityDistribution.mean()`, now a property (#235, through
+  `deprecation.called`); and `mc_samples` and `seed` given to the exact
+  `mean` of a `StandbyModel`, `LoadSharingModel` or `DegradingNode`,
+  which ignores them (#233, through `deprecation.ignored` in
+  `standby_node.drawn_mean`), all of which
   `test_what_0_13_deprecates_goes_in_0_14` holds to.
 - **Exact by default, simulation on request.** Where an analysis can be
   computed exactly or numerically, that is the default, and the Monte-Carlo
