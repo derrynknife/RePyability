@@ -9,13 +9,32 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
-### Deprecated
+### Added
 
-- **`optimal_inspection_intervals(offsets=)` is renamed `offset_shares=`
-  (#222).** Its values are shares of the interval, where
-  `with_intervals(offsets=)` and the plan's `offsets` are times, so a
-  share passed to `with_intervals` undid a stagger without a word.
-  `offsets=` still works, with a `FutureWarning`; 0.14 refuses it.
+- **A surpyval `MixtureModel` as a repairable component's life (#227).**
+  A two-mode population (infant mortality and wear-out) fitted with
+  surpyval's `MixtureModel`, which a `NonRepairableRBD` took, was refused
+  by `NonRepairable`, and so by `RepairableRBD`, with "Unknown reliability
+  function". It is now taken wherever a parametric life is: the exact and
+  numerical analyses use its survival function, distribution, density
+  and mean; the simulations draw its lives from their streams, one uniform
+  a draw, by inverting its distribution function (it has no quantile
+  function, surpyval #651), on both engines; and imperfect repair and a
+  start from an age draw its life given the age through its cumulative
+  hazard. Its parameters cannot be drawn by the uncertainty methods
+  (expectation-maximisation leaves no covariance), which now say so,
+  where they said to fit it with surpyval; a list of models can stand in.
+  Any other life is refused naming the component and what it was given.
+  A `NonRepairableRBD` draws a mixture as surpyval does, as before.
+- **A repairable diagram's measures take their times first (#224)**, as a
+  non-repairable diagram's do: `birnbaum_importance(5.0)` is
+  `birnbaum_importance(x=5.0)`, and `barlow_proschan_importance(100.0)`
+  takes its `window`, where the time was taken for node names ("'float'
+  object is not iterable"). A number, or numbers none of which is a node,
+  given first are the times, for the importance measures (Birnbaum,
+  criticality, improvement potential, risk achievement and reduction
+  worth, Fussell–Vesely, joint and differential) and
+  `parameter_sensitivity`; node names are node names, as before.
 
 ### Changed
 
@@ -57,6 +76,14 @@ other release, fixes included, the minor.
   (`mean_time_to_failure_interval`, `mean(method="simulate")`) refuses a
   diagram of fixed probabilities alone, as the exact `mean` does: it fails
   at the start or never, and has no lifetimes to average.
+
+### Deprecated
+
+- **`optimal_inspection_intervals(offsets=)` is renamed `offset_shares=`
+  (#222).** Its values are shares of the interval, where
+  `with_intervals(offsets=)` and the plan's `offsets` are times, so a
+  share passed to `with_intervals` undid a stagger without a word.
+  `offsets=` still works, with a `FutureWarning`; 0.14 refuses it.
 
 ### Fixed
 
@@ -200,6 +227,23 @@ other release, fixes included, the minor.
   or saving: its `dist` is only its components' distribution, so it was
   taken for a plain distribution of that name. It is saved with
   surpyval's `to_dict()`.
+- **A node's name given alone is that node (#225).** `working_nodes="belt"`
+  was taken as the nodes `"b"`, `"e"`, `"l"` and `"t"`, so the error
+  changed from run to run with the strings' hashes, and a word made of
+  one-letter node names was taken without a word. A string given to
+  `working_nodes`, `broken_nodes` or `nodes`, on every method of either
+  diagram class, is now one node, as `FaultTree.occurs("ab")`'s is one
+  event; the unknown nodes are listed, in order, in one message.
+- **The uncertainty methods take what the point methods take (#226).**
+  `bx_life_uncertainty([1, 10])`, `time_to_reliability_uncertainty([0.99,
+  0.9])` and `sf_uncertainty` of a 2-d array of times failed with numpy's
+  errors, and `uncertainty_importance([10, 50], of="mission_availability")`
+  blamed the window for its `x`: each now gives one row of draws per
+  target, from the same parameter draws (each element what that target
+  alone gives), with the times' shape; a percentage or reliability out of
+  range is refused naming its argument. A life some of whose units never
+  fail has an infinite mean in every draw, and `mean_uncertainty` infinite
+  bounds, where it gave `nan` with numpy's warning.
 
 ## [0.12] - 2026-10-04
 

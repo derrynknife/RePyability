@@ -48,6 +48,46 @@ def numpy_seed(seed):
             np.random.set_state(state)
 
 
+#: The parameters that take node names (#225).
+NODE_ARGUMENTS = ("working_nodes", "broken_nodes", "nodes")
+
+
+def node_names(func):
+    """``func`` (a method) with a bare string given to one of its
+    ``NODE_ARGUMENTS`` taken as one node's name (#225), not as its
+    characters: ``working_nodes="belt"`` is ``["belt"]``, where iterating
+    it gave ``{"b", "e", "l", "t"}``, and an error that changed from run to
+    run with the strings' hashes. ``func`` itself where it has none of
+    them."""
+    import inspect
+
+    try:
+        names = list(inspect.signature(func).parameters)
+    except (TypeError, ValueError):
+        return func
+    places = {
+        name: names.index(name) - 1  # in the arguments after ``self``
+        for name in NODE_ARGUMENTS
+        if name in names
+    }
+    if not places or getattr(func, "node_names", False):
+        return func
+
+    @functools.wraps(func)
+    def wrap(obj, *args, **kwargs):
+        listed = None
+        for name, place in places.items():
+            if 0 <= place < len(args) and isinstance(args[place], str):
+                listed = list(args) if listed is None else listed
+                listed[place] = [args[place]]
+            elif isinstance(kwargs.get(name), str):
+                kwargs[name] = [kwargs[name]]
+        return func(obj, *(args if listed is None else listed), **kwargs)
+
+    wrap.node_names = True  # type: ignore[attr-defined]
+    return wrap
+
+
 def check_probability(func):
     """Checks the target probability is between 0 and 1."""
 

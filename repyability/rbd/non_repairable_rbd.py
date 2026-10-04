@@ -44,6 +44,7 @@ from . import redundancy_allocation
 from ._mean_lifetime import mean_lifetime, model_knots
 from ._model_utils import (
     is_fixed_probability,
+    is_mixture,
     lfp_p,
     model_mean,
     parametric_spec,
@@ -1817,7 +1818,9 @@ class NonRepairableRBD(RBD):
                 )
             x = 1.0
         scalar = np.ndim(x) == 0
-        times = np.atleast_1d(np.asarray(x, dtype=float))
+        # Times of any shape, as ``sf`` takes them (#226): worked out
+        # flat, and each draw's row put back in their shape.
+        times = np.atleast_1d(np.asarray(x, dtype=float)).ravel()
         samples = self._quantity_samples(
             "sf", times, drawn, drawn_groups, n_draws
         )
@@ -1829,7 +1832,9 @@ class NonRepairableRBD(RBD):
                 n_draws=n_draws,
             )
         return UncertaintyResult(
-            samples=samples, nominal=nominal, n_draws=n_draws
+            samples=samples.reshape((n_draws,) + np.shape(x)),
+            nominal=nominal.reshape(np.shape(x)),
+            n_draws=n_draws,
         )
 
     def _quantity_samples(
@@ -1882,16 +1887,21 @@ class NonRepairableRBD(RBD):
                     sf, np.concatenate([np.empty(0), *knots])
                 )
             return samples
-        target = value if of == "time_to_reliability" else 1.0 - value / 100.0
-        return np.array(
-            [
-                self._invert_reliability(
-                    self._drawn_sf(drawn, i, drawn_groups)[0],
-                    target,
-                    upper_bound,
+        value = np.asarray(value, dtype=float)
+        targets = value if of == "time_to_reliability" else 1.0 - value / 100.0
+        flat = np.atleast_1d(targets).ravel()
+        out = np.empty((n, len(flat)))
+        for i in range(n):
+            sf = self._drawn_sf(drawn, i, drawn_groups)[0]
+            for j, target in enumerate(flat):
+                out[i, j] = self._invert_reliability(
+                    sf, float(target), upper_bound
                 )
-                for i in range(n)
-            ]
+        # A row of draws for each target, in its shape (#226).
+        return (
+            out[:, 0]
+            if np.ndim(value) == 0
+            else out.reshape((n,) + np.shape(value))
         )
 
     def _drawn_ccf_samples(
@@ -2017,7 +2027,7 @@ class NonRepairableRBD(RBD):
 
     def time_to_reliability_uncertainty(
         self,
-        target: float,
+        target: ArrayLike,
         uncertainty: Optional[Dict[Hashable, Any]] = None,
         *,
         n_draws: int = 1000,
@@ -2036,8 +2046,9 @@ class NonRepairableRBD(RBD):
 
         Parameters
         ----------
-        target : float
-            The reliability level, in (0, 1).
+        target : float or array_like
+            The reliability level, in (0, 1), or levels (#226): each a row
+            of draws, from the same parameter draws.
         uncertainty : dict, optional
             ``{node or tuple of nodes: uncertainty}`` for the uncertain
             nodes, as for ``sf_uncertainty`` (by default, every fitted
@@ -2093,8 +2104,12 @@ class NonRepairableRBD(RBD):
         (21.6, 49.3)
         """
         self._require_time_varying()
-        if not 0.0 < target < 1.0:
-            raise ValueError("target reliability must be in (0, 1).")
+        targets = np.asarray(target, dtype=float)
+        if not np.all((targets > 0.0) & (targets < 1.0)):
+            raise ValueError(
+                "target reliability must be in (0, 1) (or an array of "
+                f"such), got {target!r}."
+            )
         drawn, drawn_groups = self._uncertain_draws(
             uncertainty, n_draws, seed, sampling
         )
@@ -2113,7 +2128,7 @@ class NonRepairableRBD(RBD):
 
     def bx_life_uncertainty(
         self,
-        x: float,
+        x: ArrayLike,
         uncertainty: Optional[Dict[Hashable, Any]] = None,
         *,
         n_draws: int = 1000,
@@ -2130,8 +2145,9 @@ class NonRepairableRBD(RBD):
 
         Parameters
         ----------
-        x : float
-            The percentage failed, in (0, 100).
+        x : float or array_like
+            The percentage failed, in (0, 100), or percentages (#226): each
+            a row of draws, from the same parameter draws.
         uncertainty : dict, optional
             ``{node or tuple of nodes: uncertainty}`` for the uncertain
             nodes, as for ``sf_uncertainty`` (by default, every fitted
@@ -2177,10 +2193,18 @@ class NonRepairableRBD(RBD):
         >>> round(b10.nominal, 2)  # the same as the time to 90% reliability
         33.64
         """
-        if not 0.0 < x < 100.0:
-            raise ValueError("x must be a percentage in (0, 100).")
+        percent = np.asarray(x, dtype=float)
+        if not np.all((percent > 0.0) & (percent < 100.0)):
+            raise ValueError(
+                "x must be a percentage in (0, 100) (or an array of such), "
+                f"got {x!r}."
+            )
         return self.time_to_reliability_uncertainty(
-            1.0 - x / 100.0,
+            (
+                1.0 - percent / 100.0
+                if percent.ndim
+                else 1.0 - float(percent) / 100.0
+            ),
             uncertainty,
             n_draws=n_draws,
             seed=seed,
@@ -2819,6 +2843,18 @@ class NonRepairableRBD(RBD):
         same way, as two equal standby groups do (#179)."""
         if a is b:
             return True
+        if is_mixture(a) or is_mixture(b):
+            # Its dist is its components' alone, and its p their
+            # responsibilities (#227).
+            return (
+                is_mixture(a)
+                and is_mixture(b)
+                and a.dist.name == b.dist.name
+                and np.array_equal(
+                    np.asarray(a.params, float), np.asarray(b.params, float)
+                )
+                and np.array_equal(np.ravel(a.w), np.ravel(b.w))
+            )
         name_a = getattr(getattr(a, "dist", None), "name", None)
         name_b = getattr(getattr(b, "dist", None), "name", None)
         if name_a is None and name_b is None:

@@ -406,7 +406,20 @@ class UncertaintyResult(_ResultMapping):
         float or numpy.ndarray
             The percentile of ``samples`` over the draws.
         """
-        return self._per_time(np.percentile(self.samples, q, axis=0))
+        samples = np.asarray(self.samples, dtype=float)
+        if np.isfinite(samples).all():
+            return self._per_time(np.percentile(samples, q, axis=0))
+        # Infinite draws (a limited failure population's mean, say, #226):
+        # numpy's interpolation between two takes inf - inf; the same
+        # linear interpolation, but where both ends are one value, it.
+        ordered = np.sort(samples, axis=0)
+        h = (len(ordered) - 1) * float(q) / 100.0
+        low, high = ordered[int(np.floor(h))], ordered[int(np.ceil(h))]
+        with np.errstate(invalid="ignore"):
+            values = np.where(
+                low == high, low, low + (high - low) * (h - np.floor(h))
+            )
+        return self._per_time(values)
 
     def interval(self, level: float = 0.9) -> tuple:
         """The equal-tailed uncertainty interval over the draws (per time).

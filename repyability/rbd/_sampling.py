@@ -22,13 +22,14 @@ infinite for a unit that never fails, 0 for one dead on arrival.
 :func:`inverse_sampler` replays that too.
 """
 
+import weakref
 from dataclasses import dataclass
 from typing import Callable, Optional
 
 import numpy as np
 from surpyval import Parametric
 
-from ._model_utils import lfp_p
+from ._model_utils import is_mixture, lfp_p
 from .helper_classes import PerfectReliability, PerfectUnreliability
 
 Sampler = Callable[[np.ndarray], np.ndarray]
@@ -108,6 +109,171 @@ def inverse_sampler(model) -> Optional[Sampler]:
             return lambda u: dist.qf(u, *params) + gamma
         return lambda u: np.asarray(model.qf(u), dtype=float)
     return None
+
+
+#: Steps a mixture's quantile takes at most: Newton's, or halving its
+#: bracket where a Newton step would leave it (about 6 are taken).
+_STEPS = 200
+#: A Newton step this small, relative to the point, ends the search.
+_SETTLED = 4.0 * np.finfo(float).eps
+
+
+def _components(model) -> Callable[[str, np.ndarray], np.ndarray]:
+    """``values(name, x)``: a mixture's components' function ``name``
+    (``"ff"``, ``"sf"``, ``"df"`` or ``"qf"``) at the 1-d ``x``, one column
+    a component. In one call over every component where the distribution's
+    functions broadcast over their parameters (checked once, against a call
+    a component), else one call each."""
+    dist = model.dist
+    rows = np.atleast_2d(np.asarray(model.params, dtype=float))
+    columns = [rows[:, j][None, :] for j in range(rows.shape[1])]
+
+    def one_by_one(name: str, x: np.ndarray) -> np.ndarray:
+        f = getattr(dist, name)
+        return np.stack([np.ravel(f(x, *row)) for row in rows], axis=1)
+
+    def together(name: str, x: np.ndarray) -> np.ndarray:
+        return np.asarray(getattr(dist, name)(x[:, None], *columns), float)
+
+    probe = np.array([0.1, 0.5, 0.9])
+    try:
+        with np.errstate(all="ignore"):
+            points = np.ravel(one_by_one("qf", probe))
+            ok = all(
+                np.array_equal(
+                    together(name, at), one_by_one(name, at), equal_nan=True
+                )
+                for name, at in (
+                    ("qf", probe),
+                    ("ff", points),
+                    ("sf", points),
+                    ("df", points),
+                )
+            )
+    except Exception:
+        ok = False
+    return together if ok else one_by_one
+
+
+def mixture_quantile(model) -> Sampler:
+    """A surpyval ``MixtureModel``'s quantile function, which it does not
+    have (surpyval #651): for each ``u``, the ``x`` with ``F(x) = u``, to
+    the last bit or two. The mixture's quantile lies between its
+    components' (``F`` is their weighted sum), which bracket it; Newton's
+    steps, with the density, go from the bracket's middle (geometric while
+    its lower end is above 0), and a step that would leave the bracket
+    halves it instead. Above ``u = 1/2`` the survival function is compared
+    with ``1 - u``, which is exact, for the long lives' precision."""
+    weights = np.ravel(np.asarray(model.w, dtype=float))
+    values = _components(model)
+
+    def mixed(name: str, x: np.ndarray) -> np.ndarray:
+        return np.sum(values(name, x) * weights, axis=1)
+
+    def middle(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+        return np.where(a > 0.0, np.sqrt(a) * np.sqrt(b), 0.5 * (a + b))
+
+    def quantile(u):
+        u = np.asarray(u, dtype=float)
+        shape = u.shape
+        u = u.ravel()
+        with np.errstate(all="ignore"):
+            each = values("qf", u)
+        lo, hi = each.min(axis=1), each.max(axis=1)
+        x = hi.copy()
+        upper = u > 0.5
+        left = 1.0 - u
+        active = np.flatnonzero(hi > lo)
+        with np.errstate(all="ignore"):
+            x[active] = middle(lo[active], hi[active])
+        for _ in range(_STEPS):
+            if not active.size:
+                break
+            at = x[active]
+            with np.errstate(all="ignore"):
+                # Positive past the quantile, and rising at the density.
+                residual = np.where(
+                    upper[active],
+                    left[active] - mixed("sf", at),
+                    mixed("ff", at) - u[active],
+                )
+                newton = at - residual / mixed("df", at)
+            exact = residual == 0.0
+            past = residual > 0.0
+            hi[active[past]] = at[past]
+            short = ~past & ~exact
+            lo[active[short]] = at[short]
+            a, b = lo[active], hi[active]
+            inside = (newton > a) & (newton < b)
+            with np.errstate(all="ignore"):
+                step = np.where(inside, newton, middle(a, b))
+            # Newton's step, within the bracket, too small to go on with.
+            small = (
+                (newton >= a)
+                & (newton <= b)
+                & (np.abs(newton - at) <= _SETTLED * np.abs(at))
+            )
+            spent = ~((step > a) & (step < b))
+            # The root itself, Newton's last step, the bracket's upper end
+            # where no float is left inside it, or the next step.
+            x[active] = np.where(
+                exact | small,
+                np.where(exact, at, newton),
+                np.where(spent, b, step),
+            )
+            active = active[~(exact | small | spent)]
+        return x.reshape(shape)
+
+    return quantile
+
+
+class MixtureLife:
+    """A surpyval ``MixtureModel`` with the quantile function it lacks
+    (:func:`mixture_quantile`), for surpyval's ``conditional_gaps`` to
+    draw a life given an age with: its cumulative hazard and quantile.
+    (Without the mixture's ``p``, its EM responsibilities, which that
+    function would take for a limited failure population's, surpyval
+    #626.) :meth:`of` keeps one a mixture."""
+
+    _made: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+    def __init__(self, model):
+        self._model = model
+        self.qf = mixture_quantile(model)
+
+    def Hf(self, x):
+        return self._model.Hf(x)
+
+    @classmethod
+    def of(cls, model) -> "MixtureLife":
+        """The one for ``model``, made again if its parameters or weights
+        have changed since."""
+        key = (
+            model.dist.name,
+            np.asarray(model.params, dtype=float).tobytes(),
+            np.asarray(model.w, dtype=float).tobytes(),
+        )
+        try:
+            made = cls._made.get(model)
+        except TypeError:  # not weakly referenced
+            return cls(model)
+        if made is None or made[0] != key:
+            made = (key, cls(model))
+            cls._made[model] = made
+        return made[1]
+
+
+def stream_sampler(model) -> Optional[Sampler]:
+    """What a ``RepairableRBD``'s streams turn a model's uniforms into its
+    draws with, one uniform a draw: :func:`inverse_sampler`'s, or a
+    surpyval ``MixtureModel``'s quantile worked out
+    (:func:`mixture_quantile`). None for a model that draws its own way.
+    (A ``NonRepairableRBD``'s draws replay surpyval's own, and a mixture
+    draws there as surpyval does.)"""
+    sampler = inverse_sampler(model)
+    if sampler is None and is_mixture(model):
+        return mixture_quantile(model)
+    return sampler
 
 
 def draw_rows(samplers: list[Sampler], size: int) -> list[np.ndarray]:

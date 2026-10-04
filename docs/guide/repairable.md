@@ -18,7 +18,10 @@ Theory: [Concepts](../concepts.md#availability).
 ## Components
 
 Each component needs a reliability (time-to-failure) model and a
-repairability (time-to-repair) model:
+repairability (time-to-repair) model. A life is a surpyval distribution,
+fitted or built with `from_params`, or a surpyval `MixtureModel` (a
+population of two or more modes, such as infant mortality and wear-out),
+whose lives the simulations draw by inverting its distribution function:
 
 ```python
 import numpy as np

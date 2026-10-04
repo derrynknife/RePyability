@@ -470,7 +470,25 @@ def _sensitivities(rbd, of: str, x, state, rel_step) -> dict:
     if of == "point_availability":
         kwargs.update(x=x, state=state)
     elif of == "mission_availability":
-        kwargs.update(window=x, state=state)
+        if np.ndim(x) == 0:
+            kwargs.update(window=x, state=state)
+        else:
+            # A sensitivity for each mission's length (#226), stacked.
+            each = [
+                rbd.parameter_sensitivity(
+                    rel_step=rel_step, window=float(w), state=state
+                )
+                for w in np.asarray(x, dtype=float).ravel()
+            ]
+            return {
+                key: {
+                    lever: np.array(
+                        [float(np.ravel(one[key][lever])[0]) for one in each]
+                    )
+                    for lever in levers
+                }
+                for key, levers in each[0].items()
+            }
     if of == "expected_cost_rate":
         kwargs["of"] = "cost_rate"
     return rbd.parameter_sensitivity(**kwargs)
@@ -485,9 +503,7 @@ def delta(rbd, of: str, x, state, inputs, groups, rel_step) -> list:
     from ._model_utils import parametric_spec
 
     derivatives = _sensitivities(rbd, of, x, state, rel_step)
-    size = (
-        len(np.atleast_1d(np.asarray(x, dtype=float))) if x is not None else 1
-    )
+    size = int(np.size(x)) if x is not None else 1
 
     def gradient(keys, names) -> np.ndarray:
         out = np.zeros((len(names), size))
@@ -500,7 +516,7 @@ def delta(rbd, of: str, x, state, inputs, groups, rel_step) -> list:
                         "its model's parameters are not levers of "
                         "parameter_sensitivity."
                     )
-                out[j] += np.atleast_1d(np.asarray(levers[name], float))
+                out[j] += np.asarray(levers[name], float).ravel()
         return out
 
     members = {m for g in rbd.ccf_groups for m in g.members}

@@ -11,11 +11,13 @@ in ``_streams``, and its compiled engine in ``_compiled`` and
 """
 
 import dataclasses
+import functools
 import hashlib
 import heapq
 import itertools
 import json
 import math
+import numbers
 import pickle
 import warnings
 from collections import Counter, defaultdict, deque
@@ -95,6 +97,7 @@ from repyability.rbd._hidden_tests import check as check_tested
 from repyability.rbd._model_utils import (
     failure_time_scale,
     is_fixed_probability,
+    is_mixture,
     lfp_p,
     model_mean,
     refuse_nonparametric,
@@ -114,7 +117,7 @@ from repyability.rbd._point_availability import (
 )
 from repyability.rbd._point_availability import knots as point_knots
 from repyability.rbd._point_availability import unit_curve
-from repyability.rbd._sampling import inverse_sampler
+from repyability.rbd._sampling import MixtureLife, stream_sampler
 from repyability.rbd.degrading_node import DegradingNode
 from repyability.rbd.helper_classes import PerfectReliability
 from repyability.rbd.load_sharing_node import LoadSharingModel
@@ -341,7 +344,10 @@ def _aged_life(model, age: float, u: float) -> float:
     ``age``, from the uniform ``u``: the ``x`` with ``H(age + x) = H(age) -
     log(u)`` (``H`` the cumulative hazard), as surpyval's virtual-age
     renewal models draw it (``conditional_gaps``). A plain Exponential or
-    Weibull is worked in closed form, any other model by surpyval."""
+    Weibull is worked in closed form, any other model by surpyval (a
+    mixture with its quantile worked out, ``MixtureLife``)."""
+    if is_mixture(model):
+        model = MixtureLife.of(model)
     dist = getattr(model, "dist", None)
     name = getattr(dist, "name", None)
     if (
@@ -3107,6 +3113,55 @@ def _constant_rate(model) -> Optional[float]:
     return rate if constant and exponential else None
 
 
+def _times_like(rbd, value) -> bool:
+    """Whether ``value``, given where node names go, can only be times: a
+    number, or numbers none of which is a node of ``rbd`` (#224)."""
+    if value is None or isinstance(value, (str, bytes, bool, np.bool_)):
+        return False
+    if isinstance(value, numbers.Real):
+        return True
+    if isinstance(value, np.ndarray):
+        if value.dtype.kind not in "iuf":
+            return False
+        items = value.ravel().tolist()
+    elif isinstance(value, (list, tuple)):
+        items = list(value)
+        if not items or not all(
+            isinstance(v, numbers.Real) and not isinstance(v, (bool, np.bool_))
+            for v in items
+        ):
+            return False
+    else:
+        return False
+    nodes = set(rbd.nodes)
+    return not any(v in nodes for v in items)
+
+
+def _times_first(target: str = "x"):
+    """Let a repairable diagram's measure take its times first, as a
+    non-repairable diagram's does (#224): a number, or numbers none of
+    which is a node, given where the first argument goes (node names, or
+    Fussell-Vesely's ``fv_type``) is ``target`` (its times ``x``, or a
+    window's length)."""
+
+    def decorate(method):
+        @functools.wraps(method)
+        def wrapper(self, *args, **kwargs):
+            if args and _times_like(self, args[0]):
+                if kwargs.get(target) is not None:
+                    raise TypeError(
+                        f"{method.__name__}() was given times both first "
+                        f"and as {target}=: give them once, as {target}=."
+                    )
+                kwargs[target] = args[0]
+                args = args[1:]
+            return method(self, *args, **kwargs)
+
+        return wrapper
+
+    return decorate
+
+
 def _fixed_length(model) -> Optional[float]:
     """The length of a time that is always the same (an
     ``ExactEventTime``, say), or None."""
@@ -4970,9 +5025,12 @@ class RepairableRBD(RBD):
                             "zero time."
                         )
                     repair_model = ExactEventTime.from_params(0)
-                components[name] = NonRepairable(
-                    component["reliability"], repair_model
-                )
+                try:
+                    components[name] = NonRepairable(
+                        component["reliability"], repair_model
+                    )
+                except ValueError as error:
+                    raise ValueError(f"Component {name!r}: {error}") from None
                 reliability[name] = component["reliability"]
                 repairability[name] = repair_model
             elif isinstance(component, RepairableRBD):
@@ -6007,7 +6065,9 @@ class RepairableRBD(RBD):
                 "age as new, so it cannot be repaired imperfectly."
             )
         life = spec["reliability"]
-        if not (hasattr(life, "Hf") and hasattr(life, "qf")):
+        if not (
+            is_mixture(life) or (hasattr(life, "Hf") and hasattr(life, "qf"))
+        ):
             raise ValueError(
                 f"Component {node!r}: an imperfectly repaired unit's lives "
                 "are drawn given its virtual age, which needs a lifetime "
@@ -6526,11 +6586,11 @@ class RepairableRBD(RBD):
                 # A common-cause group's member draws its own cause's life.
                 own = self._own_rate(name)
                 failure = (
-                    inverse_sampler(component.reliability)
+                    stream_sampler(component.reliability)
                     if own is None
                     else _exponential_sampler(own)
                 )
-                repair = inverse_sampler(component.time_to_replace)
+                repair = stream_sampler(component.time_to_replace)
             if failure is None or repair is None:
                 complete = False
                 continue
@@ -6559,7 +6619,7 @@ class RepairableRBD(RBD):
                 add(path, _streams.TEST, _uniforms, expected["failure"])
             duration = self._duration_model(name)
             if duration is not None:
-                sampler = inverse_sampler(duration)
+                sampler = stream_sampler(duration)
                 if sampler is None:
                     complete = False
                 else:
@@ -13180,8 +13240,8 @@ class RepairableRBD(RBD):
                 continue
             if (
                 type(component) is not NonRepairable
-                or inverse_sampler(component.reliability) is None
-                or inverse_sampler(component.time_to_replace) is None
+                or stream_sampler(component.reliability) is None
+                or stream_sampler(component.time_to_replace) is None
             ):
                 raise NotImplementedError(
                     f"Component {node!r} draws its events its own way (it is "
@@ -20268,6 +20328,7 @@ class RepairableRBD(RBD):
             return unavailability / omega
         return 0.0 if unavailability <= 0.0 else float("inf")
 
+    @_times_first()
     def birnbaum_importance(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -20400,6 +20461,7 @@ class RepairableRBD(RBD):
             )
         )
 
+    @_times_first()
     def improvement_potential(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -20502,6 +20564,7 @@ class RepairableRBD(RBD):
             )
         )
 
+    @_times_first()
     def risk_achievement_worth(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -20610,6 +20673,7 @@ class RepairableRBD(RBD):
             )
         )
 
+    @_times_first()
     def risk_reduction_worth(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -20716,6 +20780,7 @@ class RepairableRBD(RBD):
             )
         )
 
+    @_times_first()
     def criticality_importance(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -20850,6 +20915,7 @@ class RepairableRBD(RBD):
             )
         )
 
+    @_times_first()
     def fussell_vesely(
         self,
         fv_type: str = "c",
@@ -20991,6 +21057,7 @@ class RepairableRBD(RBD):
             )
         )
 
+    @_times_first()
     def parameter_sensitivity(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -21594,6 +21661,7 @@ class RepairableRBD(RBD):
             total={key: shaped(v) for key, v in total.items()},
         )
 
+    @_times_first()
     def differential_importance(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -22238,6 +22306,7 @@ class RepairableRBD(RBD):
             node_jumps=node_jumps,
         )
 
+    @_times_first("window")
     def barlow_proschan_importance(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,
@@ -22375,6 +22444,7 @@ class RepairableRBD(RBD):
             for key, value in shares.items()
         }
 
+    @_times_first()
     def joint_importance(
         self,
         working_nodes: Optional[Collection[Hashable]] = None,

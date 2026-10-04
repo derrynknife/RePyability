@@ -12,6 +12,7 @@ path sets, and the probability scaling used by reliability allocation.
 
 import difflib
 import functools
+import inspect
 import warnings
 from collections import defaultdict
 from typing import (
@@ -57,7 +58,7 @@ from repyability.rbd.shannon import (
     _shannon_plan,
 )
 from repyability.utils.checks import is_whole, structure_method
-from repyability.utils.wrappers import check_probability
+from repyability.utils.wrappers import check_probability, node_names
 
 _ON_INFEASIBLE_RBD = ("raise", "warn", "ignore")
 
@@ -527,6 +528,18 @@ class Pairs(dict):
         return self[key] if key in self else default
 
 
+def _take_node_names(cls) -> None:
+    """Wrap ``cls``'s own public methods so that a bare string given where
+    node names go is one node (#225, ``node_names``): the diagram classes'
+    as they are made (``RBD.__init_subclass__``), and ``RBD``'s own."""
+    for name, value in list(vars(cls).items()):
+        if name.startswith("_") or not inspect.isfunction(value):
+            continue
+        wrapped = node_names(value)
+        if wrapped is not value:
+            setattr(cls, name, wrapped)
+
+
 class RBD:
     """Reliability block diagram structure: the base of the RBD classes.
 
@@ -690,6 +703,10 @@ class RBD:
     >>> {k: round(v, 4) for k, v in sorted(si.items())}
     {'p1': 0.25, 'p2': 0.25, 'v': 0.75}
     """
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        _take_node_names(cls)
 
     # Constructor inputs, captured verbatim by each subclass's ``__init__`` so
     # the RBD can be re-created (see ``serialisation``); declared here so the
@@ -3028,7 +3045,31 @@ class RBD:
             ("working_nodes", working_nodes),
             ("broken_nodes", broken_nodes),
         ):
-            for node in nodes:
+            unknown = sorted(
+                (
+                    node
+                    for node in nodes
+                    if node not in valid
+                    and node not in self.in_or_out
+                    and node not in folded
+                ),
+                key=str,
+            )
+            if unknown:
+                if len(unknown) == 1:
+                    what = (
+                        f"Unknown node {unknown[0]!r} given to {label}; it "
+                        "is not an intermediate node of the RBD."
+                    )
+                else:
+                    what = (
+                        f"Unknown nodes {unknown} given to {label}; they "
+                        "are not intermediate nodes of the RBD."
+                    )
+                raise ValueError(
+                    f"{what} Valid nodes are: {sorted(valid, key=str)}."
+                )
+            for node in sorted(nodes, key=str):
                 if node in self.in_or_out:
                     which = "input" if node == self.input_node else "output"
                     raise ValueError(
@@ -3376,3 +3417,6 @@ class RBD:
                 numerator = numerator + set_fails
             out[this_node] = numerator
         return out
+
+
+_take_node_names(RBD)

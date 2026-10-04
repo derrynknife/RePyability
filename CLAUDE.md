@@ -330,6 +330,17 @@ major.minor.
   `NonRepairable.mean_availability`'s example is skipped. Read and pass
   `lfp_p` directly, and run the example, once the minimum surpyval is 0.23.
 
+- **A mixture's quantile, `p` and tail** (surpyval #651, #626, #671).
+  surpyval's `MixtureModel` has no `qf` (#651), keeps its EM
+  responsibilities as `p` (#626), which surpyval's `conditional_gaps`
+  takes for a limited failure population's, and has an `sf` of `1 - ff`
+  (#671), imprecise in the tail. `_sampling.mixture_quantile` inverts its
+  distribution (with its components' `sf` summed above the median), which
+  `stream_sampler` gives a `RepairableRBD`'s streams (a change to it
+  changes seeded results), and `MixtureLife` hands `conditional_gaps` its
+  `Hf` and that `qf` (`_aged_life`). Take the mixture's own `qf`, and drop
+  `MixtureLife`, once the minimum surpyval has them.
+
 List each new workaround here with its surpyval issue and where it lives,
 so it can go once the minimum surpyval in `pyproject.toml` includes the
 fix.

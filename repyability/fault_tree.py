@@ -747,7 +747,8 @@ class FaultTree:
         >>> tree.occurs({"a"}), tree.occurs({"a", "c"})
         (False, True)
         """
-        occurred = set(events)
+        # A bare string is one event's name, not its characters (#225).
+        occurred = {events} if isinstance(events, str) else set(events)
         unknown = occurred - set(self.events)
         if unknown:
             raise ValueError(f"Unknown event(s) {sorted(map(str, unknown))}.")

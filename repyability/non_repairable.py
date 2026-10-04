@@ -6,6 +6,7 @@ from repyability.maintenance import MaintenancePolicy
 from repyability.rbd._model_utils import (
     distribution_name,
     is_exponential,
+    is_mixture,
     model_mean,
     never_fails,
 )
@@ -94,6 +95,9 @@ class NonRepairable:
 
         - a surpyval parametric distribution, fitted or built with
           ``from_params``;
+        - a surpyval ``MixtureModel`` (a population of several modes,
+          such as infant mortality and wear-out), which has no quantile
+          function: the simulations invert its distribution function;
         - a surpyval non-parametric estimate (e.g. a ``KaplanMeier``
           fit). For the cost calculations its survival function is taken
           as linear between its time points, starting from 1 at age 0,
@@ -126,8 +130,8 @@ class NonRepairable:
     Raises
     ------
     ValueError
-        If ``reliability`` is not a surpyval parametric or non-parametric
-        model or a ``StandbyModel``.
+        If ``reliability`` is not a surpyval parametric, mixture or
+        non-parametric model or a ``StandbyModel``.
 
     Examples
     --------
@@ -161,7 +165,11 @@ class NonRepairable:
         if time_to_replace is None:
             # Replaced in no time.
             time_to_replace = ExactEventTime.from_params(0)
-        if isinstance(reliability, Parametric):
+        if isinstance(reliability, Parametric) or is_mixture(reliability):
+            # A surpyval MixtureModel (#227) is no Parametric, but has the
+            # survival function, distribution, density and mean the
+            # analyses take; the simulations invert its distribution
+            # function (it has no quantile function, see _sampling).
             self.model_parameterization = "parametric"
             self.reliability_function = reliability.sf
         elif isinstance(reliability, NonParametric):
@@ -183,7 +191,12 @@ class NonRepairable:
                 "vote point) or a part that never fails."
             )
         else:
-            raise ValueError("Unknown reliability function")
+            raise ValueError(
+                "A NonRepairable's life must be a surpyval parametric "
+                "distribution or MixtureModel (fitted, or built with "
+                "from_params), a surpyval non-parametric estimate or a "
+                f"StandbyModel; got a {type(reliability).__name__}."
+            )
 
         self.reliability = reliability
         self.time_to_replace = time_to_replace

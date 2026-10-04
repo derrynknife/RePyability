@@ -389,6 +389,30 @@ def repairable_kinds():
             "fixed probability": system(
                 {"reliability": FIXED(0.1), "repairability": repair}
             ),
+            "mixture life": system(
+                unit(reliability=mixture_life(), replace_cost=10.0)
+            ),
+            "mixture life, maintained": system(
+                unit(
+                    reliability=mixture_life(),
+                    preventive={"interval": 120.0},
+                    replace_cost=10.0,
+                )
+            ),
+            "mixture life, tested": system(
+                unit(
+                    reliability=mixture_life(),
+                    repairability="instant",
+                    inspection={"interval": 50.0},
+                )
+            ),
+            "mixture life, imperfect repair": system(
+                unit(
+                    reliability=mixture_life(),
+                    repair={"model": "kijima1", "q": 0.5},
+                    repair_cost=1.0,
+                )
+            ),
             "degrading capacity": system(
                 {
                     "reliability": DegradingNode(

@@ -39,6 +39,8 @@ from typing import Any, List, Optional
 
 import numpy as np
 
+from repyability.rbd._model_utils import is_mixture
+
 #: The draws of a node's model that ``"fit"`` asks for.
 FIT = "fit"
 #: Where the draws' randomness comes from (see the module docstring).
@@ -126,6 +128,15 @@ def sobol_table(n: int, dimensions: int, rng) -> np.ndarray:
 def _parametric(model, label: str):
     """The model's distribution, or a ValueError for a model whose
     parameters cannot be redrawn."""
+    if is_mixture(model):
+        # Its dist is its components' alone (#227).
+        raise ValueError(
+            f"{label}: its model is a surpyval MixtureModel, whose "
+            "parameters are its components' and their weights, with no "
+            "parameter covariance (expectation-maximisation leaves none), "
+            "so they cannot be drawn. Give a list of alternative models "
+            "instead (fitted to resampled data, say)."
+        )
     dist = getattr(model, "dist", None)
     if dist is None or not hasattr(dist, "from_params"):
         raise ValueError(
