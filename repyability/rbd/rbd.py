@@ -16,6 +16,7 @@ import warnings
 from collections import defaultdict
 from typing import (
     Any,
+    Callable,
     Dict,
     Hashable,
     Iterable,
@@ -40,8 +41,14 @@ from scipy.sparse import diags
 from scipy.special import expit as sigmoid
 from scipy.special import logit, logsumexp, softmax
 
+from repyability.rbd import bdd
 from repyability.rbd import capacity as _capacity
-from repyability.rbd.modular import Decomposition, decompose
+from repyability.rbd.modular import (
+    Decomposition,
+    GraphStructure,
+    decompose,
+    fold,
+)
 from repyability.rbd.rbd_graph import RBDGraph
 from repyability.rbd.results import CapacityDistribution
 from repyability.rbd.shannon import (
@@ -49,6 +56,7 @@ from repyability.rbd.shannon import (
     _minimal_cut_sets,
     _shannon_plan,
 )
+from repyability.utils.checks import is_whole, structure_method
 from repyability.utils.wrappers import check_probability
 
 _ON_INFEASIBLE_RBD = ("raise", "warn", "ignore")
@@ -112,9 +120,18 @@ def structure_problems(check: dict) -> List[str]:
     (see ``RBD``), in the order a user would fix them."""
     lines = []
     missing = list(check.get("nodes_with_no_model", ()))
+    unused = list(check.get("nodes_in_no_edge", ()))
+    # A node a misspelt model was meant for needs no hint.
+    meant = {_close_name(node, missing) for node in unused}
     for node in missing:
-        lines.append(f"node {node!r} (in the edges) has no model")
-    for node in check.get("nodes_in_no_edge", ()):
+        line = f"node {node!r} (in the edges) has no model"
+        if node not in meant:
+            line += (
+                " (a junction, such as a k-out-of-n vote point, takes "
+                "PerfectReliability)"
+            )
+        lines.append(line)
+    for node in unused:
         line = f"model {node!r} is not a node in the edges"
         close = _close_name(node, missing)
         if close is not None:
@@ -122,8 +139,18 @@ def structure_problems(check: dict) -> List[str]:
         lines.append(line)
     for cycle in check.get("cycles", ()):
         lines.append(f"there is a cycle through {_names(cycle)}")
+    if check.get("is_empty"):
+        return lines + [
+            "the diagram has no edges: give them, from the input node to the "
+            "output node"
+        ]
     sources = check.get("nodes_with_no_predecessors", ())
-    if not check.get("has_unique_input_node", True):
+    if not check.get("has_unique_input_node", True) and not sources:
+        lines.append(
+            "every node has an incoming edge, so there is no input node (a "
+            "node with none)"
+        )
+    elif not check.get("has_unique_input_node", True):
         lines.append(
             "more than one node has no incoming edges, so the input node is "
             f"not clear: {_names(sources)} (only the input node has none)"
@@ -134,7 +161,12 @@ def structure_problems(check: dict) -> List[str]:
             f"the input node, {check['input_node']!r}, may have"
         )
     sinks = check.get("nodes_with_no_successors", ())
-    if not check.get("has_unique_output_node", True):
+    if not check.get("has_unique_output_node", True) and not sinks:
+        lines.append(
+            "every node has an outgoing edge, so there is no output node (a "
+            "node with none)"
+        )
+    elif not check.get("has_unique_output_node", True):
         lines.append(
             "more than one node has no outgoing edges, so the output node is "
             f"not clear: {_names(sinks)} (every node but the output needs an "
@@ -447,6 +479,37 @@ def _capacity_levels(node, levels: dict) -> dict:
     return {level: out[level] / total for level in sorted(out)}
 
 
+class Pairs(dict):
+    """A symmetric measure of pairs (``joint_importance``): each pair once,
+    its two names in order as text (so that it does not depend on the order
+    the nodes were given in), and found either way round."""
+
+    @staticmethod
+    def oriented(i: Hashable, j: Hashable) -> Tuple[Hashable, Hashable]:
+        """The pair as it is kept: its names in order as text."""
+        return (j, i) if str(j) < str(i) else (i, j)
+
+    def _swapped(self, key):
+        if isinstance(key, tuple) and len(key) == 2:
+            return (key[1], key[0])
+        return None
+
+    def __missing__(self, key):
+        swapped = self._swapped(key)
+        if swapped is not None and dict.__contains__(self, swapped):
+            return dict.__getitem__(self, swapped)
+        raise KeyError(key)
+
+    def __contains__(self, key) -> bool:
+        swapped = self._swapped(key)
+        return dict.__contains__(self, key) or (
+            swapped is not None and dict.__contains__(self, swapped)
+        )
+
+    def get(self, key, default=None):
+        return self[key] if key in self else default
+
+
 class RBD:
     """Reliability block diagram structure: the base of the RBD classes.
 
@@ -558,8 +621,11 @@ class RBD:
         levels and their probabilities (in increasing order of level).
     structure_check : dict
         The validation report, e.g. ``"is_valid"``, ``"has_cycles"``,
-        ``"cycles"``, ``"koon_errors"``, ``"koon_warnings"`` and
-        ``"irrelevant_nodes"``. The subclasses add their own entries.
+        ``"cycles"``, ``"koon_errors"``, ``"koon_warnings"``,
+        ``"irrelevant_nodes"`` and ``"is_too_meshed"``: whether the core
+        is too meshed to work out exactly, so that only the simulations run
+        (its irrelevant nodes are then not known). The subclasses add their
+        own entries.
 
     Raises
     ------
@@ -616,6 +682,12 @@ class RBD:
     # runs (None for a structure alone): one in no edge is reported as
     # such, and a node in the edges with none as having no model.
     _models_given: Optional[list] = None
+    # Whether the junctions (see ``_junctions``) are folded out of the
+    # structure (``modular.fold``): a ``RepairableRBD``'s are no components,
+    # while a ``NonRepairableRBD``'s have a model that never fails.
+    _FOLDS_JUNCTIONS = False
+    # What simulates a diagram too meshed to work out exactly.
+    _SIMULATE_INSTEAD = "Simulate it instead."
 
     def __init__(
         self,
@@ -669,6 +741,13 @@ class RBD:
         valid_rbd = True
         if k is not None:
             for node, k_val in k.items():
+                # (Below 1 is refused with the structure, which says why.)
+                if not is_whole(k_val):
+                    raise ValueError(
+                        f"k for node {node!r} must be a whole number (how "
+                        f"many of its inputs must work), got {k_val!r}."
+                    )
+                k_val = int(k_val)
                 if node in self.G.nodes:
                     self.G.nodes[node]["k"] = k_val
                 else:
@@ -728,16 +807,19 @@ class RBD:
         self.output_node = structure_check["output_node"]
         self.in_or_out = [self.input_node, self.output_node]
         # A repeated node (a subclass's ``_aliases``) is the component it
-        # repeats, so it is not a component of its own.
+        # repeats, so it is not a component of its own; nor is a junction
+        # folded out of the structure.
         aliases = self._component_aliases()
+        folded = self._junctions() if self._FOLDS_JUNCTIONS else frozenset()
         self.nodes = [
             n
             for n in self.G.nodes
-            if n not in self.in_or_out and n not in aliases
+            if n not in self.in_or_out and n not in aliases and n not in folded
         ]
         self.capacity = self._validated_capacity(capacity)
         self.structure_check["has_irrelevant_nodes"] = False
         self.structure_check["irrelevant_nodes"] = set()
+        self.structure_check["is_too_meshed"] = False
 
         if (
             not structure_check["has_cycles"]
@@ -745,12 +827,15 @@ class RBD:
             and not structure_check["has_koon_errors"]
         ):
             # Reduces the diagram, and raises if nothing reaches the output.
-            self._decomposition()
-            irrelevant_nodes = self.find_irrelevant_components()
-            if len(irrelevant_nodes) != 0:
-                self.structure_check["has_irrelevant_nodes"] = True
-
-            self.structure_check["irrelevant_nodes"] = irrelevant_nodes
+            # A core too meshed to work out leaves which nodes are
+            # irrelevant unknown.
+            if self._too_meshed() is not None:
+                self.structure_check["is_too_meshed"] = True
+            else:
+                irrelevant_nodes = self.find_irrelevant_components()
+                if len(irrelevant_nodes) != 0:
+                    self.structure_check["has_irrelevant_nodes"] = True
+                self.structure_check["irrelevant_nodes"] = irrelevant_nodes
 
     def __repr__(self) -> str:
         """A short summary: the nodes, the input and output nodes, any
@@ -817,8 +902,10 @@ class RBD:
         >>> rbd.find_irrelevant_components()
         {'b'}
         """
-        relevant = self._decomposition().nodes
-        return set(self.nodes) - relevant
+        decomposition = self._decomposition()
+        if isinstance(decomposition, GraphStructure):
+            raise NotImplementedError(decomposition.reason)
+        return set(self.nodes) - decomposition.nodes
 
     def get_all_path_sets(self) -> Iterator[list[Hashable]]:
         """Iterate over every path from the input node to the output node.
@@ -863,7 +950,9 @@ class RBD:
         exponentially with redundancy (``n`` stages of duplicated units in
         series have ``2 ** n``), but nothing else needs them: the system
         probability, the importance measures and the cut sets are found
-        without listing them.
+        without listing them. A junction (a node given
+        ``PerfectReliability``, such as a k-out-of-n vote point) always
+        works, so no path set needs it, and none lists it (#198).
 
         Parameters
         ----------
@@ -903,7 +992,7 @@ class RBD:
         """
         if not hasattr(self, "_min_path_sets"):
             self._min_path_sets: set[frozenset[Hashable]] = (
-                self._decomposition().path_sets()
+                self._set_structure().path_sets()
             )
         if not include_in_out_nodes:
             return set(self._min_path_sets)
@@ -962,8 +1051,7 @@ class RBD:
         >>> rbd.is_system_working({"a": True, "b": True, "c": False}, "c")
         False
         """
-        if method not in ("p", "c"):
-            raise ValueError("`method` must be either 'p' or 'c'")
+        method = structure_method(method)
         return self._decomposition().works(component_status, method)
 
     def system_timeline(self, timelines: Mapping) -> Any:
@@ -1102,7 +1190,9 @@ class RBD:
         bridge) has its own read off the exact engine's Shannon
         decomposition (see ``minimal_cut_sets_from_path_sets`` in this
         module). They are worked out on first use and cached; each call
-        returns a new set.
+        returns a new set. A junction (a node given ``PerfectReliability``,
+        such as a k-out-of-n vote point) never fails, so a cut set with one
+        never happens, and none is listed (#198).
 
         Parameters
         ----------
@@ -1141,7 +1231,7 @@ class RBD:
         # once per RBD; each call gets its own copy of the set.
         if not hasattr(self, "_min_cut_sets"):
             self._min_cut_sets: set[frozenset[Hashable]] = (
-                self._decomposition().cut_sets()
+                self._set_structure().cut_sets()
             )
         if not include_in_out_nodes:
             return set(self._min_cut_sets)
@@ -1245,8 +1335,9 @@ class RBD:
             input and output nodes, and any other keys, are not used. The
             dict is not modified.
         method : str, optional
-            ``"p"`` (the default) or ``"c"``: whether to compute the
-            probability that the system works or that it fails.
+            ``"p"`` or ``"paths"`` (the default), or ``"c"`` or
+            ``"cuts"``: whether to compute the probability that the system
+            works or that it fails.
 
         Returns
         -------
@@ -1289,8 +1380,7 @@ class RBD:
         >>> [round(float(v), 4) for v in p]
         [0.931, 0.375]
         """
-        if method not in ("p", "c"):
-            raise ValueError("`method` must be either 'p' or 'c'")
+        method = structure_method(method)
 
         arrays, size = self._node_arrays(node_probabilities)
         works, fails = self._decomposition().probabilities(
@@ -1418,24 +1508,135 @@ class RBD:
         not a valid RBD is not reduced: its core is the whole diagram, with
         the path sets the memoised search finds."""
         if not hasattr(self, "_modules"):
-            reducible = self.structure_check["is_valid"] and all(
-                self.G.nodes[node]["k"] >= 1 for node in self.G.nodes
-            )
-            self._modules = decompose(
-                self.G,
+            if self.structure_check.get("has_cycles"):
+                # Built anyway (on_infeasible_rbd), but not to be evaluated:
+                # a path around a cycle never ends.
+                cycles = self.structure_check.get("cycles", ())
+                raise ValueError(
+                    "The diagram has a cycle (through "
+                    + "; ".join(_names(cycle) for cycle in cycles)
+                    + "), so it cannot be evaluated: every path must lead "
+                    "from the input node to the output node."
+                )
+            self._modules = self._decompose_graph(self.G)
+        return self._modules
+
+    def _set_structure(self) -> Decomposition:
+        """The structure the path and cut sets are read from: the
+        decomposition, with the junctions (see ``_junctions``) folded in as
+        always working (#198). A junction never fails, so a cut set with
+        one never happens, and a path set needs nothing of it; a diagram
+        that folds them out of its structure (a ``RepairableRBD``) has
+        none left, and one too meshed to work out lists no sets."""
+        decomposition = self._decomposition()
+        junctions = self._junctions()
+        if (
+            self._FOLDS_JUNCTIONS
+            or not junctions
+            or isinstance(decomposition, GraphStructure)
+        ):
+            return decomposition
+        return fold(decomposition, junctions)
+
+    def _decompose_graph(self, graph) -> Decomposition:
+        """``graph`` reduced to modules as the diagram's own is (see
+        ``_decomposition``): the diagram's graph, or one drawn from it with
+        the same input and output nodes, junctions and repeated nodes (an
+        allocation's copies of a train)."""
+        reducible = self.structure_check["is_valid"] and all(
+            graph.nodes[node]["k"] >= 1 for node in graph.nodes
+        )
+        folded = self._junctions() if self._FOLDS_JUNCTIONS else frozenset()
+        try:
+            modules = decompose(
+                graph,
                 self.input_node,
                 self.output_node,
                 reduce=reducible,
                 aliases=self._component_aliases(),
             )
-        return self._modules
+        except bdd.TooLarge as error:
+            # Too meshed to work out exactly (#172): the simulations follow
+            # the graph itself, and the rest refuses.
+            return GraphStructure(
+                graph,
+                self.input_node,
+                self.output_node,
+                self._component_aliases(),
+                folded,
+                f"{error} {self._SIMULATE_INSTEAD}",
+            )
+        return fold(modules, folded) if folded else modules
+
+    def _meshed_routes(self, out: dict, free: Iterable[str]) -> dict:
+        """A route report (see ``analysis_routes``), sorted, with every
+        exact or numerical analysis but those in ``free``, which need no
+        structure, refused when the core is too meshed to work out (see
+        ``_too_meshed``): the simulations alone run."""
+        from repyability.rbd import routes as r
+
+        meshed = self._too_meshed()
+        if meshed is not None:
+            free = set(free)
+            for name, route in out.items():
+                if route.route in (r.EXACT, r.NUMERICAL) and name not in free:
+                    out[name] = r.refused(meshed)
+        return dict(sorted(out.items()))
+
+    def _require_no_ccf_pairs(self) -> None:
+        """Raise if the diagram has common-cause groups: the joint
+        importance holds pairs of nodes working and failed, which a group's
+        members cannot be (the causes they share would still strike the
+        others)."""
+        if getattr(self, "ccf_groups", None):
+            raise NotImplementedError(
+                "The joint importance holds pairs of nodes working and "
+                "failed, which a common-cause group's members cannot be "
+                "(the causes they share would still strike the others): it "
+                "is not worked out with common-cause groups, as yet."
+            )
+
+    def _joint_pairs(self, birnbaum: Callable, working_nodes, broken_nodes):
+        """The joint importance of each pair of nodes (see
+        ``NonRepairableRBD.joint_importance``) from ``birnbaum(working,
+        broken)``, every node's Birnbaum importance with those nodes held:
+        node ``j``'s with node ``i`` held working, less with it held
+        failed, for each pair once (see ``Pairs``); 0 for a pair with a
+        node already held."""
+        self._require_no_ccf_pairs()
+        working = set(working_nodes or ())
+        broken = set(broken_nodes or ())
+        base = birnbaum(working, broken)
+        nodes = list(base)
+        held = working | broken
+        up, down = {}, {}
+        for node in nodes:
+            if node not in held:
+                up[node] = birnbaum(working | {node}, broken)
+                down[node] = birnbaum(working, broken | {node})
+        out = Pairs()
+        for k, i in enumerate(nodes):
+            for j in nodes[k + 1 :]:  # noqa: E203
+                if i in held or j in held:
+                    out[Pairs.oriented(i, j)] = 0.0 * base[j]
+                else:
+                    out[Pairs.oriented(i, j)] = up[i][j] - down[i][j]
+        return out
+
+    def _too_meshed(self) -> Optional[str]:
+        """Why the diagram cannot be worked out exactly, if its core is too
+        meshed (see ``modular.GraphStructure``); None if it can."""
+        decomposition = self._decomposition()
+        if isinstance(decomposition, GraphStructure):
+            return decomposition.reason
+        return None
 
     def _junctions(self) -> frozenset:
         """The nodes that are only drawing devices: perfectly reliable
-        junctions (a ``NonRepairableRBD``'s ``PerfectReliability`` nodes,
-        such as a k-out-of-n vote), which never fail and cannot be
-        improved. The importance measures and allocations leave them out
-        (and hold them at 1); none in a structure alone."""
+        junctions (the nodes given ``PerfectReliability``, such as a
+        k-out-of-n vote), which never fail and cannot be improved. The
+        importance measures and allocations leave them out (and hold them
+        at 1); none in a structure alone."""
         return frozenset()
 
     def _component_aliases(self) -> dict:
@@ -1597,21 +1798,32 @@ class RBD:
         them."""
         own = own or {}
         self._require_capacity()
-        flow = (
-            self._decomposition().flow
-            if self.structure_check["is_valid"]
-            else None
-        )
+        if not self.structure_check["is_valid"]:
+            raise ValueError(
+                "The capacity analysis needs a valid diagram: this one "
+                "failed the structure check (see structure_check)."
+            )
+        meshed = self._too_meshed()
+        if meshed is not None:
+            raise NotImplementedError(meshed)
+        flow = self._decomposition().flow
         if flow is None:
             raise ValueError(
                 "The capacity analysis needs a valid diagram: this one "
                 "failed the structure check (see structure_check)."
             )
 
+        junctions = self._junctions()
+
         def component(name):
             if name in own:
                 return own[name]
-            works = np.asarray(arrays[name], dtype=float)
+            if name in junctions and name not in arrays:
+                # A junction always works: it passes what reaches it, up to
+                # its capacity if it has one.
+                works = np.ones(size)
+            else:
+                works = np.asarray(arrays[name], dtype=float)
             return _capacity.node_distribution(
                 self.capacity.get(name, np.inf), works, 1.0 - works
             )
@@ -2157,7 +2369,12 @@ class RBD:
         minimum-effort algorithm needs: in series, every node alone is a cut
         set (and so is in the only path set)."""
         cut_sets = self.get_min_cut_sets()
-        if any(frozenset([node]) not in cut_sets for node in self.nodes):
+        junctions = self._junctions()
+        if any(
+            frozenset([node]) not in cut_sets
+            for node in self.nodes
+            if node not in junctions
+        ):
             raise ValueError(
                 "the minimum-effort algorithm applies to a series system (a "
                 "single path through every intermediate node); use "
@@ -2503,10 +2720,9 @@ class RBD:
         common-cause groups or the downtime cost rate.
         [`from_dict`][repyability.RBD.from_dict] rebuilds the RBD by calling
         its constructor again, so the round trip is faithful even for
-        repeated nodes. Node models are serialised
-        structurally: surpyval models (parametric and non-parametric) in
-        surpyval's own format, so an offset, ``p``, ``f0`` and a fit's
-        covariance round-trip; the RePyability node models (standby,
+        repeated nodes. Node models are serialised structurally: surpyval's
+        parametric models in its own format, so an offset, ``p``, ``f0`` and
+        a fit's covariance round-trip; the RePyability node models (standby,
         repeated, load-sharing, regression, ``NonRepairable``,
         ``PerfectReliability`` and ``PerfectUnreliability``) and nested RBDs
         recursively. Per-node
@@ -2746,6 +2962,7 @@ class RBD:
             )
 
         valid = set(self.nodes)
+        folded = self._junctions() if self._FOLDS_JUNCTIONS else frozenset()
         for label, nodes in (
             ("working_nodes", working_nodes),
             ("broken_nodes", broken_nodes),
@@ -2755,6 +2972,11 @@ class RBD:
                     which = "input" if node == self.input_node else "output"
                     raise ValueError(
                         f"Cannot set the {which} node {node!r} via {label}."
+                    )
+                if node in folded:
+                    raise ValueError(
+                        f"Node {node!r} is a junction, which always works: "
+                        f"it cannot be set via {label}."
                     )
                 if node not in valid:
                     raise ValueError(
@@ -3055,7 +3277,9 @@ class RBD:
         sets' probabilities."""
         zero = np.zeros(size)
         if method == "exact":
-            decomposition = self._decomposition()
+            # The sets are those with the junctions folded in (#198): a
+            # path set with one, which never fails, would never fail.
+            decomposition = self._set_structure()
             if decomposition.always_works:
                 failed: dict = {}
             else:

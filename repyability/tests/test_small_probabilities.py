@@ -231,6 +231,24 @@ def test_regression_node(regression_model):
         )
 
 
+def test_a_proportional_odds_node_along_a_schedule():
+    # From surpyval 0.22 a proportional-odds model's cumulative hazard
+    # along a schedule keeps its precision (surpyval #528; 0.21's was
+    # 6e-4 off at 1e-6): along a constant one it is the fixed covariates'.
+    from surpyval.univariate.regression import StepSchedule
+
+    rng = np.random.default_rng(0)
+    Z = rng.normal(size=(400, 1))
+    data = rng.weibull(1.8, size=400) * 80.0 * np.exp(-0.4 * Z[:, 0]) + 1e-3
+    model = surv.ProportionalOddsFitter(surv.Weibull).fit(data, Z=Z)
+    x = np.array([1e-6, 1e-3, 1.0, 50.0])
+    fixed = RegressionNode(model, covariates=[0.5])
+    varying = RegressionNode(
+        model, schedule=StepSchedule.from_changepoints([0], [[0.5]])
+    )
+    np.testing.assert_allclose(varying.ff(x), fixed.ff(x), rtol=RTOL)
+
+
 @pytest.mark.parametrize("q", QS)
 def test_importance_measures(q):
     # A 2-out-of-3 system of identical components, failing with

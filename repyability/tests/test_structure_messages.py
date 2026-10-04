@@ -39,7 +39,10 @@ def problems(build) -> list:
             lambda: NonRepairableRBD(
                 [("s", "a"), ("a", "b"), ("b", "t")], {"a": W}
             ),
-            ["node 'b' (in the edges) has no model"],
+            [
+                "node 'b' (in the edges) has no model (a junction, such as a "
+                "k-out-of-n vote point, takes PerfectReliability)"
+            ],
         ),
         (
             lambda: NonRepairableRBD(
@@ -137,7 +140,10 @@ def test_a_repairable_diagram_says_the_same():
         lambda: RepairableRBD(
             [("s", "a"), ("a", "b"), ("b", "t")], {"a": unit}
         )
-    ) == ["node 'b' (in the edges) has no model"]
+    ) == [
+        "node 'b' (in the edges) has no model (a junction, such as a "
+        "k-out-of-n vote point, takes PerfectReliability)"
+    ]
 
 
 def test_the_findings_stay_in_the_structure_check():

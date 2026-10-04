@@ -196,7 +196,11 @@ def test_the_result_is_a_typed_mapping():
         "availability",
         "horizon",
         "method",
+        "trains",
+        "discount_rate",
     }
+    assert best.trains is None  # none considered
+    assert best.discount_rate == 0.0
     assert best.total_cost == pytest.approx(
         best.acquisition_cost + best.horizon * best.cost_rate, rel=1e-15
     )

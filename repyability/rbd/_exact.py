@@ -163,3 +163,61 @@ def add_columns(totals: Sequence[ExactSum], table: np.ndarray) -> None:
         total._pending.extend(float(part[c]) for part in parts)
         if len(total._pending) > _FOLD:
             total._fold()
+
+
+def binned_parts(bins: np.ndarray, values: np.ndarray, size: int) -> list:
+    """For each of ``size`` bins, floats whose exact sum is the exact sum of
+    the ``values`` in it (``bins`` the bin of each): one array of ``size``
+    per pass of the extraction (see the module docstring), each the exact
+    sum, bin by bin, of what that pass took. ``sigma`` is the same for
+    every bin, so a pass's values add up exactly however they fall into
+    the bins, with no sort: a bin of much smaller values than another's
+    is taken by a later pass. Values that are not finite are summed as
+    they are."""
+    bins = np.asarray(bins, dtype=np.int64).ravel()
+    p = np.array(values, dtype=float, copy=True).ravel()
+    out: list = []
+    if p.size == 0:
+        return out
+    lift = math.ceil(math.log2(p.size + 2))
+    with np.errstate(invalid="ignore", over="ignore"):
+        finite = np.isfinite(p)
+        if not finite.all():
+            out.append(
+                np.bincount(bins[~finite], weights=p[~finite], minlength=size)
+            )
+            p[~finite] = 0.0
+    for _ in range(_PASSES):
+        top = float(np.max(np.abs(p)))
+        if top == 0.0:
+            return out
+        _, exponent = math.frexp(top)
+        sigma = math.ldexp(1.0, exponent + lift)
+        if not math.isfinite(sigma):  # past 2**1023 / values: rare
+            break
+        q = (sigma + p) - sigma
+        out.append(np.bincount(bins, weights=q, minlength=size))
+        p = p - q
+    # What is left (none in practice): summed exactly, bin by bin.
+    left = np.zeros(size)
+    for b in np.unique(bins[p != 0.0]).tolist():
+        left[b] = math.fsum(p[bins == b])
+    out.append(left)
+    return out
+
+
+def compact_parts(parts: list, size: int) -> list:
+    """Arrays of ``size`` whose exact sum, bin by bin, is that of
+    ``parts``': as few as the extraction needs (see ``column_parts``)."""
+    if not parts:
+        return []
+    return column_parts(np.vstack(parts).reshape(-1, size))
+
+
+def bin_totals(parts: list, size: int) -> np.ndarray:
+    """The exact sum, bin by bin, of ``parts`` (arrays of ``size``),
+    rounded once."""
+    if not parts:
+        return np.zeros(size)
+    table = np.vstack(compact_parts(parts, size))
+    return np.array([math.fsum(table[:, j]) for j in range(size)])

@@ -118,13 +118,10 @@ def test_node_models_are_integrated_as_their_reliability_says():
     assert series(convolved).mean() == pytest.approx(
         2 * 100 * math.gamma(1.5), rel=1e-6
     )
-    # A reliability fitted to simulated lifetimes has the lifetimes' mean.
-    simulated = StandbyModel([unit] * 3, k=2, mc_samples=4000, seed=1)
-    assert series(simulated).mean() == pytest.approx(
-        simulated.mean(), rel=1e-10
-    )
-    fitted = surv.KaplanMeier.fit(np.random.default_rng(3).weibull(2, 300))
-    assert series(fitted).mean() == pytest.approx(float(fitted.mean()))
+    # A numerical reliability (two of three identical units operating)
+    # integrates to the model's own mean.
+    renewals = StandbyModel([unit] * 3, k=2)
+    assert series(renewals).mean() == pytest.approx(renewals.mean(), rel=1e-6)
 
 
 @pytest.mark.parametrize(
@@ -158,11 +155,11 @@ def test_the_exact_mttf_does_not_touch_the_global_rng():
     assert np.array_equal(np.random.get_state()[1], before)
 
 
-def test_simulation_options_without_simulate_warn_and_are_ignored():
+def test_simulation_options_without_simulate_are_refused():
     rbd = series(E([0.01]))
-    with pytest.warns(FutureWarning, match="mc_samples, seed"):
-        assert rbd.mean(1000, seed=1) == rbd.mean()
-    with pytest.warns(FutureWarning, match="tolerance"):
+    with pytest.raises(TypeError, match="mc_samples, seed"):
+        rbd.mean(1000, seed=1)
+    with pytest.raises(TypeError, match="tolerance"):
         rbd.mean_time_to_failure(tolerance=0.1)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
@@ -200,20 +197,20 @@ def test_a_system_of_fixed_probabilities_has_no_mttf():
         series(E([0.01])).mean(method="quadrature")
 
 
-def test_node_mttf_is_exact_and_warns_about_simulation_options():
+def test_node_mttf_is_exact():
     unit = W([100, 2])
     rbd = NonRepairableRBD(
         [("s", "r"), ("r", "g"), ("g", "t")],
         {
             "r": RepeatedNode(unit, 3, "series"),
-            "g": StandbyModel([unit] * 3, k=2, mc_samples=2000, seed=1),
+            "g": StandbyModel([unit] * 3, k=2),
         },
     )
     mttf = rbd.node_mttf()
     assert mttf["r"] == pytest.approx(100 * math.gamma(1.5) / 3**0.5)
     assert mttf["g"] == rbd.reliabilities["g"].mean()
-    with pytest.warns(FutureWarning, match="node_mttf"):
-        assert rbd.node_mttf(mc_samples=100, seed=1) == mttf
+    with pytest.raises(TypeError):
+        rbd.node_mttf(mc_samples=100, seed=1)
 
 
 def test_the_repeated_node_mean_is_exact_and_can_still_be_simulated():
@@ -222,9 +219,6 @@ def test_the_repeated_node_mean_is_exact_and_can_still_be_simulated():
     simulated = node.mean(method="simulate", mc_samples=20_000, seed=2)
     assert simulated == node.mean(method="simulate", mc_samples=20_000, seed=2)
     assert simulated == pytest.approx(node.mean(), rel=0.02)
-    with pytest.warns(FutureWarning, match="N is deprecated"):
-        old = node.mean(N=20_000, seed=2, method="simulate")
-    assert old == simulated
 
 
 def test_the_report_routes_the_mttf_through_the_nodes():
@@ -232,12 +226,10 @@ def test_the_report_routes_the_mttf_through_the_nodes():
         series(E([0.01])).analysis_routes()["mean"].route == routes.NUMERICAL
     )
     simulated = series(
-        StandbyModel(
-            [W([100, 2])] * 3, k=2, dormancy_factor=0.5, mc_samples=500
-        )
+        StandbyModel([W([100, 2])] * 3, k=2, dormancy_factor=0.5)
     )
     report = simulated.analysis_routes()
-    assert report["mean"].route == routes.SIMULATED
+    assert report["mean"].route == routes.REFUSED
     assert report["mean"].nodes == (0,)
     assert routes.mean_route(PerfectReliability)[0] == routes.EXACT
 

@@ -109,7 +109,7 @@ and the valve works.
 
 ## What can take a state
 
-- Parametric and non-parametric distributions and `RegressionNode`s age.
+- Parametric distributions and `RegressionNode`s age.
   For them, `NodeState(age=0)` is the same as leaving the node out.
 - A fixed-probability component given any state in which it is alive
   contributes 1 from now on: its chance of failing has been resolved by

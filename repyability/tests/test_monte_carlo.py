@@ -111,7 +111,10 @@ class Drawn:
 
 def test_availability_to_a_tolerance_is_a_run_of_its_size():
     rbd = plant()
-    result = rbd.availability(T, mc_samples=200, seed=1, tolerance=0.004)
+    # Its own twin, it would take its exact values (#187): simulate.
+    result = rbd.availability(
+        T, mc_samples=200, seed=1, tolerance=0.004, control_variate=False
+    )
     n = result.n_simulations
     assert n > 200 and n % 200 == 0
     fractions = result.uptimes / T
@@ -133,7 +136,9 @@ def test_availability_to_a_tolerance_is_a_run_of_its_size():
 
 def test_cost_to_a_tolerance():
     rbd = plant(cost=100.0)
-    result = rbd.cost(T, mc_samples=100, seed=2, tolerance=15.0)
+    result = rbd.cost(
+        T, mc_samples=100, seed=2, tolerance=15.0, control_variate=False
+    )
     n = result.n_simulations
     assert n > 100 and n % 100 == 0
     assert half_width(result.samples) <= 15.0
@@ -148,12 +153,19 @@ def test_a_run_that_does_not_converge_warns():
     rbd = plant()
     with pytest.warns(RuntimeWarning, match="did not converge"):
         result = rbd.availability(
-            T, mc_samples=100, seed=3, tolerance=1e-6, max_samples=300
+            T,
+            mc_samples=100,
+            seed=3,
+            tolerance=1e-6,
+            max_samples=300,
+            control_variate=False,
         )
     assert result.n_simulations == 300
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        rbd.availability(T, mc_samples=100, seed=3, tolerance=0.5)
+        rbd.availability(
+            T, mc_samples=100, seed=3, tolerance=0.5, control_variate=False
+        )
 
 
 @pytest.mark.parametrize(
@@ -252,7 +264,9 @@ def test_antithetic_runs_are_reproducible():
 def test_antithetic_availability_is_unbiased_and_tighter():
     rbd = plant()
     exact = window_mean(lambda t: plant_availability(1.0, t))
-    paired = rbd.availability(T, mc_samples=4000, seed=3, antithetic=True)
+    paired = rbd.availability(
+        T, mc_samples=4000, seed=3, antithetic=True, control_variate=False
+    )
     interval = paired.mean_availability_interval()
     assert paired.antithetic
     assert abs(interval.estimate - exact) < 4 * interval.standard_error
@@ -262,7 +276,9 @@ def test_antithetic_availability_is_unbiased_and_tighter():
     assert interval.standard_error == pytest.approx(
         np.std(pairs, ddof=1) / np.sqrt(2000), rel=1e-12
     )
-    independent = rbd.availability(T, mc_samples=4000, seed=3)
+    independent = rbd.availability(
+        T, mc_samples=4000, seed=3, control_variate=False
+    )
     assert not independent.antithetic
     assert (
         interval.standard_error
@@ -315,7 +331,9 @@ def assert_same_results(a, b):
 
 def test_parallel_results_do_not_depend_on_the_processes():
     rbd = plant(cost=100.0)
-    one = rbd.availability(T, mc_samples=600, seed=4, n_jobs=1)
+    one = rbd.availability(
+        T, mc_samples=600, seed=4, n_jobs=1, control_variate=False
+    )
     assert one.n_simulations == 600
     assert_same_results(
         one, rbd.availability(T, mc_samples=600, seed=4, n_jobs=2)
@@ -344,6 +362,7 @@ def test_parallel_runs_to_a_tolerance_and_in_pairs():
             tolerance=0.004,
             antithetic=True,
             n_jobs=jobs,
+            control_variate=False,
         )
         for jobs in (1, 3)
     ]
@@ -372,8 +391,12 @@ def test_compare_against_the_exact_difference():
     assert gain.lower < gain.estimate < gain.upper
     assert gain.n_samples == 2000
     # Two independent runs of the same size are far less precise.
-    a = plant(1.0).availability(T, mc_samples=2000, seed=5)
-    b = plant(2.0).availability(T, mc_samples=2000, seed=6)
+    a = plant(1.0).availability(
+        T, mc_samples=2000, seed=5, control_variate=False
+    )
+    b = plant(2.0).availability(
+        T, mc_samples=2000, seed=6, control_variate=False
+    )
     independent = math.hypot(
         a.mean_availability_interval().standard_error,
         b.mean_availability_interval().standard_error,

@@ -37,8 +37,8 @@ def test_constant_rates_and_instant_repair_give_poisson_demand(horizon, fleet):
     np.testing.assert_allclose(
         demand.probabilities, poisson.pmf(counts, mean), atol=2e-6
     )
-    assert demand.mean() == pytest.approx(mean, rel=1e-5)
-    assert demand.std() == pytest.approx(np.sqrt(mean), rel=1e-4)
+    assert demand.mean == pytest.approx(mean, rel=1e-5)
+    assert demand.std == pytest.approx(np.sqrt(mean), rel=1e-4)
     for probability in (0.5, 0.9, 0.99):
         assert demand.stock(probability) == poisson.ppf(probability, mean)
     assert demand.covered(demand.stock(0.9)) >= 0.9
@@ -132,7 +132,7 @@ def test_the_exact_demand_agrees_with_the_rbd_s_simulation():
     for node in "ab":
         e, s = exact[node], simulated[node]
         assert s.method == "simulate"
-        assert abs(e.mean() - s.mean()) < 4 * e.std() / np.sqrt(10_000)
+        assert abs(e.mean - s.mean) < 4 * e.std / np.sqrt(10_000)
         size = min(len(e.probabilities), len(s.probabilities))
         np.testing.assert_allclose(
             s.probabilities[:size], e.probabilities[:size], atol=0.015
@@ -171,8 +171,9 @@ def test_a_replacement_at_the_horizon_falls_after_it():
 
 
 def test_components_the_renewal_count_does_not_cover_are_simulated():
-    # Block-replaced and tested components are counted too (#147: see
-    # test_spares_block_and_tested.py), but not tests that take time.
+    # Block-replaced and tested components are counted too (#147, #159:
+    # see test_spares_block_and_tested.py), but not tests that can last as
+    # long as their interval.
     group = {
         "reliability": E([0.01]),
         "repairability": E([0.5]),
@@ -181,11 +182,11 @@ def test_components_the_renewal_count_does_not_cover_are_simulated():
     tested = {
         "reliability": E([0.01]),
         "repairability": "instant",
-        "inspection": {"interval": 50.0, "duration": E([1.0])},
+        "inspection": {"interval": 50.0, "duration": E([0.02])},
     }
     for spec, why in (
         (group, "standby group"),
-        (tested, "tests and repairs take no time"),
+        (tested, "within its test interval"),
     ):
         rbd = single(spec)
         with pytest.raises(NotImplementedError, match=why) as error:
@@ -197,13 +198,13 @@ def test_components_the_renewal_count_does_not_cover_are_simulated():
         simulated = rbd.spares_demand(
             500.0, method="simulate", mc_samples=2_000, seed=1
         )["c"]
-        assert simulated.mean() > 0.0
+        assert simulated.mean > 0.0
     # A standby group's units fail at 0.01 an hour while operating: about
     # five spares in 500 hours (a little less while the group is down).
     simulated = single(group).spares_demand(
         500.0, method="simulate", mc_samples=4_000, seed=2
     )["c"]
-    assert simulated.mean() == pytest.approx(5.0, abs=0.15)
+    assert simulated.mean == pytest.approx(5.0, abs=0.15)
 
 
 def test_what_is_refused_and_checked():
@@ -243,3 +244,129 @@ def test_what_is_refused_and_checked():
         with pytest.raises(ValueError):
             bad()
     assert rbd.analysis_routes()["spares_stock"].route == r.NUMERICAL
+
+
+# -- one shelf for interchangeable parts (#183) -----------------------------
+
+
+SEAL = {"reliability": W([4000.0, 1.8]), "repairability": L([2.0, 0.5])}
+TRAINS = [("s", f"seal{i}") for i in (1, 2, 3)] + [
+    (f"seal{i}", "t") for i in (1, 2, 3)
+]
+PART = {"seal": ["seal1", "seal2", "seal3"]}
+
+
+def station(**specs):
+    return RepairableRBD(
+        TRAINS,
+        {f"seal{i}": dict(specs.get(f"seal{i}", SEAL)) for i in (1, 2, 3)},
+        k={"t": 2},
+    )
+
+
+def padded(*arrays):
+    size = max(len(a) for a in arrays)
+    return [np.pad(a, (0, size - len(a))) for a in arrays]
+
+
+def test_identical_positions_on_one_shelf_are_a_bigger_fleet():
+    # Three identical seals for 13 stations draw as one seal for 39.
+    plant = station()
+    shelf = plant.spares_stock(1008.0, fill_rate=0.95, fleet=13, parts=PART)
+    one = plant.spares_stock(1008.0, fill_rate=0.95, nodes=["seal1"], fleet=39)
+    pooled, alone = shelf["seal"], one["seal1"]
+    assert list(shelf) == ["seal"] and pooled.members == tuple(PART["seal"])
+    assert (pooled.stock, alone.stock) == (17, 17)
+    for a, b in (
+        (pooled.on_order, alone.on_order),
+        (pooled.on_order_at_demand, alone.on_order_at_demand),
+    ):
+        np.testing.assert_allclose(*padded(a, b), atol=1e-14)
+    separate = plant.spares_stock(1008.0, fill_rate=0.95, fleet=13)
+    assert sum(s.stock for s in separate.values()) == 21
+
+
+def test_poisson_positions_pool_to_a_poisson_shelf():
+    # Constant rates, replaced in no time: the shelf's demand is Poisson at
+    # the summed rate, and a demand finds it as a random time does, however
+    # the rates differ (so each position's share of the demands is right).
+    rates = (0.01, 0.003, 0.02)
+    plant = station(
+        **{
+            f"seal{i}": {"reliability": E([rate]), "repairability": "instant"}
+            for i, rate in zip((1, 2, 3), rates)
+        }
+    )
+    stock = plant.spares_stock(300.0, fill_rate=0.95, parts=PART)["seal"]
+    mean = 300.0 * sum(rates)
+    expected = poisson.pmf(np.arange(len(stock.on_order)), mean)
+    np.testing.assert_allclose(stock.on_order, expected, atol=1e-6)
+    np.testing.assert_allclose(
+        *padded(stock.on_order_at_demand, stock.on_order), atol=1e-6
+    )
+    assert stock.stock == int(poisson.ppf(0.95, mean)) + 1 or (
+        poisson.cdf(stock.stock - 1, mean) >= 0.95 - 1e-6
+    )
+    demand = plant.spares_demand(1000.0, parts=PART)["seal"]
+    assert demand.mean == pytest.approx(1000.0 * sum(rates), rel=1e-5)
+
+
+def test_a_shelf_of_different_positions_by_simulation():
+    plant = station(seal1=dict(SEAL, preventive={"interval": 2000.0}))
+    exact = plant.spares_demand(8760.0, parts=PART)["seal"]
+    simulated = plant.spares_demand(
+        8760.0, parts=PART, method="simulate", mc_samples=4000, seed=3
+    )["seal"]
+    assert simulated.members == exact.members == tuple(PART["seal"])
+    assert abs(exact.mean - simulated.mean) < 4 * exact.std / np.sqrt(4000)
+    # The pooled count is the members' counted together.
+    each = plant.spares_demand(8760.0)
+    total = np.ones(1)
+    for node in PART["seal"]:
+        total = np.convolve(total, each[node].probabilities)
+    np.testing.assert_allclose(*padded(exact.probabilities, total), atol=1e-12)
+    # The stock of a mixed shelf, a demand weighed by each position's rate.
+    stock = plant.spares_stock(1008.0, fill_rate=0.95, fleet=13, parts=PART)
+    assert stock["seal"].fill_rate >= 0.95
+    assert stock["seal"].fill_rate_for(stock["seal"].stock - 1) < 0.95
+
+
+def test_parts_and_nodes_together():
+    plant = station()
+    both = plant.spares_demand(8760.0, nodes=["seal1"], parts=PART)
+    assert list(both) == ["seal1", "seal"]
+    assert both["seal1"].members is None
+
+
+@pytest.mark.parametrize(
+    "parts, error, message",
+    [
+        ({"seal1": ["seal2", "seal3"]}, ValueError, "name of a component"),
+        (
+            {"a": ["seal1", "seal2"], "b": ["seal2"]},
+            ValueError,
+            "parts 'a' and 'b'",
+        ),
+        ({"seal": "seal1"}, ValueError, "as a list"),
+        ({"seal": []}, ValueError, "no components"),
+        ({"seal": ["pump"]}, ValueError, "not a component"),
+        ([("seal", ["seal1"])], ValueError, "dict of part name"),
+    ],
+)
+def test_parts_are_checked(parts, error, message):
+    with pytest.raises(error, match=message):
+        station().spares_demand(100.0, parts=parts)
+
+
+def test_a_common_cause_group_is_not_pooled():
+    from repyability import BetaFactor, CCFGroup
+
+    exponential = {"reliability": E([0.01]), "repairability": "instant"}
+    plant = RepairableRBD(
+        TRAINS,
+        {f"seal{i}": dict(exponential) for i in (1, 2, 3)},
+        k={"t": 2},
+        ccf_groups=[CCFGroup(["seal1", "seal2"], BetaFactor(0.1, "rate"))],
+    )
+    with pytest.raises(NotImplementedError, match="common-cause group"):
+        plant.spares_stock(100.0, fill_rate=0.9, parts=PART)

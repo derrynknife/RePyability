@@ -80,7 +80,8 @@ cost rate or a policy: without them `cost_rate`, `find_optimal_replacement()`
 and `optimal_replacement_policy()` raise `ValueError` (except that
 `find_optimal_replacement()` returns `inf` without them in the cases above).
 
-A non-parametric lifetime (a Kaplan–Meier fit, say) works too. Its survival
+A non-parametric lifetime (a Kaplan–Meier fit, say) works too, for a unit on
+its own (a diagram refuses one: see [Building an RBD](building.md)). Its survival
 function is taken as linear between the estimate's time points, from 1 at age
 0, and held at its last value beyond them; the cost rate is then exact, and
 the search covers ages up to the last time point, since the estimate says

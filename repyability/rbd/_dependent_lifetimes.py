@@ -2,7 +2,7 @@
 out without simulation (#135, #138, #139).
 
 ``StandbyModel`` and ``LoadSharingModel`` use these where no closed form
-applies, in place of a Kaplan-Meier fit to simulated lifetimes:
+applies (until 0.12 a Kaplan-Meier fit to simulated lifetimes stood in):
 
 - :class:`KOutOfNSurvival`, exact: hot standby is active k-out-of-n
   redundancy, so the arrangement works while at least ``k`` units survive,

@@ -64,23 +64,18 @@ def test_in_non_repairable():
     )
 
 
-def test_a_simulated_arrangement_has_one_mean():
-    # Its mean is that of the lifetimes its Kaplan-Meier fit is made from:
-    # the same at every call, the area under its sf, and made without
-    # touching numpy's global RNG.
+def test_an_arrangement_with_no_reliability_estimates_its_mean():
+    # Asked for, from new draws, without touching numpy's global RNG.
     w = Weibull.from_params([100, 2])
-    sim = StandbyModel(
-        [w, w, w], k=2, dormancy_factor=0.5, mc_samples=2000, seed=1
-    )
-    assert sim.model is not None
+    sim = StandbyModel([w, w, w], k=2, dormancy_factor=0.5)
+    assert sim.is_simulated
+    with pytest.raises(NotImplementedError, match="no exact or numerical"):
+        sim.mean()
     before = np.random.get_state()[1].copy()
-    assert sim.mean() == sim.mean() == sim.random(2000, seed=1).mean()
+    estimate = sim.mean(mc_samples=2000, seed=1)
+    assert estimate == sim.random(2000, seed=1).mean()
     assert np.array_equal(np.random.get_state()[1], before)
-    t = np.linspace(0.0, 1000.0, 200_001)
-    area = np.trapezoid(np.ravel(sim.sf(t)), t)
-    assert area == pytest.approx(sim.mean(), rel=1e-4)
-    # A fresh estimate, from new draws, when asked for.
-    assert sim.mean(mc_samples=2000, seed=2) != sim.mean()
+    assert sim.mean(mc_samples=2000, seed=2) != estimate
 
 
 def test_a_repairable_rbds_exact_values_repeat_with_a_simulated_node():

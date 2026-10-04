@@ -1,5 +1,3 @@
-import warnings
-
 import numpy as np
 from scipy.optimize import minimize, minimize_scalar
 from surpyval import ExactEventTime, NonParametric, Parametric
@@ -11,8 +9,8 @@ from repyability.rbd._model_utils import (
     model_mean,
     never_fails,
 )
+from repyability.rbd.helper_classes import PerfectReliability
 from repyability.rbd.standby_node import StandbyModel
-from repyability.utils.deprecation import REMOVAL
 
 FAILURE = 1
 REPLACE = 0
@@ -173,10 +171,17 @@ class NonRepairable:
             )
         elif isinstance(reliability, StandbyModel):
             # Whatever the arrangement's survival function is (a closed
-            # form, a convolution or a Kaplan-Meier fit to simulated
-            # lifetimes), its sf gives it.
+            # form or a numerical method), its sf gives it; one with neither
+            # is only simulated, and its sf refuses.
             self.model_parameterization = "standby"
             self.reliability_function = _scalar_sf(reliability)
+        elif reliability is PerfectReliability:
+            raise ValueError(
+                "A NonRepairable's life must end, and PerfectReliability "
+                "never does. In a RepairableRBD, give PerfectReliability "
+                "itself as the node, for a junction (such as a k-out-of-n "
+                "vote point) or a part that never fails."
+            )
         else:
             raise ValueError("Unknown reliability function")
 
@@ -278,9 +283,9 @@ class NonRepairable:
             with np.errstate(invalid="ignore"):
                 out = quad(_scalar_sf(self.reliability), 0, t)[0]
         elif self.model_parameterization == "standby":
-            # A simulated arrangement's survival function is a Kaplan-Meier
-            # step function, which quadrature handles poorly: integrate on a
-            # fine grid instead.
+            # A numerical survival function is interpolated on its grid,
+            # with kinks quadrature handles poorly: integrate on a fine grid
+            # instead.
             ages = np.linspace(0.0, float(t), 4001)
             R = np.ravel(np.asarray(self.reliability.sf(ages), dtype=float))
             out = float(trapezoid(np.clip(R, 0.0, 1.0), ages))
@@ -474,7 +479,7 @@ class NonRepairable:
     def _cost_rate_with_log_x(self, x):
         return self._cost_rate(np.exp(x))
 
-    def find_optimal_replacement(self, options=None):
+    def find_optimal_replacement(self):
         """The replacement age that minimises the long-run cost rate.
 
         Minimises the age-replacement cost rate (see ``cost_rate``)
@@ -516,11 +521,6 @@ class NonRepairable:
         stopped on the flattening curve. A replacement age must save more
         than one part in a million to count.
 
-        Parameters
-        ----------
-        options : object, optional
-            Deprecated and ignored; it will be removed in 0.12.
-
         Returns
         -------
         float
@@ -533,11 +533,6 @@ class NonRepairable:
             If the costs have not been set with
             ``set_costs_planned_and_unplanned()`` (the parametric ``inf``
             cases above return without them).
-
-        Warns
-        -----
-        FutureWarning
-            If ``options`` is given.
 
         Examples
         --------
@@ -555,13 +550,6 @@ class NonRepairable:
         >>> unit.find_optimal_replacement()
         inf
         """
-        if options is not None:
-            warnings.warn(
-                "find_optimal_replacement()'s options argument is ignored "
-                f"and deprecated; it will be removed in {REMOVAL}.",
-                FutureWarning,
-                stacklevel=2,
-            )
         if self.model_parameterization == "parametric":
             if never_fails(self.reliability) > 0.0:
                 # Some units never fail: in the long run one of them is in

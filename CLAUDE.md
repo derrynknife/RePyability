@@ -44,6 +44,13 @@
   system's own events (`_simulate`) and a nested RBD's (`_advance`, which
   copies `RepairableRBD.next_event`) are written out separately, for speed:
   a change to one goes into the other too.
+- **CI's plain test jobs have no numba.** A test that asks for
+  `engine="numba"` skips without it (`pytest.importorskip("numba")`, or
+  `needs_numba`), unless what it checks comes before numba is needed: a
+  compiled engine refuses what it does not simulate first. A machine with
+  numba installed runs neither way, so run such tests with numba hidden
+  too, `importlib.util.find_spec("numba")` returning None and `import
+  numba` raising `ModuleNotFoundError` (which `importorskip` needs).
 - **`simulate_timelines`' histories are the event loop's, on every
   engine.** Both loops record them as they run (`_replicate` with
   `_Context.history`; `_kernel._simulate` when given room to record, the
@@ -71,6 +78,51 @@
   `_System`, `_Store` and `_structure` and on `_streams`' blocks. Keep those
   compatible, or raise `engines.API` (with a CHANGELOG entry) when an engine
   would have to change with them.
+- **A conditional run (#189, `repyability/rbd/_conditional.py`) simulates
+  the modules alone** (`_conditional_modules`: the nodes
+  `_node_over_time` refuses, with their maintenance groups), as a diagram
+  of their own (`_modules_rbd`) whose streams are named as in the system,
+  so its simulations are a plain run's; its tally keeps each simulation's
+  cost beside its histories, on both engines. Given each joint state of
+  the modules, the rest comes from `_window` and `point_availability`
+  with the modules held. A change to what makes a node need simulating
+  goes into `_node_over_time`, and anything that ties a module to the
+  other nodes (crews, a group's `system_down`) must refuse in
+  `_conditional_modules`. Changes at one instant are ordered as the loop
+  orders them (`_conditional.paths`: failures, the stops they open, then
+  restorations; a module's before the other nodes'): a change to that
+  order in the loop goes into `paths` too. `test_conditional.py` checks
+  each simulation's values against closed forms from its module's
+  history, and the estimates against plain runs.
+- **A run's means are exact or conditional by default (#187, #189).**
+  `availability()` and `cost()` take the exact methods' expected values
+  where they work them out (`_exact_means`, as the controls of the system
+  itself), and otherwise, where a conditional run applies, each
+  simulation's expected values given its modules' histories
+  (`_conditioned_run`, the modules simulated again from the run's
+  entropy); `availability_from_chunks` gives merged chunks the same
+  (`_default_means`). The simulations are a plain run's either way. A test
+  that checks the simulation against the exact methods must run plainly
+  (`control_variate=False`), or it compares the exact values with
+  themselves.
+- **A run's changes are put in time order on two paths that must agree to
+  the last bit** (#201): numpy's (`_by_time`, `_group_totals`,
+  `_capacity_totals` and `_working_over_time` in `repairable_rbd.py`) and
+  the compiled one (`repyability/rbd/_time_order.py`: a stable radix sort
+  of the times' bits, the groups and the capacity's merge in one pass
+  each), taken where numba is installed and a run has `_COMPILED_ORDER`
+  changes or more. A change to how either orders, groups or adds up the
+  changes goes into both: `test_time_order.py` checks them against each
+  other, with the sort's blocks of every size.
+- **A core's decision diagram is built and replayed on two paths that
+  must agree step for step** (#202): `bdd._build` and, where numba is
+  installed and the core's search may be long, `_bdd_kernel.build`, whose
+  states `bdd._compiled_build` packs into integers; and a plan's
+  probabilities and gradient by `modular.Decomposition._core_value` and
+  `_core_gradient` or `_bdd_kernel.replay` and `value_and_gradient`. A
+  change to the search (its states, its order, the steps it counts
+  against `STEP_LIMIT`) or to the replay's arithmetic goes into both:
+  `test_bdd_compiled.py` checks them against each other.
 - **The random streams (`repyability/rbd/_streams.py`) define every seeded
   result.** Changing how a stream is named, seeded or laid out (its width,
   `BLOCK_DRAWS`, `MAX_WIDTH`, `first_rows`, the expected draws in
@@ -84,8 +136,35 @@
   simulation. Likewise a standby group's chain (`_standby_chain.py`) copies
   `_StandbyGroup`'s rules (switching, spares, repairs), checked by
   `test_repairable_standby.py`.
+- **A common-cause group's chains (`repyability/rbd/_ccf_chain.py`) copy
+  the simulation's causes** (`_Cause`, `_strike`, #158): each cause, a
+  member's own or a shared one, strikes at its share of the failure rate
+  and fails the members it names that are up, at once; with tests that can
+  miss, one coin for all the failures it makes. A change to one goes into
+  the other: `test_ccf_over_time.py` checks the simulation against the
+  chains over time. The allocations' chains count a member's copies
+  (`_Counted`) rather than tell them apart, which holds for a
+  `BetaFactor`'s one shared cause: `test_ccf_allocations.py` checks them
+  against the chain of every copy.
+- **A tested unit's numerical model (`repyability/rbd/_hidden_tests.py`,
+  #159) copies the simulation's inspections** (`_inspected_follow_up`,
+  `_inspected_next`): a test takes a working unit off line without ageing
+  it, a failure is repaired once its test is over, the tests in a repair
+  are not done, and a failure a test misses waits for the next full test.
+  A change to one goes into the other; `test_hidden_failures_timed.py`
+  checks the model against the simulation.
 
 ## How each analysis is computed
+
+- **A `RepairableRBD`'s junctions are folded out of its structure.** A node
+  given `PerfectReliability` is no component: `RBD._decomposition()` folds
+  it in as always working (`modular.fold`), so whatever evaluates the
+  structure (the curves, the long-run values, both simulation engines, the
+  timelines, the path and cut sets) never sees it. Evaluate the structure
+  through `_decomposition()`, not the graph, so that this holds; only the
+  capacity analysis's reduced diagram (`flow`) keeps the junctions, and
+  `_capacity_arrays` passes them as working. `test_junctions.py` checks
+  every public method against the same system drawn without a junction.
 
 - **`analysis_routes()` (both RBD classes) must agree with the methods.** It
   says, without running anything, whether each public analysis is exact,
@@ -101,26 +180,60 @@
   simulated and whether it must be (or could be exact, with the issue).
   `test_the_readme_says_what_is_simulated` checks each row against
   `analysis_routes()`: when an analysis is made exact, update its row.
+- **A diagram too meshed to work out keeps only its graph (#172).** When a
+  core's decision diagram passes `bdd.STEP_LIMIT`, `RBD._decomposition()`
+  is a `modular.GraphStructure`, which works out a state and a lifetime
+  from the graph, for the simulations, and refuses the rest with the
+  reason. Both classes' `analysis_routes` end with `_meshed_routes(out,
+  free)`, which refuses every exact or numerical analysis but those in
+  `free`, which need no structure: a new method that needs none (a node's
+  own values) goes in `free`. The compiled engine and the timelines'
+  streams (`_compiled.unsupported`, `_timeline_runs.independent`) leave such
+  a diagram to the Python loop. `test_meshed_structures.py` checks the
+  stand-in against the structure worked out, and `test_analysis_routes.py`
+  the routes of diagrams too meshed.
+- **The integrals over a window are summed on coarse pieces**
+  (`repyability/rbd/_quadrature.py`, #164): the curves' breaks, cut to a
+  few steps of the finest grid still changing, and halved until their
+  quadrature agrees with their halves'. A curve class that is linear on a
+  grid says so with `grids()`, and where else it bends with `breaks()`;
+  one that has neither has every knot taken as a break, which is right but
+  makes every knot a piece. Never clip a piece's integral: a count that
+  dips integrates out, where clipping made the total depend on the pieces.
+  `test_quadrature.py` checks the pieces against summing between every
+  knot.
 
 ## API conventions
 
 - **One name for the number of simulations**: `mc_samples`, and `max_samples`
   for its cap in a run to a `tolerance`, in every method and constructor
   that simulates; `seed` seeds it (#105). The old names (`N`, `max_N`,
-  `n_sims`, `n_simulations`) warn in 0.11 and go in 0.12, through
-  `repyability/utils/deprecation.py`. Use these names in new code.
+  `n_sims`, `n_simulations`) went in 0.12. Use these names in new code.
 - **A deprecation gives one minor release's notice.** It warns in one
   minor release and the next removes it, with a `FutureWarning` (always
-  shown) through `repyability/utils/deprecation.py`. Everything deprecated
-  by 0.11 goes in 0.12 (#149): the old simulation-count names, ignored
-  arguments, the `fussel_vesely` alias, `find_optimal_replacement`'s
-  `options`, non-parametric RBD nodes, and the standby and load-sharing
-  models' fits to simulated lifetimes.
-  `test_the_removal_is_the_next_minor_release` fails once the version
-  reaches `REMOVAL`, until they are removed.
+  shown) through `repyability/utils/deprecation.py`. What 0.11 deprecated
+  went in 0.12 (#149), and `test_removed_in_0_12.py` keeps it gone: the
+  old names and ignored arguments raise `TypeError`, a diagram refuses a
+  non-parametric node, and a standby or load-sharing model with no exact
+  or numerical reliability refuses one (`is_simulated`), where a fit to
+  simulated lifetimes stood in, and is left to the simulations. What 0.12
+  deprecates goes in 0.13 (`NEXT_REMOVAL`): calling
+  `SparesDemand.mean()`/`std()`, now properties (#184, through
+  `deprecation.called`), and those models' `mc_samples`, `lower` and
+  `seed`, which set the fit (through `deprecation.ignored`).
+  `test_the_calls_go_in_the_release_after_next` fails once the version
+  reaches it.
 - **Exact by default, simulation on request.** Where an analysis can be
   computed exactly or numerically, that is the default, and the Monte-Carlo
   estimate is a `method="simulate"` away (as for `NonRepairableRBD.mean`).
+
+## Performance
+
+- **In a loop, a dot product of long vectors goes through
+  `repyability.utils.vectors.dot`, not `@`.** OpenBLAS threads one of more
+  than about 10,000 terms, at milliseconds a call; a loop of thousands of
+  them (a renewal sum, a band of a grid) then runs hundreds of times
+  slower. Matrix products are left to BLAS.
 
 ## Releasing
 
@@ -148,12 +261,19 @@ major.minor.
 
 ## surpyval workarounds to remove
 
-- **Normal and LogNormal quantiles** (surpyval #469). surpyval computes
-  them through `scipy.stats.norm.ppf`, whose argument checks cost four
-  times the maths. `_DIRECT_QF` in `repyability/rbd/_sampling.py` computes
-  the same values through `scipy.special.ndtri` for the simulations;
-  `test_direct_quantiles_are_surpyvals` checks that they stay identical.
-  Remove it once the minimum surpyval computes them directly.
+- **Fitted models in worker processes** (surpyval #573). A surpyval fit
+  holds a closure, so pickle cannot take it. `_montecarlo.dumps`, which
+  pickles a run for `n_jobs`' worker processes, sends a surpyval model that
+  pickle refuses in its saved form (`to_dict`), rebuilt in the worker;
+  `test_fitted_models_in_parallel.py` checks the results are a single
+  process's. Remove the override once the minimum surpyval's fits pickle
+  (keep `dumps`' message for what still cannot be sent).
+
+- **`success_run`'s `alpha_ci`** (surpyval #580). surpyval 0.23 names
+  the bound's level `alpha_ci = 1 - confidence` and deprecates
+  `confidence`, which 0.22 needs: `test_demonstration.py`'s `_success_run`
+  passes the name the installed surpyval takes. Pass `alpha_ci` directly
+  once the minimum surpyval is 0.23.
 
 List each new workaround here with its surpyval issue and where it lives,
 so it can go once the minimum surpyval in `pyproject.toml` includes the

@@ -29,7 +29,15 @@ taking already-fitted lifetime models (from
   demonstrate a reliability or an MTBF), what a test demonstrated, and the
   chance a design passes.
 - **Importance**: Birnbaum, improvement potential, RAW, RRW, criticality,
-  Fussell–Vesely, structural importance and parameter sensitivity.
+  Fussell–Vesely, structural importance and parameter sensitivity, on
+  repairable systems in the long run or over time.
+- **Sensitivity, the Greeks**: how far the system moves with each
+  component (delta) and with each lever, a life, a repair, the maintenance
+  or a crew; the shares of a change, which add up (differential
+  importance); whether two improvements are complements or substitutes
+  (gamma); which component is moving the availability now, and which
+  caused the failures (theta, Barlow–Proschan); and whose parameter
+  uncertainty widens the answer (vega).
 - **Live state**: reliability, remaining life and importance given each
   component's current age, and covariate-dependent components.
 - **Redundancy and dependence**: cold, warm and hot standby; repeated nodes;
@@ -39,8 +47,10 @@ taking already-fitted lifetime models (from
   histories with criticality measures; shared repair crews, exact for
   exponential components in the long run and numerical over time, with
   their importance; repairable standby groups (a duty unit and its spares,
-  repaired one at a time); and imperfect repair
-  (Kijima's virtual age), with replacement at the N-th failure.
+  repaired one at a time); imperfect repair (Kijima's virtual age), with
+  replacement at the N-th failure; and uncertainty intervals on the
+  availability and the cost rate from uncertain (fitted) models of the
+  lives, repairs and maintenance.
 - **Capacity**: how much a system delivers, from its components'
   capacities (with several levels, or degrading through stages): the exact
   distribution of its capacity at a time or in the long run, the
@@ -112,8 +122,9 @@ only when
 places, nested diagrams):
 
 - **components:** surpyval lifetime distributions and fixed
-  probabilities (non-parametric fits, such as Kaplan–Meier, are
-  deprecated and go in 0.12); repeated nodes; cold standby with one or
+  probabilities (a diagram refuses a non-parametric fit, such as
+  Kaplan–Meier: fit a parametric distribution in surpyval); repeated
+  nodes; cold standby with one or
   two units operating (any units) or more (identical units); warm standby
   with one unit operating, and hot standby (any units); load sharing of
   identical units; common-cause groups, for the system's reliability,
@@ -123,17 +134,21 @@ places, nested diagrams):
   importance measures at any time, also given each component's current age;
   the distribution of the system's capacity;
 - **repairable questions,** for independent components repaired when they
-  fail, replaced on age or block schedules or on condition at inspections
-  (the long run), or tested for hidden failures (with instant tests and
-  repairs, any life): the long-run availability,
+  fail, replaced on age or block schedules or on condition at inspections,
+  or tested for hidden failures (any life, the tests and repairs instant or
+  taking time, the tests finding every failure or missing some): the
+  long-run availability,
   failure frequency, MUT/MDT/MTBF and cost rate; the availability over time
   and over a mission, and the expected failures, outages, downtime and cost
   over a window, from new or from the components' current states (their
   ages, the repairs going on, where they are in their calendars, or the
   long run); the capacity distribution in the long run and over time, with
   the production availability of a window; and the spares used over a
-  horizon, and the stock to hold for a lead time (but under block
-  replacement).
+  horizon, and the stock to hold for a lead time (under block replacement,
+  with repairs and block replacements in no time). Common-cause groups of
+  members with exponential lives, tested or repaired, take nothing away:
+  the long-run values, importance and allocations stay exact, and the
+  values over time from new numerical.
 
 **Simulated**, or refused with the simulation to run instead:
 
@@ -142,24 +157,32 @@ places, nested diagrams):
 | **What you ask** | | |
 | Sampled lifetimes or histories, and distributions or percentiles of an outcome over a window | Simulated (from new, or from the components' current states); each simulation's histories, the system's and its components', kept whole as timelines by `simulate_timelines` (from new) | Yes: the answer is a sample. Its mean over a window (failures, outages, downtime, cost, the capacity delivered) is exact, from new or from a state: `expected_events`, `expected_cost`, `mission_capacity`. |
 | Comparing two designs (`compare`) | Simulated, with common random numbers | No, where both are exact: compare their exact values. |
-| The uncertainty from fitted component parameters (`sf_uncertainty`, `mean_uncertainty`, `bx_life_uncertainty`, `time_to_reliability_uncertainty`) | Sampled over the parameters, each draw exact | Sampling is the method. |
-| Small failure probabilities, with a simulated node | Rare-event simulation (`unreliability_interval`) | Only while the node is simulated: an exact diagram gives `ff` directly, to full precision however small (a numerical node, such as a cold-standby group of non-exponential units, to its own accuracy, about 1e-6). |
+| The uncertainty from fitted component parameters (`sf_uncertainty`, `mean_uncertainty`, `bx_life_uncertainty`, `time_to_reliability_uncertainty`; for a repairable system `mean_availability_uncertainty`, `point_availability_uncertainty`, `mission_availability_uncertainty`, `expected_cost_rate_uncertainty`) | Sampled over the parameters, randomly or quasi-randomly (`sampling="sobol"`), each draw exact or numerical as the diagram's own value is | Sampling is the method. |
+| Small failure probabilities, with a node only simulations take | Rare-event simulation (`unreliability_interval`); `ff` refused | Only while the node has no reliability of its own: an exact diagram gives `ff` directly, to full precision however small (a numerical node, such as a cold-standby group of non-exponential units, to its own accuracy, about 1e-6). |
 | **Components** | | |
-| Warm standby with two or more units operating, of non-exponential units | Simulated: a fit to simulated lifetimes, deprecated (from 0.12, simulated only in the system's simulations: #149) | Yes, in general: which spare is switched in where, and how much each has aged, branch with the order of the failures. With one unit operating it is numerical, and hot standby (k-out-of-*n*) exact. |
-| Cold standby with three or more different units operating, and load sharing of different units | Simulated: a fit to simulated lifetimes, deprecated (from 0.12, simulated only in the system's simulations: #149) | Yes, in general: which spare goes where, and how old the others are, branch with the order of the failures. Identical units are numerical in both, and so are two different units operating. |
-| Anything a simulated node is part of | Simulated through that node | Only while the node is simulated. |
+| Warm standby with two or more units operating, of non-exponential units | Simulated in the system's simulations; the analyses that need the group's reliability refused | Yes, in general: which spare is switched in where, and how much each has aged, branch with the order of the failures. With one unit operating it is numerical, and hot standby (k-out-of-*n*) exact. |
+| Cold standby with three or more different units operating, and load sharing of different units | Simulated in the system's simulations; the analyses that need the group's reliability refused | Yes, in general: which spare goes where, and how old the others are, branch with the order of the failures. Identical units are numerical in both, and so are two different units operating. |
+| Anything such a node is part of | Simulated in the system's simulations; the analyses that need the node's reliability refused | Only while the node has no reliability of its own. |
 | Common-cause groups: analyses given ages, and the MTTF of a group splitting a failure probability | Refused (a simulated MTTF leaves a probability split out) | No: the analyses given ages need a model of members of different ages. A group splitting the failure rate (`basis="rate"`) has an exact MTTF, and the simulations draw its shared shocks. Importance, parameter sensitivity and redundancy allocation are exact with groups (a beta-factor member's copies join its group), and parameter uncertainty is sampled with them. |
-| Kaplan–Meier lives in a repairable system | Long run refused; over time numerical | Non-parametric nodes are deprecated and go in 0.12 (#149): fit a parametric distribution in surpyval. |
 | **Architecture and maintenance** | | |
-| Phased missions and networks whose decision diagrams pass a million nodes | Refused, pointing to `method="simulate"` | Only in practice: the diagrams grow with the phases' and the network's width rather than their paths, so meshed missions and networks are exact (a grid of 64 nodes in about a second); a square grid of about 100 nodes passes the limit. |
-| Hidden failures whose tests or repairs take time, or whose tests miss failures of a life that is not exponential | Simulated (with instant tests and repairs, any life is numerical, summed over the test intervals; a constant failure rate is exact, staggered or with tests that miss failures too) | No: could be numerical, the next unit starting at a random phase of the test calendar, or the renewals on the lattice of the full tests (#159). |
-| Common-cause groups in a repairable diagram | Long run and importance exact, for exponential lives, tested or repaired; over time, allocation and the simulations refused | No: over time could be exact from the same Markov chain, the simulations could draw the shared causes, and an allocation could build each design's chain (#158). |
-| Replacement on condition at periodic inspections, over time | Simulated (the long-run values are numerical: a renewal cycle from one inspection that replaces the unit to the next) | No: could be numerical on the same grid (#161). |
-| Shared repair crews | For exponential lives and repairs, the long run and importance exact, and the values over time numerical (the same Markov chain, followed by uniformization), but the allocations; other lives simulated | Other lives: yes, in general. Around a nested RBD the expected events and the capacity over time are refused, and could be numerical too (#162). |
+| Phased missions and networks too large for their decision diagrams | Refused, pointing to `method="simulate"` | Only in practice: the diagrams grow with the phases' and the network's width rather than their paths, so meshed missions and networks are exact (a network grid of 100 nodes in a second and a half); one of 121 nodes passes the limit, `repyability.network.MAX_STATES`, which can be raised. |
+| Block diagrams too meshed for their decision diagrams | Simulated (lifetimes, availability, cost and timelines, in Python); the exact and numerical analyses refused | Only in practice: the diagram grows with how wide the mesh is rather than with its paths, so most meshes are exact (a 10 × 10 grid in 0.04 seconds, a random mesh of 60 nodes and 345 links in 2); one of 70 nodes and 485 links passes the limit, `repyability.rbd.bdd.STEP_LIMIT`, which can be raised. |
+| Common-cause groups in a repairable diagram | For exponential lives, tested or repaired: the long run, importance and the allocations exact (a beta-factor member's copies join its group, and the availability allocations keep the members' availability), the values over time from new numerical (the groups' Markov chains), and the simulations draw the shared causes, in Python. Members of other lives refused, and members held or started from a current state | Other lives: a shared cause has no one rate for members of different ages, so they need a model first. From a current state, no: the chains and the simulations could start from the members' states. |
+| Shared repair crews | For exponential lives and repairs, the long run and importance exact, and the values over time numerical (the same Markov chain, followed by uniformization), but the allocations; other lives simulated. The maintenance and test intervals are chosen as if every repair started at once on request (`assume_unlimited_crews=True`), for a plan to simulate with the crews | Other lives: yes, in general. |
 | Standby groups (a duty unit and its spares, repaired) | For exponential units, the long run and importance exact, and the values over time numerical (the units' Markov chain, followed by uniformization); other units simulated | Other units: yes, in general. |
 | Opportunistic maintenance (renewals at a group's stops) | Simulated | Yes: each member's renewals depend on the others' ages. |
-| Imperfect repair (Kijima), with or without replacement at the *N*-th failure | Simulated | Yes, in general: a repair does not renew the unit. |
-| Spares of tested components whose tests or repairs take time, and the stock of block-replaced ones | Simulated (`spares_demand(method="simulate")`); the stock refused (block-replaced components' demand, and tested ones', are numerical) | No: the tests' calendar phase (#159) and the stock over the block calendar (#160) could be numerical. With crews, standby groups, opportunistic maintenance or imperfect repair: yes. |
+| Imperfect repair (Kijima), with or without replacement at the *N*-th failure | Simulated; but minimal repair (`q = 1`) in no time is numerical over a window from new (it fails `H(t)` times by `t`), its long run refused | Yes, in general: a repair does not renew the unit. |
+| Spares with repair crews, standby groups, opportunistic maintenance or imperfect repair | Refused, pointing to `spares_demand(method="simulate")`. Otherwise numerical, demand and stock: block-replaced components' whether their repairs and block replacements take time or not (from a typical replacement in the long run), but for one dead on arrival while they may take none, and tested components', whatever their tests and repairs take and whether their tests miss failures | Yes, in general: a crew's queue, a group's switching or stops and an imperfect repair make the replacements depend on more than each unit's own lives. A unit dead on arrival whose renewals may take no time: no, the replacements at one instant could be counted. |
+
+Where a system's expected values over a window are exact,
+`availability()` and `cost()` give them by default, with no error, and the
+simulations give their spread. Where a system needs simulating for a few of
+its nodes (a standby group of other lives, a nested RBD sharing a crew, a
+unit repaired imperfectly), their mean intervals by default take each
+simulation's expected values given those nodes' histories, every other node
+exact given their states: a fraction of the error of the simulations' own.
+`conditional=True` simulates only those nodes, for the same means in less
+time.
 
 For your own diagram, `analysis_routes()` says how each analysis will be
 computed (exact, numerical, simulated or refused) and why, without running

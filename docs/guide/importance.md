@@ -4,7 +4,8 @@
     This page is the reference. The ideas behind it are taught step by step,
     with worked examples and exercises, in [Lesson
     4](../learn/importance.md), which builds every measure on this page from
-    one idea.
+    one idea. [Sensitivities: the Greeks](greeks.md) reads the sensitivity
+    measures as one family and runs one system through all of them.
 
 An importance measure ranks the nodes of a system by how much they matter.
 "Matter" has several meanings, and the measures disagree on purpose;
@@ -67,8 +68,7 @@ certain to have failed, it nears 2 while the exact share stays at most 1.
 probability that all the members of some path set containing *i* have
 failed (or, with `method="rare_event"`, the sum over those path sets),
 divided by `Q`. It is not bounded by 1. `fv_type="c"` (cut sets) is the
-default and the standard measure. `fussel_vesely` (misspelled) is a
-deprecated alias that warns.
+default and the standard measure.
 
 ### Failure- or success-oriented criticality
 
@@ -151,7 +151,7 @@ the shape.
   default `1e-5`) that rebuilds the distribution with `from_params`, so it
   works for any surpyval parametric distribution.
 - Composite nodes (nested RBDs, standby, repeated and load-sharing nodes)
-  and non-parametric fits have no parameters and are left out.
+  have no parameters and are left out.
 - A node pinned by `working_nodes`/`broken_nodes` reports zeros.
 
 ## On a repairable system
@@ -185,6 +185,357 @@ system the failure-oriented criticality is each node's share of the system's
 downtime: C, in series, causes 70% of it. The simulation
 also produces time-weighted criticality measures from the simulated histories;
 see [Repairable systems](repairable.md#criticality-measures).
+
+### Over time
+
+The long-run measures describe the system once it has settled. From new,
+or from the components' states now, the ranking can differ. Give `x`
+(times from new) to evaluate a measure at the nodes' point availabilities
+then (see `point_availability`), or `window` (a window's length) to
+evaluate it over `[0, window)`; `state=` starts the components from their
+current states, as for `point_availability`:
+
+```python
+critical = plant.criticality_importance(x=[0.5, 2.0, 20.0])["C"]
+critical[0]   # -> 0.841   at 0.5: early on the pair rarely fails together
+critical[2]   # -> 0.7018   settled: the long-run value
+plant.criticality_importance(window=10.0)["C"]   # -> 0.7109
+```
+
+C causes 84% of the system's chance of being down at 0.5, against 70% in
+the long run. Over a window, a ratio measure is the ratio of the system's
+means over it, as `mission_availability` is its mean availability: C's
+criticality over the first 10 time units is its share of the window's
+expected downtime, not the mean of its shares at each time.
+
+From a state: with A down now, in repair, B matters more for a while:
+
+```python
+from repyability import NodeState
+
+down = {"A": NodeState(alive=False)}
+plant.birnbaum_importance(x=1.0)["B"]               # -> 0.0599
+plant.birnbaum_importance(x=1.0, state=down)["B"]   # -> 0.3886
+```
+
+With limited repair crews, the measures follow the crews' chain over time:
+the Birnbaum importance, improvement potential and risk worths hold each
+node working and failed in it, as in the long run, and the criticality and
+Fussell–Vesely measures average over its states at each time (not yet
+around nested RBDs). With common-cause groups, each time's point is split
+by the groups' joint states then. A component whose curve over time is not
+worked out (one repaired imperfectly, say) is refused, as by
+`point_availability`.
+
+### Levers of a repairable system
+
+On a `RepairableRBD`, `parameter_sensitivity()` gives the derivative of the
+long-run availability in each lever: each component's life and repair
+models' parameters (`"reliability.<name>"`, `"repairability.<name>"`), its
+preventive maintenance and tests (`"preventive.interval"`,
+`"inspection.coverage"`, ...), a standby group's, a common-cause group's
+(under its members together), and the change one more standby unit or
+repair crew makes:
+
+```python
+levers = plant.parameter_sensitivity()
+levers["C"]["reliability.failure_rate"]     # -> -0.9532
+levers["C"]["repairability.failure_rate"]   # -> 0.01906
+levers["A"]["repairability.failure_rate"]   # -> 0.00737
+```
+
+Per unit of repair rate, C's repairs are worth 2.6 times A's. Given what a
+unit change of each costs, `unit_costs` ranks them by availability per unit
+spent instead:
+
+```python
+costs = {
+    ("C", "repairability.failure_rate"): 1000.0,
+    ("A", "repairability.failure_rate"): 200.0,
+}
+ranked = plant.parameter_sensitivity(unit_costs=costs)
+1e5 * ranked["A"]["repairability.failure_rate"]   # -> 3.683
+1e5 * ranked["C"]["repairability.failure_rate"]   # -> 1.906
+```
+
+Faster repairs of A buy about twice the availability per unit spent. With
+limited repair crews, the key None holds one more crew's gain:
+
+```python
+crewed = RepairableRBD(
+    [("s", "A"), ("s", "B"), ("A", "C"), ("B", "C"), ("C", "t")],
+    {"A": unit(0.1), "B": unit(0.1), "C": unit(0.02)},
+    repair_crews=1,
+)
+crewed.parameter_sensitivity()[None]["repair_crews"]   # -> 0.0116
+```
+
+`x` (times) or `window` gives the sensitivity of the availability over
+time, and `of="cost_rate"` (or both, as a tuple) the cost rate's. Each
+continuous lever is a central difference of the system's own value with the
+diagram rebuilt; with independent components, over time, a component's is
+its Birnbaum importance times its own curve's difference, as exact and much
+faster. In the long run, an interval of a component whose block
+replacements or tests share a calendar with others' would move it off their
+common calendar, where the long-run value jumps: its derivative takes its
+schedule apart from theirs.
+
+## Pairs: joint importance
+
+The measures above rank improvements one at a time. Whether improving two
+together is worth more than the sum of improving each is the joint
+(second-order) importance, `JRI(i, j) = ∂²R/∂R_i ∂R_j = R(1_i, 1_j) −
+R(1_i, 0_j) − R(0_i, 1_j) + R(0_i, 0_j)`. It is how much node *j*'s
+Birnbaum importance rises when node *i* goes from failed to working:
+
+```python
+joint = rbd.joint_importance(50)
+joint[("pump1", "pump2")]   # -> -0.8825
+joint[("pump1", "valve")]   # -> 0.2212
+```
+
+Positive, the two are complements, as a pump and the valve in series are:
+a better pump makes a better valve worth more, so they belong in one
+campaign. Negative, they are substitutes, as the two pumps in parallel are:
+either one does the other's job, so improving both buys less than the sum
+of improving each. The structure being multilinear, the measure is exact
+and cheap: each node's Birnbaum importance with the other held working,
+less with it held failed. The result holds each pair once, its names in
+order as text, and finds a pair either way round (`joint[("valve",
+"pump1")]` too).
+
+A `RepairableRBD` has it in the long run, or with `x`, `window` and
+`state=` as its other measures take them; with limited repair crews, each
+pair is held in the crews' chain:
+
+```python
+plant.joint_importance()[("A", "B")]                # -> -0.9804
+plant.joint_importance(x=[0.5, 20.0])[("A", "C")]   # array([0.0385, 0.0909])
+```
+
+A `FaultTree` has it too, as `−∂²P/∂q_e ∂q_f` in its events'
+probabilities, which is the same as its diagram's (`to_rbd()`): positive
+under an OR gate (complements), negative under an AND gate (substitutes).
+With common-cause groups, whose members cannot be held, it is refused.
+
+## Shares of a change: differential importance
+
+The measures above rank the nodes, but they do not add up: the two pumps'
+Birnbaum importances, summed, are not the pumps' importance together.
+`differential_importance` (DIM; Borgonovo & Apostolakis, 2001) gives each
+node's share of the change in the system when every node changes together,
+so the shares add up to 1, and a group's share (`groups`) is the sum of its
+members':
+
+```python
+rbd.differential_importance(50)
+# {'pump1': 0.1455, 'pump2': 0.1455, 'valve': 0.709}
+both = {"pumps": ["pump1", "pump2"]}
+rbd.differential_importance(50, groups=both)["pumps"]   # -> 0.291
+rbd.differential_importance(50, change="proportional", groups=both)["pumps"]   # -> 0.4359
+```
+
+What changes together matters. `change="uniform"` (the default) moves every
+node's probability of failing by as much, and shares out the Birnbaum
+importance; `change="proportional"` moves each by the same fraction of
+itself, and shares out the criticality importance (`kind="success"` moves
+the probabilities of working in proportion instead, and shares out the
+success-oriented form). By t = 50 the pumps are likelier than the valve to
+have failed, so a fraction off each moves them more: they hold 44% of a
+proportional change, against 29% of a uniform one.
+
+`over="parameters"` shares out `parameter_sensitivity`'s derivatives
+instead, keyed `(node, parameter)`. A uniform change adds the same amount
+to parameters of different units (a scale in hours, a shape with none), so
+over parameters the proportional change is the one to ask for:
+
+```python
+by_kind = {
+    "scales": [("pump1", "alpha"), ("pump2", "alpha"), ("valve", "alpha")],
+    "shapes": [("pump1", "beta"), ("pump2", "beta"), ("valve", "beta")],
+}
+rbd.differential_importance(
+    50, over="parameters", change="proportional", groups=by_kind
+)["shapes"]   # -> 0.5112
+```
+
+Half of the change from moving every parameter by the same fraction lies in
+the shapes.
+
+A `RepairableRBD` shares out its availability's change, in the long run, or
+with `x`, `window` and `state` as its other measures take them; over its
+levers, each lever's (one more standby unit or repair crew is no
+derivative, and takes no part). Levers can pull against each other: a
+failure rate lowers the availability, a repair rate raises it. Moved
+together in proportion, an exponential unit's two rates cancel, since its
+availability depends on their ratio alone, and there is no change to share
+out: the shares are NaN. `improving=True` moves each lever the way that
+raises the availability instead, so that every share is of a gain: what
+share of the gain from improving every lever by the same fraction lies in
+the lives, the repairs, or the maintenance:
+
+```python
+def wearing(alpha, beta, **more):
+    return {
+        "reliability": surv.Weibull.from_params([alpha, beta]),
+        "repairability": surv.Exponential.from_params([1.0]),
+        **more,
+    }
+
+maintained = RepairableRBD(
+    [("s", "A"), ("s", "B"), ("A", "C"), ("B", "C"), ("C", "t")],
+    {
+        "A": wearing(10, 2.0),
+        "B": wearing(10, 2.0),
+        "C": wearing(
+            50,
+            3.0,
+            preventive={
+                "policy": "age",
+                "interval": 20.0,
+                "duration": surv.Exponential.from_params([4.0]),
+            },
+        ),
+    },
+)
+kinds = {
+    "lives": [(n, f"reliability.{p}") for n in "ABC" for p in ("alpha", "beta")],
+    "repairs": [(n, "repairability.failure_rate") for n in "ABC"],
+    "maintenance": [
+        ("C", "preventive.interval"),
+        ("C", "preventive.duration.failure_rate"),
+    ],
+}
+gain = maintained.differential_importance(
+    over="parameters", change="proportional", improving=True, groups=kinds
+)
+gain["lives"]         # -> 0.4502
+gain["repairs"]       # -> 0.2928
+gain["maintenance"]   # -> 0.2571
+```
+
+A `FaultTree` shares out its top event's change over its basic events, in
+the same way (`change` and `groups`).
+
+## What is moving the system: rates and Barlow–Proschan
+
+The measures above say how much each component matters. Two more say which
+component is moving the system *now*, or caused its failures *so far*.
+
+### The rate of change, split by component
+
+With independent components the system's reliability is multilinear in
+theirs, so its rate of change is the sum of each component's Birnbaum
+importance times its own rate, `dR/dt = Σ I_B^i dR_i/dt`. Each term is what
+that component is doing to the system then, and the terms add up.
+`reliability_rate(x)` gives the system's rate, which is `-df(x)`, and each
+node's part:
+
+```python
+rate = rbd.reliability_rate(50)
+rate.node_rate["valve"]   # -> -0.003147
+rate.node_rate["pump1"]   # -> -0.00152
+rate.rate                 # -> -0.006188
+```
+
+At 50 the valve is bringing the system down about as fast as the two pumps
+together. On a `RepairableRBD`, `availability_rate(x)` splits the rate of
+change of the point availability (from new, or from `state=`) the same way:
+
+```python
+rate = plant.availability_rate([0.5, 2.0])
+rate.node_rate["C"][0]   # -> -0.01199
+rate.node_rate["A"][0]   # -> -0.0022
+```
+
+Early on, C pulls the system down five times as fast as A, since A and B
+back each other up. A component's rate is that of its point availability,
+by differences on the grid it is solved on: numerical, to about `1e-5` of
+the rates, less just after a scheduled event where a curve turns sharply.
+
+Where a scheduled event makes an availability jump (a block replacement or
+test that takes the component off line), the system's jumps are reported
+apart, in `jump_times`, `jumps` and `node_jumps`. Components that jump
+together share each jump along the straight path between their values
+before and after, so the parts add up to it:
+
+```python
+serviced = RepairableRBD(
+    [("s", "A"), ("s", "B"), ("A", "C"), ("B", "C"), ("C", "t")],
+    {
+        "A": wearing(10, 2.0),
+        "B": wearing(10, 2.0),
+        "C": wearing(
+            50,
+            3.0,
+            preventive={
+                "policy": "block",
+                "interval": 20.0,
+                "duration": surv.Exponential.from_params([4.0]),
+            },
+        ),
+    },
+)
+rate = serviced.availability_rate(21.0)
+rate.jump_times[0]         # -> 20.0
+rate.node_jumps["C"][0]    # -> -0.9816
+rate.node_rate["C"]        # -> 0.07493
+```
+
+At 20, C's block replacement takes the system down; at 21, C coming back
+from it is what raises the availability.
+
+### Which component caused the failures: Barlow–Proschan
+
+Integrated over time, the parts give the Barlow–Proschan importance: the
+probability that the system's failure is caused by the component's, the one
+whose failure finds the system up and leaves it down.
+`barlow_proschan_importance()` gives each component's share over the whole
+life, and `barlow_proschan_importance(x)` its share of the failures by `x`:
+
+```python
+rbd.barlow_proschan_importance()["valve"]     # -> 0.3474
+rbd.barlow_proschan_importance(50)["valve"]   # -> 0.7212
+```
+
+Over its whole life the valve causes a third of the system's failures, but
+72% of those by 50: early failures are the valve's, while the pumps cause
+one only once both have failed.
+
+On a `RepairableRBD` it is each component's share of the system's failures
+in the long run (its terms of `system_failure_frequency`), or over a window
+from new or from `state=` (its terms of `expected_failures`). This is the
+exact counterpart of the simulated
+`failure_criticality_index.per_system_failure`:
+
+```python
+plant.barlow_proschan_importance()["C"]               # -> 0.5455
+plant.barlow_proschan_importance(window=10.0)["C"]    # -> 0.5682
+```
+
+With common-cause groups, a cause that strikes several members at once is
+counted for the group, under the tuple of its members.
+
+With limited repair crews or common-cause groups the components do not fail
+and recover independently, and the rates and shares come from the crews' or
+the groups' Markov chains instead (#199). Each of the chain's transitions is
+one component's failure or repair, or a cause's strike, and its part is
+what those transitions do to the system: exact, from the same chain. With
+one crew for the plant above:
+
+```python
+rate = crewed.availability_rate(2.0)
+rate.node_rate["C"]                                    # -> -0.00349
+crewed.barlow_proschan_importance(window=10.0)["C"]    # -> 0.5696
+```
+
+C pulls the availability down faster than with a crew each (-0.00258 at
+2), as its repair can wait for a crew busy with A or B. A crew that finishes
+a repair and takes the next job counts as the repair that freed it. In a
+common-cause group, a member's own cause and its repairs are its part, and
+the causes that strike more than one member the group's. A hidden group's
+tests can find several members' failures at once, so a jump with a test in
+it is split by the Shapley value of what changes then, worked out exactly.
 
 ## Limits
 

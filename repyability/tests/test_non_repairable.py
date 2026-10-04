@@ -4,8 +4,6 @@ Tests Non-Repairable Optimal Replacement Time algorithms.
 Uses pytest fixtures located in conftest.py in the tests/ directory.
 """
 
-import warnings
-
 import numpy as np
 import pytest
 import surpyval as surv
@@ -240,12 +238,13 @@ def _erlang2_sf(rate, t):
 
 @pytest.mark.parametrize(
     "form",
-    ["closed form", "convolution", "simulation"],
+    ["closed form", "convolution", "warm"],
 )
 def test_a_standby_arrangement_as_the_lifetime(form):
     # Closed-form arrangements (identical exponential units, or cold k = 1)
     # used to fail at construction, and the cost methods failed for every
-    # arrangement. Any of them now works through its survival function.
+    # arrangement. Any of them now works through its survival function:
+    # exact, a convolution, or warm standby's recursion.
     from repyability import StandbyModel
 
     if form == "closed form":
@@ -256,8 +255,6 @@ def test_a_standby_arrangement_as_the_lifetime(form):
         standby = StandbyModel(
             [surv.Weibull.from_params([1000, 2.5])] * 2,
             dormancy_factor=0.3,
-            mc_samples=5000,
-            seed=1,
         )
     unit = NonRepairable(standby, surv.Exponential.from_params([1 / 24]))
     unit.set_costs_planned_and_unplanned(1, 5)
@@ -305,7 +302,7 @@ def test_a_standby_that_may_never_fail_is_never_replaced():
     from repyability import StandbyModel
 
     never = surv.Weibull.from_params([1000, 2.5], p=0.6)
-    unit = NonRepairable(StandbyModel([never, never], mc_samples=2000, seed=0))
+    unit = NonRepairable(StandbyModel([never, never]))
     unit.set_costs_planned_and_unplanned(1, 5)
     assert unit.find_optimal_replacement() == np.inf
 
@@ -398,13 +395,3 @@ def test_invalid_costs_are_rejected(cp, cu):
     with pytest.raises(ValueError, match="costs must be"):
         unit.set_costs_planned_and_unplanned(cp, cu)
     unit.set_costs_planned_and_unplanned(0.0, 5.0)  # a free planned swap
-
-
-def test_options_argument_is_deprecated():
-    unit = NonRepairable(Weibull.from_params([1000, 2.5]))
-    unit.set_costs_planned_and_unplanned(1, 5)
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")  # no warning without it
-        expected = unit.find_optimal_replacement()
-    with pytest.warns(FutureWarning, match="options"):
-        assert unit.find_optimal_replacement(options={}) == expected

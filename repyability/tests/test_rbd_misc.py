@@ -161,7 +161,7 @@ def test_system_probability_rejects_an_unknown_method():
     by_cuts = rbd.system_probability(probabilities, method="c")
     assert by_paths == pytest.approx([0.98])
     assert by_cuts == pytest.approx([0.98])
-    with pytest.raises(ValueError, match="'p' or 'c'"):
+    with pytest.raises(ValueError, match=r"'p' \(or 'paths'\) or 'c'"):
         rbd.system_probability(probabilities, method="cut sets")
-    with pytest.raises(ValueError, match="'p' or 'c'"):
+    with pytest.raises(ValueError, match=r"'p' \(or 'paths'\) or 'c'"):
         rbd.sf(1.0, method="x")

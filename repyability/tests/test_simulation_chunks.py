@@ -12,6 +12,7 @@ import pytest
 import surpyval as surv
 
 from repyability import NonRepairableRBD, RepairableRBD, SimulationChunk
+from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd._exact import ExactSum, expansion
 from repyability.rbd.repairable_rbd import _group_totals, _Tally
 
@@ -98,11 +99,12 @@ def test_a_chunk_is_the_same_however_it_is_run():
     )
     whole = rbd.availability(100.0, mc_samples=500, seed=9)
     assert np.array_equal(
-        rbd.availability_from_chunks(alone).uptimes, whole.uptimes[300:]
+        rbd.availability_from_chunks(alone, allow_gaps=True).uptimes,
+        whole.uptimes[300:],
     )
     assert same_result(
-        rbd.availability_from_chunks(parallel),
-        rbd.availability_from_chunks(alone),
+        rbd.availability_from_chunks(parallel, allow_gaps=True),
+        rbd.availability_from_chunks(alone, allow_gaps=True),
     )
 
 
@@ -114,7 +116,15 @@ def test_chunks_with_gaps_and_out_of_order():
     gappy = SimulationChunk.merge([b, a])
     assert gappy.ranges == [(0, 100), (200, 300)]
     assert gappy.n_simulations == 200
-    result = rbd.availability_from_chunks(gappy)
+    # A missing chunk is not taken for a smaller run (#176) ...
+    with pytest.raises(ValueError, match="between or before them are missing"):
+        rbd.availability_from_chunks(gappy)
+    with pytest.raises(ValueError, match="0 to 99, 200 to 299"):
+        rbd.availability_from_chunks([b, a])
+    with pytest.raises(ValueError, match="allow_gaps"):
+        rbd.availability_from_chunks(b)
+    # ... unless asked for: the result of the simulations held.
+    result = rbd.availability_from_chunks(gappy, allow_gaps=True)
     whole = rbd.availability(100.0, mc_samples=300, seed=1)
     assert np.array_equal(
         result.uptimes,
@@ -171,9 +181,14 @@ def test_antithetic_chunks_hold_whole_pairs():
     ]
     merged = rbd.availability_from_chunks(chunks)
     assert same_result(merged, whole)
-    assert (
-        merged.mean_availability_interval().standard_error
-        == whole.mean_availability_interval().standard_error
+    # Their pairs are the run's: the plain run's interval is theirs.
+    plain = rbd.availability(
+        100.0, mc_samples=400, seed=3, antithetic=True, control_variate=False
+    )
+    assert montecarlo.standard_error(
+        merged.uptimes / 100.0, True
+    ) == pytest.approx(
+        plain.mean_availability_interval().standard_error, rel=1e-15
     )
     with pytest.raises(ValueError, match="even"):
         rbd.simulate_chunk(100.0, 0, 151, seed=3, antithetic=True)
@@ -196,6 +211,32 @@ def test_chunks_follow_the_capacity():
     merged = rbd.availability_from_chunks(chunks)
     assert np.array_equal(merged.delivered, whole.delivered)
     assert np.array_equal(merged.capacity_timeline, whole.capacity_timeline)
+    assert identical(merged, whole)
+
+
+def test_chunks_count_the_capacity_on_the_grid():
+    # With curve_points the capacity's changes are counted in the grid's
+    # bins, exactly (#190): chunks, through JSON too, merge into the run.
+    rbd = RepairableRBD(
+        EDGES,
+        {
+            node: {"reliability": E([0.1]), "repairability": E([1.0])}
+            for node in "ABC"
+        },
+        capacity={"A": 60.0, "B": 60.0, "C": 100.0},
+    )
+    run = dict(seed=2, demand=100.0, curve_points=25)
+    whole = rbd.availability(50.0, mc_samples=300, **run)
+    assert len(whole.capacity_timeline) == 26
+    chunks = [
+        SimulationChunk.from_json(
+            rbd.simulate_chunk(50.0, a, b, **run).to_json()
+        )
+        for a, b in [(0, 120), (120, 300)]
+    ]
+    merged = rbd.availability_from_chunks(chunks)
+    assert np.array_equal(merged.capacity_timeline, whole.capacity_timeline)
+    assert np.array_equal(merged.capacity, whole.capacity)
     assert identical(merged, whole)
 
 
@@ -267,7 +308,10 @@ def test_capacity_changes_at_one_time_add_up_exactly():
         (dict(start=0.5, stop=10, seed=1), "whole number"),
         (dict(start=0, stop=True, seed=1), "whole number"),
         (dict(start=0, stop=10, seed=1, demand=5.0), "capacities"),
-        (dict(start=0, stop=10, seed=1, method="x"), "'p' or 'c'"),
+        (
+            dict(start=0, stop=10, seed=1, method="x"),
+            r"'p' \(or 'paths'\) or 'c'",
+        ),
     ],
 )
 def test_the_chunk_is_checked(kwargs, message):

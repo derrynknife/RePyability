@@ -19,12 +19,41 @@ simulations, that spread the simulations over several CPUs, that compare
 two designs far more precisely than two separate runs can, and that run the
 simulations compiled.
 
+## Exact or simulated?
+
+A repairable system's expected values over a window need no simulation
+where its exact methods take it: only their spread does.
+
+| Question | Exact, no simulation | Simulated (`availability`, `cost`) |
+|---|---|---|
+| The mean availability over a window | `mission_availability(t)` | `mean_availability_interval()` |
+| The availability at given times | `point_availability(times)` | the result's curve, `availability` |
+| The expected failures, planned outages and down time | `expected_failures(t)`, `expected_events(t)` | the totals over the simulations (`system_failures`, ...) |
+| The expected cost, by category and component | `expected_cost(t)` | `cost.mean_interval()` |
+| The long run | `mean_availability()`, `system_failure_frequency()`, ... | |
+| How a window varies: each simulation's up time and cost, percentiles, the chance of no failure | | `uptimes`, `cost.samples`, `cost.percentile(q)` |
+
+The exact methods take independent components, with their maintenance and
+tests, and repair crews and standby groups where their Markov chains do;
+`analysis_routes()` says which a system's take, and its `availability`
+route says whether its expected values need a simulation. Where they take
+it, `availability` and `cost` take them too: by default a run's mean
+intervals (`mean_availability_interval`, the cost's `mean_interval`) are
+the exact values, with no error, and a run to a `tolerance` stops at once;
+the simulations give the rest. Where a system has a few nodes the exact
+methods do not take, its means are by default taken given their histories,
+the rest exact (see [Conditional runs](#conditional-runs)).
+`control_variate=False` keeps the simulations' own means, for a quick run
+that should not wait for the exact part (a few tenths of a second, more
+than a few hundred simulations of a small system take).
+
 | Option | Where | What it does |
 |---|---|---|
 | `tolerance`, `confidence`, `max_samples` | `availability`, `cost`; `mean` and `mean_time_to_failure` with `method="simulate"`, `mean_time_to_failure_interval` | Simulate until the estimate is known to within `tolerance`. |
 | `antithetic=True` | the same, and `NonRepairableRBD.random` | Simulate in antithetic pairs. |
 | `n_jobs` | the same, and `RepairableRBD.compare` | Run the simulations on several CPUs. |
-| `control_variate=True` | `RepairableRBD`'s `availability` and `cost` | Control the estimate by the system's exact twin. |
+| `control_variate=True` | `RepairableRBD`'s `availability` and `cost` | Control the estimate by the system's exact twin (by default, the system itself where the exact methods take it). |
+| `conditional=True` | `RepairableRBD`'s `availability` and `cost` | Simulate only the nodes the exact methods do not take, the rest exact given their states (by default, a whole run's means are taken given their histories). |
 | `compare(other, ...)` | `RepairableRBD`, `NonRepairableRBD` | The difference between two designs, simulated with common random numbers. |
 | `engine` | `RepairableRBD`'s `availability`, `cost` and `compare` | Run the simulations compiled, with numba. |
 | `shard_map`; `shards`, `run_shard` | `RepairableRBD`'s `availability` and `cost` | Run the simulations as shards, in other processes or on other machines, through any map. |
@@ -124,12 +153,29 @@ cost of a window (`result.mean_interval()`), checking after every `mc_samples`
 simulations:
 
 ```python
-result = plant.availability(t_simulation=100.0, mc_samples=1_000, seed=0, tolerance=0.001)
+result = plant.availability(t_simulation=100.0, mc_samples=1_000, seed=0,
+                            tolerance=0.001, control_variate=False)
 result.n_simulations                  # -> 6000
 window = result.mean_availability_interval()
 window.estimate                       # -> 0.9547   the exact value is 0.9544
 window.upper - window.estimate        # -> 0.00094
 ```
+
+That run simulates to the tolerance, as `control_variate=False` asks. This
+plant's components fail and are repaired independently, so its expected
+values over the window are exact, and by default a run takes them, with no
+error: one to a tolerance stops at once (the simulations are the same as
+without it; only the means are exact):
+
+```python
+exact = plant.availability(t_simulation=100.0, mc_samples=1_000, seed=0,
+                           tolerance=0.001)
+exact.n_simulations                            # -> 1000
+exact.mean_availability_interval().estimate    # -> 0.95444   mission_availability(100.0)
+```
+
+`analysis_routes()["availability"]` says, for a system, whether its
+expected values over the window need a simulation at all.
 
 If the tolerance is not reached within `max_samples` simulations (or
 lifetimes), by default 100 times `mc_samples`, the run stops there with a
@@ -162,11 +208,17 @@ what makes the pairing work so well for it. A window's availability and cost
 depend on the draws in a less simple way, and gain less, but still gain:
 
 ```python
-single = plant.availability(t_simulation=100.0, mc_samples=2_000, seed=0)
-pairs = plant.availability(t_simulation=100.0, mc_samples=2_000, seed=0, antithetic=True)
+single = plant.availability(t_simulation=100.0, mc_samples=2_000, seed=0,
+                            control_variate=False)
+pairs = plant.availability(t_simulation=100.0, mc_samples=2_000, seed=0,
+                           antithetic=True, control_variate=False)
 single.mean_availability_interval().standard_error   # -> 0.00082
 pairs.mean_availability_interval().standard_error    # -> 0.00063
 ```
+
+(The plant's mean over the window is exact, so by default the intervals
+would be that value; `control_variate=False` keeps the simulations' own, to
+compare them.)
 
 The pairs, not the simulations, are independent, so the intervals are worked
 out from the pairs' means (`result.antithetic` records it), and
@@ -226,20 +278,27 @@ of 5 000 for `tolerance=0.0005`.
   on repair crews, and maintenance groups. And, component by component,
   what the exact methods over time do not take: a standby group's switching
   (unless its units are exponential, when its own chain follows it), whose
-  units then operate together; imperfect repair; replacement on condition;
-  and inspections they do not take (tests or repairs that take time), whose
-  failures are then revealed. It keeps the rest, age and block replacement
+  units then operate together; imperfect repair (but minimal repair in no
+  time, which the exact methods take); and inspections they do not take
+  (tests that can last as long as their interval), whose failures are then
+  revealed. It
+  keeps the rest, age and block replacement and replacement on condition
   among it: the closer the twin, the more it gains.
   `analysis_routes()["availability"].twin` says what it leaves out, or why
   there is none (a model that is a probability, or a simulated life).
 - **A system that is its own twin** (plain components, nothing left out)
   gets its exact value, with a standard error of 0: its simulations are the
-  twin's.
+  twin's, so they run once, and the run costs its simulations and the exact
+  values. Its means need no simulation at all (`mission_availability`,
+  `expected_cost`); the run adds the simulations' spread. That is the
+  default (`control_variate=None`) for every system whose expected values
+  the exact methods work out, crews and standby groups their chains follow
+  among them: its twin is then the system itself.
 - **What it costs.** The twin's exact values take a fraction of a second,
   and its simulations run compiled where they can. Every draw must come
   from a stream (surpyval parametric models); the streams are laid out as
   `compare` lays them, so a seeded run's simulations can differ from a run's
-  without it; and it does not run with `shard_map`.
+  without it; and it runs with `shard_map` only as the system itself.
 
 What it gains, on 4 000 simulations over 1 000 hours (variances of the mean
 availability, and of the mean cost, plain over controlled; *per second*
@@ -262,7 +321,125 @@ It gains most where the system is a small step from its twin: a crew
 rarely busy, a spare rarely needed. Each controlled estimate was within 1.8
 standard errors of a plain run of 100 000 simulations. It is not the
 default: where the twin is far from the system (imperfect repair, above) it
-gains nothing for the time it takes.
+gains nothing for the time it takes. (The default takes a system's modules
+instead, see [Conditional runs](#conditional-runs).)
+
+## Conditional runs
+
+A system needs simulating when some of it does: a standby group of other
+lives, a nested RBD sharing a repair crew, a unit repaired imperfectly. The
+rest is usually independent components, whose point availabilities and
+expected events are exact, and whose randomness is most of a plain run's
+error. `conditional=True` simulates only the *modules*, the nodes the exact
+methods over time do not take, and takes every other node exactly given
+their states: given the modules' states at `t`, the system is up with the
+probability its availability with them held so gives, and each simulation
+contributes its expected values given its modules' histories
+(Rao-Blackwell). Twelve units in a line and a cold-standby pair of Weibull
+pumps:
+
+```python
+line = {
+    f"unit {i}": {
+        "reliability": surv.Weibull.from_params([4000 + 500 * i, 1.8]),
+        "repairability": surv.LogNormal.from_params([2.0, 0.5]),
+    }
+    for i in range(12)
+}
+pumps = {
+    "reliability": surv.Weibull.from_params([800, 2.0]),
+    "repairability": surv.Weibull.from_params([40, 1.5]),
+    "standby": {"units": 2},
+}
+names = list(line) + ["pumps"]
+line_plant = RepairableRBD(
+    [("s", names[0])] + list(zip(names, names[1:])) + [(names[-1], "t")],
+    {**line, "pumps": pumps},
+)
+line_plain = line_plant.availability(t_simulation=5000.0, mc_samples=2_000, seed=1,
+                                     conditional=False)
+line_run = line_plant.availability(t_simulation=5000.0, mc_samples=2_000, seed=1,
+                                     conditional=True)
+line_run.conditional.modules                               # ('pumps',)
+line_plain.mean_availability_interval().standard_error    # -> 9.52e-05
+line_run.mean_availability_interval().standard_error      # -> 1.45e-05
+line_run.mean_availability_interval().estimate            # -> 0.98864
+```
+
+The conditional run is worth 43 times as many plain simulations, in about
+the same time: it simulates the pumps alone, and the line's part of the
+error is gone (by the law of total variance, what is left is the pumps').
+`analysis_routes()["availability"]` names the modules a conditional run
+would simulate.
+
+By default a run of such a system takes these means too, from its own
+simulations: it simulates the whole system, as a plain run does, then its
+modules again alone, drawing what they drew, and its mean intervals are
+those of each simulation's expected values given its modules' histories.
+Everything else in its result (each simulation's values, the curve, the
+totals, the percentiles, the criticalities) is its simulations' own:
+
+```python
+line_default = line_plant.availability(t_simulation=5000.0, mc_samples=2_000, seed=1)
+line_default.mean_availability_interval().standard_error   # -> 1.45e-05   the conditional run's
+line_default.conditional.whole                             # True
+```
+
+It costs a plain run, the modules' simulations and the exact part: here a
+quarter more time than a plain run, for a standard error 6.6 times smaller.
+`conditional=False` keeps the simulations' own means; `conditional=True`
+leaves the rest of the simulation out, for the same means in less time,
+without the spread.
+
+- **Expected values only.** Each simulation's values are its *expected*
+  values given its modules' histories: its up time (`uptimes`), the totals
+  and counts (floats: the expected failures, restorations, planned
+  outages and down times), the curve (on a grid of `curve_points` steps, by
+  default 1 000, with its own `availability_se`) and the cost's `samples`.
+  Their means, and their intervals, estimate the window's expected values
+  without bias; but their spread is less than a window's own, so a cost's
+  `percentile` and `std` refuse, and `criticalities` is None. For a
+  window's spread, or its histories, simulate the whole system (the
+  default).
+- **The same simulations.** The modules draw from the streams they draw
+  from in a plain run with the seed, by either engine, on `n_jobs`, in
+  antithetic pairs if asked, so a conditional run's modules are a plain
+  run's, and their own costs too. A run to a `tolerance` is judged on the
+  conditional means, in rounds of `mc_samples`.
+- **The exact part.** Each joint state of the modules the simulations meet
+  (each up or down) is worked out once: the system's expected up time,
+  failures and planned outages with the modules held so, on a grid of
+  some 1 300 times (finer near 0, and at the curves' breaks), read between
+  them to about 1e-8 of the window. It costs about what
+  `expected_events` does, per state met, whatever the number of
+  simulations.
+- **What it needs.** The other nodes must be independent of the modules,
+  and exact. Limited repair crews make every node they serve a module,
+  simulated with the crews (a nested RBD, with crews of its own, stays
+  exact); a system of crew-served components alone leaves none to take
+  exactly, and is refused, as is a maintenance group that stops at every
+  outage of the system (`"system_down"`), which ties its members to every
+  component.
+- **States, capacities, shards and a control variate.** From the
+  components' `state`, the modules start from theirs and the rest is taken
+  exactly from theirs. With capacities, each simulation's expected time at
+  each level and its delivered fraction (against `demand`, as in a plain
+  run) come from the exact capacity over time with the modules held, a
+  module up at its levels by their probabilities, as a plain run weighs
+  them. `shard_map` runs the modules' simulations as shards wherever it
+  sends them, to the last bit the run's. `control_variate=True` simulates
+  the exact twin's stand-ins for the modules alongside them, with common
+  random numbers: each simulation's expected values given the stand-ins'
+  histories, whose mean is the twin's exact one, control the means (by as
+  much as the stand-ins follow the modules: little for a unit repaired
+  imperfectly, whose stand-in, repaired as new, drifts from it).
+
+What it gains depends on how much of the error the independent part makes.
+On the line above, most: 43 times. On 150 units in a line with a standby
+pair and a nested two-out-of-three group sharing a crew, whose failures
+make most of the error, 2.8 times, worth 4 times the work at 40 000
+simulations against the compiled engine; on a few units, where the exact
+part's fixed cost is not repaid, nothing.
 
 ## Parallel runs
 
@@ -329,9 +506,16 @@ grid = plant.availability(t_simulation=100.0, mc_samples=2_000, seed=0,
 len(grid.timeline)       # -> 101
 ```
 
-A compiled run of 40 960 simulations of a nine-component system over
-5 000 hours kept 3 million points without it, and ran 16% faster with
-`curve_points=1000`.
+With capacities, the capacity curve (`capacity_timeline`, `capacity`)
+follows the grid too, each step's changes summed exactly, so it equals the
+full curve at the grid's times. Where numba is installed, a run's changes
+are put in time order by a compiled radix sort (#201), so the full curve
+costs little time even for millions of points: 40 960 simulations of nine
+components in series over 5 000 hours, compiled, keep 2.8 million points
+and take 0.7 s either way, and three pumps with capacities over 2 000
+hours, 5 000 simulations, keep 5.5 million capacity points and take 1.2 s,
+1.05 s with `curve_points=200`. What the grid saves is the memory the
+points take, and what a chunk carries.
 
 ## Splitting a run across machines
 
@@ -362,8 +546,10 @@ merged.system_uptime == whole.system_uptime          # True: the totals too
   (`uptimes`, the cost `samples`) and timeline, and the same totals, to
   the last bit: every total is kept exactly and rounded once, so it does
   not depend on how the run is cut. With costs, the result's `cost` is the
-  cost distribution. Chunks may leave gaps; the result is then that of the
-  simulations they hold.
+  cost distribution. The chunks must hold simulations `0` to `N - 1`, none
+  missing, so a chunk that never came back is not taken for a smaller run;
+  `allow_gaps=True` takes the result of whichever simulations they hold.
+  (Only `mc_samples=N` can say that the last chunk is missing.)
 - **Checked.** Chunks merge only with chunks of the same run: the same
   system (a hash of it saved as JSON, which a chunk carries, so a worker
   can rebuild the system with `RepairableRBD.from_json`), window, seed,
@@ -447,9 +633,8 @@ lifetimes, some 4e10 for `p = 1e-8`. Where the unreliability is exact,
 worked out from the components' own failure probabilities, not as one less
 the reliability); through a numerical node, such as a cold-standby group of
 non-exponential units, only to that node's accuracy, about 1e-6. Where a
-node is simulated, as warm standby with two Weibull pumps operating is (its
-reliability is fitted to 20 000 simulated lifetimes, none of which ends in
-the first 50 hours), the far tail has no exact value, and
+node has no exact or numerical reliability (warm standby with two Weibull
+pumps operating, say), `ff` refuses, and
 `unreliability_interval(x)` estimates `P(T <= x)` by simulation, to a
 relative precision, with methods that find rare failures:
 
@@ -457,9 +642,8 @@ relative precision, with methods that find rare failures:
 from repyability import StandbyModel
 
 pump = surv.Weibull.from_params([1000, 1.5])
-pumps = StandbyModel([pump] * 4, k=2, dormancy_factor=0.3, mc_samples=20_000, seed=1)
+pumps = StandbyModel([pump] * 4, k=2, dormancy_factor=0.3)
 station = NonRepairableRBD([("s", "pumps"), ("pumps", "t")], {"pumps": pumps})
-station.ff(50.0)                         # -> 0.0   from the fitted reliability
 tail = station.unreliability_interval(50.0, seed=1)
 tail.estimate                            # ~> 1.59e-06
 tail.method, tail.n_samples              # ('subset', 570000)
@@ -569,8 +753,9 @@ The exact difference, the integral of the difference in reliability, is
 14.46. The reliabilities themselves need no simulation: compare `sf`.
 
 Both kinds need every component's draws to be replayable, as antithetic
-pairs do. A non-parametric model draws its own random numbers, which the two
-systems would not share, so it raises `NotImplementedError`.
+pairs do. A model whose draws do not follow numpy's uniforms (a class of your
+own that draws its own random numbers, say), which the two systems would not
+share, raises `NotImplementedError`.
 
 ## The compiled engine
 
@@ -610,7 +795,9 @@ crews than components, the jobs waiting by priority; standby groups,
 cold, warm or hot, with switches that can fail; nested RBDs of up to 20
 components, each stepped to its next change as in Python; and the system's
 capacity over time, on systems of up to 63 components. Replacement on
-condition, maintenance groups, imperfect repair, a run from the components'
+condition, maintenance groups, imperfect repair, common-cause groups (whose
+shared causes the Python loop draws, see [repairable
+systems](common-cause.md#repairable-systems)), a run from the components'
 states with maintenance, tests or nested RBDs, and other models run in
 Python, which `"auto"` chooses by itself. With `n_jobs` it
 runs on that many threads, which start at once. Under age replacement (half
@@ -672,6 +859,12 @@ next engine. `analysis_routes()` reports which engine `"auto"` would run.
   `antithetic=True`, and check that the standard error falls.
 - **A system a small step from its exact twin** (a crew rarely busy, a
   spare rarely needed): `control_variate=True`.
+- **A system mostly of independent components around a few that need
+  simulating:** the default takes its expected values given those few's
+  histories; `conditional=True` simulates only those, for its expected
+  values in a fraction of the time.
+- **A system the exact methods take:** its expected values need no
+  simulation; the default gives them, and the simulations their spread.
 - **Long simulations:** install numba (`pip install "repyability[fast]"`)
   for the compiled engine, and spread them over the cores with `n_jobs`.
 - **More than one machine can run in time:** [shard](#shards) the run.

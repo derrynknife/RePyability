@@ -9,10 +9,12 @@ does not change what it draws, so the results do not depend on the number
 of processes.
 """
 
+import io
 import math
 import os
+import pickle
 import warnings
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import numpy as np
 from scipy.special import ndtri
@@ -188,6 +190,52 @@ def process_pool(jobs: int, initializer=None, initargs: tuple = ()):
         initializer=initializer,
         initargs=initargs,
     )
+
+
+class _ModelPickler(pickle.Pickler):
+    """Pickles a run for its worker processes, sending a surpyval model
+    that pickle cannot take in its saved form (``to_dict``), rebuilt where
+    it is loaded: a fit holds a closure (SurPyval#573), so a system of
+    fitted models could not be run with ``n_jobs`` (#181). Pickle's memo
+    still sends a model drawn in several places once."""
+
+    def reducer_override(self, obj):
+        module = getattr(type(obj), "__module__", None) or ""
+        if not module.startswith("surpyval") or not hasattr(obj, "to_dict"):
+            return NotImplemented
+        try:
+            pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
+        except Exception:
+            return _rebuilt_model, (obj.to_dict(),)
+        return NotImplemented
+
+
+def _rebuilt_model(saved: dict) -> Any:
+    """A surpyval model from its saved form (see ``_ModelPickler``)."""
+    import surpyval
+
+    return surpyval.from_dict(saved)
+
+
+def dumps(payload) -> bytes:
+    """``payload`` (a system and what its simulations share) pickled for
+    worker processes (see ``_ModelPickler``).
+
+    Raises
+    ------
+    ValueError
+        If it cannot be pickled, saying why and what to do instead.
+    """
+    buffer = io.BytesIO()
+    try:
+        _ModelPickler(buffer, protocol=pickle.HIGHEST_PROTOCOL).dump(payload)
+    except Exception as error:
+        raise ValueError(
+            "The system cannot be sent to worker processes for n_jobs "
+            f"(pickle failed: {type(error).__name__}: {error}). Run it "
+            "without n_jobs, or give shard_map, which sends it as JSON."
+        ) from error
+    return buffer.getvalue()
 
 
 def blocks(n: int, block: int) -> List[int]:

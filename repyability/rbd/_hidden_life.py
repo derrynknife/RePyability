@@ -40,6 +40,8 @@ from typing import Callable, Dict, Optional, Tuple
 
 import numpy as np
 
+from repyability.utils.vectors import dot
+
 from ._point_availability import Atoms, _events
 from ._point_availability import knots as _model_knots
 from ._point_availability import multiples_before
@@ -471,9 +473,9 @@ class TestedLifeCurve:
             m = min(n - 1, K - 1)
             value = found[i]
             if m:
-                value += float(
-                    renewals[n - m : n]  # noqa: E203
-                    @ reversed_fails[K - 1 - m :]  # noqa: E203
+                value += dot(
+                    renewals[n - m : n],  # noqa: E203
+                    reversed_fails[K - 1 - m :],  # noqa: E203
                 )
             renewals[n] = value
             if i == block - 1:
@@ -484,7 +486,7 @@ class TestedLifeCurve:
                 deviation = np.abs(recent - steady)
                 bound = (
                     float(still_up[i])
-                    + float(deviation @ life.up[:m])
+                    + dot(deviation, life.up[:m])
                     + steady * float(tail[m])
                 )
                 if (

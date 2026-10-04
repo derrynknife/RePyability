@@ -269,7 +269,9 @@ def test_age_replacement_rate_is_the_non_repairable_rate():
         float(unit.cost_rate(T)), rel=1e-12
     )
     # ...and the simulation converges to it.
-    result = rbd.cost(t_simulation=5000.0, mc_samples=200, seed=2)
+    result = rbd.cost(
+        t_simulation=5000.0, mc_samples=200, seed=2, control_variate=False
+    )
     interval = result.mean_interval(0.999)
     assert interval.lower <= exact * 5000.0 <= interval.upper
 
@@ -389,12 +391,16 @@ def test_block_replacement_has_exact_long_run_values():
         }
     )
     t = 50_000.0
-    result = rbd.availability(t_simulation=t, mc_samples=20, seed=2)
+    result = rbd.availability(
+        t_simulation=t, mc_samples=20, seed=2, control_variate=False
+    )
     window = result.mean_availability_interval()
     assert abs(rbd.mean_availability() - window.estimate) < 4 * (
         window.standard_error
     )
-    cost = rbd.cost(t_simulation=t, mc_samples=20, seed=3).mean_interval()
+    cost = rbd.cost(
+        t_simulation=t, mc_samples=20, seed=3, control_variate=False
+    ).mean_interval()
     assert abs(rbd.expected_cost_rate() * t - cost.estimate) < 4 * (
         cost.standard_error
     )

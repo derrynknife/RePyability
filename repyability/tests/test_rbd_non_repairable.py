@@ -217,22 +217,6 @@ def test_perfect_rel_and_unrel():
     NonRepairableRBD(edges, reliabilities)
 
 
-def test_nonparametric_node():
-    edges = [
-        (0, 1),
-        (1, 3),
-        (0, 2),
-        (2, 3),
-    ]
-
-    reliabilities = {
-        1: surv.KaplanMeier.fit([1, 2, 3, 4, 5]),
-        2: PU,
-    }
-
-    NonRepairableRBD(edges, reliabilities)
-
-
 def test_repeated_node_drawn_twice_along_one_path():
     # Node 3 is node 1 drawn again further along the same chain: the drawing
     # has no loop, and the system needs 1 and 2 working.

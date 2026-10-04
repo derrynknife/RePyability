@@ -52,10 +52,18 @@ def sf(model, x):
 
 def cycle(model, interval):
     """The mean number of intervals in a cycle: a unit that fails in ``((k
-    - 1) T, k T]`` (or at once) is found and renewed at the k-th test."""
-    k = np.arange(1, 200_001)
-    found = np.diff(np.concatenate([[0.0], model.ff(interval * k)]))
-    return float(k @ found)
+    - 1) T, k T]`` (or at once) is found and renewed at the k-th test, so
+    the cycle lasts ``k`` or more tests with chance ``R((k - 1) T)`` (and
+    surely one): ``1 + sum_{k >= 1} R(k T)``, summed until ``R`` is
+    nothing."""
+    total, start = 1.0, 1
+    while start <= 200_000:
+        survive = sf(model, interval * np.arange(start, start + 4096))
+        total += float(survive.sum())
+        if survive[-1] < 1e-300:
+            break
+        start += 4096
+    return total
 
 
 def renewal_reward(model, interval):
@@ -444,38 +452,31 @@ def test_a_long_life_against_its_interval():
 # -- what stays simulated -----------------------------------------------------
 
 
-def test_what_is_not_exact_is_refused():
+def test_what_stays_simulated():
+    # Tests that miss failures, and tests and repairs that take time, are
+    # numerical (#159, see test_hidden_failures_timed.py); a test that can
+    # last a whole interval, or a life with units dead on arrival, are not.
     model = W([200.0, 2.5])
-    missing = RepairableRBD(
-        SINGLE,
-        {"a": hidden(model, 50.0, coverage=0.8, full_test=200.0)},
+    for rbd in (
+        RepairableRBD(
+            SINGLE,
+            {"a": hidden(model, 50.0, coverage=0.8, full_test=200.0)},
+        ),
+        RepairableRBD(SINGLE, {"a": hidden(model, 50.0, duration=E([1.0]))}),
+        RepairableRBD(
+            SINGLE,
+            {"a": {**hidden(model, 50.0), "repairability": E([1.0])}},
+        ),
+    ):
+        assert 0.0 < rbd.mean_availability() < 1.0
+        assert 0.0 < float(np.ravel(rbd.point_availability(10.0))[0]) <= 1.0
+    slow = RepairableRBD(
+        SINGLE, {"a": hidden(model, 50.0, duration=E([0.01]))}
     )
-    for method in (missing.mean_availability, missing.node_availability):
-        with pytest.raises(NotImplementedError, match="can miss them"):
-            method()
-    with pytest.raises(NotImplementedError, match="can miss them"):
-        missing.point_availability(10.0)
-    slow_tests = RepairableRBD(
-        SINGLE,
-        {"a": hidden(model, 50.0, duration=E([1.0]))},
-    )
-    slow_repairs = RepairableRBD(
-        SINGLE,
-        {"a": {**hidden(model, 50.0), "repairability": E([1.0])}},
-    )
-    for rbd in (slow_tests, slow_repairs):
-        with pytest.raises(NotImplementedError, match="instant tests"):
-            rbd.mean_availability()
-        with pytest.raises(NotImplementedError, match="instant tests"):
-            rbd.point_availability(10.0)
-    # A life that lasts too many intervals to sum.
-    endless = RepairableRBD(SINGLE, {"a": hidden(W([1e9, 0.5]), 1.0)})
-    with pytest.raises(NotImplementedError, match="too long"):
-        endless.mean_availability()
-    # Down at the start: in a repair, which takes no time.
-    rbd = RepairableRBD(SINGLE, {"a": hidden(model, 50.0)})
-    with pytest.raises(ValueError, match="always over"):
-        rbd.point_availability(10.0, state={"a": NodeState(alive=False)})
+    with pytest.raises(NotImplementedError, match="within its test interval"):
+        slow.mean_availability()
+    with pytest.raises(NotImplementedError, match="within its test interval"):
+        slow.point_availability(10.0)
 
 
 def test_the_routes():
@@ -492,14 +493,22 @@ def test_the_routes():
         assert "renewed at the tests" in report[name].reason
     for name in ("point_availability", "expected_events"):
         assert report[name].route == routes.NUMERICAL
+    # Tests that miss failures: the cycle followed test by test (#159).
     missing = RepairableRBD(
         SINGLE,
         {"a": hidden(W([200.0, 2.5]), 50.0, coverage=0.8, full_test=200.0)},
     )
     route = missing.analysis_routes()["mean_availability"]
+    assert route.route == routes.NUMERICAL
+    assert "followed test by test" in route.reason
+    # Tests that can last a whole interval stay simulated.
+    slow = RepairableRBD(
+        SINGLE, {"a": hidden(W([200.0, 2.5]), 50.0, duration=E([0.01]))}
+    )
+    route = slow.analysis_routes()["mean_availability"]
     assert route.route == routes.REFUSED
     with pytest.raises(NotImplementedError) as error:
-        missing.mean_availability()
+        slow.mean_availability()
     assert str(error.value) == route.reason
 
 

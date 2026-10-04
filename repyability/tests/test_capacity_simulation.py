@@ -279,3 +279,29 @@ def test_states_with_levels_are_worked_out_one_at_a_time():
     for down, state in zip(["", "b", "ab"], states):
         assert repr(state) == repr(alone(frozenset(down)))
     assert states[1].levels == (90.0, 150.0)
+
+
+@pytest.mark.parametrize("engine", ["python", "numba"])
+def test_the_capacity_on_a_grid_is_the_curve_at_its_times(engine):
+    # With curve_points the capacity's changes are counted in the grid's
+    # bins as they come (#190), each bin's total exactly: the curve on the
+    # grid is the whole curve at the grid's times, and the time at each
+    # capacity and the delivered fractions are as without it.
+    if engine == "numba":
+        pytest.importorskip("numba")
+    rbd = RepairableRBD(
+        [("s", u) for u in "abc"] + [(u, "t") for u in "abc"],
+        {u: UNIT for u in "abc"},
+        capacity={"a": {50: 0.7, 20: 0.3}, "b": 50.0, "c": 35.5},
+    )
+    run = dict(mc_samples=300, seed=4, engine=engine, demand=80.0)
+    whole = rbd.availability(60.0, **run)
+    grid = rbd.availability(60.0, curve_points=40, **run)
+    np.testing.assert_array_equal(grid.capacity_timeline, grid.timeline)
+    assert len(grid.capacity_timeline) == 41
+    at = np.searchsorted(whole.capacity_timeline, grid.timeline, "right") - 1
+    np.testing.assert_allclose(
+        grid.capacity, whole.capacity[at], rtol=1e-14, atol=0
+    )
+    assert grid.capacity_time == whole.capacity_time
+    np.testing.assert_array_equal(grid.delivered, whole.delivered)

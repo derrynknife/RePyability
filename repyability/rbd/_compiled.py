@@ -129,6 +129,11 @@ def _unsupported_level(
     from repyability.non_repairable import NonRepairable
     from repyability.rbd.repairable_rbd import RepairableRBD
 
+    if rbd._too_meshed() is not None:
+        # Its structure is the graph itself (modular.GraphStructure).
+        return "a structure too meshed to work out"
+    if rbd.ccf_groups:
+        return "common-cause groups"
     if rbd._crews_limited() and not numba:
         return "repair crews"
     if rbd._standby and not numba:
@@ -1128,6 +1133,12 @@ class Runner:
                     change_planned[made].astype(bool),
                 )
             )
+            # Each simulation's cost beside its histories (for a
+            # conditional run's modules).
+            if self._model.has_costs:
+                tally.cost_samples.extend(cost.tolist())
+                costed = len(self._model.costed)
+                tally.fold_costs(np.hstack([by_category, by_node[:, :costed]]))
             return
         tally.uptimes.extend(uptime.tolist())
         failures, restorations, planned = system.sum(axis=0).tolist()
@@ -1217,7 +1228,7 @@ class Runner:
             self._t,
             self._table,
         )
-        tally.capacity_arrays.append(
+        tally.add_capacity(
             (change_times, change_steps, free_times, free_steps)
         )
         levels = list(self._levels)

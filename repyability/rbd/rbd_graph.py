@@ -35,6 +35,9 @@ class RBDGraph(DiGraph):
         # is_dag = not nx.is_directed_acyclic_graph(self)
         results: dict = {}
         results["is_valid"] = True
+        results["is_empty"] = self.number_of_nodes() == 0
+        if results["is_empty"]:
+            results["is_valid"] = False
         cycles = list(nx.simple_cycles(self))
         if cycles != []:
             results["is_valid"] = False
@@ -100,12 +103,12 @@ class RBDGraph(DiGraph):
         results["has_koon_warnings"] = False
         for n in self.nodes:
             k = self.nodes[n]["k"]
-            if k == 0:
+            if k < 1:
                 results["is_valid"] = False
                 results["has_koon_errors"] = True
                 koon_errors.append(
-                    f"node {n!r} has k = 0: k is how many of its inputs must "
-                    "work, a whole number from 1"
+                    f"node {n!r} has k = {k}: k is how many of its inputs "
+                    "must work, a whole number from 1"
                 )
             if k > 1:
                 in_degree = self.in_degree(n)

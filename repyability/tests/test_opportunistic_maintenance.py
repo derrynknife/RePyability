@@ -105,7 +105,9 @@ def test_a_timeline_worked_by_hand():
         (175.0, True),
         (200.0, True),
     ]
-    result = rbd.availability(200.0, mc_samples=2, seed=1)
+    result = rbd.availability(
+        200.0, mc_samples=2, seed=1, control_variate=False
+    )
     assert result.mean_availability_interval().estimate == pytest.approx(
         175.0 / 200.0
     )
@@ -146,7 +148,9 @@ def test_a_member_due_at_the_stop_keeps_its_own_replacement():
         {"a": unit, "b": unit},
         maintenance_groups={"train": {"setup_cost": 500.0}},
     )
-    result = rbd.availability(200.0, mc_samples=2, seed=1)
+    result = rbd.availability(
+        200.0, mc_samples=2, seed=1, control_variate=False
+    )
     assert result.opportunistic_renewals == {"a": 0, "b": 0}
     assert result.cost.by_category["preventive"] == 6 * 20.0
     assert result.cost.by_category["setup"] == 3 * 500.0
@@ -272,7 +276,9 @@ def test_a_system_outage_is_a_stop_when_asked():
                 "train": {"setup_cost": 500.0, "system_down": system_down}
             },
         )
-        return rbd, rbd.availability(200.0, mc_samples=2, seed=1)
+        return rbd, rbd.availability(
+            200.0, mc_samples=2, seed=1, control_variate=False
+        )
 
     rbd, result = run(True)
     assert result.opportunistic_renewals == {"x": 0, "a": 8, "b": 8}
@@ -301,7 +307,9 @@ def test_a_nested_diagram_renews_its_group_too():
     parent = RepairableRBD(
         [("s", "train"), ("train", "t")], {"train": timeline_rbd()}
     )
-    result = parent.availability(200.0, mc_samples=2, seed=1)
+    result = parent.availability(
+        200.0, mc_samples=2, seed=1, control_variate=False
+    )
     assert result.mean_availability_interval().estimate == pytest.approx(
         175.0 / 200.0
     )
@@ -323,13 +331,17 @@ def test_repair_crews_serve_the_early_renewals():
         {"a": unit, "b": unit},
         maintenance_groups={"train": {"setup_cost": 500.0}},
     )
-    crewed = rbd.availability(5000.0, mc_samples=100, seed=2)
+    crewed = rbd.availability(
+        5000.0, mc_samples=100, seed=2, control_variate=False
+    )
     assert crewed.opportunistic_renewals["a"] > 0
     assert np.array_equal(
         crewed.availability,
         rbd.availability(5000.0, mc_samples=100, seed=2).availability,
     )
-    unlimited = free.availability(5000.0, mc_samples=100, seed=2)
+    unlimited = free.availability(
+        5000.0, mc_samples=100, seed=2, control_variate=False
+    )
     assert (
         crewed.mean_availability_interval().estimate
         < unlimited.mean_availability_interval().estimate
@@ -408,7 +420,7 @@ def test_the_exact_methods_refuse_early_renewals():
     assert report["availability"].route == r.SIMULATED
     assert report["availability"].engine == "python"
     used = rbd.spares_demand(500.0, method="simulate", mc_samples=50, seed=1)
-    assert used["a"].mean() > 0.0
+    assert used["a"].mean > 0.0
 
 
 @pytest.mark.parametrize(
