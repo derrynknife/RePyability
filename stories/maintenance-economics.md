@@ -1,17 +1,25 @@
 # Maintenance economics: the net present value of a plan
 
-Stories MX-01 to MX-17. Status: all **open** or **partial** as of 0.11
-(October 2026).
+Stories MX-01 to MX-25: valuing a plan (MX-01 to MX-17) and keeping its
+value current as the plant changes (MX-18 to MX-25). Status as of 0.12
+(4 October 2026). The plan of work is in [ROADMAP.md](../ROADMAP.md).
 
 ## Why
 
-Every cost RePyability computes is undiscounted. `expected_cost_rate`,
-`total_cost` and `expected_cost` all say so, and `allocate_redundancy`
-states "Discounting is not modelled". But the people who decide on
-maintenance plans, spares, crews and redundancy decide on money, at a cost
-of capital, over a horizon. Over 20 years discounting changes which option
-wins. The end-to-end pump-station study in #184 (item 3) found exactly that
-and had to discount by hand.
+The people who decide on maintenance plans, spares, crews and redundancy
+decide on money, at a cost of capital, over a horizon, and over 20 years
+discounting changes which option wins. The end-to-end pump-station study
+in #184 (item 3) found exactly that and had to discount by hand.
+
+0.12 took the first step: `total_cost` and `allocate_redundancy` take a
+`discount_rate` (a continuous rate per unit time of the models), buying
+the components at the start and discounting the **long-run** cost rate
+over the horizon, `(1 - exp(-r H)) / r`. Everything else is still
+undiscounted: the costs from new (`expected_cost`, where the early years
+weigh most), the interval optimisers, the simulations and their
+distributions. There is no value side (what the plant earns while it
+runs), no plan on a calendar, no cash-flow table, and no way to keep a
+plan's value current as the plant changes.
 
 The question they ask is not "what is the cheapest plan per hour in the
 long run" but "**which plan creates the most value, at the least cost,
@@ -71,6 +79,9 @@ change may deliver several.
 | **B5** | Crews as cash flows and as options: crew salaries as rate costs; a contract crew called in when the repair queue reaches a threshold, at a call-out fee and a premium rate. |
 | **B6** | `objective="npv"` / `"eac"` in the optimisers (`optimal_replacement_intervals`, `optimal_inspection_intervals`, `allocate_redundancy`), with constraints kept (availability, PFDavg); the discount-rate sensitivity (rho). |
 | **B7** | Parameter uncertainty carried into NPV: the fitted models' uncertainty propagated to the NPV and to the decision (see the uncertainty-importance issue, #196). |
+| **B8** | A live plant: the diagram, the plan, the valuation and each component's current state held together, updated by events (a sensor reading, a replacement, a repair, a failure, an inspection, a refit of a life model, a new price curve), each re-valuing the plan from the state now, recomputing only what the event touched, and recording what changed the value and by how much. |
+| **B9** | Re-optimising a plan from the state now (receding horizon): the actions to bring forward, defer, add or drop, with what each is worth, only proposed when it beats the current plan by a margin, within crews, outage windows, budgets and safety limits. |
+| **B10** | An agent-facing contract: every input and result as plain JSON with its units, a stable schema, `analysis_routes` coverage of every NPV analysis, refusals that say what to do, and a valuation reproducible from its saved inputs (state, plan, models, prices, seed). |
 
 Valuing from the components' current states uses the existing `state=`
 (`NodeState`), which the NPV must accept wherever the curves do.
@@ -192,8 +203,8 @@ Not an API decision, but what every story's answer should carry:
     (IEC 61508-6, annex B), computed independently.
 - **Needs:** B1, B6 (constrained, with offsets).
 - **References:** IEC 61508-6; #184 item 4.
-- **Status:** partial: `optimal_inspection_intervals` meets the target
-  undiscounted, without offsets.
+- **Status:** partial: since 0.12 `optimal_inspection_intervals` searches
+  the offsets too (`offsets=`) and meets the target, undiscounted.
 
 ---
 
@@ -223,8 +234,9 @@ Not an API decision, but what every story's answer should carry:
     hand gives the same PV within the grid's error.
 - **Needs:** B1, B6.
 - **References:** IEC 60300-3-3 (life cycle costing); ISO 15663.
-- **Status:** partial: the undiscounted comparison exists; the prototype
-  discounting of `expected_cost(t)` works by hand.
+- **Status:** partial: `total_cost(horizon, discount_rate=)` (0.12) gives
+  each design's present value at its long-run cost rate; the costs from
+  new, payback, IRR and the cash-flow table do not exist.
 
 ### MX-06: Should we add a fourth pump train?
 
@@ -245,7 +257,10 @@ Not an API decision, but what every story's answer should carry:
     same design as comparing the NPVs by hand.
   - A whole train (a set of nodes) can be the unit copied (#184 item 2).
 - **Needs:** B1, B6; per-train allocation (#184 item 2).
-- **Status:** open.
+- **Status:** partial: 0.12's `allocate_redundancy(trains=...,
+  discount_rate=...)` answers it with the long-run cost rate (a fourth
+  train that pays undiscounted no longer does at 15% a year). Left: the
+  costs from new, the value side, and a crew-limited plant.
 
 ### MX-07: What's the most we should pay for Vendor B's valve?
 
@@ -406,7 +421,9 @@ Not an API decision, but what every story's answer should carry:
 - **Needs:** B1, B5.
 - **Status:** partial: `expected_cost(t)` already runs over time with
   `repair_crews` for exponential components, so the static crew comparison
-  can be discounted by hand; the call-out option does not exist.
+  can be discounted by hand, and since 0.12 the intervals can be chosen
+  with `assume_unlimited_crews=True` and checked by simulation with
+  `with_intervals(plan)`; the call-out option does not exist.
 
 ### MX-14: How many seals should we hold, with a 12-week lead time?
 
@@ -425,7 +442,7 @@ Not an API decision, but what every story's answer should carry:
   - Pooled stock across interchangeable parts (#183) valued the same way.
 - **Needs:** B1, B2 (holding cost as a rate cost); #183.
 - **Status:** partial: stock for a fill rate or stock-out target exists,
-  without costs.
+  and since 0.12 for pooled parts (`parts=`, #183), without costs.
 
 ### MX-15: What is better data worth?
 
@@ -492,3 +509,178 @@ Not an API decision, but what every story's answer should carry:
     the horizon.
 - **Needs:** B1, B3; the timelines' measures.
 - **Status:** open.
+
+---
+
+## Live valuation: keeping the plan's value current
+
+A plan's value changes every time the plant does: a vibration reading
+rises, a pump is replaced, a seal fails, a month of new failure data
+narrows a fit, the forward curve moves. Today each of those means rebuilding
+the analysis by hand. The aim is that RePyability holds the plant as it is
+now and re-values the plan as each event arrives, so that Reliafy (or any
+agent) can keep a maintenance plan optimal by NPV through all the churn of
+real maintenance work.
+
+The building blocks are B8 to B10, on top of B1 to B7. RePyability already
+starts every exact analysis of a `RepairableRBD` from the components' current
+states (`state=`, `NodeState`: age, up or down, how long down, the phase on
+a calendar); what is missing is the state a sensor or a repair history
+gives (a degradation level, a virtual age, a refitted model), the events
+that move it, and the valuation that follows it.
+
+### MX-18: A sensor reading moves the plan's value
+
+- **Persona:** a condition-monitoring engineer with monthly vibration
+  readings on the main bearings of a pump station.
+- **Story:** As a condition-monitoring engineer, I want each new reading
+  to update the value of the current maintenance plan, so that a
+  deteriorating bearing shows up as money, not just as a trend line.
+- **In their words:** "Bearing 2 just read 5.5 mm/s. What does that do to
+  the plan, and should we change it?"
+- **Setting:** the gamma-process bearing of SurPyval's condition-monitoring
+  scenario card (healthy 1.0 mm/s, alarm 7 mm/s, increments shape 4.0 per
+  year and scale 0.5), as one component of the pump station of MX-06, with
+  a plan that replaces bearings every three years.
+- **Acceptance criteria:**
+  - The plan's NPV before and after the reading, and the change attributed
+    to the bearing: its remaining-life distribution from 5.5 mm/s (from
+    SurPyval's degradation model) replaces its age-based life.
+  - The live update equals a full re-valuation from scratch with the same
+    state, to the exact methods' precision (incremental is not
+    approximate).
+  - The bearing's conditional life checked independently: the gamma
+    process's first passage from 5.5 to 7 mm/s by simulation.
+  - Fast enough to run on every reading: about a second for a plant of 50
+    components with exact curves.
+- **Needs:** B1, B8; SurPyval: a degradation model's remaining life from a
+  current level, as a life model RePyability can condition on.
+- **Status:** open.
+
+### MX-19: A component is replaced, or repaired imperfectly
+
+- **Persona:** a maintenance planner closing work orders.
+- **Story:** As a planner, I want a completed work order to reset the
+  component in the plant model, so that the plan's value and its next
+  actions follow what was actually done.
+- **In their words:** "We replaced the seal on pump 3 yesterday, and
+  overhauled the gearbox (not as good as new). Update the plan."
+- **Acceptance criteria:**
+  - A replacement sets the component new (age 0) at the work order's time;
+    an imperfect repair sets its virtual age (Kijima, with the restoration
+    factor fitted in SurPyval); the NPV and the component's next scheduled
+    action move accordingly.
+  - Events can arrive late and out of order (a work order closed a week
+    after the job) and give the same state as in order.
+  - Checked against re-valuing from scratch with the resulting states.
+- **Needs:** B3, B8.
+- **Status:** open.
+
+### MX-20: A failure happens
+
+- **Persona:** an operations manager on call.
+- **Story:** As an operations manager, I want a failure to update the
+  plant's state, its expected downtime and the plan's value at once, so
+  that I see what the failure costs and what the plan now recommends.
+- **In their words:** "Pump 2 tripped. What does it cost us, and does the
+  plan change?"
+- **Acceptance criteria:**
+  - The failed component is down (`NodeState(alive=False)`) and queued for
+    a crew if crews are limited; spares are drawn from stock; the NPV
+    change is attributed to the failure.
+  - The plan's other actions are re-valued from the new state (the
+    standby now carries the duty, so its replacement may come forward).
+- **Needs:** B5, B8, B9.
+- **Status:** partial: the exact analyses already start from a component
+  that is down (`NodeState(alive=False, down_for=...)`); the valuation and
+  the spares draw-down do not exist.
+
+### MX-21: New failure data updates the fleet's life models
+
+- **Persona:** a reliability engineer who refits life models monthly.
+- **Story:** As a reliability engineer, I want a refit (or a Bayesian
+  update) of a component type's life to update every plant that uses it,
+  with its uncertainty, so that the plan's value reflects what we now know.
+- **In their words:** "We've had four more seal failures this quarter. Does
+  that change the seal replacement interval anywhere?"
+- **Acceptance criteria:**
+  - Replacing a component type's model (with its covariance) re-values
+    every component of that type, keeping each one's own age or condition.
+  - The NPV distribution from parameter uncertainty (B7) narrows or moves
+    as the data say, checked against re-sampling the fit by hand.
+  - The value of the next piece of information is reported (MX-15).
+- **Needs:** B7, B8; SurPyval: refitting with new data cheaply, or a
+  sequential update.
+- **Status:** open.
+
+### MX-22: Re-optimise the plan after an event
+
+- **Persona:** a maintenance planner and the agent that assists them.
+- **Story:** As a planner, I want the NPV-optimal plan re-computed from the
+  plant as it is now, so that I'm told when the best plan has changed, by
+  how much, and what to do differently.
+- **In their words:** "Given everything that's happened this month, is
+  the plan still the best one?"
+- **Acceptance criteria:**
+  - From the current state, the plan that maximises NPV over the horizon
+    within the constraints (crews, outage windows, a budget, availability
+    or PFDavg limits), warm-started from the current plan.
+  - Changes proposed only when they beat the current plan by a stated
+    margin (so the plan does not churn on noise), each with its value:
+    "bring pump 2's replacement forward to the March outage: +$45k".
+  - An independent check on a small plant: enumerate the candidate plans
+    and value each from scratch.
+- **Needs:** B6, B8, B9.
+- **Status:** open.
+
+### MX-23: The forward curve moves
+
+- **Persona:** a generator's asset manager working with the trading desk.
+- **Story:** As an asset manager, I want a new forward price curve to
+  re-value the plan and re-time its outages, so that planned work follows
+  the market.
+- **In their words:** "Winter prices just jumped. Should the overhaul move
+  to autumn?"
+- **Acceptance criteria:**
+  - The NPV under the new curve, and the outage timing re-optimised
+    (MX-10's question from the state now).
+  - Re-valuing under a new curve reuses the plant's availability curves
+    (prices change the value, not the reliability), so it is cheap.
+- **Needs:** B2, B8, B9.
+- **Status:** open.
+
+### MX-24: What is the plan worth now, and what changed?
+
+- **Persona:** an agent (Reliafy's, through its MCP tools) asked by an
+  engineer for a status report.
+- **Story:** As an agent, I want the plant's current valuation and the
+  history of what moved it, in one call with a stable schema, so that I can
+  answer "what changed since last week?" correctly and explain it.
+- **In their words:** (the engineer) "What's the plan worth now, why did
+  it drop, and what should we do next?"
+- **Acceptance criteria:**
+  - The current NPV, EAC and cash-flow table; each event since a given
+    time with its effect on the NPV, the effects adding up to the total
+    change; the recommended next actions with their value (MX-22).
+  - The plant (structure, plan, models, states, prices, events) saves to
+    and loads from JSON, and a saved valuation reproduces exactly.
+  - Units in every result (the models' time unit, currency, the rate's
+    period).
+- **Needs:** B8, B10.
+- **Status:** open.
+
+### MX-25: Tell me when the best action changes
+
+- **Persona:** a reliability lead who doesn't want to watch a dashboard.
+- **Story:** As a reliability lead, I want to be told when the plan's value
+  drops by more than a threshold, or when the recommended next action
+  changes, so that attention goes where the money is.
+- **In their words:** "Email me if the best thing to do on any of my
+  stations changes."
+- **Acceptance criteria:**
+  - RePyability reports, for each update, whether the NPV moved beyond a
+    threshold and whether the recommended actions changed (with the
+    reason); Reliafy turns that into alerts (it already has fleet alerts).
+- **Needs:** B8, B9, B10.
+- **Status:** open (RePyability's part: the change report).
+

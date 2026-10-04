@@ -190,6 +190,14 @@ anything; a refusal's message names the simulation to run instead. The
 [guide](https://derrynknife.github.io/RePyability/guide/saving/#what-is-exact-and-what-is-simulated)
 lists every method's route.
 
+## Roadmap
+
+Where RePyability is going, beyond the issue tracker: [ROADMAP.md](ROADMAP.md)
+holds the larger ideas and their designs (first among them a net present
+value simulator for maintenance plans, kept current as the plant changes),
+and [`stories/`](stories/README.md) the questions users and agents should be
+able to answer, with how we will know they are answered.
+
 ## Install
 RePyability can be installed via pip using the PyPI [repository](https://pypi.org/project/repyability/)
 
