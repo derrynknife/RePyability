@@ -11,7 +11,6 @@ from scipy.stats import poisson
 from repyability import RepairableRBD
 from repyability.rbd import _spares
 from repyability.rbd import routes as r
-from repyability.rbd._model_utils import lfp_extras
 
 E, W, L = (
     surv.Exponential.from_params,
@@ -227,7 +226,7 @@ def test_what_is_refused_and_checked():
         nested.spares_demand(100.0, nodes=["x"])
     never = single(
         {
-            "reliability": W([100.0, 1.5], **lfp_extras(0.5)),
+            "reliability": W([100.0, 1.5], lfp_p=0.5),
             "repairability": "instant",
         }
     )
