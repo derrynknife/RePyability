@@ -9,6 +9,7 @@ small helpers keeps that coupling in one place (easy to audit and to cover
 with a compatibility test) and gives the call sites intention-revealing names.
 """
 
+import functools
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -40,13 +41,44 @@ def is_fixed_probability(model) -> bool:
 
 
 #: The values of a surpyval parametric model's offset (``gamma``),
-#: limited-failure-population (``p``) and zero-inflation (``f0``)
-#: parameters that mean it has none of them.
-_PLAIN = {"gamma": 0.0, "p": 1.0, "f0": 0.0}
+#: limited-failure-population (``lfp_p``, which ``extras`` calls ``p``
+#: before surpyval 0.23) and zero-inflation (``f0``) parameters that mean
+#: it has none of them.
+_PLAIN = {"gamma": 0.0, "lfp_p": 1.0, "p": 1.0, "f0": 0.0}
+
+
+def lfp_p(model) -> Optional[float]:
+    """The share of a surpyval limited-failure-population model's units
+    that ever fail (1 for any other surpyval model): ``lfp_p``, its name
+    from surpyval 0.23 (SurPyval#608), or ``p`` before. From 0.23 ``p``
+    is deprecated, and names the parameter of a distribution that has one
+    (Bernoulli's). None for a model with neither."""
+    value = getattr(model, "lfp_p", None)
+    if value is None:
+        value = getattr(model, "p", None)
+    return value
+
+
+@functools.lru_cache(maxsize=None)
+def _lfp_keyword() -> str:
+    import inspect
+
+    from surpyval import Weibull
+
+    names = inspect.signature(Weibull.from_params).parameters
+    return "lfp_p" if "lfp_p" in names else "p"
+
+
+def lfp_extras(p) -> Dict[str, Any]:
+    """The keyword argument of surpyval's ``from_params`` for a
+    limited-failure proportion ``p``, by the name the installed surpyval
+    takes: ``{"lfp_p": p}`` from surpyval 0.23 (SurPyval#608), ``{"p":
+    p}`` before."""
+    return {_lfp_keyword(): p}
 
 
 def never_fails(model) -> float:
-    """The fraction of units that never fail: ``1 - p`` for a surpyval
+    """The fraction of units that never fail: ``1 - lfp_p`` for a surpyval
     limited-failure-population model; for a standby arrangement whose
     survival function is a convolution (a sum of lifetimes, some of which
     may never end), the probability that it never fails; 0 for any
@@ -54,7 +86,7 @@ def never_fails(model) -> float:
     if distribution_name(model) is None:
         survival = getattr(model, "_sf_model", None)
         return float(getattr(survival, "never_fails", 0.0) or 0.0)
-    p = getattr(model, "p", None)
+    p = lfp_p(model)
     if p is None:
         return 0.0
     return max(0.0, 1.0 - float(p))

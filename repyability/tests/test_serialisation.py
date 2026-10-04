@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 import surpyval as surv
 
+from repyability.rbd._model_utils import lfp_extras
 from repyability.rbd.non_repairable_rbd import NonRepairableRBD
 from repyability.rbd.repairable_rbd import RepairableRBD
 from repyability.rbd.repeated_node import RepeatedNode
@@ -167,7 +168,7 @@ DISTRIBUTIONS = [
 
 @pytest.mark.parametrize(
     "extras",
-    [{}, {"gamma": 5.0}, {"p": 0.9}, {"f0": 0.1}],
+    [{}, {"gamma": 5.0}, lfp_extras(0.9), {"f0": 0.1}],
     ids=["plain", "offset", "p", "f0"],
 )
 @pytest.mark.parametrize(

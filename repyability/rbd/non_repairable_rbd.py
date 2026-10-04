@@ -43,6 +43,7 @@ from . import redundancy_allocation
 from ._mean_lifetime import mean_lifetime, model_knots
 from ._model_utils import (
     is_fixed_probability,
+    lfp_p,
     model_mean,
     parametric_spec,
     refuse_nonparametric,
@@ -2658,9 +2659,10 @@ class NonRepairableRBD(RBD):
         return (
             params_a.shape == params_b.shape
             and bool(np.all(params_a == params_b))
+            and lfp_p(a) == lfp_p(b)
             and all(
                 getattr(a, extra, None) == getattr(b, extra, None)
-                for extra in ("gamma", "p", "f0")
+                for extra in ("gamma", "f0")
             )
         )
 

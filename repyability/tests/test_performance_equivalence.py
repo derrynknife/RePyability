@@ -64,6 +64,7 @@ from repyability.rbd import (
     repairable_rbd,
     standby_node,
 )
+from repyability.rbd._model_utils import lfp_extras
 from repyability.rbd.helper_classes import (
     PerfectReliability,
     PerfectUnreliability,
@@ -338,7 +339,11 @@ def test_inverse_sampler_reproduces_surpyval(name):
 
 @pytest.mark.parametrize(
     "model",
-    [W([100, 2], p=0.9), W([100, 2], f0=0.1), W([100, 2], p=0.9, f0=0.1)],
+    [
+        W([100, 2], **lfp_extras(0.9)),
+        W([100, 2], f0=0.1),
+        W([100, 2], **lfp_extras(0.9), f0=0.1),
+    ],
     ids=["lfp", "zi", "both"],
 )
 def test_inverse_sampler_draws_defective_models_by_their_quantiles(model):

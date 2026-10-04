@@ -28,6 +28,7 @@ from typing import Callable, Optional
 import numpy as np
 from surpyval import Parametric
 
+from ._model_utils import lfp_p
 from .helper_classes import PerfectReliability, PerfectUnreliability
 
 Sampler = Callable[[np.ndarray], np.ndarray]
@@ -102,7 +103,7 @@ def inverse_sampler(model) -> Optional[Sampler]:
         and type(model).random is Parametric.random
         and hasattr(model.dist, "qf")
     ):
-        if model.p == 1 and model.f0 == 0:
+        if lfp_p(model) == 1 and model.f0 == 0:
             dist, params, gamma = model.dist, model.params, model.gamma
             return lambda u: dist.qf(u, *params) + gamma
         return lambda u: np.asarray(model.qf(u), dtype=float)

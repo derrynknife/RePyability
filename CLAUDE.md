@@ -275,6 +275,14 @@ major.minor.
   passes the name the installed surpyval takes. Pass `alpha_ci` directly
   once the minimum surpyval is 0.23.
 
+- **The limited-failure proportion's name** (surpyval #608). surpyval
+  0.23 renames `p` (the `from_params` argument, the attribute and the
+  `extras` key) to `lfp_p`, which 0.22 does not know: `_model_utils.lfp_p`
+  reads either, `lfp_extras` gives `from_params`' keyword (the tests and
+  files saved before 0.10 use it), `_PLAIN` holds both keys, and
+  `NonRepairable.mean_availability`'s example is skipped. Read and pass
+  `lfp_p` directly, and run the example, once the minimum surpyval is 0.23.
+
 List each new workaround here with its surpyval issue and where it lives,
 so it can go once the minimum surpyval in `pyproject.toml` includes the
 fix.
