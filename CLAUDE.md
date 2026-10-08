@@ -142,11 +142,14 @@
   `test_bdd_records.py` checks both modes against the records; re-record
   only after a deliberate change of the plans.
 - **The random streams (`repyability/rbd/_streams.py`) define every seeded
-  result.** Changing how a stream is named, seeded or laid out (its width,
-  `BLOCK_DRAWS`, `MAX_WIDTH`, `first_rows`, the expected draws in
-  `_expected_draws`) changes seeded results: that is a behaviour change for
-  the CHANGELOG, `seeded_event_loop.json` must be re-recorded, and the docs'
-  quoted numbers updated. The rows of a chunk only affect speed.
+  result** (#209): uniform `k` of simulation `r` is numpy's Philox's with
+  the stream's key (from the entropy and the stream's name) and the counter
+  `(0, r, 0, 0)` (`_philox`). Changing a stream's name, key or that
+  definition changes seeded results: a behaviour change for the CHANGELOG,
+  with `seeded_event_loop.json` re-recorded and the docs' quoted numbers
+  updated. The layout (`first_rows`, `block_width`, `BLOCK_DRAWS`,
+  `MAX_WIDTH`, a chunk's rows) only affects speed: `test_streams.py`
+  checks it changes nothing.
 - **The repair crews' Markov chain (`repyability/rbd/_crew_chain.py`)
   copies the simulation's queue (`_Crews`)**: which waiting job a free crew
   takes, and how instant jobs pass through. A change to one goes into the

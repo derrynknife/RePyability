@@ -300,16 +300,16 @@ def with_costs(
     start: int,
     states: Optional[dict] = None,
     entropy: Optional[int] = None,
-    widths: Optional[dict] = None,
+    common: bool = False,
 ):
     """Simulations ``start`` to ``start + N - 1`` of the run ``seed``
     seeds (or of the run of ``entropy``, a shard's), from new or from the
     components' checked ``states``, in the event loop: each component's
     histories (as ``simulate`` has them) and the run's tally, which keeps
     each simulation's cost beside them (for a conditional run's modules,
-    see ``RepairableRBD._conditional_run``). With ``widths``, its streams
-    take those widths, to draw what another system's take (common random
-    numbers, see ``RepairableRBD._common_widths``)."""
+    see ``RepairableRBD._conditional_run``). With ``common``, every draw
+    must come from a stream, for common random numbers with another
+    system's run."""
     from repyability.rbd.repairable_rbd import _UNSTREAMED
 
     if engine not in ("auto", "python", "numba"):
@@ -322,7 +322,7 @@ def with_costs(
         entropy = _streams.entropy_of(seed)
     states = states or {}
     plan, complete = rbd._stream_plan(
-        t_simulation, entropy, antithetic, widths, states
+        t_simulation, entropy, antithetic, states
     )
     if antithetic and not complete:
         raise NotImplementedError(_UNSTREAMED)
@@ -338,8 +338,7 @@ def with_costs(
         jobs=jobs,
         engine=_engine(rbd, plan, engine, N, states=states),
         entropy=entropy,
-        widths=widths,
-        common=widths is not None,
+        common=common,
         first=start,
         states=states,
         histories=True,

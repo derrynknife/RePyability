@@ -128,10 +128,10 @@ plant = RepairableRBD(
 )
 runs = plant.simulate_timelines(8760.0, mc_samples=2000, seed=1)
 year = runs.system
-np.mean(year.failures == 0)     # -> 0.5875   no plant failure in the year
-year.failures.mean()            # -> 0.5465
-year.failures_by_cause()["v"].mean()   # -> 0.4325   most of them the valve's
-runs.components["a"].failures.mean()   # -> 4.53      a pump fails often
+np.mean(year.failures == 0)     # -> 0.5870   no plant failure in the year
+year.failures.mean()            # -> 0.5170
+year.failures_by_cause()["v"].mean()   # -> 0.4000   most of them the valve's
+runs.components["a"].failures.mean()   # -> 4.59      a pump fails often
 ```
 
 The pumps fail four or five times a year each, but rarely together: most of
@@ -142,7 +142,7 @@ from each simulation's own history:
 longest = np.array(
     [np.max(np.diff(h.down_intervals, axis=1), initial=0.0) for h in year]
 )
-np.percentile(longest, 95)      # -> 15.04
+np.percentile(longest, 95)      # -> 14.85
 ```
 
 The result is a [`TimelineSimulation`][repyability.TimelineSimulation]:
@@ -221,8 +221,8 @@ from repyability import NodeState
 
 now = {"a": NodeState(alive=False, down_for=10.0), "b": NodeState(age=1500.0)}
 quarter = plant.simulate_timelines(2190.0, mc_samples=2000, seed=1, state=now)
-np.mean(quarter.system.failures == 0)            # -> 0.867   0.881 from new
-quarter.system.failures_by_cause()["b"].mean()   # -> 0.020   the worn pump's
+np.mean(quarter.system.failures == 0)            # -> 0.875   0.887 from new
+quarter.system.failures_by_cause()["b"].mean()   # -> 0.023   the worn pump's
 ```
 
 These are `availability(state=now)`'s simulations, each history its own. A

@@ -488,7 +488,7 @@ and revealed failures' repairs of any distribution:
 
 ```python
 run = shared.availability(1000.0, mc_samples=2000, seed=0)
-run.system_uptime / (2000 * 1000.0)          # -> 0.9841   simulated
+run.system_uptime / (2000 * 1000.0)          # -> 0.9845   simulated
 run.mean_availability_interval().estimate    # -> 0.98429  exact, as the chains give it
 ```
 

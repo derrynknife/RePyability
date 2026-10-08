@@ -780,7 +780,7 @@ class _ModuleRun:
         self.shards = None
         if self.sub is not None and shard_map is not None:
             plan, _ = self.sub._stream_plan(
-                T, entropy, antithetic, None, self.module_states
+                T, entropy, antithetic, self.module_states
             )
             template = {
                 **self.sub._shard_template(
@@ -805,7 +805,6 @@ class _ModuleRun:
         # The exact twin's stand-ins for the modules, with common random
         # numbers, and its exact expected values.
         self.twin_sub: Optional["RepairableRBD"] = None
-        self.widths: Optional[dict] = None
         self.twin_module_states: dict = {}
         self.exacts = _Exacts(0.0)
         if control_variate and self.sub is not None:
@@ -825,9 +824,6 @@ class _ModuleRun:
                 for node in modules
                 if node in twin_states
             }
-            self.widths = self.sub._common_widths(
-                self.twin_sub, T, self.module_states, self.twin_module_states
-            )
         self.twin_uptimes: List[np.ndarray] = []
         self.twin_costs: List[np.ndarray] = []
         self.curve_x = _conditional.steps(curve_points, T)
@@ -970,7 +966,7 @@ class _ModuleRun:
                 first,
                 self.module_states,
                 entropy=self.entropy,
-                widths=self.widths,
+                common=self.twin_sub is not None,
             )
             histories = [data[node] for node in modules]
             if self.sub.has_costs:
@@ -1007,7 +1003,7 @@ class _ModuleRun:
                 first,
                 self.twin_module_states,
                 entropy=self.entropy,
-                widths=self.widths,
+                common=self.twin_sub is not None,
             )
             twin_paths = _conditional.paths(
                 [data[node] for node in modules], count, T
@@ -6986,22 +6982,11 @@ class RepairableRBD(RBD):
         t_simulation: float,
         entropy,
         antithetic: bool,
-        widths: Optional[dict] = None,
         states: Optional[dict] = None,
     ) -> Tuple[_streams.Plan, bool]:
-        """A run's streams (``widths`` overriding some of their widths, as
-        ``compare`` does to line up two systems' streams), and whether every
-        draw comes from one; the components start from ``states``."""
+        """A run's streams, and whether every draw comes from one; the
+        components start from ``states``."""
         specs, complete = self._stream_specs(t_simulation, states=states)
-        if widths:
-            specs = {
-                name: (
-                    dataclasses.replace(spec, width=widths[name])
-                    if name in widths
-                    else spec
-                )
-                for name, spec in specs.items()
-            }
         return _streams.Plan(entropy, antithetic, specs), complete
 
     def _streamed_components(
@@ -7114,7 +7099,6 @@ class RepairableRBD(RBD):
         capacity: Optional[_CapacityRecorder],
         entropy,
         antithetic: bool,
-        widths: Optional[dict] = None,
         states: Optional[dict] = None,
         history: bool = False,
     ) -> "_Context":
@@ -7126,7 +7110,7 @@ class RepairableRBD(RBD):
         ``_replicate``)."""
         states = {} if states is None else states
         plan, complete = self._stream_plan(
-            t_simulation, entropy, antithetic, widths, states
+            t_simulation, entropy, antithetic, states
         )
         run = _streams.Run(plan, reseed=not complete)
         has_costs = self.has_costs
@@ -17088,7 +17072,7 @@ class RepairableRBD(RBD):
         )
         # What a run checks before it simulates (see _run).
         plan, complete = self._stream_plan(
-            t_simulation, entropy, antithetic, None, states
+            t_simulation, entropy, antithetic, states
         )
         if antithetic and not complete:
             raise NotImplementedError(_UNSTREAMED)
@@ -17582,7 +17566,6 @@ class RepairableRBD(RBD):
         jobs = None if n_jobs is None else montecarlo.jobs(n_jobs)
         states = [rbd._simulation_states(state) for rbd in (self, other)]
         entropy = _streams.entropy_of(seed)
-        widths = self._common_widths(other, t_simulation, *states)
         values = []
         for rbd, start in zip((self, other), states):
             tally = rbd._run(
@@ -17596,7 +17579,6 @@ class RepairableRBD(RBD):
                 jobs=jobs,
                 engine=engine,
                 entropy=entropy,
-                widths=widths,
                 common=True,
                 states=start,
             )
@@ -17650,25 +17632,6 @@ class RepairableRBD(RBD):
                 running = 0.0
             values.append(running + rbd.acquisition_cost)
         return float(values[0] - values[1])
-
-    def _common_widths(
-        self,
-        other: "RepairableRBD",
-        t_simulation: float,
-        states: Optional[dict] = None,
-        other_states: Optional[dict] = None,
-    ) -> dict:
-        """The block widths two systems' streams take in ``compare``: for
-        each stream both have, the narrower of the two, so that each
-        simulation of either draws the same uniforms from it. The systems
-        start from ``states`` and ``other_states``."""
-        mine, _ = self._stream_specs(t_simulation, states=states)
-        theirs, _ = other._stream_specs(t_simulation, states=other_states)
-        return {
-            name: min(spec.width, theirs[name].width)
-            for name, spec in mine.items()
-            if name in theirs
-        }
 
     def _twin(self) -> Tuple["RepairableRBD", List[str]]:
         """This system's exact twin (#154), and what it changes, in words.
@@ -17981,7 +17944,7 @@ class RepairableRBD(RBD):
                 curve_points,
             )
             plan, _ = self._stream_plan(
-                t_simulation, entropy, antithetic, None, states
+                t_simulation, entropy, antithetic, states
             )
             step = self._shard_size(plan, shard_size)
             sharded = (shard_map, template, step)
@@ -18558,7 +18521,6 @@ class RepairableRBD(RBD):
         twin_states = twin._simulation_states(state, working | broken)
         exact, exact_cost = exacts.availability, exacts.cost
         entropy = _streams.entropy_of(seed)
-        widths = self._common_widths(twin, t_simulation, states, twin_states)
         tally: Optional[_Tally] = None
         twin_tally: Optional[_Tally] = None
         first, count = 0, N
@@ -18576,7 +18538,6 @@ class RepairableRBD(RBD):
                 jobs=jobs,
                 engine=engine,
                 entropy=entropy,
-                widths=widths,
                 common=True,
                 first=first,
                 states=states,
@@ -18600,7 +18561,6 @@ class RepairableRBD(RBD):
                     jobs=jobs,
                     engine=engine,
                     entropy=entropy,
-                    widths=widths,
                     common=True,
                     first=first,
                     states=twin_states,
@@ -18674,7 +18634,6 @@ class RepairableRBD(RBD):
         jobs: Optional[int] = None,
         engine: str = "auto",
         entropy: Any = None,
-        widths: Optional[dict] = None,
         common: bool = False,
         replacements: bool = False,
         first: int = 0,
@@ -18696,7 +18655,7 @@ class RepairableRBD(RBD):
         processes or threads (``jobs``), and in a run to a tolerance as in a
         run of its final size. The global RNG is left as it was, except for
         the number drawn for the entropy. ``compare`` passes both systems
-        the same ``entropy`` and ``widths``, and ``common``: that, like
+        the same ``entropy``, and ``common``: that, like
         ``antithetic``, needs every draw to come from a stream. With
         ``capacity``, each simulation also follows the system's capacity;
         with ``replacements``, the tally keeps each simulation's
@@ -18732,7 +18691,7 @@ class RepairableRBD(RBD):
                 if seed is None:
                     after = np.random.get_state()
             plan, complete = self._stream_plan(
-                t_simulation, entropy, antithetic, widths, states
+                t_simulation, entropy, antithetic, states
             )
             if (antithetic or common) and not complete:
                 raise NotImplementedError(_UNSTREAMED)
@@ -18784,7 +18743,6 @@ class RepairableRBD(RBD):
                         capacity,
                         entropy,
                         antithetic,
-                        widths,
                         states,
                         histories,
                     ),

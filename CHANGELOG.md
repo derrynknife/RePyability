@@ -103,6 +103,26 @@ other release, fixes included, the minor.
 
 ### Changed
 
+- **Behaviour change: a `RepairableRBD` simulation's random numbers are
+  counter-based (#209), so seeded results differ from 0.12's.** Uniform `k`
+  of simulation `r` from a stream is now the `k`-th of numpy's Philox
+  generator keyed from the run's seed and the stream's name, from the
+  counter `(0, r, 0, 0)`: a function of those alone. Each block of
+  simulations had a PCG64 generator of its own, whose numbers went to a
+  simulation by the block's width, which followed from the component's
+  models and the window, so a component's draws hung on how they were laid
+  out. Now they do not: the layout (the blocks' widths and chunks) only
+  decides how fast they are worked out, and `compare` and the control
+  variate no longer give two systems' streams the same widths, which could
+  make a seeded run's simulations differ with and without them. Results
+  are as accurate as before, with other numbers: a seeded run gives
+  different estimates, within their standard errors. With numba, Philox
+  is compiled and a run takes as long as before; without it, working the
+  numbers out takes longer (about 90 ns a uniform rather than 5), and a run
+  of eight components on the Python engine took about a sixth longer.
+  Engines from other
+  packages read the run's blocks as before, but their numbers changed:
+  `engines.API` is now 2.
 - **`simulate_timelines` always records its histories in the event loop
   (#205).** On the Python engine, independent components' histories were
   drawn from their streams by a second implementation of their lives and

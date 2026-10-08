@@ -435,7 +435,7 @@ def test_compare_costs_against_the_exact_difference():
     assert default.estimate == pytest.approx(exact, rel=1e-6)
 
 
-def keyed_uptimes(rbd, n, key, widths):
+def keyed_uptimes(rbd, n, key):
     tally = rbd._run(
         T,
         set(),
@@ -445,20 +445,9 @@ def keyed_uptimes(rbd, n, key, widths):
         False,
         None,
         entropy=key,
-        widths=widths,
         common=True,
     )
     return np.asarray(tally.uptimes)
-
-
-def common_widths(*rbds):
-    """The narrowest width each stream has in any of ``rbds``, as
-    ``compare`` gives two systems."""
-    widths: dict = {}
-    for rbd in rbds:
-        for name, spec in rbd._stream_specs(T)[0].items():
-            widths[name] = min(widths.get(name, spec.width), spec.width)
-    return widths
 
 
 def test_the_same_component_fails_and_is_repaired_alike():
@@ -472,10 +461,9 @@ def test_the_same_component_fails_and_is_repaired_alike():
         {"p1": pump(1.0), "p2": pump(1.0)},
     )
     slow = RepairableRBD([("s", "p1"), ("p1", "t")], {"p1": pump(3.0)})
-    widths = common_widths(one, two, slow)
     for key in (1, 2, 3):
         up = {
-            name: keyed_uptimes(rbd, 300, key, widths)
+            name: keyed_uptimes(rbd, 300, key)
             for name, rbd in (("one", one), ("two", two), ("slow", slow))
         }
         spare = up["two"] - up["one"]

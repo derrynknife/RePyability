@@ -55,7 +55,6 @@ class Engine:
             return _compiled.Runner(
                 rbd, plan, tally, progress, working, broken, method, jobs
             )
-        widths = {name: spec.width for name, spec in plan.specs.items()}
         context = (
             tally.t_simulation,
             working,
@@ -64,7 +63,6 @@ class Engine:
             None,
             plan.entropy,
             plan.antithetic,
-            widths,
         )
         return repairable_rbd._PythonRunner(
             rbd, tally, progress, context, jobs

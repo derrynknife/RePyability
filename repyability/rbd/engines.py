@@ -42,7 +42,7 @@ from typing import Any, Dict, List, Optional
 from repyability.utils.wrappers import outside_level
 
 #: The version of the engine interface.
-API = 1
+API = 2
 #: The entry point group engines are registered under.
 GROUP = "repyability.engines"
 #: The names the built-in engines (and ``engine="auto"``) take.
