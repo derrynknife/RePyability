@@ -359,21 +359,26 @@ def test_inverse_sampler_draws_defective_models_by_their_quantiles(model):
     assert_same_rng_state(rng_state(), after_single_draws)
 
 
-def test_a_fixed_probability_is_declined_or_reproduced():
+def test_a_fixed_probability_is_declined_or_drawn_as_lifetimes():
     # surpyval 0.23's FixedEventProbability has no quantile function, so its
     # draws are left to surpyval; its development branch gives it one, and
-    # the sampler must then reproduce its draws, as it does any other's.
+    # the sampler then draws its lifetimes by it: 0 (it fails at once)
+    # exactly where surpyval's own draw from the same uniform is the event
+    # (an indicator of 1, its fit's outcome), and never otherwise.
     model = FixedEventProbability.from_params(0.1)
     sampler = _sampling.inverse_sampler(model)
     if sampler is None:
         assert not hasattr(model.dist, "qf")
         return
     np.random.seed(3)
-    expected = np.concatenate([model.random(1) for _ in range(200)])
+    outcomes = np.concatenate([model.random(1) for _ in range(200)])
     after_single_draws = rng_state()
     np.random.seed(3)
-    assert np.array_equal(sampler(np.random.random_sample(200)), expected)
+    lives = sampler(np.random.random_sample(200))
     assert_same_rng_state(rng_state(), after_single_draws)
+    if np.issubdtype(outcomes.dtype, np.integer):
+        outcomes = np.where(outcomes == 1, 0.0, np.inf)
+    assert np.array_equal(lives, outcomes)
 
 
 @pytest.mark.parametrize(
