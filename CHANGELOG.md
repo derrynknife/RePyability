@@ -119,6 +119,12 @@ other release, fixes included, the minor.
   when the `RepairableRBD` is built (an `ExactEventTime` of 0 for both its
   life and its repair). A simulation would change its state without end:
   `availability()` never returned, and `simulate_timelines` refused it.
+- **numba's engine takes every level's events in one loop (#206).** The
+  system's own events and a nested RBD's were written out twice in the
+  compiled loop; one loop now takes both, a nested RBD's to its next change
+  as it is wanted. Results are the same, bit for bit. A system with nested
+  RBDs runs faster (a three-level system in about half the time), the
+  others as before.
 - **surpyval 0.23 or later is required** (0.22 was). Its next release drops
   0.22's name for a limited-failure population's share that ever fails,
   `p`, for `lfp_p`, which 0.22 does not know, so no example could be

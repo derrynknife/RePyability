@@ -52,10 +52,12 @@
   simulate, `_compiled.unsupported` sends to Python: numba's own loop takes
   `numba=True`, as it also runs maintenance, inspections, repair crews,
   standby groups, nested RBDs and capacities (#155), while engines from
-  other packages keep the plain-components contract. Inside `_kernel`, the
-  system's own events (`_simulate`) and a nested RBD's (`_advance`, which
-  copies `RepairableRBD.next_event`) are written out separately, for speed:
-  a change to one goes into the other too.
+  other packages keep the plain-components contract. Inside `_kernel`, one
+  loop (`_simulate`) takes every level's events, the system's and its
+  nested RBDs' (#206). Per-event helpers there take few arrays: each array
+  a call binds costs reference counting that numba cannot prune in a
+  function this size, and passing the run's tuples to a function per
+  simulation cost several times the loop (measured in #206).
 - **Simulations take turns across threads (#216).** The event loop keeps
   a run's state on the diagram (`_RUN_STATE`) and draws that cannot be
   streamed come from numpy's global RNG, so a run holds
@@ -77,7 +79,7 @@
 - **`simulate_timelines`' histories are the event loop's, on every
   engine.** Both loops record them as they run (`_replicate` with
   `_Context.history`; `_kernel._simulate` when given room to record, the
-  system's own level only, so `_advance` records nothing): each top-level
+  system's own level only): each top-level
   component's changes, and each of the system's with the component that
   made it (#205: there is no other path to them). A change to what the
   loops record goes into both: `test_timelines.py` checks every engine's
