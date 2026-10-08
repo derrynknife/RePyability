@@ -2935,12 +2935,10 @@ class TimelineSimulation(_ResultMapping):
     engine : str
         The engine that made them: ``"python"`` or ``"numba"``.
     method : str
-        How: ``"event loop"``, recorded by the event loop as it ran them,
-        or ``"streams"``, each component's history drawn straight from its
-        streams and the system's merged from theirs (independent
-        components, on the Python engine). Either way they are the
-        simulations ``availability`` runs with the same seed, with the same
-        histories.
+        How they were made: ``"event loop"``, recorded by the event loop as
+        it ran them, the simulations ``availability`` runs with the same
+        seed. (Until 0.13 independent components' histories could be
+        ``"streams"``, drawn from their streams, the same histories.)
     start : int
         The run's simulation the first history is (see ``join``).
 
@@ -2960,7 +2958,7 @@ class TimelineSimulation(_ResultMapping):
     ...     1000.0, mc_samples=500, seed=1, engine="python"
     ... )
     >>> runs.method, len(runs.system)
-    ('streams', 500)
+    ('event loop', 500)
     >>> pair, pump = runs.system.failures, runs.components["a"].failures
     >>> bool(pair.mean() < pump.mean())
     True
@@ -2981,7 +2979,7 @@ class TimelineSimulation(_ResultMapping):
     n_simulations: int
     antithetic: bool = False
     engine: str = "python"
-    method: str = "streams"
+    method: str = "event loop"
     start: int = 0
 
     @classmethod

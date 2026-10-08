@@ -95,6 +95,7 @@ from repyability.rbd._hidden_life import (
 from repyability.rbd._hidden_tests import TestedUnit
 from repyability.rbd._hidden_tests import check as check_tested
 from repyability.rbd._model_utils import (
+    distribution_name,
     failure_time_scale,
     is_fixed_probability,
     is_mixture,
@@ -4582,6 +4583,21 @@ def restoration_criticality_index_by_component(RCI):
     return rci
 
 
+def _at_zero(model) -> bool:
+    """Whether ``model`` is a time of exactly 0 (an instant repair is)."""
+    return distribution_name(model) == "ExactEventTime" and not np.any(
+        np.ravel(model.params)
+    )
+
+
+def _never_settles(component) -> bool:
+    """Whether a component fails at once and is repaired at once, so that
+    the event loop would change its state without end."""
+    return _at_zero(getattr(component, "reliability", None)) and _at_zero(
+        getattr(component, "time_to_replace", None)
+    )
+
+
 class RepairableRBD(RBD):
     """A reliability block diagram of repairable components.
 
@@ -5305,6 +5321,13 @@ class RepairableRBD(RBD):
         self.structure_check["is_missing_components"] = bool(missing)
         self.structure_check["nodes_with_no_component"] = missing
 
+        for node, component in components.items():
+            if _never_settles(component):
+                raise ValueError(
+                    f"Component {node!r} fails at once and is repaired at "
+                    "once, so a simulation would change its state without "
+                    "end: give its life or its repair some length."
+                )
         self.components = components
         self.repairability = copy(repairability)
         self._maintenance = self._validate_groups(maintenance_groups)
@@ -11338,14 +11361,7 @@ class RepairableRBD(RBD):
             else r.AnalysisRoute(
                 r.SIMULATED,
                 "The simulations availability runs, their histories kept "
-                "as timelines: recorded by the event loop as it runs"
-                + (
-                    "; on the Python engine, each component's drawn "
-                    "straight from its streams, and the system's merged "
-                    "from theirs."
-                    if _timeline_runs.independent(self, plan)
-                    else "."
-                )
+                "as timelines: recorded by the event loop as it runs."
                 + paired,
                 engine=engine,
                 engine_reason=why,
@@ -18960,14 +18976,16 @@ class RepairableRBD(RBD):
 
         trace = None if ctx.capacity is None else ctx.capacity.trace(status)
         # With ctx.history (see simulate_timelines): each component's state
-        # at 0 and its changes (the component, the time, and whether it is
-        # a planned change down), how many it has had, and each change of
-        # the system's (the time, the component whose change made it, which
-        # of that one's changes it was, and whether it was planned).
-        record: Optional[list] = [] if ctx.history else None
-        system_record: Optional[list] = [] if ctx.history else None
-        seen = [0] * n
-        at_start = [status[node] for node in index] if ctx.history else None
+        # at 0, the times of its changes, and which of them (their places
+        # among its changes) were planned changes down, maintenance or a
+        # test off line; and the system's changes: their times, the
+        # component whose change made each, which of its changes that was,
+        # and whether it was planned.
+        history = ctx.history
+        at_start = [status[node] for node in index] if history else None
+        times_of: list = [[] for _ in range(n)] if history else []
+        planned_of: list = [[] for _ in range(n)] if history else []
+        system_record: tuple = ([], [], [], []) if history else ()
         # The system's state, and its up and down time until ``since``, its
         # last change; each component's last change, and the system's up and
         # down time until then.
@@ -19100,17 +19118,10 @@ class RepairableRBD(RBD):
             status[node] = event.status
             if trace is not None:
                 trace.change(t, node, event.status)
-            if record is not None:
-                # A planned change down: maintenance or a test off line.
-                record.append(
-                    (
-                        c,
-                        t,
-                        not event.status
-                        and bool(event.preventive or event.inspection),
-                    )
-                )
-                seen[c] += 1
+            if history:
+                times_of[c].append(t)
+                if not event.status and (event.preventive or event.inspection):
+                    planned_of[c].append(len(times_of[c]) - 1)
             if event.status:
                 restored[c] += 1
             elif event.preventive:
@@ -19147,15 +19158,12 @@ class RepairableRBD(RBD):
                 system_up, system_down, since = system_up_t, system_down_t, t
                 up = not up
                 changes.append(t)
-                if system_record is not None:
-                    system_record.append(
-                        (
-                            t,
-                            c,
-                            seen[c] - 1,
-                            not up
-                            and bool(event.preventive or event.inspection),
-                        )
+                if history:
+                    system_record[0].append(t)
+                    system_record[1].append(c)
+                    system_record[2].append(len(times_of[c]) - 1)
+                    system_record[3].append(
+                        not up and bool(event.preventive or event.inspection)
                     )
                 if up:
                     deltas.append(1)
@@ -19232,9 +19240,9 @@ class RepairableRBD(RBD):
         rec.replacements = replaced
         rec.opportunistic = opportunistic
         rec.history = (
-            None
-            if record is None
-            else (at_start, record, started_up, system_record)
+            (at_start, times_of, planned_of, started_up, system_record)
+            if history
+            else None
         )
         if trace is not None:
             trace.finish(t_simulation, rec)

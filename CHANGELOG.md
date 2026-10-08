@@ -100,8 +100,25 @@ other release, fixes included, the minor.
   tests with it, a common-cause group's members moved together), so that
   a what-if agrees with them. A report or an app no longer needs the
   private `repyability.rbd._sensitivity` to name, show or move the levers.
+
 ### Changed
 
+- **`simulate_timelines` always records its histories in the event loop
+  (#205).** On the Python engine, independent components' histories were
+  drawn from their streams by a second implementation of their lives and
+  repairs; the event loop now records them as it runs, as it did for every
+  other diagram. The histories are the same, bit for bit, and
+  `TimelineSimulation.method` is always `"event loop"` (it was `"streams"`
+  for those diagrams). Without numba, such a run is slower: a bridge of
+  five units over 20,000 simulations takes 7.6 s where it took 3.0 s, and
+  a system with a nested diagram 9.7 s where it took 0.8 s. The numba
+  engine, which records in its own loop, is unchanged; recording in the
+  Python loop now costs about a quarter of the loop's own time, where it
+  cost nearly a half.
+- **A component that fails at once and is repaired at once is refused**
+  when the `RepairableRBD` is built (an `ExactEventTime` of 0 for both its
+  life and its repair). A simulation would change its state without end:
+  `availability()` never returned, and `simulate_timelines` refused it.
 - **surpyval 0.23 or later is required** (0.22 was). Its next release drops
   0.22's name for a limited-failure population's share that ever fails,
   `p`, for `lfp_p`, which 0.22 does not know, so no example could be

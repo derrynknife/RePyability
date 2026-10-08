@@ -28,6 +28,18 @@
   allows; raise that minimum, rather than keep code for older versions,
   once RePyability needs what a newer surpyval does.
 
+## Code
+
+- **Clean, simple implementations (#204).** Optimise through algorithms
+  and data structures (complexity, exact methods, work not done, numpy,
+  numba compiling the same plain algorithm), not machine-level tricks: no
+  logic written out twice for speed, no second design of a computation
+  that must agree with the first, no fast path that hands rare cases
+  back, no speed constant that changes results. A compiled version
+  follows the plain one's algorithm and shape; a better algorithm goes
+  into both. If code needs a "keep in sync with X" note, simplify it
+  instead.
+
 ## Simulation engines and seeded results
 
 - **A `RepairableRBD` simulation has two engines that must agree to the last
@@ -49,10 +61,10 @@
   streamed come from numpy's global RNG, so a run holds
   `repyability.utils.wrappers.SIMULATIONS`, a process-wide `RLock`:
   `RepairableRBD._run` (but a sharded run's parent, whose shards take it
-  where they run, so a `shard_map` on threads cannot wait on it),
-  `numpy_seed`, and `_timeline_runs._looped`. New code that runs the loop
-  or seeds the global RNG goes through one of these; threads that work
-  for a run (numba's, the timelines' stream draws) must not take it.
+  where they run, so a `shard_map` on threads cannot wait on it)
+  and `numpy_seed`. New code that runs the loop or seeds the global RNG
+  goes through one of these; threads that work for a run (numba's) must
+  not take it.
   `test_threads.py` checks seeded calls on threads give their serial
   results.
 - **CI's plain test jobs have no numba.** A test that asks for
@@ -67,15 +79,9 @@
   `_Context.history`; `_kernel._simulate` when given room to record, the
   system's own level only, so `_advance` records nothing): each top-level
   component's changes, and each of the system's with the component that
-  made it. On the Python engine, plain units' histories are drawn from
-  their streams instead (`repyability/rbd/_timeline_runs.py`), added up
-  as the loop adds them, and a simulation with changes of different
-  components at one instant is run in the loop. A change to what the loops
-  record goes into both; one to how the loop draws or adds up a plain
-  unit's lives and repairs goes into `_timeline_runs._unit` too, and
-  anything new that couples components into `independent`:
-  `test_timelines.py` checks every engine's histories against each other
-  and against `availability`.
+  made it (#205: there is no other path to them). A change to what the
+  loops record goes into both: `test_timelines.py` checks every engine's
+  histories against each other and against `availability`.
 - **Capacity states are worked out in batches**
   (`_CapacityRecorder.evaluate`): a simulation's in Python, a batch's
   compiled, so a state's capacity must not depend on what is worked out
@@ -221,9 +227,9 @@
   free, drawn)`, which refuses every exact or numerical analysis but those
   in `free`, which need no structure, and the simulated ones in `drawn`,
   which work the structure out for each draw of parameters: a new method
-  that needs none (a node's own values) goes in `free`. The compiled engine and the timelines'
-  streams (`_compiled.unsupported`, `_timeline_runs.independent`) leave such
-  a diagram to the Python loop. `test_meshed_structures.py` checks the
+  that needs none (a node's own values) goes in `free`. The compiled
+  engine (`_compiled.unsupported`) leaves such a diagram to the Python
+  loop. `test_meshed_structures.py` checks the
   stand-in against the structure worked out, and `test_analysis_routes.py`
   the routes of diagrams too meshed.
 - **A non-repairable structure's common-cause groups are worked out

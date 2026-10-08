@@ -2,58 +2,24 @@
 timelines, each component's history and the system's.
 
 The simulations are those ``availability`` runs with the same seed, and
-their histories are the event loop's, whichever way they are made:
-
-- **Recorded** by the event loop as it runs, on the engine ``engine``
-  chooses: the Python loop (``RepairableRBD._replicate`` with
-  ``_Context.history``) or numba's (``_kernel._simulate``, recording), in
-  however many processes or threads. Each records each component's
-  changes and each of the system's, with the component whose change made
-  it (see ``Records``).
-- **Drawn** from the streams, on the Python engine, when the components
-  are independent (plain units with streamed models, and nested RBDs of
-  them, held working or broken or not): each unit's lives and repairs, the
-  draws the event loop reads (see ``_streams``), added up as it adds them,
-  a batch of simulations at once, so the times are the event loop's to the
-  last bit; and the system's history merged up the diagram (see
-  ``repyability.timelines``). A simulation in which changes of different
-  components fall at the same time, which the merge might take in another
-  order than the event loop, is run in the loop instead.
+their histories are the event loop's, recorded as it runs on the engine
+``engine`` chooses: the Python loop (``RepairableRBD._replicate`` with
+``_Context.history``) or numba's (``_kernel._simulate``, recording), in
+however many processes or threads. Each records each component's changes
+and each of the system's, with the component whose change made it (see
+``Records``).
 """
 
+import itertools
 import math
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from typing import Dict, Hashable, List, NamedTuple, Optional, Tuple
+from typing import List, NamedTuple, Optional, Tuple
 
 import numpy as np
 
 from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd import _streams
-from repyability.timelines import (
-    Timelines,
-    _constant,
-    _Data,
-    _leaf,
-    _positions,
-    _stacked,
-    _system_merge,
-)
-from repyability.utils.wrappers import SIMULATIONS
-
-#: The most simulations whose draws are laid out at once.
-_BATCH = 4096
-#: The most draws laid out at once, for memory: fewer simulations at once
-#: for a component that changes state more often.
-_BATCH_DRAWS = 2**21
-#: How many times its planned draws (see ``_streams.first_rows``) a
-#: simulation may take before its component is taken to change state
-#: without end.
-_MOST = 64
-#: The simulations drawn and merged at once (a multiple of the widest
-#: stream block), on one thread each: a smaller merge sorts its changes
-#: faster, each.
-_PART = 2048
+from repyability.timelines import Timelines, _Data, _positions
 
 
 class Block(NamedTuple):
@@ -168,38 +134,52 @@ class Records:
 
 def _block(histories: list, m: int) -> Block:
     """The Python loop's records of simulations (see ``_replicate``) as a
-    block."""
+    block: each component's changes already together, in the order of the
+    simulations and, in each, the order they happened."""
     n = len(histories)
+    chain = itertools.chain.from_iterable
 
     def offsets(counts) -> np.ndarray:
         out = np.zeros(n + 1, np.int64)
         np.cumsum(np.asarray(counts, np.int64), out=out[1:])
         return out
 
-    changes = [change for h in histories for change in h[1]]
-    system = [change for h in histories for change in h[3]]
-    which = np.array([change[0] for change in changes], np.int64)
-    row = np.repeat(np.arange(n), [len(h[1]) for h in histories])
-    # Each component's changes together, in the order of the simulations
-    # and, in each, the order they happened.
-    order = np.argsort(which, kind="stable")
-    per = np.bincount(which * n + row, minlength=m * n).reshape(m, n)
+    counts = np.array(
+        [[len(h[1][c]) for h in histories] for c in range(m)], np.int64
+    ).reshape(m, n)
     grouped = np.zeros((m, n + 1), np.int64)
-    np.cumsum(per, axis=1, out=grouped[:, 1:])
+    np.cumsum(counts, axis=1, out=grouped[:, 1:])
     bounds = np.zeros(m + 1, np.int64)
     np.cumsum(grouped[:, n], out=bounds[1:])
+    times = np.fromiter(
+        chain(h[1][c] for c in range(m) for h in histories),
+        float,
+        count=int(bounds[m]),
+    )
+    # The planned changes, few, by their places among each one's changes.
+    planned = np.zeros(times.size, bool)
+    for s, h in enumerate(histories):
+        for c, places in enumerate(h[2]):
+            if places:
+                planned[bounds[c] + grouped[c, s] + np.asarray(places)] = True
+    system = offsets([len(h[4][0]) for h in histories])
+
+    def system_changes(field: int, dtype) -> np.ndarray:
+        lists = (h[4][field] for h in histories)
+        return np.fromiter(chain(lists), dtype, count=int(system[n]))
+
     return Block(
         np.array([h[0] for h in histories], np.int8).reshape(n, m),
         bounds,
         grouped,
-        np.array([change[1] for change in changes], float)[order],
-        np.array([change[2] for change in changes], bool)[order],
-        np.array([h[2] for h in histories], np.int8),
-        offsets([len(h[3]) for h in histories]),
-        np.array([change[0] for change in system], float),
-        np.array([change[1] for change in system], np.int64),
-        np.array([change[2] for change in system], np.int64),
-        np.array([change[3] for change in system], bool),
+        times,
+        planned,
+        np.array([h[3] for h in histories], np.int8),
+        system,
+        system_changes(0, float),
+        system_changes(1, np.int64),
+        system_changes(2, np.int64),
+        system_changes(3, bool),
     )
 
 
@@ -274,39 +254,25 @@ def simulate(
         if antithetic and not complete:
             raise NotImplementedError(_UNSTREAMED)
         chosen = _engine(rbd, plan, engine, N, states)
-        # The streams draw new units' histories; a run from states is the
-        # loop's.
-        if chosen == "python" and not states and independent(rbd, plan):
-            method = "streams"
-            data, system = _streamed(
-                rbd,
-                plan,
-                (t_simulation, working, broken, entropy, antithetic),
-                start,
-                N,
-                jobs,
-            )
-        else:
-            method = "event loop"
-            tally = rbd._run(
-                t_simulation,
-                working,
-                broken,
-                "p",
-                N,
-                False,
-                seed,
-                antithetic,
-                jobs=jobs,
-                engine=chosen,
-                entropy=entropy,
-                first=start,
-                states=states,
-                histories=True,
-            )
-            parts, recorded = tally.histories.data(t_simulation)
-            data = dict(zip(rbd.components, parts))
-            system = _named(rbd, recorded)
+        tally = rbd._run(
+            t_simulation,
+            working,
+            broken,
+            "p",
+            N,
+            False,
+            seed,
+            antithetic,
+            jobs=jobs,
+            engine=chosen,
+            entropy=entropy,
+            first=start,
+            states=states,
+            histories=True,
+        )
+        parts, recorded = tally.histories.data(t_simulation)
+        data = dict(zip(rbd.components, parts))
+        system = _named(rbd, recorded)
     finally:
         np.random.set_state(after)
     return TimelineSimulation(
@@ -318,7 +284,7 @@ def simulate(
         n_simulations=int(N),
         antithetic=bool(antithetic),
         engine=chosen,
-        method=method,
+        method="event loop",
         start=start,
     )
 
@@ -433,350 +399,3 @@ def _named(rbd, data: _Data) -> _Data:
         [nodes.index(node) for node in rbd.components], dtype=np.int64
     )
     return replace(data, causes=place[data.causes], leaves=tuple(nodes))
-
-
-def independent(rbd, plan: _streams.Plan, prefix: tuple = ()) -> bool:
-    """Whether each component's history follows from its own draws alone:
-    plain units with streamed lives and repairs, and nested RBDs of them,
-    with no crew a job can wait for, nothing scheduled and no common cause
-    shared; and a structure worked out (one too meshed is followed in the
-    loop)."""
-    from repyability.non_repairable import NonRepairable
-    from repyability.rbd.repairable_rbd import RepairableRBD
-
-    if (
-        rbd._too_meshed() is not None
-        or rbd._preventive
-        or rbd._inspection
-        or rbd._standby
-        or rbd._imperfect
-        or rbd._maintenance
-        or rbd._crews_limited()
-        or rbd.ccf_groups
-    ):
-        return False
-    for name, component in rbd.components.items():
-        path = prefix + (name,)
-        if type(component) is RepairableRBD:
-            if not independent(component, plan, path):
-                return False
-        elif not (
-            type(component) is NonRepairable
-            and (path, _streams.FAILURE) in plan.specs
-            and (path, _streams.REPAIR) in plan.specs
-        ):
-            return False
-    return True
-
-
-def _streamed(
-    rbd,
-    plan: _streams.Plan,
-    run: tuple,
-    first: int,
-    N: int,
-    jobs: Optional[int],
-) -> Tuple[Dict[Hashable, _Data], _Data]:
-    """Simulations ``first`` to ``first + N - 1`` of the run (its window,
-    held nodes, entropy and pairing), drawn from the streams: each
-    component's histories and the system's. Those in which changes of
-    different components fall at the same time are run in the event loop
-    instead. With ``jobs``, the simulations are drawn in parts on that
-    many threads."""
-    t_end, working, broken = run[0], run[1], run[2]
-    threads = 1 if jobs is None else jobs
-    width = max(
-        (plan.columns(spec) for spec in plan.specs.values()), default=1
-    )
-    size = -(-_PART // width) * width
-    cuts = list(range(0, N, size)) + [N]
-    spans = [(first + a, b - a) for a, b in zip(cuts, cuts[1:])]
-    if threads > 1 and len(spans) > 1:
-        with ThreadPoolExecutor(min(threads, len(spans))) as pool:
-            parts = list(
-                pool.map(
-                    lambda span: _part(
-                        rbd, plan, t_end, working, broken, *span
-                    ),
-                    spans,
-                )
-            )
-    else:
-        parts = [
-            _part(rbd, plan, t_end, working, broken, *span) for span in spans
-        ]
-    if len(parts) == 1:
-        data, system, tied = parts[0]
-    else:
-        data = {
-            node: _stacked([part[0][node] for part in parts], None, t_end)
-            for node in rbd.components
-        }
-        system = _stacked(
-            [part[1] for part in parts], parts[0][1].leaves, t_end
-        )
-        tied = np.concatenate(
-            [part[2] + (span[0] - first) for part, span in zip(parts, spans)]
-        )
-    if tied.size:
-        data, system = _looped(rbd, run, first, tied, data, system)
-    return data, system
-
-
-def _part(
-    rbd,
-    plan: _streams.Plan,
-    t_end: float,
-    working: set,
-    broken: set,
-    first: int,
-    N: int,
-) -> Tuple[Dict[Hashable, _Data], _Data, np.ndarray]:
-    """Simulations ``first`` to ``first + N - 1``, drawn: each component's
-    histories, the system's, and the simulations (from 0, here) in which
-    changes of different components fall at the same time."""
-    data, tied = _drawn(rbd, plan, (), t_end, first, N, working, broken)
-    relevant = rbd._decomposition().nodes
-    system, more = _system_merge(
-        rbd, {n: d for n, d in data.items() if n in relevant}, N, t_end
-    )
-    return data, system, np.union1d(tied, more)
-
-
-def _looped(
-    rbd,
-    run: tuple,
-    first: int,
-    tied: np.ndarray,
-    data: Dict[Hashable, _Data],
-    system: _Data,
-) -> Tuple[Dict[Hashable, _Data], _Data]:
-    """``data`` and ``system`` with simulations ``tied`` (from ``first``)
-    run in the event loop, which takes changes at the same time in its own
-    order."""
-    t_end, working, broken, entropy, antithetic = run
-    records = Records(len(rbd.components))
-    # The loop keeps its state on the diagram: one run at a time (#216).
-    with SIMULATIONS:
-        ctx = rbd._context(
-            t_end,
-            working,
-            broken,
-            "p",
-            None,
-            entropy,
-            antithetic,
-            history=True,
-        )
-        try:
-            for r in tied.tolist():
-                records.add(rbd._replicate(ctx, first + r).history)
-        finally:
-            rbd._forget_run()
-    parts, recorded = records.data(t_end)
-    data = {
-        node: _spliced(data[node], tied, part)
-        for node, part in zip(rbd.components, parts)
-    }
-    return data, _spliced(system, tied, _named(rbd, recorded))
-
-
-def _spliced(data: _Data, at: np.ndarray, other: _Data) -> _Data:
-    """``data`` with its histories ``at`` (in order) those of ``other``,
-    which holds one for each."""
-    pieces = []
-    before = 0
-    for k, s in enumerate(at.tolist()):
-        pieces.append((data, before, s))
-        pieces.append((other, k, k + 1))
-        before = s + 1
-    pieces.append((data, before, data.size))
-
-    def joined(field: str) -> np.ndarray:
-        return np.concatenate(
-            [
-                getattr(d, field)[d.offsets[a] : d.offsets[b]]  # noqa: E203
-                for d, a, b in pieces
-            ]
-        )
-
-    start = data.start.copy()
-    start[at] = other.start
-    counts = np.concatenate(
-        [np.diff(d.offsets[a : b + 1]) for d, a, b in pieces]
-    )
-    offsets = np.zeros(data.size + 1, np.int64)
-    np.cumsum(counts, out=offsets[1:])
-    return replace(
-        data,
-        start=start,
-        offsets=offsets,
-        times=joined("times"),
-        causes=joined("causes"),
-        index=joined("index"),
-        planned=joined("planned"),
-    )
-
-
-def _drawn(
-    rbd,
-    plan: _streams.Plan,
-    prefix: tuple,
-    t_end: float,
-    first: int,
-    N: int,
-    working: set,
-    broken: set,
-) -> Tuple[Dict[Hashable, _Data], np.ndarray]:
-    """Each component's histories in simulations ``first`` to ``first + N
-    - 1``, drawn from its streams (a nested RBD's merged from its own
-    components', its causes not kept, as the event loop does not keep
-    them); and the simulations (from 0) in which changes of different
-    components of a nested RBD fall at the same time."""
-    from repyability.rbd.repairable_rbd import RepairableRBD
-
-    out: Dict[Hashable, _Data] = {}
-    tied = [np.zeros(0, np.int64)]
-    for name, component in rbd.components.items():
-        path = prefix + (name,)
-        if name in broken or name in working:
-            start = np.full(N, name in working, np.int8)
-            out[name] = _constant(start, t_end, None)
-        elif type(component) is RepairableRBD:
-            inner, inside = _drawn(
-                component, plan, path, t_end, first, N, set(), set()
-            )
-            relevant = component._decomposition().nodes
-            nested, more = _system_merge(
-                component,
-                {n: d for n, d in inner.items() if n in relevant},
-                N,
-                t_end,
-            )
-            out[name] = _leaf(nested, 0)
-            tied += [inside, more]
-        else:
-            out[name] = _unit(plan, path, t_end, first, N)
-    return out, np.unique(np.concatenate(tied))
-
-
-def _unit(
-    plan: _streams.Plan, path: tuple, t_end: float, first: int, N: int
-) -> _Data:
-    """A plain unit's histories in simulations ``first`` to ``first + N -
-    1``: up at 0, then its lives and repairs in turn, from its streams,
-    added up as the event loop adds them; its changes before ``t_end``."""
-    specs = (
-        plan.specs[(path, _streams.FAILURE)],
-        plan.specs[(path, _streams.REPAIR)],
-    )
-    pairs = max(specs[0].rows, specs[1].rows, 1)
-    size = max(1, min(_BATCH, _BATCH_DRAWS // (2 * pairs)))
-    blocks: Dict[tuple, _streams.Block] = {}
-    counts = []
-    times = []
-    for lo in range(first, first + N, size):
-        hi = min(lo + size, first + N)
-        changes = _changes(plan, specs, blocks, lo, hi, pairs)
-        inside = changes < t_end
-        count = inside.sum(axis=1)
-        flat = changes[inside]
-        short = np.flatnonzero(changes[:, -1] < t_end)
-        if short.size:
-            # These simulations change state again in the window.
-            parts = np.split(flat, np.cumsum(count)[:-1])
-            for i in short.tolist():
-                parts[i] = _longer(
-                    plan, specs, blocks, lo + i, t_end, pairs, path
-                )
-            count = np.array([part.size for part in parts])
-            flat = np.concatenate(parts)
-        counts.append(count)
-        times.append(flat)
-        for key in [k for k in blocks if (k[1] + 1) * k[2] <= hi]:
-            del blocks[key]  # passed: every simulation of it is done
-    count = np.concatenate(counts)
-    offsets = np.zeros(N + 1, np.int64)
-    np.cumsum(count, out=offsets[1:])
-    flat = np.concatenate(times)
-    data = _Data(
-        np.ones(N, np.int8),
-        offsets,
-        flat,
-        np.zeros(flat.size, np.int64),
-        np.zeros(flat.size, np.int64),
-        np.zeros(flat.size, bool),
-        None,
-        t_end,
-    )
-    _, j = _positions(data)
-    return replace(data, index=j)
-
-
-def _changes(
-    plan: _streams.Plan,
-    specs: tuple,
-    blocks: dict,
-    first: int,
-    stop: int,
-    pairs: int,
-) -> np.ndarray:
-    """The times of the first ``pairs`` failures and repairs of
-    simulations ``first`` to ``stop - 1``, one row each: their lives and
-    repairs in turn, added up one after another as the event loop adds
-    them (so to the same bits)."""
-    steps = np.empty((stop - first, 2 * pairs))
-    steps[:, 0::2] = _draws(plan, specs[0], blocks, first, stop, pairs)
-    steps[:, 1::2] = _draws(plan, specs[1], blocks, first, stop, pairs)
-    return np.cumsum(steps, axis=1)
-
-
-def _longer(
-    plan: _streams.Plan,
-    specs: tuple,
-    blocks: dict,
-    r: int,
-    t_end: float,
-    pairs: int,
-    path: tuple,
-) -> np.ndarray:
-    """Simulation ``r``'s changes before ``t_end``, for one with more
-    than ``pairs`` failures and repairs in the window: twice as many drawn
-    each time, up to a limit."""
-    limit = min(_MOST * pairs, _streams.MAX_ROWS)
-    while pairs < limit:
-        pairs = min(2 * pairs, limit)
-        changes = _changes(plan, specs, blocks, r, r + 1, pairs)[0]
-        if changes[-1] >= t_end:
-            return changes[changes < t_end]
-    raise ValueError(
-        f"Component {path[-1]!r} changes state more than {2 * pairs:,} "
-        f"times in a simulation of [0, {t_end:g}]: too many to keep as "
-        "timelines. Are its lives and repairs all of length 0?"
-    )
-
-
-def _draws(
-    plan: _streams.Plan,
-    spec: _streams.Spec,
-    blocks: dict,
-    first: int,
-    stop: int,
-    rows: int,
-) -> np.ndarray:
-    """The first ``rows`` draws of ``spec``'s stream for simulations
-    ``first`` to ``stop - 1``, one row each, as the event loop reads them
-    (simulation ``r``, row ``r % columns`` of block ``r // columns``)."""
-    columns = plan.columns(spec)
-    parts = []
-    for index in range(first // columns, (stop - 1) // columns + 1):
-        key = (spec.name, index, columns)
-        block = blocks.get(key)
-        if block is None:
-            block = blocks[key] = plan.block(spec, index)
-        while block.values.shape[1] < rows:
-            block.extend()
-        lo = max(first, index * columns) - index * columns
-        hi = min(stop, (index + 1) * columns) - index * columns
-        parts.append(block.values[lo:hi, :rows])
-    return np.concatenate(parts)
