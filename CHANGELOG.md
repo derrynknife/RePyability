@@ -125,6 +125,16 @@ other release, fixes included, the minor.
   as it is wanted. Results are the same, bit for bit. A system with nested
   RBDs runs faster (a three-level system in about half the time), the
   others as before.
+- **A run's changes are put in time order by numpy alone (#208).** The
+  compiled radix sort and merge (`_time_order`, taken where numba was
+  installed and a run had a million changes or more) are gone, with their
+  tuning constants. The +1 and -1 changes of state are netted by one sort
+  of integers (each time's bits above the change's sign), and the
+  capacity's changes by one sort of (time, change) pairs. Results are the
+  same, bit for bit. Without numba, a run of a million simulations puts
+  its changes in order about 2.5 times faster than before; with numba, a
+  capacity run of a million simulations takes about a tenth longer, and an
+  availability run as long.
 - **surpyval 0.23 or later is required** (0.22 was). Its next release drops
   0.22's name for a limited-failure population's share that ever fails,
   `p`, for `lfp_p`, which 0.22 does not know, so no example could be

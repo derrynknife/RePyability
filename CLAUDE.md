@@ -124,15 +124,16 @@
   that checks the simulation against the exact methods must run plainly
   (`control_variate=False`), or it compares the exact values with
   themselves.
-- **A run's changes are put in time order on two paths that must agree to
-  the last bit** (#201): numpy's (`_by_time`, `_group_totals`,
-  `_capacity_totals` and `_working_over_time` in `repairable_rbd.py`) and
-  the compiled one (`repyability/rbd/_time_order.py`: a stable radix sort
-  of the times' bits, the groups and the capacity's merge in one pass
-  each), taken where numba is installed and a run has `_COMPILED_ORDER`
-  changes or more. A change to how either orders, groups or adds up the
-  changes goes into both: `test_time_order.py` checks them against each
-  other, with the sort's blocks of every size.
+- **A run's changes are put in time order by numpy alone (#201, #208)**
+  in `repairable_rbd.py`: `_net_by_time` nets the +1 and -1 changes of
+  state with one sort of integers, each time's bits above the change's
+  sign (a time is never negative); `_by_time` sorts the capacity's (time,
+  change) pairs, and the changes in how many systems can carry an
+  unlimited amount, as complex numbers; `_capacity_totals` merges the two
+  the first way. What is
+  made of a time's changes is exact (whole counts, exact sums), so their
+  order within a time does not matter. `test_time_order.py` checks each
+  against its definition written out plainly.
 - **A core's decision diagram is built and replayed on two paths that
   must agree step for step** (#202): `bdd._build` and, where numba is
   installed and the core's search may be long, `_bdd_kernel.build`, whose
