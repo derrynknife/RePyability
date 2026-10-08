@@ -134,15 +134,13 @@
   made of a time's changes is exact (whole counts, exact sums), so their
   order within a time does not matter. `test_time_order.py` checks each
   against its definition written out plainly.
-- **A core's decision diagram is built and replayed on two paths that
-  must agree step for step** (#202): `bdd._build` and, where numba is
-  installed and the core's search may be long, `_bdd_kernel.build`, whose
-  states `bdd._compiled_build` packs into integers; and a plan's
-  probabilities and gradient by `modular.Decomposition._core_value` and
-  `_core_gradient` or `_bdd_kernel.replay` and `value_and_gradient`. A
-  change to the search (its states, its order, the steps it counts
-  against `STEP_LIMIT`) or to the replay's arithmetic goes into both:
-  `test_bdd_compiled.py` checks them against each other.
+- **A core's decision diagram has one search and one replay** (#202,
+  #207): `bdd.search` and `shannon.replay`/`replay_gradient`, which numba
+  compiles as written (`_bdd_kernel`) where it is installed and a core is
+  large. Keep them to what numba compiles. Their plans and values are
+  recorded (`tests/bdd_records.json`, by `tests/_bdd_cases.py`), and
+  `test_bdd_records.py` checks both modes against the records; re-record
+  only after a deliberate change of the plans.
 - **The random streams (`repyability/rbd/_streams.py`) define every seeded
   result.** Changing how a stream is named, seeded or laid out (its width,
   `BLOCK_DRAWS`, `MAX_WIDTH`, `first_rows`, the expected draws in

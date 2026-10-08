@@ -66,21 +66,14 @@ class TooLarge(NotImplementedError):
     steps."""
 
 
-#: Whether ``build`` runs compiled (``_bdd_kernel``, with numba installed):
-#: ``"auto"`` (the default) for a core whose diagram may be large (its
-#: order's ``_cost`` at least ``COMPILED_COST``), True for every core, False
-#: for none. The plan is the same either way, step for step.
+#: Whether ``build``'s search runs compiled (``_bdd_kernel``, with numba
+#: installed): ``"auto"`` (the default) for a core whose diagram may be
+#: large (its order's ``_cost`` at least ``COMPILED_COST``), True for every
+#: core, False for none. It is one search either way, so one plan.
 COMPILED: Any = "auto"
-#: The ``_cost`` from which ``"auto"`` compiles: below it the search takes a
-#: few hundredths of a second in Python, less than loading numba does. (A
-#: 10 by 20 grid's, ``2**17.4``, is built, with its first probabilities, in
-#: 0.17 s in Python and 0.07 s compiled; a 12 by 24 grid's, ``2**19.9``, in
-#: 0.9 s and 0.19 s.)
+#: The ``_cost`` from which ``"auto"`` compiles: below it the search takes
+#: less time in Python than loading numba's compiled search does.
 COMPILED_COST = 2.0**15
-#: The bits of each of the two integers a compiled state is: the counts'
-#: fields, and the values of the variables drawn in several places still to
-#: come. A core whose states need more is built in Python.
-COMPILED_WIDTH = 62
 
 
 def order(
@@ -196,9 +189,10 @@ def build(
     """The decision diagram of the core whose vertices are ``sequence``, a
     topological order, as a plan (see the module docstring). ``variable``
     names the random variable each vertex stands for: two vertices with the
-    same variable are one component, drawn in two places. Compiled when
-    numba is installed and the diagram may be large (see ``COMPILED``),
-    with the same plan.
+    same variable are one component, drawn in two places. The search
+    (``search``) runs compiled when numba is installed and the diagram may
+    be large (see ``COMPILED``), and as Python otherwise: the same search,
+    so the same plan.
 
     Returns
     -------
@@ -206,42 +200,59 @@ def build(
         ``(steps, root)``, each step ``(variable, active slot, inactive
         slot)``; ``root`` is 0 or 1 if the system never or always works.
     """
-    if COMPILED and _compiled.available():
-        if COMPILED is True or (
-            _cost(sequence, pred, succ, source, sink) >= COMPILED_COST
-        ):
-            plan = _compiled_build(
-                sequence, pred, succ, k, source, sink, variable
-            )
-            if plan is not None:
-                return plan
-    return _build(sequence, pred, succ, k, source, sink, variable)
+    compiled = bool(COMPILED) and _compiled.available()
+    if COMPILED is not True and compiled:
+        compiled = _cost(sequence, pred, succ, source, sink) >= COMPILED_COST
+    core = _layout(
+        sequence, succ, k, source, sink, variable, WORD if compiled else None
+    )
+    if core is None:
+        return [], FAIL
+    names, arguments = core
+    if compiled:
+        from repyability.rbd import _bdd_kernel
+
+        made = _bdd_kernel.run_search(arguments, STEP_LIMIT)
+    else:
+        made = _run_search(arguments, STEP_LIMIT)
+    out_var, out_active, out_inactive, root, too_large = made
+    if too_large:
+        raise TooLarge(
+            "The diagram is too meshed to work out exactly: its decision "
+            f"diagram takes more than {STEP_LIMIT:,} steps "
+            "(repyability.rbd.bdd.STEP_LIMIT)."
+        )
+    steps = [
+        (names[int(x)], int(a), int(b))
+        for x, a, b in zip(out_var, out_active, out_inactive)
+    ]
+    return steps, int(root)
 
 
-def _compiled_build(
+def _layout(
     sequence: Sequence[int],
-    pred: Mapping[int, Iterable[int]],
     succ: Mapping[int, Iterable[int]],
     k: Mapping[int, int],
     source: int,
     sink: int,
     variable: Mapping[int, Hashable],
+    width: Optional[int],
 ) -> Optional[tuple]:
-    """``_build``, compiled (``_bdd_kernel.build``): the same plan, step for
-    step, and the same steps taken (``TooLarge`` past ``STEP_LIMIT``); None
-    for a core whose states do not fit in two integers (``COMPILED_WIDTH``
-    bits each).
+    """The core as ``search`` takes it: its variables' names, and the
+    lists describing it. None for a core whose output needs no reached
+    predecessor (which ``modular`` never builds).
 
-    A state's counts are an integer's fields: each position (the output's
-    is ``n``) has a field wide enough for its ``k``, from the step after its
-    first predecessor is decided (from the start for the input's
-    successors) until it is decided itself, and a position decided gives
-    its field up to those that come in after it. A variable drawn in several
-    places has a bit of a second integer, its value, from the step after
-    its first appearance until its last. At each step every state lays its
-    fields out alike, so equal states are equal integers."""
-    from repyability.rbd import _bdd_kernel
-
+    A state is the counts of reached predecessors (each up to its ``k``) of
+    the positions still to be decided, and the values of the variables
+    drawn in several places still to come, as fields of words of ``width``
+    bits (one word of any width for ``None``): each position (the output's
+    is ``n``) has a field wide enough for its ``k``, from the step after
+    its first predecessor is decided (from the start for the input's
+    successors) until it is decided itself; a variable drawn in several
+    places has a bit, from the step after its first appearance until its
+    last. A field is given up when it ends, to those that come in after it.
+    At each step every state lays its fields out alike (first fit), so
+    equal states are equal words."""
     n = len(sequence)
     position = {v: i for i, v in enumerate(sequence)}
     position[sink] = n
@@ -258,6 +269,10 @@ def _compiled_build(
         for w in ends:
             alive_from[w] = min(alive_from[w], u + 1)
     bits = [need.bit_length() for need in needs]
+    # Each variable, numbered by its first appearance: decided there, so
+    # that every variable is decided at the same point on every branch (the
+    # diagram is then ordered, and reduced it is canonical), and kept until
+    # its last.
     names = list(dict.fromkeys(variable[v] for v in sequence))
     index = {name: j for j, name in enumerate(names)}
     variables = [index[variable[v]] for v in sequence]
@@ -266,9 +281,6 @@ def _compiled_build(
     for i, x in enumerate(variables):
         first[x] = min(first[x], i)
         final[x] = i
-    # Lay the fields and the bits out, step by step, first fit: a field is
-    # given up after its position is decided, and a bit after its
-    # variable's last appearance.
     entering: List[List[int]] = [[] for _ in range(n + 2)]
     for w in range(n + 1):
         if alive_from[w] <= n:
@@ -279,255 +291,376 @@ def _compiled_build(
         if first[x] < final[x]:
             starting[first[x] + 1].append(x)
             ending[final[x] + 1].append(x)
+    word = [0] * (n + 1)
     offset = [0] * (n + 1)
+    name_word = [0] * len(names)
     name_bit = [0] * len(names)
-    used = names_used = 0
+    used: List[int] = []
     alive: List[List[int]] = []
     pending = [0] * (n + 1)
     current: List[int] = []
     held = 0
     for i in range(n + 1):
         if i and alive_from[i - 1] <= i - 1:
-            used &= ~(((1 << bits[i - 1]) - 1) << offset[i - 1])
+            used[word[i - 1]] &= ~(((1 << bits[i - 1]) - 1) << offset[i - 1])
             current.remove(i - 1)
-        for w in entering[i]:
-            mask = (1 << bits[w]) - 1
-            at = next(
-                (
-                    o
-                    for o in range(COMPILED_WIDTH - bits[w] + 1)
-                    if not used & (mask << o)
-                ),
-                None,
-            )
-            if at is None:
-                return None
-            offset[w] = at
-            used |= mask << at
-            current.append(w)
-        alive.append(sorted(current))
         for x in ending[i]:
-            names_used &= ~(1 << name_bit[x])
+            used[name_word[x]] &= ~(1 << name_bit[x])
             held -= 1
+        for w in entering[i]:
+            word[w], offset[w] = _first_fit(used, bits[w], width)
+            current.append(w)
         for x in starting[i]:
-            at = next(
-                (o for o in range(COMPILED_WIDTH) if not names_used >> o & 1),
-                None,
-            )
-            if at is None:
-                return None
-            name_bit[x] = at
-            names_used |= 1 << at
+            name_word[x], name_bit[x] = _first_fit(used, 1, width)
             held += 1
+        alive.append(sorted(current))
         pending[i] = held
+    words = max(1, len(used))
+    # Each step's count fields, as masks of each word: whether any count is
+    # left (the values held are not counts).
+    counted = [0] * ((n + 1) * words)
+    for i, fields in enumerate(alive):
+        for w in fields:
+            counted[i * words + word[w]] |= ((1 << bits[w]) - 1) << offset[w]
     expiring: List[List[int]] = [[] for _ in range(n)]
     for x in range(len(names)):
         if first[x] < final[x]:
             expiring[final[x]].append(x)
 
     def packed(lists: List[List[int]]) -> tuple:
-        pointer = np.zeros(len(lists) + 1, np.int64)
-        pointer[1:] = np.cumsum([len(items) for items in lists])
-        ids = np.array([u for items in lists for u in items], np.int64)
-        return pointer, ids
+        pointer = [0]
+        for items in lists:
+            pointer.append(pointer[-1] + len(items))
+        return pointer, [u for items in lists for u in items]
 
     succ_ptr, succ_ids = packed(later)
     alive_ptr, alive_ids = packed(alive)
     expire_ptr, expire_ids = packed(expiring)
-    out_var, out_active, out_inactive, root, too_large = _bdd_kernel.build(
+    return names, (
         n,
-        np.array(variables, np.int64),
-        np.array(first, np.int64),
-        np.array(final, np.int64),
-        np.array(needs, np.int64),
+        variables,
+        first,
+        final,
+        needs,
         succ_ptr,
         succ_ids,
-        np.array(from_input, np.int64),
-        np.array(alive_from, np.int64),
-        np.array(offset, np.int64),
-        np.array(bits, np.int64),
-        np.array(name_bit, np.int64),
+        from_input,
+        alive_from,
+        word,
+        offset,
+        bits,
+        name_word,
+        name_bit,
         expire_ptr,
         expire_ids,
         alive_ptr,
         alive_ids,
-        np.array(pending, np.int64),
-        STEP_LIMIT,
+        pending,
+        counted,
+        words,
     )
-    if too_large:
-        raise TooLarge(
-            "The diagram is too meshed to work out exactly: its decision "
-            f"diagram takes more than {STEP_LIMIT:,} steps "
-            "(repyability.rbd.bdd.STEP_LIMIT)."
-        )
-    steps = [
-        (names[x], a, b)
-        for x, a, b in zip(
-            out_var.tolist(), out_active.tolist(), out_inactive.tolist()
-        )
-    ]
-    return steps, int(root)
 
 
-def _build(
-    sequence: Sequence[int],
-    pred: Mapping[int, Iterable[int]],
-    succ: Mapping[int, Iterable[int]],
-    k: Mapping[int, int],
-    source: int,
-    sink: int,
-    variable: Mapping[int, Hashable],
-) -> tuple:
-    """``build`` in Python."""
-    n = len(sequence)
-    position = {v: i for i, v in enumerate(sequence)}
-    position[sink] = n
-    # Each vertex's successors, as positions (the output's is n), and the k
-    # of each position's vertex.
-    later = {
-        u: tuple(position[w] for w in succ.get(u, ()))
-        for u in [source, *sequence]
-    }
-    needs = [k[v] for v in sequence] + [k[sink]]
-    # Where each variable appears first, and last: a variable drawn in
-    # several places is decided at its first appearance, so that every
-    # variable is decided at the same point on every branch (the diagram
-    # is then ordered, and reduced it is canonical), and kept until its
-    # last.
-    first: Dict[Hashable, int] = {}
-    final: Dict[Hashable, int] = {}
-    for i, v in enumerate(sequence):
-        first.setdefault(variable[v], i)
-        final[variable[v]] = i
-    # The variables drawn in several places whose last appearance each
-    # position is: only those are forgotten there.
-    expiring: Dict[int, set] = {}
-    for name, i in final.items():
-        if first[name] < i:
-            expiring.setdefault(i, set()).add(name)
+def _first_fit(used: List[int], size: int, width: Optional[int]) -> tuple:
+    """The first free place for a field of ``size`` bits in the words
+    ``used`` (their taken bits), ``(word, offset)``, taken; a new word if
+    none has room (one word of any width for ``width`` None)."""
+    mask = (1 << size) - 1
+    for w, taken in enumerate(used):
+        at = 0
+        while width is None or at + size <= width:
+            if not taken & (mask << at):
+                used[w] |= mask << at
+                return w, at
+            at += 1
+    used.append(mask)
+    return len(used) - 1, 0
 
-    # A state's ``counts``: for each undecided position with a reached
-    # predecessor, how many, up to its k, as sorted (position, count)
-    # pairs. Each settling works on counts of its own, changed in place.
-    def reach(u, counts: dict) -> None:
-        """Count vertex ``u`` reached, in ``counts``."""
-        taken[0] += len(later[u])
-        for w in later[u]:
-            counts[w] = min(counts.get(w, 0) + 1, needs[w])
 
-    # The steps taken (see STEP_LIMIT).
-    taken = [0]
+#: The bits of a word of a compiled search's state (see ``_layout``): a
+#: field never straddles two, and a word stays a non-negative int64.
+WORD = 62
 
-    def settle(i: int, counts: dict, decided: frozenset):
-        """Decide vertices from the ``i``-th while no branch is needed: the
-        terminal reached (FAIL or WORK), or the state at which the next
-        vertex must be branched on, as ``(i, counts, decided)``. ``counts``
-        is changed."""
+# What a settling comes to (see ``search``): a state to branch on, or an
+# outcome.
+_STATE, _FAILS, _WORKS = 0, 1, 2
+
+
+def _run_search(arguments: tuple, limit: int) -> tuple:
+    """``search`` in Python, its working memory as lists, a dict and
+    arrays of Python's integers."""
+    n, W = arguments[0], arguments[-1]
+    rows = n + 3
+    memory: tuple = (
+        {},
+        np.full(64, -1, dtype=np.int64),
+        {},
+        [],
+        [],
+        [],
+        [0] * (2 * rows),
+        [0] * (2 * rows),
+        [0] * (2 * rows),
+        [0] * (2 * rows * W),
+        [0] * rows,
+        [0] * rows,
+        [0] * (rows * W),
+        [0] * (2 * rows),
+        [0] * rows,
+        [0] * W,
+    )
+    return search(*arguments, *(limit, *memory))
+
+
+def search(
+    n,
+    variable,
+    first,
+    final,
+    needs,
+    succ_ptr,
+    succ_ids,
+    from_input,
+    alive_from,
+    word,
+    offset,
+    bits,
+    name_word,
+    name_bit,
+    expire_ptr,
+    expire_ids,
+    alive_ptr,
+    alive_ids,
+    pending,
+    counted,
+    W,
+    limit,
+    interned,
+    slots,
+    unique,
+    out_var,
+    out_active,
+    out_inactive,
+    kid_kind,
+    kid_i,
+    kid_id,
+    kid_words,
+    state_i,
+    state_id,
+    state_words,
+    solved,
+    count,
+    words,
+):
+    """The core's decision diagram (see ``_layout`` for the core's
+    arguments, the module docstring for the search): its steps into
+    ``out_var`` (each variable's number), ``out_active`` and
+    ``out_inactive``; its root; and whether it took more than ``limit``
+    steps (it then stops short).
+
+    The vertices are decided in their order. From a state, those that need
+    no branch are decided at once (*settled*): a vertex too few of whose
+    predecessors are reached is decided as not working, and a variable
+    drawn in several places takes its value from its first appearance.
+    Settling stops at an outcome (the output reached, or no count left to
+    reach it) or at a vertex to branch on: one whose variable appears there
+    first and again later, or a reached one whose variable's value is still
+    to choose. Each state is solved once: it is numbered by its step and
+    its words (``interned``, a word at a time), and its slot kept by that
+    number (``slots``, grown as needed). Each step is made once
+    (``unique``), and a branch whose two outcomes agree is dropped.
+
+    The steps taken (``limit``) count each vertex settled, each successor
+    a working vertex reaches and each held value when a variable is
+    forgotten; and when a state is branched on, three for each of its
+    counts that is not 0 and for each value it holds. This one function
+    runs as Python (``_run_search``: one word, a Python integer of any
+    width) and compiled (``_bdd_kernel``: words of ``WORD`` bits), with
+    the same states and steps, so the same plan.
+
+    The working memory, for each state on the stack (``n + 2`` at most,
+    over a base row whose one branch is the start): its two branches
+    (``kid_*``: an outcome, or a state's step, number and words), its step,
+    number and words, the slots its branches have come to and how many;
+    and the state being settled (``words``)."""
+    made = 0
+    taken = len(from_input)
+    next_id = 0
+    # The base row: its one branch is the start, the input reached (each
+    # of its successors' counts 1; each needs 1 at least), settled from
+    # position 0.
+    for j in range(W):
+        words[j] = 0
+    for w in from_input:
+        words[word[w]] |= 1 << offset[w]
+    count[0] = 0
+    top = 1
+    row = 0
+    target = 0
+    start = 0
+    forced = -1
+    second = False
+    while True:
+        # Settle the state in ``words`` from position ``start``: for a
+        # branch, first deciding it with value ``forced``.
+        i = start
+        kind = _STATE
         while True:
-            taken[0] += 1
-            if counts.get(n, 0) >= needs[n]:
-                return WORK
-            if not counts or i == n:
-                return FAIL
-            v = sequence[i]
-            name = variable[v]
-            if first[name] == i and final[name] > i:
-                # Decided here, used later.
-                return (i, tuple(sorted(counts.items())), decided)
-            if counts.get(i, 0) >= needs[i]:
-                if (name, True) in decided:
-                    works = True
-                elif (name, False) in decided:
-                    works = False
-                else:
-                    return (i, tuple(sorted(counts.items())), decided)
-            else:
+            x = variable[i] if i < n else 0
+            if forced < 0:
+                taken += 1
+                if (
+                    alive_from[n] <= i
+                    and ((words[word[n]] >> offset[n]) & ((1 << bits[n]) - 1))
+                    >= needs[n]
+                ):
+                    kind = _WORKS
+                    break
+                left = False
+                for j in range(W):
+                    if words[j] & counted[i * W + j]:
+                        left = True
+                if not left or i == n:
+                    kind = _FAILS
+                    break
+                if first[x] == i and final[x] > i:
+                    break
                 works = False
-            decided = _step(i, v, works, counts, decided)
-            i += 1
-
-    def _step(i, v, works, counts, decided) -> frozenset:
-        """Decide the ``i``-th vertex, ``v``: ``counts`` changed, and the
-        variables drawn in several places still to come kept."""
-        if works:
-            reach(v, counts)
-        counts.pop(i, None)
-        gone = expiring.get(i)
-        if decided and gone:
-            taken[0] += len(decided)
-            decided = frozenset(
-                (name, value) for name, value in decided if name not in gone
-            )
-        return decided
-
-    def branches(state) -> list:
-        """The states after the ``i``-th vertex's variable works, and
-        fails (the vertex is reached only if enough predecessors are)."""
-        i, pairs, decided = state
-        taken[0] += 3 * len(pairs) + 3 * len(decided)
-        v = sequence[i]
-        name = variable[v]
-        enough = dict(pairs).get(i, 0) >= needs[i]
-        out = []
-        for value in (True, False):
-            counts = dict(pairs)
-            remembered = decided
-            if final[name] > i:
-                remembered = decided | {(name, value)}
-            remembered = _step(i, v, value and enough, counts, remembered)
-            out.append(settle(i + 1, counts, remembered))
-        return out
-
-    slots: Dict[Any, int] = {}
-    unique: Dict[tuple, int] = {}
-    steps: List[tuple] = []
-
-    def known(state) -> Optional[int]:
-        if state == FAIL or state == WORK:
-            return state
-        return slots.get(state)
-
-    counts: Dict[int, int] = {}
-    reach(source, counts)
-    start = settle(0, counts, frozenset())
-    root = known(start)
-    stack: list = []
-    if root is None:
-        stack.append([start, branches(start), []])
-    while stack:
-        state, children, solved = stack[-1]
-        if len(solved) < 2:
-            child = children[len(solved)]
-            slot = known(child)
-            if slot is None:
-                stack.append([child, branches(child), []])
+                if (
+                    alive_from[i] <= i
+                    and ((words[word[i]] >> offset[i]) & ((1 << bits[i]) - 1))
+                    >= needs[i]
+                ):
+                    if first[x] == i:
+                        break
+                    works = (words[name_word[x]] >> name_bit[x]) & 1 == 1
             else:
-                solved.append(slot)
+                works = forced == 1 and (
+                    alive_from[i] <= i
+                    and ((words[word[i]] >> offset[i]) & ((1 << bits[i]) - 1))
+                    >= needs[i]
+                )
+            # Decide position i: its field goes, and each value forgotten
+            # here (the fields coming in may take their bits); if it works,
+            # each successor's count goes up (to its k at most); and a
+            # variable whose first appearance it is and works is held.
+            if alive_from[i] <= i:
+                words[word[i]] &= ~(((1 << bits[i]) - 1) << offset[i])
+            if expire_ptr[i + 1] > expire_ptr[i]:
+                taken += pending[i]
+                for e in range(expire_ptr[i], expire_ptr[i + 1]):
+                    y = expire_ids[e]
+                    words[name_word[y]] &= ~(1 << name_bit[y])
+            if works:
+                taken += succ_ptr[i + 1] - succ_ptr[i]
+                for s in range(succ_ptr[i], succ_ptr[i + 1]):
+                    w = succ_ids[s]
+                    mask = (1 << bits[w]) - 1
+                    c = (words[word[w]] >> offset[w]) & mask
+                    if c < needs[w]:
+                        c += 1
+                    words[word[w]] = (
+                        words[word[w]] & ~(mask << offset[w])
+                    ) | (c << offset[w])
+            if forced == 1 and final[x] > i:
+                words[name_word[x]] |= 1 << name_bit[x]
+            forced = -1
+            i += 1
+        # What it settled to: an outcome, or a state, numbered (by its
+        # step, then each of its words, in turn).
+        kid_kind[target] = kind
+        kid_i[target] = i
+        if kind == _STATE:
+            here = -1 - i
+            for j in range(W):
+                key = (here, words[j])
+                found = interned.get(key, -1)
+                if found < 0:
+                    found = next_id
+                    next_id += 1
+                    interned[key] = found
+                here = found
+            kid_id[target] = here
+            for j in range(W):
+                kid_words[target * W + j] = words[j]
+        if second:
+            # The state pushed: its second branch, its variable failing.
+            second = False
+            target += 1
+            for j in range(W):
+                words[j] = state_words[row * W + j]
+            start = state_i[row]
+            forced = 0
             continue
-        stack.pop()
-        name = variable[sequence[state[0]]]
-        active, inactive = solved
-        if active == inactive:
-            slot = active  # the vertex cannot change the outcome here
-        else:
-            key = (name, active, inactive)
-            slot = unique.get(key)
-            if slot is None:
-                steps.append(key)
-                slot = unique[key] = len(steps) + 1
-        slots[state] = slot
-        if taken[0] > STEP_LIMIT:
-            raise TooLarge(
-                "The diagram is too meshed to work out exactly: its "
-                f"decision diagram takes more than {STEP_LIMIT:,} steps "
-                "(repyability.rbd.bdd.STEP_LIMIT)."
-            )
-        if stack:
-            stack[-1][2].append(slot)
-        else:
-            root = slot
-    assert root is not None
-    return steps, root
+        # Work down the stack until a state must be pushed (its branches
+        # to settle) or the start is solved.
+        while True:
+            t = top - 1
+            if count[t] < (1 if t == 0 else 2):
+                c = 2 * t + count[t]
+                if kid_kind[c] == _FAILS:
+                    slot = FAIL
+                elif kid_kind[c] == _WORKS:
+                    slot = WORK
+                elif kid_id[c] < slots.size:
+                    slot = slots[kid_id[c]]
+                else:
+                    slot = -1
+                if slot >= 0:
+                    solved[c] = slot
+                    count[t] += 1
+                    continue
+                # Push the state, and settle its first branch, its
+                # variable working (its second follows).
+                row = top
+                top += 1
+                p = kid_i[c]
+                state_i[row] = p
+                state_id[row] = kid_id[c]
+                nonzero = 0
+                for j in range(W):
+                    words[j] = kid_words[c * W + j]
+                    state_words[row * W + j] = words[j]
+                for a in range(alive_ptr[p], alive_ptr[p + 1]):
+                    w = alive_ids[a]
+                    if (words[word[w]] >> offset[w]) & ((1 << bits[w]) - 1):
+                        nonzero += 1
+                taken += 3 * nonzero + 3 * pending[p]
+                count[row] = 0
+                target = 2 * row
+                start = p
+                forced = 1
+                second = True
+                break
+            if t == 0:
+                return out_var, out_active, out_inactive, solved[0], False
+            # Both branches solved: the state's slot.
+            x = variable[state_i[t]]
+            active, inactive = solved[2 * t], solved[2 * t + 1]
+            if active == inactive:
+                slot = active  # the vertex cannot change the outcome here
+            else:
+                key3 = (x, active, inactive)
+                slot = unique.get(key3, -1)
+                if slot < 0:
+                    out_var.append(x)
+                    out_active.append(active)
+                    out_inactive.append(inactive)
+                    made += 1
+                    slot = made + 1
+                    unique[key3] = slot
+            number = state_id[t]
+            if number >= slots.size:
+                grown = np.full(max(2 * slots.size, number + 1), -1, np.int64)
+                grown[: slots.size] = slots
+                slots = grown
+            slots[number] = slot
+            if taken > limit:
+                return out_var, out_active, out_inactive, -1, True
+            top -= 1
+            u = top - 1
+            solved[2 * u + count[u]] = slot
+            count[u] += 1
 
 
 def pivots(plan: tuple) -> List[Hashable]:

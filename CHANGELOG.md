@@ -125,6 +125,17 @@ other release, fixes included, the minor.
   as it is wanted. Results are the same, bit for bit. A system with nested
   RBDs runs faster (a three-level system in about half the time), the
   others as before.
+- **A decision diagram has one search and one replay (#207).** The search
+  (`bdd.search`) and the replay (`shannon.replay`, `replay_gradient`) are
+  each written once and run as Python or compiled by numba as written,
+  where numba is installed and a core is large; the compiled search's
+  separate design, its packing of states into integers and its fall back
+  to Python for a wide frontier are gone. Plans are the same, step for
+  step, and values the same, bit for bit, checked against plans and values
+  recorded before the change. A core's compiled search takes about a third
+  less time (a 12 by 24 grid, 0.15 s rather than 0.23 s); a compiled
+  replay of 1,000 sets of probabilities takes 0.45 s rather than 1.0 s,
+  and of its gradient 1.8 s rather than 2.9 s.
 - **A run's changes are put in time order by numpy alone (#208).** The
   compiled radix sort and merge (`_time_order`, taken where numba was
   installed and a run had a million changes or more) are gone, with their
