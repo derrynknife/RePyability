@@ -299,9 +299,10 @@ class _StreamedComponent:
             return self._test.draw()
         return float(np.random.random())
 
-    def life_drawn(self) -> None:
+    def life_drawn(self, x: float = 0.0) -> None:
         """The unit's life has been drawn (given its age, at a start from a
-        state): its next draw is its repair."""
+        state; ``x`` its operating time from its last repair to the failure
+        drawn): its next draw is its repair."""
         self._fails_next = False
 
     def next_event(self):
@@ -433,6 +434,12 @@ class _ImperfectComponent(_StreamedComponent):
         self._fails_next = True
         self.age = self.operated = 0.0
         self.count = 0
+
+    def life_drawn(self, x: float = 0.0) -> None:
+        # Its repair after the failure drawn takes its virtual age on by
+        # the operating time since its last repair (#269).
+        super().life_drawn(x)
+        self._x = x
 
     @property
     def replacing(self) -> bool:
@@ -5104,9 +5111,7 @@ class RepairableRBD(RBD):
                     name,
                     {
                         **component,
-                        "reliability": perfect_class(
-                            component["reliability"]
-                        ),
+                        "reliability": perfect_class(component["reliability"]),
                     },
                 )
                 if isinstance(component, dict) and "reliability" in component
@@ -10659,6 +10664,11 @@ class RepairableRBD(RBD):
         schedule = self._preventive.get(node)
         inspection = self._inspection.get(node)
         source.reset()
+        virtual = start.virtual_age or 0.0
+        if virtual:
+            # Repaired imperfectly (#269): at its virtual age at its last
+            # repair (or once its repair going on is over).
+            source.age = virtual
         if not start.alive:
             # Down: up again, as new, once its repair or maintenance is
             # done.
@@ -10671,7 +10681,7 @@ class RepairableRBD(RBD):
             if inspection is not None:
                 self._pending_failure[node] = None
             return False, Event(left, node, True, start.maintenance)
-        if not start.age:
+        if not start.age and not virtual:
             # New at 0, on a calendar at its phase.
             if schedule is not None:
                 return True, self._renewal(node, 0.0, source, schedule)
@@ -10688,12 +10698,12 @@ class RepairableRBD(RBD):
         life = (
             _aged_life(
                 component.reliability,
-                start.age - since,
+                virtual + start.age - since,
                 source.start_uniform(),
             )
             - since
         )
-        source.life_drawn()
+        source.life_drawn(start.age + life)
         if inspection is not None:
             if life < 0.0:
                 # Failed, unseen, since it was last known up.
@@ -13813,12 +13823,13 @@ class RepairableRBD(RBD):
         first = interval - phase if phase else interval
         return TestedLifeCurve(life, first, initial, initial_down)
 
-    def _states(self, state, forced=frozenset()) -> dict:
+    def _states(self, state, forced=frozenset(), simulated=False) -> dict:
         """``state`` checked (see ``point_availability``): each component it
         names, its ``NodeState``, and each nested RBD, its components'
         states, in the same form; for ``"stationary"``, every component in
         its long-run state. Nodes in ``forced`` (held working or broken)
-        take none."""
+        take none. ``simulated``: for a simulation, which takes an
+        imperfectly repaired component's virtual age (#269)."""
         if state is None:
             return {}
         if isinstance(state, str):
@@ -13860,7 +13871,7 @@ class RepairableRBD(RBD):
                             "(or 'stationary')."
                         )
                     value = "stationary"
-                out[node] = component._states(value)
+                out[node] = component._states(value, simulated=simulated)
                 continue
             if value == "stationary":
                 value = NodeState(stationary=True)
@@ -13869,18 +13880,24 @@ class RepairableRBD(RBD):
                     f"The state of component {node!r} must be a NodeState, "
                     f"got {value!r}."
                 )
-            self._check_state(node, value)
+            self._check_state(node, value, simulated)
             out[node] = value
         return out
 
-    def _check_state(self, node, state: NodeState) -> None:
+    def _check_state(self, node, state: NodeState, simulated=False) -> None:
         """Raise if a component cannot be in ``state``: a phase off a
         calendar or past its interval, maintenance it does not have, an age
         it cannot be up at or a repair or maintenance that is always over
-        sooner, or a state of a kind of component whose state is not
-        taken."""
+        sooner, a virtual age of a component not repaired imperfectly, or a
+        state of a kind of component whose state is not taken (an
+        imperfectly repaired one's, outside a simulation)."""
         schedule = self._preventive.get(node)
         inspection = self._inspection.get(node)
+        if state.virtual_age is not None and node not in self._imperfect:
+            raise ValueError(
+                f"Component {node!r} is not repaired imperfectly (it has no "
+                "'repair'), so it has no virtual age: give its age alone."
+            )
         if (
             inspection is not None
             and inspection.partial
@@ -13922,16 +13939,35 @@ class RepairableRBD(RBD):
             # A standby group in its long-run state starts its units'
             # chain from its long-run distribution.
             return
-        for kinds, what in (
-            (self._standby, "a standby group, whose units' states"),
-            (self._imperfect, "repaired imperfectly: its virtual age"),
-        ):
-            if node in kinds:
+        if node in self._standby:
+            raise NotImplementedError(
+                f"Component {node!r} is a standby group, whose units' "
+                "states are not taken as a state: leave it out (new)."
+            )
+        imperfect = self._imperfect.get(node)
+        if imperfect is not None:
+            if not simulated:
                 raise NotImplementedError(
-                    f"Component {node!r} is {what} are not taken as a "
-                    "state: leave it out (new)."
+                    f"Component {node!r} is repaired imperfectly: its state "
+                    "(its age and virtual age) is taken by the simulations "
+                    "(availability, cost, simulate_timelines), not here: "
+                    "leave it out (new)."
                 )
-        if state.stationary or (state.alive and not state.age):
+            if (
+                imperfect.replace_after is not None
+                or schedule is not None
+                or inspection is not None
+            ):
+                raise NotImplementedError(
+                    f"Component {node!r} is repaired imperfectly and "
+                    "replaced after some failures, maintained or tested, "
+                    "which would need its failures or operating time "
+                    "since it was renewed, which a state does not give: "
+                    "leave it out (new)."
+                )
+        if state.stationary or (
+            state.alive and not state.age and not state.virtual_age
+        ):
             return
         component = self.components[node]
         for what, model in [
@@ -13950,7 +13986,7 @@ class RepairableRBD(RBD):
             since = 0.0
             if inspection is not None:
                 since = min(state.age, state.phase or 0.0)
-            age = state.age - since
+            age = state.age - since + (state.virtual_age or 0.0)
             survive = _sf_values(component.reliability.sf, np.array([age]))
             if not survive[0] > 0.0:
                 raise ValueError(
@@ -13978,7 +14014,7 @@ class RepairableRBD(RBD):
         given states), and see ``_check_simulated``."""
         if state is None:
             return {}
-        states = self._states(state, forced)
+        states = self._states(state, forced, simulated=True)
         self._check_simulated(states)
         return states
 

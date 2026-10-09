@@ -21,6 +21,15 @@ other release, fixes included, the minor.
   Kijima model and restoration factor. The spec is saved as that life and
   repair. surpyval's ARA, ARI and G1 renewal models are refused, their
   repairs not being Kijima's (SurPyval#833).
+- **A simulation starts an imperfectly repaired unit from its virtual age
+  (#269).** `NodeState(age=a, virtual_age=v)`: its virtual age `v` at its
+  last repair and its operating time `a` since; its life left is drawn
+  from virtual age `v + a`, and its next repair takes the virtual age on
+  by the whole time since its last. A fitted `GeneralizedRenewal`'s
+  `unit_states()` gives both. The exact methods still refuse such a state,
+  as do the simulations for a component also replaced after some
+  failures, maintained or tested, which would need its history since it
+  was renewed. Seeded runs from other states are unchanged.
 
 ### Changed
 
