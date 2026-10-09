@@ -584,8 +584,13 @@ def test_what_a_state_is_not_taken_for():
         repairability=E([1.0]),
         repair={"model": "kijima1", "q": 0.5},
     )
-    with pytest.raises(NotImplementedError, match="virtual age"):
-        imperfect.availability(10.0, state={"a": NodeState(age=5.0)})
+    # The simulations take its age and virtual age (#269); the exact
+    # methods do not.
+    imperfect.availability(
+        10.0, mc_samples=5, seed=0, state={"a": NodeState(age=5.0)}
+    )
+    with pytest.raises(NotImplementedError, match="taken by the simulations"):
+        imperfect.point_availability(10.0, state={"a": NodeState(age=5.0)})
     standby = single(
         reliability=E([0.01]),
         repairability=E([0.5]),
