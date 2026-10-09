@@ -2,7 +2,12 @@ name: actions
 
 run-name: RePyability CI
 
-on: [push, pull_request]
+# The one automated test run: the full suite on a pull request into master
+# (from dev). Nothing else runs it; release.yml publishes only what it
+# passed.
+on:
+  pull_request:
+    branches: [master]
 
 jobs:
   lint:
