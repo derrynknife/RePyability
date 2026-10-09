@@ -279,6 +279,16 @@ availability, failures, cost and capacity over the next month?* Pass
   hidden failures is known to have been up only at its last test (or when
   put into service, if that was since): it may have failed since, unseen,
   and the next test finds it;
+- **repaired imperfectly, at a virtual age:** `NodeState(age=a,
+  virtual_age=v)`, its virtual age `v` at its last repair and its operating
+  time `a` since (#269); its life left is drawn from virtual age `v + a`,
+  and its next repair takes the virtual age on from `v` by the whole `a`
+  plus that life. One down is at virtual age `v` once its repair is over.
+  For a unit of a fitted surpyval `GeneralizedRenewal`, `unit_states()`
+  gives its `virtual_age` now and `since_failure`: give
+  `age=since_failure` and `virtual_age=virtual_age - since_failure`. The
+  simulations take it (not the exact methods), for a component with no
+  `replace_after`, maintenance or tests;
 - **a nested RBD:** a dict of its own components' states;
 - **long in service, state unknown:** `state="stationary"` puts every
   component in its long-run state (one on a calendar at its phase; for one
@@ -336,8 +346,8 @@ before the other is back.
   than there are crews; or every component in its long-run state
   (`state="stationary"`), not one alone, as the queue ties them together.
 - **Not taken:** the state of a standby group (but its long-run state,
-  `NodeState(stationary=True)`), and the virtual age of an imperfectly
-  repaired component; leave them out (new).
+  `NodeState(stationary=True)`), and, by the exact methods, that of an
+  imperfectly repaired component; leave them out (new).
 
 ## Uncertain component models
 

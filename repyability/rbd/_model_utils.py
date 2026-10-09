@@ -135,7 +135,9 @@ class ParametricSpec(NamedTuple):
         ``params``."""
         shares = {share for _, share, _ in _SHARES}
         own = [float(v) for n, v in zip(self.names, values) if n not in shares]
-        given = {n: float(v) for n, v in zip(self.names, values) if n in shares}
+        given = {
+            n: float(v) for n, v in zip(self.names, values) if n in shares
+        }
         return self.cls.from_params(own, **{**self.extras, **given})
 
 

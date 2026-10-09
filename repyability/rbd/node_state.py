@@ -69,13 +69,24 @@ class NodeState:
         For a repairable component: start it in its long-run state, by
         default ``False``. Its ``phase`` still places it on its calendar;
         the other fields must be left at their defaults.
+    virtual_age : float, optional
+        For a repairable component repaired imperfectly (a spec's
+        ``"repair"``, or a fitted ``GeneralizedRenewal`` or Poisson
+        process): its virtual age at its last repair, by default None (as
+        new); ``age`` is then its operating time since. One down is at
+        this virtual age once its repair is over. For a unit of a fitted
+        surpyval renewal model, ``unit_states()`` gives its
+        ``virtual_age`` now and ``since_failure``: give ``age=
+        since_failure`` and ``virtual_age=virtual_age - since_failure``
+        (#269). The simulations take it.
 
     Raises
     ------
     ValueError
-        If ``age``, ``down_for`` or ``phase`` is negative or not finite,
-        ``down_for`` or ``maintenance`` is given for a component that is
-        alive, or another field is given with ``stationary``.
+        If ``age``, ``down_for``, ``phase`` or ``virtual_age`` is negative
+        or not finite, ``down_for`` or ``maintenance`` is given for a
+        component that is alive, or another field is given with
+        ``stationary``.
 
     Notes
     -----
@@ -127,13 +138,14 @@ class NodeState:
     maintenance: bool = False
     phase: Optional[float] = None
     stationary: bool = False
+    virtual_age: Optional[float] = None
 
     def __post_init__(self) -> None:
         if self.age < 0:
             raise ValueError(
                 f"NodeState.age must be non-negative, got {self.age!r}."
             )
-        for name in ("age", "down_for", "phase"):
+        for name in ("age", "down_for", "phase", "virtual_age"):
             value = getattr(self, name)
             if value is not None and not (math.isfinite(value) and value >= 0):
                 raise ValueError(
@@ -146,7 +158,11 @@ class NodeState:
                 "that is down: give alive=False with them."
             )
         if self.stationary and (
-            self.age or not self.alive or self.down_for or self.maintenance
+            self.age
+            or not self.alive
+            or self.down_for
+            or self.maintenance
+            or self.virtual_age
         ):
             raise ValueError(
                 "A stationary NodeState is in its long-run state, which "
@@ -163,6 +179,8 @@ class NodeState:
             fields.append(f"phase={self.phase!r}")
         if self.stationary:
             fields.append("stationary=True")
+        if self.virtual_age is not None:
+            fields.append(f"virtual_age={self.virtual_age!r}")
         return f"NodeState({', '.join(fields)})"
 
     @property
@@ -174,4 +192,5 @@ class NodeState:
             and not self.age
             and not self.stationary
             and not self.phase
+            and not self.virtual_age
         )
