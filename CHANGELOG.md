@@ -190,12 +190,14 @@ other release, fixes included, the minor.
   saved. Most of the draws' time is the models' quantile functions,
   whose overhead per value is raised in surpyval (SurPyval#769).
 - **Faster capacity runs, timelines and conditional runs (#246, #247,
-  #248)**, with results the same, bit for bit.
+  #248)**. Timelines and conditional runs give the same results, bit for
+  bit; a capacity run's probabilities can differ in their last digits.
   - A capacity run adds up equal levels with a sorted reduction rather
-    than `np.add.at`, and tidies each level once: 25 redundant pairs
-    with capacities (50 components), 2,000 h, 500 simulations with numba,
-    0.31 s rather than 0.39 s; 70 pairs on the Python loop, 3.5 s rather
-    than 3.8 s.
+    than `np.add.at`, which sums a level's rows in another order (its
+    probabilities equal to rounding, its levels the same), and tidies each
+    level once: 25 redundant pairs with capacities (50 components),
+    2,000 h, 500 simulations with numba, 0.31 s rather than 0.39 s; 70
+    pairs on the Python loop, 3.5 s rather than 3.8 s.
   - A timeline's changes' histories and positions are worked out once,
     where every measure worked them out again, and a unit's own changes
     no longer store their index (their position): `simulate_timelines`
