@@ -4,11 +4,7 @@ import numpy as np
 from surpyval import Hypoexponential
 
 from repyability.utils.checks import simulation_options, whole_number
-from repyability.utils.deprecation import (
-    REMOVAL_AFTER_NEXT,
-    ignored,
-    refuse_removed_names,
-)
+from repyability.utils.deprecation import ignored, refuse_removed_names
 from repyability.utils.wrappers import numpy_seed
 
 from ._dependent_lifetimes import (
@@ -56,7 +52,6 @@ def drawn_mean(model, name: str, exact, mc_samples, seed, method) -> float:
             "the mean is worked out exactly (or numerically), so nothing is "
             "drawn; method='simulate' estimates it from draws instead.",
             options,
-            REMOVAL_AFTER_NEXT,
         )
     return value
 
@@ -189,21 +184,13 @@ class StandbyModel:
     k : int, optional
         The number of units that must operate for the arrangement to work,
         from 1 to ``len(reliabilities)``, by default 1.
-    mc_samples : int, optional
-        Deprecated and unused: the number of simulated lifetimes the
-        reliability was fitted to until 0.12. Passing it warns, and 0.13
-        will refuse it.
-    lower : float, optional
-        Deprecated and unused, as ``mc_samples`` is: that fit's lower limit.
     switching_probability : float or sequence of float, optional
         The probability, in ``[0, 1]``, that switching onto the next spare
         succeeds: a scalar for every switch, or one value per spare
         (length ``len(reliabilities) - k``). A failed switch ends the
         arrangement's life when the unit it should replace fails. By
         default 1.0 (perfect switching). Imperfect switching is supported
-        for cold standby only.
-    seed : int or None, optional
-        Deprecated and unused, as ``mc_samples`` is: that fit's seed.
+        for cold standby only. Given by name, as ``dormancy_factor`` is.
     dormancy_factor : float, optional
         The dormant-to-operating aging ratio, in ``[0, 1]``: 0 is cold, 1
         is hot and anything between is warm. By default 0.0.
@@ -286,17 +273,10 @@ class StandbyModel:
         self,
         reliabilities,
         k=1,
-        mc_samples=None,
-        lower=None,
+        *,
         switching_probability=1.0,
-        seed=None,
         dormancy_factor=0.0,
     ):
-        ignored(
-            "StandbyModel()",
-            "its reliability is no longer fitted to simulated lifetimes.",
-            {"mc_samples": mc_samples, "lower": lower, "seed": seed},
-        )
         k = whole_number(k, "k (how many units must operate)")
         if k > len(reliabilities):
             raise ValueError(

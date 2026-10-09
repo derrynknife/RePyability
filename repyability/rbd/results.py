@@ -33,7 +33,7 @@ import numpy as np
 from scipy.special import ndtri
 
 from repyability.rbd import _montecarlo as montecarlo
-from repyability.utils.deprecation import REMOVAL_AFTER_NEXT, called
+from repyability.utils.deprecation import called
 from repyability.utils.wrappers import outside_level
 
 
@@ -1995,7 +1995,6 @@ class CapacityDistribution(_ResultMapping):
         return called(
             self._per_time(np.sum(parts, axis=0)),
             "CapacityDistribution.mean",
-            REMOVAL_AFTER_NEXT,
         )
 
     def delivered_fraction(self, demand: float) -> Any:
@@ -2724,21 +2723,15 @@ class SparesDemand(_ResultMapping):
 
     @property
     def mean(self) -> float:
-        """The expected number of spares used.
-
-        A property, as the other results' values are (#184): calling it,
-        ``mean()``, as before 0.12, still gives it, with a
-        ``FutureWarning``, until 0.13.
+        """The expected number of spares used (a property, as the other
+        results' values are, #184).
 
         Returns
         -------
         float
             The mean number of replacements.
         """
-        return called(
-            float(self.probabilities @ np.arange(len(self.probabilities))),
-            "SparesDemand.mean",
-        )
+        return float(self.probabilities @ np.arange(len(self.probabilities)))
 
     @property
     def std(self) -> float:
@@ -2751,11 +2744,7 @@ class SparesDemand(_ResultMapping):
             The standard deviation of the number of replacements.
         """
         counts = np.arange(len(self.probabilities))
-        mean = float(self.mean)
-        return called(
-            float(np.sqrt(self.probabilities @ (counts - mean) ** 2)),
-            "SparesDemand.std",
-        )
+        return float(np.sqrt(self.probabilities @ (counts - self.mean) ** 2))
 
     def covered(self, stock: int) -> float:
         """The probability that ``stock`` spares cover the horizon's

@@ -37,7 +37,7 @@ from typing import Any
 import numpy as np
 from surpyval import Hypoexponential
 
-from repyability.utils.deprecation import ignored, refuse_removed_names
+from repyability.utils.deprecation import refuse_removed_names
 from repyability.utils.wrappers import conditional_survival, numpy_seed
 
 from ._dependent_lifetimes import LoadSharingSurvival
@@ -143,14 +143,6 @@ class LoadSharingModel:
     k : int, optional
         The minimum number of surviving units for the group to work, from
         1 to ``len(models)``, by default 1.
-    mc_samples : int, optional
-        Deprecated and unused: the number of simulated lifetimes the
-        reliability of different units was fitted to until 0.12. Passing
-        it warns, and 0.13 will refuse it.
-    lower : float, optional
-        Deprecated and unused, as ``mc_samples`` is: that fit's lower limit.
-    seed : int or None, optional
-        Deprecated and unused, as ``mc_samples`` is: that fit's seed.
 
     Attributes
     ----------
@@ -209,15 +201,7 @@ class LoadSharingModel:
         models,
         load,
         k=1,
-        mc_samples=None,
-        lower=None,
-        seed=None,
     ):
-        ignored(
-            "LoadSharingModel()",
-            "its reliability is no longer fitted to simulated lifetimes.",
-            {"mc_samples": mc_samples, "lower": lower, "seed": seed},
-        )
         models = list(models)
         if len(models) == 0:
             raise ValueError("LoadSharingModel needs at least one unit.")

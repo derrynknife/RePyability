@@ -95,8 +95,8 @@ reliability, naming the simulations that take it: `random`,
 `NonRepairableRBD`, or `availability` and `cost` of a `RepairableRBD`.
 Until 0.12 such an arrangement was given a Kaplan–Meier fit to simulated
 lifetimes, which carried their Monte-Carlo error into every exact analysis
-of the system; the `mc_samples`, `lower` and `seed` that set the fit are
-now ignored, and warn until 0.13 refuses them.
+of the system; the `mc_samples`, `lower` and `seed` that set the fit went
+in 0.13.
 
 `mean()` and `random(size, seed=None)` give the arrangement's mean lifetime
 and draw lifetimes; `cs(x, X)` is its conditional survival. A standby node
