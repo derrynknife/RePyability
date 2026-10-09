@@ -641,7 +641,7 @@ class FailureCriticalityIndex(_ResultMapping):
 
     >>> share = fci.per_component_failure
     >>> {node: round(share[node], 2) for node in sorted(share)}
-    {'a': 0.91, 'b': 0.91}
+    {'a': 0.92, 'b': 0.89}
     """
 
     per_system_failure: Dict[Hashable, float]
@@ -755,7 +755,7 @@ class Criticalities(_ResultMapping):
     >>> {node: round(float(v), 4) for node, v in oci.up.items()}
     {'a': 1.0, 'b': 1.0}
     >>> {node: round(float(v), 2) for node, v in oci.down.items()}
-    {'a': 0.55, 'b': 0.5}
+    {'a': 0.5, 'b': 0.55}
     >>> crit["iou"] is crit.iou  # dict-style access also works
     True
     """
@@ -1001,7 +1001,7 @@ class CostResult(_ResultMapping):
     >>> round(result.by_category["system_downtime"], 2)  # 50 per hour down
     450.41
     >>> round(result.sample_mean, 2), round(result.std, 2)
-    (1354.77, 429.75)
+    (1387.42, 436.54)
     >>> result.mean_interval(0.95).method
     'exact'
 
@@ -1012,10 +1012,10 @@ class CostResult(_ResultMapping):
     ...     t_simulation=100.0, mc_samples=200, seed=0, control_variate=False
     ... )
     >>> round(own.mean, 2), round(own.by_category["repair"], 2)
-    (1354.77, 909.5)
+    (1387.42, 927.0)
     >>> interval = own.mean_interval(0.95)
     >>> interval.method, round(interval.lower, 2), round(interval.upper, 2)
-    ('simulated', 1295.21, 1414.33)
+    ('simulated', 1326.92, 1447.92)
     """
 
     samples: np.ndarray
@@ -2233,7 +2233,7 @@ class AvailabilityResult(_ResultMapping):
     >>> round(result.mean_availability, 4)  # exact; long run: 10 / 11
     0.9107
     >>> round(result.sample_mean_availability, 4)  # the simulations' own
-    0.9104
+    0.9117
     >>> result.mean_availability_interval().method
     'exact'
     >>> lower, upper = result.availability_interval(0.95)
@@ -2935,12 +2935,10 @@ class TimelineSimulation(_ResultMapping):
     engine : str
         The engine that made them: ``"python"`` or ``"numba"``.
     method : str
-        How: ``"event loop"``, recorded by the event loop as it ran them,
-        or ``"streams"``, each component's history drawn straight from its
-        streams and the system's merged from theirs (independent
-        components, on the Python engine). Either way they are the
-        simulations ``availability`` runs with the same seed, with the same
-        histories.
+        How they were made: ``"event loop"``, recorded by the event loop as
+        it ran them, the simulations ``availability`` runs with the same
+        seed. (Until 0.13 independent components' histories could be
+        ``"streams"``, drawn from their streams, the same histories.)
     start : int
         The run's simulation the first history is (see ``join``).
 
@@ -2960,7 +2958,7 @@ class TimelineSimulation(_ResultMapping):
     ...     1000.0, mc_samples=500, seed=1, engine="python"
     ... )
     >>> runs.method, len(runs.system)
-    ('streams', 500)
+    ('event loop', 500)
     >>> pair, pump = runs.system.failures, runs.components["a"].failures
     >>> bool(pair.mean() < pump.mean())
     True
@@ -2981,7 +2979,7 @@ class TimelineSimulation(_ResultMapping):
     n_simulations: int
     antithetic: bool = False
     engine: str = "python"
-    method: str = "streams"
+    method: str = "event loop"
     start: int = 0
 
     @classmethod

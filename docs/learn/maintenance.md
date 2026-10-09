@@ -361,8 +361,8 @@ The simulation prices the same policy over a finite window, with its spread:
 
 ```python
 year = alone(580).availability(t_simulation=8760.0, mc_samples=500, seed=0)
-year.system_failures / year.n_simulations          # -> 3.524   failures a year
-year.system_planned_outages / year.n_simulations   # -> 11.90   planned stops a year
+year.system_failures / year.n_simulations          # -> 3.562   failures a year
+year.system_planned_outages / year.n_simulations   # -> 11.89   planned stops a year
 year.cost.by_category["preventive"]                # -> 11886.8   expected, exact
 ```
 
@@ -379,7 +379,7 @@ Now compare block replacement at the same interval:
 
 ```python
 block = alone(580, "block").availability(t_simulation=8760.0, mc_samples=500, seed=0)
-block.system_planned_outages / block.n_simulations   # -> 14.70
+block.system_planned_outages / block.n_simulations   # -> 14.75
 block.cost.cost_rate    # -> 13.98   per hour, against...
 year.cost.cost_rate     # -> 12.82   ...for age replacement
 ```

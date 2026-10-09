@@ -404,8 +404,12 @@ def test_pricing_never_changes_the_failure_simulation():
         drawn.cost.by_category["component_downtime"]
         == fixed.cost.by_category["component_downtime"]
     )
-    # Random prices add spread on top of the random failures.
-    assert drawn.cost.std > fixed.cost.std
+    # Random prices add spread on top of the random failures: with the same
+    # failures, each simulation's cost differs from the fixed prices' by the
+    # prices' own variation, about 0 on average.
+    added = drawn.cost.samples - fixed.cost.samples
+    assert np.std(added) > 0.0
+    assert abs(np.mean(added)) < 4 * np.std(added) / np.sqrt(added.size)
 
 
 def test_random_costs_are_reproducible():

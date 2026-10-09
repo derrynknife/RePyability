@@ -159,7 +159,8 @@ def test_timelines_go_through_json(repairable):
     assert len(out["system"]["timelines"]) == 5
     first = json.loads(json.dumps(run.system[0].to_dict()))
     assert first["end"] == 500.0
-    assert first["changes"] == [list(c) for c in run.system[0].changes]
+    assert first["changes"] == run.system[0].changes.tolist()
+    assert first["changes"]  # the first history changes state
 
 
 # -- short reprs --------------------------------------------------------------

@@ -145,9 +145,9 @@ same `N`, without biasing the estimate:
 
 In a `RepairableRBD` both work component by component: each component draws
 each quantity (its times to failure, its repairs, ...) from a stream of its
-own, keyed by the seed, its place in the diagram and the quantity, and laid
-out so that the stream's `k`-th draw in simulation `r` (or pair `r`) is
-fixed by those alone. Its `k`-th draw is then matched, or paired, however
+own, keyed by the seed, its place in the diagram and the quantity, and
+counter-based, so that the stream's `k`-th draw in simulation `r` (or pair
+`r`) is fixed by those alone. Its `k`-th draw is then matched, or paired, however
 the components' events interleave, and every simulation is the same however
 the run is split up: over processes or threads, or in a run to a tolerance.
 

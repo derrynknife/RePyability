@@ -128,10 +128,10 @@ plant = RepairableRBD(
 )
 runs = plant.simulate_timelines(8760.0, mc_samples=2000, seed=1)
 year = runs.system
-np.mean(year.failures == 0)     # -> 0.5875   no plant failure in the year
-year.failures.mean()            # -> 0.5465
-year.failures_by_cause()["v"].mean()   # -> 0.4325   most of them the valve's
-runs.components["a"].failures.mean()   # -> 4.53      a pump fails often
+np.mean(year.failures == 0)     # -> 0.5870   no plant failure in the year
+year.failures.mean()            # -> 0.5170
+year.failures_by_cause()["v"].mean()   # -> 0.4000   most of them the valve's
+runs.components["a"].failures.mean()   # -> 4.59      a pump fails often
 ```
 
 The pumps fail four or five times a year each, but rarely together: most of
@@ -142,7 +142,7 @@ from each simulation's own history:
 longest = np.array(
     [np.max(np.diff(h.down_intervals, axis=1), initial=0.0) for h in year]
 )
-np.percentile(longest, 95)      # -> 15.04
+np.percentile(longest, 95)      # -> 14.85
 ```
 
 The result is a [`TimelineSimulation`][repyability.TimelineSimulation]:
@@ -168,19 +168,14 @@ in one of these ways:
   compiled engine simulates (plain components, maintenance, tests, repair
   crews, standby groups, nested RBDs). `engine="auto"`, the default, runs
   a long run on it, as `availability` does.
-- **Drawn from the streams** (`engine="python"`, for independent
-  components: plain units whose models can be streamed, and nested RBDs
-  of them): each component's history is its lives and repairs, the draws
-  the event loop reads, added up as it adds them, a batch of simulations
-  at once; the system's is merged from theirs. Several times faster than
-  the Python event loop. A simulation in which two components change at
-  the same instant is run in the loop, which takes them in its own order.
-- **Recorded by the Python event loop** (`engine="python"`, for the rest:
-  replacement on condition, maintenance groups, imperfect repair, models
-  whose draws cannot be streamed).
+- **Recorded by the Python event loop** (`engine="python"`, and for
+  what the compiled engine does not simulate: replacement on condition,
+  maintenance groups, imperfect repair, models whose draws cannot be
+  streamed). Recording adds about a quarter to the loop's own time; the
+  loop itself, several times slower than numba's, is the cost.
 
-`n_jobs` runs on that many threads (numba, and the streams) or processes
-(the Python loop), and the histories are the same however many. On systems
+`n_jobs` runs on that many threads (numba) or processes (the Python
+loop), and the histories are the same however many. On systems
 of 3 to 70 components, with and without repair crews, standby groups and
 maintenance, numba recorded the histories in 3% to 32% more time than
 `availability`'s run of the same simulations took on it, and 5 to 16
@@ -226,8 +221,8 @@ from repyability import NodeState
 
 now = {"a": NodeState(alive=False, down_for=10.0), "b": NodeState(age=1500.0)}
 quarter = plant.simulate_timelines(2190.0, mc_samples=2000, seed=1, state=now)
-np.mean(quarter.system.failures == 0)            # -> 0.867   0.881 from new
-quarter.system.failures_by_cause()["b"].mean()   # -> 0.020   the worn pump's
+np.mean(quarter.system.failures == 0)            # -> 0.875   0.887 from new
+quarter.system.failures_by_cause()["b"].mean()   # -> 0.023   the worn pump's
 ```
 
 These are `availability(state=now)`'s simulations, each history its own. A

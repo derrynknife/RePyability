@@ -123,7 +123,7 @@ shows both:
 costs.mean_interval().method              # 'exact'
 costs.mean == plant.expected_cost(1000.0).mean   # True
 round(costs.mean, 1)                      # -> 121155.1
-round(costs.sample_mean, 1)               # -> 121702.6   the 500 windows' own
+round(costs.sample_mean, 1)               # -> 120634.4   the 500 windows' own
 ```
 
 ### Two different uncertainties
@@ -141,7 +141,7 @@ round(costs.sample_mean, 1)               # -> 121702.6   the 500 windows' own
 own = plant.cost(t_simulation=1000.0, mc_samples=500, seed=0, control_variate=False)
 interval = own.mean_interval(confidence=0.95)
 interval.method                                                       # 'simulated'
-round(interval.standard_error, 1)                                     # -> 850.0
+round(interval.standard_error, 1)                                     # -> 862.0
 interval.lower < plant.expected_cost(1000.0).mean < interval.upper    # True
 ```
 
@@ -414,8 +414,8 @@ simulations.
 
 ```python
 year = alone(580).availability(t_simulation=8760.0, mc_samples=500, seed=0)
-year.system_failures / year.n_simulations          # -> 3.518
-year.system_planned_outages / year.n_simulations   # -> 11.92
+year.system_failures / year.n_simulations          # -> 3.466
+year.system_planned_outages / year.n_simulations   # -> 11.95
 year.cost.by_category["preventive"]                # -> 11886.8   1000 each, expected
 ```
 
@@ -449,7 +449,7 @@ inspected = RepairableRBD([("s", "p"), ("p", "t")],
 inspected.expected_cost_rate()              # -> 13.37   per hour
 run = inspected.cost(200_000.0, mc_samples=20, seed=1)
 run.cost_rate                               # -> 13.36   exact over the window
-run.sample_mean / 200_000.0                 # -> 13.28   the 20 simulations', ± 0.2
+run.sample_mean / 200_000.0                 # -> 13.27   the 20 simulations', ± 0.2
 ```
 
 | Threshold | 0.05 | 0.1 | 0.15 | 0.2 | 0.25 | 0.3 |
@@ -544,15 +544,15 @@ def train(opportunity=None):
 
 train().expected_cost_rate()          # -> 33.00   separate stops, exact
 run = train(300).availability(200_000.0, mc_samples=20, seed=1)
-run.cost.cost_rate                    # -> 23.45   grouped, simulated
-run.opportunistic_renewals            # -> {'compressor': 3355, 'motor': 3481}
+run.cost.cost_rate                    # -> 23.48   grouped, simulated
+run.opportunistic_renewals            # -> {'compressor': 3337, 'motor': 3502}
 ```
 
 | Opportunity age (h) | none | 500 | 400 | 300 | 200 | 100 |
 |---|---|---|---|---|---|---|
-| Cost per hour (± 0.15) | 33.00 | 29.98 | 26.76 | 23.45 | 23.17 | 23.16 |
+| Cost per hour (± 0.15) | 33.00 | 29.99 | 26.82 | 23.48 | 23.20 | 23.18 |
 
-Grouping pays twice: the stops, and their set-ups, are fewer (5.63 an hour
+Grouping pays twice: the stops, and their set-ups, are fewer (5.64 an hour
 of set-ups against 10.33), and the units' outages overlap, so the train is
 down less (12.0 an hour of lost production against 16.7).
 

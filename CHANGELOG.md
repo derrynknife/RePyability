@@ -100,8 +100,72 @@ other release, fixes included, the minor.
   tests with it, a common-cause group's members moved together), so that
   a what-if agrees with them. A report or an app no longer needs the
   private `repyability.rbd._sensitivity` to name, show or move the levers.
+
 ### Changed
 
+- **Behaviour change: a `RepairableRBD` simulation's random numbers are
+  counter-based (#209), so seeded results differ from 0.12's.** Uniform `k`
+  of simulation `r` from a stream is now the `k`-th of numpy's Philox
+  generator keyed from the run's seed and the stream's name, from the
+  counter `(0, r, 0, 0)`: a function of those alone. Each block of
+  simulations had a PCG64 generator of its own, whose numbers went to a
+  simulation by the block's width, which followed from the component's
+  models and the window, so a component's draws hung on how they were laid
+  out. Now they do not: the layout (the blocks' widths and chunks) only
+  decides how fast they are worked out, and `compare` and the control
+  variate no longer give two systems' streams the same widths, which could
+  make a seeded run's simulations differ with and without them. Results
+  are as accurate as before, with other numbers: a seeded run gives
+  different estimates, within their standard errors. With numba, Philox
+  is compiled and a run takes as long as before; without it, working the
+  numbers out takes longer (about 90 ns a uniform rather than 5), and a run
+  of eight components on the Python engine took about a sixth longer.
+  Engines from other
+  packages read the run's blocks as before, but their numbers changed:
+  `engines.API` is now 2.
+- **`simulate_timelines` always records its histories in the event loop
+  (#205).** On the Python engine, independent components' histories were
+  drawn from their streams by a second implementation of their lives and
+  repairs; the event loop now records them as it runs, as it did for every
+  other diagram. The histories are the same, bit for bit, and
+  `TimelineSimulation.method` is always `"event loop"` (it was `"streams"`
+  for those diagrams). Without numba, such a run is slower: a bridge of
+  five units over 20,000 simulations takes 7.6 s where it took 3.0 s, and
+  a system with a nested diagram 9.7 s where it took 0.8 s. The numba
+  engine, which records in its own loop, is unchanged; recording in the
+  Python loop now costs about a quarter of the loop's own time, where it
+  cost nearly a half.
+- **A component that fails at once and is repaired at once is refused**
+  when the `RepairableRBD` is built (an `ExactEventTime` of 0 for both its
+  life and its repair). A simulation would change its state without end:
+  `availability()` never returned, and `simulate_timelines` refused it.
+- **numba's engine takes every level's events in one loop (#206).** The
+  system's own events and a nested RBD's were written out twice in the
+  compiled loop; one loop now takes both, a nested RBD's to its next change
+  as it is wanted. Results are the same, bit for bit. A system with nested
+  RBDs runs faster (a three-level system in about half the time), the
+  others as before.
+- **A decision diagram has one search and one replay (#207).** The search
+  (`bdd.search`) and the replay (`shannon.replay`, `replay_gradient`) are
+  each written once and run as Python or compiled by numba as written,
+  where numba is installed and a core is large; the compiled search's
+  separate design, its packing of states into integers and its fall back
+  to Python for a wide frontier are gone. Plans are the same, step for
+  step, and values the same, bit for bit, checked against plans and values
+  recorded before the change. A core's compiled search takes about a third
+  less time (a 12 by 24 grid, 0.15 s rather than 0.23 s); a compiled
+  replay of 1,000 sets of probabilities takes 0.45 s rather than 1.0 s,
+  and of its gradient 1.8 s rather than 2.9 s.
+- **A run's changes are put in time order by numpy alone (#208).** The
+  compiled radix sort and merge (`_time_order`, taken where numba was
+  installed and a run had a million changes or more) are gone, with their
+  tuning constants. The +1 and -1 changes of state are netted by one sort
+  of integers (each time's bits above the change's sign), and the
+  capacity's changes by one sort of (time, change) pairs. Results are the
+  same, bit for bit. Without numba, a run of a million simulations puts
+  its changes in order about 2.5 times faster than before; with numba, a
+  capacity run of a million simulations takes about a tenth longer, and an
+  availability run as long.
 - **surpyval 0.23 or later is required** (0.22 was). Its next release drops
   0.22's name for a limited-failure population's share that ever fails,
   `p`, for `lfp_p`, which 0.22 does not know, so no example could be

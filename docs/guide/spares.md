@@ -305,7 +305,7 @@ takes over at once:
 ```python
 paired = RepairableRBD(edges, {"pump": dict(pump, standby={"units": 2}), "seal": seal})
 used = paired.spares_demand(8760.0, fleet=20, method="simulate", seed=1)
-used["pump"].mean      # -> 90.38   simulated
+used["pump"].mean      # -> 90.80   simulated
 ```
 
 The stock needs the long run, which the simulations from new do not reach,

@@ -95,6 +95,7 @@ from repyability.rbd._hidden_life import (
 from repyability.rbd._hidden_tests import TestedUnit
 from repyability.rbd._hidden_tests import check as check_tested
 from repyability.rbd._model_utils import (
+    distribution_name,
     failure_time_scale,
     is_fixed_probability,
     is_mixture,
@@ -779,7 +780,7 @@ class _ModuleRun:
         self.shards = None
         if self.sub is not None and shard_map is not None:
             plan, _ = self.sub._stream_plan(
-                T, entropy, antithetic, None, self.module_states
+                T, entropy, antithetic, self.module_states
             )
             template = {
                 **self.sub._shard_template(
@@ -804,7 +805,6 @@ class _ModuleRun:
         # The exact twin's stand-ins for the modules, with common random
         # numbers, and its exact expected values.
         self.twin_sub: Optional["RepairableRBD"] = None
-        self.widths: Optional[dict] = None
         self.twin_module_states: dict = {}
         self.exacts = _Exacts(0.0)
         if control_variate and self.sub is not None:
@@ -824,9 +824,6 @@ class _ModuleRun:
                 for node in modules
                 if node in twin_states
             }
-            self.widths = self.sub._common_widths(
-                self.twin_sub, T, self.module_states, self.twin_module_states
-            )
         self.twin_uptimes: List[np.ndarray] = []
         self.twin_costs: List[np.ndarray] = []
         self.curve_x = _conditional.steps(curve_points, T)
@@ -969,7 +966,7 @@ class _ModuleRun:
                 first,
                 self.module_states,
                 entropy=self.entropy,
-                widths=self.widths,
+                common=self.twin_sub is not None,
             )
             histories = [data[node] for node in modules]
             if self.sub.has_costs:
@@ -1006,7 +1003,7 @@ class _ModuleRun:
                 first,
                 self.twin_module_states,
                 entropy=self.entropy,
-                widths=self.widths,
+                common=self.twin_sub is not None,
             )
             twin_paths = _conditional.paths(
                 [data[node] for node in modules], count, T
@@ -1713,61 +1710,57 @@ class _Replication:
     history: Optional[tuple]
 
 
+def _net_by_time(
+    times: np.ndarray, steps: np.ndarray
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Changes of +1 or -1 (``steps``) at ``times`` (none negative), netted
+    by time: the distinct times, in order, and the net change at each.
+
+    A time is never negative, so its sign bit is free: each change is one
+    integer, its time's bits above whether it is +1, and one sort of the
+    integers puts the changes in time order (``-0.0`` sorts as ``0.0``)."""
+    keys = times.view(np.uint64) << np.uint64(1)
+    keys |= steps > 0
+    keys.sort()
+    if not keys.size:
+        return np.zeros(0), np.zeros(0, dtype=np.int64)
+    at = keys >> np.uint64(1)
+    new = np.empty(keys.size, dtype=bool)
+    new[0] = True
+    np.not_equal(at[1:], at[:-1], out=new[1:])
+    firsts = np.flatnonzero(new)
+    ups = np.add.reduceat((keys & np.uint64(1)).astype(np.int64), firsts)
+    sizes = np.diff(np.append(firsts, keys.size))
+    return at[firsts].view(np.float64), 2 * ups - sizes
+
+
 def _working_over_time(
     changed_at: np.ndarray,
     deltas: np.ndarray,
     t_end: float,
     start: int,
-    reuse: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """How many simulated systems work after each time at which one changed
     state (and at 0 and ``t_end`` whether or not any did): the times, in
-    order, and the counts, ``start`` working at 0. Changes given in order of
-    time (as an engine may keep them) are added up as they come; otherwise
-    they are sorted first (by the compiled radix sort where it applies;
-    with ``reuse``, the arrays given may be overwritten). Either way the
-    counts are whole numbers added exactly, so the order cannot change
-    them."""
-    compiled = _time_order(changed_at.size)
-    if compiled is not None:
-        ordered = compiled.sort_by_time(changed_at, deltas, reuse)
-        if ordered is not None:
-            changed_at, deltas = ordered
-    in_order = changed_at.size == 0 or (
-        changed_at[0] >= 0.0
-        and changed_at[-1] < t_end
-        and bool(np.all(changed_at[1:] >= changed_at[:-1]))
-    )
-    if not in_order:
-        time, inverse = np.unique(
-            np.concatenate(([0.0, t_end], changed_at)), return_inverse=True
-        )
-        working = np.bincount(
-            inverse.ravel(),
-            weights=np.concatenate(([start, 0], deltas)),
-            minlength=time.size,
-        )
-        return time, working.cumsum()
-    new = np.empty(changed_at.size, bool)
-    if changed_at.size:
-        new[0] = True
-        np.not_equal(changed_at[1:], changed_at[:-1], out=new[1:])
-    firsts = np.flatnonzero(new)
-    times = changed_at[firsts]
-    sums = (
-        np.add.reduceat(deltas, firsts).astype(float)
-        if changed_at.size
-        else np.zeros(0)
-    )
-    at_zero = bool(times.size) and times[0] == 0.0
-    if at_zero:
-        sums[0] += start
-        time = np.concatenate((times, [t_end]))
-        weights = np.concatenate((sums, [0.0]))
-    else:
-        time = np.concatenate(([0.0], times, [t_end]))
-        weights = np.concatenate(([float(start)], sums, [0.0]))
+    order, and the counts, ``start`` working at 0. Each change is +1 or -1
+    (``deltas``); the counts are whole numbers added exactly."""
+    times, net = _net_by_time(changed_at, deltas)
+    time, weights = _with_ends(times, net.astype(float), t_end)
+    weights[0] += start
     return time, weights.cumsum()
+
+
+def _with_ends(
+    times: np.ndarray, values: np.ndarray, t_end: float
+) -> Tuple[np.ndarray, np.ndarray]:
+    """``times`` (in order, each once) with 0 and ``t_end`` among them, and
+    ``values`` at their times (0 at an end that had none)."""
+    for end in (0.0, t_end):
+        i = int(np.searchsorted(times, end))
+        if i == times.size or times[i] != end:
+            times = np.insert(times, i, end)
+            values = np.insert(values, i, 0)
+    return times, values
 
 
 def _add_at(totals: dict, key, value) -> None:
@@ -1788,42 +1781,21 @@ def _partials(value) -> list:
     return value.partials if isinstance(value, ExactSum) else [value]
 
 
-#: The fewest changes of a run for which they are put in time order by the
-#: compiled radix sort and merge (``_time_order``, #201), where numba is
-#: installed. The results are numpy's to the last bit either way: this only
-#: spares loading the compiled functions for a few changes.
-_COMPILED_ORDER = 1 << 20
-
-
-def _time_order(size: int):
-    """The compiled sorting and merging of a run's changes
-    (``_time_order``), for ``size`` changes; None where numba is not
-    installed, or the changes are too few to pay for it."""
-    if size < _COMPILED_ORDER:
-        return None
-    from repyability.rbd import _compiled
-
-    if not _compiled.available():
-        return None
-    from repyability.rbd import _time_order as compiled
-
-    return compiled
-
-
 def _by_time(
-    times: np.ndarray, values: np.ndarray, reuse: bool = False
+    times: np.ndarray, values: np.ndarray
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """``values`` grouped by their ``times``: the distinct times, in order;
     the values, in the order of their times; and where each time's values
-    start. With ``reuse``, the arrays given may be overwritten."""
-    compiled = _time_order(times.size)
-    if compiled is not None:
-        grouped = compiled.by_time(times, values, reuse)
-        if grouped is not None:
-            return grouped
-    if times.size > 1 and not np.all(times[1:] >= times[:-1]):
-        order = np.argsort(times, kind="stable")
-        times, values = times[order], values[order]
+    start. A time's values are in no particular order: what is made of
+    them (``_group_totals``, ``_group_partials``) is exact.
+
+    Each (time, value) pair is a complex number, which numpy sorts by its
+    real part, then its imaginary one: one sort of the pairs."""
+    pairs = np.empty(times.size, dtype=complex)
+    pairs.real = times
+    pairs.imag = values
+    pairs.sort()
+    times, values = pairs.real, pairs.imag
     new = np.ones(times.size, dtype=bool)
     new[1:] = times[1:] != times[:-1]
     starts = np.flatnonzero(new)
@@ -1847,21 +1819,33 @@ def _capacity_totals(
     ``change``, at the times ``at``) or whether it can carry an unlimited
     amount (by the net ``counts`` of systems that can, at ``free_at``)
     changed, and 0 and ``t_end``: in order; the systems' total expected
-    capacity after each (the running total of the changes); and whether any
-    can carry an unlimited amount then. ``at`` and ``free_at`` are in
-    order, each time once (as ``_by_time`` gives them). Merged in one
-    compiled pass where it applies (``_time_order.capacity_totals``),
-    to the same last bit."""
-    compiled = _time_order(at.size + free_at.size)
-    if compiled is not None:
-        merged = compiled.capacity_totals(at, change, free_at, counts, t_end)
-        if merged is not None:
-            return merged
-    times = np.unique(np.r_[at, free_at, 0.0, t_end])
+    capacity after each (the running total of the changes, as
+    ``np.cumsum`` adds them); and whether any can carry an unlimited amount
+    then. ``at`` and ``free_at`` are in order, each time once (as
+    ``_by_time`` gives them).
+
+    The two are merged as ``_net_by_time`` merges its changes, each time's
+    bits above whether it is ``free_at``'s: the merged times of each keep
+    their order, so their changes follow them in turn."""
+    keys = np.concatenate(
+        (
+            at.view(np.uint64) << np.uint64(1),
+            (free_at.view(np.uint64) << np.uint64(1)) | np.uint64(1),
+        )
+    )
+    keys.sort()
+    bits = keys >> np.uint64(1)
+    new = np.ones(keys.size, dtype=bool)
+    new[1:] = bits[1:] != bits[:-1]
+    group = np.cumsum(new) - 1
+    free = (keys & np.uint64(1)).astype(bool)
+    times = bits[new].view(np.float64)
     step = np.zeros(times.size)
-    step[np.searchsorted(times, at)] = change
+    step[group[~free]] = change
     freed = np.zeros(times.size, dtype=np.int64)
-    freed[np.searchsorted(times, free_at)] = counts
+    freed[group[free]] = counts
+    times, step = _with_ends(times, step, t_end)
+    _, freed = _with_ends(bits[new].view(np.float64), freed, t_end)
     return times, np.cumsum(step), np.cumsum(freed) > 0
 
 
@@ -1877,12 +1861,8 @@ def _group_stops(values: np.ndarray, starts: np.ndarray) -> np.ndarray:
 def _group_totals(values: np.ndarray, starts: np.ndarray) -> np.ndarray:
     """The exact sum of each group of ``values`` (from each of ``starts``
     to the next), rounded once: a group of one value, the value."""
-    compiled = _time_order(values.size)
-    if compiled is not None:
-        totals, several = compiled.group_firsts(values, starts)
-    else:
-        totals = values[starts]
-        several = np.flatnonzero(_group_stops(values, starts) - starts > 1)
+    totals = values[starts]
+    several = np.flatnonzero(_group_stops(values, starts) - starts > 1)
     for i in several.tolist():
         stop = starts[i + 1] if i + 1 < starts.size else values.size
         totals[i] = float(ExactSum(values[starts[i] : stop]))  # noqa: E203
@@ -2234,8 +2214,8 @@ class _Tally:
         """Every change of a simulated system's expected capacity, as
         times (``-0.0`` made ``0.0``) and changes, whose exact sum at a
         time is the total change then; and every change of whether it can
-        carry an unlimited amount, as times and +1 or -1 (see
-        ``capacity_changes``): new arrays, which the caller may
+        carry an unlimited amount, as times and changes in how many systems
+        can (see ``capacity_changes``): new arrays, which the caller may
         overwrite."""
         times = [np.asarray(self.capacity_times, dtype=float)]
         steps = [np.asarray(self.capacity_steps, dtype=float)]
@@ -2261,16 +2241,13 @@ class _Tally:
         unlimited amount changed, in order, and the net change then in how
         many can."""
         times, steps, free_times, free_steps = self.capacity_records()
-        at, steps, starts = _by_time(times, steps, reuse=True)
-        free_at, free_steps, free_starts = _by_time(
-            free_times, free_steps, reuse=True
-        )
+        at, steps, starts = _by_time(times, steps)
+        # Whole numbers, each time's added exactly (as floats, below 2**53).
+        free_at, free_steps, firsts = _by_time(free_times, free_steps)
         counts = (
-            np.add.reduceat(free_steps, free_starts)
-            if free_steps.size
-            else free_steps
+            np.add.reduceat(free_steps, firsts) if firsts.size else free_steps
         )
-        return at, steps, starts, free_at, counts
+        return at, steps, starts, free_at, counts.astype(np.int64)
 
     # The totals that are lists of floats, one per node, and the counts.
     _NODE_SUMS = (
@@ -4582,6 +4559,21 @@ def restoration_criticality_index_by_component(RCI):
     return rci
 
 
+def _at_zero(model) -> bool:
+    """Whether ``model`` is a time of exactly 0 (an instant repair is)."""
+    return distribution_name(model) == "ExactEventTime" and not np.any(
+        np.ravel(model.params)
+    )
+
+
+def _never_settles(component) -> bool:
+    """Whether a component fails at once and is repaired at once, so that
+    the event loop would change its state without end."""
+    return _at_zero(getattr(component, "reliability", None)) and _at_zero(
+        getattr(component, "time_to_replace", None)
+    )
+
+
 class RepairableRBD(RBD):
     """A reliability block diagram of repairable components.
 
@@ -4980,7 +4972,7 @@ class RepairableRBD(RBD):
     >>> result = pumps.availability(t_simulation=50, mc_samples=200, seed=0)
     >>> window = result.n_simulations * result.time_simulated_to
     >>> round(float(result.system_uptime) / window, 4)  # simulated
-    0.9925
+    0.9914
 
     The pair as one node of a larger system, in series with a valve that
     is replaced instantly at a cost of 250 per failure, while lost
@@ -5305,6 +5297,13 @@ class RepairableRBD(RBD):
         self.structure_check["is_missing_components"] = bool(missing)
         self.structure_check["nodes_with_no_component"] = missing
 
+        for node, component in components.items():
+            if _never_settles(component):
+                raise ValueError(
+                    f"Component {node!r} fails at once and is repaired at "
+                    "once, so a simulation would change its state without "
+                    "end: give its life or its repair some length."
+                )
         self.components = components
         self.repairability = copy(repairability)
         self._maintenance = self._validate_groups(maintenance_groups)
@@ -6983,22 +6982,11 @@ class RepairableRBD(RBD):
         t_simulation: float,
         entropy,
         antithetic: bool,
-        widths: Optional[dict] = None,
         states: Optional[dict] = None,
     ) -> Tuple[_streams.Plan, bool]:
-        """A run's streams (``widths`` overriding some of their widths, as
-        ``compare`` does to line up two systems' streams), and whether every
-        draw comes from one; the components start from ``states``."""
+        """A run's streams, and whether every draw comes from one; the
+        components start from ``states``."""
         specs, complete = self._stream_specs(t_simulation, states=states)
-        if widths:
-            specs = {
-                name: (
-                    dataclasses.replace(spec, width=widths[name])
-                    if name in widths
-                    else spec
-                )
-                for name, spec in specs.items()
-            }
         return _streams.Plan(entropy, antithetic, specs), complete
 
     def _streamed_components(
@@ -7111,7 +7099,6 @@ class RepairableRBD(RBD):
         capacity: Optional[_CapacityRecorder],
         entropy,
         antithetic: bool,
-        widths: Optional[dict] = None,
         states: Optional[dict] = None,
         history: bool = False,
     ) -> "_Context":
@@ -7123,7 +7110,7 @@ class RepairableRBD(RBD):
         ``_replicate``)."""
         states = {} if states is None else states
         plan, complete = self._stream_plan(
-            t_simulation, entropy, antithetic, widths, states
+            t_simulation, entropy, antithetic, states
         )
         run = _streams.Run(plan, reseed=not complete)
         has_costs = self.has_costs
@@ -11338,14 +11325,7 @@ class RepairableRBD(RBD):
             else r.AnalysisRoute(
                 r.SIMULATED,
                 "The simulations availability runs, their histories kept "
-                "as timelines: recorded by the event loop as it runs"
-                + (
-                    "; on the Python engine, each component's drawn "
-                    "straight from its streams, and the system's merged "
-                    "from theirs."
-                    if _timeline_runs.independent(self, plan)
-                    else "."
-                )
+                "as timelines: recorded by the event loop as it runs."
                 + paired,
                 engine=engine,
                 engine_reason=why,
@@ -16542,7 +16522,7 @@ class RepairableRBD(RBD):
 
         >>> window = result.n_simulations * result.time_simulated_to
         >>> round(float(result.system_uptime) / window, 4)
-        0.8303
+        0.832
         >>> round(rbd.mean_availability(), 4)
         0.8264
 
@@ -17092,7 +17072,7 @@ class RepairableRBD(RBD):
         )
         # What a run checks before it simulates (see _run).
         plan, complete = self._stream_plan(
-            t_simulation, entropy, antithetic, None, states
+            t_simulation, entropy, antithetic, states
         )
         if antithetic and not complete:
             raise NotImplementedError(_UNSTREAMED)
@@ -17540,7 +17520,7 @@ class RepairableRBD(RBD):
         ...     control_variate=False,
         ... )
         >>> round(simulated.estimate, 4), round(simulated.standard_error, 5)
-        (0.0196, 0.00042)
+        (0.0187, 0.00041)
 
         Two independent runs of 2000 simulations would estimate it with a
         standard error of about 0.00058.
@@ -17586,7 +17566,6 @@ class RepairableRBD(RBD):
         jobs = None if n_jobs is None else montecarlo.jobs(n_jobs)
         states = [rbd._simulation_states(state) for rbd in (self, other)]
         entropy = _streams.entropy_of(seed)
-        widths = self._common_widths(other, t_simulation, *states)
         values = []
         for rbd, start in zip((self, other), states):
             tally = rbd._run(
@@ -17600,7 +17579,6 @@ class RepairableRBD(RBD):
                 jobs=jobs,
                 engine=engine,
                 entropy=entropy,
-                widths=widths,
                 common=True,
                 states=start,
             )
@@ -17654,25 +17632,6 @@ class RepairableRBD(RBD):
                 running = 0.0
             values.append(running + rbd.acquisition_cost)
         return float(values[0] - values[1])
-
-    def _common_widths(
-        self,
-        other: "RepairableRBD",
-        t_simulation: float,
-        states: Optional[dict] = None,
-        other_states: Optional[dict] = None,
-    ) -> dict:
-        """The block widths two systems' streams take in ``compare``: for
-        each stream both have, the narrower of the two, so that each
-        simulation of either draws the same uniforms from it. The systems
-        start from ``states`` and ``other_states``."""
-        mine, _ = self._stream_specs(t_simulation, states=states)
-        theirs, _ = other._stream_specs(t_simulation, states=other_states)
-        return {
-            name: min(spec.width, theirs[name].width)
-            for name, spec in mine.items()
-            if name in theirs
-        }
 
     def _twin(self) -> Tuple["RepairableRBD", List[str]]:
         """This system's exact twin (#154), and what it changes, in words.
@@ -17985,7 +17944,7 @@ class RepairableRBD(RBD):
                 curve_points,
             )
             plan, _ = self._stream_plan(
-                t_simulation, entropy, antithetic, None, states
+                t_simulation, entropy, antithetic, states
             )
             step = self._shard_size(plan, shard_size)
             sharded = (shard_map, template, step)
@@ -18562,7 +18521,6 @@ class RepairableRBD(RBD):
         twin_states = twin._simulation_states(state, working | broken)
         exact, exact_cost = exacts.availability, exacts.cost
         entropy = _streams.entropy_of(seed)
-        widths = self._common_widths(twin, t_simulation, states, twin_states)
         tally: Optional[_Tally] = None
         twin_tally: Optional[_Tally] = None
         first, count = 0, N
@@ -18580,7 +18538,6 @@ class RepairableRBD(RBD):
                 jobs=jobs,
                 engine=engine,
                 entropy=entropy,
-                widths=widths,
                 common=True,
                 first=first,
                 states=states,
@@ -18604,7 +18561,6 @@ class RepairableRBD(RBD):
                     jobs=jobs,
                     engine=engine,
                     entropy=entropy,
-                    widths=widths,
                     common=True,
                     first=first,
                     states=twin_states,
@@ -18678,7 +18634,6 @@ class RepairableRBD(RBD):
         jobs: Optional[int] = None,
         engine: str = "auto",
         entropy: Any = None,
-        widths: Optional[dict] = None,
         common: bool = False,
         replacements: bool = False,
         first: int = 0,
@@ -18700,7 +18655,7 @@ class RepairableRBD(RBD):
         processes or threads (``jobs``), and in a run to a tolerance as in a
         run of its final size. The global RNG is left as it was, except for
         the number drawn for the entropy. ``compare`` passes both systems
-        the same ``entropy`` and ``widths``, and ``common``: that, like
+        the same ``entropy``, and ``common``: that, like
         ``antithetic``, needs every draw to come from a stream. With
         ``capacity``, each simulation also follows the system's capacity;
         with ``replacements``, the tally keeps each simulation's
@@ -18736,7 +18691,7 @@ class RepairableRBD(RBD):
                 if seed is None:
                     after = np.random.get_state()
             plan, complete = self._stream_plan(
-                t_simulation, entropy, antithetic, widths, states
+                t_simulation, entropy, antithetic, states
             )
             if (antithetic or common) and not complete:
                 raise NotImplementedError(_UNSTREAMED)
@@ -18788,7 +18743,6 @@ class RepairableRBD(RBD):
                         capacity,
                         entropy,
                         antithetic,
-                        widths,
                         states,
                         histories,
                     ),
@@ -18960,14 +18914,16 @@ class RepairableRBD(RBD):
 
         trace = None if ctx.capacity is None else ctx.capacity.trace(status)
         # With ctx.history (see simulate_timelines): each component's state
-        # at 0 and its changes (the component, the time, and whether it is
-        # a planned change down), how many it has had, and each change of
-        # the system's (the time, the component whose change made it, which
-        # of that one's changes it was, and whether it was planned).
-        record: Optional[list] = [] if ctx.history else None
-        system_record: Optional[list] = [] if ctx.history else None
-        seen = [0] * n
-        at_start = [status[node] for node in index] if ctx.history else None
+        # at 0, the times of its changes, and which of them (their places
+        # among its changes) were planned changes down, maintenance or a
+        # test off line; and the system's changes: their times, the
+        # component whose change made each, which of its changes that was,
+        # and whether it was planned.
+        history = ctx.history
+        at_start = [status[node] for node in index] if history else None
+        times_of: list = [[] for _ in range(n)] if history else []
+        planned_of: list = [[] for _ in range(n)] if history else []
+        system_record: tuple = ([], [], [], []) if history else ()
         # The system's state, and its up and down time until ``since``, its
         # last change; each component's last change, and the system's up and
         # down time until then.
@@ -19100,17 +19056,10 @@ class RepairableRBD(RBD):
             status[node] = event.status
             if trace is not None:
                 trace.change(t, node, event.status)
-            if record is not None:
-                # A planned change down: maintenance or a test off line.
-                record.append(
-                    (
-                        c,
-                        t,
-                        not event.status
-                        and bool(event.preventive or event.inspection),
-                    )
-                )
-                seen[c] += 1
+            if history:
+                times_of[c].append(t)
+                if not event.status and (event.preventive or event.inspection):
+                    planned_of[c].append(len(times_of[c]) - 1)
             if event.status:
                 restored[c] += 1
             elif event.preventive:
@@ -19147,15 +19096,12 @@ class RepairableRBD(RBD):
                 system_up, system_down, since = system_up_t, system_down_t, t
                 up = not up
                 changes.append(t)
-                if system_record is not None:
-                    system_record.append(
-                        (
-                            t,
-                            c,
-                            seen[c] - 1,
-                            not up
-                            and bool(event.preventive or event.inspection),
-                        )
+                if history:
+                    system_record[0].append(t)
+                    system_record[1].append(c)
+                    system_record[2].append(len(times_of[c]) - 1)
+                    system_record[3].append(
+                        not up and bool(event.preventive or event.inspection)
                     )
                 if up:
                     deltas.append(1)
@@ -19232,9 +19178,9 @@ class RepairableRBD(RBD):
         rec.replacements = replaced
         rec.opportunistic = opportunistic
         rec.history = (
-            None
-            if record is None
-            else (at_start, record, started_up, system_record)
+            (at_start, times_of, planned_of, started_up, system_record)
+            if history
+            else None
         )
         if trace is not None:
             trace.finish(t_simulation, rec)
@@ -19332,7 +19278,6 @@ class RepairableRBD(RBD):
                 deltas,
                 t_simulation,
                 N if initial_up else 0,
-                reuse=True,
             )
         system_availability = working / N
 
@@ -19606,9 +19551,9 @@ class RepairableRBD(RBD):
         >>> round(result.mean, 2)  # expected cost of a 100-hour window: exact
         1360.33
         >>> round(result.sample_mean, 2)  # the 200 windows' own
-        1354.77
+        1387.42
         >>> round(result.percentile(90), 2)  # 9 windows in 10 cost less
-        1961.22
+        1897.0
         >>> round(result.cost_rate, 2), round(rbd.expected_cost_rate(), 2)
         (13.6, 13.64)
         """

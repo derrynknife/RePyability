@@ -261,9 +261,9 @@ follow what the system can deliver, against a `demand`:
 year = pumps.availability(8760, mc_samples=500, seed=1, demand=100)   # a year, in hours
 year.capacity[:3]                   # array([150. , 149.9, 149.8])   the mean capacity curve
 year.mean_capacity                  # -> 144.2     the long run: 144.23
-year.delivered_fraction             # -> 0.99782   the long run: 0.99781
-year.delivered_fraction_interval().upper   # -> 0.99796
-year.capacity_time[100.0] / (500 * 8760)   # -> 0.10638   the time at 100
+year.delivered_fraction             # -> 0.99766   the long run: 0.99781
+year.delivered_fraction_interval().upper   # -> 0.99782
+year.capacity_time[100.0] / (500 * 8760)   # -> 0.10732   the time at 100
 ```
 
 - `capacity_timeline` and `capacity` are the mean capacity over time, as
