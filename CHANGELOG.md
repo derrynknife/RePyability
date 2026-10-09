@@ -52,6 +52,19 @@ other release, fixes included, the minor.
   slow (SurPyval#821), so the simulations keep drawing a mixture's lives
   with RePyability's own; seeded results are unchanged.
 
+### Fixed
+
+- **Conditional survival keeps its precision at old ages (#268).** The
+  chance of surviving a further `x` given survival to an age `X` was the
+  ratio `R(X + x) / R(X)`, which came out 0 once both were too small for a
+  float: for a Weibull(100, 3) unit 1000 hours old, the next 10 hours'
+  survival is 6.9e-14, where it gave 0. It is now worked out from the
+  model's cumulative hazard, `exp(-(H(X + x) - H(X)))`, wherever the model
+  has one (surpyval's models, and a diagram's own `Hf`), in
+  `NonRepairableRBD.cs` and a node's age in `sf_given_state`. A diagram's
+  own `cs` is still 0 once its reliability at `X` is below the smallest
+  float, as its `Hf` is then infinite.
+
 ## [0.13] - 2026-10-09
 
 Simpler, faster and harder to misuse. Each computation now has one
