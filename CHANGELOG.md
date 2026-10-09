@@ -11,6 +11,20 @@ other release, fixes included, the minor.
 
 ### Changed
 
+- **A `RegressionNode`'s mean and draws are exact.** Its `mean()`
+  integrated the survival curve tabulated on 4,096 points and stopped
+  where the survival fell to 1e-4, so it came out low (8e-5 for a
+  LogNormal AFT model; the heavier the tail, the lower), and its draws
+  were read off that grid, so none fell past its end. The mean is now
+  integrated as an RBD's MTTF is, to a relative 1e-10, on pieces split at
+  the model's quantiles or the schedule's change points, and `inf` where
+  some lifetimes never end (a `ValueError` before). A draw is the model's
+  quantile `qf(u, Z)` at fixed covariates (surpyval 0.24), and along a
+  schedule the time at which the cumulative hazard reaches `-log(1 - u)`,
+  by bisection. Seeded draws of a diagram with a regression node change.
+  surpyval's own `mean(Z)` is not used: on an additive-hazards model with
+  a Normal, Logistic or Gumbel baseline it integrates a survival function
+  above 1 before 0 (SurPyval#828), a model `RegressionNode` refuses.
 - **surpyval 0.24 or later is required** (0.23 was). It gives a mixture
   life a survival function that keeps its precision in the far tail, and
   draws a life given an age (imperfect repair) reading a limited failure

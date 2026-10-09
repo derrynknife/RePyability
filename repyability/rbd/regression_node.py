@@ -44,6 +44,45 @@ def _is_semiparametric(model) -> bool:
     return isinstance(model, semiparametric.SemiParametricRegressionModel)
 
 
+def _inverse_hazard(hazard, target: np.ndarray) -> np.ndarray:
+    """The times ``t`` with ``hazard(t) = target``, for a cumulative hazard
+    rising from 0: bracketed by doubling, then bisected until each bracket
+    is as narrow as floating point allows. ``inf`` where ``target`` is
+    (``u = 1``) or the hazard never reaches it; 0 where ``target`` is 0."""
+    target = np.asarray(target, dtype=float)
+    out = np.zeros(target.shape)
+    live = np.flatnonzero(target > 0.0)
+    out[target == np.inf] = np.inf
+    live = live[np.isfinite(target[live])]
+    if not live.size:
+        return out
+    goal = target[live]
+    lo = np.zeros(live.size)
+    hi = np.ones(live.size)
+    short = hazard(hi) < goal
+    while short.any():
+        lo[short] = hi[short]
+        hi[short] *= 2.0
+        too_far = hi > 1e300
+        if too_far.any():
+            hi[too_far & short] = np.inf
+            short &= ~too_far
+        rising = np.flatnonzero(short)
+        if rising.size:
+            short[rising] = hazard(hi[rising]) < goal[rising]
+    open_ = np.flatnonzero(np.isfinite(hi))
+    while open_.size:
+        a, b = lo[open_], hi[open_]
+        mid = 0.5 * (a + b)
+        settled = (mid <= a) | (mid >= b)
+        below = hazard(mid) < goal[open_]
+        lo[open_] = np.where(below & ~settled, mid, a)
+        hi[open_] = np.where(~below & ~settled, mid, b)
+        open_ = open_[~settled]
+    out[live] = hi
+    return out
+
+
 class RegressionNode:
     """An RBD node backed by a fitted surpyval regression model.
 
@@ -60,10 +99,12 @@ class RegressionNode:
 
     ``sf`` and ``ff`` evaluate that curve directly, so the node takes part
     in system reliability, importance measures and the condition-based
-    (``age``) methods with no special handling. ``mean`` and ``random``
-    work from the curve tabulated on a grid, which needs a proper
-    parametric curve: a semiparametric model such as ``surpyval.CoxPH``
-    supports ``sf`` but not ``mean`` or ``random``. Do the regression fit
+    (``age``) methods with no special handling. ``mean`` integrates the
+    curve to a relative 1e-10, and ``random`` inverts it exactly (the
+    model's quantile at fixed covariates; the cumulative hazard along a
+    schedule), which needs a proper parametric curve: a semiparametric
+    model such as ``surpyval.CoxPH`` supports ``sf`` but not ``mean`` or
+    ``random``. Do the regression fit
     in surpyval and pass the fitted model in.
 
     Parameters
@@ -164,8 +205,6 @@ class RegressionNode:
                 "models). Probing "
                 f"survival failed: {type(e).__name__}: {e}."
             ) from e
-        # Cached (t, sf(t)) grid for mean()/random() (built lazily).
-        self._grid: Any = None
 
     def _Z(self, n: int) -> np.ndarray:
         """Fixed covariate vector broadcast to ``n`` rows for ``sf(x, Z)``."""
@@ -231,50 +270,74 @@ class RegressionNode:
             out = np.asarray(self.model.ff(x, self._Z(len(x))), dtype=float)
         return out[0] if scalar else out
 
-    def _survival_grid(self):
-        """A cached ``(t, sf(t))`` grid spanning the bulk of the lifetime.
+    def _require_proper(self) -> None:
+        """Refuse a lifetime with no proper survival curve (starting at ~1):
+        a semiparametric baseline (e.g. surpyval's Cox) is defined only on
+        the observed range, with no tail, so its mean and draws are
+        undefined there, a clear error rather than a wrong number."""
+        if _is_semiparametric(self.model) or (
+            float(self._sf_at(np.array([1e-9]))[0]) <= 0.99
+        ):
+            raise ValueError(
+                "mean()/random() need a proper parametric survival curve "
+                "(sf(0+) ~ 1, decaying to 0), but this model's survival "
+                "is improper -- e.g. a semiparametric Cox baseline, "
+                "defined only on the observed range. Its MTTF is "
+                "undefined; use the sf-based reliability / remaining-life "
+                "methods instead."
+            )
 
-        surpyval's regression models expose no working ``random``, so ``mean``
-        and ``random`` are obtained from the survival curve directly (a numeric
-        integral, and inverse-transform sampling). This needs a *proper*
-        lifetime curve (starting at ~1 and decaying to 0); a semiparametric
-        baseline (e.g. surpyval's Cox) is defined only on the observed range
-        and has no proper tail, so MTTF/simulation is undefined there and is
-        reported as a clear error rather than a wrong number.
-        """
-        if self._grid is None:
-            if _is_semiparametric(self.model) or (
-                float(self._sf_at(np.array([1e-9]))[0]) <= 0.99
-            ):
-                raise ValueError(
-                    "mean()/random() need a proper parametric survival curve "
-                    "(sf(0+) ~ 1, decaying to 0), but this model's survival "
-                    "is improper -- e.g. a semiparametric Cox baseline, "
-                    "defined only on the observed range. Its MTTF is "
-                    "undefined; use the sf-based reliability / remaining-life "
-                    "methods instead."
-                )
-            hi = 1.0
-            while self._sf_at(np.array([hi]))[0] > 1e-4:
-                hi *= 2.0
-                if hi > 1e15:
-                    raise ValueError(
-                        "mean()/random(): the survival curve does not decay "
-                        "to 0 (no finite MTTF). Use the sf-based methods."
-                    )
-            t = np.linspace(0.0, hi, 4096)
-            self._grid = (t, self._sf_at(t))
-        return self._grid
+    def _knots(self) -> np.ndarray:
+        """Times marking the curve's scale, for its integral: at fixed
+        covariates the model's quantiles, along a schedule none (the
+        integral finds them from the curve)."""
+        if self.schedule is not None:
+            return np.empty(0)
+        from ._point_availability import _KNOT_PROBABILITIES
+
+        with np.errstate(all="ignore"):
+            q = self._quantiles(_KNOT_PROBABILITIES)
+        return q[np.isfinite(q)]
+
+    def _kinks(self) -> np.ndarray:
+        """Times at which the curve may bend sharply: a schedule's change
+        points, where the covariates jump."""
+        if self.schedule is None:
+            return np.empty(0)
+        edges = np.asarray(self.schedule.edges, dtype=float)
+        return edges[np.isfinite(edges) & (edges > 0.0)]
+
+    def _quantiles(self, p: np.ndarray) -> np.ndarray:
+        """The model's quantiles ``F^-1(p)`` at the fixed covariates."""
+        assert self.covariates is not None  # fixed-covariate mode only
+        return np.asarray(
+            self.model.qf(p, self.covariates[np.newaxis, :]), dtype=float
+        )
+
+    def _draw(self, u: np.ndarray) -> np.ndarray:
+        """The lifetimes ``F^-1(u)`` of the uniforms ``u``: the model's
+        quantiles at fixed covariates, and along a schedule the time at
+        which the cumulative hazard reaches ``-log(1 - u)``."""
+        self._require_proper()
+        u = np.asarray(u, dtype=float)
+        if self.schedule is None:
+            return self._quantiles(u)
+        with np.errstate(divide="ignore"):
+            target = -np.log1p(-u)
+        return _inverse_hazard(
+            lambda t: np.asarray(
+                self.model.Hf_tvc(t, self.schedule), dtype=float
+            ),
+            target,
+        )
 
     def mean(self) -> float:
         """Mean time to failure at the stored covariates / along the schedule.
 
         For a non-negative lifetime ``E[T] = integral of R(t)``, integrated
-        numerically over the survival curve: the trapezoidal rule on 4096
-        points from 0 to the first ``t`` in 1, 2, 4, 8, ... at which
-        ``R(t) <= 1e-4``. The tail beyond is left out, so the result is
-        slightly low (by that tail's integral). The grid is built on first
-        use and cached.
+        to a relative accuracy of 1e-10 on pieces split at the model's
+        quantiles (fixed covariates) or the schedule's change points, as
+        an RBD's MTTF is: ``inf`` if some lifetimes never end.
 
         Returns
         -------
@@ -285,23 +348,26 @@ class RegressionNode:
         ------
         ValueError
             If the model is semiparametric (a Cox model: its baseline is
-            defined on the observed range only), if the survival curve is
-            improper (``R(1e-9) <= 0.99``) or if it does not fall to 1e-4
-            by ``t = 1e15``.
+            defined on the observed range only), or if the survival curve
+            is improper (``R(1e-9) <= 0.99``).
         """
-        t, s = self._survival_grid()
-        return float(np.trapezoid(s, t))
+        from ._mean_lifetime import mean_lifetime
+
+        self._require_proper()
+        return float(mean_lifetime(self._sf_at, self._knots(), self._kinks()))
 
     def random(self, size: int) -> np.ndarray:
         """Draw ``size`` failure times at the stored covariates / schedule.
 
-        Inverse-transform sampling on the survival curve tabulated for
-        ``mean``: each uniform ``u`` maps to the time at which ``R = u``
-        (linear interpolation), so draws never exceed the grid's end,
-        where ``R <= 1e-4``. There is no ``seed`` argument: this uses
-        numpy's global RNG, so seed it (``np.random.seed``) or wrap the
-        call in ``repyability.utils.wrappers.numpy_seed`` to reproduce the
-        draws. An RBD's seeded ``random`` and ``mean`` do this for you.
+        Inverse-transform sampling, exact: each uniform ``u`` maps to the
+        time at which the distribution reaches ``u``, the model's
+        quantile ``qf(u, Z)`` at fixed covariates, and along a schedule the
+        time at which the cumulative hazard reaches ``-log(1 - u)`` (found
+        by bisection, to the last bits). There is no ``seed`` argument:
+        this uses numpy's global RNG, so seed it (``np.random.seed``) or
+        wrap the call in ``repyability.utils.wrappers.numpy_seed`` to
+        reproduce the draws. An RBD's seeded ``random`` and ``mean`` do
+        this for you.
 
         Parameters
         ----------
@@ -316,23 +382,16 @@ class RegressionNode:
         Raises
         ------
         ValueError
-            If the survival curve is improper or does not decay, as for
-            ``mean``.
+            If the survival curve is improper, as for ``mean``.
         """
-        t, s = self._survival_grid()
-        u = np.random.uniform(size=size)
-        # s decreases in t; np.interp needs an increasing sample-point array.
-        return np.interp(u, s[::-1], t[::-1])
+        return self._draw(np.random.uniform(size=size))
 
     def _row_sampler(self) -> RowSampler:
         """``random(1)`` as a :class:`~._sampling.RowSampler` (one uniform
         per draw), so an RBD with this node batches its draws."""
-
-        def draw(u):
-            t, s = self._survival_grid()
-            return np.interp(np.ascontiguousarray(u[:, 0]), s[::-1], t[::-1])
-
-        return RowSampler(1, draw)
+        return RowSampler(
+            1, lambda u: self._draw(np.ascontiguousarray(u[:, 0]))
+        )
 
     # -- Serialisation ----------------------------------------------------
 

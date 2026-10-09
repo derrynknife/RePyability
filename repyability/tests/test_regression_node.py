@@ -78,6 +78,50 @@ def test_mean_and_random(models):
     assert a.mean() == pytest.approx(node.mean(), rel=0.05)
 
 
+def _nodes(models):
+    """A node of each kind with a proper curve: fixed covariates (AFT and
+    PO) and a schedule that raises the load at 50."""
+    schedule = StepSchedule.from_changepoints([0, 50], [[0.0], [0.5]])
+    return [
+        RegressionNode(models["aft"], covariates=[0.2]),
+        RegressionNode(models["po"], covariates=[-0.4]),
+        RegressionNode(models["aft"], schedule=schedule),
+    ]
+
+
+def test_the_mean_is_the_integral_of_the_survival_function(models):
+    # Integrated to the end of the tail, not cut off where the survival
+    # falls to 1e-4 as the tabulated grid was.
+    from scipy.integrate import quad
+
+    for node in _nodes(models):
+        integral = sum(
+            quad(
+                lambda t: float(node.sf(t)),
+                a,
+                b,
+                epsabs=0.0,
+                epsrel=1e-12,
+                limit=500,
+            )[0]
+            for a, b in ((0.0, 50.0), (50.0, np.inf))
+        )
+        assert node.mean() == pytest.approx(integral, rel=1e-9)
+
+
+def test_draws_invert_the_distribution(models):
+    # Each uniform u is the lifetime t with F(t) = u: the model's quantile
+    # at fixed covariates, the cumulative hazard inverted along a schedule
+    # (no grid, so the tail is drawn too).
+    u = np.array([1e-9, 0.01, 0.3, 0.7, 0.99, 1.0 - 1e-9])
+    for node in _nodes(models):
+        t = node._draw(u)
+        np.testing.assert_allclose(node.ff(t), u, rtol=1e-6)
+    schedule = _nodes(models)[2]
+    exact = schedule._draw(u)
+    np.testing.assert_allclose(schedule.ff(exact), u, rtol=1e-12)
+
+
 def test_semiparametric_mean_random_raise_clearly(models):
     # A semiparametric Cox baseline has no proper tail, so MTTF is undefined;
     # mean/random must raise rather than return a wrong number; sf works.
