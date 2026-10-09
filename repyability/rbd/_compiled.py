@@ -7,7 +7,7 @@ its draws come from its own streams (see ``_streams``) -- in any structure,
 with components held working or broken, antithetic pairs, common random
 numbers and costs, under age and block replacement, with hidden failures
 found by periodic tests, with fewer repair crews than components, with
-standby groups, with nested RBDs of up to ``MAX_TABLED`` components, and
+standby groups, with nested RBDs, and
 following the capacity of a system of up to ``MAX_TRACED`` components
 (#155). Anything else (replacement on condition, maintenance groups,
 imperfect repair, models whose draws cannot be streamed) runs in Python,
@@ -58,10 +58,6 @@ BATCH_BYTES = 64 * 2**20
 MAX_TRACED = 63
 #: The most simulations in a batch.
 MAX_BATCH = 65536
-#: The most components for which the compiled loop looks the system's state
-#: up in a table of every state (``2**n`` bytes) rather than keeping it up
-#: to date as components change (see ``_kept``).
-MAX_TABLED = 20
 
 
 def available() -> bool:
@@ -89,7 +85,7 @@ def unsupported(
     of the interface's version (see engines) simulates plain
     components; with numba, numba's own loop also simulates age and
     block replacement, inspections of hidden failures, repair crews,
-    standby groups, nested RBDs of up to MAX_TABLED components and the
+    standby groups, nested RBDs and the
     capacity of a system of up to MAX_TRACED components (#155), from new
     for maintenance, inspections and nested RBDs (a run from the
     components' states shifts their calendars)."""
@@ -161,11 +157,6 @@ def _unsupported_level(
                 return "nested RBDs"
             if type(component) is not RepairableRBD:
                 return f"the {type(component).__name__} of node {name!r}"
-            if len(component.components) > MAX_TABLED:
-                return (
-                    f"the {len(component.components)} components of node "
-                    f"{name!r} (a nested RBD of more than {MAX_TABLED})"
-                )
             reason = _unsupported_level(
                 component, plan, numba, prefix + (name,)
             )
@@ -351,7 +342,7 @@ class _System:
     """A run's system as arrays for the compiled loop: the components'
     streams and initial states, the charges, and the structure function."""
 
-    def __init__(self, rbd, plan, working, broken, method: str, kernel):
+    def __init__(self, rbd, plan, working, broken, method: str):
         from repyability.rbd.repairable_rbd import _CATEGORIES, RepairableRBD
 
         nodes = list(rbd.components)
@@ -575,17 +566,7 @@ class _System:
                 for g in unit_group
             ]
         )
-        #: Each nested RBD's table of every state of its components (the
-        #: system's own is ``table`` below), and the nested RBDs innermost
-        #: first, the order they start in.
-        tables = [np.zeros(0, np.int8)]
-        for level in range(1, levels):
-            here = level_rbds[level]
-            local = {name: c for c, name in enumerate(here.components)}
-            tables.append(
-                kernel.truth_table(len(local), _structure(here, local))
-            )
-        level_table_start = np.cumsum([0] + [t.size for t in tables[:-1]])
+        #: The nested RBDs, innermost first, the order they start in.
         level_order = np.arange(levels - 1, 0, -1, dtype=np.int64)
         #: Everything numba's own loop simulates besides plain components
         #: (see ``_kernel._simulate``).
@@ -621,22 +602,28 @@ class _System:
             level_of,
             level_start,
             level_stop,
-            level_table_start.astype(np.int64),
-            np.concatenate(tables).astype(np.int8),
             level_order,
         )
         initial_up = rbd.is_system_working(
             {node: bool(start[c]) for c, node in enumerate(nodes)}, method
         )
+        #: The system's structure function, and every level's laid out to
+        #: be kept up to date as components change (#255).
         self.structure = _structure(rbd, index)
-        tabled = n <= MAX_TABLED
-        table = (
-            kernel.truth_table(n, self.structure)
-            if tabled
-            else np.zeros(0, np.int8)
+        self.kept = _kept(
+            [self.structure]
+            + [
+                _structure(
+                    level_rbds[level],
+                    {
+                        name: int(level_start[level]) + c
+                        for c, name in enumerate(level_rbds[level].components)
+                    },
+                )
+                for level in range(1, levels)
+            ],
+            start,
         )
-        #: The structure laid out to be kept up to date, without a table.
-        self.kept = _kept(self.structure, None if tabled else start[:n])
         self.system = (
             start,
             active,
@@ -653,7 +640,6 @@ class _System:
             int(self.has_costs),
             float(rbd.downtime_cost_rate) if self.has_costs else 0.0,
             int(bool(initial_up)),
-            table,
         )
         self.n = n
         # Room for a simulation's system changes: two for each failure it
@@ -717,43 +703,69 @@ def _structure(rbd, index: dict) -> tuple:
     )
 
 
-def _kept(structure: tuple, start: Optional[np.ndarray]) -> tuple:
-    """The structure laid out for the compiled loop to keep whether the
-    system works up to date as components change, rather than work it out
-    at each event: each term's kind, what it needs of its members (all of
-    them in series, ``k`` in a vote) and its parent; the terms each
+def _kept(structures: list, start: np.ndarray) -> tuple:
+    """Every level's structure (``_structure``'s, the system's and then
+    each nested RBD's, its nodes numbered among all the levels'
+    components) laid out as one, for the compiled loop to keep whether
+    each level works up to date as components change, rather than work it
+    out at each event: each term's kind, what it needs of its members (all
+    of them in series, ``k`` in a vote) and its parent; the terms each
     component stands for (a repeated node, more than one); the core's path
-    sets each top term is in; and, with the components as they ``start``,
-    each term's state, how many of its members work, how many members of
-    each path set are down, and how many path sets work. Without ``start``
-    (when the loop looks states up in a table), empty."""
-    (
-        kind,
-        k,
-        node,
-        child_start,
-        child_end,
-        children,
-        _,
-        _,
-        core_start,
-        core_end,
-        core_members,
-    ) = structure
-    terms = kind.size if start is not None else 0
-    n = 0 if start is None else start.size
-    paths = core_start.size if start is not None else 0
+    sets each top term is in, and each path set's level; each level's
+    root term (-1 for a core of path sets) and whether it always works;
+    and, with the components as they ``start``, each term's state, how
+    many of its members work, how many members of each path set are down,
+    and how many of each level's path sets work."""
+    levels = len(structures)
+    kinds, ks, nodes, members_of = [], [], [], []
+    roots = np.full(levels, -1, np.int64)
+    always = np.zeros(levels, np.int8)
+    paths: list = []
+    path_level: list = []
+    offset = 0
+    for level, structure in enumerate(structures):
+        (
+            kind,
+            k,
+            node,
+            child_start,
+            child_end,
+            children,
+            root,
+            whole,
+            core_start,
+            core_end,
+            core_members,
+        ) = structure
+        kinds.append(kind)
+        ks.append(k)
+        nodes.append(node)
+        members_of += [
+            children[child_start[i] : child_end[i]] + offset
+            for i in range(kind.size)
+        ]
+        if root >= 0:
+            roots[level] = root + offset
+        always[level] = whole
+        for p in range(core_start.size):
+            paths.append(core_members[core_start[p] : core_end[p]] + offset)
+            path_level.append(level)
+        offset += kind.size
+    kind = np.concatenate(kinds)
+    k = np.concatenate(ks)
+    node = np.concatenate(nodes)
+    terms = kind.size
     parent = np.full(terms, -1, np.int32)
     need = np.zeros(terms, np.int32)
     value = np.zeros(terms, np.int8)
     count = np.zeros(terms, np.int32)
-    owners: list = [[] for _ in range(n)]
+    owners: list = [[] for _ in range(start.size)]
     for i in range(terms):
-        members = children[child_start[i] : child_end[i]]
+        members = members_of[i]
         parent[members] = i
         if kind[i] == NODE_TERM:
             owners[node[i]].append(i)
-            value[i] = start[node[i]]  # type: ignore[index]
+            value[i] = start[node[i]]
             continue
         need[i] = members.size if kind[i] == SERIES_TERM else k[i]
         count[i] = int(np.count_nonzero(value[members]))
@@ -762,22 +774,18 @@ def _kept(structure: tuple, start: Optional[np.ndarray]) -> tuple:
         else:
             value[i] = count[i] >= need[i]
     belongs: list = [[] for _ in range(terms)]
-    for p in range(paths):
-        for j in range(core_start[p], core_end[p]):
-            belongs[core_members[j]].append(p)
+    for p, members in enumerate(paths):
+        for member in members:
+            belongs[member].append(p)
     down = np.array(
-        [
-            np.count_nonzero(
-                value[core_members[core_start[p] : core_end[p]]] == 0
-            )
-            for p in range(paths)
-        ],
+        [np.count_nonzero(value[members] == 0) for members in paths],
         np.int32,
     )
+    level_of_path = np.array(path_level, np.int32)
     node_term_start, node_term_end, node_terms = _csr(owners)
     term_path_start, term_path_end, term_paths = _csr(belongs)
     return (
-        kind[:terms].astype(np.int8),
+        kind.astype(np.int8),
         need,
         parent,
         node_term_start.astype(np.int32),
@@ -786,10 +794,15 @@ def _kept(structure: tuple, start: Optional[np.ndarray]) -> tuple:
         term_path_start.astype(np.int32),
         term_path_end.astype(np.int32),
         term_paths.astype(np.int32),
+        level_of_path,
+        roots,
+        always,
         value,
         count,
         down,
-        int(np.count_nonzero(down == 0)),
+        np.bincount(level_of_path[down == 0], minlength=levels).astype(
+            np.int64
+        ),
     )
 
 
@@ -919,7 +932,7 @@ class Runner:
         self._tally = tally
         self._progress = progress
         self._t = float(tally.t_simulation)
-        self._model = _System(rbd, plan, working, broken, method, _kernel)
+        self._model = _System(rbd, plan, working, broken, method)
         #: Room for each simulation's components' changes, recording them
         #: (see ``_kernel._simulate``): at first, as many as the system's
         #: room expects (two for each failure), and twice as many each time
@@ -1035,7 +1048,6 @@ class Runner:
                     first,
                     self._t,
                     self._model.system,
-                    self._model.structure,
                     self._model.kept,
                     draws,
                     out,
@@ -1048,7 +1060,6 @@ class Runner:
                     first,
                     self._t,
                     self._model.system,
-                    self._model.structure,
                     self._model.kept,
                     draws,
                     out,

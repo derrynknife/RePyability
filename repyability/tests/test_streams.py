@@ -48,9 +48,8 @@ def test_a_block_holds_the_defined_uniforms_whatever_its_width():
     uniform = dataclasses.replace(spec, sampler=lambda u: u)
     for width in (1, 3, 8):
         for antithetic in (False, True):
-            block = _streams.Block(
-                5, dataclasses.replace(uniform, width=width), 2, antithetic
-            )
+            wide = dataclasses.replace(uniform, width=width)
+            block = _streams.Block(_streams.key(5, wide), wide, 2, antithetic)
             block.extend()
             columns = block.values.shape[0]
             for j in range(columns):

@@ -874,12 +874,13 @@ a second:
 | A bridge feeding a 2-out-of-3 vote, 12 components | 5 000 h | 0.63 | 10.0 | 25.0 |
 | 35 redundant pairs in series, 70 components | 2 000 h | 0.51 | 7.1 | 17.3 |
 
-Above 20 components the compiled loop has no table of every state to look
-the system up in. It keeps whether the system is up up to date as
-components fail and are repaired instead, following each change up the
-diagram's structure only as far as it changes anything: on the 70
+The compiled loop keeps whether the system is up (and each nested RBD)
+up to date as components fail and are repaired, following each change up
+the diagram's structure only as far as it changes anything: on the 70
 components, 1.7 times as fast on one thread as working the system out at
-each event, and 1.5 times on four.
+each event, and 1.5 times on four. It is as fast as looking the system up
+in a table of every state, which it once built for 20 components or fewer
+on every run (#255).
 
 A `NonRepairableRBD`'s lifetimes are drawn vectorised, a block of samples
 at once through the diagram's modules; on the same machine, a million of

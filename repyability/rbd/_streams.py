@@ -183,8 +183,8 @@ class Block:
         "values",
     )
 
-    def __init__(self, entropy, spec: Spec, index: int, antithetic: bool):
-        self._key = key(entropy, spec)
+    def __init__(self, key, spec: Spec, index: int, antithetic: bool):
+        self._key = key
         first = index * spec.width
         self._counters = np.arange(first, first + spec.width, dtype=np.uint64)
         self._spec = spec
@@ -223,12 +223,17 @@ class Plan:
         self.entropy = entropy
         self.antithetic = antithetic
         self.specs = specs
+        #: Each stream's key, worked out once a run (see ``key``).
+        self._keys: Dict[Name, np.ndarray] = {}
 
     def columns(self, spec: Spec) -> int:
         return spec.width * (2 if self.antithetic else 1)
 
     def block(self, spec: Spec, index: int) -> Block:
-        return Block(self.entropy, spec, index, self.antithetic)
+        found = self._keys.get(spec.name)
+        if found is None:
+            found = self._keys[spec.name] = key(self.entropy, spec)
+        return Block(found, spec, index, self.antithetic)
 
 
 def replication_seed(entropy, replication: int) -> np.ndarray:
