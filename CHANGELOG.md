@@ -450,11 +450,15 @@ other release, fixes included, the minor.
   other refusals now say what to do too, and name a member as "the life of
   member 'v1'" where they printed "member 'v1''s".
 - **Common-cause groups are no longer dropped with limited repair
-  crews.** With fewer `repair_crews` than jobs, `mean_availability`,
+  crews (#251).** With fewer `repair_crews` than jobs, `mean_availability`,
   `mean_unavailability`, the importance measures, the failure frequency
   and the capacity distribution gave the system without its groups (the
   crews' chain does not take common causes in), and `analysis_routes`
-  called them exact. They now refuse, as the values over time did.
+  called them exact. They now refuse, as the values over time did, and so
+  does `node_availability`, which gave each component's value in the
+  crews' chain without the groups, where a shared failure leaves one
+  member waiting for the crew. The refusal now says to simulate, with
+  `availability()` or `cost()`, which take both.
 - **`ConfidenceInterval.method` names every case of a repairable run's
   mean (#223):** `"simulated"`, `"control_variate"`, `"conditional"` or
   `"exact"`, where the simulations' own mean and a controlled one were

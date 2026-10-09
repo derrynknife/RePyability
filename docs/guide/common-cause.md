@@ -458,8 +458,9 @@ working anything out: simulate such a system with `availability()` or
 `cost()`. The capacity distribution and the allocations still take every
 combination of every group's states at once, and refuse, before building
 them, where those would take too much memory. Limited repair crews are
-refused too: the groups' chains do not take the crews' queue in, and the
-crews' chain does not take the common causes in, as yet.
+refused too, by every exact value, `node_availability` among them: the
+groups' chains do not take the crews' queue in, and the crews' chain does
+not take the common causes in, as yet. The simulations take both.
 
 Over time from new, each group's chain is followed from every member up at
 0 (by uniformization, or through the members' tests, after whose first
