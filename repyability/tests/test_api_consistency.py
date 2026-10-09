@@ -33,7 +33,7 @@ from repyability import (
 from repyability._version import __version__
 from repyability.rbd.ccf import with_parameters
 from repyability.rbd.uncertainty import draw_ccf_models
-from repyability.utils.deprecation import NEXT_REMOVAL, REMOVAL_AFTER_NEXT
+from repyability.utils.deprecation import NEXT_REMOVAL
 
 W, E = surv.Weibull.from_params, surv.Exponential.from_params
 F = FixedEventProbability.from_params
@@ -258,16 +258,6 @@ def test_the_spares_demand_values_are_properties():
     demand = rbd.spares_demand(1000.0)["pump"]
     assert demand.mean == pytest.approx(10.0, rel=1e-5)
     assert demand.std == pytest.approx(np.sqrt(10.0), rel=1e-4)
-    with pytest.warns(FutureWarning, match=r"write mean, not mean\(\)"):
-        assert demand.mean() == demand.mean
-    with pytest.warns(FutureWarning, match="0.13"):
-        assert demand.std() == demand.std
-
-
-def test_the_calls_go_in_the_release_after_next():
-    # When the version reaches NEXT_REMOVAL, what 0.12 deprecates must go.
-    version = tuple(map(int, __version__.split(".")))
-    assert version < tuple(map(int, NEXT_REMOVAL.split(".")))
 
 
 def test_what_0_13_deprecates_goes_in_0_14():
@@ -278,7 +268,7 @@ def test_what_0_13_deprecates_goes_in_0_14():
     # names callers used before the levers were public, kept as they were
     # for 0.13: rbd._sensitivity's levers and Lever (#244).
     version = tuple(map(int, __version__.split(".")))
-    assert version < tuple(map(int, REMOVAL_AFTER_NEXT.split(".")))
+    assert version < tuple(map(int, NEXT_REMOVAL.split(".")))
 
 
 def test_an_uncertainty_result_shows_a_summary():

@@ -9,6 +9,60 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+## [0.13] - 2026-10-09
+
+Simpler, faster and harder to misuse. Each computation now has one
+implementation (#204): a simulation's random numbers are counter-based, a
+function of the seed, the stream, the simulation and the draw alone
+(#209); every timeline is recorded by the event loop (#205); numba's engine
+takes every level's events in one loop (#206) and keeps whether each level
+works up to date without truth tables (#255, #254); a decision diagram has
+one search and one replay (#207); and a run's changes are put in time order
+by numpy alone (#208). The exact curves are built several times as fast,
+an MTTF takes a few hundred evaluations where it took thousands (#229),
+and capacity runs, timelines and conditional runs spend less time around
+the compiled loop (#246, #247, #248). Common-cause groups are worked out
+module by module, linear in the groups rather than doubling per group, in
+fault trees and non-repairable diagrams (#219) and in repairable ones
+(#218), whose members' tests and repairs may now take time (#220); limited
+repair crews refuse common-cause groups where they dropped them (#251,
+#252); and `availability_rate` is exact just after a scheduled maintenance
+(#240). From the 0.12 persona check (#213): a mixture as a repairable life
+(#227), times first in the measures over time (#224), replacement intervals
+from a calendar (#230), discounted costs from new and endless horizons
+(#231), chunks of a plain run (#236), unavailability over time to its own
+precision (#237), `to_dict()` on every result (#235), public levers
+(#244), simulations of one diagram from several threads (#216), a shared
+fitted model drawn once in parameter uncertainty (#214), messages that say
+what to do and inputs checked where they are given (#232, #233), and docs
+brought up to date (#238). What 0.12 deprecated is gone.
+
+Behaviour changes: a `RepairableRBD` simulation's seeded results differ
+from 0.12's, within their standard errors, as its random numbers are
+counter-based (#209); exact curves move in their seventh or eighth
+significant figure (a grid of 1,000 steps); a cost result's `mean`,
+`cost_rate` and breakdowns, and the new `mean_availability`, are the run's
+estimate (exact or conditional by default), the simulations' own being
+`sample_mean` (#223); a model given for the input or output node is
+refused (#217); costs, intervals and times given as text or booleans,
+surpyval's distribution class in place of a model, and seeds that are not
+whole numbers or lists of them are refused (#233, #232), as are unknown
+nodes in `allowed=`, `offset_shares=` and `with_intervals` (#222) and a
+component that fails and is repaired at once; a fixed-probability node's
+simulated lifetime is 0 or infinite, so seeded draws of such a diagram
+change; `compare(quantity="cost")` counts acquisition, and `cost()` with
+only an acquisition cost gives a result (#234); a test offset within a
+billionth of the interval is 0 (#237); a capacity run's probabilities can
+differ from 0.12's in their last digits (#246); what 0.12 deprecated is
+removed: calling `SparesDemand.mean()` or `std()` raises `TypeError` (they
+are properties), as do `StandbyModel`'s and `LoadSharingModel`'s
+`mc_samples`, `lower` and `seed`, and `StandbyModel`'s
+`switching_probability` and `dormancy_factor` are given by name; and
+surpyval 0.23 is required. Deprecated, to go in 0.14:
+`optimal_inspection_intervals(offsets=)` (now `offset_shares=`), calling
+`CapacityDistribution.mean()`, and the simulation options of an exact
+`mean`.
+
 ### Added
 
 - **A surpyval `MixtureModel` as a repairable component's life (#227).**
@@ -367,6 +421,7 @@ other release, fixes included, the minor.
   bound method printed when `()` is left off.)
 - **Warnings point at the line that called the package (#232)**, where
   several pointed inside it.
+
 ### Deprecated
 
 - **`optimal_inspection_intervals(offsets=)` is renamed `offset_shares=`
@@ -388,6 +443,17 @@ other release, fixes included, the minor.
   `_calendar_lever` and `_as_spec`, stay for 0.13 (its `Lever` tuple with
   a `bounds` field at its end), and may change or go in 0.14: use
   `levers()`, `Lever` (its `calendar` and `value`) and `with_levers`.
+
+### Removed
+
+- **What 0.12 deprecated.** `SparesDemand.mean` and `std` are properties
+  alone: calling them, `mean()`, raises `TypeError` (#184). `StandbyModel`
+  and `LoadSharingModel` no longer take `mc_samples`, `lower` or `seed`,
+  which set a fit to simulated lifetimes that 0.12 removed (#149):
+  passing them raises `TypeError`. `StandbyModel`'s `switching_probability`
+  and `dormancy_factor` came after them, so they are now given by name, and
+  a call that gave them by position is refused rather than misread.
+
 ### Fixed
 
 - **`availability_rate` just after a scheduled maintenance** (#240). A

@@ -338,20 +338,19 @@
   non-parametric node, and a standby or load-sharing model with no exact
   or numerical reliability refuses one (`is_simulated`), where a fit to
   simulated lifetimes stood in, and is left to the simulations. What 0.12
-  deprecates goes in 0.13 (`NEXT_REMOVAL`): calling
-  `SparesDemand.mean()`/`std()`, now properties (#184, through
-  `deprecation.called`), and those models' `mc_samples`, `lower` and
-  `seed`, which set the fit (through `deprecation.ignored`).
-  `test_the_calls_go_in_the_release_after_next` fails once the version
-  reaches it. What 0.13 deprecates goes in 0.14 (`REMOVAL_AFTER_NEXT`):
-  `optimal_inspection_intervals(offsets=)`, renamed `offset_shares=`
-  (#222, through `deprecation.renamed`); calling
+  deprecated went in 0.13, and `test_removed_in_0_13.py` keeps it gone:
+  calling `SparesDemand.mean()`/`std()` (#184) and those models'
+  `mc_samples`, `lower` and `seed` raise `TypeError`, and `StandbyModel`'s
+  options after them are given by name. What 0.13 deprecates goes in 0.14
+  (`NEXT_REMOVAL`): `optimal_inspection_intervals(offsets=)`, renamed
+  `offset_shares=` (#222, through `deprecation.renamed`); calling
   `CapacityDistribution.mean()`, now a property (#235, through
   `deprecation.called`); and `mc_samples` and `seed` given to the exact
   `mean` of a `StandbyModel`, `LoadSharingModel` or `DegradingNode`,
   which ignores them (#233, through `deprecation.ignored` in
   `standby_node.drawn_mean`), all of which
-  `test_what_0_13_deprecates_goes_in_0_14` holds to.
+  `test_what_0_13_deprecates_goes_in_0_14` holds to: it fails once the
+  version reaches `NEXT_REMOVAL`.
 - **Exact by default, simulation on request.** Where an analysis can be
   computed exactly or numerically, that is the default, and the Monte-Carlo
   estimate is a `method="simulate"` away (as for `NonRepairableRBD.mean`).

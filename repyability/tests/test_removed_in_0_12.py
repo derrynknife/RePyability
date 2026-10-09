@@ -3,7 +3,7 @@ names and ignored arguments raise, non-parametric RBD nodes are refused,
 and the standby and load-sharing models with no exact or numerical
 reliability refuse it, rather than fitting one to simulated lifetimes, and
 are left to the simulations. Their constructors' simulation settings, which
-set that fit, warn until 0.13 (``NEXT_REMOVAL``)."""
+set that fit, went in 0.13 (``test_removed_in_0_13``)."""
 
 import warnings
 
@@ -255,25 +255,6 @@ def test_a_repairable_component_with_one_is_simulated(build, case):
         rbd.point_availability([10.0])
     result = rbd.availability(200.0, mc_samples=50, seed=1)
     assert 0.0 < float(np.mean(result.availability)) <= 1.0
-
-
-@pytest.mark.parametrize("build, case", NO_RELIABILITY, ids=IDS)
-def test_the_fits_settings_warn_until_0_13(build, case):
-    from repyability.utils.deprecation import NEXT_REMOVAL
-
-    model = quiet(build)
-    kind = type(model)
-    with pytest.warns(
-        FutureWarning, match=rf"mc_samples, seed.*{NEXT_REMOVAL}"
-    ):
-        if kind is StandbyModel:
-            StandbyModel(
-                model.reliabilities, k=model.k, mc_samples=100, seed=1
-            )
-        else:
-            LoadSharingModel(
-                model.models, load=model.load, mc_samples=100, seed=1
-            )
 
 
 def test_exact_and_numerical_models_are_unchanged():
