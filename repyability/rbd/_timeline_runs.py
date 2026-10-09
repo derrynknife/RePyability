@@ -19,7 +19,7 @@ import numpy as np
 
 from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd import _streams
-from repyability.timelines import Timelines, _Data, _positions
+from repyability.timelines import Timelines, _Data
 
 
 class Block(NamedTuple):
@@ -105,15 +105,14 @@ class Records:
                     [b.times[lo:hi] for b, (lo, hi) in zip(blocks, pieces)]
                 ),
                 np.zeros(total, np.int64),
-                np.zeros(total, np.int64),
+                None,
                 np.concatenate(
                     [b.planned[lo:hi] for b, (lo, hi) in zip(blocks, pieces)]
                 ),
                 None,
                 t_end,
             )
-            _, j = _positions(data)
-            components.append(replace(data, index=j))
+            components.append(data)
         offsets = np.zeros(size + 1, np.int64)
         np.cumsum(
             np.concatenate([np.diff(b.system_offsets) for b in blocks]),
