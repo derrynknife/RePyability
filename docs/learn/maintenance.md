@@ -361,13 +361,17 @@ The simulation prices the same policy over a finite window, with its spread:
 
 ```python
 year = alone(580).availability(t_simulation=8760.0, mc_samples=500, seed=0)
-year.system_failures / year.n_simulations          # -> 3.524   failures a year
-year.system_planned_outages / year.n_simulations   # -> 11.90   planned stops a year
-year.cost.by_category["preventive"]                # -> 11904.0
+year.system_failures / year.n_simulations          # -> 3.562   failures a year
+year.system_planned_outages / year.n_simulations   # -> 11.89   planned stops a year
+year.cost.by_category["preventive"]                # -> 11886.8   expected, exact
 ```
 
-A planned outage counts as downtime in every availability output, but not as
-a failure: `system_planned_outages` counts them separately. (The first year
+The counts are the 500 simulated years' own; the cost's mean, rate and
+breakdown are a year's expected values, exact where the exact methods take
+the system, as here (11.89 stops' worth of preventive cost; see
+[Costs](../guide/costs.md#one-expected-value)). A planned outage counts as
+downtime in every availability output, but not as a failure:
+`system_planned_outages` counts them separately. (The first year
 has slightly fewer planned stops than the long run's 12.3 a year, because
 every simulated year starts with a new pump.)
 
@@ -375,9 +379,9 @@ Now compare block replacement at the same interval:
 
 ```python
 block = alone(580, "block").availability(t_simulation=8760.0, mc_samples=500, seed=0)
-block.system_planned_outages / block.n_simulations   # -> 14.70
-block.cost.cost_rate    # -> 13.89   per hour, against...
-year.cost.cost_rate     # -> 12.80   ...for age replacement
+block.system_planned_outages / block.n_simulations   # -> 14.75
+block.cost.cost_rate    # -> 13.98   per hour, against...
+year.cost.cost_rate     # -> 12.82   ...for age replacement
 ```
 
 Block replacement stops the plant more often (it replaces pumps that are

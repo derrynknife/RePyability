@@ -12,6 +12,8 @@ import numpy as np
 import pytest
 import surpyval as surv
 
+import repyability.rbd._block_replacement as block_replacement
+import repyability.rbd.repairable_rbd as repairable_rbd
 from repyability import (
     BetaFactor,
     CCFGroup,
@@ -19,6 +21,7 @@ from repyability import (
     NonRepairableRBD,
     RepairableRBD,
 )
+from repyability.rbd import _rates
 
 E, W = surv.Exponential.from_params, surv.Weibull.from_params
 
@@ -214,12 +217,12 @@ def test_a_series_of_exponential_units_in_closed_form():
     a, b = available(0.1), available(0.3)
     expected = {"a": b * changing(0.1), "b": a * changing(0.3)}
     for node, value in expected.items():
-        np.testing.assert_allclose(rate.node_rate[node], value, atol=1e-6)
-    np.testing.assert_allclose(rate.rate, sum(expected.values()), atol=1e-6)
+        np.testing.assert_allclose(rate.node_rate[node], value, atol=4e-6)
+    np.testing.assert_allclose(rate.rate, sum(expected.values()), atol=4e-6)
     assert rate.jump_times.size == 0
 
 
-def own_rate(rbd, x, h=0.012, **given):
+def own_rate(rbd, x, h=0.024, **given):
     """The system's own rate: central differences of its point availability
     a step of its coarsest curve's grid either side (each curve is linear
     between its points), or ``h`` for a chain's exact curve."""
@@ -244,7 +247,7 @@ def test_the_parts_add_up_to_the_system_s_rate():
     rbd = mixed()
     x = np.array([0.7, 2.0, 4.5, 9.9, 15.0])
     rate = rbd.availability_rate(x)
-    np.testing.assert_allclose(rate.rate, own_rate(rbd, x), rtol=3e-5)
+    np.testing.assert_allclose(rate.rate, own_rate(rbd, x), rtol=2e-4)
     np.testing.assert_allclose(sum(rate.node_rate.values()), rate.rate)
 
 
@@ -284,6 +287,67 @@ def test_jumps_at_block_replacements_that_take_time():
     assert np.all(rate.node_jumps["a"] < 0) and np.all(
         rate.node_jumps["c"] < 0
     )
+
+
+def maintained_briefly(policy):
+    """A unit maintained every 80 days for about 6 hours: far shorter than
+    its curve's grid step (#240)."""
+    return RepairableRBD(
+        [("s", "v"), ("v", "t")],
+        {
+            "v": unit(
+                W([160.0, 1.5]),
+                E([2.0]),
+                preventive={
+                    "policy": policy,
+                    "interval": 80.0,
+                    "duration": E([4.0]),
+                },
+            )
+        },
+    )
+
+
+@pytest.mark.parametrize("policy", ["age", "block"])
+def test_a_maintenance_shorter_than_a_step_is_differentiated_exactly(
+    policy, monkeypatch
+):
+    # Just after the first maintenance, and the second: the unit's rate is
+    # its recovery from it, as fast as the maintenance is short. The whole
+    # curve differenced over its grid's step smoothed the recovery over (a
+    # percent off, #240); its dips are differentiated on their own scale.
+    rbd = maintained_briefly(policy)
+    x = np.array([80.3, 81.0, 82.0, 160.6])
+    rate = rbd.availability_rate(x).rate
+    curve = rbd._availability_curves(200.0, set())["v"]
+    smoothed = _rates.differences(curve, x, 200.0)
+    assert np.max(np.abs(smoothed / rate - 1.0)) > 0.005
+    monkeypatch.setattr(repairable_rbd, "_POINT_STEPS", 16_000)
+    monkeypatch.setattr(block_replacement, "_MIN_STEPS", 32_000)
+    monkeypatch.setattr(block_replacement, "_MAX_STEPS", 64_000)
+    finer = rbd.availability_rate(x).rate
+    np.testing.assert_allclose(rate, finer, rtol=3e-4)
+
+
+def test_a_nested_rbd_s_rate_is_its_nodes_by_their_importance():
+    # Its own nodes' rates (exact for their dips) times their importance,
+    # not its curve differenced as a whole.
+    inner = maintained_briefly("age")
+    outer = RepairableRBD(
+        PAIR_THEN_C,
+        {"a": inner, "b": unit(E([0.1])), "c": unit(W([30, 1.5]))},
+    )
+    x = np.array([80.3, 81.0, 160.6])
+    nested = outer._availability_curves(200.0, set())["a"]
+    own = inner._availability_curves(200.0, set())["v"]
+    exact = _rates.derivative(own, x, 200.0)
+    np.testing.assert_allclose(
+        _rates.derivative(nested, x, 200.0), exact, rtol=1e-12
+    )
+    smoothed = _rates.differences(nested, x, 200.0)
+    assert np.max(np.abs(smoothed / exact - 1.0)) > 0.005
+    rate = outer.availability_rate(x)
+    np.testing.assert_allclose(sum(rate.node_rate.values()), rate.rate)
 
 
 def test_the_rates_and_jumps_make_up_the_change():
@@ -390,7 +454,7 @@ def test_crews_around_a_nested_rbd():
     )
     x = np.array([1.0, 3.0, 9.0])
     rate = rbd.availability_rate(x)
-    np.testing.assert_allclose(rate.rate, own_rate(rbd, x), rtol=3e-5)
+    np.testing.assert_allclose(rate.rate, own_rate(rbd, x), rtol=2e-4)
     assert np.all(rate.node_rate["c"] < 0.0)
 
 

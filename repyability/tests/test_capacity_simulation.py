@@ -59,7 +59,7 @@ def test_the_long_run_average_matches_the_exact_capacity():
     plant = pumps()
     exact = plant.capacity_distribution()
     result = plant.availability(2000, mc_samples=200, seed=2, demand=100)
-    assert result.mean_capacity == pytest.approx(exact.mean(), rel=2e-3)
+    assert result.mean_capacity == pytest.approx(exact.mean, rel=2e-3)
     interval = result.delivered_fraction_interval(0.999)
     assert interval.lower <= exact.delivered_fraction(100) <= interval.upper
     assert result.delivered_fraction == interval.estimate
@@ -108,7 +108,7 @@ def test_levels_while_up_count_in_proportion():
     result = plant.availability(2000, mc_samples=100, seed=3)
     exact = plant.capacity_distribution()
     assert result.demand == 100.0
-    assert result.mean_capacity == pytest.approx(exact.mean(), rel=5e-3)
+    assert result.mean_capacity == pytest.approx(exact.mean, rel=5e-3)
     assert result.delivered_fraction == pytest.approx(
         exact.delivered_fraction(100), rel=5e-3
     )

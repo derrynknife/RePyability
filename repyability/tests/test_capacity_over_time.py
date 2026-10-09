@@ -59,7 +59,7 @@ def test_exponential_pumps_are_binomial_at_their_availabilities():
     assert isinstance(capacity, CapacityDistribution)
     assert capacity.levels.tolist() == [0.0, 50.0, 100.0, 150.0]
     exact = np.array([binom.pmf(k, 3, available(x)) for k in range(4)])
-    np.testing.assert_allclose(capacity.probabilities, exact, atol=3e-7)
+    np.testing.assert_allclose(capacity.probabilities, exact, atol=1.2e-6)
     # The capacity is positive exactly when the system is up.
     np.testing.assert_allclose(
         1.0 - capacity.probabilities[0],
@@ -78,7 +78,7 @@ def test_exponential_pumps_are_binomial_at_their_availabilities():
             for k in range(4)
         ]
     )
-    np.testing.assert_allclose(window.probabilities, exact, atol=3e-7)
+    np.testing.assert_allclose(window.probabilities, exact, atol=1.2e-6)
     np.testing.assert_allclose(
         window.meets(1e-9), plant.mission_availability(t), atol=1e-12
     )
@@ -201,7 +201,7 @@ def test_the_delivered_fraction_is_what_the_simulation_estimates(t):
     simulated = plant.availability(t, mc_samples=3000, seed=3, demand=100.0)
     interval = simulated.delivered_fraction_interval(0.999)
     assert interval.lower <= exact.delivered_fraction(100.0) <= interval.upper
-    assert exact.mean() == pytest.approx(simulated.mean_capacity, rel=2e-3)
+    assert exact.mean == pytest.approx(simulated.mean_capacity, rel=2e-3)
 
 
 def test_inspected_pumps_settle_into_their_calendar():

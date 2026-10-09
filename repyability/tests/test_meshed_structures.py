@@ -14,7 +14,7 @@ import surpyval as surv
 from repyability import FaultTree, NonRepairableRBD, RepairableRBD
 from repyability.rbd import bdd, modular
 from repyability.rbd.rbd_graph import RBDGraph
-from repyability.tests.test_analysis_routes import BRIDGE, too_meshed
+from repyability.tests.catalogue import BRIDGE, too_meshed
 from repyability.tests.test_rbd_modular import enumerate_states, random_diagram
 
 W = surv.Weibull.from_params

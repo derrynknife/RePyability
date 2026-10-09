@@ -109,7 +109,11 @@ def test_the_controlled_estimate_is_unbiased_and_more_precise():
         plain.cost.mean_interval().standard_error
         > 2 * cost.mean_interval().standard_error
     )
-    assert cost.mean == pytest.approx(np.mean(cost.samples))
+    # Its mean is the controlled estimate (#223); the simulations' own is
+    # beside it, and so is their breakdown, a twin's being only the total's.
+    assert cost.mean == cost.mean_interval().estimate
+    assert cost.sample_mean == pytest.approx(np.mean(cost.samples))
+    assert sum(cost.by_category.values()) == pytest.approx(cost.sample_mean)
 
 
 def test_cost_takes_the_control_too():
@@ -376,7 +380,9 @@ def test_minimal_repair_in_no_time_is_kept_by_the_twin():
 def test_the_twin_builds_each_curve_once(monkeypatch):
     # Its exact cost and availability share the components' curves (#185),
     # and give what they give apart.
-    rbd = RepairableRBD(EDGES, {n: unit() for n in "ABC"})
+    rbd = RepairableRBD(
+        EDGES, {n: unit(scale) for n, scale in zip("ABC", (90, 100, 110))}
+    )
     twin, _ = rbd._twin()
     apart = (twin.expected_cost(300.0).mean, twin.mission_availability(300.0))
     built = []
@@ -423,7 +429,7 @@ def test_a_run_takes_exact_values_by_default(monkeypatch):
         300.0, mc_samples=50, seed=3, control_variate=False
     )
     assert plain.control_variate is None
-    assert plain.mean_availability_interval().method is None
+    assert plain.mean_availability_interval().method == "simulated"
     for other in (run, fixed):
         np.testing.assert_array_equal(other.uptimes, plain.uptimes)
         np.testing.assert_array_equal(other.availability, plain.availability)
@@ -503,9 +509,7 @@ def test_the_route_says_the_expected_values_need_no_simulation():
     own = RepairableRBD(EDGES, {n: unit() for n in "ABC"}).analysis_routes()
     for name in ("availability", "cost"):
         assert "mission_availability, expected_events" in own[name].reason
-        assert "by default a run's mean intervals are theirs" in (
-            own[name].reason
-        )
+        assert "by default a run's means are theirs" in (own[name].reason)
     # Weibull lives sharing a crew have no exact values over a window.
     assert (
         "mission_availability"

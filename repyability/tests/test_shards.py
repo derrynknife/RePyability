@@ -28,9 +28,9 @@ from repyability.rbd.repairable_rbd import (
     _Tally,
 )
 from repyability.rbd.shards import main
+from repyability.tests.catalogue import systems_of_every_kind
 from repyability.tests.test_performance_equivalence import binomial_first
 from repyability.tests.test_simulation_chunks import identical, plant
-from repyability.tests.test_simulation_engines import systems_of_every_kind
 
 E, W = surv.Exponential.from_params, surv.Weibull.from_params
 

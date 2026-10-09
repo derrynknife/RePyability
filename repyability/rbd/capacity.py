@@ -33,6 +33,7 @@ rounded to 12 significant digits, so that totals that differ only by
 rounding (``0.1 + 0.2`` and ``0.3``) are one level.
 """
 
+import functools
 import math
 from typing import Callable, Dict, Hashable, List, Optional, Tuple
 
@@ -54,6 +55,7 @@ Distribution = Tuple[np.ndarray, np.ndarray]
 _NOTHING = ("nothing",)
 
 
+@functools.lru_cache(maxsize=1 << 16)
 def tidy(value: float) -> float:
     """``value`` rounded to 12 significant digits (0 and infinity as
     they are)."""
@@ -68,8 +70,14 @@ def merged(levels: np.ndarray, probabilities: np.ndarray) -> Distribution:
     increasing order, and levels that no evaluation can reach left out."""
     tidied = np.array([tidy(v) for v in np.ravel(levels)], dtype=float)
     unique, where = np.unique(tidied, return_inverse=True)
-    out = np.zeros((len(unique), probabilities.shape[1]))
-    np.add.at(out, np.ravel(where), probabilities)
+    # Each level's rows summed together after one stable sort (#246), as
+    # ``np.add.at`` sums them but faster: equal to it up to rounding (a
+    # level's later rows are added up before its first), and none when no
+    # level is given.
+    order = np.argsort(np.ravel(where), kind="stable")
+    ranked = np.ravel(where)[order]
+    first = np.flatnonzero(np.diff(ranked, prepend=-1))
+    out = np.add.reduceat(probabilities[order], first, axis=0)
     reachable = np.any(out != 0.0, axis=1)
     if not reachable.all():
         unique, out = unique[reachable], out[reachable]

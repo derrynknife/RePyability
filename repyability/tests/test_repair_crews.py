@@ -185,7 +185,9 @@ def test_runs_with_crews_are_reproducible_and_split_alike():
     assert rbd.availability(**run).node_uptime == serial.node_uptime
     parallel = rbd.availability(**run, n_jobs=2)
     assert parallel.node_uptime == serial.node_uptime
-    gain = system(2).compare(rbd, 200.0, mc_samples=300, seed=6)
+    gain = system(2).compare(
+        rbd, 200.0, mc_samples=300, seed=6, control_variate=False
+    )
     assert gain.estimate > 0.0
 
 

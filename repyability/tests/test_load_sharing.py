@@ -96,11 +96,14 @@ def test_a_group_of_different_units_estimates_its_mean(weibull_aft, other_aft):
     # From new draws, asked for, without touching numpy's global RNG.
     group = LoadSharingModel([weibull_aft, other_aft], load=2.0, k=1)
     assert group.is_simulated
-    with pytest.raises(NotImplementedError, match=r"mean\(mc_samples="):
+    with pytest.raises(
+        NotImplementedError, match=r"mean\(method='simulate', mc_samples="
+    ):
         group.mean()
     before = np.random.get_state()[1].copy()
     estimate = group.mean(mc_samples=500, seed=7)
     assert estimate == group.random(500, seed=7).mean()
+    assert estimate == group.mean(method="simulate", mc_samples=500, seed=7)
     assert np.array_equal(np.random.get_state()[1], before)
     assert group.mean(mc_samples=500, seed=8) != estimate
 

@@ -98,17 +98,17 @@ def test_an_exponential_unit_is_memoryless():
     np.testing.assert_allclose(
         rbd.point_availability(x, state=down),
         available_from_down(lam, mu, x),
-        atol=3e-7,
+        atol=1.2e-6,
     )
     # Its failures from down: lam times its expected up time.
     t = np.array([1.0, 10.0, 100.0])
     total = lam + mu
     uptime = mu / total * (t + np.expm1(-total * t) / total)
     np.testing.assert_allclose(
-        rbd.expected_failures(t, state=down), lam * uptime, atol=2e-7
+        rbd.expected_failures(t, state=down), lam * uptime, atol=8e-7
     )
     np.testing.assert_allclose(
-        rbd.mission_availability(t, state=down), uptime / t, atol=2e-7
+        rbd.mission_availability(t, state=down), uptime / t, atol=8e-7
     )
 
 
@@ -121,7 +121,7 @@ def test_a_unit_up_at_an_age_lives_what_is_left_of_its_life():
     left = life.sf(a + x) / life.sf(a)
     state = {"a": NodeState(age=a)}
     np.testing.assert_allclose(
-        rbd.point_availability(x, state=state), left, atol=1e-7
+        rbd.point_availability(x, state=state), left, atol=4e-7
     )
     np.testing.assert_allclose(
         rbd.expected_failures(x, state=state), 1.0 - left, atol=1e-7
@@ -197,7 +197,7 @@ def test_a_unit_down_for_maintenance_finishes_it():
     state = {"a": NodeState(alive=False, down_for=2.0, maintenance=True)}
     # Back at 3, as new: maintained again at 103 to 108, and 208 to 213.
     assert rbd.mission_availability(300.0, state=state) == pytest.approx(
-        (300.0 - 13.0) / 300.0, abs=1e-9
+        (300.0 - 13.0) / 300.0, abs=3e-8
     )
     run = rbd.availability(300.0, mc_samples=2, seed=0, state=state)
     np.testing.assert_allclose(run.uptimes, 287.0)
@@ -514,7 +514,12 @@ def test_compare_from_a_state_draws_the_same_numbers():
         "b": NodeState(alive=False, down_for=1.0),
     }
     difference = maintained_pair().compare(
-        maintained_pair(), 500.0, mc_samples=200, seed=2, state=state
+        maintained_pair(),
+        500.0,
+        mc_samples=200,
+        seed=2,
+        state=state,
+        control_variate=False,
     )
     assert difference.estimate == 0.0
     assert difference.standard_error == 0.0

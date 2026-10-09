@@ -31,7 +31,9 @@ for vega); this page runs one system through all of them.
   `[0, window)`, and `state=` starts from the components' current states,
   as `point_availability` and `mission_availability` take them (theta,
   a rate, needs its times; vega names its quantity, `of=`, and takes its
-  times as `x`). On a `NonRepairableRBD` they take the time `x`. All but
+  times as `x`). On a `NonRepairableRBD` they take the time `x`. On
+  either, the times may come first, as `birnbaum_importance(5.0)` (and
+  Barlow–Proschan's window, `barlow_proschan_importance(100.0)`). All but
   vega take `working_nodes` and `broken_nodes`, which hold nodes working
   or failed as for every importance measure.
 - **Exact where the structure is.** With independent components the
@@ -120,6 +122,36 @@ shape has none, a repair rate is per day, the interval is in days. Given
 what a unit of each costs, `unit_costs=` ranks them by availability per
 unit spent; the shares below put them on one footing instead.
 
+### The levers themselves
+
+`levers()` lists the levers that `parameter_sensitivity` moves, in its
+order, each a `Lever`: whose it is and its name, its value now, the range
+of values it can take, whether it is discrete (one more standby unit or
+crew), and whether it moves a calendar that its component shares with
+others. Nothing is worked out, so a report can name the levers and show
+their values without the sensitivities:
+
+```python
+valve = {lever.name: lever for lever in station.levers() if lever.key == "valve"}
+len(valve)                                   # -> 5
+valve["repairability.failure_rate"].value    # -> 2.0
+valve["preventive.interval"].calendar        # False: no other unit shares its calendar
+```
+
+`with_levers` builds the station with levers moved, as
+`parameter_sensitivity` moves them, so that a what-if agrees with the
+deltas. With the valve repaired 10% faster, in 0.4545 days rather than
+half a day:
+
+```python
+faster = station.with_levers({valve["repairability.failure_rate"]: 2.2})
+faster.repairability["valve"].mean()   # -> 0.4545
+faster.mean_availability()             # -> 0.99482
+```
+
+The station gains 0.00019, a little less than the delta times the step,
+`0.001055 × 0.2 = 0.00021`: the gain from faster repairs tapers off.
+
 ### DIM: shares of a change
 
 The differential importance is each component's (or lever's) share of the
@@ -192,7 +224,7 @@ are reported apart, split among the components that make them:
 ```python
 rate.jump_times[0]           # -> 80.0
 rate.node_jumps["valve"][0]  # -> -0.7017
-rate.node_rate["valve"][1]   # -> 0.0514
+rate.node_rate["valve"][1]   # -> 0.0518
 ```
 
 Just after 80 days the station is down for the replacement with
@@ -313,6 +345,7 @@ ownership (`discount_rate=`, see [Costs](costs.md#discounting)).
 |---|---|---|---|
 | `birnbaum_importance` | at `x` | long run, `x`, `window`, `state` | at `t` |
 | `parameter_sensitivity` | at `x` | long run, `x`, `window`, `state`; `of="cost_rate"` | |
+| `levers`, `with_levers` | the parameters | every lever | |
 | `differential_importance` | at `x` | long run, `x`, `window`, `state` | at `t` |
 | `joint_importance` | at `x` | long run, `x`, `window`, `state` | at `t` |
 | Theta | `reliability_rate(x)` | `availability_rate(x)`, from new or `state` | |

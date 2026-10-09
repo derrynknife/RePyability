@@ -112,15 +112,17 @@ q_independent        # array([0.009])
 ### Exclusive or independent shocks
 
 By default the shocks are mutually exclusive, as `decompose` gives them:
-one shared cause strikes the group at most, so each member fails with
-probability `Q` exactly. PRA codes (SAPHIRE, CAFTA, RiskSpectrum) take each
+one shared cause strikes the group at most, and a member's own failure is
+a separate event, independent of it, so each member fails with probability
+`Q` to first order, as in PRA's basic events (`βQ + (1 − βQ)(1 − β)Q =
+Q − β(1 − β)Q²` for a `BetaFactor`: 0.0991 at `Q = 0.1`, `β = 0.1`). PRA codes (SAPHIRE, CAFTA, RiskSpectrum) take each
 shock's `Q_k` as a basic event of its own instead, independent of the
 others, so several can strike at once. The two differ at second order in
 `Q`, so to check a result against such a tool, give
 `MGL(..., shocks="independent")`:
 
 ```python
-W = surv.Weibull.from_params([1000, 1.5])          # Q = 0.031 at t = 100
+W = surv.Weibull.from_params([1000, 1.5])          # Q = 0.0311 at t = 100
 parallel = [("s", x) for x in "abc"] + [(x, "t") for x in "abc"]
 
 def vote(model):
@@ -351,6 +353,47 @@ pair.mean()                                # -> 1145.8   exact, without the grou
 Groups are saved with the RBD, their basis with them. An *alpha-factor*
 model, a data-estimable reparameterisation of MGL, is a planned extension.
 
+### Many groups
+
+Given the outcome of a group's shocks, its members are independent of
+everything else, so the exact values condition on a group only within the
+smallest module of the diagram that holds its members: groups in separate
+modules (a pair of pumps in each of many stages) cost a sum each. Groups
+that share a module, as a group of each kind of component across redundant
+trains does, would multiply their outcomes: past 64 combinations, their
+shared causes are written out as events of their own, each repeated under
+every member it strikes, which the diagram's decision diagram works out
+with the rest (#219). A beta factor's cause, and an MGL model's by rate or
+with `shocks="independent"`, are such events as they stand; an MGL
+model's exclusive shocks are taken as independent causes that fail the
+same sets of members as often, which exist unless the model leaves out a
+set that two pair shocks would fail together (a `gamma` of 0, say), when
+the groups are conditioned on together, as before. The values are the
+same either way:
+
+```python
+import time
+
+def trains(kinds, model):
+    """Three trains of `kinds` components in series, a group of each kind."""
+    units = {f"{i}{j}": surv.Exponential.from_params([1e-3])
+             for i in range(kinds) for j in "abc"}
+    edges = [(("s" if i == 0 else f"{i - 1}{j}"), f"{i}{j}")
+             for i in range(kinds) for j in "abc"]
+    edges += [(f"{kinds - 1}{j}", "t") for j in "abc"]
+    groups = [CCFGroup([f"{i}{j}" for j in "abc"], model) for i in range(kinds)]
+    return NonRepairableRBD(edges, units, ccf_groups=groups)
+
+big = trains(30, MGL(0.1, 0.3))
+start = time.perf_counter()
+big.ff(1.0)                             # -> 0.0010048   30 groups across 3 trains
+time.perf_counter() - start < 1.0       # True: where 5 ** 30 outcomes would never end
+```
+
+The Fussell–Vesely importance conditions on the groups within their
+modules, and the capacity distribution and the redundancy allocations on
+every combination of the groups' outcomes, as yet.
+
 A [`FaultTree`](fault-trees.md#common-causes) takes the same groups over its
 basic events, with the same exact top event probability and importance
 measures, and its conversions to and from a diagram keep them.
@@ -387,27 +430,42 @@ The long-run values are exact: a group's members form a Markov chain of
 which of them are down, its long-run distribution found without
 subtraction, so a small probability keeps its precision. The members need
 exponential lives, and either revealed failures with exponential repairs, as
-here, or hidden failures found by tests (instant, as the long-run values of
-tests need, with one coverage for the group), at offsets of their own if
-they are staggered; see [the PFDavg of a safety
-function](costs.md#common-cause-staggered-tests-and-test-coverage).
+here, or hidden failures found by tests (with one coverage for the group),
+at offsets of their own if they are staggered, whose tests and repairs take
+no time, a fixed time or an exponential one (#220); see [the PFDavg of a
+safety function](costs.md#common-cause-staggered-tests-and-test-coverage).
 `mean_availability`, `mean_unavailability`, `system_failure_frequency`,
 MTBF, MUT and MDT, the cost rate, `capacity_distribution`, and the interval
 choices built on them take the groups in. So do the importance measures:
-each long-run time's points are split by the members' joint states, and a
-member's measures are conditioned on its state at each time, then averaged
-over the times as every node's are. With `beta = 0` they are the measures
-without the group:
+a member's are conditioned on its state at each time, as its state says
+something of its group's, then averaged over the times as every node's
+are. With `beta = 0` they are the measures without the group:
 
 ```python
 shared.birnbaum_importance()["p1"]       # -> 0.1743   P(p2 down | p1 down)
 independent.birnbaum_importance()["p1"]  # -> 0.0909
 ```
 
+Given which of its members are down, a group is independent of everything
+else, so, as for a non-repairable diagram, each group is conditioned on only
+within the smallest module of the diagram holding its members (#218): ten,
+or fifty, pairs of tested units in series, each pair a group, cost a sum,
+not a product, and take a fraction of a second. Groups that meet in one
+module, a group of each kind of component across redundant trains, multiply
+their members' combinations there; past about 33 million (combinations
+times the long-run grid's times) the exact values refuse, saying so, before
+working anything out: simulate such a system with `availability()` or
+`cost()`. The capacity distribution and the allocations still take every
+combination of every group's states at once, and refuse, before building
+them, where those would take too much memory. Limited repair crews are
+refused too, by every exact value, `node_availability` among them: the
+groups' chains do not take the crews' queue in, and the crews' chain does
+not take the common causes in, as yet. The simulations take both.
+
 Over time from new, each group's chain is followed from every member up at
 0 (by uniformization, or through the members' tests, after whose first
-period it repeats its long run), and each time is split by the groups'
-joint states as the long-run times are. `point_availability`,
+period it repeats its long run), and each group is conditioned on within
+its module at each time, as in the long run. `point_availability`,
 `mission_availability`, `expected_failures`, `expected_events`,
 `expected_cost`, `point_capacity` and `mission_capacity` take the groups in,
 and settle into the long-run values. A member's own curve, and so its own
@@ -426,12 +484,12 @@ causes: each strikes as a Poisson process at its share of the members'
 failure rate, and fails the members it names that are up, at once. A test
 that can miss a failure tosses one coin for all the failures a cause makes.
 They run in Python (the compiled engine does not draw the causes, as yet),
-and they take in what the chains cannot: tests and repairs that take time,
-and repairs of any distribution:
+and they take in what the chains cannot: tests and repairs of any length,
+and revealed failures' repairs of any distribution:
 
 ```python
 run = shared.availability(1000.0, mc_samples=2000, seed=0)
-run.system_uptime / (2000 * 1000.0)          # -> 0.9841   simulated
+run.system_uptime / (2000 * 1000.0)          # -> 0.9845   simulated
 run.mean_availability_interval().estimate    # -> 0.98429  exact, as the chains give it
 ```
 

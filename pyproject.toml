@@ -44,10 +44,12 @@ dependencies = [
     # to_dict/from_dict). A surpyval release reaches every fresh install at
     # once, so the upstream workflow runs the tests against surpyval's
     # development branch to show a break before it is released. CI also tests
-    # this minimum. 0.22 names a distribution's parameters parameter_names
-    # (param_names goes in 0.23), and computes the Normal and LogNormal
-    # quantiles directly, as RePyability relies on.
-    "surpyval>=0.22",
+    # this minimum. 0.23 names the limited-failure proportion lfp_p (p goes
+    # in its next release), takes success_run's level as alpha_ci, and
+    # pickles its fits (for n_jobs' worker processes), as RePyability relies
+    # on; 0.22 named a distribution's parameters parameter_names and
+    # computes the Normal and LogNormal quantiles directly.
+    "surpyval>=0.23",
     "tqdm>=4.64",
 ]
 
@@ -146,14 +148,14 @@ follow_imports = 'skip'
 # Coverage
 [tool.coverage.run]
 source = ["repyability"]
-# The compiled loop, decision diagram and sorting of a run's changes run as
+# The compiled loop, decision diagram and random streams' Philox run as
 # machine code, which coverage cannot trace (their equivalence with the
-# Python code, and with numpy's sorting, is tested instead).
+# Python code is tested instead).
 omit = [
     "*/tests/*",
     "*/rbd/_kernel.py",
     "*/rbd/_bdd_kernel.py",
-    "*/rbd/_time_order.py",
+    "*/rbd/_philox_kernel.py",
 ]
 
 [tool.coverage.report]

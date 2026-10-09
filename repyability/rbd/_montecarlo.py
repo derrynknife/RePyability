@@ -9,15 +9,16 @@ does not change what it draws, so the results do not depend on the number
 of processes.
 """
 
-import io
 import math
 import os
 import pickle
 import warnings
-from typing import Any, List, Optional
+from typing import List, Optional
 
 import numpy as np
 from scipy.special import ndtri
+
+from repyability.utils.wrappers import outside_level
 
 
 def check_count(n, antithetic: bool, name: str) -> None:
@@ -115,24 +116,31 @@ def more_samples(
     antithetic: bool,
     what: str,
     limit_name: str,
+    unjudged: Optional[str] = None,
 ) -> int:
     """How many more samples a run to ``tolerance`` needs: 0 once the
     confidence interval of the mean of ``values`` is at most ``tolerance``
     either side, or ``limit`` samples have been taken (then with a
     RuntimeWarning); otherwise another ``n``, up to the limit. An
     infinite (or NaN) value stops the run at once: the mean is infinite
-    (or undefined) however many more are taken."""
+    (or undefined) however many more are taken. With ``unjudged``, why
+    the values do not show the error yet (a run of modules that have not
+    changed state, #215): the run goes on, to the limit."""
     if not np.all(np.isfinite(values)):
         return 0
-    if half_width(values, confidence, antithetic) <= tolerance:
+    if (
+        unjudged is None
+        and half_width(values, confidence, antithetic) <= tolerance
+    ):
         return 0
     taken = len(values)
     if taken >= limit:
         warnings.warn(
             f"The {what} did not converge to within {tolerance} in {taken} "
-            f"samples ({limit_name}); the result is from those.",
+            f"samples ({limit_name}); the result is from those."
+            + ("" if unjudged is None else f" {unjudged}"),
             RuntimeWarning,
-            stacklevel=4,
+            stacklevel=outside_level(),
         )
         return 0
     return min(n, limit - taken)
@@ -192,50 +200,23 @@ def process_pool(jobs: int, initializer=None, initargs: tuple = ()):
     )
 
 
-class _ModelPickler(pickle.Pickler):
-    """Pickles a run for its worker processes, sending a surpyval model
-    that pickle cannot take in its saved form (``to_dict``), rebuilt where
-    it is loaded: a fit holds a closure (SurPyval#573), so a system of
-    fitted models could not be run with ``n_jobs`` (#181). Pickle's memo
-    still sends a model drawn in several places once."""
-
-    def reducer_override(self, obj):
-        module = getattr(type(obj), "__module__", None) or ""
-        if not module.startswith("surpyval") or not hasattr(obj, "to_dict"):
-            return NotImplemented
-        try:
-            pickle.dumps(obj, protocol=pickle.HIGHEST_PROTOCOL)
-        except Exception:
-            return _rebuilt_model, (obj.to_dict(),)
-        return NotImplemented
-
-
-def _rebuilt_model(saved: dict) -> Any:
-    """A surpyval model from its saved form (see ``_ModelPickler``)."""
-    import surpyval
-
-    return surpyval.from_dict(saved)
-
-
 def dumps(payload) -> bytes:
     """``payload`` (a system and what its simulations share) pickled for
-    worker processes (see ``_ModelPickler``).
+    worker processes.
 
     Raises
     ------
     ValueError
         If it cannot be pickled, saying why and what to do instead.
     """
-    buffer = io.BytesIO()
     try:
-        _ModelPickler(buffer, protocol=pickle.HIGHEST_PROTOCOL).dump(payload)
+        return pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
     except Exception as error:
         raise ValueError(
             "The system cannot be sent to worker processes for n_jobs "
             f"(pickle failed: {type(error).__name__}: {error}). Run it "
             "without n_jobs, or give shard_map, which sends it as JSON."
         ) from error
-    return buffer.getvalue()
 
 
 def blocks(n: int, block: int) -> List[int]:

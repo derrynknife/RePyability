@@ -361,6 +361,16 @@ class CrewSystem:
         up = np.clip(up, 0.0, 1.0)
         return importance, up, 1.0 - up, np.maximum(rate, 0.0), chain_up
 
+    def probabilities(self, values: dict, x: np.ndarray):
+        """The system's availability and unavailability at the times ``x``
+        (see ``evaluate``)."""
+        return self.evaluate(values, x)[1:3]
+
+    def importance(self, values: dict, x: np.ndarray) -> dict:
+        """Each nested RBD's Birnbaum importance at the times ``x`` (see
+        ``evaluate``)."""
+        return self.evaluate(values, x)[0]
+
     def caused(self, values: dict, x: np.ndarray) -> dict:
         """The rate of the system's failures by each of the chain's
         components at the times ``x`` (with ``causes``; else none), the

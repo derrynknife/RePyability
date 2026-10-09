@@ -324,10 +324,12 @@ def test_runs_with_groups_are_reproducible_and_compiled(monkeypatch):
     plan = alone._stream_plan(1.0, 0, False)[0]
     assert _compiled.unsupported(alone, plan, None) == "standby groups"
     assert _compiled.unsupported(alone, plan, None, numba=True) is None
-    monkeypatch.setattr(_compiled, "available", lambda: True)
-    assert alone.analysis_routes()["availability"].engine == "numba"
+    with monkeypatch.context() as patched:
+        # (As where numba is installed: the route only, nothing is run.)
+        patched.setattr(_compiled, "available", lambda: True)
+        assert alone.analysis_routes()["availability"].engine == "numba"
     gain = group(0.02, 0.25, 2, units=3).compare(
-        rbd, 2_000.0, mc_samples=200, seed=9
+        rbd, 2_000.0, mc_samples=200, seed=9, control_variate=False
     )
     assert gain.estimate > 0.0
 

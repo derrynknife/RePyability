@@ -75,9 +75,9 @@ Every Monte-Carlo method takes a `seed`:
 
 | Where | Methods |
 |---|---|
-| `NonRepairableRBD` | `random`, `mean` and `mean_time_to_failure` with `method="simulate"`, `mean_time_to_failure_interval`, `compare` |
-| `RepairableRBD` | `availability`, `cost`, `compare`, `spares_demand` with `method="simulate"` |
-| Node models | `RepeatedNode.random`, `RepeatedNode.mean` with `method="simulate"`, `RepeatedStandbyNode.random`, `StandbyModel.random`, `LoadSharingModel.random`, and the `mean(mc_samples=..., seed=...)` of a simulated `StandbyModel` or `LoadSharingModel` |
+| `NonRepairableRBD` | `random`, `mean`, `mean_time_to_failure` and `compare` with `method="simulate"`, `mean_time_to_failure_interval` |
+| `RepairableRBD` | `availability`, `cost`, `compare` with `control_variate=False` (or where the exact methods do not reach), `spares_demand` with `method="simulate"` |
+| Node models | `RepeatedNode.random`, `RepeatedNode.mean` with `method="simulate"`, `RepeatedStandbyNode.random`, `StandbyModel.random`, `LoadSharingModel.random`, `DegradingNode.random`, and the `mean` of a `StandbyModel`, `LoadSharingModel` or `DegradingNode` with `method="simulate"` (or with `mc_samples` or `seed`, where it has no exact mean) |
 | `PhasedMission` | `reliability`, `unreliability` and `phase_failure_probabilities` with `method="simulate"`, `reliability_interval` |
 | `Network` | `sf`, `ff` and `mean` with `method="simulate"`, `random` |
 | `Repairable` | every simulation-backed method |
@@ -145,17 +145,22 @@ maintenance or hidden failures):
 | `point_availability`, `mission_availability` | numerical | Each component's renewal equation, from new or from its state, solved numerically (to about `1e-7`), and the system at its components' availabilities at each time; with repair crews, and for a standby group, a Markov chain followed by uniformization (to about `1e-13`). |
 | `availability_rate` | numerical | Each component's point availability differentiated on the grid it is solved on, times its Birnbaum importance; the jumps at scheduled events split along the path between the values either side. With limited repair crews or common-cause groups, their chains' transitions split by the component or cause that makes each (exact), and a hidden group's tests' jumps by the Shapley value. |
 | `expected_failures`, `expected_events` | numerical | Each component's expected events from its renewal equation, on the grid of its availability (to about `1e-7`), and the system's failures by the time-dependent Birnbaum/Vesely formula; `expected_cost` prices them, numerically when anything is priced. |
-| `availability` (with the capacity over time and the delivered fraction), `cost`, `compare` | simulated | Discrete-event simulation. |
+| `availability` (with the capacity over time and the delivered fraction), `cost` | simulated | Discrete-event simulation. |
+| `compare` | numerical | The difference of the two designs' expected values: their MTTFs (`mean`), or a repairable system's mission availability and expected cost (#236); with `method="simulate"` (`control_variate=False` for a repairable one), both simulated with common random numbers. |
 | `spares_demand`, `spares_stock` | numerical | Each component's replacements, a renewal process, counted on a grid (to about `1e-6`); `spares_demand(method="simulate")` counts them in simulations instead. |
 | `allocate_redundancy` (both kinds of RBD) | exact | Exact scoring: `method="exact"` is a proven optimum, `"greedy"` a heuristic. Cold standby (`strategy="cold"` or `"choose"`) that needs two or more units working, of units that are not identical Exponentials, is scored from 10 000 seeded simulated lifetimes. |
 
 The nodes can change a route:
 
 - **Standby and load-sharing nodes.** Their reliability is exact or numerical
-  where a closed form or convolution applies, and is otherwise fitted to
-  simulated lifetimes (see [Redundancy
-  models](redundancy-models.md#how-the-survival-function-is-obtained)). The
-  analyses built on such a node are then simulated too.
+  where a closed form or convolution applies (see [Redundancy
+  models](redundancy-models.md#how-the-survival-function-is-obtained)).
+  Otherwise the node is simulated (`is_simulated`): it refuses `sf`, `ff`,
+  `cs` and `mean()`, and so do the exact and numerical analyses of a
+  diagram that holds it, saying why, while its lifetimes are still drawn,
+  so the simulations take it (`random`, `mean(method="simulate")` and
+  `unreliability_interval`, or a repairable diagram's `availability` and
+  `cost`). Until 0.12 its reliability was fitted to simulated lifetimes.
 - **Maintenance.** Preventive maintenance makes the long-run values numerical,
   and the values over time too, replacement on condition (`"policy":
   "condition"`) among it (#161). The exact
@@ -223,7 +228,7 @@ routes = tested.analysis_routes()
 routes["mean_availability"].route  # 'refused': a test can outlast its interval
 routes["mean_availability"].nodes  # ('pump',)
 routes["availability"].route       # 'simulated'
-routes["availability"].engine      # 'numba' with numba installed, else 'python'
+routes["availability"].engine      # with numba installed 'numba', else 'python'
 ```
 
 ## Performance

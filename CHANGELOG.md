@@ -9,6 +9,659 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+### Added
+
+- **A surpyval `MixtureModel` as a repairable component's life (#227).**
+  A two-mode population (infant mortality and wear-out) fitted with
+  surpyval's `MixtureModel`, which a `NonRepairableRBD` took, was refused
+  by `NonRepairable`, and so by `RepairableRBD`, with "Unknown reliability
+  function". It is now taken wherever a parametric life is: the exact and
+  numerical analyses use its survival function, distribution, density
+  and mean; the simulations draw its lives from their streams, one uniform
+  a draw, by inverting its distribution function (it has no quantile
+  function, surpyval #651), on both engines; and imperfect repair and a
+  start from an age draw its life given the age through its cumulative
+  hazard. Its parameters cannot be drawn by the uncertainty methods
+  (expectation-maximisation leaves no covariance), which now say so,
+  where they said to fit it with surpyval; a list of models can stand in.
+  Any other life is refused naming the component and what it was given.
+  A `NonRepairableRBD` draws a mixture as surpyval does, as before.
+- **A repairable diagram's measures take their times first (#224)**, as a
+  non-repairable diagram's do: `birnbaum_importance(5.0)` is
+  `birnbaum_importance(x=5.0)`, and `barlow_proschan_importance(100.0)`
+  takes its `window`, where the time was taken for node names ("'float'
+  object is not iterable"). A number, or numbers none of which is a node,
+  given first are the times, for the importance measures (Birnbaum,
+  criticality, improvement potential, risk achievement and reduction
+  worth, Fussell–Vesely, joint and differential) and
+  `parameter_sensitivity`; node names are node names, as before.
+- **Replacement intervals from a calendar (#230).**
+  `optimal_replacement_intervals(allowed=...)` chooses each component's
+  age-replacement interval from a list (one for every component, or a dict
+  of a list each; `inf` among them for never), every combination tried
+  when there are at most 2000, as `optimal_inspection_intervals` chooses
+  tests': replacement every four weeks, say, rather than at 497 hours. The
+  0.12 notes said it took `allowed` already; it did not. Its docstring now
+  says the plan is the best for the long run, and that a new plant, whose
+  units' first replacements fall together, can cost more in its first years
+  (#234).
+- **The discounted expected cost from new (#231).** `expected_cost(t,
+  discount_rate=r)` discounts each cost when it falls, where `total_cost`
+  spends the long-run rate from the start: `exp(-r t) C(t) + r * integral
+  of exp(-r s) C(s)`, by parts from the expected cost from new, on
+  Gauss-Kronrod pieces halved until within 1e-8 (closing in on the jumps
+  of scheduled tests and replacements). The ten-year pump of `total_cost`'s
+  example is worth 114,528 from new against 114,538 at the long-run rate.
+  The result's `discount_rate` says it is a present value.
+- **Endless and many horizons (#231).** `total_cost` (and
+  `allocate_redundancy`) take an endless horizon when the costs are
+  discounted: the acquisition and `rate / r`. `total_cost` takes an array of
+  horizons too, as `expected_cost` does.
+- **Chunks of a plain run (#236).** `simulate_chunk` and
+  `availability_from_chunks` take `control_variate=False` and
+  `conditional=False`, so a split run gives the means
+  `availability(..., control_variate=False)` gives, where merged chunks
+  always took the default ones. Given to `simulate_chunk`, it is kept with
+  the chunk (and its saved form); chunks made with different ones do not
+  merge. True, which simulates a twin or the modules alone, is refused.
+- **Unavailability over time to its own precision (#237).**
+  `RepairableRBD.point_unavailability(x)` and `mission_unavailability(t)`
+  take what `point_availability` and `mission_availability` take and work
+  out the probability of being down itself, where one less the
+  availability rounds to 0 below about 1e-16: a component with an
+  exponential life and repair by its closed form, the others from their
+  curves of being down, and repair crews and common-cause groups through
+  their chains. For a pair of valves failing once in 10^9 hours, repaired in
+  8, `1 - point_availability(1000.0)` gave 1.1e-16 and
+  `1 - mission_availability(8760.0)` 0; `point_unavailability(1000.0)`
+  gives the exact 6.4e-17 and `mission_unavailability(8760.0)` 6.391e-17,
+  so a small PFD(t) can be plotted on a log scale.
+- **`to_dict()` on every result (#235)**, ready for `json.dumps`, for a
+  service that hands results on: each field by name, arrays as lists,
+  numpy numbers as Python ones, the results a result holds (its
+  criticalities, cost or control variate) as their own `to_dict()`, and
+  keys JSON cannot hold (tuple node names) as their text. An
+  `AnalysisRoute`, `joint_importance`'s pairs (nested, `{first: {second:
+  value}}`), a `Timeline` and `Timelines` have one too.
+- **A simulated check of an exact mean (#233).** `StandbyModel`,
+  `LoadSharingModel` and `DegradingNode`'s `mean(method="simulate")`
+  estimates the mean from `mc_samples` draws (10,000 by default) with
+  `seed`, as `NonRepairableRBD.mean` does; `method="exact"` refuses the
+  draws' options.
+- **A diagram's levers are public (#244).** `RepairableRBD.levers()` and
+  `NonRepairableRBD.levers()` list what `parameter_sensitivity` moves, in
+  the order it reports them, as `Lever` results: whose each is and its
+  name, as the sensitivities key them, its value, the range of its values
+  (one outside it is refused), whether it is discrete (one more standby
+  unit or repair crew), and whether it moves a calendar its component
+  shares with others (whose long-run sensitivity takes its schedule
+  apart). `with_levers({lever: value})` builds the diagram with levers
+  moved, as the sensitivities move them (a test interval taking its full
+  tests with it, a common-cause group's members moved together), so that
+  a what-if agrees with them. A report or an app no longer needs the
+  private `repyability.rbd._sensitivity` to name, show or move the levers.
+
+### Changed
+
+- **Behaviour change: a `RepairableRBD` simulation's random numbers are
+  counter-based (#209), so seeded results differ from 0.12's.** Uniform `k`
+  of simulation `r` from a stream is now the `k`-th of numpy's Philox
+  generator keyed from the run's seed and the stream's name, from the
+  counter `(0, r, 0, 0)`: a function of those alone. Each block of
+  simulations had a PCG64 generator of its own, whose numbers went to a
+  simulation by the block's width, which followed from the component's
+  models and the window, so a component's draws hung on how they were laid
+  out. Now they do not: the layout (the blocks' widths and chunks) only
+  decides how fast they are worked out, and `compare` and the control
+  variate no longer give two systems' streams the same widths, which could
+  make a seeded run's simulations differ with and without them. Results
+  are as accurate as before, with other numbers: a seeded run gives
+  different estimates, within their standard errors. With numba, Philox
+  is compiled and a run takes as long as before; without it, working the
+  numbers out takes longer (about 90 ns a uniform rather than 5), and a run
+  of eight components on the Python engine took about a sixth longer.
+  Engines from other
+  packages read the run's blocks as before, but their numbers changed:
+  `engines.API` was raised to 2 (and to 3 with #255).
+- **`simulate_timelines` always records its histories in the event loop
+  (#205).** On the Python engine, independent components' histories were
+  drawn from their streams by a second implementation of their lives and
+  repairs; the event loop now records them as it runs, as it did for every
+  other diagram. The histories are the same, bit for bit, and
+  `TimelineSimulation.method` is always `"event loop"` (it was `"streams"`
+  for those diagrams). Without numba, such a run is slower: a bridge of
+  five units over 20,000 simulations takes 7.6 s where it took 3.0 s, and
+  a system with a nested diagram 9.7 s where it took 0.8 s. The numba
+  engine, which records in its own loop, is unchanged; recording in the
+  Python loop now costs about a quarter of the loop's own time, where it
+  cost nearly a half.
+- **A component that fails at once and is repaired at once is refused**
+  when the `RepairableRBD` is built (an `ExactEventTime` of 0 for both its
+  life and its repair). A simulation would change its state without end:
+  `availability()` never returned, and `simulate_timelines` refused it.
+- **numba's engine takes every level's events in one loop (#206).** The
+  system's own events and a nested RBD's were written out twice in the
+  compiled loop; one loop now takes both, a nested RBD's to its next change
+  as it is wanted. Results are the same, bit for bit. A system with nested
+  RBDs runs faster (a three-level system in about half the time), the
+  others as before.
+- **A decision diagram has one search and one replay (#207).** The search
+  (`bdd.search`) and the replay (`shannon.replay`, `replay_gradient`) are
+  each written once and run as Python or compiled by numba as written,
+  where numba is installed and a core is large; the compiled search's
+  separate design, its packing of states into integers and its fall back
+  to Python for a wide frontier are gone. Plans are the same, step for
+  step, and values the same, bit for bit, checked against plans and values
+  recorded before the change. A core's compiled search takes about a third
+  less time (a 12 by 24 grid, 0.15 s rather than 0.23 s); a compiled
+  replay of 1,000 sets of probabilities takes 0.45 s rather than 1.0 s,
+  and of its gradient 1.8 s rather than 2.9 s.
+- **A run's changes are put in time order by numpy alone (#208).** The
+  compiled radix sort and merge (`_time_order`, taken where numba was
+  installed and a run had a million changes or more) are gone, with their
+  tuning constants. The +1 and -1 changes of state are netted by one sort
+  of integers (each time's bits above the change's sign), and the
+  capacity's changes by one sort of (time, change) pairs. Results are the
+  same, bit for bit. Without numba, a run of a million simulations puts
+  its changes in order about 2.5 times faster than before; with numba, a
+  capacity run of a million simulations takes about a tenth longer, and an
+  availability run as long.
+- **The compiled engine keeps whether the system works up to date, at
+  every level, and builds no table of states (#255).** For a system of up
+  to 20 components, and for every nested RBD, it built a table of whether
+  the system works in each of the `2^n` states of its components, again
+  on every run: a tenth of a second for 20 components, half of a short
+  run. It now keeps the structure up to date as components change, as it
+  did above 20 components, at every level in one structure; that is as
+  fast as the table at every size measured (and a seventh faster at 20).
+  A 1,000-simulation run of two lines of ten components takes 0.036 s
+  rather than 0.119 s. Results are the same, bit for bit. A nested RBD of
+  more than 20 components, which ran in Python, is now compiled.
+  `engines.API` is now 3: the run's arrays an engine is handed changed
+  (the system's no longer ends with a table, and `_System.kept` lays out
+  every level's structure).
+- **A run works out each stream's key once (#254)**, not once for each
+  block of its draws: 40 keys rather than 800 for 20,000 simulations of
+  20 components, about 0.035 s of a 0.65 s run. `_streams.Block` takes
+  the key (`Plan.block` gives it). Laying the draws out more tightly was
+  tried and left out: giving each simulation its own limit, extended
+  alone, and starting nearer the expected draws worked out a third fewer
+  values, but running again the simulations that ran out cost what that
+  saved. Most of the draws' time is the models' quantile functions,
+  whose overhead per value is raised in surpyval (SurPyval#769).
+- **Faster capacity runs, timelines and conditional runs (#246, #247,
+  #248)**. Timelines and conditional runs give the same results, bit for
+  bit; a capacity run's probabilities can differ in their last digits.
+  - A capacity run adds up equal levels with a sorted reduction rather
+    than `np.add.at`, which sums a level's rows in another order (its
+    probabilities equal to rounding, its levels the same), and tidies each
+    level once: 25 redundant pairs with capacities (50 components),
+    2,000 h, 500 simulations with numba, 0.31 s rather than 0.39 s; 70
+    pairs on the Python loop, 3.5 s rather than 3.8 s.
+  - A timeline's changes' histories and positions are worked out once,
+    where every measure worked them out again, and a unit's own changes
+    no longer store their index (their position): `simulate_timelines`
+    on a 12-component bridge feeding a vote, 20,000 simulations, 0.69 s
+    rather than 0.76 s, and the measures over its result 0.68 s rather
+    than 0.79 s.
+  - A conditional run puts the modules' changes in order with one sort
+    (of a key that grows with the simulation and the time; equal keys
+    then put in order exactly) rather than two multi-key sorts, and finds
+    each joint state's stretches once: on a standby system of five
+    components, 20,000 simulations, ordering the changes takes 0.11 s
+    rather than 0.43 s, and a default `availability()` 7.1 s rather than
+    7.5 s.
+- **surpyval 0.23 or later is required** (0.22 was). Its next release drops
+  0.22's name for a limited-failure population's share that ever fails,
+  `p`, for `lfp_p`, which 0.22 does not know, so no example could be
+  written for both; 0.23 also pickles its fits (SurPyval#573) and takes
+  `success_run`'s level as `alpha_ci` (SurPyval#580). RePyability's
+  workarounds for 0.22 are gone: a system of fitted models goes to `n_jobs`'
+  worker processes as it is, rather than in its saved form, and models are
+  read by `lfp_p` alone. Files saved before 0.10 with `p` in a model's
+  extras still load.
+- **The exact curves are built several times as fast** (`point_availability`,
+  `mission_availability`, `expected_events`, `expected_cost` and the exact
+  means a simulation run takes by default, #187). A 12-component system's
+  exact mission availability over 5,000 h takes 0.33 s rather than 1.76 s,
+  and a 70-component one's 0.86 s rather than 3.7 s:
+  - each component's curve is built on a grid of 1,000 steps over its
+    typical up time, rather than 2,000. The error falls as the square of
+    the step: about 4e-7 at a point (up to 4e-6 soon after the start), and
+    about 4e-8 in a mission average, four times what it was. Exact values
+    change in their seventh or eighth significant figure;
+  - a curve that has not settled at its long-run value is followed to
+    where, judging by how fast it is settling, it will have, rather than
+    four times as far: most of the work went on curves that had long since
+    settled;
+  - identical components (the same life and repair models, the same state
+    at 0, with no schedule, tests or imperfect repair) share one curve;
+  - each series in a curve's convolutions is transformed once.
+- **A model given for the input or output node is refused (#217).** The
+  input and output nodes are inferred from the edges and never fail, so a
+  model given for one was dropped: forgetting a component's edge to the
+  output node made it the output node, and the answer changed with no
+  warning. Both RBD classes now refuse it as an invalid structure, naming
+  the edge most likely missing ("'belt' is the output node ..., so the
+  model given for it would be ignored: did you forget an edge from 'belt'
+  to the output node?"). `PerfectReliability`, or a fixed probability of
+  failing of 0 (as a `node_availability()` of 1 gives), may still be given
+  for an end, and `on_infeasible_rbd="warn"` keeps the old behaviour.
+
+- **A cost result's `mean` is its run's estimate of the expected cost
+  (#223)**, the value its `mean_interval()` gives: exact where the exact
+  methods work it out (by default since 0.12), taken given the modules'
+  histories where those apply, and otherwise the simulations' own.
+  `mean_se`, `cost_rate`, `by_category` and `by_component` follow it, the
+  breakdowns exact or conditional too (but under `control_variate=True`,
+  whose twin controls only the total). The simulations' own mean and its
+  error are the new `sample_mean` and `sample_se`. Likewise the new
+  `AvailabilityResult.mean_availability` is the estimate
+  `mean_availability_interval()` gives, and `sample_mean_availability`
+  the simulations' own, `system_uptime / (n_simulations *
+  time_simulated_to)`. In 0.12 a result carried two expected values, and
+  `mean`, `cost_rate` and the breakdowns were the noisier one, up to 3%
+  off the exact value in a persona's study. Both results' reprs now
+  summarise the run (the estimate, its standard error and method, the
+  simulations' own mean and spread), where they printed every sample.
+  `control_variate=False` keeps the simulations' own values, as before.
+
+- **A fixed-probability node's simulated lifetime is 0 or infinite.**
+  `NonRepairableRBD.random()` took surpyval's draw for it, a 0/1 event
+  indicator, as a time, so the samples of a diagram with one did not
+  follow its `sf` (the docstring called them "not meaningful"): the node
+  now fails at the start with its probability, and otherwise never, as
+  `sf` takes it. Seeded draws of such a diagram change. An MTTF estimate
+  (`mean_time_to_failure_interval`, `mean(method="simulate")`) refuses a
+  diagram of fixed probabilities alone, as the exact `mean` does: it fails
+  at the start or never, and has no lifetimes to average.
+- **An MTTF takes a few hundred evaluations of the survival function
+  (#229),** where it took thousands: the integral split at every knot of
+  every node model (127 quantiles each) and doubled into the tail up
+  to 1e300 at once. It now starts from a few pieces a decade (one up to
+  where the curve first falls by 1e-6), the knots thinned to two a decade
+  but every kink kept (a numerical curve's grid, where a support starts),
+  each piece integrated by the Gauss-Kronrod (7, 15) rule, whose Gauss
+  points bound its error at no extra cost, and the tail followed only
+  until it is 0. A diagram of 20 different Weibulls in series takes 513
+  points where it took 63,100, to the same 1e-10. `Network.mean()` on the
+  issue's 10x10 grid takes 7 s, where it took 209: its replay evaluates
+  more times at once too (11 a chunk, at 12 ms a time, where two took 28
+  ms), as does `sf` at many times.
+- **A network refused as too meshed is refused at once after (#229)**:
+  each call repeated the search that refused it (seven seconds on an 11x11
+  grid).
+- **Fussell-Vesely on a meshed structure takes half the memory (#229)**:
+  the decision diagrams' table of combinations worked out starts again
+  past half a million, where it kept 1.6 million (250 MB) for a mesh of
+  50 nodes; a cofactor leaves the nodes after its variable alone.
+- **Choosing the test intervals of a common-cause group, or of a unit
+  whose tests take time, is faster (#229).** A group's chain keeps
+  `exp(G dt)` for the steps it takes again, period after period, where it
+  summed the series anew each time (48,000 times for one plan of a 2oo3
+  group); a plan keeps its groups' states for its cost rate and its
+  availability, and the plans of one search share the tested units'
+  models. Each plan of the issue's 2oo3 group takes 0.2 to 0.3 s where it
+  took 1.4 to 6.5, and its choice among five intervals 32 s where it took
+  506. A tested unit's walk convolves directly or by FFT without scipy's
+  choosing each time.
+- **Of interval plans as good, the search keeps the first it tried
+  (#229)**: plans whose cost rates are within 1e-10 of each other's, or
+  whose availabilities are within 1e-10, are as good, where the last bits
+  of their arithmetic chose between them. Which of identical members is
+  tested more often no longer turns on them, and of plans that cost the
+  same, the most available is chosen however their costs' last bits fall
+  (as a stagger's offsets, which change no cost, are chosen).
+- **`compare` is exact where both designs' expected values are (#236).**
+  It simulated both designs with common random numbers even where the
+  exact methods give the difference: two pump trains' availability
+  0.005787 ± 0.000172 against the exact 0.005676. Now, as `availability`
+  and `cost` take their means, where both `RepairableRBD`s' mission
+  availability (and expected cost) are worked out, `compare` gives their
+  difference with no error and no simulation (`method="exact"` on the
+  result); `control_variate=False` simulates it as before
+  (`method="simulated"`). A `NonRepairableRBD`'s `compare` gives the exact
+  difference of the MTTFs where `mean` works both out, and simulates on
+  request (`method="simulate"`, or where a `mean` is refused).
+  `analysis_routes()` and the README's table say so.
+- **`compare(quantity="cost")` counts the components' acquisition (#234).**
+  It compared the running costs alone, so "is a second pump worth buying?"
+  overstated the saving by its price: a second 20,000 pump "saved" 4,273 a
+  year where it costs some 15,750 more to own. The cost compared is now what
+  owning each design for the window costs, as `total_cost` and
+  `expected_cost(...).total` count it, and a design priced by its purchase
+  alone can be compared.
+- **`cost()` with only an acquisition cost (#234)** gives a `CostResult`
+  with no running cost, exactly, and the acquisition beside it, where it
+  gave None (and `.mean` raised); so does `availability()`'s result. A
+  system with nothing priced at all still gives None.
+- **Inputs are refused where they are given (#233).** A cost given as
+  text or as True or False (`repair_cost: "800"` was priced at 800, `True`
+  at 1) is refused, as other non-numbers were, and so are an interval
+  given as text (an inspection's `"interval": "8760"`) and times given as
+  text (`sf("8760")`), with a TypeError naming them. surpyval's
+  distribution itself (`surv.Weibull`) given where a model of it goes,
+  which built and failed in surpyval at the first evaluation, is refused at
+  once by a `NonRepairableRBD`, `RepairableRBD`, `FaultTree` or
+  `NonRepairable`, saying to fit it or give its parameters; a repairable
+  diagram given a life alone says it needs its repairs too. A part of
+  `spares_demand` or `spares_stock` that lists a component twice, or a
+  component in both a part and `nodes`, which stocked its spares on two
+  shelves, is refused, as `allocate_redundancy` refuses a node in a train
+  and `nodes`.
+- **A test offset within a billionth of the interval is no offset
+  (#237).** An offset of 0 puts a component's first test at its interval,
+  but any positive one put a test at the offset, near the start: one more
+  test, its cost and its outage, and a unit off line at once, so an offset
+  worked out as a share of the interval fell on either side of the jump.
+  An offset no more than `1e-9 * interval` is now 0. The constructor's
+  docstring and the costs guide say what 0 and a small offset do.
+- **Seeds are checked where they are given (#232).** A seed is a whole
+  number from 0 to 2**32 - 1, a list of them, or None; a numpy
+  `Generator`, refused deep in numpy before, is refused saying how to draw
+  a seed from it (`seed=int(rng.integers(2**32))`).
+- **Shorter reprs (#235).** A `SparesDemand` prints its mean, standard
+  deviation and how many probabilities it holds, and a `ControlVariate` and
+  a `ConditionalRun` their values and how many simulations, rather than
+  their arrays. (A diagram's repr was already a summary, and so was the
+  bound method printed when `()` is left off.)
+- **Warnings point at the line that called the package (#232)**, where
+  several pointed inside it.
+### Deprecated
+
+- **`optimal_inspection_intervals(offsets=)` is renamed `offset_shares=`
+  (#222).** Its values are shares of the interval, where
+  `with_intervals(offsets=)` and the plan's `offsets` are times, so a
+  share passed to `with_intervals` undid a stagger without a word.
+  `offsets=` still works, with a `FutureWarning`; 0.14 refuses it.
+- **`CapacityDistribution.mean` is a property (#235)**, as the other
+  results' values are and as 0.12 made `SparesDemand.mean`. Called,
+  `mean()`, it still gives the mean, with a `FutureWarning`; 0.14 refuses
+  it.
+- **The simulation options of an exact mean (#233).** `StandbyModel`,
+  `LoadSharingModel` and `DegradingNode`'s `mean(mc_samples, seed)`
+  ignored them without a word where the mean is exact (or numerical); they
+  now warn, with a `FutureWarning`, and 0.14 refuses them.
+  `mean(method="simulate", ...)` simulates it.
+- **The private names callers used for the levers (#244).**
+  `repyability.rbd._sensitivity`'s `levers` and `Lever`, and its
+  `_calendar_lever` and `_as_spec`, stay for 0.13 (its `Lever` tuple with
+  a `bounds` field at its end), and may change or go in 0.14: use
+  `levers()`, `Lever` (its `calendar` and `value`) and `with_levers`.
+### Fixed
+
+- **`availability_rate` just after a scheduled maintenance** (#240). A
+  component's rate was its whole curve differenced over its grid's step,
+  which smoothed over a down time far shorter than a step: the greeks
+  guide's valve, maintained for about 6 h on a grid of 0.04 to 0.08 days,
+  had its rate a day after its replacement 1-2% low (0.0514, or 0.0509 on
+  the coarser grid, for 0.0518). The down times a curve keeps off its grid
+  (its dips, the later maintenances of an age-replaced unit and the return
+  from a block replacement) are now differentiated on their own scale, and
+  only the grid is differenced; a nested RBD's rate is its nodes' times
+  their importance. The two guides' quoted rates change (0.0509 to 0.0518,
+  0.07493 to 0.07491), each now within 1e-4 of its value on grids sixteen
+  times finer.
+- **`optimal_inspection_intervals` chooses the intervals of tests that can
+  miss a failure (#221),** which 0.12 listed as numerical but refused: a
+  component whose tests have a `coverage` below 1 keeps its full tests'
+  interval, and its test interval is chosen among those that divide it,
+  from `allowed` (an interval that does not is refused, by name, with
+  some that do) or, left out, from every one in range.
+- **Offsets and per-node options are checked (#222).** An offset given to
+  `with_intervals` for a component with no tests is refused also when its
+  interval is given (it was dropped); `allowed=` and `offset_shares=`
+  dicts that name a node not chosen are refused, naming it, where a typo
+  was dropped; a node that is not a component, in `nodes=` or
+  `with_intervals`, is refused listing the components; and a plan from
+  `optimal_inspection_intervals` has its `offsets` whether they were
+  searched or not.
+- **Parameter uncertainty draws a shared fitted model once (#214).** In a
+  `RepairableRBD`, nodes holding the same fitted life but repair fits of
+  their own (one fleet's life fit, repairs recorded by site) had their
+  life drawn per node, by default, and no spec could share it: the
+  intervals of `*_uncertainty` were some 40% too narrow, and the vega
+  split wrong. Draws are now shared per fitted object in each role: a
+  node may come under several inputs, a role of it under one
+  (`{("a", "b"): {"reliability": "fit"}, "a": {"repairability": "fit"},
+  ...}`), which the default now gives. In both diagram classes, a spec that
+  draws one node and leaves others holding the same fitted object as they
+  are is warned about. Seeded draws change where models were shared in
+  some roles only.
+- **A conditional run whose modules never changed state no longer reports
+  a certain answer (#215).** When the dependent modules met only the state
+  they started in, in every simulation (a standby pair that never went
+  down), each simulation's expected values given them were the same: the
+  run reported a standard error of 0, and a `tolerance` was met after the
+  first batch, for the value of the rest of the system alone. Such a run
+  now warns; a default run's mean intervals are its simulations' own
+  (`method="simulated"`), and judge its `tolerance`; a run of the modules
+  alone (`conditional=True`) has no error to give (`nan`), and runs on to
+  `max_samples`. A run with no modules stays exact.
+- **Common-cause groups no longer double the time per group (#219).** A
+  `FaultTree`'s or `NonRepairableRBD`'s exact values conditioned on every
+  combination of every group's shock outcomes: 15 groups took 2 s for the
+  top event, and 8 over two minutes for the importance measures. A group is
+  now conditioned on only within the smallest module of the structure
+  holding its members, so groups in separate modules cost a sum each (the
+  issue's 40 groups take milliseconds); where a module's groups would
+  multiply past 64 outcomes, as a group of each kind of component across
+  redundant trains does, their shared causes are written out as events of
+  their own, repeated under every member they strike, which the decision
+  diagram works out with the rest (30 groups across three trains in a
+  tenth of a second). An MGL model's exclusive shocks are taken as
+  independent causes that fail the same sets of members as often, which
+  exist unless the model leaves out a set two pair shocks would fail
+  together (`gamma = 0`), when such groups are conditioned on together, as
+  before. The values are those of every combination, to rounding: the top
+  event, `sf`, `ff`, the importance measures (Fussell–Vesely conditioning
+  within the modules), `ranked_cut_sets` and the rare-event Fussell–Vesely
+  (a product over the groups). The capacity distribution and the
+  redundancy allocations still condition on every combination.
+- **Common-cause groups in a `RepairableRBD` no longer take memory that
+  doubles per group (#218).** The long-run values, the importance
+  measures, the failure frequency (MTBF, MUT, MDT) and the values over
+  time split each time by every combination of every group's members up
+  or down: ten groups (pairs of tested units in series) were killed by the
+  operating system for memory, with no message. Each group is now
+  conditioned on only within the smallest module holding its members, as
+  for a non-repairable diagram (#219), an owner's combinations worked out
+  together a bounded chunk at a time: fifty such pairs take a third of a
+  second, in flat memory. Where groups meet in one module (kinds of
+  component across redundant trains) the values over time take far less
+  too: with five kinds across three trains, `point_availability` at 200
+  times took 42 s and 4 GB, and takes 0.1 s. Where a module's combinations
+  would still be too many, the exact values refuse before working anything
+  out, saying to simulate; the capacity distribution and the allocations,
+  which still take every combination at once, refuse where that would
+  take too much memory. The values are those of every combination, to
+  rounding.
+- **A common-cause group's members' tests and repairs may take time
+  (#220).** The most common SIL calculation, a 1oo2 or 2oo3 with a beta
+  factor and a mean repair time, was refused by every exact method. A
+  tested member's level in its group's chain may now be off line for a test
+  while working (where it neither ages nor is struck), under a test while
+  failed, or under repair: a test or repair of a fixed length ends a fixed
+  time after its test, and one of an exponential length at a rate, and a
+  test that falls in a member's own test or repair is not done, as in the
+  simulations. The long-run values, the importance measures and the values
+  over time are numerical (to the members' own models' grids): the issue's
+  1oo2, with an eight-hour MRT, has a PFDavg of 9.591e-4 against IEC
+  61508-6's estimate of 9.609e-4. Refused, each saying what to do: tests or
+  repairs of another distribution, a test of an exponential length
+  followed by a repair of a fixed one, fixed lengths as long as the test
+  interval, copies of such members in the allocations, and the failure
+  frequency where their tests take time (planned outages). The chains'
+  other refusals now say what to do too, and name a member as "the life of
+  member 'v1'" where they printed "member 'v1''s".
+- **Common-cause groups are no longer dropped with limited repair
+  crews (#251).** With fewer `repair_crews` than jobs, `mean_availability`,
+  `mean_unavailability`, the importance measures, the failure frequency
+  and the capacity distribution gave the system without its groups (the
+  crews' chain does not take common causes in), and `analysis_routes`
+  called them exact. They now refuse, as the values over time did, and so
+  does `node_availability`, which gave each component's value in the
+  crews' chain without the groups, where a shared failure leaves one
+  member waiting for the crew. The refusal now says to simulate, with
+  `availability()` or `cost()`, which take both.
+- **`ConfidenceInterval.method` names every case of a repairable run's
+  mean (#223):** `"simulated"`, `"control_variate"`, `"conditional"` or
+  `"exact"`, where the simulations' own mean and a controlled one were
+  both `None`. The docs' examples are now checked for the `True` and
+  `False`, strings, tuples and lists they quote, as well as their
+  numbers: the costs guide's check that the interval holds the expected
+  cost printed `False`, and the stepped simulation's first outage was
+  quoted at a stale time.
+- **Simulations of one diagram from several threads (#216)** crashed
+  (`AttributeError: ... '_cancelled'`) or returned another seed's result:
+  the event loop keeps a run's state on the diagram, and draws that cannot
+  be streamed come from numpy's global RNG. The simulations now take turns,
+  one run at a time in the process, so each call gives what it gives
+  alone; the exact methods, and `n_jobs`' processes and the compiled
+  engine's threads, are not held up.
+- **`NonRepairableRBD.node_mttf()` leaves junctions out (#228)**, as the
+  importance measures do, where it raised an `AttributeError` on a
+  `PerfectReliability` node though `analysis_routes()` reported it exact;
+  a `PerfectUnreliability` node's is 0. Both helpers have a `mean()`, as
+  surpyval's models do: `inf` and 0.
+- **`analysis_routes()` says what each method does on every kind of
+  diagram (#239).** The routes test now calls every analysis the report
+  lists (27 were never called) on a catalogue of 22 non-repairable and 49
+  repairable diagrams, with junctions, k-out-of-n votes, every node class,
+  every spec key, policy and option, and a guard that fails when a new one
+  has no diagram. It found the report calling exact or simulated what the
+  method refuses: `NonRepairableRBD`'s parameter-uncertainty methods on a
+  diagram with a node that has no reliability or a structure too meshed to
+  work out; `minimum_effort_allocation` off a series system (now found
+  from the graph, a pass per node, rather than from the cut sets); a
+  `system_capacity` whose nodes take their capacity from their models;
+  and a repairable availability allocation with no component to allocate.
+  Each is now refused in the report with the method's own message. The
+  catalogue is shared by the engines' test, which checks that numba's loop
+  agrees with the Python one on every diagram it runs, and the exact and
+  numerical routes are checked against the simulation of the same
+  quantity on each diagram (MTTF, reliability, availability over a window,
+  expected cost).
+- **A surpyval `MixtureModel` node** no longer breaks `analysis_routes()`
+  or saving: its `dist` is only its components' distribution, so it was
+  taken for a plain distribution of that name. It is saved with
+  surpyval's `to_dict()`.
+- **A node's name given alone is that node (#225).** `working_nodes="belt"`
+  was taken as the nodes `"b"`, `"e"`, `"l"` and `"t"`, so the error
+  changed from run to run with the strings' hashes, and a word made of
+  one-letter node names was taken without a word. A string given to
+  `working_nodes`, `broken_nodes` or `nodes`, on every method of either
+  diagram class, is now one node, as `FaultTree.occurs("ab")`'s is one
+  event; the unknown nodes are listed, in order, in one message.
+- **The uncertainty methods take what the point methods take (#226).**
+  `bx_life_uncertainty([1, 10])`, `time_to_reliability_uncertainty([0.99,
+  0.9])` and `sf_uncertainty` of a 2-d array of times failed with numpy's
+  errors, and `uncertainty_importance([10, 50], of="mission_availability")`
+  blamed the window for its `x`: each now gives one row of draws per
+  target, from the same parameter draws (each element what that target
+  alone gives), with the times' shape; a percentage or reliability out of
+  range is refused naming its argument. A life some of whose units never
+  fail has an infinite mean in every draw, and `mean_uncertainty` infinite
+  bounds, where it gave `nan` with numpy's warning.
+- **A discount rate given per year with models in hours is warned of
+  (#231).** `discount_rate=0.07` with models in hours discounts every cost
+  after the first fourteen hours away: owning a 20,000 pump for ten years
+  came to 20,021 where it is 114,538 at 7% a year. `total_cost`,
+  `allocate_redundancy` and `expected_cost` now warn when the rate
+  discounts the components' shortest mean life by more than `exp(-20)`, or
+  a horizon by more than `exp(-1000)`, saying how to convert an annual
+  rate (`math.log(1 + i) / 8760`). A long horizon at a high rate is no
+  mistake, and is not warned of.
+- **0.12's notes corrected (#230).** Its behaviour changes said an MGL group
+  splitting a probability takes PRA's independent shocks: the default is
+  mutually exclusive shocks, as before, and `shocks="independent"` is asked
+  for. Its staggered-tests entry gave `optimal_replacement_intervals` an
+  `allowed` it did not have (it has now, see Added), and the MGL example's
+  probability is 0.0311.
+- **Messages that say what to do (#232).** The names 0.12 removed (`N`,
+  `max_N`, `n_sims`, `n_simulations`) are refused naming what took their
+  place, where Python said only "unexpected keyword argument", and
+  `fussel_vesely` names `fussell_vesely`. A node name with a typo (in a
+  spares part, a train, a common-cause group, a state or an allocation)
+  is answered with the closest name, whatever its case, and the
+  components; a junction given where a component goes is called a
+  junction. A role or parameter with a typo in an uncertainty spec is
+  answered with the closest; a spec mixing the two says so; and
+  `uncertainty_importance(of="cost_rate")` is `expected_cost_rate`. An
+  outage log says which outage is wrong and how (not a pair, a start or
+  end that is not a time, outside the window, ending before it starts)
+  and, out of order, to give `merge=True`. Gates that form a loop say so,
+  naming one, where the tree asked for its top event. `spares_stock` with
+  repair crews says it has no simulation to fall back on, and what gives
+  the stock when a crew is always free. And no message reads "'a''s".
+- **`PerfectReliability()` is `PerfectReliability` (#232).** An instance,
+  as a repairable diagram's node or a spec's `reliability`, is taken as
+  the class, where the diagram refused it (a `NonRepairableRBD` took it
+  already); a junction's spec without repairs is saved and loaded; and a
+  `NonRepairable` given one says a life must end.
+- **A single common-cause group (#232)** is taken by `ccf_groups=` as a
+  list of one, by both diagram classes and `FaultTree`, where it was
+  refused as "not iterable".
+- **`NonRepairable(life, "instant")` (#233)** replaces in no time, as a
+  spec's `"instant"` repairs, where it was taken as a model and failed at
+  its first use; any other text is refused.
+- **`UncertaintyResult.percentile` and `CostResult.percentile` warn of a
+  share (#233)**: a `q` between 0 and 1 is taken on numpy's 0 to 100
+  scale, as before, but warns that `percentile(5)` is the 5th percentile,
+  where `interval()` takes shares.
+- **An infinite risk reduction worth (#235)** no longer warns of dividing
+  by zero in a `NonRepairableRBD` or `RepairableRBD`, as it did not in a
+  `FaultTree`.
+- **`FaultTree.from_rbd` keeps a common-cause member the logic makes
+  irrelevant (#237)**, `b` in `a OR (a AND b)` with `a` and `b` in one
+  group, where it was refused: the tree keeps it under the top event as
+  `OR(G, AND(G, b))`, which is `G`, for the group's shared cause to
+  strike it with `a`. 39 of 150 random trees with one common-cause pair
+  were refused; every one now goes round.
+- **Staggered tests in a common-cause group restore only the member
+  tested (#237)**: each member is restored by its own test, as in the
+  simulations; the costs guide said a shared failure was "found by
+  whichever test comes first" and "twice as soon", as if a test restored
+  both, which gives a little less (practice that restores both channels
+  at the first test is not modelled).
+- **The docs after 0.12 (#238).** The saving guide said a standby or
+  load-sharing node with no exact reliability was fitted to simulated
+  lifetimes, which 0.12 removed; the spares guide described `mean()` and
+  `std()`, properties since 0.12; the common-cause guide, the concepts and
+  `MGL`'s docstring said a member fails with probability `Q` exactly, where
+  it is `Q` to first order (`Q - β(1 - β)Q²` for one shared cause, as in
+  PRA's basic events: 0.0991 at `Q = 0.1`, `β = 0.1`); and
+  `sf_given_state`, `remaining_life` and `mean_residual_life` said a
+  number given as a node's state is refused, where it is its age.
+- **0.12's features are easier to find (#238).** Junctions, pooled spares,
+  discounting, whole trains, plans that keep both risks, common causes in
+  fault trees and the unavailability over time are in the README's list,
+  the docs' home table and the guide's index; the glossary defines
+  junction, delta, gamma, theta, vega, differential and Barlow–Proschan
+  importance, discount rate, fill rate, lead time, producer's and
+  consumer's risk, and unavailability.
+- **`help()` reads well (#238).** The package's docstring says where to
+  start (the diagram classes, `analysis_routes()`, the docs); the API
+  reference's cross-references read in `help()` as the names they link,
+  where they showed as markup (the web pages, built from the source, keep
+  their links); the sensitivity
+  measures name the Greeks the guide calls them by; and `availability`'s
+  longest options (`control_variate`, `conditional`, `engine`) point to the
+  guide rather than repeat it. `initialize_event_queue` stays public, as
+  the guide steps a simulation by hand with it, and the wheel keeps its
+  tests (#167).
+- **The values over time of a tested component with an exponential life
+  are no longer refused on some platforms.** Where its tests or repairs
+  take time, its curve follows its state from new until it is the long
+  run's, which it took to be within 1e-15 of it. The state settles a few
+  roundings from the long run's, how few depending on the platform's
+  numerical libraries, and on some (CI's Python 3.12 and 3.13) it did not
+  come that close: `point_availability`, `mission_availability`,
+  `expected_events` and its other values over time were refused as not
+  settled at times later than its curve can follow (some 2,000 tests). It
+  now has to be within 1e-12, as a component's with any other life
+  already did.
+
 ## [0.12] - 2026-10-04
 
 Exact where there were estimates, and the sensitivities as one family. A
@@ -55,15 +708,13 @@ leaving it to the simulations, where a fit to simulated lifetimes stood in;
 `availability_from_chunks` refuses chunks with simulations missing, unless
 `allow_gaps=True` (#176); a simulation over a window that is not positive
 and finite is refused (#174), and so are bad counts and structures (#168,
-#169, #178) and a count of `True` in the demonstration functions (#179); an
-MGL group splitting a probability takes PRA's independent shocks, which
-moves its results by O(Q²) (#180); junctions leave the minimal cut and path
-sets (#198); the window analyses move by a few parts in 10^9, and the fixed
-planned outages after age replacement and expected failures of hidden
-failures by up to a few in 10^4 (#164); `SparesDemand.mean` and `std` are
-properties, and calling them, like `StandbyModel`'s and
-`LoadSharingModel`'s `mc_samples`, `lower` and `seed`, warns until 0.13
-(#184, #149); and surpyval 0.22 is required.
+#169, #178) and a count of `True` in the demonstration functions (#179);
+junctions leave the minimal cut and path sets (#198); the window analyses
+move by a few parts in 10^9, and the fixed planned outages after age
+replacement and expected failures of hidden failures by up to a few in
+10^4 (#164); `SparesDemand.mean` and `std` are properties, and calling
+them, like `StandbyModel`'s and `LoadSharingModel`'s `mc_samples`, `lower`
+and `seed`, warns until 0.13 (#184, #149); and surpyval 0.22 is required.
 
 ### Added
 
@@ -125,7 +776,7 @@ properties, and calling them, like `StandbyModel`'s and
   searched with the intervals; the plan's `offsets` gives them. At a
   PFDavg of 5e-4 that plan costs a third less than the best tested
   together. Of plans that cost the same, the most available is now chosen
-  (it was the first found), for replacement intervals from `allowed` too.
+  (it was the first found).
 - **Discounted total costs (#184).** `total_cost` and
   `allocate_redundancy` were undiscounted, so over a 20-year life a copy
   bought now weighed the same as the running costs it saves later.
@@ -160,8 +811,9 @@ properties, and calling them, like `StandbyModel`'s and
   probability, an MGL group's shocks were mutually exclusive (one shared
   cause at most), where PRA codes (SAPHIRE, CAFTA, RiskSpectrum) take each
   specific set's `Q_k` as an independent basic event: the two differ at
-  second order in `Q` (a 2-out-of-3 group of `MGL(0.2, 0.3)` at `Q = 0.031`
-  fails with probability 0.010219 one way and 0.010192 the other).
+  second order in `Q` (a 2-out-of-3 group of `MGL(0.2, 0.3)` at
+  `Q = 0.0311` fails with probability 0.010219 one way and 0.010192 the
+  other).
   `MGL(..., shocks="independent")` combines them as PRA codes do (exact,
   over the unions of the causes that strike), to check a result against
   one; the default is as before. It is saved, kept by parameter changes

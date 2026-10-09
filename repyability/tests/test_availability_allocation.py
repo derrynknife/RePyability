@@ -8,7 +8,6 @@ import pytest
 import surpyval as surv
 
 from repyability import AvailabilityAllocation, RepairableRBD
-from repyability.rbd._model_utils import lfp_extras
 
 PLANT = [("s", "p1"), ("s", "p2"), ("p1", "v"), ("p2", "v"), ("v", "t")]
 SERIES = [("s", "a"), ("a", "b"), ("b", "c"), ("c", "t")]
@@ -263,9 +262,7 @@ def test_minimum_effort_in_series():
 def test_held_components_keep_their_availability():
     nested = RepairableRBD([("s", "x"), ("x", "t")], {"x": unit(30.0, 3.0)})
     cured = {
-        "reliability": surv.Weibull.from_params(
-            [20.0, 2.0], **lfp_extras(0.7)
-        ),
+        "reliability": surv.Weibull.from_params([20.0, 2.0], lfp_p=0.7),
         "repairability": surv.Exponential.from_params([0.5]),
     }
     rbd = RepairableRBD(

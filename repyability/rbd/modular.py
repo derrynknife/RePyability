@@ -69,7 +69,9 @@ from repyability.rbd.rbd_graph import RBDGraph
 from repyability.rbd.shannon import (
     _minimal_cut_sets,
     _shannon_plan,
-    _shannon_value_and_gradient,
+    replay,
+    room,
+    value_and_gradient,
 )
 from repyability.utils.checks import structure_method
 
@@ -101,9 +103,10 @@ CORE_METHOD = "auto"
 #: to decompose, four thousand about nine).
 AUTO_PATHS = 100
 #: The fewest steps in a core's plan for which, with numba installed, its
-#: probabilities (and their gradient) are worked out compiled
-#: (``_bdd_kernel``): the same products and sums in the same order, so the
-#: same values; below, replaying it in Python takes a few milliseconds.
+#: probabilities (and their gradient) are replayed compiled
+#: (``_bdd_kernel``): the same replay (``shannon.replay``), so the same
+#: values; below, replaying it in Python takes a few milliseconds, less
+#: than loading the compiled replay does.
 COMPILED_STEPS = 5000
 
 
@@ -210,10 +213,10 @@ class Decomposition:
         # term (see ``failed_cut_sets``), and the dual decomposition.
         self._cut_plan: Optional[tuple] = None
         self._dual: Optional["Decomposition"] = None
-        # The core's plan as arrays, for ``_bdd_kernel`` (``_compiled_plan``),
-        # and the kernel's working memory.
+        # The core's plan as ``replay`` takes it (``_plan_rows``), and as
+        # ``_bdd_kernel`` does (``_compiled_terms``).
         self._plan_arrays: Optional[tuple] = None
-        self._buffers: Optional[tuple] = None
+        self._kernel_plan: Optional[tuple] = None
 
     @property
     def core(self) -> Optional[List[tuple]]:
@@ -232,7 +235,6 @@ class Decomposition:
         # compiled again on first use.
         state = dict(self.__dict__)
         state["_functions"] = {}
-        state["_buffers"] = None  # working memory, made again when needed
         return state
 
     # -- the core ----------------------------------------------------------
@@ -294,86 +296,69 @@ class Decomposition:
                 R[i], Q[i] = above, sum(below)
         return R, Q
 
-    def _compiled_plan(self, R: list, Q: list, shape) -> Optional[tuple]:
-        """The core's plan as arrays for ``_bdd_kernel`` (its pivots as rows
-        of the terms it branches on), with those terms' probabilities of
-        working and failing, a column per value; None if it is not worth
-        compiling, or the probabilities are not plain numbers (traced by
-        autograd, say)."""
-        steps, root = self.core_plan()
-        if len(steps) < COMPILED_STEPS or not _compiled.available():
-            return None
+    def _plan_rows(self) -> tuple:
+        """The core's plan as ``shannon.replay`` takes it: each step's
+        pivot (a term's position), active and inactive slot."""
         # (A decomposition saved before the arrays were kept has none.)
-        arrays = getattr(self, "_plan_arrays", None)
-        if arrays is None:
-            used = sorted({pivot for pivot, _, _ in steps})
-            row = {t: j for j, t in enumerate(used)}
-            arrays = self._plan_arrays = (
-                np.array([row[pivot] for pivot, _, _ in steps], np.int64),
-                np.array([a for _, a, _ in steps], np.int64),
-                np.array([b for _, _, b in steps], np.int64),
-                used,
+        rows = getattr(self, "_plan_arrays", None)
+        if rows is None or len(rows) != 3:
+            steps, _ = self.core_plan()
+            rows = self._plan_arrays = (
+                [pivot for pivot, _, _ in steps],
+                [a for _, a, _ in steps],
+                [b for _, _, b in steps],
             )
-        pivots, actives, inactives, used = arrays
-        size = 1 if shape is None else int(np.prod(shape))
-        works = np.empty((len(used), size))
-        fails = np.empty((len(used), size))
-        for j, t in enumerate(used):
-            for table, value in ((works, R[t]), (fails, Q[t])):
-                if not isinstance(
-                    value, (float, int, np.floating, np.ndarray)
-                ):
-                    return None
-                array = np.asarray(value)
-                if array.dtype != np.float64 and array.dtype.kind != "i":
-                    return None
-                table[j] = np.broadcast_to(array, shape or ()).reshape(-1)
-        return pivots, actives, inactives, root, works, fails, used
+        return rows
 
-    def _replay_buffers(self) -> tuple:
-        """Two buffers of a row per slot of the core's plan and
-        ``_bdd_kernel.COLUMNS`` columns, kept for the next call."""
+    def _compiled_terms(self, R: list, Q: list, shape) -> Optional[tuple]:
+        """The core's plan as ``_bdd_kernel`` takes it (made once), the
+        terms it branches on, and their probabilities of working and
+        failing as arrays (a row per value, a column per term); None if
+        the plan is too small to be worth compiling (``COMPILED_STEPS``),
+        numba is not installed, or the probabilities are not plain numbers
+        (traced by autograd, say)."""
+        pivots = self._plan_rows()[0]
+        if len(pivots) < COMPILED_STEPS or not _compiled.available():
+            return None
         from repyability.rbd import _bdd_kernel
 
-        buffers = getattr(self, "_buffers", None)
-        if buffers is None:
-            rows = len(self.core_plan()[0]) + 2
-            buffers = self._buffers = tuple(
-                np.empty((rows, _bdd_kernel.COLUMNS)) for _ in range(2)
-            )
-        return buffers
+        kernel = getattr(self, "_kernel_plan", None)
+        if kernel is None:
+            kernel = self._kernel_plan = _bdd_kernel.plan(*self._plan_rows())
+        plan, used = kernel
+        size = 1 if shape is None else int(np.prod(shape))
+        works = np.empty((size, len(used)))
+        fails = np.empty((size, len(used)))
+        for j, t in enumerate(used):
+            for table, value in ((works, R[t]), (fails, Q[t])):
+                if not isinstance(value, (float, int, np.number, np.ndarray)):
+                    return None
+                array = np.asarray(value)
+                if array.dtype.kind not in "fiu":
+                    return None
+                table[:, j] = np.broadcast_to(array, shape or ()).reshape(-1)
+        return plan, used, works, fails
 
     def _core_value(self, R: list, Q: list, fails: bool, shape) -> Any:
         """The core's probability of working (or, with ``fails``, of
         failing), from its terms' probabilities. The complement uses the
         same decomposition with the outcomes swapped, so it too is a sum of
-        products and keeps its relative precision. Compiled for a large
-        plan (``COMPILED_STEPS``), with the same values."""
-        compiled = self._compiled_plan(R, Q, shape)
+        products and keeps its relative precision. Replayed compiled for a
+        large plan (``COMPILED_STEPS``), with the same values."""
+        root = self.core_plan()[1]
+        compiled = self._compiled_terms(R, Q, shape)
         if compiled is not None:
             from repyability.rbd import _bdd_kernel
 
-            pivots, actives, inactives, root, works, failing, _ = compiled
-            value = _bdd_kernel.replay(
-                pivots,
-                actives,
-                inactives,
-                root,
-                works,
-                failing,
-                fails,
-                self._replay_buffers()[0],
-            )
+            plan, _, works, failing = compiled
+            value = _bdd_kernel.replay(plan, root, works, failing, fails)
             return float(value[0]) if shape is None else value.reshape(shape)
-        steps, root = self.core_plan()
+        pivots, actives, inactives = self._plan_rows()
         zero: Any = 0.0 if shape is None else np.zeros(shape)
         one: Any = 1.0 if shape is None else np.ones(shape)
-        values = [one, zero] if fails else [zero, one]
-        for pivot, active, inactive in steps:
-            values.append(
-                R[pivot] * values[active] + Q[pivot] * values[inactive]
-            )
-        return values[root]
+        ends = (one, zero) if fails else (zero, one)
+        values = room(len(pivots), *ends)
+        return replay(pivots, actives, inactives, root, R, Q, values)
 
     def probabilities(
         self,
@@ -468,27 +453,30 @@ class Decomposition:
         return works, fails, gradient
 
     def _core_gradient(self, R: list, Q: list, terminals, shape) -> tuple:
-        """``_shannon_value_and_gradient`` of the core's plan (compiled for a
-        large plan, with the same values)."""
-        compiled = self._compiled_plan(R, Q, shape)
+        """The core's plan's value and its derivative with respect to each
+        term's probability (``shannon.replay_gradient``), compiled for a
+        large plan, with the same values."""
+        pivots, actives, inactives = self._plan_rows()
+        root = self.core_plan()[1]
+        compiled = self._compiled_terms(R, Q, shape)
         if compiled is None:
-            return _shannon_value_and_gradient(
-                self.core_plan(), R, Q, terminals
+            value, gradient, reached = value_and_gradient(
+                pivots,
+                actives,
+                inactives,
+                root,
+                R,
+                Q,
+                terminals[0],
+                terminals[1],
+                len(R),
             )
+            return value, {t: gradient[t] for t in range(len(R)) if reached[t]}
         from repyability.rbd import _bdd_kernel
 
-        pivots, actives, inactives, root, works, fails, used = compiled
-        value, gradient, has = _bdd_kernel.value_and_gradient(
-            pivots,
-            actives,
-            inactives,
-            root,
-            works,
-            fails,
-            terminals[0],
-            terminals[1],
-            len(used),
-            *self._replay_buffers(),
+        plan, used, works, fails = compiled
+        value, gradient, has = _bdd_kernel.replay_gradient(
+            plan, root, works, fails, terminals
         )
         if shape is None:
             return float(value[0]), {
@@ -826,16 +814,22 @@ def _critical_closures(plan: tuple) -> tuple[list, list, list]:
         )
     structure = made[top]
 
-    def mapped(f: int, rule: Callable[[int, int, int], int], memo: dict):
+    def mapped(
+        f: int,
+        rule: Callable[[int, int, int], int],
+        memo: dict,
+        after: float = float("inf"),
+    ):
         """``f``'s diagram rebuilt bottom up, each node by ``rule(node,
-        new low, new high)``, constants kept."""
+        new low, new high)``, constants kept, and the nodes of variables
+        ``after`` or later in the order kept as they are, unvisited."""
         stack = [f]
         while stack:
             n = stack[-1]
             if n in memo:
                 stack.pop()
                 continue
-            if n <= TRUE:
+            if n <= TRUE or d.var[n] > after:
                 memo[n] = n
                 stack.pop()
                 continue
@@ -853,7 +847,8 @@ def _critical_closures(plan: tuple) -> tuple[list, list, list]:
                 return high if works else low
             return d.node(int(d.var[n]), low, high)
 
-        return mapped(f, rule, {})
+        # The nodes after ``v`` in the order do not depend on it.
+        return mapped(f, rule, {}, after=v)
 
     closed: dict = {}
 
@@ -869,10 +864,9 @@ def _critical_closures(plan: tuple) -> tuple[list, list, list]:
     )
     roots = []
     for v in variables:
+        # Works with it, and fails without it.
         critical = d.ite(
-            cofactor(structure, v, True),
-            d.ite(cofactor(structure, v, False), FALSE, TRUE),
-            FALSE,
+            cofactor(structure, v, False), FALSE, cofactor(structure, v, True)
         )
         roots.append(closure(critical))
     plan_steps, slots = d.plan(roots, named.__getitem__)

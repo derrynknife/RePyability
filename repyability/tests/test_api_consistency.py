@@ -33,7 +33,7 @@ from repyability import (
 from repyability._version import __version__
 from repyability.rbd.ccf import with_parameters
 from repyability.rbd.uncertainty import draw_ccf_models
-from repyability.utils.deprecation import NEXT_REMOVAL
+from repyability.utils.deprecation import NEXT_REMOVAL, REMOVAL_AFTER_NEXT
 
 W, E = surv.Weibull.from_params, surv.Exponential.from_params
 F = FixedEventProbability.from_params
@@ -270,6 +270,17 @@ def test_the_calls_go_in_the_release_after_next():
     assert version < tuple(map(int, NEXT_REMOVAL.split(".")))
 
 
+def test_what_0_13_deprecates_goes_in_0_14():
+    # optimal_inspection_intervals(offsets=), renamed offset_shares (#222);
+    # CapacityDistribution.mean() called, now a property (#235); and the
+    # simulation options of StandbyModel, LoadSharingModel and
+    # DegradingNode's exact mean, which it ignores (#233). And the private
+    # names callers used before the levers were public, kept as they were
+    # for 0.13: rbd._sensitivity's levers and Lever (#244).
+    version = tuple(map(int, __version__.split(".")))
+    assert version < tuple(map(int, REMOVAL_AFTER_NEXT.split(".")))
+
+
 def test_an_uncertainty_result_shows_a_summary():
     pump = surv.Weibull.fit(np.linspace(200, 1800, 50))
     rbd = NonRepairableRBD([("s", "pump"), ("pump", "t")], {"pump": pump})
@@ -330,7 +341,8 @@ def test_a_run_controlled_by_itself_is_exact():
     controlled = crewed.availability(
         200.0, mc_samples=100, seed=1, control_variate=True, engine="python"
     ).mean_availability_interval()
-    assert controlled.method is None and controlled.standard_error > 0.0
+    assert controlled.method == "control_variate"
+    assert controlled.standard_error > 0.0
 
 
 # -- outage logs -----------------------------------------------------------

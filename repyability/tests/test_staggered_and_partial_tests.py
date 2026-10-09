@@ -315,15 +315,34 @@ def test_choosing_intervals_keeps_an_offsets_share():
     assert set(chosen.intervals) == {"a", "b"}
 
 
-def test_intervals_are_not_chosen_for_tests_that_miss_failures():
+def test_intervals_are_chosen_for_tests_that_miss_failures():
+    # Among those that divide the full tests' interval (#221).
     rbd = RepairableRBD(
         SINGLE,
-        {"a": hidden(1e-3, 100.0, coverage=0.5, full_test=300.0)},
+        {"a": hidden(1e-3, 100.0, coverage=0.5, full_test=300.0, cost=10.0)},
+        downtime_cost_rate=50.0,
     )
-    with pytest.raises(NotImplementedError, match="not chosen here"):
-        rbd.optimal_inspection_intervals(min_availability=0.9)
-    route = rbd.analysis_routes()["optimal_inspection_intervals"]
-    assert route.route == "refused"
+    assert rbd.analysis_routes()["optimal_inspection_intervals"].route != (
+        "refused"
+    )
+    options = [50.0, 75.0, 100.0, 150.0, 300.0]
+    plan = rbd.optimal_inspection_intervals(allowed=options)
+    best = min(
+        options,
+        key=lambda i: rbd.with_intervals({"a": i}).expected_cost_rate(),
+    )
+    assert plan.intervals == {"a": best}
+    assert plan.cost_rate == rbd.with_intervals(plan).expected_cost_rate()
+    # Left out, every interval that divides it is a candidate.
+    searched = rbd.optimal_inspection_intervals()
+    count = 300.0 / searched.intervals["a"]
+    assert count == round(count)
+    every = [300.0 / k for k in range(1, 61)]
+    assert searched.cost_rate == pytest.approx(
+        min(rbd.with_intervals({"a": i}).expected_cost_rate() for i in every)
+    )
+    with pytest.raises(ValueError, match="120.0 does not divide it"):
+        rbd.optimal_inspection_intervals(allowed=[100.0, 120.0])
 
 
 def test_saved_and_loaded():

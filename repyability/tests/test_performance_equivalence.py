@@ -64,7 +64,6 @@ from repyability.rbd import (
     repairable_rbd,
     standby_node,
 )
-from repyability.rbd._model_utils import lfp_extras
 from repyability.rbd.helper_classes import (
     PerfectReliability,
     PerfectUnreliability,
@@ -96,8 +95,9 @@ def assert_same_rng_state(a, b):
 def no_fast_path(monkeypatch):
     """Force every sampler back onto its original draw-at-a-time code."""
     monkeypatch.setattr(non_repairable_rbd, "row_sampler", lambda model: None)
-    for module in (standby_node, repairable_rbd):
-        monkeypatch.setattr(module, "inverse_sampler", lambda model: None)
+    monkeypatch.setattr(standby_node, "inverse_sampler", lambda model: None)
+    # A repairable diagram's streams sample through stream_sampler (#227).
+    monkeypatch.setattr(repairable_rbd, "stream_sampler", lambda model: None)
 
 
 def assert_same(a, b, path="result"):
@@ -340,9 +340,9 @@ def test_inverse_sampler_reproduces_surpyval(name):
 @pytest.mark.parametrize(
     "model",
     [
-        W([100, 2], **lfp_extras(0.9)),
+        W([100, 2], lfp_p=0.9),
         W([100, 2], f0=0.1),
-        W([100, 2], **lfp_extras(0.9), f0=0.1),
+        W([100, 2], lfp_p=0.9, f0=0.1),
     ],
     ids=["lfp", "zi", "both"],
 )
@@ -359,10 +359,31 @@ def test_inverse_sampler_draws_defective_models_by_their_quantiles(model):
     assert_same_rng_state(rng_state(), after_single_draws)
 
 
+def test_a_fixed_probability_is_declined_or_drawn_as_lifetimes():
+    # surpyval 0.23's FixedEventProbability has no quantile function, so its
+    # draws are left to surpyval; its development branch gives it one, and
+    # the sampler then draws its lifetimes by it: 0 (it fails at once)
+    # exactly where surpyval's own draw from the same uniform is the event
+    # (an indicator of 1, its fit's outcome), and never otherwise.
+    model = FixedEventProbability.from_params(0.1)
+    sampler = _sampling.inverse_sampler(model)
+    if sampler is None:
+        assert not hasattr(model.dist, "qf")
+        return
+    np.random.seed(3)
+    outcomes = np.concatenate([model.random(1) for _ in range(200)])
+    after_single_draws = rng_state()
+    np.random.seed(3)
+    lives = sampler(np.random.random_sample(200))
+    assert_same_rng_state(rng_state(), after_single_draws)
+    if np.issubdtype(outcomes.dtype, np.integer):
+        outcomes = np.where(outcomes == 1, 0.0, np.inf)
+    assert np.array_equal(lives, outcomes)
+
+
 @pytest.mark.parametrize(
     "model",
     [
-        FixedEventProbability.from_params(0.1),
         surv.KaplanMeier.fit(np.array([1.0, 2.0, 3.0, 4.0])),
         StandbyModel([W([100, 2])] * 2, k=1),
         PerfectReliability,
@@ -1034,10 +1055,18 @@ def seeded_runs():
             ),
         )
         if rbd.has_costs:
+            # The simulations' own breakdown, which a run whose mean is
+            # exact replaces with the exact one (#223).
             runs[f"{name}, cost"] = (
                 rbd,
                 "cost",
-                dict(t_simulation=200.0, mc_samples=20, seed=25),
+                dict(
+                    t_simulation=200.0,
+                    mc_samples=20,
+                    seed=25,
+                    control_variate=False,
+                    conditional=False,
+                ),
             )
     air = instrument_air()
     runs["instrument air"] = (

@@ -196,7 +196,7 @@ def test_two_votes_in_series_are_nested_votes():
         flat.point_availability(t), nested.point_availability(t), rtol=1e-9
     )
     np.testing.assert_allclose(
-        flat.expected_failures(t), nested.expected_failures(t), rtol=1e-9
+        flat.expected_failures(t), nested.expected_failures(t), rtol=4e-9
     )
     assert flat.system_failure_frequency() == pytest.approx(
         nested.system_failure_frequency(), rel=1e-12
@@ -442,3 +442,24 @@ def test_random_junctions_in_no_set(core, monkeypatch):
         assert found == expected
         checked += 1
     assert checked > 60
+
+
+def test_a_nonrepairable_junction_has_no_mttf():
+    # A junction never fails: node_mttf leaves it out, as the importance
+    # measures do, where it raised on PerfectReliability's missing mean
+    # though analysis_routes() called it exact (#228).
+    u = W([100, 2])
+    rbd = NonRepairableRBD(
+        [
+            ("s", "a"),
+            ("s", "b"),
+            ("a", "j"),
+            ("b", "j"),
+            ("j", "c"),
+            ("c", "t"),
+        ],
+        {"a": u, "b": u, "c": u, "j": PerfectReliability},
+    )
+    assert rbd.analysis_routes()["node_mttf"].route == "exact"
+    mean = float(u.mean())
+    assert rbd.node_mttf() == pytest.approx({"a": mean, "b": mean, "c": mean})

@@ -28,6 +28,18 @@
   allows; raise that minimum, rather than keep code for older versions,
   once RePyability needs what a newer surpyval does.
 
+## Code
+
+- **Clean, simple implementations (#204).** Optimise through algorithms
+  and data structures (complexity, exact methods, work not done, numpy,
+  numba compiling the same plain algorithm), not machine-level tricks: no
+  logic written out twice for speed, no second design of a computation
+  that must agree with the first, no fast path that hands rare cases
+  back, no speed constant that changes results. A compiled version
+  follows the plain one's algorithm and shape; a better algorithm goes
+  into both. If code needs a "keep in sync with X" note, simplify it
+  instead.
+
 ## Simulation engines and seeded results
 
 - **A `RepairableRBD` simulation has two engines that must agree to the last
@@ -40,10 +52,25 @@
   simulate, `_compiled.unsupported` sends to Python: numba's own loop takes
   `numba=True`, as it also runs maintenance, inspections, repair crews,
   standby groups, nested RBDs and capacities (#155), while engines from
-  other packages keep the plain-components contract. Inside `_kernel`, the
-  system's own events (`_simulate`) and a nested RBD's (`_advance`, which
-  copies `RepairableRBD.next_event`) are written out separately, for speed:
-  a change to one goes into the other too.
+  other packages keep the plain-components contract. Inside `_kernel`, one
+  loop (`_simulate`) takes every level's events, the system's and its
+  nested RBDs' (#206), and keeps whether each level works up to date in
+  one structure over every level (`_compiled._kept`; no table of states,
+  #255). Per-event helpers there take few arrays: each array
+  a call binds costs reference counting that numba cannot prune in a
+  function this size, and passing the run's tuples to a function per
+  simulation cost several times the loop (measured in #206).
+- **Simulations take turns across threads (#216).** The event loop keeps
+  a run's state on the diagram (`_RUN_STATE`) and draws that cannot be
+  streamed come from numpy's global RNG, so a run holds
+  `repyability.utils.wrappers.SIMULATIONS`, a process-wide `RLock`:
+  `RepairableRBD._run` (but a sharded run's parent, whose shards take it
+  where they run, so a `shard_map` on threads cannot wait on it)
+  and `numpy_seed`. New code that runs the loop or seeds the global RNG
+  goes through one of these; threads that work for a run (numba's) must
+  not take it.
+  `test_threads.py` checks seeded calls on threads give their serial
+  results.
 - **CI's plain test jobs have no numba.** A test that asks for
   `engine="numba"` skips without it (`pytest.importorskip("numba")`, or
   `needs_numba`), unless what it checks comes before numba is needed: a
@@ -54,17 +81,11 @@
 - **`simulate_timelines`' histories are the event loop's, on every
   engine.** Both loops record them as they run (`_replicate` with
   `_Context.history`; `_kernel._simulate` when given room to record, the
-  system's own level only, so `_advance` records nothing): each top-level
+  system's own level only): each top-level
   component's changes, and each of the system's with the component that
-  made it. On the Python engine, plain units' histories are drawn from
-  their streams instead (`repyability/rbd/_timeline_runs.py`), added up
-  as the loop adds them, and a simulation with changes of different
-  components at one instant is run in the loop. A change to what the loops
-  record goes into both; one to how the loop draws or adds up a plain
-  unit's lives and repairs goes into `_timeline_runs._unit` too, and
-  anything new that couples components into `independent`:
-  `test_timelines.py` checks every engine's histories against each other
-  and against `availability`.
+  made it (#205: there is no other path to them). A change to what the
+  loops record goes into both: `test_timelines.py` checks every engine's
+  histories against each other and against `availability`.
 - **Capacity states are worked out in batches**
   (`_CapacityRecorder.evaluate`): a simulation's in Python, a batch's
   compiled, so a state's capacity must not depend on what is worked out
@@ -105,30 +126,32 @@
   that checks the simulation against the exact methods must run plainly
   (`control_variate=False`), or it compares the exact values with
   themselves.
-- **A run's changes are put in time order on two paths that must agree to
-  the last bit** (#201): numpy's (`_by_time`, `_group_totals`,
-  `_capacity_totals` and `_working_over_time` in `repairable_rbd.py`) and
-  the compiled one (`repyability/rbd/_time_order.py`: a stable radix sort
-  of the times' bits, the groups and the capacity's merge in one pass
-  each), taken where numba is installed and a run has `_COMPILED_ORDER`
-  changes or more. A change to how either orders, groups or adds up the
-  changes goes into both: `test_time_order.py` checks them against each
-  other, with the sort's blocks of every size.
-- **A core's decision diagram is built and replayed on two paths that
-  must agree step for step** (#202): `bdd._build` and, where numba is
-  installed and the core's search may be long, `_bdd_kernel.build`, whose
-  states `bdd._compiled_build` packs into integers; and a plan's
-  probabilities and gradient by `modular.Decomposition._core_value` and
-  `_core_gradient` or `_bdd_kernel.replay` and `value_and_gradient`. A
-  change to the search (its states, its order, the steps it counts
-  against `STEP_LIMIT`) or to the replay's arithmetic goes into both:
-  `test_bdd_compiled.py` checks them against each other.
+- **A run's changes are put in time order by numpy alone (#201, #208)**
+  in `repairable_rbd.py`: `_net_by_time` nets the +1 and -1 changes of
+  state with one sort of integers, each time's bits above the change's
+  sign (a time is never negative); `_by_time` sorts the capacity's (time,
+  change) pairs, and the changes in how many systems can carry an
+  unlimited amount, as complex numbers; `_capacity_totals` merges the two
+  the first way. What is
+  made of a time's changes is exact (whole counts, exact sums), so their
+  order within a time does not matter. `test_time_order.py` checks each
+  against its definition written out plainly.
+- **A core's decision diagram has one search and one replay** (#202,
+  #207): `bdd.search` and `shannon.replay`/`replay_gradient`, which numba
+  compiles as written (`_bdd_kernel`) where it is installed and a core is
+  large. Keep them to what numba compiles. Their plans and values are
+  recorded (`tests/bdd_records.json`, by `tests/_bdd_cases.py`), and
+  `test_bdd_records.py` checks both modes against the records; re-record
+  only after a deliberate change of the plans.
 - **The random streams (`repyability/rbd/_streams.py`) define every seeded
-  result.** Changing how a stream is named, seeded or laid out (its width,
-  `BLOCK_DRAWS`, `MAX_WIDTH`, `first_rows`, the expected draws in
-  `_expected_draws`) changes seeded results: that is a behaviour change for
-  the CHANGELOG, `seeded_event_loop.json` must be re-recorded, and the docs'
-  quoted numbers updated. The rows of a chunk only affect speed.
+  result** (#209): uniform `k` of simulation `r` is numpy's Philox's with
+  the stream's key (from the entropy and the stream's name) and the counter
+  `(0, r, 0, 0)` (`_philox`). Changing a stream's name, key or that
+  definition changes seeded results: a behaviour change for the CHANGELOG,
+  with `seeded_event_loop.json` re-recorded and the docs' quoted numbers
+  updated. The layout (`first_rows`, `block_width`, `BLOCK_DRAWS`,
+  `MAX_WIDTH`, a chunk's rows) only affects speed: `test_streams.py`
+  checks it changes nothing.
 - **The repair crews' Markov chain (`repyability/rbd/_crew_chain.py`)
   copies the simulation's queue (`_Crews`)**: which waiting job a free crew
   takes, and how instant jobs pass through. A change to one goes into the
@@ -146,6 +169,14 @@
   (`_Counted`) rather than tell them apart, which holds for a
   `BetaFactor`'s one shared cause: `test_ccf_allocations.py` checks them
   against the chain of every copy.
+- **A common-cause group's chain with tests and repairs that take time
+  (`_ccf_chain._Timed`, #220) copies the simulation's inspections** too
+  (`_inspected_follow_up`, `_inspected_next`, `_strike`): a working member
+  is off line for its test, unaged and not struck; a failure found is
+  repaired once the test is over; a test in a member's own test or repair
+  is not done. A change to one goes into the other: `test_ccf_timed.py`
+  checks the chain against the simulation, and against the members' own
+  model (`_hidden_tests`) where no cause is shared.
 - **A tested unit's numerical model (`repyability/rbd/_hidden_tests.py`,
   #159) copies the simulation's inspections** (`_inspected_follow_up`,
   `_inspected_next`): a test takes a working unit off line without ageing
@@ -166,6 +197,14 @@
   `_capacity_arrays` passes them as working. `test_junctions.py` checks
   every public method against the same system drawn without a junction.
 
+- **Identical components share one curve** (`_availability_curves`,
+  `_curve_twin`): a plain unit's curve follows from its life and repair
+  models and its state at 0 alone. Anything new that makes a unit's curve
+  depend on more (a schedule, a group, a coupling) must leave it out in
+  `_plain_unit`, or two units would be given one curve that is only one's:
+  `test_identical_components_share_one_curve` checks the shared curves
+  against a curve each.
+
 - **`analysis_routes()` (both RBD classes) must agree with the methods.** It
   says, without running anything, whether each public analysis is exact,
   numerical, simulated or refused. Refusals go through checks the report
@@ -174,7 +213,13 @@
   or changes how it computes, update `analysis_routes`:
   `test_analysis_routes.py` checks that it covers every public method, that
   each method does what it says on diagrams of every kind, and that the
-  saving guide's table agrees with it.
+  saving guide's table agrees with it. It calls every method the report
+  lists (a new one needs its call in `NONREPAIRABLE_CALLS` or
+  `REPAIRABLE_CALLS`) on every diagram of `tests/catalogue.py`, the one
+  registry of diagram kinds, which the engines' agreement and the
+  exact-against-simulated checks (`test_catalogue.py`) share. A new node
+  class, spec key, policy or diagram option needs a diagram there:
+  `test_the_catalogue_has_every_kind` names what no diagram uses.
 - **The README's "When is a simulation needed?" table follows the routes.**
   It says, by what is asked, the components and the maintenance, what is
   simulated and whether it must be (or could be exact, with the issue).
@@ -185,13 +230,32 @@
   is a `modular.GraphStructure`, which works out a state and a lifetime
   from the graph, for the simulations, and refuses the rest with the
   reason. Both classes' `analysis_routes` end with `_meshed_routes(out,
-  free)`, which refuses every exact or numerical analysis but those in
-  `free`, which need no structure: a new method that needs none (a node's
-  own values) goes in `free`. The compiled engine and the timelines'
-  streams (`_compiled.unsupported`, `_timeline_runs.independent`) leave such
-  a diagram to the Python loop. `test_meshed_structures.py` checks the
+  free, drawn)`, which refuses every exact or numerical analysis but those
+  in `free`, which need no structure, and the simulated ones in `drawn`,
+  which work the structure out for each draw of parameters: a new method
+  that needs none (a node's own values) goes in `free`. The compiled
+  engine (`_compiled.unsupported`) leaves such a diagram to the Python
+  loop. `test_meshed_structures.py` checks the
   stand-in against the structure worked out, and `test_analysis_routes.py`
   the routes of diagrams too meshed.
+- **A non-repairable structure's common-cause groups are worked out
+  module by module (#219, `repyability/rbd/_ccf_modules.py`)**: each group
+  conditioned on within the smallest module holding its members, and where
+  a module's groups would multiply past `COMBINATIONS` outcomes, their
+  causes written out as shock events (repeated nodes of the diagram,
+  repeated events of the tree), exclusive causes through their independent
+  equivalent (`ccf._as_independent`) where it exists. Either way the values
+  must be those of conditioning on every combination of every group's
+  outcomes (`ccf.shock_outcomes`), which `test_ccf_modules.py` checks them
+  against. A change to a model's outcomes (`_split`) goes into its causes
+  (`_causes`, `_fired`) too.
+  A `RepairableRBD`'s groups are conditioned on module by module too
+  (#218, `_ccf_modules.Tabled`), on their chains' combinations of the
+  members up or down, an owner's laid out as a last axis of the arrays;
+  `test_ccf_repairable_modules.py` checks every long-run value, measure
+  and the groups' system over time against the times split by every
+  combination (`_with_ccf_groups`, which the capacity distribution and the
+  allocations still take, behind `_ccf_chain.check_split`).
 - **The integrals over a window are summed on coarse pieces**
   (`repyability/rbd/_quadrature.py`, #164): the curves' breaks, cut to a
   few steps of the finest grid still changing, and halved until their
@@ -202,13 +266,70 @@
   dips integrates out, where clipping made the total depend on the pieces.
   `test_quadrature.py` checks the pieces against summing between every
   knot.
+- **Unavailability over time is worked out as itself (#237)**, not as
+  one less the availability, which rounds to 0 below about 1e-16:
+  `RepairableRBD._system_at(..., down=True)` takes each component's
+  probability of being down from its closed form where it has one
+  (`_closed_form_down`: an exponential life and repair, nothing else
+  about it), from its curve otherwise (`_curves_down_at`), and from the
+  crews' and common-cause groups' chains (`GroupsCurve.down_at`); the
+  mission's integral is refined to its own size (`_integrated(...,
+  relative=)`). A change to how `point_availability` works out a kind of
+  component goes into the down side too: `test_unavailability.py` checks
+  both against closed forms and each other.
+- **An MTTF is integrated on pieces that start at its models' kinks**
+  (`repyability/rbd/_mean_lifetime.py`, #229): every kink
+  (`model_kinks`: a numerical curve's grid, where a support starts)
+  starts a piece, the other knots (quantiles) are thinned to
+  `_PER_DECADE` a decade, and each piece is integrated by the
+  Gauss-Kronrod (7, 15) rule and halved until `|K15 - G7|` is within
+  `RTOL`. A new numerical model class gives its grid to `_collect`'s
+  kinks: without them its bends fall inside pieces, which then take many
+  halvings (right, but slow). `test_evaluation_costs.py` checks the
+  points an MTTF takes and its accuracy.
 
 ## API conventions
 
 - **One name for the number of simulations**: `mc_samples`, and `max_samples`
   for its cap in a run to a `tolerance`, in every method and constructor
   that simulates; `seed` seeds it (#105). The old names (`N`, `max_N`,
-  `n_sims`, `n_simulations`) went in 0.12. Use these names in new code.
+  `n_sims`, `n_simulations`) went in 0.12, and are refused naming their
+  replacement (#232): `deprecation.refuse_removed_names` wraps every
+  public function of the classes that simulate (an `RBD` subclass gets it
+  from `RBD.__init_subclass__`); a new class whose methods take
+  `mc_samples` gets `@refuse_removed_names`. A seed goes through
+  `checks.seed` where it is taken.
+- **Inputs are checked where they are given (#233)**: numbers through
+  `checks.is_number`/`number_or_nan` (not `bool`, not text), times through
+  `checks.real_array`, and models through `checks.no_distribution`, which
+  refuses surpyval's distribution itself (`surv.Weibull`) for a model of
+  it. A new argument that takes a number, a time or a model uses them.
+- **Warnings point outside the package (#232)**: `warnings.warn(...,
+  stacklevel=outside_level())` (`repyability/utils/wrappers.py`), never a
+  counted level, which goes stale as calls are wrapped. A message never
+  puts `'s` after a quoted name (`{node!r}'s` reads `'a''s`): write "the
+  life of component {node!r}"; `test_messages.py` scans for it.
+- **Docstrings serve the web pages and `help()` (#238).** Cross-reference
+  as ``[`name`][repyability.Class.name]``: mkdocstrings links it from the
+  source, and `repyability/__init__.py` rewrites it at import, for the
+  classes and functions in `__all__`, to ````name```` (`utils.docs`), so a
+  new public class goes in `__all__`. Long explanations belong in the
+  guide, linked, not in a parameter's description; `test_help.py` checks
+  `help()`.
+- **Every result is a `results._ResultMapping` dataclass (#235)**, so it
+  has `to_dict()` (through `results.plain`, ready for `json.dumps`); a
+  result holding arrays of a run's length gets a summary `__repr__`.
+  `test_result_objects.py` sends each kind through JSON.
+- **A diagram's levers are listed in one place (#244)**:
+  `_sensitivity._levers` (repairable) and `_nonrepairable_levers`, each
+  lever with the range its constructor checks. `RepairableRBD`'s
+  `parameter_sensitivity`, both classes' `levers()` and `with_levers`
+  take them from there (`NonRepairableRBD.parameter_sensitivity` walks its
+  nodes itself). A new lever (a spec option, a kind of model) goes there
+  with its bounds: `test_levers.py` checks, on every catalogue diagram,
+  that `levers()` lists what `parameter_sensitivity` reports, in its
+  order, that each value lies in its range, and that `with_levers`
+  refuses a value past it.
 - **A deprecation gives one minor release's notice.** It warns in one
   minor release and the next removes it, with a `FutureWarning` (always
   shown) through `repyability/utils/deprecation.py`. What 0.11 deprecated
@@ -222,7 +343,15 @@
   `deprecation.called`), and those models' `mc_samples`, `lower` and
   `seed`, which set the fit (through `deprecation.ignored`).
   `test_the_calls_go_in_the_release_after_next` fails once the version
-  reaches it.
+  reaches it. What 0.13 deprecates goes in 0.14 (`REMOVAL_AFTER_NEXT`):
+  `optimal_inspection_intervals(offsets=)`, renamed `offset_shares=`
+  (#222, through `deprecation.renamed`); calling
+  `CapacityDistribution.mean()`, now a property (#235, through
+  `deprecation.called`); and `mc_samples` and `seed` given to the exact
+  `mean` of a `StandbyModel`, `LoadSharingModel` or `DegradingNode`,
+  which ignores them (#233, through `deprecation.ignored` in
+  `standby_node.drawn_mean`), all of which
+  `test_what_0_13_deprecates_goes_in_0_14` holds to.
 - **Exact by default, simulation on request.** Where an analysis can be
   computed exactly or numerically, that is the default, and the Monte-Carlo
   estimate is a `method="simulate"` away (as for `NonRepairableRBD.mean`).
@@ -234,6 +363,14 @@
   than about 10,000 terms, at milliseconds a call; a loop of thousands of
   them (a renewal sum, a band of a grid) then runs hundreds of times
   slower. Matrix products are left to BLAS.
+
+## Testing
+
+- **Test what a change touches; the full suite only when asked.** Work
+  going into dev is checked by the tests of what it changes (the files
+  that exercise the code touched, and new tests for it). The full suite
+  runs only when the maintainer asks for it, and before merging to main
+  (master).
 
 ## Releasing
 
@@ -261,27 +398,20 @@ major.minor.
 
 ## surpyval workarounds to remove
 
-- **Fitted models in worker processes** (surpyval #573). A surpyval fit
-  holds a closure, so pickle cannot take it. `_montecarlo.dumps`, which
-  pickles a run for `n_jobs`' worker processes, sends a surpyval model that
-  pickle refuses in its saved form (`to_dict`), rebuilt in the worker;
-  `test_fitted_models_in_parallel.py` checks the results are a single
-  process's. Remove the override once the minimum surpyval's fits pickle
-  (keep `dumps`' message for what still cannot be sent).
+surpyval 0.23 (the minimum) pickles its fits (#573), names the
+limited-failure proportion `lfp_p` (#608) and takes `success_run`'s
+`alpha_ci` (#580), which RePyability now uses directly. What remains:
 
-- **`success_run`'s `alpha_ci`** (surpyval #580). surpyval 0.23 names
-  the bound's level `alpha_ci = 1 - confidence` and deprecates
-  `confidence`, which 0.22 needs: `test_demonstration.py`'s `_success_run`
-  passes the name the installed surpyval takes. Pass `alpha_ci` directly
-  once the minimum surpyval is 0.23.
-
-- **The limited-failure proportion's name** (surpyval #608). surpyval
-  0.23 renames `p` (the `from_params` argument, the attribute and the
-  `extras` key) to `lfp_p`, which 0.22 does not know: `_model_utils.lfp_p`
-  reads either, `lfp_extras` gives `from_params`' keyword (the tests and
-  files saved before 0.10 use it), `_PLAIN` holds both keys, and
-  `NonRepairable.mean_availability`'s example is skipped. Read and pass
-  `lfp_p` directly, and run the example, once the minimum surpyval is 0.23.
+- **A mixture's quantile, `p` and tail** (surpyval #651, #626, #671).
+  surpyval's `MixtureModel` has no `qf` (#651), keeps its EM
+  responsibilities as `p` (#626), which surpyval's `conditional_gaps`
+  takes for a limited failure population's, and has an `sf` of `1 - ff`
+  (#671), imprecise in the tail. `_sampling.mixture_quantile` inverts its
+  distribution (with its components' `sf` summed above the median), which
+  `stream_sampler` gives a `RepairableRBD`'s streams (a change to it
+  changes seeded results), and `MixtureLife` hands `conditional_gaps` its
+  `Hf` and that `qf` (`_aged_life`). Take the mixture's own `qf`, and drop
+  `MixtureLife`, once the minimum surpyval has them.
 
 List each new workaround here with its surpyval issue and where it lives,
 so it can go once the minimum surpyval in `pyproject.toml` includes the

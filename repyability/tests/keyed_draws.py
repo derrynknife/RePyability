@@ -1,9 +1,9 @@
 """The draws a ``RepairableRBD`` simulation takes, worked out from the
 definition of its streams (see ``repyability.rbd._streams``) rather than
-by the code that makes them: a generator for each block of each stream,
-seeded from the run's entropy, the stream's name and the block's position,
-whose uniforms are laid out one row per draw and one column per simulation
-(or antithetic pair)."""
+by the code that makes them: uniform ``k`` of simulation ``r`` is the
+``k``-th of numpy's Philox generator keyed from the run's entropy and the
+stream's name, with the counter ``(0, r, 0, 0)`` (``r`` an antithetic
+pair's number, with pairs)."""
 
 from collections import defaultdict
 
@@ -12,18 +12,22 @@ import numpy as np
 from repyability.rbd import _streams
 
 
+def reference_uniform(entropy, spec, r: int, k: int) -> float:
+    """Uniform ``k`` of simulation (or pair) ``r`` of the stream ``spec``."""
+    path = _streams.path_key(spec.path)
+    seeds = np.random.SeedSequence(
+        entropy, spawn_key=(path & 0xFFFFFFFF, path >> 32, spec.kind)
+    )
+    key = seeds.generate_state(2, np.uint64)
+    counter = np.array([0, r, 0, 0], dtype=np.uint64)
+    philox = np.random.Philox(key=key, counter=counter)
+    return float(np.random.Generator(philox).random(k + 1)[k])
+
+
 def reference_draw(entropy, spec, antithetic, replication, k) -> float:
     """Draw ``k`` of simulation ``replication`` from the stream ``spec``."""
-    column = replication // 2 if antithetic else replication
-    block, j = divmod(column, spec.width)
-    key = _streams.path_key(spec.path)
-    seeds = np.random.SeedSequence(
-        entropy, spawn_key=(key & 0xFFFFFFFF, key >> 32, spec.kind, block)
-    )
-    uniforms = np.random.Generator(np.random.PCG64(seeds)).random(
-        (k + 1) * spec.width
-    )
-    u = uniforms[k * spec.width + j]
+    r = replication // 2 if antithetic else replication
+    u = reference_uniform(entropy, spec, r, k)
     if antithetic and replication % 2:
         u = 1.0 - u
     return float(np.asarray(spec.sampler(np.array([u])), dtype=float)[0])

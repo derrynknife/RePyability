@@ -125,9 +125,7 @@ def paths(histories: List[Any], n: int, end: float) -> Paths:
     down = np.concatenate(downs) if downs else np.empty(0, bool)
     plan = np.concatenate(planned) if planned else np.empty(0, bool)
     rank = np.concatenate(ranks) if ranks else np.empty(0, np.int64)
-    # In each simulation, by time, then by rank (the sort is stable, so a
-    # module's changes at one instant stay in their order).
-    order = np.lexsort((module, rank, time, sim))
+    order = _in_order(sim, time, rank, float(end))
     sim, time, module, down, plan = (
         sim[order],
         time[order],
@@ -139,27 +137,25 @@ def paths(histories: List[Any], n: int, end: float) -> Paths:
     # The modules each simulation has flipped by each change: a running xor
     # over all changes, less the simulation's own start in it.
     running = np.bitwise_xor.accumulate(bit) if bit.size else bit
+    first = np.searchsorted(sim, np.arange(n), side="left")
     before_first = np.zeros(n, dtype=np.int64)
     if bit.size:
-        first = np.searchsorted(sim, np.arange(n), side="left")
         before_first = np.where(
             first > 0, running[np.maximum(first - 1, 0)], 0
         ).astype(np.int64)
     after = start[sim] ^ running ^ before_first[sim]
     before = after ^ bit
-    # The stretches: from 0, and from each change, to the next or the end.
-    seg_sim = np.concatenate([np.arange(n), sim])
-    seg_start = np.concatenate([np.zeros(n), time])
-    seg_state = np.concatenate([start, after])
-    rank = np.concatenate(
-        [np.zeros(n, np.int64), 1 + np.arange(sim.size, dtype=np.int64)]
-    )
-    order = np.lexsort((rank, seg_sim))
-    seg_sim, seg_start, seg_state = (
-        seg_sim[order],
-        seg_start[order],
-        seg_state[order],
-    )
+    # The stretches: from 0, and from each change, to the next or the end,
+    # in each simulation from 0. A simulation's start goes before its
+    # first change, the changes already in order (#248).
+    opens = first + np.arange(n)
+    follows = np.arange(sim.size) + sim + 1
+    seg_sim = np.empty(n + sim.size, np.int64)
+    seg_start = np.empty(n + sim.size)
+    seg_state = np.empty(n + sim.size, np.int64)
+    seg_sim[opens], seg_sim[follows] = np.arange(n), sim
+    seg_start[opens], seg_start[follows] = 0.0, time
+    seg_state[opens], seg_state[follows] = start, after
     last = np.ones(seg_sim.size, dtype=bool)
     last[:-1] = seg_sim[1:] != seg_sim[:-1]
     seg_end = np.full(seg_sim.size, float(end))
@@ -181,6 +177,54 @@ def paths(histories: List[Any], n: int, end: float) -> Paths:
         seg_state,
         last,
     )
+
+
+def _in_order(
+    sim: np.ndarray, time: np.ndarray, rank: np.ndarray, end: float
+) -> np.ndarray:
+    """The order of the modules' changes (given module after module, each
+    module's in order): by simulation and time, and at one instant of one
+    simulation by rank, then as given (a module's changes at one instant
+    stay together, in their order).
+
+    One sort (#248), of a key that grows with the simulation and the time:
+    each simulation's times shifted past the one before's, by a power of
+    two beyond the window, so the shift is exact and rounding can make
+    nearby keys equal but never put two out of order. Each run of equal
+    keys (changes at one instant, or within rounding) is then put in
+    order exactly, so the order is the same whatever the sort does with
+    them."""
+    span = 2.0 ** (math.floor(math.log2(end)) + 1)
+    key = sim * span + time
+    order = np.argsort(key)
+    ranked = key[order]
+    tied = ranked[1:] == ranked[:-1]
+    if tied.any():
+        group = np.cumsum(np.concatenate(([True], ~tied)))
+        together = np.zeros(order.size, bool)
+        together[1:] |= tied
+        together[:-1] |= tied
+        places = np.flatnonzero(together)
+        rows = order[places]
+        exact = np.lexsort(
+            (rows, rank[rows], time[rows], sim[rows], group[places])
+        )
+        order[places] = rows[exact]
+    return order
+
+
+def _members(keys: np.ndarray):
+    """``members(m)``: the places of ``keys`` equal to ``m``, in order (one
+    stable sort, rather than comparing every key with every ``m``)."""
+    order = np.argsort(keys, kind="stable")
+    ranked = keys[order]
+
+    def members(m) -> np.ndarray:
+        lo = np.searchsorted(ranked, m, side="left")
+        hi = np.searchsorted(ranked, m, side="right")
+        return order[lo:hi]
+
+    return members
 
 
 def grid(end: float, breaks: List[np.ndarray]) -> np.ndarray:
@@ -272,8 +316,13 @@ def values(p: Paths, given: Dict[int, Given], curve_x: np.ndarray) -> Values:
     planned, ending = np.zeros(n), np.zeros(n)
     curve = np.zeros(curve_x.size)
     square = np.zeros(curve_x.size)
+    # Each state's stretches, and the changes down from and into it, found
+    # once (#248).
+    stretches = _members(p.segment_state)
+    downs = np.flatnonzero(p.down)
+    leaving, entering = _members(p.before[downs]), _members(p.after[downs])
     for m, state in given.items():
-        inside = p.segment_state == m
+        inside = stretches(m)
         sims = p.segment_sim[inside]
         a, b = p.segment_start[inside], p.segment_end[inside]
         for name, total in (
@@ -291,8 +340,8 @@ def values(p: Paths, given: Dict[int, Given], curve_x: np.ndarray) -> Values:
         # before the other nodes' changes at that instant, which the
         # stretch from it counts.
         for rows, sign in (
-            ((p.before == m) & p.down, 1.0),
-            ((p.after == m) & p.down, -1.0),
+            (downs[leaving(m)], 1.0),
+            (downs[entering(m)], -1.0),
         ):
             jump = sign * state.before(p.time[rows])
             unplanned = ~p.planned[rows]
@@ -304,7 +353,7 @@ def values(p: Paths, given: Dict[int, Given], curve_x: np.ndarray) -> Values:
             )
         # Down at the end: an outage not restored in the window (whose
         # changes at its end are past it).
-        closing = inside & p.last
+        closing = inside[p.last[inside]]
         ending[p.segment_sim[closing]] = 1.0 - state.before(p.end)
         # How many simulations are in the state at each of the curve's
         # times, each up with ``up``.
@@ -321,8 +370,8 @@ def values(p: Paths, given: Dict[int, Given], curve_x: np.ndarray) -> Values:
 def _occupancy(
     p: Paths, inside: np.ndarray, curve_x: np.ndarray
 ) -> np.ndarray:
-    """How many simulations are in the stretches ``inside`` at each of the
-    curve's times (from just after a change there)."""
+    """How many simulations are in the stretches ``inside`` (their places)
+    at each of the curve's times (from just after a change there)."""
     points = curve_x.size
     low = np.searchsorted(curve_x, p.segment_start[inside], side="left")
     high = np.where(
@@ -415,8 +464,9 @@ def capacity_values(
     delivered: Optional[np.ndarray] = None
     curve = np.zeros(curve_x.size)
     unlimited = np.zeros(curve_x.size)
+    stretches = _members(p.segment_state)
     for m, state in given.items():
-        inside = p.segment_state == m
+        inside = stretches(m)
         sims = p.segment_sim[inside]
         a, b = p.segment_start[inside], p.segment_end[inside]
         for row, level in zip(state.time, state.levels):

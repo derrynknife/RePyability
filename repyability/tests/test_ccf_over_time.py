@@ -73,7 +73,7 @@ def test_no_shared_cause_is_the_independent_system(member, b):
         plain.mission_availability(3000.0), abs=1e-7
     )
     assert grouped.expected_failures(3000.0) == pytest.approx(
-        plain.expected_failures(3000.0), rel=1e-6
+        plain.expected_failures(3000.0), rel=4e-6
     )
 
 
@@ -124,9 +124,9 @@ def test_a_revealed_pair_against_its_chain():
         return pair * c_up(t) + (1.0 - p[3]) * c_up(t) * c_rate
 
     x = np.array([1.0, 5.0, 20.0, 100.0, 1000.0])
-    # The other component's curve is on a grid (to about 1e-6 early on).
+    # The other component's curve is on a grid (to about 4e-6 early on).
     np.testing.assert_allclose(
-        rbd.point_availability(x), [up(t) for t in x], atol=2e-6
+        rbd.point_availability(x), [up(t) for t in x], atol=8e-6
     )
     mission = integrate.quad(up, 0.0, 500.0, limit=500)[0] / 500.0
     assert rbd.mission_availability(500.0) == pytest.approx(mission, abs=1e-7)
@@ -439,21 +439,38 @@ def inspected_for_a_while(offset):
     }
 
 
-@pytest.mark.parametrize(
-    "components",
-    [
-        {"a": inspected_for_a_while(0.0), "b": inspected_for_a_while(25.0)},
-        {
-            x: revealed(0.01, 0.5) | {"repairability": W([3.0, 2.0])}
-            for x in "ab"
-        },
-    ],
-    ids=["tests taking time", "Weibull repairs"],
-)
-def test_what_the_chains_need_not_the_simulation(components):
-    # The groups' chains need tests and repairs in no time, or exponential
-    # repairs, but the simulation draws the causes around any: with no
-    # shared cause, it is the plain system's (numerical) long run.
+def test_tests_taking_time_in_the_chains():
+    # The groups' chains take tested members' tests and repairs of a fixed
+    # or an exponential length (#220), and the simulation agrees with them.
+    components = {
+        "a": inspected_for_a_while(0.0),
+        "b": inspected_for_a_while(25.0),
+    }
+    for beta in (0.0, 0.3):
+        rbd = RepairableRBD(
+            PAIR,
+            components,
+            ccf_groups=[CCFGroup(["a", "b"], BetaFactor(beta))],
+        )
+        assert rbd.analysis_routes()["mean_availability"].route == r.NUMERICAL
+        interval = rbd.availability(
+            20000.0,
+            mc_samples=400,
+            seed=3,
+            control_variate=False,
+            conditional=False,
+        ).mean_availability_interval()
+        exact = rbd.mission_availability(20000.0)
+        assert abs(interval.estimate - exact) < 4.0 * interval.standard_error
+
+
+def test_what_the_chains_need_not_the_simulation():
+    # The groups' chains need exponential repairs of revealed failures, but
+    # the simulation draws the causes around any: with no shared cause, it
+    # is the plain system's (numerical) long run.
+    components = {
+        x: revealed(0.01, 0.5) | {"repairability": W([3.0, 2.0])} for x in "ab"
+    }
     plain = RepairableRBD(PAIR, components)
     for beta in (0.0, 0.3):
         rbd = RepairableRBD(
@@ -463,6 +480,7 @@ def test_what_the_chains_need_not_the_simulation(components):
         )
         routes = rbd.analysis_routes()
         assert routes["mean_availability"].route == r.REFUSED
+        assert "availability() or cost()" in routes["mean_availability"].reason
         assert routes["availability"].route == r.SIMULATED
         interval = rbd.availability(
             20000.0, mc_samples=400, seed=3, control_variate=False

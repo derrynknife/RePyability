@@ -5,12 +5,19 @@ from typing import Any, Sequence, Tuple
 
 import numpy as np
 
+from repyability.utils.deprecation import refuse_removed_names
+
 from ._model_utils import model_mean, never_fails
 from .numerical_convolution import ConvolvedSurvival
 from .results import CapacityDistribution
-from .standby_node import StandbyModel, _ExponentialStandbySurvival
+from .standby_node import (
+    StandbyModel,
+    _ExponentialStandbySurvival,
+    drawn_mean,
+)
 
 
+@refuse_removed_names
 class DegradingNode(StandbyModel):
     """A component that degrades through stages before it fails.
 
@@ -205,24 +212,36 @@ class DegradingNode(StandbyModel):
             return self.reliabilities[0].ff(x, *args, **kwargs)
         return super().ff(x, *args, **kwargs)
 
-    def mean(self, mc_samples=None, seed=None):
+    def mean(self, mc_samples=None, seed=None, *, method=None):
         """Mean lifetime (MTTF): the sum of the stages' mean times, exactly;
-        infinite if a stage may never end.
+        infinite if a stage may never end. ``method="simulate"`` estimates
+        it from ``mc_samples`` draws of ``random`` instead (#233).
 
         Parameters
         ----------
         mc_samples : int, optional
-            Ignored: accepted so ``mean`` can be called as a
-            ``StandbyModel``'s is.
+            With ``method="simulate"``, the number of draws, 10_000 by
+            default. The exact mean draws nothing, and ignores it with a
+            ``FutureWarning`` (0.14 will refuse it).
         seed : int or None, optional
-            Ignored, as ``mc_samples`` is.
+            Seed for those draws, ignored as ``mc_samples`` is.
+        method : {None, "exact", "simulate"}, optional
+            As for ``StandbyModel.mean``: None and ``"exact"`` give the
+            exact mean.
 
         Returns
         -------
         float
-            The mean lifetime.
+            The mean lifetime, or its estimate.
         """
-        return float(sum(model_mean(m) for m in self.reliabilities))
+        return drawn_mean(
+            self,
+            "DegradingNode",
+            lambda: float(sum(model_mean(m) for m in self.reliabilities)),
+            mc_samples,
+            seed,
+            method,
+        )
 
     def capacity_distribution(self, x) -> CapacityDistribution:
         """The distribution of the component's capacity at time/s ``x``: the

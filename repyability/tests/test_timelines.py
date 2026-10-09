@@ -8,7 +8,6 @@ each input's own order), and decides the unit after each; the simulated
 timelines against ``availability``, which runs the same simulations.
 """
 
-import dataclasses
 import warnings
 
 import numpy as np
@@ -206,7 +205,7 @@ def test_a_timeline_from_an_outage_log():
 @pytest.mark.parametrize(
     "outages, options, match",
     [
-        ([(2.0, 1.0)], {}, "out of order"),
+        ([(2.0, 1.0)], {}, "ends before it starts"),
         ([(1.0, 3.0), (2.0, 4.0)], {}, "out of order"),
         ([(11.0, 12.0)], {}, "after the window's end"),
         ([(1.0, 2.0)], {"planned": [True, False]}, "one for each outage"),
@@ -646,7 +645,6 @@ def simulated_systems():
     }
 
 
-STREAMED = {"pair", "bridge", "nested", "instant repairs"}
 ENGINES = ["python", pytest.param("numba", marks=needs_numba)]
 
 
@@ -732,9 +730,7 @@ def test_simulated_timelines_are_the_simulations_availability_runs(
         )
     assert isinstance(runs, TimelineSimulation)
     assert runs.engine == engine
-    assert runs.method == (
-        "streams" if engine == "python" and name in STREAMED else "event loop"
-    )
+    assert runs.method == "event loop"
     assert runs.n_simulations == 60 and runs.time_simulated_to == 300.0
     assert runs.antithetic == bool(options.get("antithetic"))
     assert runs.start == 0
@@ -773,11 +769,11 @@ def test_simulated_timelines_are_the_simulations_availability_runs(
 def every_architecture():
     """The routes' diagrams of every kind, but those the simulations
     refuse."""
-    from repyability.tests.test_analysis_routes import repairable_rbds
+    from repyability.tests.catalogue import repairable_kinds
 
     return {
         name: rbd
-        for name, rbd in repairable_rbds().items()
+        for name, rbd in repairable_kinds().items()
         if not rbd._has_ccf()
     }
 
@@ -785,8 +781,7 @@ def every_architecture():
 @pytest.mark.filterwarnings("ignore::FutureWarning")
 @pytest.mark.parametrize("name", sorted(every_architecture()))
 def test_every_engine_records_the_same_histories(name):
-    # simulate_timelines on the Python engine (drawn from the streams, or
-    # recorded by its loop) and the loops' own records on each engine.
+    # simulate_timelines on each engine, and the loops' own records.
     rbd = every_architecture()[name]
     options = {"broken_nodes": [next(iter(rbd.components))]}
     for settings in ({}, options):
@@ -796,10 +791,6 @@ def test_every_engine_records_the_same_histories(name):
         assert same_runs(
             runs, recorded(rbd, "python", 300.0, 30, 3, **settings)
         )
-        if _compiled.available() and runs.method == "streams":
-            assert same_runs(
-                runs, recorded(rbd, "numba", 300.0, 30, 3, **settings)
-            )
         if (
             _compiled.available()
             and _compiled.unsupported(
@@ -851,21 +842,19 @@ def test_changes_at_one_instant_are_the_event_loops(name):
     runs = rbd.simulate_timelines(
         100.0, mc_samples=30, seed=2, engine="python"
     )
-    assert runs.method == "streams"
     assert same_runs(runs, recorded(rbd, "python", 100.0, 30, 2))
     if _compiled.available():
         assert same_runs(runs, recorded(rbd, "numba", 100.0, 30, 2))
     if name == "two of three":
         # Merged in the order of the components, they would differ: the
-        # simulations with ties were run in the loop.
+        # changes at one instant are in the loop's order.
         assert not same_data(rbd.system_timeline(runs.components), runs.system)
 
 
 @pytest.mark.parametrize("engine", ENGINES)
-def test_the_histories_are_the_same_however_many_jobs(engine, monkeypatch):
-    # Drawn from the streams in parts of a block each, or simulated in
-    # processes (Python) or threads (numba): the same histories.
-    monkeypatch.setattr(_timeline_runs, "_PART", 1)
+def test_the_histories_are_the_same_however_many_jobs(engine):
+    # Simulated in processes (Python) or threads (numba): the same
+    # histories.
     for name, n in (("pair", 2500), ("a repair crew", 40)):
         rbd = simulated_systems()[name]
         alone = rbd.simulate_timelines(
@@ -1014,9 +1003,9 @@ def test_simulated_timelines_check_their_arguments(arguments, error, match):
 
 @pytest.mark.filterwarnings("ignore::FutureWarning")
 def test_numba_is_asked_for_only_where_it_simulates(monkeypatch):
-    from repyability.tests.test_analysis_routes import repairable_rbds
+    from repyability.tests.catalogue import repairable_kinds
 
-    imperfect = repairable_rbds()["imperfect repair"]
+    imperfect = repairable_kinds()["imperfect repair"]
     route = imperfect.analysis_routes()["simulate_timelines"]
     assert route.engine == "python"
     assert route.engine_reason.startswith("the compiled engine does not")
@@ -1066,45 +1055,15 @@ def test_simulated_timelines_with_common_causes_are_the_loop_s():
 
 
 def test_a_component_that_changes_state_without_end_is_refused():
-    rbd = RepairableRBD(
-        [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
-        {
-            "a": {"reliability": X(0.0), "repairability": "instant"},
-            "b": unit(50, 1.5),
-        },
-    )
-    with pytest.raises(ValueError, match="too many to keep as timelines"):
-        rbd.simulate_timelines(10.0, mc_samples=20, seed=1, engine="python")
-
-
-@pytest.mark.parametrize("batch", [1, 4096])
-def test_a_simulation_with_more_changes_than_planned_is_drawn_further(
-    batch, monkeypatch
-):
-    # Planned for a single failure and repair each, nearly every simulation
-    # has more, and is drawn further on its own: to the same timelines.
-    # (A chunk's rows change only how the draws are computed.)
-    rbd = simulated_systems()["pair"]
-    plain = rbd.simulate_timelines(
-        300.0, mc_samples=20, seed=4, engine="python"
-    )
-    planned = type(rbd)._stream_plan
-
-    def one_row(self, *args, **kwargs):
-        plan, complete = planned(self, *args, **kwargs)
-        plan.specs = {
-            name: dataclasses.replace(spec, rows=1)
-            for name, spec in plan.specs.items()
-        }
-        return plan, complete
-
-    monkeypatch.setattr(type(rbd), "_stream_plan", one_row)
-    monkeypatch.setattr(_timeline_runs, "_BATCH", batch)
-    again = rbd.simulate_timelines(
-        300.0, mc_samples=20, seed=4, engine="python"
-    )
-    assert again.method == "streams"
-    assert same_runs(again, plain)
+    # Failing and repaired at once, it would keep the event loop at 0.
+    with pytest.raises(ValueError, match="change its state without end"):
+        RepairableRBD(
+            [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
+            {
+                "a": {"reliability": X(0.0), "repairability": "instant"},
+                "b": unit(50, 1.5),
+            },
+        )
 
 
 @needs_numba

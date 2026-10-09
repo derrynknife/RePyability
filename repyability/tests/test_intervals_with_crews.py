@@ -83,13 +83,13 @@ def test_the_plan_without_waiting_is_the_unlimited_crews_plan():
     tests = valves(crews=1).optimal_inspection_intervals(
         allowed=[2190.0, 4380.0, 8760.0],
         min_availability=1 - 1e-5,
-        offsets="stagger",
+        offset_shares="stagger",
         assume_unlimited_crews=True,
     )
     assert tests == valves().optimal_inspection_intervals(
         allowed=[2190.0, 4380.0, 8760.0],
         min_availability=1 - 1e-5,
-        offsets="stagger",
+        offset_shares="stagger",
     )
     # Enough crews for every job: nothing waits, and nothing is refused.
     assert plant(crews=3).optimal_replacement_intervals() == unlimited
@@ -123,7 +123,9 @@ def test_intervals_and_offsets_by_hand():
     assert moved._inspection["v1"].interval == 4380.0
     assert moved._inspection["v2"].offset == 2190.0
     plan = rbd.optimal_inspection_intervals(
-        allowed=[4380.0, 8760.0], min_availability=0.999, offsets="stagger"
+        allowed=[4380.0, 8760.0],
+        min_availability=0.999,
+        offset_shares="stagger",
     )
     applied = rbd.with_intervals(plan)
     assert {
@@ -165,7 +167,7 @@ def test_never_replacing_drops_the_schedule():
 
 def test_with_intervals_is_checked():
     rbd = plant()
-    with pytest.raises(ValueError, match="no maintenance or test schedule"):
+    with pytest.raises(ValueError, match="not a component of the RBD"):
         rbd.with_intervals({"s": 100.0})
     with pytest.raises(ValueError, match="no maintenance or test schedule"):
         RepairableRBD(

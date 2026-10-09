@@ -55,15 +55,14 @@ A node model is anything that exposes `sf(t)` and `ff(t)`:
 | Another `NonRepairableRBD` | A subsystem, nested as a single node. |
 
 A surpyval parametric model can carry an offset (`gamma`), a limited
-failure population (`p < 1`: a fraction `1 - p` of the units never fail;
-surpyval 0.23 names it `lfp_p`, and RePyability reads either) or zero
-inflation (`f0 > 0`: a fraction dead on arrival). Every calculation
+failure population (`lfp_p < 1`: a fraction `1 - lfp_p` of the units never
+fail) or zero inflation (`f0 > 0`: a fraction dead on arrival). Every calculation
 honours them. Simulations draw an infinite lifetime for a unit that never
 fails and 0 for one dead on arrival, so a system that can outlast its failing
 units has an infinite MTTF, as has the node itself:
 
 ```python
-cured = surv.Weibull.from_params([100, 2], p=0.9)   # one unit in ten never fails
+cured = surv.Weibull.from_params([100, 2], lfp_p=0.9)   # one unit in ten never fails
 one = NonRepairableRBD([("s", "c"), ("c", "t")], {"c": cured})
 one.sf(1e6)             # -> 0.1   the units that never fail
 one.node_mttf()["c"]    # inf

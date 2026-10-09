@@ -11,8 +11,10 @@ Each may be uncertain, and is drawn as ``NonRepairableRBD.sf_uncertainty``
 draws a node's model (see ``uncertainty``): from a fit's parameter
 covariance, distributions over its parameters, or a list of models. A
 common-cause group's model may be uncertain too. An input is a node, a
-population of nodes sharing their models (a tuple), or a common-cause
-group; a node's uncertain roles are one input.
+population of nodes sharing a model (a tuple), or a common-cause group;
+a node may come under several inputs, a role under one (#214): a fleet's
+life fit, shared by pumps whose repairs were recorded apart, is one input
+of the pumps' lives, and each pump's repair one of its own.
 
 Each draw is the diagram rebuilt from its constructor's arguments with the
 drawn models, and its value worked out as for the diagram itself (exactly,
@@ -25,10 +27,15 @@ the Sobol indices from draws (Jansen's estimators), as
 ``NonRepairableRBD.uncertainty_importance`` does.
 """
 
+import difflib
+import warnings
 from collections.abc import Mapping
 from typing import Any, Dict, Hashable, List, NamedTuple, Optional, Tuple
 
 import numpy as np
+
+from repyability.utils.checks import seed as check_seed
+from repyability.utils.wrappers import outside_level
 
 from .uncertainty import (
     FIT,
@@ -58,6 +65,8 @@ QUANTITIES = (
     "mission_availability",
     "expected_cost_rate",
 )
+#: The quantities' other names: ``parameter_sensitivity``'s (#232).
+QUANTITY_NAMES = {"cost_rate": "expected_cost_rate"}
 
 
 def model_of(spec: dict, role: str):
@@ -138,48 +147,103 @@ def _roles(spec: Any, models: dict, label: str) -> Dict[str, Any]:
                     "model, or it has none)."
                 )
         return dict(spec)
+    if isinstance(spec, Mapping) and spec:
+        _require_parameters_or_roles(spec, models.get("reliability"), label)
     if models.get("reliability") is None:
         raise ValueError(f"{label} has no life model to draw.")
     return {"reliability": spec}
 
 
-def fitted(rbd) -> Dict[Hashable, str]:
-    """The uncertainty drawn when none is given: ``"fit"`` for every
-    component with a model that is a surpyval fit with a parameter
-    covariance, the nodes whose fitted models are the same objects, or
-    the members of one common-cause group, together."""
-    keys: Dict[Hashable, tuple] = {}
-    for node in rbd.components:
-        models = _models(rbd, node)
-        fits = tuple(
-            (role, id(model))
-            for role, model in models.items()
-            if model is not None and is_fit(model)
+def _require_parameters_or_roles(spec: Mapping, life, label: str) -> None:
+    """Raise if ``spec``, distributions by the life's parameter names or
+    uncertainties by role, has a key that is neither one of the life's
+    parameters nor a role: saying which it is likelier meant, and what each
+    may be (#232)."""
+    dist = getattr(life, "dist", None)
+    names = [str(name) for name in getattr(dist, "parameter_names", ())]
+    roles = [key for key in spec if key in ROLES]
+    unknown = [key for key in spec if key not in ROLES and key not in names]
+    if roles and len(roles) < len(spec):
+        raise ValueError(
+            f"{label}: {sorted(map(str, set(spec) - set(roles)))} and "
+            f"{roles} mix roles and parameters: give uncertainties by role "
+            f"({', '.join(ROLES)}), or distributions over the life's "
+            f"parameters ({', '.join(names) or 'none'}), not both."
         )
-        if fits:
-            keys[node] = fits
-    parent = {node: node for node in keys}
+    if unknown:
+        close = [
+            match
+            for key in unknown
+            for match in difflib.get_close_matches(
+                str(key), list(ROLES) + names, n=1
+            )
+        ]
+        hint = f" Did you mean {close[0]!r}?" if close else ""
+        raise ValueError(
+            f"{label}: {sorted(map(str, unknown))} are neither roles "
+            f"({', '.join(ROLES)}) nor parameters of its life's model "
+            f"({', '.join(names) or 'none'}).{hint}"
+        )
 
-    def root(node):
-        while parent[node] != node:
-            parent[node] = parent[parent[node]]
-            node = parent[node]
-        return node
 
-    first: Dict[tuple, Hashable] = {}
-    for node, fits in keys.items():
-        parent[root(node)] = root(first.setdefault(fits, node))
-    for group in rbd.ccf_groups:
-        inside = [m for m in group.members if m in parent]
-        for member in inside[1:]:
-            parent[root(member)] = root(inside[0])
-    together: Dict[Hashable, list] = {}
-    for node in keys:
-        together.setdefault(root(node), []).append(node)
+def fitted(rbd) -> Dict[Hashable, Dict[str, str]]:
+    """The uncertainty drawn when none is given: ``"fit"`` for every one
+    of the components' models that is a surpyval fit with a parameter
+    covariance, drawn once for all the nodes holding that fitted object in
+    that role (#214), and for one common-cause group's members together:
+    ``{node or tuple of nodes: {role: "fit"}}``, by first node and role, a
+    node under as many keys as it has populations."""
+    order = {node: i for i, node in enumerate(rbd.components)}
+    out: Dict[tuple, Dict[str, str]] = {}
+    for role in ROLES:
+        parent: Dict[Hashable, Hashable] = {}
+
+        def root(node):
+            while parent[node] != node:
+                parent[node] = parent[parent[node]]
+                node = parent[node]
+            return node
+
+        first: Dict[int, Hashable] = {}
+        for node in rbd.components:
+            model = _models(rbd, node).get(role)
+            if model is not None and is_fit(model):
+                parent[node] = node
+                parent[root(node)] = root(first.setdefault(id(model), node))
+        for group in rbd.ccf_groups:
+            inside = [m for m in group.members if m in parent]
+            for member in inside[1:]:
+                parent[root(member)] = root(inside[0])
+        together: Dict[Hashable, list] = {}
+        for node in parent:
+            together.setdefault(root(node), []).append(node)
+        for nodes in together.values():
+            out.setdefault(tuple(nodes), {})[role] = FIT
+    # By their first node, then role: a node's own inputs where it comes.
     return {
-        nodes[0] if len(nodes) == 1 else tuple(nodes): FIT
-        for nodes in together.values()
+        nodes[0] if len(nodes) == 1 else nodes: roles
+        for nodes, roles in sorted(
+            out.items(),
+            key=lambda item: (
+                order[item[0][0]],
+                ROLES.index(next(iter(item[1]))),
+            ),
+        )
     }
+
+
+def half_named(label: str, others: list, what: str, together) -> None:
+    """Warn that an input is drawn without ``others``, which hold the same
+    fitted ``what`` and keep it as it is in every draw (#214)."""
+    names = ", ".join(repr(n) for n in others)
+    warnings.warn(
+        f"{label} is drawn without {names}, which hold the same {what} "
+        "object and keep it as fitted in every draw: if they are one "
+        "population, its uncertainty is understated. Give them together, "
+        f"{together!r}, to draw it once for all of them.",
+        UserWarning,
+        stacklevel=outside_level(),
+    )
 
 
 def sources(
@@ -187,9 +251,13 @@ def sources(
 ) -> Tuple[List[Source], Dict[int, Tuple[Any, Any]]]:
     """The uncertain inputs, checked: the nodes' (see ``Source``), and for
     each common-cause group whose model is uncertain, by its index, its key
-    and its uncertainty. By default, every fitted model (``fitted``)."""
+    and its uncertainty. By default, every fitted model (``fitted``). A
+    node may come under several inputs, a role of it under one; given, an
+    input drawn without other nodes holding the same model object, which
+    are left as they are, is warned about."""
     from .non_repairable_rbd import NonRepairableRBD
 
+    given = uncertainty is not None
     if uncertainty is None:
         uncertainty = fitted(rbd)
         if not uncertainty:
@@ -207,6 +275,7 @@ def sources(
         )
     out: List[Source] = []
     groups: Dict[int, Tuple[Any, Any]] = {}
+    # Each node's roles given so far.
     seen: set = set()
     for key, spec in uncertainty.items():
         index = next(
@@ -231,14 +300,17 @@ def sources(
                     "nested RBD or a junction): give its own components' "
                     "uncertainty to the nested RBD."
                 )
-            if node in seen:
-                raise ValueError(
-                    f"Node {node!r} is given an uncertainty twice."
-                )
-            seen.add(node)
         label = _label(members)
         models = _models(rbd, members[0])
         roles = _roles(spec, models, label)
+        for node in members:
+            for role in roles:
+                if (node, role) in seen:
+                    raise ValueError(
+                        f"The {role} of node {node!r} is given an "
+                        "uncertainty twice."
+                    )
+                seen.add((node, role))
         for node in members[1:]:
             theirs = _models(rbd, node)
             for role in roles:
@@ -251,18 +323,45 @@ def sources(
                     )
         out.append(Source(key, tuple(members), roles))
     for group in rbd.ccf_groups:
-        holders = [
-            s.members for s in out if set(s.members) & set(group.members)
-        ]
-        if holders and (
-            len(holders) > 1 or not set(group.members) <= set(holders[0])
-        ):
-            raise ValueError(
-                f"Nodes {list(group.members)!r} are a common-cause group, "
-                "whose members carry one model: give their uncertainty "
-                f"together, in one tuple of nodes (e.g. "
-                f"{{{tuple(group.members)!r}: 'fit'}})."
-            )
+        for role in ROLES:
+            holders = [
+                s.members
+                for s in out
+                if role in s.specs and set(s.members) & set(group.members)
+            ]
+            if holders and (
+                len(holders) > 1 or not set(group.members) <= set(holders[0])
+            ):
+                raise ValueError(
+                    f"Nodes {list(group.members)!r} are a common-cause "
+                    "group, whose members carry one model: give their "
+                    "uncertainty together, in one tuple of nodes (e.g. "
+                    f"{{{tuple(group.members)!r}: 'fit'}})."
+                )
+    if given:
+        for item in out:
+            models = _models(rbd, item.members[0])
+            for role in item.specs:
+                others = [
+                    node
+                    for node in rbd.components
+                    if node not in item.members
+                    and (node, role) not in seen
+                    and models[role] is not None
+                    and _models(rbd, node).get(role) is models[role]
+                ]
+                if others:
+                    who = (
+                        f"node {item.members[0]!r}"
+                        if len(item.members) == 1
+                        else f"nodes {list(item.members)!r}"
+                    )
+                    half_named(
+                        f"The {role} of {who}",
+                        others,
+                        f"{role} model",
+                        {tuple(item.members) + tuple(others): {role: FIT}},
+                    )
     return out, groups
 
 
@@ -286,7 +385,7 @@ def draws(
     if n < 1:
         raise ValueError(f"n_draws must be at least 1, got {n}.")
     check_sampling(sampling)
-    rng = np.random.default_rng(seed)
+    rng = np.random.default_rng(check_seed(seed))
 
     def draw(count: int, source) -> Tuple[List[Dict[str, list]], list]:
         drawn = []
@@ -296,7 +395,11 @@ def draws(
             drawn.append(
                 {
                     role: draw_models(
-                        models[role], spec, count, source, f"{label}'s {role}"
+                        models[role],
+                        spec,
+                        count,
+                        source,
+                        f"The {role} of {label[0].lower()}{label[1:]}",
                     )
                     for role, spec in item.specs.items()
                 }
@@ -338,13 +441,18 @@ def build(rbd, inputs, drawn, drawn_groups, i: int):
 
     args = rbd._init_args
     components = dict(args["components"])
+    # A node under several inputs takes each one's roles (#214).
+    respecified: Dict[Hashable, Any] = {}
     for item, by_role in zip(inputs, drawn):
         for node in item.members:
             # A node with no models of its own is refused by ``sources``.
-            spec: Any = _spec(rbd, node)
+            spec: Any = respecified.get(node)
+            if spec is None:
+                spec = _spec(rbd, node)
             for role, models in by_role.items():
                 spec = with_model(spec, role, models[i])
-            components[node] = spec
+            respecified[node] = spec
+    components.update(respecified)
     changed: Dict[str, Any] = {"components": components}
     if any(models is not None for models in drawn_groups):
         changed["ccf_groups"] = [
@@ -406,7 +514,25 @@ def _sensitivities(rbd, of: str, x, state, rel_step) -> dict:
     if of == "point_availability":
         kwargs.update(x=x, state=state)
     elif of == "mission_availability":
-        kwargs.update(window=x, state=state)
+        if np.ndim(x) == 0:
+            kwargs.update(window=x, state=state)
+        else:
+            # A sensitivity for each mission's length (#226), stacked.
+            each = [
+                rbd.parameter_sensitivity(
+                    rel_step=rel_step, window=float(w), state=state
+                )
+                for w in np.asarray(x, dtype=float).ravel()
+            ]
+            return {
+                key: {
+                    lever: np.array(
+                        [float(np.ravel(one[key][lever])[0]) for one in each]
+                    )
+                    for lever in levers
+                }
+                for key, levers in each[0].items()
+            }
     if of == "expected_cost_rate":
         kwargs["of"] = "cost_rate"
     return rbd.parameter_sensitivity(**kwargs)
@@ -421,9 +547,7 @@ def delta(rbd, of: str, x, state, inputs, groups, rel_step) -> list:
     from ._model_utils import parametric_spec
 
     derivatives = _sensitivities(rbd, of, x, state, rel_step)
-    size = (
-        len(np.atleast_1d(np.asarray(x, dtype=float))) if x is not None else 1
-    )
+    size = int(np.size(x)) if x is not None else 1
 
     def gradient(keys, names) -> np.ndarray:
         out = np.zeros((len(names), size))
@@ -436,7 +560,7 @@ def delta(rbd, of: str, x, state, inputs, groups, rel_step) -> list:
                         "its model's parameters are not levers of "
                         "parameter_sensitivity."
                     )
-                out[j] += np.atleast_1d(np.asarray(levers[name], float))
+                out[j] += np.asarray(levers[name], float).ravel()
         return out
 
     members = {m for g in rbd.ccf_groups for m in g.members}
@@ -457,7 +581,9 @@ def delta(rbd, of: str, x, state, inputs, groups, rel_step) -> list:
             keys = list(item.members)
         for role, spec in item.specs.items():
             positions, _, covariance, _ = varied_parameters(
-                models[role], spec, f"{label}'s {role}"
+                models[role],
+                spec,
+                f"The {role} of {label[0].lower()}{label[1:]}",
             )
             names = parametric_spec(models[role])[2]
             g = gradient(keys, [f"{role}.{names[p]}" for p in positions])

@@ -11,7 +11,6 @@ from scipy.stats import poisson
 from repyability import RepairableRBD
 from repyability.rbd import _spares
 from repyability.rbd import routes as r
-from repyability.rbd._model_utils import lfp_extras
 
 E, W, L = (
     surv.Exponential.from_params,
@@ -227,7 +226,7 @@ def test_what_is_refused_and_checked():
         nested.spares_demand(100.0, nodes=["x"])
     never = single(
         {
-            "reliability": W([100.0, 1.5], **lfp_extras(0.5)),
+            "reliability": W([100.0, 1.5], lfp_p=0.5),
             "repairability": "instant",
         }
     )
@@ -337,9 +336,15 @@ def test_a_shelf_of_different_positions_by_simulation():
 
 def test_parts_and_nodes_together():
     plant = station()
-    both = plant.spares_demand(8760.0, nodes=["seal1"], parts=PART)
-    assert list(both) == ["seal1", "seal"]
-    assert both["seal1"].members is None
+    pair = {"seal": ["seal1", "seal2"]}
+    both = plant.spares_demand(8760.0, nodes=["seal3"], parts=pair)
+    assert list(both) == ["seal3", "seal"]
+    assert both["seal3"].members is None
+    assert both["seal"].members == ("seal1", "seal2")
+    # A component's spares come from one shelf, its own or its part's
+    # (#233).
+    with pytest.raises(ValueError, match="'seal1' is in nodes and in part"):
+        plant.spares_demand(8760.0, nodes=["seal1"], parts=PART)
 
 
 @pytest.mark.parametrize(

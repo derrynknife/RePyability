@@ -145,9 +145,9 @@ same `N`, without biasing the estimate:
 
 In a `RepairableRBD` both work component by component: each component draws
 each quantity (its times to failure, its repairs, ...) from a stream of its
-own, keyed by the seed, its place in the diagram and the quantity, and laid
-out so that the stream's `k`-th draw in simulation `r` (or pair `r`) is
-fixed by those alone. Its `k`-th draw is then matched, or paired, however
+own, keyed by the seed, its place in the diagram and the quantity, and
+counter-based, so that the stream's `k`-th draw in simulation `r` (or pair
+`r`) is fixed by those alone. Its `k`-th draw is then matched, or paired, however
 the components' events interleave, and every simulation is the same however
 the run is split up: over processes or threads, or in a run to a tolerance.
 
@@ -463,8 +463,10 @@ and the model, passed via `ccf_groups`. Two models:
 Q_k = [ 1 / C(m−1, k−1) ] · (ρ₁ ρ₂ ⋯ ρ_k) · (1 − ρ_{k+1}) · Q
 ```
 
-  with `ρ₁ = 1, ρ₂ = β, ρ₃ = γ, …, ρ_{m+1} = 0`; these partition each unit's
-  `Q` exactly. A group of `m` members takes `m − 1` letters, and `MGL(β)` on
+  with `ρ₁ = 1, ρ₂ = β, ρ₃ = γ, …, ρ_{m+1} = 0`; the `Q_k` of the sets
+  holding a unit sum to its `Q`, so, its own failure and the shared causes
+  being separate events, it fails with probability `Q` to first order (as
+  in PRA's basic events). A group of `m` members takes `m − 1` letters, and `MGL(β)` on
   two members is exactly `BetaFactor(β)`.
 
 **The evaluation is exact, not a correction factor.** Each model's
@@ -573,8 +575,8 @@ value, possibly overshooting. A component alternates up periods `U` and down
 periods `D`, as good as new after each: an alternating renewal process, whose
 point availability `A_i(t)` solves the renewal equation. There is a closed
 form only for exponential times; `point_availability` solves the equation
-numerically, on a grid of 2,000 steps over the component's typical up time
-(an error of about `1e-7`). Components that fail and are repaired
+numerically, on a grid of 1,000 steps over the component's typical up time
+(an error of about `4e-7`). Components that fail and are repaired
 independently are up or down independently at every time, so the system's
 `A(t)` is its system probability at the `A_i(t)`, and
 `mission_availability` is its mean over `[0, T]`. For a long mission that

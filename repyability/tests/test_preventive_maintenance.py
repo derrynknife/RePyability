@@ -63,7 +63,7 @@ def test_a_failure_at_the_replacement_age_is_a_failure():
             "preventive": {"interval": 10, "cost": 1.0},
         }
     )
-    cost = rbd.cost(60.0, mc_samples=2, seed=1)
+    cost = rbd.cost(60.0, mc_samples=2, seed=1, control_variate=False)
     assert cost.by_category["replace"] == 5 * 5.0  # at 10, 20, 30, 40, 50
     assert cost.by_category["preventive"] == 0.0
 

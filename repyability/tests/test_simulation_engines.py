@@ -27,12 +27,11 @@ import surpyval as surv
 from repyability import NodeState, PerfectReliability, RepairableRBD
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import _compiled, _streams, repairable_rbd
-from repyability.rbd._model_utils import lfp_extras
 from repyability.rbd.repairable_rbd import Event
+from repyability.tests.catalogue import systems_of_every_kind
 from repyability.tests.keyed_draws import KeyedDraws, reference_draw
 from repyability.tests.test_performance_equivalence import (
     binomial_first,
-    instrument_air,
     overlaps_one_at_a_time,
     pumps_with_capacities,
     repairable_rbds,
@@ -178,7 +177,7 @@ def plain_rbds():
             [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
             {
                 "a": {
-                    "reliability": W([30, 2], **lfp_extras(0.7)),
+                    "reliability": W([30, 2], lfp_p=0.7),
                     "repairability": surv.Normal.from_params([2, 0.3]),
                 },
                 "b": {
@@ -391,41 +390,6 @@ def test_plain_simulation_matches_the_reference(name, options):
 # -- how the run is cut up ----------------------------------------------------
 
 
-def systems_of_every_kind():
-    systems = dict(repairable_rbds())
-    systems["instrument air"] = instrument_air()
-    systems["capacities"] = pumps_with_capacities()
-    # A maintenance time that cannot be streamed, likewise.
-    systems["unstreamable maintenance"] = RepairableRBD(
-        [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
-        {
-            name: {
-                "reliability": W([70, 2]),
-                "repairability": E([0.8]),
-                "preventive": {
-                    "interval": 30.0,
-                    "duration": binomial_first([2, 1.5]),
-                    "cost": 5.0,
-                },
-            }
-            for name in "ab"
-        },
-    )
-    # A component whose draws cannot be streamed draws from numpy's global
-    # RNG, seeded for each simulation; the others still stream.
-    systems["unstreamable"] = RepairableRBD(
-        [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
-        {
-            "a": {"reliability": W([70, 1.5]), "repairability": E([0.8])},
-            "b": {
-                "reliability": binomial_first([40, 2]),
-                "repairability": E([0.5]),
-            },
-        },
-    )
-    return systems
-
-
 @pytest.mark.parametrize("name", sorted(systems_of_every_kind()))
 def test_a_simulation_is_the_same_however_the_run_is_cut_up(name):
     rbd = systems_of_every_kind()[name]
@@ -517,7 +481,9 @@ def test_an_unstreamable_component_leaves_the_others_alone():
     with pytest.raises(NotImplementedError):
         mixed.availability(100.0, mc_samples=10, seed=1, antithetic=True)
     with pytest.raises(NotImplementedError):
-        mixed.compare(plain, 100.0, mc_samples=10, seed=1)
+        mixed.compare(
+            plain, 100.0, mc_samples=10, seed=1, control_variate=False
+        )
 
 
 @pytest.mark.parametrize("name", ["costed_pairs", "maintained", "nested_koon"])
@@ -600,7 +566,10 @@ def test_a_subclassed_component_runs_in_python(monkeypatch):
         },
     )
     plan, _ = rbd._stream_plan(100.0, 1, False)
-    assert _compiled.unsupported(rbd, plan, None) == "node 'sub''s LoggedUnit"
+    assert (
+        _compiled.unsupported(rbd, plan, None)
+        == "the LoggedUnit of node 'sub'"
+    )
 
     def compiled(*args, **kwargs):
         raise AssertionError("compiled")
@@ -732,11 +701,9 @@ def pairs_in_series(pairs):
 @needs_numba
 @pytest.mark.parametrize("pairs", [12, 35])
 def test_the_engines_agree_on_large_systems(pairs):
-    # More components than the compiled loop tabulates the system's states
-    # for, and more than bits in a 64-bit mask: it keeps the structure up
-    # to date as components change instead.
+    # More components than bits in a 64-bit mask: the compiled loop keeps
+    # the structure up to date as components change.
     rbd = pairs_in_series(pairs)
-    assert len(rbd.components) > _compiled.MAX_TABLED
     for options in ({}, {"antithetic": True}, {"n_jobs": 2}):
         identical(
             rbd.availability(
@@ -752,7 +719,7 @@ def maintained_rbds():
     """Systems under age and block replacement, which numba's own loop
     simulates (#155): maintenance in zero time and taking time, preventive
     costs fixed and drawn, fixed lives that fall on the schedule (ties the
-    heap orders), and more components than the loop tabulates."""
+    heap orders), and a system of 24 components."""
     pm = {"interval": 30.0}
     timed = {"interval": 40.0, "duration": L([0.5, 0.4]), "cost": 7.0}
     block = {"interval": 25.0, "policy": "block", "cost": G([3.0, 0.5])}
@@ -960,9 +927,9 @@ def test_what_numbas_loop_runs_besides_plain_components():
     for rbd, reason in [
         (on_condition(), "replacement on condition"),
         (systems_of_every_kind()["unstreamable maintenance"], "maintenance"),
-        (inspected_unit(timed), "node 'a''s test time"),
+        (inspected_unit(timed), "the test time of node 'a'"),
         # Its test time could be streamed, its life cannot.
-        (unstreamed, "node 'a''s models"),
+        (unstreamed, "the models of node 'a'"),
     ]:
         plan, _ = rbd._stream_plan(100.0, 1, False)
         assert reason in _compiled.unsupported(rbd, plan, None, numba=True)
@@ -1379,6 +1346,18 @@ def nested_rbds():
         }
 
     pair = [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")]
+    bridge = [
+        ("s", "a"),
+        ("s", "b"),
+        ("a", "c"),
+        ("b", "c"),
+        ("a", "d"),
+        ("b", "e"),
+        ("c", "d"),
+        ("c", "e"),
+        ("d", "t"),
+        ("e", "t"),
+    ]
     slow = L([2.0, 0.5])
     crewed = RepairableRBD(
         [
@@ -1517,6 +1496,23 @@ def nested_rbds():
                 "c": {"reliability": X(10.0), "repairability": X(1.0)},
             },
         ),
+        # More components inside than bits in a 64-bit mask; and a core of
+        # path sets at both levels, whose working path sets each level
+        # counts on its own (#255).
+        "wide inside": RepairableRBD(
+            [("s", "m"), ("m", "c"), ("c", "t")],
+            {"m": pairs_in_series(35), "c": unit(60, 1.5)},
+        ),
+        "bridges inside and out": RepairableRBD(
+            bridge,
+            {
+                "a": RepairableRBD(
+                    bridge,
+                    {x: unit(40 + 3 * i, 1.5) for i, x in enumerate("abcde")},
+                ),
+                **{x: unit(50 + 7 * i, 2.0) for i, x in enumerate("bcde")},
+            },
+        ),
     }
 
 
@@ -1550,13 +1546,11 @@ def test_what_numba_does_not_run_inside_a_nested_rbd():
             [("s", "m"), ("m", "c"), ("c", "t")], {"m": inner, "c": dict(unit)}
         )
 
-    wide = pairs_in_series(11)
     imperfect = RepairableRBD(
         [("s", "a"), ("a", "t")],
         {"a": {**unit, "repair": {"model": "kijima1", "q": 0.5}}},
     )
     for inner, reason in [
-        (wide, "22 components (a nested RBD of more than 20)"),
         (imperfect, "imperfect repair"),
         (on_condition(), "replacement on condition"),
     ]:
@@ -1579,7 +1573,7 @@ def capacity_rbds():
     of several (a node working at several levels), a node without one
     (unlimited), a demand given and the design capacity's, with
     maintenance, tests, crews and standby groups, a nested RBD's capacity,
-    and more components than the loop tabulates."""
+    and a system of 24 components."""
 
     def unit(scale, shape, repair=None, **extra):
         return {
@@ -1754,6 +1748,7 @@ def test_the_engines_agree_on_costs_and_comparisons():
                 seed=6,
                 quantity=quantity,
                 engine="python",
+                control_variate=False,
             ),
             rbd.compare(
                 faster,
@@ -1762,6 +1757,7 @@ def test_the_engines_agree_on_costs_and_comparisons():
                 seed=6,
                 quantity=quantity,
                 engine="numba",
+                control_variate=False,
             ),
         )
 
@@ -1851,11 +1847,9 @@ def random_repairable(seed):
 
 @needs_numba
 @pytest.mark.parametrize("seed", range(12))
-def test_the_engines_agree_keeping_the_structure_up_to_date(seed, monkeypatch):
-    # Without a table of every state (forced here on small diagrams), the
-    # compiled loop keeps whether the system works up to date as components
-    # change, through modules and a core of path sets alike.
-    monkeypatch.setattr(_compiled, "MAX_TABLED", 0)
+def test_the_engines_agree_keeping_the_structure_up_to_date(seed):
+    # The compiled loop keeps whether the system works up to date as
+    # components change, through modules and a core of path sets alike.
     rbd = random_repairable(seed)
     for extra in ({}, {"broken_nodes": [rbd.nodes[0]]}, {"n_jobs": 2}):
         options = dict(t_simulation=150.0, mc_samples=40, seed=seed, **extra)
@@ -1872,18 +1866,17 @@ def test_the_kept_structure_starts_as_the_structure_function(seed):
     structure = _compiled._structure(
         rbd, {node: c for c, node in enumerate(nodes)}
     )
-    root, always = structure[6], structure[7]
     rng = np.random.default_rng(seed)
     for _ in range(10):
         start = (rng.random(len(nodes)) < 0.6).astype(np.int8)
-        kept = _compiled._kept(structure, start)
-        value, working_paths = kept[9], kept[12]
-        if always:
+        kept = _compiled._kept([structure], start)
+        root, always, value, working = kept[10], kept[11], kept[12], kept[15]
+        if always[0]:
             works = True
-        elif root >= 0:
-            works = bool(value[root])
+        elif root[0] >= 0:
+            works = bool(value[root[0]])
         else:
-            works = working_paths > 0
+            works = working[0] > 0
         assert works == rbd.is_system_working(
             {node: bool(start[c]) for c, node in enumerate(nodes)}, "p"
         )

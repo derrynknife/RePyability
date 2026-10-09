@@ -274,10 +274,10 @@ keeps the simulations' own.)
 ```python
 year = plant.cost(t_simulation=8760.0, mc_samples=400, seed=0,
                   control_variate=False)
-year.mean              # -> 1058918.3   mean cost of a year
-year.cost_rate         # -> 120.88      the mean per hour, against the exact 121.23
-year.std               # -> 58061.7     how much one year's cost varies
-year.percentile(90)    # -> 1132614.9   nine years in ten cost less than this
+year.mean              # -> 1064784.4   mean cost of a year
+year.cost_rate         # -> 121.55      the mean per hour, against the exact 121.23
+year.std               # -> 55340.5     how much one year's cost varies
+year.percentile(90)    # -> 1138386.7   nine years in ten cost less than this
 ```
 
 The **90th percentile** is the cost that 90% of the simulated years stay
@@ -285,7 +285,7 @@ below. Grouping the 400 years into bins 50,000 wide shows the shape:
 
 ```python
 counts, bins = np.histogram(year.samples, bins=np.linspace(0.85e6, 1.25e6, 9))
-counts         # array([  2,   7,  54, 116, 120,  83,  15,   3])
+counts         # array([  1,   9,  34, 109, 143,  78,  26,   0])
 counts.sum()   # -> 400   every simulated year falls in a bin
 ```
 
@@ -294,13 +294,13 @@ xychart-beta
     title "Cost of a year, 400 simulated years"
     x-axis "cost of the year, millions (bin centre)" ["0.875", "0.925", "0.975", "1.025", "1.075", "1.125", "1.175", "1.225"]
     y-axis "number of years" 0 --> 140
-    bar [2, 7, 54, 116, 120, 83, 15, 3]
+    bar [1, 9, 34, 109, 143, 78, 26, 0]
 ```
 
-The mean, 1.059 million, agrees with the exact 1.062 million within the
+The mean, 1.065 million, agrees with the exact 1.062 million within the
 simulation's error (next section). The spread is the new information: a
-typical year lands within about 58,000 of the mean, and one year in ten costs
-more than 1.133 million. That is the budget to set if you can accept an
+typical year lands within about 55,000 of the mean, and one year in ten costs
+more than 1.138 million. That is the budget to set if you can accept an
 overrun one year in ten; a budget equal to the mean is overrun about every
 other year.
 
@@ -308,12 +308,12 @@ The result also breaks the mean down:
 
 ```python
 year.by_category
-# {'repair': 401813.5, 'replace': 252105.0, 'preventive': 0.0,
+# {'repair': 402661.75, 'replace': 253743.75, 'preventive': 0.0,
 #  'inspection': 0.0, 'component_downtime': 0.0,
-#  'system_downtime': 404999.82, 'setup': 0.0}
+#  'system_downtime': 408378.88, 'setup': 0.0}
 year.by_component
-# {'pump1': 158658.0, 'pump2': 159120.5, 'valve': 336140.0}
-sum(year.by_category.values())   # -> 1058918.3   the categories add up to the mean
+# {'pump1': 158803.5, 'pump2': 159277.0, 'valve': 338325.0}
+sum(year.by_category.values())   # -> 1064784.4   the categories add up to the mean
 ```
 
 The categories agree, within simulation error, with the exact terms times
@@ -340,27 +340,27 @@ Run a quick 100 years with the same seed, which are the first 100 of the
 ```python
 quick = plant.cost(t_simulation=8760.0, mc_samples=100, seed=0,
                    control_variate=False)
-quick.std              # -> 56910.1
-quick.percentile(90)   # -> 1128018.5
-quick.mean_se          # -> 5691.0
-year.mean_se           # -> 2903.1
+quick.std              # -> 58535.9
+quick.percentile(90)   # -> 1140300.5
+quick.mean_se          # -> 5853.6
+year.mean_se           # -> 2767.0
 interval = year.mean_interval(0.95)
-interval.lower         # -> 1053228.4
-interval.upper         # -> 1064608.3
+interval.lower         # -> 1059361.1
+interval.upper         # -> 1070207.6
 interval.lower < plant.expected_cost_rate() * 8760 < interval.upper   # True
 ```
 
 | | N = 100 | N = 400 | Shrinks as N grows? |
 |---|---|---|---|
-| `std` | 56,910 | 58,062 | no |
-| `percentile(90)` | 1,128,018 | 1,132,615 | no |
-| `mean_se` | 5,691 | 2,903 | yes, like $1/\sqrt{N}$ |
-| `mean_interval(0.95)` | 1,039,510 to 1,061,819 | 1,053,228 to 1,064,608 | yes |
+| `std` | 58,536 | 55,340 | no |
+| `percentile(90)` | 1,140,301 | 1,138,387 | no |
+| `mean_se` | 5,854 | 2,767 | yes, like $1/\sqrt{N}$ |
+| `mean_interval(0.95)` | 1,047,830 to 1,070,776 | 1,059,361 to 1,070,208 | yes |
 
 Four times the simulations halved the standard error and the width of the
 interval, and left the spread where it was. The exact cost of an average
-year, 1,062,004, lies inside the 400 years' interval, and just above the 100
-years': a 95% interval misses the true value about one time in twenty. Check `mean_interval` before
+year, 1,062,004, lies inside both intervals, as a 95% interval does about
+nineteen times in twenty. Check `mean_interval` before
 quoting a simulated mean; quote a percentile when the question is about one
 year.
 
@@ -380,27 +380,27 @@ less per hour. An 8-hour shift shows it:
 ```python
 shift = plant.cost(t_simulation=8.0, mc_samples=10_000, seed=0,
                    control_variate=False)
-shift.cost_rate                             # -> 111.5   per hour, against 121.23
-shift.by_category["system_downtime"] / 8    # -> 35.7    lost production per hour, against 46.41
+shift.cost_rate                             # -> 112.2   per hour, against 121.23
+shift.by_category["system_downtime"] / 8    # -> 35.5    lost production per hour, against 46.41
 shift_interval = shift.mean_interval(0.95)
-shift_interval.upper / 8                    # -> 115.06  per hour, below 121.23
+shift_interval.upper / 8                    # -> 115.83  per hour, below 121.23
 ```
 
 The whole 95% interval lies below 121.23, so the gap is real. Within a few
 repair times (about ten hours here) the plant forgets how it started and
 costs accrue at the long-run rate, so the start-up saving is a fixed sum
-(about (121.23 − 111.5) × 8 ≈ 78 in the shift) that does not grow with the
-window. Over a year it is lost in the noise: the year's mean came out 3,100
-below rate × window, forty times the start-up saving, so that gap is
-simulation error (1.1 standard errors).
+(about (121.23 − 112.2) × 8 ≈ 72 in the shift) that does not grow with the
+window. Over a year it is lost in the noise: the year's mean came out 2,800
+above rate × window, where the start-up saving alone would put it 72 below,
+so that gap is simulation error (1.0 standard errors).
 
 Short windows also have lopsided distributions, in which the mean is not a
 typical value:
 
 ```python
 shift.percentile(50)   # -> 400.0    the median shift: two pump repairs
-shift.mean             # -> 891.74
-shift.percentile(90)   # -> 3018.3
+shift.mean             # -> 897.70
+shift.percentile(90)   # -> 3030.1
 ```
 
 ## Prices that vary
@@ -442,9 +442,10 @@ Three things follow:
   prices differ, which makes the comparison fair.
 
 ```python
-priced = variable.cost(t_simulation=8760.0, mc_samples=100, seed=0)
+priced = variable.cost(t_simulation=8760.0, mc_samples=100, seed=0,
+                       control_variate=False)
 priced.by_category["system_downtime"] == quick.by_category["system_downtime"]   # True
-priced.std             # -> 57088.0   against 56910.1 at a fixed 200
+priced.std             # -> 58231.4   against 58535.9 at a fixed 200
 ```
 
 The spread barely moved. A year holds about 2 × 8,760/11 ≈ 1,600 pump
@@ -640,23 +641,23 @@ year?
     (drive.expected_cost_rate() - swap.expected_cost_rate()) * 8760   # -> 84395.1
     ```
 
-**2.** For the plant, `year.percentile(90)` is about 1.133 million. What does
+**2.** For the plant, `year.percentile(90)` is about 1.138 million. What does
 this number mean for the plant manager? How often would a budget equal to
-the mean be overrun, and is 1.133 million the worst case?
+the mean be overrun, and is 1.138 million the worst case?
 
 ??? success "Answer"
-    Nine simulated years in ten cost less than 1.133 million, so a budget of
+    Nine simulated years in ten cost less than 1.138 million, so a budget of
     that size is overrun about one year in ten. A year's cost is spread
     almost symmetrically about its mean, so a budget of the mean would be
     overrun about one year in two. It is not a worst case: one year in ten
-    costs more, and the costliest simulated year reached 1.240 million. It
+    costs more, and the costliest simulated year reached 1.195 million. It
     is also an estimate from 400 years; another seed would move it by a few
     thousand.
 
     ```python
     np.mean(year.samples > year.percentile(90))   # -> 0.1
     np.mean(year.samples > year.mean)             # -> 0.5
-    year.samples.max()                            # -> 1239572.6
+    year.samples.max()                            # -> 1195381.3
     ```
 
 **3.** How many simulated years would you need to know the plant's expected
@@ -664,13 +665,13 @@ yearly cost to within ±1,000, with 95% confidence? What would you do instead?
 
 ??? success "Answer"
     The interval's half-width is 1.96 × std/√N, so you need
-    N ≥ (1.96 × 58,100/1,000)² ≈ 13,000 years, about thirty times the 400
+    N ≥ (1.96 × 55,340/1,000)² ≈ 11,800 years, about thirty times the 400
     simulated. Use the exact rate instead: `plant.expected_cost_rate() * 8760`
     gives 1,062,003.8 with no simulation error at all. Simulate for the
     spread, which the exact rate cannot give.
 
     ```python
-    round((1.96 * year.std / 1000) ** 2)   # -> 12951
+    round((1.96 * year.std / 1000) ** 2)   # -> 11765
     ```
 
 **4.** Would a second valve, in parallel with the first, pay for itself in

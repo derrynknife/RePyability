@@ -18,7 +18,10 @@ Theory: [Concepts](../concepts.md#availability).
 ## Components
 
 Each component needs a reliability (time-to-failure) model and a
-repairability (time-to-repair) model:
+repairability (time-to-repair) model. A life is a surpyval distribution,
+fitted or built with `from_params`, or a surpyval `MixtureModel` (a
+population of two or more modes, such as infant mortality and wear-out),
+whose lives the simulations draw by inverting its distribution function:
 
 ```python
 import numpy as np
@@ -167,12 +170,43 @@ some (see [a life that wears out](costs.md#a-life-that-wears-out) and
 [tests and repairs that take
 time](costs.md#tests-and-repairs-that-take-time)). A test that can last as
 long as its interval raises `NotImplementedError`; simulate it. Each component's curve is
-computed on a grid of 2,000 steps over its typical up time: within one step
+computed on a grid of 1,000 steps over its typical up time: within one step
 of a time at which its units start or stop on a schedule (at 0, and at its
 scheduled replacements), what happens faster than a step, such as a short
 repair, is smoothed over it, so a point value there can be off by up to
 about the probability that the component is under repair; mission averages
 are not affected.
+
+A small unavailability, a redundant safety function's `1e-16`, say, is lost
+below one less a number next to 1: `1 - point_availability(t)` cannot hold
+it. `point_unavailability` and `mission_unavailability` (#237) work it out
+in its own right, as `mean_unavailability` does in the long run, each
+component down with one less its availability, or in closed form for one
+with an exponential life and repair (and no maintenance or tests), new at 0:
+
+```python
+valve = {
+    "reliability": surv.Exponential.from_params([1e-9]),
+    "repairability": surv.Exponential.from_params([1 / 8]),
+}
+pair = RepairableRBD(
+    [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")], {"a": valve, "b": valve}
+)
+1 - pair.point_availability(1000.0)   # -> 1.11e-16   the floor of a float
+pair.point_unavailability(1000.0)     # -> 6.4e-17    (8e-9 squared)
+pair.mission_unavailability(8760.0)   # -> 6.391e-17  from new, over a year
+```
+
+!!! note "A window's length, by its name"
+    The methods name a window's length for what it is to them: `t`, the
+    times (or missions' lengths) of the exact values over time
+    (`point_availability`, `mission_availability`, `expected_events`,
+    `expected_cost`); `t_simulation`, the window a simulation runs over
+    (`availability`, `cost`, `compare`, `simulate_timelines`); `horizon`,
+    the time a count or a cost is totalled over (`spares_demand`,
+    `total_cost`, `allocate_redundancy`); and `window`, the window an
+    importance measure is averaged over (#235). Each runs from 0, every
+    component new, unless a `state` is given.
 
 ## Expected events over a window (exact)
 
@@ -412,10 +446,10 @@ costs and criticality measures over the window:
 
 ```python
 result = plant.availability(t_simulation=100.0, mc_samples=2_000, seed=0)
-result.timeline[:3]       # array([0.    , 0.0259, 0.027 ])  times the mean availability changes
+result.timeline[:3]       # array([0.    , 0.0577, 0.0624])  times the mean availability changes
 result.availability[:3]   # array([1.    , 0.9995, 0.999 ])  mean availability at those times
-result.availability[-1]   # -> 0.9495   at t = 100
-np.interp(50, result.timeline, result.availability)   # -> 0.9607   at t = 50
+result.availability[-1]   # -> 0.9600   at t = 100
+np.interp(50, result.timeline, result.availability)   # -> 0.9553   at t = 50
 ```
 
 | Argument | Meaning |
@@ -437,9 +471,9 @@ The curve starts at 1 and settles towards the long-run availability
 (`0.9536` here). Its sampling error is available pointwise:
 
 ```python
-result.availability_se[-1]                            # -> 0.004896   standard error at t = 100
+result.availability_se[-1]                            # -> 0.004382   standard error at t = 100
 lower, upper = result.availability_interval(confidence=0.95)   # Wilson band
-lower[-1], upper[-1]                                  # (0.939, 0.9583)
+lower[-1], upper[-1]                                  # (0.950, 0.9677)
 ```
 
 `lower`/`upper` align with `result.timeline`, ready to draw as a band. The
@@ -454,14 +488,15 @@ result.mean_availability_interval().estimate    # -> 0.9544   exact
 own = plant.availability(t_simulation=100.0, mc_samples=2_000, seed=0,
                          control_variate=False)
 window = own.mean_availability_interval(confidence=0.95)
-window.estimate                   # -> 0.9542   simulated
-window.lower, window.upper        # (0.9526, 0.9558)
+window.estimate                   # -> 0.9543   simulated
+window.lower, window.upper        # (0.9526, 0.9559)
 ```
 
-To compare two designs, simulate them with common random numbers:
-`faster.compare(plant, t_simulation)` estimates how much more of the window
-one is up than the other far more precisely than two separate runs (see
-[Comparing two designs](simulation.md#comparing-two-designs)).
+To compare two designs, `faster.compare(plant, t_simulation)` gives how
+much more of the window one is up than the other: exactly where both
+designs' mission availabilities are worked out, and otherwise by simulating
+them with common random numbers, far more precisely than two separate runs
+(see [Comparing two designs](simulation.md#comparing-two-designs)).
 
 ### What the result holds
 
@@ -484,12 +519,15 @@ one is up than the other far more precisely than two separate runs (see
 | `capacity_timeline`, `capacity`, `capacity_time`, `mean_capacity`, `demand`, `delivered`, `delivered_fraction`, `delivered_fraction_interval(confidence)` | With node capacities: the mean capacity over time, the time at each capacity, and the fraction of the demand delivered (see [System capacity](capacity.md#over-a-window-simulated)). `None` without capacities. |
 
 ```python
-result.mean_up_time      # -> 27.20    against the exact 27.27
-result.failure_frequency # -> 0.035075 against the exact 0.03497
+result.mean_up_time      # -> 28.08    against the exact 27.27
+result.failure_frequency # -> 0.033985 against the exact 0.03497
 ```
 
-The result also behaves as a read-only mapping (`result["availability"]`,
-`result.keys()`, `dict(result)`), so dict-style code keeps working.
+Its values are attributes and properties; what takes a confidence level,
+an interval, is a method. The result also behaves as a read-only mapping
+(`result["availability"]`, `result.keys()`, `dict(result)`), so dict-style
+code keeps working, and `result.to_dict()` gives it as plain data, ready for
+`json.dumps` (#235).
 
 ### Criticality measures
 
@@ -499,9 +537,9 @@ view:
 
 ```python
 c = result.criticalities
-c.operational_criticality_index.down   # {'A': 0.246, 'B': 0.2491, 'C': 0.8252}
-c.failure_criticality_index.per_system_failure   # {'A': 0.222, 'B': 0.2294, 'C': 0.5487}
-c.failure_criticality_index.per_system_failure["C"]   # -> 0.5487
+c.operational_criticality_index.down   # {'A': 0.2407, 'B': 0.2405, 'C': 0.8334}
+c.failure_criticality_index.per_system_failure   # {'A': 0.2247, 'B': 0.2238, 'C': 0.5516}
+c.failure_criticality_index.per_system_failure["C"]   # -> 0.5516
 ```
 
 | Measure | `up` / `by_system` / `per_system_failure` | `down` / `by_component` / `per_component_failure` |
@@ -534,7 +572,7 @@ three = [("s", p) for p in "xyz"] + [(p, "t") for p in "xyz"]
 one_crew = RepairableRBD(three, {p: dict(pump) for p in "xyz"}, repair_crews=1)
 one_crew.mean_availability()    # -> 0.9746
 result = one_crew.availability(20_000.0, mc_samples=40, seed=1)
-result.system_uptime / (40 * 20_000.0)          # -> 0.9747   simulated
+result.system_uptime / (40 * 20_000.0)          # -> 0.9750   simulated
 RepairableRBD(three, {p: dict(pump) for p in "xyz"}).mean_availability()   # -> 0.9954   a crew each
 ```
 
@@ -631,7 +669,7 @@ pumps.mean_availability()    # -> 0.9894
 pumps.mean_down_time()       # -> 10.0   hours: until the first repair ends
 pumps.point_availability(10.0)    # -> 0.9963   ten hours from new
 result = pumps.availability(50_000.0, mc_samples=40, seed=1)
-result.system_uptime / (40 * 50_000.0)          # -> 0.9893   simulated
+result.system_uptime / (40 * 50_000.0)          # -> 0.9889   simulated
 ```
 
 (One pump alone is up 0.9091 of the time; with a switch that always works,
@@ -700,8 +738,8 @@ five_years = 43_800.0
 renewed = line().availability(five_years, mc_samples=20, seed=1)
 patched = line(repair={"model": "kijima1", "q": 0.5}).availability(
     five_years, mc_samples=20, seed=1)
-renewed.system_uptime / (20 * five_years)         # -> 0.9759
-patched.system_uptime / (20 * five_years)         # -> 0.5295
+renewed.system_uptime / (20 * five_years)         # -> 0.9757
+patched.system_uptime / (20 * five_years)         # -> 0.5264
 ```
 
 | Repair | Up | Failures a year | Cost an hour |
@@ -792,7 +830,7 @@ nested = RepairableRBD(
 )
 nested.mean_availability()         # -> 0.9536   the same system as `plant`
 nested.system_failure_frequency()  # -> 0.03497
-nested.availability(t_simulation=100.0, mc_samples=2_000, seed=0).availability[-1]   # -> 0.951
+nested.availability(t_simulation=100.0, mc_samples=2_000, seed=0).availability[-1]   # -> 0.959
 ```
 
 Use one `RepairableRBD` object per place it appears: the same object used for
@@ -823,7 +861,7 @@ plant.initialize_event_queue(100.0)
 events = [plant.next_event()]
 while events[-1][0] < 100.0:
     events.append(plant.next_event())
-events[0]   # (15.06..., False): the plant first went down at t = 15.06
+events[0]   # (17.18..., False): the plant first went down at t = 17.19
 ```
 
 `initialize_event_queue(t_simulation, state=...)` starts the history from

@@ -1,21 +1,18 @@
-"""A run's changes put in time order by the compiled radix sort and merge
-(#201, ``repyability.rbd._time_order``): to the last bit what numpy's
-stable ``argsort``, ``np.unique``, ``searchsorted`` and ``np.cumsum`` give,
-and the same results for whole runs and their chunks, whichever path builds
-them. Without numba every run takes numpy's path, which the rest of the
-suite tests."""
+"""A run's changes put in time order (#201, #208): each simulation's changes
+come as a sorted run, one run after another, and ``repairable_rbd`` nets
+the +1 and -1 changes of state by time, groups the capacity's changes by
+time and merges its totals. Each is checked here against its definition,
+written out plainly: a dict of the changes at each time, their exact sums
+and ``np.cumsum`` of the totals in time order."""
 
-import json
+import math
+from collections import defaultdict
 
 import numpy as np
 import pytest
 
 from repyability.rbd import repairable_rbd
-from repyability.tests.test_simulation_engines import capacity_rbds
-
-numba = pytest.importorskip("numba")
-
-from repyability.rbd import _time_order  # noqa: E402
+from repyability.rbd._exact import ExactSum
 
 
 def bits(array: np.ndarray) -> np.ndarray:
@@ -28,18 +25,6 @@ def same(a, b) -> None:
     a, b = np.asarray(a), np.asarray(b)
     assert a.dtype == b.dtype and a.shape == b.shape
     assert np.array_equal(bits(a), bits(b))
-
-
-@pytest.fixture
-def numpy_path(monkeypatch):
-    """Run what follows on numpy's path, whatever the size."""
-
-    def run(function, *args, **kwargs):
-        with monkeypatch.context() as patch:
-            patch.setattr(repairable_rbd, "_COMPILED_ORDER", np.inf)
-            return function(*args, **kwargs)
-
-    return run
 
 
 def runs(rng, count=300, longest=60):
@@ -66,66 +51,77 @@ def runs(rng, count=300, longest=60):
     return times, steps, deltas
 
 
-@pytest.mark.parametrize("seed", range(4))
-@pytest.mark.parametrize("block", [1 << 16, 97])
-def test_the_radix_sort_is_a_stable_argsort(seed, block, monkeypatch):
-    # In one block, and in many (each sorted on a thread of its own).
-    monkeypatch.setattr(_time_order, "_BLOCK", block)
-    times, steps, deltas = runs(np.random.default_rng(seed))
-    order = np.argsort(times, kind="stable")
-    for values in (steps, deltas):
-        kept = times.copy(), values.copy()
-        sorted_times, sorted_values = _time_order.sort_by_time(times, values)
-        same(sorted_times, times[order])
-        same(sorted_values, values[order])
-        same(times, kept[0])  # left as they were, without reuse
-        same(values, kept[1])
-        reused = _time_order.sort_by_time(
-            times.copy(), values.copy(), reuse=True
-        )
-        same(reused[0], times[order])
-        same(reused[1], values[order])
+def by_time(times, values) -> dict:
+    """Each time's values, the times in order."""
+    grouped = defaultdict(list)
+    for t, v in zip(times.tolist(), values.tolist()):
+        grouped[t + 0.0].append(v)  # -0.0 is 0.0's time
+    return dict(sorted(grouped.items()))
+
+
+CASES = {
+    "none": np.zeros(0),
+    "at zero, as -0.0 too": np.array([0.0, -0.0, 0.0, 3.0]),
+    "at the end and beyond": np.array([1.0, 100.0, 100.0, 130.0]),
+}
 
 
 @pytest.mark.parametrize("seed", range(4))
-def test_grouped_by_time_as_numpy_groups_them(seed, numpy_path):
-    times, steps, deltas = runs(np.random.default_rng(seed))
-    for values in (steps, deltas):
-        compiled = _time_order.by_time(times.copy(), values.copy())
-        expected = numpy_path(repairable_rbd._by_time, times, values)
-        for got, want in zip(compiled, expected):
-            same(got, want)
-        at, ordered, starts = compiled
-        same(
-            repairable_rbd._group_totals(ordered, starts),
-            numpy_path(repairable_rbd._group_totals, ordered, starts),
-        )
+@pytest.mark.parametrize("start", [0, 40])
+def test_the_working_count_after_each_time(seed, start):
+    rng = np.random.default_rng(seed)
+    times, _, deltas = runs(rng)
+    expected = by_time(np.r_[times, 0.0, 100.0], np.r_[deltas, 0, 0])
+    count = start + np.cumsum([sum(d) for d in expected.values()])
+    time, working = repairable_rbd._working_over_time(
+        times, deltas, 100.0, start
+    )
+    same(time, np.array(list(expected), dtype=float))
+    same(working, count.astype(float))
 
 
-@pytest.mark.parametrize(
-    "times",
-    [
-        np.zeros(0),
-        np.array([3.0]),
-        np.array([1.0, 2.0, 2.0, 7.0]),  # in order already
-        np.array([2.0, 2.0, 2.0]),  # one time: no digit to sort by
-    ],
-)
-def test_short_and_ordered_changes(times, numpy_path):
-    values = np.arange(times.size, dtype=float)
-    compiled = _time_order.by_time(times, values)
-    for got, want in zip(
-        compiled, numpy_path(repairable_rbd._by_time, times, values)
-    ):
-        same(got, want)
+@pytest.mark.parametrize("case", sorted(CASES))
+def test_the_working_count_at_the_edges(case):
+    times = CASES[case]
+    deltas = np.resize(np.array([-1, 1], dtype=np.int64), times.size)
+    expected = by_time(np.r_[times, 0.0, 100.0], np.r_[deltas, 0, 0])
+    time, working = repairable_rbd._working_over_time(times, deltas, 100.0, 7)
+    same(time, np.array(list(expected), dtype=float))
+    same(working, 7.0 + np.cumsum([sum(d) for d in expected.values()]))
 
 
-@pytest.mark.parametrize("odd", [-1.0, -0.0, np.nan])
-def test_times_whose_bits_do_not_sort_are_left_to_numpy(odd):
-    times = np.array([3.0, 1.0, odd, 2.0])
-    values = np.arange(4.0)
-    assert _time_order.sort_by_time(times, values) is None
-    assert _time_order.by_time(times, values) is None
+def exact_total(values: list) -> float:
+    """A time's total change: a lone change itself (``-0.0`` stays), else
+    the exact sum, rounded once."""
+    return values[0] if len(values) == 1 else float(ExactSum(values))
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_the_capacity_changes_grouped_by_time(seed):
+    rng = np.random.default_rng(seed)
+    times, steps, _ = runs(rng)
+    expected = by_time(times, steps)
+    at, values, starts = repairable_rbd._by_time(times, steps)
+    same(at, np.array(list(expected), dtype=float))
+    stops = np.append(starts[1:], values.size)
+    for a, b, want in zip(starts, stops, expected.values()):
+        assert sorted(values[a:b].tolist()) == sorted(want)
+    totals = repairable_rbd._group_totals(values, starts)
+    same(totals, np.array([exact_total(v) for v in expected.values()]))
+    assert all(
+        math.isclose(t, math.fsum(v), abs_tol=0.0)
+        for t, v in zip(totals.tolist(), expected.values())
+    )
+
+
+@pytest.mark.parametrize("seed", range(4))
+def test_the_net_changes_by_time(seed):
+    rng = np.random.default_rng(seed)
+    times, _, deltas = runs(rng)
+    expected = by_time(times, deltas)
+    at, net = repairable_rbd._net_by_time(times, deltas)
+    same(at, np.array(list(expected), dtype=float))
+    same(net, np.array([sum(d) for d in expected.values()], dtype=np.int64))
 
 
 def merge_cases():
@@ -167,60 +163,16 @@ def merge_cases():
 
 
 @pytest.mark.parametrize("case", sorted(merge_cases()))
-def test_the_merge_is_numpy_s_unique_searchsorted_and_cumsum(case, numpy_path):
+def test_the_capacity_totals_merged(case):
     at, change, free_at, counts = merge_cases()[case]
-    compiled = _time_order.capacity_totals(at, change, free_at, counts, 10.0)
-    expected = numpy_path(
-        repairable_rbd._capacity_totals, at, change, free_at, counts, 10.0
+    every = sorted(set(at.tolist()) | set(free_at.tolist()) | {0.0, 10.0})
+    step = dict.fromkeys(every, 0.0)
+    step.update(zip(at.tolist(), change.tolist()))
+    freed = dict.fromkeys(every, 0)
+    freed.update(zip(free_at.tolist(), counts.tolist()))
+    times, totals, unlimited = repairable_rbd._capacity_totals(
+        at, change, free_at, counts, 10.0
     )
-    for got, want in zip(compiled, expected):
-        same(got, want)
-
-
-def test_an_undefined_time_is_left_to_numpy():
-    at = np.array([1.0, np.nan])
-    assert (
-        _time_order.capacity_totals(
-            at, np.ones(2), np.zeros(0), np.zeros(0, int), 10.0
-        )
-        is None
-    )
-
-
-def bit_identical(a, b, path="result"):
-    """Two results the same to the last bit (``-0.0`` apart from ``0.0``)."""
-    import dataclasses
-
-    if dataclasses.is_dataclass(a):
-        assert type(a) is type(b), path
-        for f in dataclasses.fields(a):
-            bit_identical(getattr(a, f.name), getattr(b, f.name), path)
-    elif isinstance(a, dict):
-        assert list(a) == list(b), path
-        for key in a:
-            bit_identical(a[key], b[key], f"{path}[{key!r}]")
-    elif isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
-        same(a, b)
-    elif isinstance(a, float):
-        assert np.float64(a).view(np.uint64) == np.float64(b).view(
-            np.uint64
-        ), path
-    else:
-        assert a == b, path
-
-
-@pytest.mark.parametrize("name", sorted(capacity_rbds()))
-def test_runs_and_chunks_are_the_same_on_either_path(
-    name, monkeypatch, numpy_path
-):
-    rbd, kwargs = capacity_rbds()[name]
-    expected = numpy_path(
-        rbd.availability, 200.0, mc_samples=24, seed=5, **kwargs
-    )
-    chunk = numpy_path(rbd.simulate_chunk, 200.0, 0, 24, seed=5, **kwargs)
-    monkeypatch.setattr(repairable_rbd, "_COMPILED_ORDER", 0)
-    bit_identical(
-        rbd.availability(200.0, mc_samples=24, seed=5, **kwargs), expected
-    )
-    compiled = rbd.simulate_chunk(200.0, 0, 24, seed=5, **kwargs)
-    assert json.dumps(compiled.to_dict()) == json.dumps(chunk.to_dict())
+    same(times, np.array(every, dtype=float))
+    same(totals, np.cumsum(np.array(list(step.values()), dtype=float)))
+    same(unlimited, np.cumsum(list(freed.values())) > 0)

@@ -13,8 +13,8 @@ taking already-fitted lifetime models (from
 `sf`/`ff`) as its components:
 
 - **Fault trees**: static fault trees (OR, AND and VOTE gates, repeated
-  events) evaluated exactly, with cut sets, importance measures and
-  conversion to and from block diagrams.
+  events) evaluated exactly, with common-cause groups, cut sets, importance
+  measures and conversion to and from block diagrams.
 - **Reliability**: exact system reliability, hazard and conditional survival;
   the exact MTTF (or simulated, with confidence intervals); B*X* life;
   uncertainty intervals on the reliability, MTTF, B*X* life and time to a
@@ -26,7 +26,8 @@ taking already-fitted lifetime models (from
   landing), each with its own diagram over the same components: the exact
   mission reliability and the chance of failing in each phase.
 - **Testing**: demonstration test plans (the units, or the test time, that
-  demonstrate a reliability or an MTBF), what a test demonstrated, and the
+  demonstrate a reliability or an MTBF), plans that keep both the
+  producer's and the consumer's risk, what a test demonstrated, and the
   chance a design passes.
 - **Importance**: Birnbaum, improvement potential, RAW, RRW, criticality,
   Fussell–Vesely, structural importance and parameter sensitivity, on
@@ -41,9 +42,12 @@ taking already-fitted lifetime models (from
 - **Live state**: reliability, remaining life and importance given each
   component's current age, and covariate-dependent components.
 - **Redundancy and dependence**: cold, warm and hot standby; repeated nodes;
-  load sharing; beta-factor and MGL common-cause groups.
+  load sharing; junctions (a vote point that never fails); beta-factor and
+  MGL common-cause groups, splitting a probability or a failure rate, in
+  block diagrams, repairable systems and fault trees.
 - **Repairable systems**: exact long-run availability, failure frequency and
-  MUT/MDT/MTBF; exact availability over time and over a mission; simulated
+  MUT/MDT/MTBF; exact availability over time and over a mission, and the
+  unavailability to its own precision (a PFD of 1e-17); simulated
   histories with criticality measures; shared repair crews, exact for
   exponential components in the long run and numerical over time, with
   their importance; repairable standby groups (a duty unit and its spares,
@@ -57,7 +61,8 @@ taking already-fitted lifetime models (from
   probability of meeting a demand, and the production availability.
 - **Spares**: how many spares each component uses over a horizon, for a
   system or a fleet, and the stock that meets a fill rate or a stock-out
-  target for a replenishment lead time.
+  target for a replenishment lead time, with interchangeable components'
+  spares pooled on one shelf.
 - **Timelines**: up/down histories, from outage logs or simulated, with
   their measures (time up, failures and who caused them, first failure);
   merged as a diagram's structure, so a system's history follows from its
@@ -75,11 +80,15 @@ taking already-fitted lifetime models (from
   maintenance of grouped components at each other's stops,
   with its intervals chosen for a cost or availability target, hidden
   failures found by periodic inspection, with the test intervals chosen for a
-  PFDavg target, the total cost of ownership, optimal redundancy allocation
-  (for the lowest total cost of a repairable system, too), reliability
+  PFDavg target, the total cost of ownership, discounted to a present
+  value from new or in the long run, optimal redundancy allocation (for the
+  lowest total cost of a repairable system, too, with whole trains given
+  copies together), reliability
   allocation by the classic named methods (equal and ARINC-style
   apportionment, minimum effort, cost-based), availability allocation to
   MTTF and MTTR targets, and age-replacement and overhaul policies.
+- **Saving**: diagrams to and from JSON, seeded results that repeat, and
+  every result as plain data (`to_dict()`, ready for `json.dumps`).
 
 ```python
 import surpyval as surv
@@ -156,7 +165,7 @@ places, nested diagrams):
 |---|---|---|
 | **What you ask** | | |
 | Sampled lifetimes or histories, and distributions or percentiles of an outcome over a window | Simulated (from new, or from the components' current states); each simulation's histories, the system's and its components', kept whole as timelines by `simulate_timelines` (from new) | Yes: the answer is a sample. Its mean over a window (failures, outages, downtime, cost, the capacity delivered) is exact, from new or from a state: `expected_events`, `expected_cost`, `mission_capacity`. |
-| Comparing two designs (`compare`) | Simulated, with common random numbers | No, where both are exact: compare their exact values. |
+| Comparing two designs (`compare`) | Exact where both designs' expected values are (their MTTFs; a repairable system's mission availability and expected cost), with no simulation (#236); otherwise, or on request (`method="simulate"`, `control_variate=False`), simulated with common random numbers | Only where a design's own values are simulated. |
 | The uncertainty from fitted component parameters (`sf_uncertainty`, `mean_uncertainty`, `bx_life_uncertainty`, `time_to_reliability_uncertainty`; for a repairable system `mean_availability_uncertainty`, `point_availability_uncertainty`, `mission_availability_uncertainty`, `expected_cost_rate_uncertainty`) | Sampled over the parameters, randomly or quasi-randomly (`sampling="sobol"`), each draw exact or numerical as the diagram's own value is | Sampling is the method. |
 | Small failure probabilities, with a node only simulations take | Rare-event simulation (`unreliability_interval`); `ff` refused | Only while the node has no reliability of its own: an exact diagram gives `ff` directly, to full precision however small (a numerical node, such as a cold-standby group of non-exponential units, to its own accuracy, about 1e-6). |
 | **Components** | | |
@@ -167,7 +176,7 @@ places, nested diagrams):
 | **Architecture and maintenance** | | |
 | Phased missions and networks too large for their decision diagrams | Refused, pointing to `method="simulate"` | Only in practice: the diagrams grow with the phases' and the network's width rather than their paths, so meshed missions and networks are exact (a network grid of 100 nodes in a second and a half); one of 121 nodes passes the limit, `repyability.network.MAX_STATES`, which can be raised. |
 | Block diagrams too meshed for their decision diagrams | Simulated (lifetimes, availability, cost and timelines, in Python); the exact and numerical analyses refused | Only in practice: the diagram grows with how wide the mesh is rather than with its paths, so most meshes are exact (a 10 × 10 grid in 0.04 seconds, a random mesh of 60 nodes and 345 links in 2); one of 70 nodes and 485 links passes the limit, `repyability.rbd.bdd.STEP_LIMIT`, which can be raised. |
-| Common-cause groups in a repairable diagram | For exponential lives, tested or repaired: the long run, importance and the allocations exact (a beta-factor member's copies join its group, and the availability allocations keep the members' availability), the values over time from new numerical (the groups' Markov chains), and the simulations draw the shared causes, in Python. Members of other lives refused, and members held or started from a current state | Other lives: a shared cause has no one rate for members of different ages, so they need a model first. From a current state, no: the chains and the simulations could start from the members' states. |
+| Common-cause groups in a repairable diagram | For exponential lives, tested or repaired: the long run, importance and the allocations exact (a beta-factor member's copies join its group, and the availability allocations keep the members' availability), and numerical where the members' tests and repairs take a fixed or an exponential time (#220); the values over time from new numerical (the groups' Markov chains), and the simulations draw the shared causes, in Python. Members of other lives refused, as are tests and repairs of other lengths, copies of members whose tests or repairs take time, the failure frequency where their tests do, and members held or started from a current state | Other lives: a shared cause has no one rate for members of different ages, so they need a model first. Tests and repairs of other lengths, no: the chain could follow them on a grid, as a single component's model does. From a current state, no: the chains and the simulations could start from the members' states. |
 | Shared repair crews | For exponential lives and repairs, the long run and importance exact, and the values over time numerical (the same Markov chain, followed by uniformization), but the allocations; other lives simulated. The maintenance and test intervals are chosen as if every repair started at once on request (`assume_unlimited_crews=True`), for a plan to simulate with the crews | Other lives: yes, in general. |
 | Standby groups (a duty unit and its spares, repaired) | For exponential units, the long run and importance exact, and the values over time numerical (the units' Markov chain, followed by uniformization); other units simulated | Other units: yes, in general. |
 | Opportunistic maintenance (renewals at a group's stops) | Simulated | Yes: each member's renewals depend on the others' ages. |

@@ -12,7 +12,6 @@ from scipy.special import gammainc
 from surpyval import KaplanMeier, LogNormal, Weibull
 
 from repyability.non_repairable import NonRepairable
-from repyability.rbd._model_utils import lfp_extras
 from repyability.utils.wrappers import numpy_seed
 
 
@@ -90,8 +89,8 @@ def test_weibull_no_optimal_replacement():
     for model, rate in [
         (Weibull.from_params((1000, 0.5), gamma=1), 5 / 2001),
         (Weibull.from_params((1000, 0.5), f0=0.1), 5 / 1800),
-        (Weibull.from_params((1000, 0.5), **lfp_extras(0.9)), 0.0),
-        (Weibull.from_params((1000, 3.0), **lfp_extras(0.9)), 0.0),
+        (Weibull.from_params((1000, 0.5), lfp_p=0.9), 0.0),
+        (Weibull.from_params((1000, 3.0), lfp_p=0.9), 0.0),
         (surv.Gamma.from_params((0.5, 0.001)), 5 / 500),
     ]:
         nr_model = NonRepairable(model)
@@ -302,7 +301,7 @@ def test_a_standby_that_may_never_fail_is_never_replaced():
     # rate keeps falling with the replacement age.
     from repyability import StandbyModel
 
-    never = surv.Weibull.from_params([1000, 2.5], **lfp_extras(0.6))
+    never = surv.Weibull.from_params([1000, 2.5], lfp_p=0.6)
     unit = NonRepairable(StandbyModel([never, never]))
     unit.set_costs_planned_and_unplanned(1, 5)
     assert unit.find_optimal_replacement() == np.inf

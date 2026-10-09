@@ -29,7 +29,6 @@ from repyability import (
     RepairableRBD,
 )
 from repyability.rbd import capacity as engine
-from repyability.rbd._model_utils import lfp_extras
 
 FEP = surv.FixedEventProbability
 E = surv.Exponential.from_params
@@ -223,7 +222,7 @@ def test_k_identical_units_of_one_kth_capacity(k):
     np.testing.assert_allclose(capacity.probabilities, binomial, rtol=1e-12)
     assert capacity.meets(1.0) == pytest.approx(p**k)
     assert capacity.meets(1 / k) == pytest.approx(1 - (1 - p) ** k)
-    assert capacity.mean() == pytest.approx(p)
+    assert capacity.mean == pytest.approx(p)
     # Against a demand of 1 the fraction delivered is the expected
     # capacity: no state carries more than 1.
     assert capacity.delivered_fraction(1.0) == pytest.approx(p)
@@ -353,7 +352,7 @@ def test_positive_capacity_is_the_reliability_over_time():
     one = rbd.capacity_distribution(500.0)
     np.testing.assert_allclose(one.probabilities, capacity.probabilities[:, 2])
     assert isinstance(one.meets(20), float)
-    assert isinstance(one.mean(), float)
+    assert isinstance(one.mean, float)
 
 
 @pytest.mark.filterwarnings("ignore:Common-cause group:UserWarning")
@@ -410,7 +409,7 @@ def test_repairable_long_run():
         [(1 - a) ** 3, 3 * a * (1 - a) ** 2, 3 * a**2 * (1 - a), a**3],
     )
     assert capacity.meets(1) == pytest.approx(plant.mean_availability())
-    assert capacity.mean() == pytest.approx(150 * a)
+    assert capacity.mean == pytest.approx(150 * a)
     down = plant.capacity_distribution(broken_nodes=["a"])
     assert down.levels.tolist() == [0.0, 50.0, 100.0]
 
@@ -473,7 +472,7 @@ def test_unlimited_capacity():
     capacity = rbd.system_capacity({"a": 0.9, "b": 0.8})
     assert capacity.levels.tolist() == [0.0, 5.0, math.inf]
     assert capacity.meets(math.inf) == pytest.approx(0.8)
-    assert capacity.mean() == math.inf
+    assert capacity.mean == math.inf
     assert capacity.delivered_fraction(10) == pytest.approx(
         0.8 + 0.9 * 0.2 * 0.5
     )
@@ -489,7 +488,7 @@ def test_mean_ignores_unreachable_infinite_levels():
         np.array([0.0, 1.0, math.inf]),
         np.array([[0.5, 0.5], [0.5, 0.0], [0.0, 0.5]]),
     )
-    mean = capacity.mean()
+    mean = capacity.mean
     assert mean[0] == pytest.approx(0.5)
     assert mean[1] == math.inf
 
@@ -928,7 +927,7 @@ def test_repairable_multi_state_nodes_in_the_long_run():
 def test_a_stage_that_may_never_end():
     # Units whose second stage never ends (30%) are caught in it for good;
     # the rest fail, are renewed, and sooner or later are caught too.
-    forever = surv.Weibull.from_params([100, 2], **lfp_extras(0.7))
+    forever = surv.Weibull.from_params([100, 2], lfp_p=0.7)
     stages = DegradingNode([(100, E([0.01])), (50, forever)])
     np.testing.assert_allclose(stages.stage_fractions(), [0.0, 1.0])
     assert stages.mean() == math.inf
@@ -1000,3 +999,22 @@ def test_system_capacity_needs_the_capacity_of_every_node():
         [("s", "a"), ("a", "t")], {"a": stages}, capacity={"a": 3}
     )
     assert given.system_capacity({"a": 0.5}).levels.tolist() == [0.0, 3.0]
+
+
+@pytest.mark.parametrize("rows", [0, 1, 7, 40])
+def test_merged_sums_equal_levels_as_its_definition(rows):
+    # #246: the sorted reduction gives the sums ``np.add.at`` makes, up to
+    # rounding, on the same levels, and nothing when no level is given.
+    rng = np.random.default_rng(rows)
+    levels = rng.choice([0.0, 1.0, 2.5, 1.0 + 1e-14, 3.0], size=(rows, 1))
+    probabilities = rng.random((rows, 6))
+    probabilities[rng.random(rows) < 0.2] = 0.0
+    tidied = np.array([engine.tidy(v) for v in levels.ravel()])
+    unique, where = np.unique(tidied, return_inverse=True)
+    sums = np.zeros((unique.size, 6))
+    np.add.at(sums, where, probabilities)
+    kept = np.any(sums != 0.0, axis=1)
+    got_levels, got = engine.merged(levels, probabilities)
+    assert got_levels.tolist() == unique[kept].tolist()
+    assert got.shape == (kept.sum(), 6)
+    np.testing.assert_allclose(got, sums[kept], rtol=1e-14, atol=0.0)

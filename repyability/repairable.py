@@ -54,7 +54,8 @@ from scipy.special import gammaln
 
 from repyability.maintenance import FailureLimitPolicy, MaintenancePolicy
 from repyability.rbd._model_utils import failure_time_scale
-from repyability.utils.wrappers import numpy_seed
+from repyability.utils.deprecation import refuse_removed_names
+from repyability.utils.wrappers import numpy_seed, outside_level
 
 # Simulation draws used to estimate E[N(t)] for a simulation-backed
 # (imperfect-repair) model. Ignored for analytic (``cif``) models.
@@ -146,6 +147,7 @@ def _cut_short(caught: warnings.WarningMessage) -> bool:
     )
 
 
+@refuse_removed_names
 class Repairable:
     """Repairable component with optimal overhaul and failure-limit policies.
 
@@ -612,7 +614,7 @@ class Repairable:
             warnings.warn(
                 "The cost rate is still falling at the search horizon "
                 f"{reason}; the horizon is returned.",
-                stacklevel=4,
+                stacklevel=outside_level(),
             )
         return float(grid[i]), float(rates[i])
 
@@ -848,7 +850,7 @@ class Repairable:
                 f"{achievable} failures; the search was truncated from "
                 f"{max_failures}. For minimal repair use "
                 "minimal_repair_time_to_nth_failure().",
-                stacklevel=3,
+                stacklevel=outside_level(),
             )
         data = result.data
         x = np.asarray(data.x, dtype=float)

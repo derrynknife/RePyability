@@ -5,35 +5,25 @@ of its own: a component's times to failure, its repair times, its
 maintenance or test times, and the amounts charged for it when a cost is a
 distribution. A stream is named by the component's place in the diagram
 (its node name, and the node names down through nested RBDs) and the kind of
-quantity, and its ``k``-th draw in simulation ``r`` depends on nothing but
-the run's entropy (its seed), the stream's name, ``r`` and ``k``:
-
-- the simulations are taken in blocks of the stream's ``width``: many
-  simulations to a block for a component that fails a few times in the
-  window, a single one for a component that fails thousands of times. Each
-  block of each stream has a generator of its own, seeded from the entropy,
-  the stream's name and the block's position;
-- a block's uniforms are laid out one row per draw and one column per
-  simulation (row ``k`` holds every simulation's ``k``-th uniform), a chunk
-  of rows at a time, so a block extended by more rows keeps the rows it
-  had; and the stream's quantile function turns them into draws, a whole
-  chunk at a time.
+quantity, and its ``k``-th uniform in simulation ``r`` is defined by the
+run's entropy (its seed), the stream's name, ``r`` and ``k`` alone (#209):
+the ``k``-th of numpy's Philox generator with the stream's key (``key``,
+from the entropy and the name) and the counter ``(0, r, 0, 0)``
+(``_philox``). The stream's quantile function turns it into the draw.
 
 So a simulation draws the same numbers however many simulations the run
 has, in however many processes or threads, in whatever order, and whichever
 engine runs it: the event loop in Python and the compiled one read the same
 values. A component in the same place in another system draws the same
-uniforms (common random numbers, for ``compare``). With antithetic pairs, a
-column serves a pair: the second simulation draws ``1 - u`` for each
-uniform ``u`` of the first.
+uniforms (common random numbers, for ``compare``). With antithetic pairs,
+pair ``m`` (simulations ``2m`` and ``2m + 1``) is counted as ``r = m``: the
+second simulation draws ``1 - u`` for each uniform ``u`` of the first.
 
-A stream's width follows from how many draws a simulation is expected to
-take from it (``first_rows``, ``block_width``), which depends on its models
-and the window. It decides which uniform goes to which simulation, so it is
-part of what the draws are: ``compare`` gives the two systems' streams the
-same widths. How many rows a chunk has only decides how the draws are
-computed: a simulation that needs more rows than its block has gets another
-chunk, and the uniforms are the same however the rows are chunked.
+The draws are worked out in blocks, for speed alone: a block holds
+``width`` simulations (many for a component that fails a few times in the
+window, one for a component that fails thousands of times, see
+``first_rows`` and ``block_width``) and is extended a chunk of rows at a
+time. The layout decides how the draws are computed, never what they are.
 """
 
 import hashlib
@@ -41,6 +31,9 @@ from dataclasses import dataclass
 from typing import Callable, Dict, Optional, Tuple
 
 import numpy as np
+
+from repyability.rbd import _philox
+from repyability.utils.checks import seed as check_seed
 
 # The kinds of quantity a stream draws.
 FAILURE, REPAIR, DURATION = 0, 1, 2
@@ -68,9 +61,8 @@ COST_KINDS = {
 }
 
 #: The draws a block of a stream aims for: its width times the rows each
-#: simulation is expected to use. Seeding a block's generator and calling
-#: the quantile function cost some microseconds, spread over this many
-#: draws.
+#: simulation is expected to use. Making a block and calling the quantile
+#: function cost some microseconds, spread over this many draws.
 BLOCK_DRAWS = 65536
 #: The widest block, in simulations (antithetic pairs, with pairs).
 MAX_WIDTH = 1024
@@ -154,23 +146,47 @@ def _values(sampler, u: np.ndarray) -> np.ndarray:
     return values
 
 
+def key(entropy, spec: "Spec") -> np.ndarray:
+    """The Philox key of a run's stream: two 64-bit words from the run's
+    entropy and the stream's name."""
+    path = path_key(spec.path)
+    seeds = np.random.SeedSequence(
+        entropy, spawn_key=(path & 0xFFFFFFFF, path >> 32, spec.kind)
+    )
+    return seeds.generate_state(2, np.uint64)
+
+
+def _uniforms_function():
+    """``_philox.uniforms``, compiled where numba is installed."""
+    from repyability.rbd import _compiled
+
+    if _compiled.available():
+        from repyability.rbd import _philox_kernel
+
+        return _philox_kernel.uniforms
+    return _philox.uniforms
+
+
 class Block:
     """One block of one stream: every draw of ``width`` simulations (or
     antithetic pairs), extended a chunk of rows at a time. ``values`` holds
     a row per simulation, ``values[j, k]`` being simulation ``j``'s
     ``k``-th draw (with pairs, a pair's first simulation and then its
-    second, in turn); the uniforms are laid out the other way round (see
-    the module docstring)."""
+    second, in turn)."""
 
-    __slots__ = ("_generator", "_spec", "_antithetic", "chunks", "values")
+    __slots__ = (
+        "_key",
+        "_counters",
+        "_spec",
+        "_antithetic",
+        "chunks",
+        "values",
+    )
 
-    def __init__(self, entropy, spec: Spec, index: int, antithetic: bool):
-        key = path_key(spec.path)
-        seeds = np.random.SeedSequence(
-            entropy,
-            spawn_key=(key & 0xFFFFFFFF, key >> 32, spec.kind, index),
-        )
-        self._generator = np.random.Generator(np.random.PCG64(seeds))
+    def __init__(self, key, spec: Spec, index: int, antithetic: bool):
+        self._key = key
+        first = index * spec.width
+        self._counters = np.arange(first, first + spec.width, dtype=np.uint64)
         self._spec = spec
         self._antithetic = antithetic
         self.chunks = 0
@@ -182,12 +198,14 @@ class Block:
         each simulation."""
         spec = self._spec
         rows, width = spec.chunk_rows(self.chunks), spec.width
-        u = self._generator.random(rows * width)
-        draws = _values(spec.sampler, u).reshape(rows, width).T
+        done = self.values.shape[1] if self.chunks else 0
+        u = _uniforms_function()(self._key, self._counters, done, rows)
+        u = u.ravel()
+        draws = _values(spec.sampler, u).reshape(width, rows)
         if self._antithetic:
             chunk = np.empty((2 * width, rows))
             chunk[0::2] = draws
-            chunk[1::2] = _values(spec.sampler, 1.0 - u).reshape(rows, width).T
+            chunk[1::2] = _values(spec.sampler, 1.0 - u).reshape(width, rows)
         else:
             chunk = draws
         if self.chunks:
@@ -205,12 +223,17 @@ class Plan:
         self.entropy = entropy
         self.antithetic = antithetic
         self.specs = specs
+        #: Each stream's key, worked out once a run (see ``key``).
+        self._keys: Dict[Name, np.ndarray] = {}
 
     def columns(self, spec: Spec) -> int:
         return spec.width * (2 if self.antithetic else 1)
 
     def block(self, spec: Spec, index: int) -> Block:
-        return Block(self.entropy, spec, index, self.antithetic)
+        found = self._keys.get(spec.name)
+        if found is None:
+            found = self._keys[spec.name] = key(self.entropy, spec)
+        return Block(found, spec, index, self.antithetic)
 
 
 def replication_seed(entropy, replication: int) -> np.ndarray:
@@ -225,7 +248,7 @@ def entropy_of(seed) -> int:
     seed, from that RNG as the seed would seed it (without touching it).
     So a run with ``seed=s`` is the run ``np.random.seed(s)`` makes
     reproducible, and takes the same seeds (0 to ``2**32 - 1``)."""
-    if seed is None:
+    if check_seed(seed) is None:
         return int(np.random.randint(0, 2**62, dtype=np.int64))
     return int(np.random.RandomState(seed).randint(0, 2**62, dtype=np.int64))
 

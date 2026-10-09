@@ -44,6 +44,7 @@ from repyability.rbd._ordered_bdd import FALSE, TRUE, OrderedBDD
 from repyability.rbd._sampling import lifetime_sampler
 from repyability.rbd.results import ConfidenceInterval
 from repyability.rbd.shannon import _shannon_value_and_gradient
+from repyability.utils.deprecation import refuse_removed_names
 from repyability.utils.wrappers import numpy_seed
 
 #: How the exact values are worked out: ``"bdd"`` (the default), by the
@@ -199,6 +200,7 @@ def _phase_diagram(
     return slots[root]
 
 
+@refuse_removed_names
 class PhasedMission:
     """A mission through phases, each with its own duration and diagram over
     the same non-repairable components.

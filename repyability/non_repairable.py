@@ -6,11 +6,13 @@ from repyability.maintenance import MaintenancePolicy
 from repyability.rbd._model_utils import (
     distribution_name,
     is_exponential,
+    is_mixture,
     model_mean,
     never_fails,
 )
-from repyability.rbd.helper_classes import PerfectReliability
+from repyability.rbd.helper_classes import PerfectReliability, perfect_class
 from repyability.rbd.standby_node import StandbyModel
+from repyability.utils.checks import no_distribution
 
 FAILURE = 1
 REPLACE = 0
@@ -94,6 +96,9 @@ class NonRepairable:
 
         - a surpyval parametric distribution, fitted or built with
           ``from_params``;
+        - a surpyval ``MixtureModel`` (a population of several modes,
+          such as infant mortality and wear-out), which has no quantile
+          function: the simulations invert its distribution function;
         - a surpyval non-parametric estimate (e.g. a ``KaplanMeier``
           fit). For the cost calculations its survival function is taken
           as linear between its time points, starting from 1 at age 0,
@@ -103,10 +108,11 @@ class NonRepairable:
         - a [`StandbyModel`][repyability.StandbyModel], in any of its
           forms (a closed form, a convolution or a simulation), through its
           survival function ``sf``.
-    time_to_replace : surpyval model, optional
+    time_to_replace : surpyval model or "instant", optional
         The distribution of the time taken to replace the unit after a
         failure, used by the availability and event methods. By default
-        None: instantaneous replacement (``ExactEventTime.from_params(0)``).
+        None, or ``"instant"`` as a ``RepairableRBD`` spec takes it:
+        instantaneous replacement (``ExactEventTime.from_params(0)``).
 
     Attributes
     ----------
@@ -126,8 +132,12 @@ class NonRepairable:
     Raises
     ------
     ValueError
-        If ``reliability`` is not a surpyval parametric or non-parametric
-        model or a ``StandbyModel``.
+        If ``reliability`` is not a surpyval parametric, mixture or
+        non-parametric model or a ``StandbyModel``, or ``time_to_replace``
+        is text other than ``"instant"``.
+    TypeError
+        If either is a surpyval distribution itself (``surv.Weibull``)
+        rather than a model of it, or ``time_to_replace`` is not a model.
 
     Examples
     --------
@@ -158,10 +168,32 @@ class NonRepairable:
     """
 
     def __init__(self, reliability, time_to_replace=None):
+        reliability = perfect_class(reliability)
+        no_distribution(reliability, "A NonRepairable's life")
+        no_distribution(time_to_replace, "A NonRepairable's time_to_replace")
+        if isinstance(time_to_replace, str):
+            if time_to_replace != "instant":
+                raise ValueError(
+                    f"time_to_replace {time_to_replace!r} is no model: give "
+                    "a time-to-replace model, or None or 'instant' for "
+                    "replacement in no time."
+                )
+            time_to_replace = None
         if time_to_replace is None:
             # Replaced in no time.
             time_to_replace = ExactEventTime.from_params(0)
-        if isinstance(reliability, Parametric):
+        elif not callable(getattr(time_to_replace, "mean", None)):
+            raise TypeError(
+                "time_to_replace must be a model of the time to replace (a "
+                "surpyval distribution, such as "
+                "surv.Exponential.from_params([rate])), or None or 'instant' "
+                f"for replacement in no time, got {time_to_replace!r}."
+            )
+        if isinstance(reliability, Parametric) or is_mixture(reliability):
+            # A surpyval MixtureModel (#227) is no Parametric, but has the
+            # survival function, distribution, density and mean the
+            # analyses take; the simulations invert its distribution
+            # function (it has no quantile function, see _sampling).
             self.model_parameterization = "parametric"
             self.reliability_function = reliability.sf
         elif isinstance(reliability, NonParametric):
@@ -183,7 +215,12 @@ class NonRepairable:
                 "vote point) or a part that never fails."
             )
         else:
-            raise ValueError("Unknown reliability function")
+            raise ValueError(
+                "A NonRepairable's life must be a surpyval parametric "
+                "distribution or MixtureModel (fitted, or built with "
+                "from_params), a surpyval non-parametric estimate or a "
+                f"StandbyModel; got a {type(reliability).__name__}."
+            )
 
         self.reliability = reliability
         self.time_to_replace = time_to_replace
@@ -396,17 +433,16 @@ class NonRepairable:
         >>> round(unit.mean_availability(), 4)
         0.9804
 
-        One in ten units never fails, so in the long run the unit is up.
-        (The share that ever fails, ``p`` here, is ``lfp_p`` from surpyval
-        0.23.)
+        One in ten units never fails (``lfp_p``, the share that ever
+        fails, is 0.9), so in the long run the unit is up.
 
-        >>> cured = NonRepairable(  # doctest: +SKIP
-        ...     surv.Exponential.from_params([0.01], p=0.9),
+        >>> cured = NonRepairable(
+        ...     surv.Exponential.from_params([0.01], lfp_p=0.9),
         ...     surv.Exponential.from_params([0.5]),
         ... )
-        >>> cured.mean_availability()  # doctest: +SKIP
+        >>> cured.mean_availability()
         1.0
-        >>> cured.failure_frequency()  # doctest: +SKIP
+        >>> cured.failure_frequency()
         0.0
         """
         if isinstance(self.reliability, NonParametric):

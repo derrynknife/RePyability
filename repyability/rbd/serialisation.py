@@ -31,7 +31,7 @@ from typing import Any
 
 from repyability._version import __version__
 from repyability.non_repairable import NonRepairable
-from repyability.rbd._model_utils import distribution_name, lfp_extras
+from repyability.rbd._model_utils import distribution_name, is_mixture
 from repyability.rbd.degrading_node import DegradingNode
 from repyability.rbd.helper_classes import (
     PerfectReliability,
@@ -164,9 +164,10 @@ def _serialise_model(model: Any) -> dict:
             "load": model.load,
             "k": model.k,
         }
-    if distribution_name(model) is not None:
+    if distribution_name(model) is not None or is_mixture(model):
         # surpyval's own format: everything surpyval keeps (an offset, p,
-        # f0, a fit's covariance) round-trips, whatever it adds later.
+        # f0, a fit's covariance, a mixture's components) round-trips,
+        # whatever it adds later.
         return {"kind": "surpyval", "model": model.to_dict()}
     raise NotImplementedError(
         f"Cannot serialise a node model of type {type(model).__name__}. "
@@ -198,11 +199,11 @@ def deserialise_model(d: dict) -> Any:
     if kind == "parametric":
         # The format before 0.10.0: a distribution's name, parameters and
         # any offset, p and f0 ("extras", since 0.9.0). p is the
-        # limited-failure proportion, lfp_p from surpyval 0.23.
+        # limited-failure proportion, surpyval's lfp_p.
         cls = getattr(surpyval, d["dist"])
         extras = dict(d.get("extras", {}))
         if "p" in extras:
-            extras.update(lfp_extras(extras.pop("p")))
+            extras["lfp_p"] = extras.pop("p")
         return cls.from_params(d["params"], **extras)
     if kind == "rbd":
         return rbd_from_dict(d["rbd"])
@@ -271,17 +272,19 @@ def _serialise_component(value) -> dict:
     if isinstance(value, dict):
         from repyability.rbd.repairable_rbd import RepairableRBD
 
-        repairability = value["repairability"]
         out: dict[str, Any] = {
             "kind": "component_spec",
             "reliability": serialise_model(value["reliability"]),
+        }
+        # A junction's spec may give no repair (#232).
+        if "repairability" in value:
+            repairability = value["repairability"]
             # "instant" (repair in zero time) is a sentinel, not a model.
-            "repairability": (
+            out["repairability"] = (
                 "instant"
                 if repairability == "instant"
                 else serialise_model(repairability)
-            ),
-        }
+            )
         for key in RepairableRBD.COST_KEYS:
             cost = value.get(key)
             if hasattr(cost, "qf"):
@@ -361,14 +364,13 @@ def _deserialise_component(d: dict) -> Any:
     if d.get("kind") == "component_spec":
         from repyability.rbd.repairable_rbd import RepairableRBD
 
-        out: Any = {
-            "reliability": deserialise_model(d["reliability"]),
-            "repairability": (
+        out: Any = {"reliability": deserialise_model(d["reliability"])}
+        if "repairability" in d:
+            out["repairability"] = (
                 "instant"
                 if d["repairability"] == "instant"
                 else deserialise_model(d["repairability"])
-            ),
-        }
+            )
         for key in RepairableRBD.COST_KEYS:
             if key in d:
                 cost = d[key]

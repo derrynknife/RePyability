@@ -92,18 +92,141 @@ def _shannon_plan(sets: Iterable[frozenset]) -> tuple[list, int]:
     return steps, root
 
 
+def replay(pivots, actives, inactives, root, works, fails, values):
+    """A plan's value: slot ``i + 2`` of ``values`` is ``works[p] *
+    values[active] + fails[p] * values[inactive]`` for step ``i``'s pivot
+    row ``p`` and branches (``pivots``, ``actives``, ``inactives``), slots 0
+    and 1 holding the values of failing and working; the value at
+    ``root``. ``works`` and ``fails`` hold each pivot's probabilities of
+    working and failing (by row); ``values`` has room for a value per slot
+    (``room``), and keeps them for ``replay_gradient``.
+
+    One function for every replay: run as Python, its values are numbers
+    or arrays of any shape (a column of probabilities each element);
+    compiled (``_bdd_kernel``), numbers, a column at a time."""
+    slot = 2
+    for p, a, b in zip(pivots, actives, inactives):
+        values[slot] = works[p] * values[a] + fails[p] * values[b]
+        slot += 1
+    return values[root]
+
+
+def room(steps: int, fail: Any, work: Any) -> list:
+    """Room for ``replay``'s values, slots 0 and 1 holding ``fail`` and
+    ``work``."""
+    return [fail, work] + [None] * steps
+
+
+def replay_gradient(
+    pivots,
+    actives,
+    inactives,
+    root,
+    works,
+    fails,
+    values,
+    one,
+    adjoints,
+    has_adjoint,
+    gradient,
+    reached,
+):
+    """The derivative of ``replay``'s value (whose slots ``values`` holds)
+    with respect to each row's probability of working, by a reverse pass:
+    into ``gradient`` (room for a value per row), with whether each row has
+    one in ``reached`` (a row the pass never reaches has none). ``one`` is
+    the root's adjoint, 1 (in the values' form); ``adjoints`` has room for
+    a value per slot. ``has_adjoint`` and ``reached`` start all False.
+    Each adjoint and derivative starts at its first share, not at 0 (which
+    would turn a -0.0 into 0.0). Run as Python or compiled, as
+    ``replay``."""
+    adjoints[root] = one
+    has_adjoint[root] = True
+    for s in range(len(pivots) - 1, -1, -1):
+        if not has_adjoint[s + 2]:
+            continue
+        p, a, b = pivots[s], actives[s], inactives[s]
+        adjoint = adjoints[s + 2]
+        # (A derivative or adjoint is its own once it has its first share,
+        # so the rest are added in place.)
+        if reached[p]:
+            gradient[p] += adjoint * (values[a] - values[b])
+        else:
+            gradient[p] = adjoint * (values[a] - values[b])
+        reached[p] = True
+        if a > _ONE:
+            if has_adjoint[a]:
+                adjoints[a] += adjoint * works[p]
+            else:
+                adjoints[a] = adjoint * works[p]
+            has_adjoint[a] = True
+        if b > _ONE:
+            if has_adjoint[b]:
+                adjoints[b] += adjoint * fails[p]
+            else:
+                adjoints[b] = adjoint * fails[p]
+            has_adjoint[b] = True
+
+
+def value_and_gradient(
+    pivots, actives, inactives, root, works, fails, fail, work, rows
+) -> tuple:
+    """``replay``'s value and ``replay_gradient``'s derivatives, in
+    Python: the value, a list by row, and whether each row has one."""
+    values = room(len(pivots), fail, work)
+    value = replay(pivots, actives, inactives, root, works, fails, values)
+    slots = len(values)
+    gradient: list = [None] * rows
+    reached = [False] * rows
+    replay_gradient(
+        pivots,
+        actives,
+        inactives,
+        root,
+        works,
+        fails,
+        values,
+        1.0,
+        [None] * slots,
+        [False] * slots,
+        gradient,
+        reached,
+    )
+    return value, gradient, reached
+
+
+def _plan_rows(plan: tuple[list, int]) -> tuple:
+    """A plan's pivots, numbered by their first appearance, as ``replay``
+    takes them: each step's pivot row, active and inactive slots; and the
+    pivots in row order."""
+    steps, _ = plan
+    names = list(dict.fromkeys(pivot for pivot, _, _ in steps))
+    row = {name: j for j, name in enumerate(names)}
+    return (
+        [row[pivot] for pivot, _, _ in steps],
+        [a for _, a, _ in steps],
+        [b for _, _, b in steps],
+        names,
+    )
+
+
 def _evaluate_shannon_plan(
     plan: tuple[list, int],
     element_probabilities: Dict[Any, np.ndarray],
     array_shape,
 ) -> np.ndarray:
     """Replay a :func:`_shannon_plan` for the given probabilities."""
-    steps, root = plan
-    values = [np.zeros(array_shape), np.ones(array_shape)]
-    for pivot, active, inactive in steps:
-        p = element_probabilities[pivot]
-        values.append(p * values[active] + (1 - p) * values[inactive])
-    return values[root]
+    pivots, actives, inactives, names = _plan_rows(plan)
+    works = [element_probabilities[name] for name in names]
+    return replay(
+        pivots,
+        actives,
+        inactives,
+        plan[1],
+        works,
+        [1 - p for p in works],
+        room(len(pivots), np.zeros(array_shape), np.ones(array_shape)),
+    )
 
 
 def _shannon_value_and_gradient(
@@ -115,44 +238,29 @@ def _shannon_value_and_gradient(
     """A plan's value for the element probabilities (single values, or
     arrays of one shape), and its derivative with respect to each element's
     probability (the element's Birnbaum importance), by one forward and one
-    reverse pass. ``complements`` holds each element's ``1 - p``, computed
-    without cancellation, so the value keeps its full relative precision
-    however small it is.
+    reverse pass (``replay_gradient``). ``complements`` holds each
+    element's ``1 - p``, computed without cancellation, so the value keeps
+    its full relative precision however small it is.
 
     ``terminals`` are the values of the plan's two constant slots: with
     ``(1.0, 0.0)`` in place of the default ``(0.0, 1.0)`` the plan gives the
     complement, the probability that no set is satisfied, just as precisely
     (and its derivative, the negated Birnbaum importance)."""
-    steps, root = plan
-    values = list(terminals)
-    for pivot, active, inactive in steps:
-        values.append(
-            probabilities[pivot] * values[active]
-            + complements[pivot] * values[inactive]
-        )
-    # None: a slot the root does not reach (or a constant, which needs none).
-    adjoints: list = [None] * len(values)
-    adjoints[root] = 1.0
-    gradient: Dict[Any, Any] = {}
-    for index in range(len(steps) - 1, -1, -1):
-        adjoint = adjoints[index + 2]
-        if adjoint is None:
-            continue
-        pivot, active, inactive = steps[index]
-        change = adjoint * (values[active] - values[inactive])
-        gradient[pivot] = (
-            gradient[pivot] + change if pivot in gradient else change
-        )
-        for slot, weight in (
-            (active, probabilities[pivot]),
-            (inactive, complements[pivot]),
-        ):
-            if slot > _ONE:
-                share = adjoint * weight
-                adjoints[slot] = (
-                    share if adjoints[slot] is None else adjoints[slot] + share
-                )
-    return values[root], gradient
+    pivots, actives, inactives, names = _plan_rows(plan)
+    value, gradient, reached = value_and_gradient(
+        pivots,
+        actives,
+        inactives,
+        plan[1],
+        [probabilities[name] for name in names],
+        [complements[name] for name in names],
+        terminals[0],
+        terminals[1],
+        len(names),
+    )
+    return value, {
+        name: gradient[j] for j, name in enumerate(names) if reached[j]
+    }
 
 
 def _minimal_cut_sets(plan: tuple[list, int]) -> set[frozenset]:

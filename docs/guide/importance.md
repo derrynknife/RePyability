@@ -450,8 +450,10 @@ rate.node_rate["A"][0]   # -> -0.0022
 
 Early on, C pulls the system down five times as fast as A, since A and B
 back each other up. A component's rate is that of its point availability,
-by differences on the grid it is solved on: numerical, to about `1e-5` of
-the rates, less just after a scheduled event where a curve turns sharply.
+by differences on the grid it is solved on, numerical to about `1e-5` of
+the rates; the down times kept off the grid (a repair or maintenance that
+starts at a known time, however short) are differentiated on their own
+scale, so the rate just after a scheduled event is as close.
 
 Where a scheduled event makes an availability jump (a block replacement or
 test that takes the component off line), the system's jumps are reported
@@ -479,7 +481,7 @@ serviced = RepairableRBD(
 rate = serviced.availability_rate(21.0)
 rate.jump_times[0]         # -> 20.0
 rate.node_jumps["C"][0]    # -> -0.9816
-rate.node_rate["C"]        # -> 0.07493
+rate.node_rate["C"]        # -> 0.07491
 ```
 
 At 20, C's block replacement takes the system down; at 21, C coming back

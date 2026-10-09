@@ -33,6 +33,7 @@ window ``[0, end)``: one at ``end`` or after it is outside it.
 
 import math
 from dataclasses import dataclass, replace
+from functools import cached_property
 from typing import (
     Dict,
     Hashable,
@@ -46,6 +47,8 @@ from typing import (
 )
 
 import numpy as np
+
+from repyability.utils.checks import number_or_nan
 
 #: The most members the core's path sets may hold in all for the core to be
 #: merged path set by path set (a series merge of each, and a parallel
@@ -61,13 +64,15 @@ class _Data:
     1]]``, in order. Each change has a cause, an index into ``leaves`` (or,
     with ``leaves`` None, the unit itself), its position among its cause's
     changes in its history (``index``, which orders a cause's changes at
-    the same time), and whether it is a planned change down."""
+    the same time; None where that is its position in its history, as in
+    a unit's own histories, see ``indices``), and whether it is a planned
+    change down."""
 
     start: np.ndarray
     offsets: np.ndarray
     times: np.ndarray
     causes: np.ndarray
-    index: np.ndarray
+    index: Optional[np.ndarray]
     planned: np.ndarray
     leaves: Optional[tuple]
     end: float
@@ -76,12 +81,20 @@ class _Data:
     def size(self) -> int:
         return int(self.start.size)
 
+    @cached_property
+    def positions(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Each change's history, and its position in it: worked out once
+        (#247), for every measure that needs them."""
+        counts = np.diff(self.offsets)
+        history = np.repeat(np.arange(self.size), counts)
+        first = np.repeat(self.offsets[:-1], counts)
+        return history, np.arange(self.times.size) - first
 
-def _positions(data: _Data) -> Tuple[np.ndarray, np.ndarray]:
-    """Each change's history, and its position in it."""
-    counts = np.diff(data.offsets)
-    history = np.repeat(np.arange(data.size), counts)
-    return history, np.arange(data.times.size) - data.offsets[:-1][history]
+    @property
+    def indices(self) -> np.ndarray:
+        """Each change's position among its cause's changes in its history
+        (``index``, or its position in its history where that is None)."""
+        return self.positions[1] if self.index is None else self.index
 
 
 def _after(data: _Data, history: np.ndarray, j: np.ndarray) -> np.ndarray:
@@ -98,7 +111,7 @@ def _constant(start: np.ndarray, end: float, leaves) -> _Data:
         np.zeros(size + 1, np.int64),
         np.zeros(0),
         empty,
-        empty,
+        None,
         np.zeros(0, bool),
         leaves,
         end,
@@ -161,28 +174,27 @@ def _raw(
         offsets,
         times,
         np.zeros(times.size, np.int64),
-        np.zeros(times.size, np.int64),
+        None,
         flags,
         None,
         end,
     )
-    history, j = _positions(data)
+    history, j = data.positions
     up = _after(data, history, j) == 1
     if np.any(flags & up):
         raise ValueError(
             "Only a change down can be planned (maintenance taking the unit "
             "off line): a change back up has planned False."
         )
-    return replace(data, index=j)
+    return data
 
 
 def _leaf(data: _Data, rank: int) -> _Data:
     """``data`` as a cause of its own, ``rank``: each change its own."""
-    _, j = _positions(data)
     return replace(
         data,
         causes=np.full(data.times.size, rank, np.int64),
-        index=j,
+        index=None,
         leaves=None,
     )
 
@@ -199,7 +211,7 @@ def _tiled(data: _Data, size: int) -> _Data:
         offsets=offsets,
         times=np.tile(data.times, size),
         causes=np.tile(data.causes, size),
-        index=np.tile(data.index, size),
+        index=None if data.index is None else np.tile(data.index, size),
         planned=np.tile(data.planned, size),
     )
 
@@ -213,7 +225,7 @@ def _history(data: _Data, s: int) -> _Data:
         offsets=np.array([0, b - a], np.int64),
         times=data.times[a:b],
         causes=data.causes[a:b],
-        index=data.index[a:b],
+        index=None if data.index is None else data.index[a:b],
         planned=data.planned[a:b],
     )
 
@@ -266,10 +278,10 @@ def _table(datas: Sequence[_Data]) -> Tuple[_Table, List[_Run]]:
     )
     parts = [
         (
-            _positions(data)[0],
+            data.positions[0],
             data.times,
             data.causes,
-            data.index,
+            data.indices,
             data.planned,
         )
         for data in datas
@@ -376,7 +388,7 @@ def _complement(data: _Data) -> _Data:
 def _spans(data: _Data) -> Tuple[np.ndarray, np.ndarray]:
     """Each history's time up and time down."""
     size, end = data.size, data.end
-    history, j = _positions(data)
+    history, j = data.positions
     times = data.times
     previous = np.zeros(times.size)
     later = j > 0
@@ -402,7 +414,7 @@ def _counts(data: _Data) -> Dict[str, np.ndarray]:
     """Each history's failures (unplanned changes down), planned outages
     and restorations."""
     size = data.size
-    history, j = _positions(data)
+    history, j = data.positions
     up = _after(data, history, j) == 1
     down = ~up
     return {
@@ -414,7 +426,7 @@ def _counts(data: _Data) -> Dict[str, np.ndarray]:
 
 def _first_failures(data: _Data) -> np.ndarray:
     """Each history's first failure (an unplanned change down), or inf."""
-    history, j = _positions(data)
+    history, j = data.positions
     failed = (_after(data, history, j) == 0) & ~data.planned
     out = np.full(data.size, np.inf)
     which, at = np.unique(history[failed], return_index=True)
@@ -426,7 +438,7 @@ def _by_cause(data: _Data, name, up: bool) -> Dict[Hashable, np.ndarray]:
     """For each cause, how many failures (or, ``up``, restorations) it made
     in each history."""
     size = data.size
-    history, j = _positions(data)
+    history, j = data.positions
     after = _after(data, history, j) == 1
     chosen = after if up else (~after & ~data.planned)
     leaves = (name,) if data.leaves is None else data.leaves
@@ -453,7 +465,7 @@ def _curve(data: _Data) -> Tuple[np.ndarray, np.ndarray]:
     (and at 0 and the end): the times, in order, and the fractions."""
     from repyability.rbd.repairable_rbd import _working_over_time
 
-    history, j = _positions(data)
+    history, j = data.positions
     delta = 2 * _after(data, history, j) - 1
     time, working = _working_over_time(
         data.times, delta, data.end, int(data.start.sum())
@@ -656,6 +668,47 @@ def k_out_of_n(k: int, *timelines, name: Optional[Hashable] = None):
     return _combine(timelines, need, name, "k_out_of_n")
 
 
+def _checked_outage(outage, end: float) -> Tuple[float, float]:
+    """An outage log's record, ``(start, stop)``, as floats in the window
+    ``[0, end]`` (a stop of None, or past ``end``, at ``end``), or a
+    ValueError saying what is wrong with it (#232)."""
+    try:
+        start, stop = outage
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Each outage is a (start, end) pair, got {outage!r}."
+        ) from None
+    first = number_or_nan(start)
+    if math.isnan(first):
+        raise ValueError(
+            f"Outage ({start}, {stop}) starts at {start!r}, which is not a "
+            f"time: give its start as a number from 0 to the window's end "
+            f"({end:g})."
+        )
+    if first < 0.0:
+        raise ValueError(
+            f"Outage ({start}, {stop}) starts before the window's start, "
+            "0: give the times from the window's start."
+        )
+    if first > end:
+        raise ValueError(
+            f"Outage ({first}, {stop}) starts after the window's end "
+            f"({end})."
+        )
+    if stop is None:
+        return first, end
+    last = number_or_nan(stop)
+    if math.isnan(last):
+        raise ValueError(
+            f"Outage ({start}, {stop}) ends at {stop!r}, which is not a "
+            "time: give its end as a number, or None for an outage that "
+            "runs to the window's end."
+        )
+    if last < first:
+        raise ValueError(f"Outage ({start}, {stop}) ends before it starts.")
+    return first, min(last, end)
+
+
 def _merged_outages(outages: list, flags: list, end: float):
     """``outages`` (with their ``planned`` flags) sorted by start, each run
     that overlaps or touches joined into one: planned only if all of it
@@ -818,7 +871,7 @@ class Timeline:
         (2, 40.0)
         """
         end = _check_end(end)
-        outages = list(outages)
+        outages = [_checked_outage(outage, end) for outage in outages]
         flags = (
             [False] * len(outages)
             if planned is None
@@ -835,24 +888,11 @@ class Timeline:
         marks: list = []
         last = 0.0
         for (start, stop), flag in zip(outages, flags):
-            start = float(start)
-            if start > end:
-                raise ValueError(
-                    f"Outage ({start}, {stop}) starts after the window's end "
-                    f"({end})."
-                )
-            stop = end if stop is None else min(float(stop), end)
-            if not (math.isfinite(start) and start >= last and stop >= start):
+            if start < last:
                 raise ValueError(
                     f"Outage ({start}, {stop}) is out of order: each starts "
-                    "no earlier than the one before ends, and ends no "
-                    "earlier than it starts."
-                    + (
-                        " Give merge=True to join outages that overlap or "
-                        "touch."
-                        if math.isfinite(start) and stop >= start
-                        else ""
-                    )
+                    "no earlier than the one before ends. Give merge=True to "
+                    "join outages that overlap or touch."
                 )
             changes += [start, stop]
             marks += [flag, False]
@@ -1069,6 +1109,27 @@ class Timeline:
             return NotImplemented
         return _same(self, other)
 
+    def to_dict(self) -> dict:
+        """The history as plain data, ready for ``json.dumps`` (#235).
+
+        Returns
+        -------
+        dict
+            ``end``, ``up`` (at 0), ``name``, ``changes`` (the times it
+            changes state), ``causes`` (each change's cause) and
+            ``planned`` (whether each is a planned change down).
+        """
+        from repyability.rbd.results import plain
+
+        return {
+            "end": self.end,
+            "up": bool(self.up),
+            "name": plain(self.name),
+            "changes": self.changes.tolist(),
+            "causes": plain(self.causes),
+            "planned": [bool(p) for p in self.planned],
+        }
+
     def __repr__(self) -> str:
         shown = ", ".join(f"{t:g}" for t in self._data.times[:6])
         if len(self) > 6:
@@ -1209,7 +1270,7 @@ class Timelines:
         """
         data = self._data
         times = np.atleast_1d(np.asarray(t, dtype=float))
-        history, _ = _positions(data)
+        history, _ = data.positions
         out = np.empty((data.size, times.size), bool)
         for i, time in enumerate(times):
             passed = np.bincount(
@@ -1314,6 +1375,23 @@ class Timelines:
             return NotImplemented
         return _same(self, other)
 
+    def to_dict(self) -> dict:
+        """The histories as plain data, ready for ``json.dumps`` (#235).
+
+        Returns
+        -------
+        dict
+            ``end``, ``name`` and ``timelines``, each history's
+            ``Timeline.to_dict()``, in order.
+        """
+        from repyability.rbd.results import plain
+
+        return {
+            "end": self.end,
+            "name": plain(self.name),
+            "timelines": [history.to_dict() for history in self],
+        }
+
     def __repr__(self) -> str:
         label = "" if self._name is None else f", name={self._name!r}"
         return (
@@ -1335,7 +1413,11 @@ def _stacked(parts: Sequence[_Data], leaves, end=None) -> _Data:
         offsets,
         np.concatenate([p.times for p in parts]),
         np.concatenate([p.causes for p in parts]),
-        np.concatenate([p.index for p in parts]),
+        (
+            None
+            if all(p.index is None for p in parts)
+            else np.concatenate([p.indices for p in parts])
+        ),
         np.concatenate([p.planned for p in parts]),
         leaves,
         end,
