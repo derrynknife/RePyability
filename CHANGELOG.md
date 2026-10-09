@@ -189,6 +189,28 @@ other release, fixes included, the minor.
   values, but running again the simulations that ran out cost what that
   saved. Most of the draws' time is the models' quantile functions,
   whose overhead per value is raised in surpyval (SurPyval#769).
+- **Faster capacity runs, timelines and conditional runs (#246, #247,
+  #248)**. Timelines and conditional runs give the same results, bit for
+  bit; a capacity run's probabilities can differ in their last digits.
+  - A capacity run adds up equal levels with a sorted reduction rather
+    than `np.add.at`, which sums a level's rows in another order (its
+    probabilities equal to rounding, its levels the same), and tidies each
+    level once: 25 redundant pairs with capacities (50 components),
+    2,000 h, 500 simulations with numba, 0.31 s rather than 0.39 s; 70
+    pairs on the Python loop, 3.5 s rather than 3.8 s.
+  - A timeline's changes' histories and positions are worked out once,
+    where every measure worked them out again, and a unit's own changes
+    no longer store their index (their position): `simulate_timelines`
+    on a 12-component bridge feeding a vote, 20,000 simulations, 0.69 s
+    rather than 0.76 s, and the measures over its result 0.68 s rather
+    than 0.79 s.
+  - A conditional run puts the modules' changes in order with one sort
+    (of a key that grows with the simulation and the time; equal keys
+    then put in order exactly) rather than two multi-key sorts, and finds
+    each joint state's stretches once: on a standby system of five
+    components, 20,000 simulations, ordering the changes takes 0.11 s
+    rather than 0.43 s, and a default `availability()` 7.1 s rather than
+    7.5 s.
 - **surpyval 0.23 or later is required** (0.22 was). Its next release drops
   0.22's name for a limited-failure population's share that ever fails,
   `p`, for `lfp_p`, which 0.22 does not know, so no example could be

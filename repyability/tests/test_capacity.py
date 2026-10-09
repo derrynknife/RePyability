@@ -999,3 +999,22 @@ def test_system_capacity_needs_the_capacity_of_every_node():
         [("s", "a"), ("a", "t")], {"a": stages}, capacity={"a": 3}
     )
     assert given.system_capacity({"a": 0.5}).levels.tolist() == [0.0, 3.0]
+
+
+@pytest.mark.parametrize("rows", [0, 1, 7, 40])
+def test_merged_sums_equal_levels_as_its_definition(rows):
+    # #246: the sorted reduction gives the sums ``np.add.at`` makes, up to
+    # rounding, on the same levels, and nothing when no level is given.
+    rng = np.random.default_rng(rows)
+    levels = rng.choice([0.0, 1.0, 2.5, 1.0 + 1e-14, 3.0], size=(rows, 1))
+    probabilities = rng.random((rows, 6))
+    probabilities[rng.random(rows) < 0.2] = 0.0
+    tidied = np.array([engine.tidy(v) for v in levels.ravel()])
+    unique, where = np.unique(tidied, return_inverse=True)
+    sums = np.zeros((unique.size, 6))
+    np.add.at(sums, where, probabilities)
+    kept = np.any(sums != 0.0, axis=1)
+    got_levels, got = engine.merged(levels, probabilities)
+    assert got_levels.tolist() == unique[kept].tolist()
+    assert got.shape == (kept.sum(), 6)
+    np.testing.assert_allclose(got, sums[kept], rtol=1e-14, atol=0.0)
