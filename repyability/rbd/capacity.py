@@ -74,9 +74,7 @@ def merged(levels: np.ndarray, probabilities: np.ndarray) -> Distribution:
     # first (#246): the sums ``np.add.at`` would make one row at a time.
     order = np.argsort(np.ravel(where), kind="stable")
     ranked = np.ravel(where)[order]
-    first = np.flatnonzero(
-        np.concatenate(([True], ranked[1:] != ranked[:-1]))
-    )
+    first = np.flatnonzero(np.concatenate(([True], ranked[1:] != ranked[:-1])))
     out = np.add.reduceat(probabilities[order], first, axis=0)
     reachable = np.any(out != 0.0, axis=1)
     if not reachable.all():
