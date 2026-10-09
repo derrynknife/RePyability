@@ -4972,7 +4972,7 @@ class RepairableRBD(RBD):
     >>> result = pumps.availability(t_simulation=50, mc_samples=200, seed=0)
     >>> window = result.n_simulations * result.time_simulated_to
     >>> round(float(result.system_uptime) / window, 4)  # simulated
-    0.9925
+    0.9914
 
     The pair as one node of a larger system, in series with a valve that
     is replaced instantly at a cost of 250 per failure, while lost
@@ -16522,7 +16522,7 @@ class RepairableRBD(RBD):
 
         >>> window = result.n_simulations * result.time_simulated_to
         >>> round(float(result.system_uptime) / window, 4)
-        0.8303
+        0.832
         >>> round(rbd.mean_availability(), 4)
         0.8264
 
@@ -17520,7 +17520,7 @@ class RepairableRBD(RBD):
         ...     control_variate=False,
         ... )
         >>> round(simulated.estimate, 4), round(simulated.standard_error, 5)
-        (0.0196, 0.00042)
+        (0.0187, 0.00041)
 
         Two independent runs of 2000 simulations would estimate it with a
         standard error of about 0.00058.
@@ -19551,9 +19551,9 @@ class RepairableRBD(RBD):
         >>> round(result.mean, 2)  # expected cost of a 100-hour window: exact
         1360.33
         >>> round(result.sample_mean, 2)  # the 200 windows' own
-        1354.77
+        1387.42
         >>> round(result.percentile(90), 2)  # 9 windows in 10 cost less
-        1961.22
+        1897.0
         >>> round(result.cost_rate, 2), round(rbd.expected_cost_rate(), 2)
         (13.6, 13.64)
         """

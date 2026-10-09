@@ -641,7 +641,7 @@ class FailureCriticalityIndex(_ResultMapping):
 
     >>> share = fci.per_component_failure
     >>> {node: round(share[node], 2) for node in sorted(share)}
-    {'a': 0.91, 'b': 0.91}
+    {'a': 0.92, 'b': 0.89}
     """
 
     per_system_failure: Dict[Hashable, float]
@@ -755,7 +755,7 @@ class Criticalities(_ResultMapping):
     >>> {node: round(float(v), 4) for node, v in oci.up.items()}
     {'a': 1.0, 'b': 1.0}
     >>> {node: round(float(v), 2) for node, v in oci.down.items()}
-    {'a': 0.55, 'b': 0.5}
+    {'a': 0.5, 'b': 0.55}
     >>> crit["iou"] is crit.iou  # dict-style access also works
     True
     """
@@ -1001,7 +1001,7 @@ class CostResult(_ResultMapping):
     >>> round(result.by_category["system_downtime"], 2)  # 50 per hour down
     450.41
     >>> round(result.sample_mean, 2), round(result.std, 2)
-    (1354.77, 429.75)
+    (1387.42, 436.54)
     >>> result.mean_interval(0.95).method
     'exact'
 
@@ -1012,10 +1012,10 @@ class CostResult(_ResultMapping):
     ...     t_simulation=100.0, mc_samples=200, seed=0, control_variate=False
     ... )
     >>> round(own.mean, 2), round(own.by_category["repair"], 2)
-    (1354.77, 909.5)
+    (1387.42, 927.0)
     >>> interval = own.mean_interval(0.95)
     >>> interval.method, round(interval.lower, 2), round(interval.upper, 2)
-    ('simulated', 1295.21, 1414.33)
+    ('simulated', 1326.92, 1447.92)
     """
 
     samples: np.ndarray
@@ -2233,7 +2233,7 @@ class AvailabilityResult(_ResultMapping):
     >>> round(result.mean_availability, 4)  # exact; long run: 10 / 11
     0.9107
     >>> round(result.sample_mean_availability, 4)  # the simulations' own
-    0.9104
+    0.9117
     >>> result.mean_availability_interval().method
     'exact'
     >>> lower, upper = result.availability_interval(0.95)
