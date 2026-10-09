@@ -5421,7 +5421,9 @@ class RepairableRBD(RBD):
         if self._crews_couple():
             raise NotImplementedError(
                 f"{where}: with limited repair crews, the crews' Markov "
-                "chain does not take common causes in, as yet."
+                "chain does not take common causes in, as yet. Estimate the "
+                "values by simulation, with availability() or cost(), which "
+                "take both."
             )
         rates = set()
         for member in group.members:
@@ -11955,9 +11957,9 @@ class RepairableRBD(RBD):
             test that can last as long as its interval; or, while a
             component can wait for a repair crew, if the Markov chain does
             not cover the components (a life
-            or repair that is not exponential, scheduled maintenance or an
-            inspection) or would have more than 15,000 states: simulate it
-            with ``availability``.
+            or repair that is not exponential, scheduled maintenance, an
+            inspection or a common-cause group) or would have more than
+            15,000 states: simulate it with ``availability``.
 
         Examples
         --------
@@ -15709,9 +15711,11 @@ class RepairableRBD(RBD):
 
     def _require_crew_chain(self) -> None:
         """Raise if the exact long-run values with limited repair crews
-        cannot be computed: the Markov chain does not cover the components
+        cannot be computed: the Markov chain does not take common-cause
+        groups in (#251, see ``_ccf_rates``), does not cover the components
         (see ``_crew_chain_rates``), or nested RBDs' calendars fall together
         (see ``_require_calendars``)."""
+        self._require_ccf_long_run()
         self._crew_chain_rates()
         self._require_calendars()
 

@@ -444,29 +444,44 @@ def test_the_split_refuses_before_building_it(monkeypatch):
     rbd.mean_unavailability()
 
 
-def test_groups_with_limited_crews_refuse_rather_than_drop_the_groups():
+@pytest.mark.parametrize("basis", ["probability", "rate"])
+def test_groups_with_limited_crews_refuse_rather_than_drop_the_groups(basis):
     # The crews' chain does not take common causes in: the long-run values
     # refused only over time, and gave the system without its groups in
-    # the long run.
+    # the long run; then each component's own, which a shared failure
+    # changes too, as one member waits for the crew (#251).
     units = {n: revealed(1e-3, 0.1) for n in "abc"}
     edges = [("s", "a"), ("s", "b"), ("a", "c"), ("b", "c"), ("c", "t")]
     rbd = RepairableRBD(
         edges,
         units,
-        ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1))],
+        ccf_groups=[CCFGroup(["a", "b"], BetaFactor(0.1, basis=basis))],
         repair_crews=1,
+        downtime_cost_rate=5.0,
     )
     message = "crews' Markov chain does not take common causes in"
     for method in (
         "mean_availability",
         "mean_unavailability",
+        "node_availability",
+        "system_failure_frequency",
+        "mean_time_between_failures",
+        "mean_up_time",
         "birnbaum_importance",
         "risk_achievement_worth",
         "criticality_importance",
         "fussell_vesely",
-        "mean_time_between_failures",
+        "barlow_proschan_importance",
+        "parameter_sensitivity",
+        "expected_cost_rate",
         "capacity_distribution",
+        "point_availability",
+        "mission_availability",
     ):
+        args = (100.0,) if method.startswith(("point", "mission")) else ()
         with pytest.raises(NotImplementedError, match=message):
-            getattr(rbd, method)()
+            getattr(rbd, method)(*args)
         assert rbd.analysis_routes()[method].route == "refused", method
+    # The simulations take both.
+    assert rbd.analysis_routes()["availability"].route == "simulated"
+    rbd.availability(100.0, mc_samples=20, seed=1)
