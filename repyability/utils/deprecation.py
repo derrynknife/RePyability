@@ -1,24 +1,23 @@
 """Deprecated names, arguments and calls.
 
-A deprecation gives one minor release's notice: what 0.12 deprecates goes
-in 0.13 (``NEXT_REMOVAL``). Each warns with a ``FutureWarning``, which
+A deprecation gives one minor release's notice: what 0.13 deprecates goes
+in 0.14 (``NEXT_REMOVAL``). Each warns with a ``FutureWarning``, which
 Python always shows, as the notice is short:
 
-- calling a result's value that is now a property, such as
-  ``SparesDemand.mean()`` (``called``, #184);
-- ``StandbyModel``'s and ``LoadSharingModel``'s ``mc_samples``, ``lower``
-  and ``seed``, which set a fit to simulated lifetimes that 0.12 removed
-  (``ignored``, #149).
+- the search's ``offsets`` of ``optimal_inspection_intervals``, renamed
+  ``offset_shares`` (``renamed``, #222);
+- calling ``CapacityDistribution.mean()``, now a property (``called``,
+  #235);
+- the simulation options of a ``StandbyModel``'s, ``LoadSharingModel``'s
+  or ``DegradingNode``'s exact ``mean``, which it ignores (``ignored``,
+  #233).
 
-What 0.13 deprecates goes in 0.14 (``REMOVAL_AFTER_NEXT``): the
-search's ``offsets`` of ``optimal_inspection_intervals``, renamed
-``offset_shares`` (``renamed``, #222); ``CapacityDistribution.mean()``,
-now a property (``called``, #235); and the simulation options of a
-``StandbyModel``'s, ``LoadSharingModel``'s or ``DegradingNode``'s exact
-``mean`` (``ignored``, #233).
-
-What 0.11 deprecated went in 0.12 (#149): its old names are refused with
-the names that took their place (``refuses_removed_names``, #232).
+What 0.12 deprecated went in 0.13: calling ``SparesDemand.mean()`` and
+``std()``, properties since 0.12 (#184), and ``StandbyModel``'s and
+``LoadSharingModel``'s ``mc_samples``, ``lower`` and ``seed``, which set a
+fit to simulated lifetimes that 0.12 removed (#149). What 0.11 deprecated
+went in 0.12 (#149): its old names are refused with the names that took
+their place (``refuses_removed_names``, #232).
 """
 
 import functools
@@ -30,10 +29,8 @@ import numpy as np
 
 from repyability.utils.wrappers import outside_level
 
-#: The release that removes what 0.12 deprecates.
-NEXT_REMOVAL = "0.13"
 #: The release that removes what 0.13 deprecates.
-REMOVAL_AFTER_NEXT = "0.14"
+NEXT_REMOVAL = "0.14"
 
 
 def _called_warning(name: str, removal: str) -> None:
@@ -77,7 +74,7 @@ class CalledArray(np.ndarray):
     of the array, with a ``FutureWarning``."""
 
     _name: str = ""
-    _removal: str = REMOVAL_AFTER_NEXT
+    _removal: str = NEXT_REMOVAL
 
     def __call__(self) -> np.ndarray:
         _called_warning(self._name, self._removal)
@@ -90,7 +87,7 @@ class CalledArray(np.ndarray):
 def called(value: Any, name: str, removal: str = NEXT_REMOVAL) -> Any:
     """``value``, a result's property ``name`` (``"Class.attribute"``) that
     used to be a method: still callable, with a ``FutureWarning``, until
-    ``removal`` (``NEXT_REMOVAL`` for what 0.12 deprecated). A number
+    ``removal`` (``NEXT_REMOVAL`` by default). A number
     becomes a ``CalledValue``, an array a ``CalledArray``."""
     if np.ndim(value) == 0:
         return CalledValue(float(value), name, removal)
@@ -107,7 +104,7 @@ def ignored(
 ) -> None:
     """Warn that the arguments in ``given`` that were passed (not None or
     False) are ignored by ``method``, for the reason ``why``: refused in
-    ``removal`` (``NEXT_REMOVAL`` for what 0.12 deprecated)."""
+    ``removal`` (``NEXT_REMOVAL`` by default)."""
     passed = [
         name
         for name, value in given.items()
@@ -126,11 +123,10 @@ def ignored(
 
 def renamed(method: str, old: str, new: str, why: str) -> None:
     """Warn that ``method``'s argument ``old`` is renamed ``new``, for the
-    reason ``why``: deprecated in 0.13, it is refused in
-    ``REMOVAL_AFTER_NEXT``."""
+    reason ``why``: deprecated in 0.13, it is refused in ``NEXT_REMOVAL``."""
     warnings.warn(
         f"{method}'s {old}= is renamed {new}=, as {why}. Passing {old}= is "
-        f"deprecated, and {REMOVAL_AFTER_NEXT} will refuse it.",
+        f"deprecated, and {NEXT_REMOVAL} will refuse it.",
         FutureWarning,
         stacklevel=outside_level(),
     )

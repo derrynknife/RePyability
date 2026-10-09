@@ -34,7 +34,7 @@ path = Path(tempfile.mkdtemp()) / "plant.json"
 rbd.to_json(path)                       # written; returns None
 NonRepairableRBD.from_json(path).sf(30) == rbd.sf(30)   # True
 type(RBD.from_dict(data)).__name__   # 'NonRepairableRBD': the base class dispatches on type
-data["type"], data["repyability_version"]   # ('NonRepairableRBD', '0.12')
+data["type"], data["repyability_version"]   # ('NonRepairableRBD', '0.13')
 ```
 
 What is saved:

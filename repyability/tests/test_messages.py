@@ -60,7 +60,9 @@ def crow():
             "max_samples",
         ),
         (
-            lambda: StandbyModel([W([100, 2])] * 2, n_sims=100),
+            lambda: StandbyModel([W([100, 2])] * 2).mean(
+                method="simulate", n_sims=100
+            ),
             "n_sims",
             "mc_samples",
         ),
