@@ -1,13 +1,14 @@
 """A surpyval MixtureModel as a repairable component's life (#227).
 
 A mixture (two modes, such as infant mortality and wear-out) has the
-survival function, distribution, density and mean the analyses take, but
-no quantile function (surpyval #651): the simulations' streams draw its
-lives by inverting its distribution function (``mixture_quantile``), one
-uniform a draw, and a life given an age through its cumulative hazard
-(``MixtureLife``). Every analysis on diagrams with a mixture life is
-checked in ``test_analysis_routes`` (the catalogue's "mixture life"
-diagrams), and the engines against each other in ``test_catalogue``.
+survival function, distribution, density and mean the analyses take, and
+from surpyval 0.24 a quantile function, which loses the upper tail and is
+slow (surpyval #821): the simulations' streams draw its lives by inverting
+its distribution function (``mixture_quantile``), one uniform a draw, and
+a life given an age through its cumulative hazard (``MixtureLife``).
+Every analysis on diagrams with a mixture life is checked in
+``test_analysis_routes`` (the catalogue's "mixture life" diagrams), and
+the engines against each other in ``test_catalogue``.
 """
 
 import json
@@ -47,9 +48,9 @@ def test_the_issue_s_diagram(mix):
 
 
 def survival(mix, x):
-    """The mixture's survival from its components' (its own ``sf``,
-    ``1 - ff``, loses its precision in the tail, surpyval #671)."""
-    return sum(w * mix.dist.sf(x, *p) for w, p in zip(mix.w, mix.params))
+    """The mixture's survival function (precise in the tail from surpyval
+    0.24, #671)."""
+    return mix.sf(x)
 
 
 def test_the_quantile_inverts_the_distribution(mix):

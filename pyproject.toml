@@ -43,12 +43,12 @@ dependencies = [
     # (sf/ff/qf/random/mean, extras/with_params, regression sf/sf_tvc,
     # to_dict/from_dict). A surpyval release reaches every fresh install at
     # once, so run the tests against surpyval's development branch before it
-    # is released, to show a break first. CI also tests this minimum. 0.23 names the limited-failure proportion lfp_p (p goes
-    # in its next release), takes success_run's level as alpha_ci, and
-    # pickles its fits (for n_jobs' worker processes), as RePyability relies
-    # on; 0.22 named a distribution's parameters parameter_names and
-    # computes the Normal and LogNormal quantiles directly.
-    "surpyval>=0.23",
+    # is released, to show a break first. CI also tests this minimum. 0.24
+    # gives a mixture a precise tail (sf) and has conditional_gaps read a
+    # limited failure population's lfp_p, not a mixture's p; 0.23 named the
+    # proportion lfp_p, takes success_run's level as alpha_ci, and pickles
+    # its fits (for n_jobs' worker processes), as RePyability relies on.
+    "surpyval>=0.24",
     "tqdm>=4.64",
 ]
 

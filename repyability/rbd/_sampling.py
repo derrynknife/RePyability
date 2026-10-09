@@ -156,9 +156,11 @@ def _components(model) -> Callable[[str, np.ndarray], np.ndarray]:
 
 
 def mixture_quantile(model) -> Sampler:
-    """A surpyval ``MixtureModel``'s quantile function, which it does not
-    have (surpyval #651): for each ``u``, the ``x`` with ``F(x) = u``, to
-    the last bit or two. The mixture's quantile lies between its
+    """A surpyval ``MixtureModel``'s quantile function, which its own
+    (from surpyval 0.24) is not yet fit to replace: that loses the upper
+    tail, inverting ``F`` there, and takes some 200 times as long (surpyval
+    #821). For each ``u``, the ``x`` with ``F(x) = u``, to the last bit or
+    two. The mixture's quantile lies between its
     components' (``F`` is their weighted sum), which bracket it; Newton's
     steps, with the density, go from the bracket's middle (geometric while
     its lower end is above 0), and a step that would leave the bracket
@@ -228,12 +230,10 @@ def mixture_quantile(model) -> Sampler:
 
 
 class MixtureLife:
-    """A surpyval ``MixtureModel`` with the quantile function it lacks
-    (:func:`mixture_quantile`), for surpyval's ``conditional_gaps`` to
-    draw a life given an age with: its cumulative hazard and quantile.
-    (Without the mixture's ``p``, its EM responsibilities, which that
-    function would take for a limited failure population's, surpyval
-    #626.) :meth:`of` keeps one a mixture."""
+    """A surpyval ``MixtureModel`` with :func:`mixture_quantile` for its
+    quantile function (surpyval #821), for surpyval's ``conditional_gaps``
+    to draw a life given an age with: its cumulative hazard and quantile.
+    :meth:`of` keeps one a mixture."""
 
     _made: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 

@@ -404,20 +404,22 @@ major.minor.
 
 ## surpyval workarounds to remove
 
-surpyval 0.23 (the minimum) pickles its fits (#573), names the
+surpyval 0.24 (the minimum) gives a mixture a precise tail (`sf`, #671) and
+has `conditional_gaps` read a limited failure population's `lfp_p`, not a
+mixture's `p` (#626); 0.23 pickles its fits (#573), names the
 limited-failure proportion `lfp_p` (#608) and takes `success_run`'s
-`alpha_ci` (#580), which RePyability now uses directly. What remains:
+`alpha_ci` (#580). RePyability uses these directly. What remains:
 
-- **A mixture's quantile, `p` and tail** (surpyval #651, #626, #671).
-  surpyval's `MixtureModel` has no `qf` (#651), keeps its EM
-  responsibilities as `p` (#626), which surpyval's `conditional_gaps`
-  takes for a limited failure population's, and has an `sf` of `1 - ff`
-  (#671), imprecise in the tail. `_sampling.mixture_quantile` inverts its
-  distribution (with its components' `sf` summed above the median), which
+- **A mixture's quantile** (surpyval #821). surpyval 0.24's `MixtureModel`
+  has a `qf` (#651), but it inverts `F` in the upper tail, losing the long
+  lives' precision (about 1e-4), and takes some 200 times as long as
+  RePyability's. `_sampling.mixture_quantile` inverts the distribution
+  (with its components' `sf` summed above the median), which
   `stream_sampler` gives a `RepairableRBD`'s streams (a change to it
-  changes seeded results), and `MixtureLife` hands `conditional_gaps` its
-  `Hf` and that `qf` (`_aged_life`). Take the mixture's own `qf`, and drop
-  `MixtureLife`, once the minimum surpyval has them.
+  changes seeded results), and `MixtureLife` hands `conditional_gaps` that
+  `qf` with the mixture's `Hf` (`_aged_life`). Take the mixture's own
+  `qf`, and drop `MixtureLife`, once the minimum surpyval's is as precise
+  and fast.
 
 List each new workaround here with its surpyval issue and where it lives,
 so it can go once the minimum surpyval in `pyproject.toml` includes the
