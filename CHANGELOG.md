@@ -180,6 +180,15 @@ other release, fixes included, the minor.
   `engines.API` is now 3: the run's arrays an engine is handed changed
   (the system's no longer ends with a table, and `_System.kept` lays out
   every level's structure).
+- **A run works out each stream's key once (#254)**, not once for each
+  block of its draws: 40 keys rather than 800 for 20,000 simulations of
+  20 components, about 0.035 s of a 0.65 s run. `_streams.Block` takes
+  the key (`Plan.block` gives it). Laying the draws out more tightly was
+  tried and left out: giving each simulation its own limit, extended
+  alone, and starting nearer the expected draws worked out a third fewer
+  values, but running again the simulations that ran out cost what that
+  saved. Most of the draws' time is the models' quantile functions,
+  whose overhead per value is raised in surpyval (SurPyval#769).
 - **surpyval 0.23 or later is required** (0.22 was). Its next release drops
   0.22's name for a limited-failure population's share that ever fails,
   `p`, for `lfp_p`, which 0.22 does not know, so no example could be
