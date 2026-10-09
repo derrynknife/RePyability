@@ -4621,7 +4621,10 @@ class RepairableRBD(RBD):
         input node, is most likely missing). Each is one of:
 
         - A spec dict with ``"reliability"`` (a time-to-failure model, such
-          as a fitted surpyval distribution) and ``"repairability"`` (a
+          as a fitted surpyval distribution, or a model surpyval fits to a
+          repairable unit's failures, ``CrowAMSAA``, ``Duane``, ``HPP`` or
+          ``GeneralizedRenewal``, which is the life and ``"repair"`` it is:
+          see the guide's imperfect repair) and ``"repairability"`` (a
           time-to-repair model, or ``"instant"`` for repair in zero time:
           the component still fails, and any repair or replace cost is
           charged, but it is never down), plus optional costs.
@@ -5089,16 +5092,23 @@ class RepairableRBD(RBD):
         # Capture the constructor inputs verbatim (before any mutation) so the
         # RBD can be faithfully serialised via to_dict()/to_json().
         edges = list(edges)
+        from repyability.rbd._processes import as_spec
         from repyability.rbd.ccf import as_groups
 
         # PerfectReliability() stands for the class (#232), given alone or
-        # as a spec's life.
+        # as a spec's life; a fitted process as a spec's life is the life
+        # and repair it is (#269).
         components = {
             name: (
-                {
-                    **component,
-                    "reliability": perfect_class(component["reliability"]),
-                }
+                as_spec(
+                    name,
+                    {
+                        **component,
+                        "reliability": perfect_class(
+                            component["reliability"]
+                        ),
+                    },
+                )
                 if isinstance(component, dict) and "reliability" in component
                 else perfect_class(component)
             )

@@ -9,6 +9,19 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+### Added
+
+- **Fitted repairable-unit models as components (#269).** A spec's
+  `"reliability"` may be what surpyval fits to a repairable unit's failure
+  history. A Poisson process (`CrowAMSAA`, `Duane`, `HPP`) is minimal
+  repair of the life whose cumulative hazard is its cumulative intensity
+  (a Weibull, or an exponential life), so its expected failures with
+  repairs in no time are exactly the fitted ones; a `GeneralizedRenewal`
+  (Kijima I or II) is its life distribution with the `"repair"` of its
+  Kijima model and restoration factor. The spec is saved as that life and
+  repair. surpyval's ARA, ARI and G1 renewal models are refused, their
+  repairs not being Kijima's (SurPyval#833).
+
 ### Changed
 
 - **Parameter uncertainty draws a fit's shares too (#267).** `"fit"` drew

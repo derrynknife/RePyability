@@ -99,6 +99,13 @@ def shares_life():
     return surv.Weibull.fit(x, c=c, lfp=True, zi=True)
 
 
+def crow_amsaa():
+    """A Crow-AMSAA process fitted to 60 failures of a repairable unit
+    (#269): minimal repair of a Weibull life."""
+    gaps = np.random.default_rng(7).weibull(1.5, 60) * 300
+    return surv.CrowAMSAA.fit(np.cumsum(gaps))
+
+
 def mixture_life():
     """A two-mode population, infant mortality and wear-out (#227)."""
     g = np.random.default_rng(7)
@@ -407,6 +414,9 @@ def repairable_kinds():
             ),
             "mixture life": system(
                 unit(reliability=mixture_life(), replace_cost=10.0)
+            ),
+            "fitted Crow-AMSAA process": system(
+                unit(reliability=crow_amsaa(), repair_cost=1.0)
             ),
             "mixture life, maintained": system(
                 unit(
