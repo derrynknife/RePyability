@@ -106,67 +106,11 @@ def _pop(heap, size):
 
 
 @njit(cache=True, inline="always")
-def _works(status, structure, value):
-    """The structure function: 1 if the system works with the components'
-    ``status``, else 0 (see ``Decomposition.structure_function``)."""
-    (
-        kind,
-        k,
-        node,
-        child_start,
-        child_end,
-        children,
-        root,
-        always,
-        core_start,
-        core_end,
-        core_members,
-    ) = structure
-    if always:
-        return 1
-    for i in range(kind.size):
-        term = kind[i]
-        if term == _NODE:
-            value[i] = status[node[i]]
-        elif term == _SERIES:
-            works = 1
-            for j in range(child_start[i], child_end[i]):
-                if value[children[j]] == 0:
-                    works = 0
-                    break
-            value[i] = works
-        elif term == _PARALLEL:
-            works = 0
-            for j in range(child_start[i], child_end[i]):
-                if value[children[j]] != 0:
-                    works = 1
-                    break
-            value[i] = works
-        else:
-            count = 0
-            for j in range(child_start[i], child_end[i]):
-                if value[children[j]] != 0:
-                    count += 1
-            value[i] = 1 if count >= k[i] else 0
-    if root >= 0:
-        return value[root]
-    for p in range(core_start.size):
-        works = 1
-        for j in range(core_start[p], core_end[p]):
-            if value[core_members[j]] == 0:
-                works = 0
-                break
-        if works:
-            return 1
-    return 0
-
-
-@njit(cache=True, inline="always")
-def _keep(kept, value, count, down, c, state, working_paths):
+def _keep(kept, value, count, down, working, c, state):
     """Bring the structure up to date with component ``c`` now ``state``
     (see ``_compiled._kept``): each term it stands for, and up the tree as
     far as the change goes, then the core's path sets of a top term that
-    changed. The number of the core's path sets that work, after."""
+    changed, and the number of its level's path sets that work."""
     (
         kind,
         need,
@@ -177,11 +121,8 @@ def _keep(kept, value, count, down, c, state, working_paths):
         term_path_start,
         term_path_end,
         term_paths,
-        _,
-        _,
-        _,
-        _,
-    ) = kept
+        path_level,
+    ) = kept[:10]
     for e in range(node_term_start[c], node_term_end[c]):
         term = node_terms[e]
         value[term] = state
@@ -210,12 +151,24 @@ def _keep(kept, value, count, down, c, state, working_paths):
                 if works:
                     down[p] -= 1
                     if down[p] == 0:
-                        working_paths += 1
+                        working[path_level[p]] += 1
                 else:
                     if down[p] == 0:
-                        working_paths -= 1
+                        working[path_level[p]] -= 1
                     down[p] += 1
-    return working_paths
+
+
+@njit(cache=True, inline="always")
+def _level_works(kept, value, working, L):
+    """Whether level ``L`` (the system, or a nested RBD) works, from its
+    structure kept up to date (see ``_keep``): its root term's state, or
+    whether any of its core's path sets works."""
+    root, always = kept[10], kept[11]
+    if always[L]:
+        return 1
+    if root[L] >= 0:
+        return value[root[L]]
+    return 1 if working[L] > 0 else 0
 
 
 @njit(cache=True, inline="always")
@@ -524,21 +477,6 @@ def _arm(g, c, t_end, first, count, units, groups, heap, size, tags):
     return _push(heap, size, units[2][best], c, _GROUP, tags[0])
 
 
-@njit(cache=True)
-def truth_table(n, structure):
-    """``_works`` for every state of ``n`` components: entry ``mask`` is
-    whether the system works when component ``c`` is up exactly if bit
-    ``c`` of ``mask`` is set."""
-    table = np.empty(1 << n, np.int8)
-    status = np.empty(n, np.int8)
-    value = np.empty(structure[0].size, np.int8)
-    for mask in range(1 << n):
-        for c in range(n):
-            status[c] = (mask >> c) & 1
-        table[mask] = _works(status, structure, value)
-    return table
-
-
 @njit(cache=True, inline="always")
 def _up_kind(kind):
     """Whether an event of ``kind`` leaves its component up."""
@@ -568,21 +506,19 @@ def _level_view(L, state):
 
 
 @njit(cache=True)
-def _simulate(
-    todo, lo, hi, first, t_end, system, structure, kept, draws, out, upkeep
-):
+def _simulate(todo, lo, hi, first, t_end, system, kept, draws, out, upkeep):
     """Simulations ``todo[lo:hi]`` (each into row ``r - first``). Whether
-    the system works is looked up in the table of every state, or, without
-    one, kept up to date as components change (``kept``, see
-    ``_compiled._kept``). ``upkeep`` is the components' preventive
-    maintenance and inspections, the repair crews, the standby groups and
-    the nested RBDs (see ``_compiled._System.upkeep``): the components of
-    nested RBDs come after the system's own, each nested RBD a level with
-    its own heap and crews. One loop takes every level's events, the
-    system's to the end and a nested RBD's to its next change (as
-    ``RepairableRBD.next_event``) when that is wanted where it is a
-    component: a component's events, a standby group's and the crews' are
-    written once, whatever their level."""
+    the system, and each nested RBD, works is kept up to date as
+    components change (``kept``, see ``_compiled._kept``). ``upkeep`` is
+    the components' preventive maintenance and inspections, the repair
+    crews, the standby groups and the nested RBDs (see
+    ``_compiled._System.upkeep``): the components of nested RBDs come after
+    the system's own, each nested RBD a level with its own heap and crews.
+    One loop takes every level's events, the system's to the end and a
+    nested RBD's to its next change (as ``RepairableRBD.next_event``) when
+    that is wanted where it is a component: a component's events, a
+    standby group's and the crews' are written once, whatever their
+    level."""
     (
         start,
         active,
@@ -599,10 +535,8 @@ def _simulate(
         has_costs,
         system_rate,
         initial_up,
-        table,
     ) = system
     flat, offsets, rows, first_block, columns = draws
-    tabled = table.size > 0
     (
         uptime_out,
         node_out,
@@ -674,7 +608,6 @@ def _simulate(
     # and the nested levels, innermost first.
     level_start, level_stop = upkeep[29], upkeep[30]
     child_level = upkeep[27]
-    level_table_start, level_table = upkeep[31], upkeep[32]
     levels = level_start.size
     m = unit_fail.size
     # Each unit's life left (as of when it last started operating or
@@ -759,12 +692,11 @@ def _simulate(
         np.empty((levels, cap), np.int64),
     )
     sizes = np.zeros(levels, np.int64)
-    # Each level's system state and its components' states as bits; and
-    # the levels stepping to their next change (see ``_advance``): their
-    # stack, the nested node whose event each is taking, and whether that
-    # event changed it, to what, when and if planned.
+    # Each level's system state; and the levels stepping to their next
+    # change (see ``_advance``): their stack, the nested node whose event
+    # each is taking, and whether that event changed it, to what, when and
+    # if planned.
     level_up = np.empty(levels, np.int8)
-    level_mask = np.zeros(levels, np.int64)
     stack = np.empty(levels, np.int64)
     cursor = np.empty(levels, np.int64)
     awaiting = np.empty(levels, np.int64)
@@ -785,7 +717,6 @@ def _simulate(
         holding,
         standby,
         level_up,
-        level_mask,
         stack,
         awaiting,
         pending_change,
@@ -800,7 +731,6 @@ def _simulate(
         tags,
     )
     changed_, new_, time_, planned_ = pending_change
-    root_term, always = structure[6], structure[7]
     # Whether the run follows the system's capacity (#155): the components
     # up at the start, as bits, and each change of a component's state, its
     # time and the components up after it (see ``trace_capacity``).
@@ -819,10 +749,11 @@ def _simulate(
     up_at = np.empty(n)
     down_at = np.empty(n)
     seen = np.zeros(n, np.int64)
-    value0, count0, down0, working_paths0 = kept[9:]
+    value0, count0, down0, working0 = kept[12:]
     value = np.empty(value0.size, np.int8)
     count = np.empty(count0.size, np.int32)
     down = np.empty(down0.size, np.int32)
+    working = np.empty(levels, np.int64)
     for i in range(lo, hi):
         r = todo[i]
         row = r - first
@@ -837,10 +768,10 @@ def _simulate(
         category_out[row] = 0.0
         node_cost_out[row] = 0.0
         status[:] = start
-        if not tabled:
-            value[:] = value0
-            count[:] = count0
-            down[:] = down0
+        value[:] = value0
+        count[:] = count0
+        down[:] = down0
+        working[:] = working0
         lives[:] = 0
         repairs[:] = 0
         charged[:] = 0
@@ -874,10 +805,10 @@ def _simulate(
         down_at[:] = 0.0
         cursor[:] = -1
         cursor[0] = 0
-        # The system's tallies: whether it works, as of when, and its
-        # components' states for its structure (as bits for its table, or
-        # kept up to date as they change, see ``_compiled._kept``); and its
-        # capacity trace's and histories' records.
+        # The system's tallies: whether it works and as of when (every
+        # level's structure kept up to date as components change, see
+        # ``_compiled._kept``); and its capacity trace's and histories'
+        # records.
         up = initial_up
         system_up = 0.0
         system_down = 0.0
@@ -887,8 +818,6 @@ def _simulate(
         planned_n = 0
         changes = 0
         rep_cost = 0.0
-        mask = 0
-        working_paths = working_paths0
         traced = 0
         traced_n = 0
         recorded_n = 0
@@ -1021,10 +950,6 @@ def _simulate(
                 cursor[L] = -1
                 if L == 0:
                     # The system's tallies start.
-                    if tabled:
-                        for c in range(n):
-                            if status[c]:
-                                mask |= 1 << c
                     if tracing:
                         for c in range(n):
                             if status[c]:
@@ -1037,12 +962,7 @@ def _simulate(
                 else:
                     # Its system's state, which is its node's where it is a
                     # component.
-                    bits = 0
-                    for c in range(level_start[L], level_stop[L]):
-                        if status[c]:
-                            bits |= 1 << (c - level_start[L])
-                    level_mask[L] = bits
-                    level_up[L] = level_table[level_table_start[L] + bits]
+                    level_up[L] = _level_works(kept, value, working, L)
                     status[awaiting[stack[depth - 2]]] = level_up[L]
                 continue
             if size == 0:
@@ -1281,21 +1201,7 @@ def _simulate(
                     up_at[c] = system_up_t
                     down_at[c] = system_down_t
                     status[c] = state_now
-                    if tabled:
-                        if state_now:
-                            mask |= 1 << c
-                        else:
-                            mask &= ~(1 << c)
-                    else:
-                        working_paths = _keep(
-                            kept,
-                            value,
-                            count,
-                            down,
-                            c,
-                            state_now,
-                            working_paths,
-                        )
+                    _keep(kept, value, count, down, working, c, state_now)
                     if tracing:
                         # The capacity trace's record (_CapacityTrace.change).
                         if state_now:
@@ -1378,14 +1284,7 @@ def _simulate(
                                 node_cost_out[row, cost_index[c]] += charge
                             if code != 0:
                                 break
-                    if tabled:
-                        works = table[mask]
-                    elif always:
-                        works = 1
-                    elif root_term >= 0:
-                        works = value[root_term]
-                    else:
-                        works = 1 if working_paths > 0 else 0
+                    works = _level_works(kept, value, working, 0)
                     if state_now != up and works != up:
                         system_up = system_up_t
                         system_down = system_down_t
@@ -1417,15 +1316,14 @@ def _simulate(
                 # A nested RBD's component: whether its system changes.
                 if grouped and state_now == status[c]:
                     continue
-                status[c] = state_now
-                bit = 1 << (c - level_start[L])
-                if state_now:
-                    level_mask[L] |= bit
-                else:
-                    level_mask[L] &= ~bit
+                if state_now != status[c]:
+                    # (An event of no change, maintenance in zero time say,
+                    # leaves the structure as it is.)
+                    status[c] = state_now
+                    _keep(kept, value, count, down, working, c, state_now)
                 new = level_up[L]
                 if state_now != level_up[L]:
-                    new = level_table[level_table_start[L] + level_mask[L]]
+                    new = _level_works(kept, value, working, L)
                     changed = new != level_up[L]
                 planned = (
                     changed
@@ -1776,9 +1674,7 @@ def group_records(counts, times, which, planned, m):
 
 
 @njit(cache=True, nogil=True)
-def run_serial(
-    todo, first, t_end, system, structure, kept, draws, out, upkeep
-):
+def run_serial(todo, first, t_end, system, kept, draws, out, upkeep):
     """Simulations ``todo``, one after another (without holding the GIL,
     so that threads can run several at once)."""
     _simulate(
@@ -1788,7 +1684,6 @@ def run_serial(
         first,
         t_end,
         system,
-        structure,
         kept,
         draws,
         out,
@@ -1802,7 +1697,6 @@ def run_parallel(
     first,
     t_end,
     system,
-    structure,
     kept,
     draws,
     out,
@@ -1822,7 +1716,6 @@ def run_parallel(
             first,
             t_end,
             system,
-            structure,
             kept,
             draws,
             out,

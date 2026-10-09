@@ -122,7 +122,7 @@ other release, fixes included, the minor.
   of eight components on the Python engine took about a sixth longer.
   Engines from other
   packages read the run's blocks as before, but their numbers changed:
-  `engines.API` is now 2.
+  `engines.API` was raised to 2 (and to 3 with #255).
 - **`simulate_timelines` always records its histories in the event loop
   (#205).** On the Python engine, independent components' histories were
   drawn from their streams by a second implementation of their lives and
@@ -166,6 +166,20 @@ other release, fixes included, the minor.
   its changes in order about 2.5 times faster than before; with numba, a
   capacity run of a million simulations takes about a tenth longer, and an
   availability run as long.
+- **The compiled engine keeps whether the system works up to date, at
+  every level, and builds no table of states (#255).** For a system of up
+  to 20 components, and for every nested RBD, it built a table of whether
+  the system works in each of the `2^n` states of its components, again
+  on every run: a tenth of a second for 20 components, half of a short
+  run. It now keeps the structure up to date as components change, as it
+  did above 20 components, at every level in one structure; that is as
+  fast as the table at every size measured (and a seventh faster at 20).
+  A 1,000-simulation run of two lines of ten components takes 0.036 s
+  rather than 0.119 s. Results are the same, bit for bit. A nested RBD of
+  more than 20 components, which ran in Python, is now compiled.
+  `engines.API` is now 3: the run's arrays an engine is handed changed
+  (the system's no longer ends with a table, and `_System.kept` lays out
+  every level's structure).
 - **surpyval 0.23 or later is required** (0.22 was). Its next release drops
   0.22's name for a limited-failure population's share that ever fails,
   `p`, for `lfp_p`, which 0.22 does not know, so no example could be

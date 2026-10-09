@@ -54,7 +54,9 @@
   standby groups, nested RBDs and capacities (#155), while engines from
   other packages keep the plain-components contract. Inside `_kernel`, one
   loop (`_simulate`) takes every level's events, the system's and its
-  nested RBDs' (#206). Per-event helpers there take few arrays: each array
+  nested RBDs' (#206), and keeps whether each level works up to date in
+  one structure over every level (`_compiled._kept`; no table of states,
+  #255). Per-event helpers there take few arrays: each array
   a call binds costs reference counting that numba cannot prune in a
   function this size, and passing the run's tuples to a function per
   simulation cost several times the loop (measured in #206).

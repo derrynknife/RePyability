@@ -701,11 +701,9 @@ def pairs_in_series(pairs):
 @needs_numba
 @pytest.mark.parametrize("pairs", [12, 35])
 def test_the_engines_agree_on_large_systems(pairs):
-    # More components than the compiled loop tabulates the system's states
-    # for, and more than bits in a 64-bit mask: it keeps the structure up
-    # to date as components change instead.
+    # More components than bits in a 64-bit mask: the compiled loop keeps
+    # the structure up to date as components change.
     rbd = pairs_in_series(pairs)
-    assert len(rbd.components) > _compiled.MAX_TABLED
     for options in ({}, {"antithetic": True}, {"n_jobs": 2}):
         identical(
             rbd.availability(
@@ -1348,6 +1346,18 @@ def nested_rbds():
         }
 
     pair = [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")]
+    bridge = [
+        ("s", "a"),
+        ("s", "b"),
+        ("a", "c"),
+        ("b", "c"),
+        ("a", "d"),
+        ("b", "e"),
+        ("c", "d"),
+        ("c", "e"),
+        ("d", "t"),
+        ("e", "t"),
+    ]
     slow = L([2.0, 0.5])
     crewed = RepairableRBD(
         [
@@ -1486,6 +1496,23 @@ def nested_rbds():
                 "c": {"reliability": X(10.0), "repairability": X(1.0)},
             },
         ),
+        # More components inside than bits in a 64-bit mask; and a core of
+        # path sets at both levels, whose working path sets each level
+        # counts on its own (#255).
+        "wide inside": RepairableRBD(
+            [("s", "m"), ("m", "c"), ("c", "t")],
+            {"m": pairs_in_series(35), "c": unit(60, 1.5)},
+        ),
+        "bridges inside and out": RepairableRBD(
+            bridge,
+            {
+                "a": RepairableRBD(
+                    bridge,
+                    {x: unit(40 + 3 * i, 1.5) for i, x in enumerate("abcde")},
+                ),
+                **{x: unit(50 + 7 * i, 2.0) for i, x in enumerate("bcde")},
+            },
+        ),
     }
 
 
@@ -1519,13 +1546,11 @@ def test_what_numba_does_not_run_inside_a_nested_rbd():
             [("s", "m"), ("m", "c"), ("c", "t")], {"m": inner, "c": dict(unit)}
         )
 
-    wide = pairs_in_series(11)
     imperfect = RepairableRBD(
         [("s", "a"), ("a", "t")],
         {"a": {**unit, "repair": {"model": "kijima1", "q": 0.5}}},
     )
     for inner, reason in [
-        (wide, "the 22 components of node 'm' (a nested RBD of more than 20)"),
         (imperfect, "imperfect repair"),
         (on_condition(), "replacement on condition"),
     ]:
@@ -1822,11 +1847,9 @@ def random_repairable(seed):
 
 @needs_numba
 @pytest.mark.parametrize("seed", range(12))
-def test_the_engines_agree_keeping_the_structure_up_to_date(seed, monkeypatch):
-    # Without a table of every state (forced here on small diagrams), the
-    # compiled loop keeps whether the system works up to date as components
-    # change, through modules and a core of path sets alike.
-    monkeypatch.setattr(_compiled, "MAX_TABLED", 0)
+def test_the_engines_agree_keeping_the_structure_up_to_date(seed):
+    # The compiled loop keeps whether the system works up to date as
+    # components change, through modules and a core of path sets alike.
     rbd = random_repairable(seed)
     for extra in ({}, {"broken_nodes": [rbd.nodes[0]]}, {"n_jobs": 2}):
         options = dict(t_simulation=150.0, mc_samples=40, seed=seed, **extra)
@@ -1843,18 +1866,17 @@ def test_the_kept_structure_starts_as_the_structure_function(seed):
     structure = _compiled._structure(
         rbd, {node: c for c, node in enumerate(nodes)}
     )
-    root, always = structure[6], structure[7]
     rng = np.random.default_rng(seed)
     for _ in range(10):
         start = (rng.random(len(nodes)) < 0.6).astype(np.int8)
-        kept = _compiled._kept(structure, start)
-        value, working_paths = kept[9], kept[12]
-        if always:
+        kept = _compiled._kept([structure], start)
+        root, always, value, working = kept[10], kept[11], kept[12], kept[15]
+        if always[0]:
             works = True
-        elif root >= 0:
-            works = bool(value[root])
+        elif root[0] >= 0:
+            works = bool(value[root[0]])
         else:
-            works = working_paths > 0
+            works = working[0] > 0
         assert works == rbd.is_system_working(
             {node: bool(start[c]) for c, node in enumerate(nodes)}, "p"
         )
