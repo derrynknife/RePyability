@@ -58,25 +58,32 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e .[dev]
 
+      - name: pytest
+        # Every version runs the suite on all the runner's cores; coverage is
+        # measured once, on the newest Python (next step).
+        if: matrix.python-version != '3.14'
+        run: python -m pytest -n auto -q
+
       - name: pytest (under coverage)
-        # From Python 3.12 coverage can measure through sys.monitoring,
-        # which counts the same lines as its default tracer (sys.settrace)
-        # several times faster: under the tracer, Python 3.12's job took
-        # over an hour. Python 3.11 has no sys.monitoring, and an empty
-        # COVERAGE_CORE leaves it the default tracer.
+        # Coverage is measured on Python 3.14 alone, through sys.monitoring,
+        # which is several times faster than its default tracer
+        # (sys.settrace): under the tracer, Python 3.11's job took an hour.
+        # pytest-cov collects it from each of pytest-xdist's workers.
+        if: matrix.python-version == '3.14'
         env:
-          COVERAGE_CORE: ${{ matrix.python-version != '3.11' && 'sysmon' || '' }}
-        run: coverage run -m pytest
+          COVERAGE_CORE: sysmon
+        run: python -m pytest -n auto -q --cov --cov-report=
 
       - name: coverage report (enforces the fail_under gate)
+        if: matrix.python-version == '3.14'
         run: coverage report
 
       - name: coverage html
-        if: matrix.python-version == '3.11'
+        if: matrix.python-version == '3.14'
         run: coverage html
 
       - name: Upload coverage html report artifact
-        if: matrix.python-version == '3.11'
+        if: matrix.python-version == '3.14'
         uses: actions/upload-artifact@v4
         with:
           name: coverage-html-report
@@ -107,7 +114,7 @@ jobs:
           python -c "import numba; print('numba', numba.__version__)"
 
       - name: pytest
-        run: python -m pytest -q
+        run: python -m pytest -n auto -q
 
   test-minimum:
     # CI otherwise installs the newest surpyval, so once surpyval releases,
@@ -140,7 +147,7 @@ jobs:
           python -c "import surpyval; print('surpyval', surpyval.__version__)"
 
       - name: pytest
-        run: python -m pytest -q
+        run: python -m pytest -n auto -q
 
   docs:
     name: docs (strict build)
