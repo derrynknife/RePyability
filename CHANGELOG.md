@@ -9,6 +9,16 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+### Changed
+
+- **surpyval 0.24 or later is required** (0.23 was). It gives a mixture
+  life a survival function that keeps its precision in the far tail, and
+  draws a life given an age (imperfect repair) reading a limited failure
+  population's share by its own name, `lfp_p`, which a mixture lacks. The
+  mixture's new quantile function loses the long lives' precision and is
+  slow (SurPyval#821), so the simulations keep drawing a mixture's lives
+  with RePyability's own; seeded results are unchanged.
+
 ## [0.13] - 2026-10-09
 
 Simpler, faster and harder to misuse. Each computation now has one
