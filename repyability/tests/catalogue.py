@@ -86,6 +86,19 @@ def fitted_life():
     return surv.Weibull.fit(np.random.default_rng(7).weibull(2, 30) * 100)
 
 
+def shares_life():
+    """A Weibull fitted to 30 failures, 20 units that never failed and 5
+    dead on arrival: a fit of the share that ever fails (``lfp_p``) and
+    the share dead on arrival (``f0``) too (#267)."""
+    x = np.r_[
+        np.random.default_rng(7).weibull(2, 30) * 100,
+        np.full(20, 300.0),
+        np.zeros(5),
+    ]
+    c = np.r_[np.zeros(30), np.ones(20), np.zeros(5)].astype(int)
+    return surv.Weibull.fit(x, c=c, lfp=True, zi=True)
+
+
 def mixture_life():
     """A two-mode population, infant mortality and wear-out (#227)."""
     g = np.random.default_rng(7)
@@ -188,6 +201,9 @@ def nonrepairable_kinds():
             EDGES, {"a": RegressionNode(aft(), covariates=[1.0]), **rest}
         ),
         "fitted": NonRepairableRBD(EDGES, {"a": fitted_life(), **rest}),
+        "fitted shares": NonRepairableRBD(
+            EDGES, {"a": shares_life(), **rest}
+        ),
         "mixture": NonRepairableRBD(EDGES, {"a": mixture_life(), **rest}),
         "degrading": NonRepairableRBD(
             EDGES,

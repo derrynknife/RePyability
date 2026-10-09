@@ -11,6 +11,25 @@ other release, fixes included, the minor.
 
 ### Changed
 
+- **Parameter uncertainty draws a fit's shares too (#267).** `"fit"` drew
+  only a distribution's own parameters (from surpyval's `hess_inv`) and
+  kept a limited failure population's share that ever fails (`lfp_p`) and
+  a zero-inflated fit's share dead on arrival (`f0`) at their fitted
+  values. Long after the units that fail have failed, the reliability is
+  that share alone, so its spread came out as nothing: with 42% of units
+  ever failing, known to 0.029, every draw had 42%. It now draws every
+  parameter the fit estimated from surpyval's `covariance()`, the shares on
+  the logit scale, in `sf_uncertainty` and the other uncertainty methods,
+  vega and both classes' `uncertainty_importance`, and seeded uncertainty
+  results of such fits change. An offset is still held where it was
+  fitted, as surpyval's covariance leaves it out (SurPyval#830); `"fit"`
+  now warns that it does.
+- **`lfp_p` and `f0` are parameters (#267).** Where a node's model has a
+  limited failure population or zero inflation, `parameter_sensitivity`,
+  `levers()` and `with_levers` take the shares as parameters, after the
+  distribution's own (the order of surpyval's `covariance()`), with the
+  range (0, 1), and an uncertainty `{parameter: distribution}` may name
+  them.
 - **A `RegressionNode`'s mean and draws are exact.** Its `mean()`
   integrated the survival curve tabulated on 4,096 points and stopped
   where the survival fell to 1e-4, so it came out low (8e-5 for a

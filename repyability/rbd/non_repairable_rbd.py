@@ -214,28 +214,27 @@ def _times(obj, x) -> tuple:
     return np.atleast_1d(real_array(x, "x")), scalar_in
 
 
-def _dsf_dparam(cls, params, j, x_arr, rel_step, extras=None) -> np.ndarray:
-    """Partial derivative of a distribution's ``sf`` at ``x_arr`` with respect
-    to its ``j``-th parameter, by finite difference.
+def _dsf_dparam(spec, j, x_arr, rel_step) -> np.ndarray:
+    """Partial derivative of a model's ``sf`` at ``x_arr`` with respect to
+    its ``j``-th parameter (``spec``, a ``parametric_spec``), by finite
+    difference.
 
-    ``cls.from_params`` rebuilds the distribution with a perturbed parameter
-    (and the model's offset, limited-failure-population and zero-inflation
-    ``extras``, kept as they are), so this works for any surpyval parametric
+    ``spec.build`` rebuilds the model with a perturbed parameter (its
+    offset kept as it is), so this works for any surpyval parametric
     distribution without hard-coding per-distribution derivative formulae.
     A central difference is used where both perturbations are valid; if one
     perturbation falls outside a parameter's admissible range (e.g. a
     probability leaving ``[0, 1]``) it falls back to a one-sided difference
     about the unperturbed value.
     """
-    theta = params[j]
+    theta = spec.params[j]
     h = rel_step * abs(theta) if theta != 0.0 else rel_step
 
     def perturbed(delta):
-        trial = list(params)
+        trial = list(spec.params)
         trial[j] = theta + delta
         try:
-            model = cls.from_params(trial, **(extras or {}))
-            return np.asarray(model.sf(x_arr), dtype=float)
+            return np.asarray(spec.build(trial).sf(x_arr), dtype=float)
         except Exception:
             return None
 
@@ -245,9 +244,7 @@ def _dsf_dparam(cls, params, j, x_arr, rel_step, extras=None) -> np.ndarray:
         return (up - down) / (2.0 * h)
     # A perturbation hit a parameter bound; fall back to a one-sided
     # difference about the unperturbed value.
-    base = np.asarray(
-        cls.from_params(list(params), **(extras or {})).sf(x_arr), dtype=float
-    )
+    base = np.asarray(spec.build(spec.params).sf(x_arr), dtype=float)
     if up is not None:
         return (up - base) / h
     if down is not None:
@@ -905,14 +902,13 @@ class NonRepairableRBD(RBD):
         out: Dict[str, np.ndarray] = {}
         spec = parametric_spec(self.reliabilities[group.members[0]])
         if spec is not None:
-            cls, params, names, extras = spec
-            for j, name in enumerate(names):
+            for j, name in enumerate(spec.names):
 
                 def at_param(value, j=j):
-                    trial = list(params)
+                    trial = list(spec.params)
                     trial[j] = value
                     try:
-                        model = cls.from_params(trial, **extras)
+                        model = spec.build(trial)
                         works = np.asarray(model.sf(x), dtype=float)
                         fails = np.asarray(model.ff(x), dtype=float)
                     except Exception:
@@ -920,7 +916,7 @@ class NonRepairableRBD(RBD):
                     return system(members=(works, fails))
 
                 out[name] = _system_difference(
-                    at_param, params[j], rel_step, base
+                    at_param, spec.params[j], rel_step, base
                 )
         for name, value in ccf_parameters(group.model).items():
 
@@ -1695,11 +1691,12 @@ class NonRepairableRBD(RBD):
         in surpyval, provides. A node's uncertainty is one of:
 
         - ``"fit"``: its parameters are drawn from the normal approximation
-          of its maximum-likelihood fit (surpyval's ``hess_inv``), on the
-          log scale for a parameter that must be positive and the logit
-          scale for one in (0, 1), so that every draw is valid; an offset,
-          zero-inflation or limited-failure-population parameter keeps its
-          fitted value;
+          of its maximum-likelihood fit (surpyval's ``covariance()``), on
+          the log scale for a parameter that must be positive and the
+          logit scale for one in (0, 1), so that every draw is valid:
+          the distribution's parameters and a limited failure population's
+          ``lfp_p`` or a zero-inflated fit's ``f0``; an offset, which the
+          covariance leaves out, keeps its fitted value, with a warning;
         - ``{parameter name: distribution}``: each named parameter is drawn
           from its distribution (anything with ``qf`` or ``ppf``, such as a
           surpyval or scipy.stats distribution), the others kept;
@@ -2262,7 +2259,7 @@ class NonRepairableRBD(RBD):
         its gradient in input ``k``'s parameters (central differences of
         the exact quantity, with the parameters moved by ``rel_step`` of
         themselves) and ``Sigma_k`` their covariance: a fit's (surpyval's
-        ``hess_inv``) for ``"fit"``, or the variances of the distributions
+        ``covariance()``) for ``"fit"``, or the variances of the distributions
         given. The inputs are independent, so each one's part is its own
         term and the shares add up to 1. A list of models has no
         parameters to move: it needs ``method="sobol"``.
@@ -2490,16 +2487,16 @@ class NonRepairableRBD(RBD):
         for k, (_, members, _) in enumerate(sources):
             model = self.reliabilities[members[0]]
             positions = varied[k][0]
-            params = np.atleast_1d(np.asarray(model.params, dtype=float))
+            spec = parametric_spec(model)
             models = []
             for which, move in configurations:
                 if which != k:
                     models.append(model)
                     continue
                 j, moved = move
-                changed = params.copy()
+                changed = list(spec.params)
                 changed[positions[j]] = moved
-                models.append(model.with_params(list(changed)))
+                models.append(spec.build(changed))
             for node in members:
                 drawn[node] = models
         drawn_groups: list = [None] * len(self.ccf_groups)
@@ -8214,18 +8211,17 @@ class NonRepairableRBD(RBD):
             if spec is None:
                 # A composite node: no parameters to perturb.
                 continue
-            cls, params, names, extras = spec
             node_out: Dict[str, Union[float, np.ndarray]] = {}
             if node_name in forced:
                 # Pinned regardless of its parameters -> zero sensitivity.
                 zero = np.zeros_like(x_arr)
-                for name in names:
+                for name in spec.names:
                     node_out[name] = _out(zero)
                 sensitivities[node_name] = node_out
                 continue
             b_i = np.asarray(birnbaum[node_name], dtype=float)
-            for j, name in enumerate(names):
-                dsf = _dsf_dparam(cls, params, j, x_arr, rel_step, extras)
+            for j, name in enumerate(spec.names):
+                dsf = _dsf_dparam(spec, j, x_arr, rel_step)
                 node_out[name] = _out(b_i * dsf)
             sensitivities[node_name] = node_out
         return sensitivities

@@ -22246,7 +22246,7 @@ class RepairableRBD(RBD):
         is
 
         - ``"fit"``: every one of its models that is a surpyval fit with a
-          parameter covariance (``hess_inv``), drawn from its normal
+          parameter covariance (``covariance()``), drawn from its normal
           approximation (on the log scale for a positive parameter, the
           logit scale for one in (0, 1));
         - ``{role: uncertainty}``: each model named drawn as its
@@ -22516,7 +22516,7 @@ class RepairableRBD(RBD):
         its derivatives in input ``k``'s parameters (``parameter_
         sensitivity``'s, of every one of its uncertain models; a
         population's summed over its nodes, which move together) and
-        ``Sigma_k`` their covariance (a fit's ``hess_inv``, or the
+        ``Sigma_k`` their covariance (a fit's ``covariance()``, or the
         variances of the distributions given). The inputs are independent,
         so each one's part is its own term, and the shares add up to 1. A
         list of models has no parameters to move: it needs

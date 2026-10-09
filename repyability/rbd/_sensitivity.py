@@ -90,13 +90,10 @@ class _Lever(NamedTuple):
     bounds: Tuple[float, float]
 
 
-def _model_bounds(cls, n: int) -> List[Tuple[float, float]]:
-    """The range of each of a surpyval model's ``n`` parameters, as its
+def _model_bounds(given) -> List[Tuple[float, float]]:
+    """The range of each of a surpyval model's parameters, as its
     distribution bounds them (``from_params`` refuses a value outside),
     ``-inf`` and ``inf`` where it does not."""
-    given = getattr(cls, "bounds", None)
-    if given is None or len(given) != n:
-        return [(-math.inf, math.inf)] * n
     return [
         (
             -math.inf if low is None else float(low),
@@ -114,18 +111,17 @@ def _model_levers(prefix: str, model, rebuild) -> List[tuple]:
     spec = parametric_spec(model)
     if spec is None:
         return []
-    cls, params, names, extras = spec
-    ranges = _model_bounds(cls, len(params))
+    ranges = _model_bounds(spec.bounds)
     out = []
-    for j, name in enumerate(names):
+    for j, name in enumerate(spec.names):
 
         def moved(v, j=j):
-            trial = list(params)
+            trial = list(spec.params)
             trial[j] = v
-            return rebuild(cls.from_params(trial, **extras))
+            return rebuild(spec.build(trial))
 
         named = f"{prefix}.{name}" if prefix else name
-        out.append((named, float(params[j]), moved, ranges[j]))
+        out.append((named, spec.params[j], moved, ranges[j]))
     return out
 
 
