@@ -307,9 +307,10 @@ def _collect(
         inner = [model.model, getattr(model, "_sf_model", None)]
     elif isinstance(model, RegressionNode):
         try:
-            kinks.append(_thinned(model._survival_grid()[0]))
-        except Exception:  # a model whose grid cannot be built
+            hints.append(model._knots())
+        except Exception:  # a model whose quantiles cannot be taken
             pass
+        kinks.append(model._kinks())
         return
     else:
         quantiles = quantile_knots(model)
