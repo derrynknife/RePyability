@@ -218,7 +218,7 @@ A node's uncertainty is one of:
 
 | Given | Draws |
 |---|---|
-| `"fit"` | The parameters, from the normal approximation of the model's maximum-likelihood fit (surpyval's `hess_inv`), on the log scale for a positive parameter and the logit scale for one in (0, 1), so every draw is valid. An offset, zero-inflation or limited-failure-population parameter keeps its fitted value. |
+| `"fit"` | Every parameter the fit estimated, from the normal approximation of the model's maximum-likelihood fit (surpyval's `covariance()`), on the log scale for a positive parameter and the logit scale for one in (0, 1), so every draw is valid. That includes a limited failure population's share that ever fails (`lfp_p`) and a zero-inflated fit's share dead on arrival (`f0`). An offset keeps its fitted value, with a warning, since surpyval's covariance leaves it out (SurPyval#830). |
 | `{"alpha": distribution, ...}` | Each named parameter from its distribution (anything with `qf` or `ppf`: surpyval or `scipy.stats`); the others keep their values. |
 | A list of models | One of them, with replacement: for example refits to bootstrap resamples, or posterior draws, made in surpyval. |
 
@@ -311,7 +311,7 @@ The pumps' fit accounts for 60% of the reliability's variance at 50 h, but
 `"mean"`, `"bx_life"` (`x` the percentage) or `"time_to_reliability"` (`x`
 the reliability). By default it is worked out by the delta method: the
 quantity's derivative in each input's parameters (central differences of the
-exact value) with their covariance (the fit's `hess_inv`, or the variances
+exact value) with their covariance (the fit's `covariance()`, or the variances
 of the distributions given). The inputs are independent, so each input's
 part is its own term, and the shares add up to 1.
 

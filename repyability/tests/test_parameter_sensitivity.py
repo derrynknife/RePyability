@@ -162,3 +162,31 @@ def test_x_optional_for_fixed(rbd_parallel: NonRepairableRBD):
 def test_unknown_node_override_raises(rbd_series: NonRepairableRBD):
     with pytest.raises(ValueError):
         rbd_series.parameter_sensitivity(10.0, broken_nodes=["nope"])
+
+
+def test_the_shares_that_never_fail_and_are_dead_are_parameters():
+    # A limited failure population and zero inflation (#267). In
+    # surpyval's terms lfp_p is the share that ever fails, the share dead
+    # on arrival f0 among it: R(t) = 1 - f0 - (lfp_p - f0) F(t), with F
+    # the Weibull's, so dR/dlfp_p = -F(t) and dR/df0 = -(1 - F(t)). They
+    # are levers, in the order of surpyval's covariance(), with the range
+    # (0, 1).
+    model = surv.Weibull.from_params([100, 2], lfp_p=0.6, f0=0.1)
+    rbd = NonRepairableRBD([("s", "a"), ("a", "t")], {"a": model})
+    t = np.array([50.0, 150.0])
+    f = 1 - np.exp(-((t / 100) ** 2))
+    sens = rbd.parameter_sensitivity(t)["a"]
+    assert list(sens) == ["alpha", "beta", "lfp_p", "f0"]
+    np.testing.assert_allclose(model.sf(t), 1 - 0.1 - 0.5 * f, rtol=1e-12)
+    np.testing.assert_allclose(sens["lfp_p"], -f, rtol=1e-6)
+    np.testing.assert_allclose(sens["f0"], -(1 - f), rtol=1e-6)
+    levers = {lever.name: lever for lever in rbd.levers()}
+    assert levers["lfp_p"].value == 0.6 and levers["lfp_p"].bounds == (0, 1)
+    moved = rbd.with_levers({("a", "lfp_p"): 0.5})
+    assert moved.reliabilities["a"].lfp_p == 0.5
+    assert moved.reliabilities["a"].f0 == 0.1
+    # A model with neither has no such levers.
+    plain = NonRepairableRBD(
+        [("s", "a"), ("a", "t")], {"a": surv.Weibull.from_params([100, 2])}
+    )
+    assert list(plain.parameter_sensitivity(t)["a"]) == ["alpha", "beta"]

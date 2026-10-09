@@ -80,7 +80,7 @@ def test_a_fit_s_covariance_and_derivatives():
     parts = rbd.uncertainty_importance(x)
     assert parts.first_order == {"pump": 1.0}
     assert parts.variance == pytest.approx(
-        gradient @ np.asarray(pump.hess_inv) @ gradient, rel=1e-6
+        gradient @ np.asarray(pump.covariance()) @ gradient, rel=1e-6
     )
 
 

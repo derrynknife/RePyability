@@ -130,7 +130,12 @@ def conditional_survival(model, x, X, *args, **kwargs):
     already survived to ``X``:
 
     .. math::
-        R(x \\mid X) = \\frac{R(X + x)}{R(X)}
+        R(x \\mid X) = \\frac{R(X + x)}{R(X)} = e^{-(H(X + x) - H(X))}
+
+    It is worked out from the cumulative hazard ``Hf`` where the model has
+    one, which keeps its precision where ``R(X + x)`` and ``R(X)`` are
+    both too small for a float (an age far past the model's lives, #268),
+    and as the ratio of ``sf`` otherwise.
 
     Parameters
     ----------
@@ -145,17 +150,27 @@ def conditional_survival(model, x, X, *args, **kwargs):
     Returns
     -------
     float or numpy.ndarray
-        The conditional survival probability, clipped to ``[0, 1]``; where the
-        item has all but surely failed by ``X`` (``R(X) ≈ 0``) it is ``0``.
+        The conditional survival probability, clipped to ``[0, 1]``; where
+        ``X`` cannot be reached (``R(X)`` is 0, or rounds to it without a
+        cumulative hazard) it is ``0``.
         A float if both ``x`` and ``X`` are scalars, otherwise an array.
     """
     scalar_in = np.ndim(x) == 0 and np.ndim(X) == 0
     x = np.atleast_1d(np.asarray(x, dtype=float))
     X = np.atleast_1d(np.asarray(X, dtype=float))
-    denom = np.asarray(model.sf(X, *args, **kwargs), dtype=float)
-    numer = np.asarray(model.sf(x + X, *args, **kwargs), dtype=float)
+    hazard = getattr(model, "Hf", None)
     with np.errstate(divide="ignore", invalid="ignore"):
-        out = numer / denom
+        if hazard is None:
+            out = np.asarray(
+                model.sf(x + X, *args, **kwargs), dtype=float
+            ) / np.asarray(model.sf(X, *args, **kwargs), dtype=float)
+        else:
+            out = np.exp(
+                -(
+                    np.asarray(hazard(x + X, *args, **kwargs), dtype=float)
+                    - np.asarray(hazard(X, *args, **kwargs), dtype=float)
+                )
+            )
     out = np.where(np.isfinite(out), out, 0.0)
     out = np.clip(out, 0.0, 1.0)
     return out.item() if scalar_in else out

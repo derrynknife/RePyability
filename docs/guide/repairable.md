@@ -757,6 +757,31 @@ Under Kijima I the virtual age only grows, so a unit that is never renewed
 fails ever more often; under Kijima II it settles. Replacing the unit
 every few failures (or on a preventive schedule) bounds it.
 
+**A model fitted to the unit's history.** A spec's `"reliability"` may be
+what surpyval fits to a repairable unit's failure times (#269), and the
+component is then the life and repair that model is:
+
+- a Poisson process, `CrowAMSAA`, `Duane` or `HPP`, is minimal repair of the
+  life whose cumulative hazard is the process's cumulative intensity
+  (Crow-AMSAA's `(t / alpha) ** beta` is a Weibull life, and a homogeneous
+  process an exponential one), so with repairs in no time its expected
+  failures are the process's own;
+- a `GeneralizedRenewal` (Kijima I or II) is its life distribution with the
+  `"repair"` of its Kijima model and restoration factor `q`.
+
+```python
+from surpyval import CrowAMSAA
+
+gearbox = CrowAMSAA.from_params([1500, 0.9])
+rbd = RepairableRBD([("s", "g"), ("g", "t")],
+                    {"g": {"reliability": gearbox, "repairability": "instant"}})
+rbd.expected_failures(8760.0)   # -> 4.8952, gearbox.cif(8760.0)
+```
+
+Such a spec takes no `"repair"` of its own, and is saved as the life and
+repair it is. surpyval's other renewal models (ARA, ARI, G1) are refused:
+their repairs are not Kijima's.
+
 - **Costs and spares.** A repair is charged its `"repair_cost"`; a
   replacement, at the `N`-th failure or at any failure of a unit renewed by
   its repairs, its `"repair_cost"` and `"replace_cost"`, and uses a spare

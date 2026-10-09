@@ -9,8 +9,40 @@ other release, fixes included, the minor.
 
 ## [Unreleased]
 
+### Added
+
+- **Fitted repairable-unit models as components (#269).** A spec's
+  `"reliability"` may be what surpyval fits to a repairable unit's failure
+  history. A Poisson process (`CrowAMSAA`, `Duane`, `HPP`) is minimal
+  repair of the life whose cumulative hazard is its cumulative intensity
+  (a Weibull, or an exponential life), so its expected failures with
+  repairs in no time are exactly the fitted ones; a `GeneralizedRenewal`
+  (Kijima I or II) is its life distribution with the `"repair"` of its
+  Kijima model and restoration factor. The spec is saved as that life and
+  repair. surpyval's ARA, ARI and G1 renewal models are refused, their
+  repairs not being Kijima's (SurPyval#833).
+
 ### Changed
 
+- **Parameter uncertainty draws a fit's shares too (#267).** `"fit"` drew
+  only a distribution's own parameters (from surpyval's `hess_inv`) and
+  kept a limited failure population's share that ever fails (`lfp_p`) and
+  a zero-inflated fit's share dead on arrival (`f0`) at their fitted
+  values. Long after the units that fail have failed, the reliability is
+  that share alone, so its spread came out as nothing: with 42% of units
+  ever failing, known to 0.029, every draw had 42%. It now draws every
+  parameter the fit estimated from surpyval's `covariance()`, the shares on
+  the logit scale, in `sf_uncertainty` and the other uncertainty methods,
+  vega and both classes' `uncertainty_importance`, and seeded uncertainty
+  results of such fits change. An offset is still held where it was
+  fitted, as surpyval's covariance leaves it out (SurPyval#830); `"fit"`
+  now warns that it does.
+- **`lfp_p` and `f0` are parameters (#267).** Where a node's model has a
+  limited failure population or zero inflation, `parameter_sensitivity`,
+  `levers()` and `with_levers` take the shares as parameters, after the
+  distribution's own (the order of surpyval's `covariance()`), with the
+  range (0, 1), and an uncertainty `{parameter: distribution}` may name
+  them.
 - **A `RegressionNode`'s mean and draws are exact.** Its `mean()`
   integrated the survival curve tabulated on 4,096 points and stopped
   where the survival fell to 1e-4, so it came out low (8e-5 for a
@@ -32,6 +64,19 @@ other release, fixes included, the minor.
   mixture's new quantile function loses the long lives' precision and is
   slow (SurPyval#821), so the simulations keep drawing a mixture's lives
   with RePyability's own; seeded results are unchanged.
+
+### Fixed
+
+- **Conditional survival keeps its precision at old ages (#268).** The
+  chance of surviving a further `x` given survival to an age `X` was the
+  ratio `R(X + x) / R(X)`, which came out 0 once both were too small for a
+  float: for a Weibull(100, 3) unit 1000 hours old, the next 10 hours'
+  survival is 6.9e-14, where it gave 0. It is now worked out from the
+  model's cumulative hazard, `exp(-(H(X + x) - H(X)))`, wherever the model
+  has one (surpyval's models, and a diagram's own `Hf`), in
+  `NonRepairableRBD.cs` and a node's age in `sf_given_state`. A diagram's
+  own `cs` is still 0 once its reliability at `X` is below the smallest
+  float, as its `Hf` is then infinite.
 
 ## [0.13] - 2026-10-09
 

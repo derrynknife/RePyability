@@ -4621,7 +4621,10 @@ class RepairableRBD(RBD):
         input node, is most likely missing). Each is one of:
 
         - A spec dict with ``"reliability"`` (a time-to-failure model, such
-          as a fitted surpyval distribution) and ``"repairability"`` (a
+          as a fitted surpyval distribution, or a model surpyval fits to a
+          repairable unit's failures, ``CrowAMSAA``, ``Duane``, ``HPP`` or
+          ``GeneralizedRenewal``, which is the life and ``"repair"`` it is:
+          see the guide's imperfect repair) and ``"repairability"`` (a
           time-to-repair model, or ``"instant"`` for repair in zero time:
           the component still fails, and any repair or replace cost is
           charged, but it is never down), plus optional costs.
@@ -5089,16 +5092,23 @@ class RepairableRBD(RBD):
         # Capture the constructor inputs verbatim (before any mutation) so the
         # RBD can be faithfully serialised via to_dict()/to_json().
         edges = list(edges)
+        from repyability.rbd._processes import as_spec
         from repyability.rbd.ccf import as_groups
 
         # PerfectReliability() stands for the class (#232), given alone or
-        # as a spec's life.
+        # as a spec's life; a fitted process as a spec's life is the life
+        # and repair it is (#269).
         components = {
             name: (
-                {
-                    **component,
-                    "reliability": perfect_class(component["reliability"]),
-                }
+                as_spec(
+                    name,
+                    {
+                        **component,
+                        "reliability": perfect_class(
+                            component["reliability"]
+                        ),
+                    },
+                )
                 if isinstance(component, dict) and "reliability" in component
                 else perfect_class(component)
             )
@@ -22246,7 +22256,7 @@ class RepairableRBD(RBD):
         is
 
         - ``"fit"``: every one of its models that is a surpyval fit with a
-          parameter covariance (``hess_inv``), drawn from its normal
+          parameter covariance (``covariance()``), drawn from its normal
           approximation (on the log scale for a positive parameter, the
           logit scale for one in (0, 1));
         - ``{role: uncertainty}``: each model named drawn as its
@@ -22516,7 +22526,7 @@ class RepairableRBD(RBD):
         its derivatives in input ``k``'s parameters (``parameter_
         sensitivity``'s, of every one of its uncertain models; a
         population's summed over its nodes, which move together) and
-        ``Sigma_k`` their covariance (a fit's ``hess_inv``, or the
+        ``Sigma_k`` their covariance (a fit's ``covariance()``, or the
         variances of the distributions given). The inputs are independent,
         so each one's part is its own term, and the shares add up to 1. A
         list of models has no parameters to move: it needs

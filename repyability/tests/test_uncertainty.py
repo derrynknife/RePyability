@@ -50,7 +50,7 @@ def test_fit_draws_follow_the_fits_normal_approximation():
     times = np.linspace(20, 400, 40)
     model = surv.Exponential.fit(times)
     rate = float(np.ravel(model.params)[0])
-    s = math.sqrt(float(np.ravel(model.hess_inv)[0])) / rate
+    s = math.sqrt(float(np.ravel(model.covariance())[0])) / rate
     result = one_node(model).sf_uncertainty(
         100.0, {"c": "fit"}, n_draws=40_000, seed=0
     )
@@ -75,14 +75,78 @@ def test_fit_draws_agree_with_surpyvals_confidence_bounds():
 def test_fit_draws_keep_an_offset():
     model = surv.Weibull.fit(np.linspace(200, 1800, 50) + 100, offset=True)
     rbd = one_node(model)
-    # Before the offset nothing can fail, in every draw.
-    with np.errstate(invalid="ignore"):
+    # Before the offset nothing can fail, in every draw. surpyval's
+    # covariance leaves the offset out (SurPyval#830), so it is held, and
+    # the draws say so.
+    with np.errstate(invalid="ignore"), pytest.warns(
+        UserWarning, match="offset.*SurPyval#830"
+    ):
         early = rbd.sf_uncertainty(
             0.5 * model.gamma, {"c": "fit"}, n_draws=200
         )
     np.testing.assert_array_equal(early.samples, 1.0)
-    later = rbd.sf_uncertainty(1000.0, {"c": "fit"}, n_draws=200, seed=2)
+    with pytest.warns(UserWarning, match="offset"):
+        later = rbd.sf_uncertainty(1000.0, {"c": "fit"}, n_draws=200, seed=2)
     assert later.std > 0
+
+
+def shares_fit(lfp=True, zi=False):
+    """A Weibull fitted to 60 failures, with 40 units that never failed
+    (``lfp``) and 10 dead on arrival (``zi``)."""
+    x = [np.random.default_rng(5).weibull(2, 60) * 100]
+    c = [np.zeros(60)]
+    if lfp:
+        x, c = x + [np.full(40, 400.0)], c + [np.ones(40)]
+    if zi:
+        x, c = x + [np.zeros(10)], c + [np.zeros(10)]
+    x, c = np.concatenate(x), np.concatenate(c).astype(int)
+    return surv.Weibull.fit(x, c=c, lfp=lfp, zi=zi)
+
+
+@pytest.mark.parametrize("share", ["lfp_p", "f0"])
+def test_fit_draws_vary_the_shares_that_never_fail_and_are_dead(share):
+    # Long after every unit that can fail has failed, the reliability is
+    # the share that never fails, 1 - lfp_p; just after 0 it is the share
+    # not dead on arrival, 1 - f0 (#267). Each share is drawn on the logit
+    # scale, its variance from surpyval's covariance() (the delta method),
+    # so the reliability there has known percentiles; before #267 it was
+    # held at its fitted value.
+    model = shares_fit(lfp=share == "lfp_p", zi=share == "f0")
+    p = float(getattr(model, share))
+    sd = math.sqrt(float(model.covariance()[-1, -1])) / (p * (1 - p))
+    at = 1e4 if share == "lfp_p" else 1e-9
+    result = one_node(model).sf_uncertainty(
+        at, {"c": "fit"}, n_draws=40_000, seed=4
+    )
+    assert result.nominal == pytest.approx(1 - p)
+    logit = math.log(p / (1 - p))
+    for q in (0.05, 0.25, 0.5, 0.75, 0.95):
+        # A high share is a low reliability.
+        drawn = 1 / (1 + math.exp(-(logit + st.norm.ppf(1 - q) * sd)))
+        assert_percentile(result.samples, 1 - drawn, q)
+
+
+def test_fit_draws_every_parameter_with_the_fits_covariance():
+    # A fit of both shares: the draws of all four parameters have the
+    # fit's covariance, to the skew of the log and logit scales over the
+    # draws: each variance within 15%, each correlation within 0.05.
+    from repyability.rbd._model_utils import parametric_spec
+    from repyability.rbd.uncertainty import draw_models
+
+    model = shares_fit(lfp=True, zi=True)
+    drawn = draw_models(model, "fit", 20_000, np.random.default_rng(6), "c")
+    params = np.array([parametric_spec(m).params for m in drawn])
+    assert parametric_spec(model).names == ["alpha", "beta", "lfp_p", "f0"]
+    drawn_cov, fitted = np.cov(params.T), model.covariance()
+    np.testing.assert_allclose(np.diag(drawn_cov), np.diag(fitted), rtol=0.15)
+    sd = np.sqrt(np.diag(fitted))
+    np.testing.assert_allclose(
+        np.corrcoef(params.T), fitted / np.outer(sd, sd), atol=0.05
+    )
+    # Centred on the fit on the log and logit scales: the median is it.
+    np.testing.assert_allclose(
+        np.median(params, axis=0), parametric_spec(model).params, rtol=0.01
+    )
 
 
 def test_parameter_distributions():
@@ -301,7 +365,7 @@ def test_a_model_on_the_edge_of_its_range_has_no_normal_approximation():
     with pytest.raises(ValueError, match="edge of its range"):
         one_node(edge).sf_uncertainty(10.0, {"c": "fit"}, n_draws=5)
     broken = surv.Exponential.fit(np.linspace(20, 400, 40))
-    broken.hess_inv = np.array([[np.nan]])
+    broken.covariance = lambda: np.array([[np.nan]])
     with pytest.raises(ValueError, match="finite"):
         one_node(broken).sf_uncertainty(10.0, {"c": "fit"}, n_draws=5)
     assert (

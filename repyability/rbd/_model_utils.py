@@ -9,7 +9,7 @@ small helpers keeps that coupling in one place (easy to audit and to cover
 with a compatibility test) and gives the call sites intention-revealing names.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
 import numpy as np
 
@@ -114,20 +114,49 @@ def failure_time_scale(model) -> float:
     return float("nan")
 
 
-def parametric_spec(model):
-    """Return ``(surpyval_class, params, parameter_names, extras)`` for a
-    parametric node model, or ``None`` when it has no reconstructable
-    distribution parameters (a ``StandbyModel``, ``RepeatedNode``, nested
-    RBD, a repeated node's source name, the perfect-reliability helpers, or
-    a fitted non-parametric model). ``extras`` are its offset,
-    limited-failure-population and zero-inflation parameters (surpyval's
-    ``model.extras``): ``surpyval_class.from_params(params, **extras)``
-    rebuilds it.
+#: The shares a model may have after its distribution's parameters, in the
+#: order of surpyval's ``covariance()`` (a limited failure population's
+#: ``lfp_p``, then a zero-inflated one's ``f0``), each with the flag that
+#: says a fit estimated it and the value that means it has none.
+_SHARES = (("lfp", "lfp_p", 1.0), ("zi", "f0", 0.0))
 
-    Used by parameter-sensitivity analysis to rebuild a distribution with a
-    perturbed parameter. It is faithful for exactly the models
-    ``serialisation`` round-trips (surpyval parametric distributions), since it
-    goes through the same ``dist name`` + ``from_params`` reconstruction.
+
+class ParametricSpec(NamedTuple):
+    """A parametric model's parameters (see ``parametric_spec``)."""
+
+    cls: Any
+    params: List[float]
+    names: List[str]
+    extras: Dict[str, Any]
+    bounds: List[tuple]
+
+    def build(self, values) -> Any:
+        """The model with its parameters at ``values``, in the order of
+        ``params``."""
+        shares = {share for _, share, _ in _SHARES}
+        own = [float(v) for n, v in zip(self.names, values) if n not in shares]
+        given = {n: float(v) for n, v in zip(self.names, values) if n in shares}
+        return self.cls.from_params(own, **{**self.extras, **given})
+
+
+def parametric_spec(model) -> Optional[ParametricSpec]:
+    """The parameters of a parametric node model, or ``None`` when it has no
+    reconstructable distribution parameters (a ``StandbyModel``,
+    ``RepeatedNode``, nested RBD, a repeated node's source name, the
+    perfect-reliability helpers, or a fitted non-parametric model).
+
+    ``params`` and ``names`` are its distribution's, then the share that
+    ever fails (``lfp_p``, a limited failure population) and the share dead
+    on arrival (``f0``, zero inflation) where it has them: the order of
+    surpyval's ``covariance()``. ``extras`` are surpyval's ``model.extras``
+    (the offset kept as it is), ``bounds`` each parameter's range as its
+    distribution bounds it (None where it does not), and ``build(values)``
+    the model with its parameters at ``values``.
+
+    Used by parameter sensitivity and uncertainty to rebuild a model with
+    moved or drawn parameters. It is faithful for exactly the models
+    ``serialisation`` round-trips (surpyval parametric distributions), since
+    it goes through the same ``dist name`` + ``from_params`` reconstruction.
     """
     import surpyval
 
@@ -142,7 +171,18 @@ def parametric_spec(model):
     names = getattr(dist, "parameter_names", None)
     if not names or len(list(names)) != len(params):
         names = [f"param{i}" for i in range(len(params))]
-    return cls, params, list(names), dict(getattr(model, "extras", {}))
+    names = list(names)
+    bounds = list(getattr(cls, "bounds", None) or [])
+    if len(bounds) != len(params):
+        bounds = [(None, None)] * len(params)
+    extras = dict(getattr(model, "extras", {}))
+    for flag, share, none in _SHARES:
+        value = extras.get(share, none)
+        if getattr(model, flag, False) or value != none:
+            params.append(float(value))
+            names.append(share)
+            bounds.append((0, 1))
+    return ParametricSpec(cls, params, names, extras, bounds)
 
 
 def nonparametric(model) -> bool:
