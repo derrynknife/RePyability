@@ -21,12 +21,15 @@
 
 - **surpyval releases reach RePyability users at once.** surpyval is
   required with no upper bound, so its next release is what a fresh install
-  gets. `.github/workflows/upstream.yml` runs the tests against surpyval's
-  `develop`; when it fails, fix RePyability (working with both the released
-  surpyval and `develop`) and release that before surpyval releases. CI's
-  `test (minimum surpyval)` job tests the oldest surpyval `pyproject.toml`
-  allows; raise that minimum, rather than keep code for older versions,
-  once RePyability needs what a newer surpyval does.
+  gets. No automated run tests surpyval's `develop` (the maintainer wants
+  one automated test run, below): before surpyval releases, run
+  RePyability's tests against its `develop` by hand (`pip install
+  "surpyval @ git+https://github.com/derrynknife/SurPyval@develop"`), and
+  when they fail, fix RePyability (working with both the released surpyval
+  and `develop`) and release that first. CI's `test (minimum surpyval)` job
+  tests the oldest surpyval `pyproject.toml` allows; raise that minimum,
+  rather than keep code for older versions, once RePyability needs what a
+  newer surpyval does.
 
 ## Code
 
@@ -365,11 +368,14 @@
 
 ## Testing
 
-- **Test what a change touches; the full suite only when asked.** Work
-  going into dev is checked by the tests of what it changes (the files
-  that exercise the code touched, and new tests for it). The full suite
-  runs only when the maintainer asks for it, and before merging to main
-  (master).
+- **One automated test run: the full suite on the pull request from dev
+  into master.** `actions.yml` runs on nothing else: not on pushes, not on
+  pull requests into dev, not on a schedule, and there is no other test
+  workflow. Work going into dev is checked locally by the tests of what it
+  changes (the files that exercise the code touched, and new tests for
+  it), and is merged without waiting for CI. Do not start, re-run or add
+  other automated test runs; run the full suite locally only when the
+  maintainer asks.
 
 ## Releasing
 
@@ -389,7 +395,8 @@ major.minor.
    and update the version in `docs/guide/saving.md`. PR to dev, then dev to
    master, listing "Closes #N" for each finished issue: commit messages'
    "(#N)" close nothing.
-2. When CI has passed on master's merge commit, run the workflow with
+2. When the full suite has passed on the pull request from dev into
+   master, merge it (a merge commit) and run the workflow with
    `actions_run_trigger`: `run_workflow`, workflow `release.yml`, ref
    `master`, inputs `{"version": "X.Y", "dry_run": "true"}`. If that
    passes, run it again with `"dry_run": "false"`. Then check the run, the

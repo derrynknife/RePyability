@@ -42,9 +42,8 @@ dependencies = [
     # Deliberately uncapped: RePyability consumes a small surface of surpyval
     # (sf/ff/qf/random/mean, extras/with_params, regression sf/sf_tvc,
     # to_dict/from_dict). A surpyval release reaches every fresh install at
-    # once, so the upstream workflow runs the tests against surpyval's
-    # development branch to show a break before it is released. CI also tests
-    # this minimum. 0.23 names the limited-failure proportion lfp_p (p goes
+    # once, so run the tests against surpyval's development branch before it
+    # is released, to show a break first. CI also tests this minimum. 0.23 names the limited-failure proportion lfp_p (p goes
     # in its next release), takes success_run's level as alpha_ci, and
     # pickles its fits (for n_jobs' worker processes), as RePyability relies
     # on; 0.22 named a distribution's parameters parameter_names and
@@ -91,8 +90,8 @@ Issues = "https://github.com/derrynknife/RePyability/issues"
 testpaths = ["repyability"]
 addopts = "--doctest-modules"
 # A surpyval deprecation that RePyability or its tests run into fails them
-# ("... will be removed in v0.23"), so that the upstream workflow, on
-# surpyval's development branch, shows it before the name is removed.
+# ("... will be removed in v0.23"), so that a run on surpyval's development
+# branch shows it before the name is removed.
 filterwarnings = [
     "error:.*will be removed in v[0-9]:DeprecationWarning:repyability",
 ]
