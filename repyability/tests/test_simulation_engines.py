@@ -719,7 +719,7 @@ def maintained_rbds():
     """Systems under age and block replacement, which numba's own loop
     simulates (#155): maintenance in zero time and taking time, preventive
     costs fixed and drawn, fixed lives that fall on the schedule (ties the
-    heap orders), and more components than the loop tabulates."""
+    heap orders), and a system of 24 components."""
     pm = {"interval": 30.0}
     timed = {"interval": 40.0, "duration": L([0.5, 0.4]), "cost": 7.0}
     block = {"interval": 25.0, "policy": "block", "cost": G([3.0, 0.5])}
@@ -1573,7 +1573,7 @@ def capacity_rbds():
     of several (a node working at several levels), a node without one
     (unlimited), a demand given and the design capacity's, with
     maintenance, tests, crews and standby groups, a nested RBD's capacity,
-    and more components than the loop tabulates."""
+    and a system of 24 components."""
 
     def unit(scale, shape, repair=None, **extra):
         return {

@@ -842,8 +842,8 @@ replacement, in zero time or taking time; hidden failures found by
 periodic tests, in zero time or taking time, staggered, and with a coverage
 below 1 (a failure a test misses waits for a full test); fewer repair
 crews than components, the jobs waiting by priority; standby groups,
-cold, warm or hot, with switches that can fail; nested RBDs of up to 20
-components, each stepped to its next change as in Python; and the system's
+cold, warm or hot, with switches that can fail; nested RBDs of any size,
+each stepped to its next change as in Python; and the system's
 capacity over time, on systems of up to 63 components. Replacement on
 condition, maintenance groups, imperfect repair, common-cause groups (whose
 shared causes the Python loop draws, see [repairable
