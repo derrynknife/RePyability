@@ -300,11 +300,14 @@ class RegressionNode:
         return q[np.isfinite(q)]
 
     def _kinks(self) -> np.ndarray:
-        """Times at which the curve may bend sharply: a schedule's change
-        points, where the covariates jump."""
-        if self.schedule is None:
+        """Times at which the curve may bend sharply: a step schedule's
+        change points, where the covariates jump. (A ``CovariatePath``
+        moves between its points linearly, so its hazard only bends, which
+        the integral follows without them.)"""
+        edges = getattr(self.schedule, "edges", None)
+        if edges is None:
             return np.empty(0)
-        edges = np.asarray(self.schedule.edges, dtype=float)
+        edges = np.asarray(edges, dtype=float)
         return edges[np.isfinite(edges) & (edges > 0.0)]
 
     def _quantiles(self, p: np.ndarray) -> np.ndarray:
@@ -397,6 +400,11 @@ class RegressionNode:
 
     @staticmethod
     def _schedule_to_dict(schedule: Any) -> dict:
+        if getattr(schedule, "edges", None) is None:
+            raise NotImplementedError(
+                f"Serialising a {type(schedule).__name__} is not supported "
+                "yet; use a StepSchedule."
+            )
         if getattr(schedule, "period", None) is not None:
             raise NotImplementedError(
                 "Serialising a cyclic StepSchedule is not supported yet; use "

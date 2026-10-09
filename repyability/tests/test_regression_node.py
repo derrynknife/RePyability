@@ -316,3 +316,19 @@ def test_schedule_mean_and_random(models):
     np.random.seed(0)
     b = node.random(2000)
     assert np.allclose(a, b) and (a > 0).all()
+
+
+def test_a_covariate_path_is_integrated_and_drawn(models):
+    # surpyval's CovariatePath moves linearly between its points: its mean
+    # and draws work as a step schedule's, and saving it is refused by name.
+    from surpyval.univariate.regression import CovariatePath
+
+    path = CovariatePath.from_points([0, 50, 100], [[0.0], [0.5], [0.2]])
+    node = RegressionNode(models["aft"], schedule=path)
+    assert node.mean() == pytest.approx(
+        float(models["aft"].mean_tvc(path)), rel=1e-6
+    )
+    u = np.array([0.01, 0.5, 0.99])
+    np.testing.assert_allclose(node.ff(node._draw(u)), u, rtol=1e-12)
+    with pytest.raises(NotImplementedError, match="CovariatePath"):
+        node.to_dict()
