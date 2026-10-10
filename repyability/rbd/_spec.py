@@ -39,10 +39,6 @@ from repyability.utils.checks import (
     unfitted_distribution,
 )
 
-if TYPE_CHECKING:
-    from repyability.rbd.repairable_rbd import RepairableRBD
-
-
 #: Optional per-component cost fields accepted in a component spec dict.
 COST_KEYS = ("repair_cost", "replace_cost", "downtime_cost")
 
@@ -132,6 +128,7 @@ def _validate_ccf_groups(rbd, ccf_groups) -> list:
     if not ccf_groups:
         return []
     from repyability.rbd.ccf import checked_groups
+    from repyability.rbd.repairable_rbd import RepairableRBD
     from repyability.rbd.serialisation import serialise_model
 
     def check_member(member, group):
