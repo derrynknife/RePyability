@@ -29,6 +29,7 @@ from repyability import timelines as tl
 from repyability.rbd import (
     _ccf_groups,
     _compiled,
+    _event_loop,
     _streams,
     _timeline_runs,
     modular,
@@ -687,7 +688,8 @@ def recorded(rbd, engine: str, t: float, n: int, seed: int, **options):
     (whatever the components), as ``simulate_timelines`` gives them."""
     working = set(options.get("working_nodes", ()))
     broken = set(options.get("broken_nodes", ()))
-    tally = rbd._run(
+    tally = _event_loop._run(
+        rbd,
         t,
         working,
         broken,
@@ -800,7 +802,10 @@ def test_every_engine_records_the_same_histories(name):
         if (
             _compiled.available()
             and _compiled.unsupported(
-                rbd, rbd._stream_plan(300.0, 0, False)[0], None, numba=True
+                rbd,
+                _event_loop._stream_plan(rbd, 300.0, 0, False)[0],
+                None,
+                numba=True,
             )
             is None
         ):

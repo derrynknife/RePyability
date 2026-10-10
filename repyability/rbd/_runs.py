@@ -384,7 +384,9 @@ def _engine_choice(diagram, capacity: bool) -> Tuple[str, str]:
     (see ``_simulation_engine``)."""
     from repyability.rbd import _compiled
 
-    plan = diagram._stream_plan(1.0, 0, False)[0]
+    from . import _event_loop
+
+    plan = _event_loop._stream_plan(diagram, 1.0, 0, False)[0]
     engine, reason = _compiled.choice(
         diagram, plan, object() if capacity else None
     )
@@ -575,8 +577,11 @@ def _chunk(
     a chunk with the run's settings."""
     from repyability.rbd.chunks import SimulationChunk
 
+    from . import _event_loop
+
     capacity = _chunk_capacity(diagram, broken, method, demand)
-    tally = diagram._run(
+    tally = _event_loop._run(
+        diagram,
         t_simulation,
         working,
         broken,
@@ -644,6 +649,8 @@ def shards(
     curve_points: Optional[int],
 ) -> List[bytes]:
     """See ``RepairableRBD.shards``."""
+    from . import _event_loop
+
     N = 10_000 if mc_samples is None else mc_samples
     montecarlo.check_count(N, antithetic, "mc_samples")
     working = set() if working_nodes is None else set(working_nodes)
@@ -669,8 +676,8 @@ def shards(
         _curve_points(curve_points),
     )
     # What a run checks before it simulates (see _run).
-    plan, complete = diagram._stream_plan(
-        t_simulation, entropy, antithetic, states
+    plan, complete = _event_loop._stream_plan(
+        diagram, t_simulation, entropy, antithetic, states
     )
     if antithetic and not complete:
         raise NotImplementedError(_UNSTREAMED)
@@ -940,6 +947,8 @@ def compare(
     control_variate: Optional[bool],
 ) -> ConfidenceInterval:
     """See ``RepairableRBD.compare``."""
+    from . import _event_loop
+
     N = 10_000 if mc_samples is None else mc_samples
     t_simulation = simulation_window(t_simulation)
 
@@ -981,7 +990,8 @@ def compare(
     entropy = _streams.entropy_of(seed)
     values = []
     for rbd, start in zip((diagram, other), states):
-        tally = rbd._run(
+        tally = _event_loop._run(
+            rbd,
             t_simulation,
             set(),
             set(),
@@ -1135,11 +1145,13 @@ def _twin_report(diagram) -> str:
     """What ``analysis_routes`` says of the exact twin a run with
     ``control_variate`` is controlled by (see ``AnalysisRoute.twin``):
     what it leaves out of this system, or why there is none."""
+    from . import _event_loop
+
     try:
         _, changes = _twin(diagram)
     except NotImplementedError as error:
         return f"none. {error}"
-    _, complete = diagram._stream_specs(1.0)
+    _, complete = _event_loop._stream_specs(diagram, 1.0)
     if not complete:
         return f"none. {_UNSTREAMED}"
     if not changes:
@@ -1266,6 +1278,8 @@ def _simulated(
     are exact where the system is its own exact twin (#187), and taken
     given the modules' histories where a conditional run applies
     (#189, see ``_conditioned_run``)."""
+    from . import _event_loop
+
     t_simulation = simulation_window(t_simulation)
     working_nodes = set() if working_nodes is None else set(working_nodes)
     broken_nodes = set() if broken_nodes is None else set(broken_nodes)
@@ -1389,8 +1403,8 @@ def _simulated(
             states,
             curve_points,
         )
-        plan, _ = diagram._stream_plan(
-            t_simulation, entropy, antithetic, states
+        plan, _ = _event_loop._stream_plan(
+            diagram, t_simulation, entropy, antithetic, states
         )
         step = _shard_size(plan, shard_size)
         sharded = (shard_map, template, step)
@@ -1464,7 +1478,8 @@ def _simulated(
             # Its means are the system's exact ones (#223).
             breakdown = exacts.breakdown
     else:
-        tally = diagram._run(
+        tally = _event_loop._run(
+            diagram,
             t_simulation,
             working_nodes,
             broken_nodes,
@@ -1473,7 +1488,6 @@ def _simulated(
             verbose,
             seed,
             antithetic,
-            # Exact means need no more simulations.
             None if exact_means is not None else stop,
             capacity=capacity,
             jobs=jobs,
@@ -1777,6 +1791,8 @@ def _conditioned_run(
     expected cost's split given the modules (None unpriced, or while
     they have not changed state); or None, before simulating anything,
     if the rest cannot be worked out exactly given the modules."""
+    from . import _event_loop
+
     entropy = _streams.entropy_of(seed)
     run = _ModuleRun(
         diagram,
@@ -1802,7 +1818,8 @@ def _conditioned_run(
     tally: Optional[_Tally] = None
     first, count = 0, N
     while True:
-        part = diagram._run(
+        part = _event_loop._run(
+            diagram,
             t_simulation,
             working,
             broken,
@@ -1919,6 +1936,8 @@ def _controlled_run(
     cost (None unpriced; see ``_twin_exact``). A twin that is this
     system is not simulated again, so its run can be ``sharded`` (see
     ``_run``)."""
+    from . import _event_loop
+
     assert sharded is None or itself
     twin_states = _curves._simulation_states(twin, state, working | broken)
     exact, exact_cost = exacts.availability, exacts.cost
@@ -1927,7 +1946,8 @@ def _controlled_run(
     twin_tally: Optional[_Tally] = None
     first, count = 0, N
     while True:
-        part = diagram._run(
+        part = _event_loop._run(
+            diagram,
             t_simulation,
             working,
             broken,
@@ -1951,7 +1971,8 @@ def _controlled_run(
         twin_part = (
             None
             if itself
-            else twin._run(
+            else _event_loop._run(
+                twin,
                 t_simulation,
                 working,
                 broken,

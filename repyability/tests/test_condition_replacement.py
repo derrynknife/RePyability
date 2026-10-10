@@ -8,7 +8,7 @@ import surpyval as surv
 
 from repyability import RepairableRBD
 from repyability.rbd import routes as r
-from repyability.rbd.repairable_rbd import _failures_between
+from repyability.rbd._event_loop import _failures_between
 
 E, W, L = (
     surv.Exponential.from_params,

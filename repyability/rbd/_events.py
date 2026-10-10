@@ -275,6 +275,8 @@ class _StandbyGroup:
     def advance(self, t: float) -> Tuple[bool, int]:
         """Take the group's event at ``t`` (its ``entry``): whether it is up
         after it, and how many of its units failed (each is repaired)."""
+        from . import _event_loop
+
         self.entry = None
         events, version = self._events, self._version
         while events[0][4] != version[events[0][3]]:
@@ -286,7 +288,7 @@ class _StandbyGroup:
             if crews is not None:
                 started = crews.release(_Unit(self._node, unit), t)
                 if started is not None:
-                    self._rbd._crew_started(started)
+                    _event_loop._crew_started(self._rbd, started)
             self._life[unit] = self._draws.life(unit)
             if len(self._operating) < self._k:
                 self._operate(unit, t)
@@ -430,7 +432,7 @@ class Event:
 
     Examples
     --------
-    >>> from repyability.rbd.repairable_rbd import Event
+    >>> from repyability.rbd._events import Event
     >>> Event(12.0, "pump", True) > Event(10.0, "valve", False)
     True
     """

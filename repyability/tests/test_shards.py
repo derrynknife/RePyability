@@ -20,13 +20,9 @@ import pytest
 import surpyval as surv
 
 from repyability import NodeState, RepairableRBD, SimulationChunk, run_shard
-from repyability.rbd import _streams
+from repyability.rbd import _event_loop, _streams
+from repyability.rbd._event_loop import _WORKER, _simulate_block, _start_worker
 from repyability.rbd._tally import _Tally
-from repyability.rbd.repairable_rbd import (
-    _WORKER,
-    _simulate_block,
-    _start_worker,
-)
 from repyability.rbd.shards import main
 from repyability.tests.catalogue import systems_of_every_kind
 from repyability.tests.test_performance_equivalence import binomial_first
@@ -324,7 +320,8 @@ def test_workers_send_back_their_blocks_totals():
     assert block._rows == [] and block.changes == []
     assert len(block.uptimes) == 50
     # And the same totals as the block's simulations added one by one.
-    serial = rbd._run(
+    serial = _event_loop._run(
+        rbd,
         100.0,
         set(),
         set(),
@@ -343,9 +340,11 @@ def test_workers_send_back_their_blocks_totals():
 def test_parallel_workers_keep_each_simulations_replacements():
     rbd = plant()
     run = dict(entropy=_streams.entropy_of(2), replacements=True)
-    serial = rbd._run(100.0, set(), set(), "p", 600, False, None, **run)
-    parallel = rbd._run(
-        100.0, set(), set(), "p", 600, False, None, jobs=2, **run
+    serial = _event_loop._run(
+        rbd, 100.0, set(), set(), "p", 600, False, None, **run
+    )
+    parallel = _event_loop._run(
+        rbd, 100.0, set(), set(), "p", 600, False, None, jobs=2, **run
     )
     assert parallel.replacements == serial.replacements
     assert len(parallel.replacements) == 600

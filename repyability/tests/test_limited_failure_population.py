@@ -30,6 +30,7 @@ from repyability import (
     RepeatedStandbyNode,
     StandbyModel,
 )
+from repyability.rbd import _event_loop
 from repyability.rbd._model_utils import (
     is_exponential,
     lfp_p,
@@ -390,7 +391,7 @@ def test_repairable_draws_come_from_their_streams():
             }
         },
     )
-    specs, complete = maintained._stream_specs(200.0)
+    specs, complete = _event_loop._stream_specs(maintained, 200.0)
     assert complete and (("c",), DURATION) in specs
     assert maintained.availability(
         200.0, mc_samples=100, seed=17

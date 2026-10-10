@@ -9,7 +9,7 @@ from collections import defaultdict
 
 import numpy as np
 
-from repyability.rbd import _streams
+from repyability.rbd import _event_loop, _streams
 
 
 def reference_uniform(entropy, spec, r: int, k: int) -> float:
@@ -40,7 +40,9 @@ class KeyedDraws:
 
     def __init__(self, rbd, t_simulation, seed, antithetic=False):
         self.entropy = _streams.entropy_of(seed)
-        self.plan, _ = rbd._stream_plan(t_simulation, self.entropy, antithetic)
+        self.plan, _ = _event_loop._stream_plan(
+            rbd, t_simulation, self.entropy, antithetic
+        )
         self.antithetic = antithetic
         self.taken: dict = defaultdict(int)
 

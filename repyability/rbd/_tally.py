@@ -180,7 +180,7 @@ class _ModuleRun:
         control_variate: bool = False,
         modules: Optional[list] = None,
     ) -> None:
-        from . import _runs
+        from . import _event_loop, _runs
 
         T = simulation_window(t_simulation)
         self.rbd = rbd
@@ -202,8 +202,8 @@ class _ModuleRun:
         self.capacity_parts: List[_conditional.CapacityValues] = []
         self.shards = None
         if self.sub is not None and shard_map is not None:
-            plan, _ = self.sub._stream_plan(
-                T, entropy, antithetic, self.module_states
+            plan, _ = _event_loop._stream_plan(
+                self.sub, T, entropy, antithetic, self.module_states
             )
             template = {
                 **_runs._shard_template(

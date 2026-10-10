@@ -26,7 +26,13 @@ import surpyval as surv
 
 from repyability import NodeState, PerfectReliability, RepairableRBD
 from repyability.non_repairable import NonRepairable
-from repyability.rbd import _compiled, _crews, _streams, _time_order
+from repyability.rbd import (
+    _compiled,
+    _crews,
+    _event_loop,
+    _streams,
+    _time_order,
+)
 from repyability.rbd._events import Event
 from repyability.tests import timeline_reference
 from repyability.tests.catalogue import systems_of_every_kind
@@ -235,7 +241,7 @@ def test_each_simulation_draws_from_the_start_of_its_columns():
     # draws the other simulations take, and a block extended by more rows
     # keeps its rows.
     rbd = plain_rbds()["bridge"]
-    plan, complete = rbd._stream_plan(400.0, 5, False)
+    plan, complete = _event_loop._stream_plan(rbd, 400.0, 5, False)
     assert complete
     spec = plan.specs[(("a",), _streams.FAILURE)]
     block = plan.block(spec, 1)
@@ -456,7 +462,7 @@ def test_a_nested_rbd_can_be_held_working_or_broken(name, forced):
 
 def test_an_unstreamable_maintenance_time_still_takes_time():
     rbd = systems_of_every_kind()["unstreamable maintenance"]
-    assert not rbd._stream_specs(200.0)[1]
+    assert not _event_loop._stream_specs(rbd, 200.0)[1]
     result = rbd.availability(200.0, mc_samples=30, seed=31)
     assert result.system_planned_outages > 0
     assert result.node_uptime["a"] < 200.0 * 30
@@ -467,7 +473,7 @@ def test_an_unstreamable_component_leaves_the_others_alone():
     # draws from, so its up time is the same.
     systems = systems_of_every_kind()
     mixed = systems["unstreamable"]
-    assert not mixed._stream_specs(100.0)[1]
+    assert not _event_loop._stream_specs(mixed, 100.0)[1]
     plain = RepairableRBD(
         [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")],
         {
@@ -526,7 +532,7 @@ def test_an_unknown_engine_is_refused():
 )
 def test_the_compiled_engine_says_what_it_cannot_run(name, reason):
     rbd = repairable_rbds()[name]
-    plan, _ = rbd._stream_plan(100.0, 1, False)
+    plan, _ = _event_loop._stream_plan(rbd, 100.0, 1, False)
     assert reason in _compiled.unsupported(rbd, plan, None)
     # "auto" runs it in Python.
     identical(
@@ -537,17 +543,17 @@ def test_the_compiled_engine_says_what_it_cannot_run(name, reason):
 
 def test_what_the_compiled_engine_can_run():
     for rbd in plain_rbds().values():
-        plan, _ = rbd._stream_plan(100.0, 1, False)
+        plan, _ = _event_loop._stream_plan(rbd, 100.0, 1, False)
         assert _compiled.unsupported(rbd, plan, None) is None
     mixed = systems_of_every_kind()["unstreamable"]
-    plan, _ = mixed._stream_plan(100.0, 1, False)
+    plan, _ = _event_loop._stream_plan(mixed, 100.0, 1, False)
     assert "cannot be streamed" in _compiled.unsupported(mixed, plan, None)
     capacity = RepairableRBD(
         [("s", "a"), ("a", "t")],
         {"a": {"reliability": E([0.1]), "repairability": E([1.0])}},
         capacity={"a": 10.0},
     )
-    plan, _ = capacity._stream_plan(100.0, 1, False)
+    plan, _ = _event_loop._stream_plan(capacity, 100.0, 1, False)
     assert _compiled.unsupported(capacity, plan, object()) == "capacities"
     # numba's own loop follows them (#155).
     assert _compiled.unsupported(capacity, plan, object(), numba=True) is None
@@ -566,7 +572,7 @@ def test_a_subclassed_component_runs_in_python(monkeypatch):
             "sub": LoggedUnit(W([40, 2]), E([0.5])),
         },
     )
-    plan, _ = rbd._stream_plan(100.0, 1, False)
+    plan, _ = _event_loop._stream_plan(rbd, 100.0, 1, False)
     assert (
         _compiled.unsupported(rbd, plan, None)
         == "the LoggedUnit of node 'sub'"
@@ -816,7 +822,7 @@ def engines_agree(rbd, options):
     if "broken_nodes" in options and "b" not in rbd.components:
         nodes = list(rbd.components)
         options = {**options, "broken_nodes": [nodes[min(1, len(nodes) - 1)]]}
-    plan, _ = rbd._stream_plan(100.0, 1, False)
+    plan, _ = _event_loop._stream_plan(rbd, 100.0, 1, False)
     assert _compiled.unsupported(rbd, plan, None) is not None
     assert _compiled.unsupported(rbd, plan, None, numba=True) is None
     with warnings.catch_warnings():
@@ -900,7 +906,7 @@ def test_what_numbas_loop_runs_besides_plain_components():
         *standby_rbds().values(),
         *nested_rbds().values(),
     ]:
-        plan, _ = rbd._stream_plan(100.0, 1, False)
+        plan, _ = _event_loop._stream_plan(rbd, 100.0, 1, False)
         # Not given to an engine of the interface's version.
         if _crews._crews_limited(rbd):
             reason = "repair crews"
@@ -932,7 +938,7 @@ def test_what_numbas_loop_runs_besides_plain_components():
         # Its test time could be streamed, its life cannot.
         (unstreamed, "the models of node 'a'"),
     ]:
-        plan, _ = rbd._stream_plan(100.0, 1, False)
+        plan, _ = _event_loop._stream_plan(rbd, 100.0, 1, False)
         assert reason in _compiled.unsupported(rbd, plan, None, numba=True)
 
 
@@ -1556,12 +1562,12 @@ def test_what_numba_does_not_run_inside_a_nested_rbd():
         (on_condition(), "replacement on condition"),
     ]:
         rbd = outer(inner)
-        plan, _ = rbd._stream_plan(100.0, 1, False)
+        plan, _ = _event_loop._stream_plan(rbd, 100.0, 1, False)
         assert reason in _compiled.unsupported(rbd, plan, None, numba=True)
         # An engine of the interface's version is given no nested RBD.
         assert _compiled.unsupported(rbd, plan, None) == "nested RBDs"
     rbd = nested_rbds()["maintained inside"]
-    plan, _ = rbd._stream_plan(100.0, 1, False)
+    plan, _ = _event_loop._stream_plan(rbd, 100.0, 1, False)
     state = {"c": NodeState(age=0.0, phase=1.0)}
     assert "started from a state" in _compiled.unsupported(
         rbd, plan, None, numba=True, states=state
@@ -1667,7 +1673,7 @@ def test_the_engines_agree_on_capacities(name, options):
     rbd, extra = capacity_rbds()[name]
     if "broken_nodes" in options and "b" not in rbd.components:
         options = {**options, "broken_nodes": [list(rbd.components)[0]]}
-    plan, _ = rbd._stream_plan(100.0, 1, False)
+    plan, _ = _event_loop._stream_plan(rbd, 100.0, 1, False)
     # An engine of the interface's version is given no capacities.
     assert _compiled.unsupported(rbd, plan, object()) is not None
     assert _compiled.unsupported(rbd, plan, object(), numba=True) is None
@@ -1681,7 +1687,7 @@ def test_the_engines_agree_on_capacities(name, options):
 
 def test_capacities_numba_does_not_follow():
     wide = pairs_in_series(32)
-    plan, _ = wide._stream_plan(100.0, 1, False)
+    plan, _ = _event_loop._stream_plan(wide, 100.0, 1, False)
     assert "more than 63" in _compiled.unsupported(
         wide, plan, object(), numba=True
     )

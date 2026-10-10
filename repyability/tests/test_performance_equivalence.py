@@ -58,11 +58,11 @@ from repyability import (
 )
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import (
+    _event_loop,
     _events,
     _sampling,
     _streams,
     non_repairable_rbd,
-    repairable_rbd,
     standby_node,
 )
 from repyability.rbd.helper_classes import (
@@ -99,7 +99,7 @@ def no_fast_path(monkeypatch):
     monkeypatch.setattr(non_repairable_rbd, "row_sampler", lambda model: None)
     monkeypatch.setattr(standby_node, "inverse_sampler", lambda model: None)
     # A repairable diagram's streams sample through stream_sampler (#227).
-    monkeypatch.setattr(repairable_rbd, "stream_sampler", lambda model: None)
+    monkeypatch.setattr(_event_loop, "stream_sampler", lambda model: None)
 
 
 def assert_same(a, b, path="result"):
@@ -930,9 +930,11 @@ def test_subclassed_components_keep_their_own_event_methods():
                 "sub": component,
             },
         )
-        plan, complete = rbd._stream_plan(200.0, 1, False)
+        plan, complete = _event_loop._stream_plan(rbd, 200.0, 1, False)
         assert not complete
-        sources = rbd._streamed_components(_streams.Run(plan, reseed=True))
+        sources = _event_loop._streamed_components(
+            rbd, _streams.Run(plan, reseed=True)
+        )
         assert sources["sub"] is rbd.components["sub"]
         calls.clear()
         rbd.availability(200.0, mc_samples=5, seed=30)
