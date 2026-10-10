@@ -23,7 +23,7 @@ from .numerical_convolution import (
 
 
 def drawn_mean(model, name: str, exact, mc_samples, seed, method) -> float:
-    """A node model's ``mean(mc_samples, seed, method=...)`` (#233):
+    """A node model's ``mean(mc_samples, seed, method=...)``:
     ``exact()``, its exact or numerical mean (a NotImplementedError where it
     has none), by default and with ``method="exact"``; with
     ``method="simulate"``, or by default where it has no exact mean and
@@ -736,7 +736,7 @@ class StandbyModel:
         ``is_simulated``) has no exact mean, and refuses, unless asked for
         an estimate: the mean of ``mc_samples`` new draws of ``random``.
         ``method="simulate"`` estimates it so whatever the arrangement, to
-        check the exact mean against draws, say (#233).
+        check the exact mean against draws, say.
 
         Parameters
         ----------

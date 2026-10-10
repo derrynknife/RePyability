@@ -125,7 +125,7 @@ def more_samples(
     infinite (or NaN) value stops the run at once: the mean is infinite
     (or undefined) however many more are taken. With ``unjudged``, why
     the values do not show the error yet (a run of modules that have not
-    changed state, #215): the run goes on, to the limit."""
+    changed state): the run goes on, to the limit."""
     if not np.all(np.isfinite(values)):
         return 0
     if (

@@ -964,7 +964,7 @@ def _assembled(
 
 def carries_over(model: Block) -> bool:
     """Whether a block-replaced unit's repairs or block replacements take
-    time, so that an interval need not start with a new unit (#160)."""
+    time, so that an interval need not start with a new unit."""
     zero = np.zeros(1)
     if float(np.ravel(model.repair(zero))[0]) < 1.0:
         return True

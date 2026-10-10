@@ -318,7 +318,7 @@ class CrewSystem:
     each state, then for each pattern the rate of its failures by the
     chain's components in each state, then whether each of the chain's
     ``served`` components is up; with ``causes``, then for each pattern
-    the rate of its failures by each of them (#199). The nested RBDs have
+    the rate of its failures by each of them. The nested RBDs have
     crews of their own, so they are independent of the chain: at a time,
     the system is up with probability ``sum_m p(t) u_m w_m(t)``, ``w_m``
     the pattern's probability from their availabilities then, and a nested
@@ -414,7 +414,7 @@ class CrewCurve:
     RBDs, its integrals give the system's uptime and failures from 0
     exactly (``integral``, ``events``); with them, its events are counted
     as another RBD counts its nodes', with the nested RBDs' importance
-    taken over the chain (#162)."""
+    taken over the chain."""
 
     def __init__(self, rbd, chain: Uniformized, nested: dict):
         from .repairable_rbd import _settling

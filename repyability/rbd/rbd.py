@@ -537,7 +537,7 @@ class Pairs(dict):
         return self[key] if key in self else default
 
     def to_dict(self) -> dict:
-        """The pairs as plain data, ready for ``json.dumps`` (#235): each
+        """The pairs as plain data, ready for ``json.dumps``: each
         value under its pair's first name, then its second,
         ``{"a": {"b": 0.1}}`` for the pair ``("a", "b")``, the names as
         JSON holds them (see ``RBD`` results' ``to_dict``)."""
@@ -1049,7 +1049,7 @@ class RBD:
         probability, the importance measures and the cut sets are found
         without listing them. A junction (a node given
         ``PerfectReliability``, such as a k-out-of-n vote point) always
-        works, so no path set needs it, and none lists it (#198).
+        works, so no path set needs it, and none lists it.
 
         Parameters
         ----------
@@ -1289,7 +1289,7 @@ class RBD:
         module). They are worked out on first use and cached; each call
         returns a new set. A junction (a node given ``PerfectReliability``,
         such as a k-out-of-n vote point) never fails, so a cut set with one
-        never happens, and none is listed (#198).
+        never happens, and none is listed.
 
         Parameters
         ----------

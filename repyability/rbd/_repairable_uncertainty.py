@@ -190,7 +190,7 @@ def fitted(rbd) -> Dict[Hashable, Dict[str, str]]:
     """The uncertainty drawn when none is given: ``"fit"`` for every one
     of the components' models that is a surpyval fit with a parameter
     covariance, drawn once for all the nodes holding that fitted object in
-    that role (#214), and for one common-cause group's members together:
+    that role, and for one common-cause group's members together:
     ``{node or tuple of nodes: {role: "fit"}}``, by first node and role, a
     node under as many keys as it has populations."""
     order = {node: i for i, node in enumerate(rbd.components)}
@@ -234,7 +234,7 @@ def fitted(rbd) -> Dict[Hashable, Dict[str, str]]:
 
 def half_named(label: str, others: list, what: str, together) -> None:
     """Warn that an input is drawn without ``others``, which hold the same
-    fitted ``what`` and keep it as it is in every draw (#214)."""
+    fitted ``what`` and keep it as it is in every draw."""
     names = ", ".join(repr(n) for n in others)
     warnings.warn(
         f"{label} is drawn without {names}, which hold the same {what} "

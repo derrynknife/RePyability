@@ -74,7 +74,7 @@ NODE_ARGUMENTS = ("working_nodes", "broken_nodes", "nodes")
 
 def node_names(func):
     """``func`` (a method) with a bare string given to one of its
-    ``NODE_ARGUMENTS`` taken as one node's name (#225), not as its
+    ``NODE_ARGUMENTS`` taken as one node's name, not as its
     characters: ``working_nodes="belt"`` is ``["belt"]``, where iterating
     it gave ``{"b", "e", "l", "t"}``, and an error that changed from run to
     run with the strings' hashes. ``func`` itself where it has none of
@@ -134,7 +134,7 @@ def conditional_survival(model, x, X, *args, **kwargs):
 
     It is worked out from the cumulative hazard ``Hf`` where the model has
     one, which keeps its precision where ``R(X + x)`` and ``R(X)`` are
-    both too small for a float (an age far past the model's lives, #268),
+    both too small for a float (an age far past the model's lives),
     and as the ratio of ``sf`` otherwise.
 
     Parameters

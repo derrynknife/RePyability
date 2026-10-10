@@ -148,7 +148,7 @@ _COUNTS = frozenset({"mc_samples", "max_samples"})
 def refuses_removed_names(function):
     """``function``, refusing the simulation-count names 0.12 removed with
     the names that took their place, where Python would say only that the
-    keyword was unexpected (#232); ``function`` itself where it takes
+    keyword was unexpected; ``function`` itself where it takes
     neither ``mc_samples`` nor ``max_samples``."""
     if getattr(function, "refuses_removed_names", False):
         return function

@@ -51,7 +51,7 @@ class CrewChain(NamedTuple):
     ``_chain_transient``). ``transitions`` are its transitions one by one,
     ``(sources, targets, rates, components)``: each a component's failure
     or the end of its repair (with the jobs the crew then takes that are
-    done at once), labelled with that component's position (#199).
+    done at once), labelled with that component's position.
     """
 
     nodes: Tuple[Hashable, ...]
@@ -70,7 +70,7 @@ class CrewChain(NamedTuple):
         """``Q_i v`` for each component ``i`` (columns), ``Q_i`` the part of
         the generator made of its transitions: ``Q = sum_i Q_i``, so that
         ``p(t) Q_i v`` is the part of ``d/dt p(t) v`` the component's
-        failures and repairs make (#199)."""
+        failures and repairs make."""
         sources, targets, rates, components = self.transitions
         out = np.zeros((len(self.probabilities), len(self.nodes)))
         vector = np.asarray(vector, dtype=float)

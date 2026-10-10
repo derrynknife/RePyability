@@ -488,7 +488,7 @@ class MGL(_Model):
     that several may strike: ``shocks="independent"``. The two differ at
     second order in ``Q`` (a 2-out-of-3 group of ``MGL(0.2, 0.3)`` at
     ``Q = 0.0311`` fails with probability 0.010219 one way and 0.010192
-    the other), so match the tool you check against (#180). A
+    the other), so match the tool you check against. A
     ``BetaFactor``, or an ``MGL`` model with one shared cause, has one
     shock, and both agree. By rate, the causes strike independently.
 
@@ -875,7 +875,7 @@ class CCFGroup:
 
 def as_groups(groups) -> list:
     """A diagram's ``ccf_groups`` as a list: none for None, and one for a
-    single ``CCFGroup`` (#232); else the groups given, which the diagram
+    single ``CCFGroup``; else the groups given, which the diagram
     checks."""
     if groups is None:
         return []

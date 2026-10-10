@@ -78,8 +78,8 @@ class NodeState:
         this virtual age once its repair is over. For a unit of a fitted
         surpyval renewal model, ``unit_states()`` gives its
         ``virtual_age`` now and ``since_failure``: give ``age=
-        since_failure`` and ``virtual_age=virtual_age - since_failure``
-        (#269). The simulations take it.
+        since_failure`` and ``virtual_age=virtual_age - since_failure``.
+        The simulations take it.
 
     Raises
     ------

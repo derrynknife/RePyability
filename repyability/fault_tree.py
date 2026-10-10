@@ -171,7 +171,7 @@ class FaultTree:
         gate's input.
     ccf_groups : list of CCFGroup, optional
         Common-cause groups over basic events (keyword only), as a
-        ``NonRepairableRBD`` takes them (#184): each group's members,
+        ``NonRepairableRBD`` takes them: each group's members,
         events with the same model, occur together through its shared
         causes as well as on their own, split by its ``BetaFactor`` or
         ``MGL`` model at every ``t``. The top event probability and the
@@ -1234,8 +1234,8 @@ class FaultTree:
         return shares(values, groups, scalar=t is None or np.ndim(t) == 0)
 
     def joint_importance(self, t: Optional[ArrayLike] = None) -> dict:
-        """The joint (second-order) importance of each pair of basic events
-        (#194): whether preventing the two together is worth more than
+        """The joint (second-order) importance of each pair of basic events:
+        whether preventing the two together is worth more than
         preventing each.
 
         In the guide's Greeks it is *gamma*: complements or substitutes (see
@@ -1459,7 +1459,7 @@ class FaultTree:
         group with one that can: the tree keeps it, for the group's causes
         to strike it with the others, as an event its logic makes
         irrelevant (the top event ``OR(G, AND(G, member))``, which is
-        ``G``, #237).
+        ``G``).
 
         Parameters
         ----------
