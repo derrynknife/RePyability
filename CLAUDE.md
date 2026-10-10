@@ -91,7 +91,7 @@
   loops record goes into both: `test_timelines.py` checks every engine's
   histories against each other and against `availability`.
 - **Capacity states are worked out in batches**
-  (`_CapacityRecorder.evaluate`): a simulation's in Python, a batch's
+  (`_tally._CapacityRecorder.evaluate`): a simulation's in Python, a batch's
   compiled, so a state's capacity must not depend on what is worked out
   with it. It does not while every node works at one level (each
   probability is then 0 or 1, and every sum exact); with several levels
@@ -132,8 +132,8 @@
   (`control_variate=False`), or it compares the exact values with
   themselves.
 - **A run's changes are put in time order by numpy alone (#201, #208)**
-  in `repairable_rbd.py`: `_net_by_time` nets the +1 and -1 changes of
-  state with one sort of integers, each time's bits above the change's
+  in `repyability/rbd/_time_order.py`: `_net_by_time` nets the +1 and -1
+  changes of state with one sort of integers, each time's bits above the change's
   sign (a time is never negative); `_by_time` sorts the capacity's (time,
   change) pairs, and the changes in how many systems can carry an
   unlimited amount, as complex numbers; `_capacity_totals` merges the two
@@ -158,14 +158,14 @@
   `MAX_WIDTH`, a chunk's rows) only affects speed: `test_streams.py`
   checks it changes nothing.
 - **The repair crews' Markov chain (`repyability/rbd/_crew_chain.py`)
-  copies the simulation's queue (`_Crews`)**: which waiting job a free crew
+  copies the simulation's queue (`_events._Crews`)**: which waiting job a free crew
   takes, and how instant jobs pass through. A change to one goes into the
   other; `test_crew_chain.py` checks the chain's exact values against the
   simulation. Likewise a standby group's chain (`_standby_chain.py`) copies
-  `_StandbyGroup`'s rules (switching, spares, repairs), checked by
+  `_events._StandbyGroup`'s rules (switching, spares, repairs), checked by
   `test_repairable_standby.py`.
 - **A common-cause group's chains (`repyability/rbd/_ccf_chain.py`) copy
-  the simulation's causes** (`_Cause`, `_strike`, #158): each cause, a
+  the simulation's causes** (`_events._Cause`, `_strike`, #158): each cause, a
   member's own or a shared one, strikes at its share of the failure rate
   and fails the members it names that are up, at once; with tests that can
   miss, one coin for all the failures it makes. A change to one goes into

@@ -65,7 +65,7 @@ def measure(
     """``spec``'s measure of each node of ``rbd`` at the times ``x``, or
     over the windows ``[0, window)``: floats for a single time or window,
     else arrays in its shape."""
-    from .repairable_rbd import _check_times
+    from repyability.utils.checks import nonnegative_times
 
     if x is not None and window is not None:
         raise ValueError(
@@ -77,10 +77,10 @@ def measure(
     rbd._validate_node_overrides(working, broken)
     states = rbd._states(state, working | broken)
     if x is not None:
-        times = _check_times(x)
+        times = nonnegative_times(x)
         values = _at(rbd, spec, times.ravel(), working, broken, states, state)
         return _shaped(values, x, times.shape)
-    ends = _check_times(window)
+    ends = nonnegative_times(window)
     if np.any(ends <= 0.0):
         raise ValueError(
             f"A window must be a positive length of time, got {window!r}."

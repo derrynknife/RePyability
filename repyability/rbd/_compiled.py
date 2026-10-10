@@ -331,7 +331,8 @@ class _System:
     streams and initial states, the charges, and the structure function."""
 
     def __init__(self, rbd, plan, working, broken, method: str):
-        from repyability.rbd.repairable_rbd import _CATEGORIES, RepairableRBD
+        from repyability.rbd._tally import _CATEGORIES
+        from repyability.rbd.repairable_rbd import RepairableRBD
 
         nodes = list(rbd.components)
         index = {node: c for c, node in enumerate(nodes)}
@@ -961,7 +962,7 @@ class Runner:
     def _outputs(self, size: int) -> tuple:
         """The output arrays of a batch of ``size`` simulations (each
         simulation's row is written whole by the loop)."""
-        from repyability.rbd.repairable_rbd import _CATEGORIES
+        from repyability.rbd._tally import _CATEGORIES
 
         model = self._model
         out = self._out
@@ -1200,7 +1201,7 @@ class Runner:
         as ``_Tally.add`` adds each simulation's: its exact totals the
         same in any order."""
         from repyability.rbd._exact import ExactSum
-        from repyability.rbd.repairable_rbd import _add_at
+        from repyability.rbd._time_order import _add_at
 
         kept = np.arange(times.shape[1]) < counts[:, None]
         visited = np.unique(np.concatenate([starts, masks[kept]]))

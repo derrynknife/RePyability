@@ -15,7 +15,7 @@ from scipy.special import gamma as gamma_function
 from scipy.special import gammainc
 
 from repyability import NonRepairable, RepairableRBD
-from repyability.rbd.repairable_rbd import Event
+from repyability.rbd._events import Event
 
 X = surv.ExactEventTime.from_params
 E = surv.Exponential.from_params

@@ -63,6 +63,30 @@ def simulation_options(method: str, given: dict) -> None:
         )
 
 
+def simulation_window(t_simulation) -> float:
+    """A simulation's window, ``t_simulation``, as a float: a positive and
+    finite time."""
+    if (
+        isinstance(t_simulation, bool)
+        or not isinstance(t_simulation, (int, float, np.integer, np.floating))
+        or not (math.isfinite(t_simulation) and t_simulation > 0.0)
+    ):
+        raise ValueError(
+            f"t_simulation must be a positive, finite time, got "
+            f"{t_simulation!r}."
+        )
+    return float(t_simulation)
+
+
+def nonnegative_times(x) -> np.ndarray:
+    """``x`` as a 1-d float array of times, all finite and non-negative:
+    numbers, not text that reads as them (#233)."""
+    times = np.atleast_1d(real_array(x, "The times"))
+    if not np.all(np.isfinite(times)) or np.any(times < 0.0):
+        raise ValueError(f"Times must be finite and non-negative, got {x!r}.")
+    return times
+
+
 def one_of(name: str, value, choices: tuple) -> None:
     """Refuse ``value`` for the option ``name`` unless it is one of
     ``choices``: "name must be 'a' or 'b', got 'c'."."""

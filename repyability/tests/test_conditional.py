@@ -15,7 +15,7 @@ from surpyval import Exponential, Weibull
 
 from repyability import NodeState, PerfectReliability, RepairableRBD
 from repyability.rbd import routes as r
-from repyability.rbd.repairable_rbd import _ModuleRun
+from repyability.rbd._tally import _ModuleRun
 
 E, W = Exponential.from_params, Weibull.from_params
 LIFE, REPAIR = 0.004, 0.25  # y's failure and repair rates

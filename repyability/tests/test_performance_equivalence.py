@@ -58,6 +58,7 @@ from repyability import (
 )
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import (
+    _events,
     _sampling,
     _streams,
     non_repairable_rbd,
@@ -966,11 +967,11 @@ def test_nested_rbds_step_by_hand_as_before_after_a_simulation():
 def test_event_queue_pops_in_priority_queue_order():
     # Equal times are where two heaps could disagree; use many.
     rng = np.random.default_rng(27)
-    ours = repairable_rbd._EventQueue()
+    ours = _events._EventQueue()
     theirs: queue.PriorityQueue = queue.PriorityQueue()
     for step in range(2000):
         if rng.random() < 0.6 or theirs.empty():
-            event = repairable_rbd.Event(
+            event = _events.Event(
                 float(rng.integers(0, 20)), step, bool(rng.random() < 0.5)
             )
             ours.put(event)
