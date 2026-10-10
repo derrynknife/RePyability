@@ -54,6 +54,7 @@ from repyability.rbd._events import (
     _Imperfect,
     _Inspection,
     _Preventive,
+    _Run,
     _Standby,
     _StandbyDraws,
     _StandbyGroup,
@@ -120,11 +121,11 @@ class _StreamedRBD:
 
     @property
     def system_state(self) -> bool:
-        return self._rbd.system_state
+        return self._rbd._run_state.system_state
 
     @property
     def last_change_planned(self) -> bool:
-        return self._rbd.last_change_planned
+        return self._rbd._run_state.last_change_planned
 
 
 def _planned(source, status: bool) -> bool:
@@ -1169,6 +1170,7 @@ def _start_queue(
     ``_simulation_states``)."""
     from repyability.rbd.repairable_rbd import RepairableRBD
 
+    rbd._run_state = _Run()
     # What the components draw their events from: themselves (an
     # imperfectly repaired one through a stand-in keeping its virtual
     # age, and one started from a state through one whose next draw can
@@ -1176,15 +1178,13 @@ def _start_queue(
     # streams (see _streamed_components), which the caller passes to
     # next_event too.
     if sources is None:
-        sources = rbd._step_sources = _own_sources(rbd, states)
-    else:
-        rbd.__dict__.pop("_step_sources", None)
+        sources = rbd._run_state._step_sources = _own_sources(rbd, states)
     # The window's end, which the first events already look to (see
     # _replaced_at).
-    rbd.t_simulation = t_simulation
+    rbd._run_state.t_simulation = t_simulation
     # Each calendar a state's phase shifts: by node, the time since its
     # last scheduled replacement or test (see _due).
-    rbd._phases = {
+    rbd._run_state._phases = {
         node: start.phase
         for node, start in states.items()
         if isinstance(start, NodeState)
@@ -1211,30 +1211,30 @@ def _start_queue(
     event_queue = _EventQueue()
     # When each working node with hidden failures is due to fail (None
     # once it has failed).
-    rbd._pending_failure = {}
+    rbd._run_state._pending_failure = {}
     # When each working node replaced on condition is due to fail, and
     # to be replaced (see _replaced_at).
-    rbd._in_service = {}
+    rbd._run_state._in_service = {}
     # Each working node replaced on condition by its measured level
     # (#271): when its level was last known, and the level then.
-    rbd._levels = {}
+    rbd._run_state._levels = {}
     # Opportunistic maintenance (#108): when each member that can be
     # renewed early was put into service as new, and its pending event;
     # the pending events early renewals have cancelled, and the early
     # renewals queued, by identity, and their members (see _stop).
-    rbd._renewed_at = {}
-    rbd._pending_event = {}
-    rbd._cancelled = {}
-    rbd._early = {}
-    rbd._renewing = set()
+    rbd._run_state._renewed_at = {}
+    rbd._run_state._pending_event = {}
+    rbd._run_state._cancelled = {}
+    rbd._run_state._early = {}
+    rbd._run_state._renewing = set()
     # Common-cause groups (#158): each member's next event, which a
     # shared cause that strikes it first supersedes, and the uniform a
     # strike has decided its tests by (see _strike).
-    rbd._ccf_members = frozenset(
+    rbd._run_state._ccf_members = frozenset(
         m for group in rbd.ccf_groups for m in group.members
     )
-    rbd._ccf_pending = {}
-    rbd._ccf_coins = {}
+    rbd._run_state._ccf_pending = {}
+    rbd._run_state._ccf_coins = {}
     # The components down at the start in a repair or maintenance going
     # on, which holds a repair crew.
     in_hand: list = []
@@ -1282,43 +1282,45 @@ def _start_queue(
         # Only consider it if it occurs within the simulation window
         if first.time < t_simulation:
             event_queue.put(first)
-        if component_id in rbd._ccf_members:
-            rbd._ccf_pending[component_id] = first
+        if component_id in rbd._run_state._ccf_members:
+            rbd._run_state._ccf_pending[component_id] = first
     for cause in _ccf_groups._shared_causes(rbd):
         first = Event(sources[cause].gap(), cause, False)
         if first.time < t_simulation:
             event_queue.put(first)
-    rbd._event_queue = event_queue
+    rbd._run_state._event_queue = event_queue
     # The repair crews, when there are fewer than the components that
     # may need one (with enough, no job ever waits).
     crews = rbd.repair_crews
-    rbd._crews = (
+    rbd._run_state._crews = (
         _Crews(crews, _crews._crew_served(rbd), rbd._priority)
         if crews is not None and _crews._crews_limited(rbd)
         else None
     )
-    if rbd._crews is not None:
+    if rbd._run_state._crews is not None:
         # A repair or maintenance going on at the start holds a crew
         # (_simulation_states has checked that there are enough).
         for node in in_hand:
-            if node in rbd._crews.served:
-                rbd._crews.free -= 1
-                rbd._crews.holding.add(node)
+            if node in rbd._run_state._crews.served:
+                rbd._run_state._crews.free -= 1
+                rbd._run_state._crews.holding.add(node)
     # Each standby group's units, which queue the group's first event.
-    rbd._groups = {
+    rbd._run_state._groups = {
         node: _StandbyGroup(
             rbd, node, arrangement, sources[node], t_simulation
         )
         for node, arrangement in rbd._standby.items()
         if node not in working_nodes and node not in broken_nodes
     }
-    rbd.last_change_planned = False
+    rbd._run_state.last_change_planned = False
     # The initial system state must reflect any forced-broken components
     # (e.g. a broken component in series starts the system down), and
     # any component that starts down, rather than assuming everything is
     # up.
-    rbd.system_state = rbd.is_system_working(component_status, method)
-    rbd.component_status = component_status
+    rbd._run_state.system_state = rbd.is_system_working(
+        component_status, method
+    )
+    rbd._run_state.component_status = component_status
 
 
 def _started(rbd, node, source, start: NodeState) -> Tuple[bool, Event]:
@@ -1357,7 +1359,7 @@ def _started(rbd, node, source, start: NodeState) -> Tuple[bool, Event]:
         )
         left = _aged_life(model, start.down_for, source.start_uniform())
         if inspection is not None:
-            rbd._pending_failure[node] = None
+            rbd._run_state._pending_failure[node] = None
         return False, Event(left, node, True, start.maintenance)
     if not start.age and not virtual:
         # New at 0, on a calendar at its phase.
@@ -1383,10 +1385,10 @@ def _started(rbd, node, source, start: NodeState) -> Tuple[bool, Event]:
     if inspection is not None:
         if life < 0.0:
             # Failed, unseen, since it was last known up.
-            rbd._pending_failure[node] = None
+            rbd._run_state._pending_failure[node] = None
             found = _finds(rbd, node, inspection, life)
             return False, Event(found, node, False, inspection=True)
-        rbd._pending_failure[node] = life
+        rbd._run_state._pending_failure[node] = life
         return True, _inspected_next(rbd, node, 0.0, inspection)
     if schedule is None:
         return True, Event(life, node, False)
@@ -1400,7 +1402,9 @@ def _due(rbd, node, schedule, t: float) -> float:
     ``_Inspection``) after ``t``, on ``node``'s calendar: shifted, from
     a state, by its phase, so that the last action fell that long
     before 0."""
-    phase = rbd._phases.get(node) if rbd._phases else None
+    phase = (
+        rbd._run_state._phases.get(node) if rbd._run_state._phases else None
+    )
     if phase is None:
         return schedule.due(t)
     if isinstance(schedule, _Inspection):
@@ -1413,7 +1417,9 @@ def _due(rbd, node, schedule, t: float) -> float:
 def _finds(rbd, node, inspection: _Inspection, t: float) -> float:
     """The test that finds a failure at ``t``, on ``node``'s calendar
     (see ``_due``): the first at or after it, and not before 0."""
-    phase = rbd._phases.get(node) if rbd._phases else None
+    phase = (
+        rbd._run_state._phases.get(node) if rbd._run_state._phases else None
+    )
     if phase is None:
         return inspection.finds(t)
     inspection = inspection.without_offset()
@@ -1453,20 +1459,20 @@ def _strike(rbd, event: Event, source) -> List[Event]:
     queue: the members' failures, and the cause's next strike."""
     cause: Any = event.component
     t = event.time
-    status = rbd.component_status
+    status = rbd._run_state.component_status
     out: List[Event] = []
     coin = source.coin() if cause.coins else None
     for member in cause.struck:
         if not status[member]:
             continue
-        pending = rbd._ccf_pending.pop(member, None)
-        if pending is not None and pending.time < rbd.t_simulation:
-            rbd._cancelled[id(pending)] = pending
+        pending = rbd._run_state._ccf_pending.pop(member, None)
+        if pending is not None and pending.time < rbd._run_state.t_simulation:
+            rbd._run_state._cancelled[id(pending)] = pending
         if coin is not None:
-            rbd._ccf_coins[member] = coin
+            rbd._run_state._ccf_coins[member] = coin
         out.append(Event(t, member, False))
     later = Event(t + source.gap(), cause, False)
-    if later.time < rbd.t_simulation:
+    if later.time < rbd._run_state.t_simulation:
         out.append(later)
     return out
 
@@ -1476,7 +1482,7 @@ def _crew_follow_up(rbd, event: Event, next_event: Event) -> Optional[Event]:
     that falls due when ``event`` takes a component down waits for a
     crew (None while it does), and a crew that finishes one at
     ``event`` starts the next waiting job, whose end is queued here."""
-    crews, node = rbd._crews, event.component
+    crews, node = rbd._run_state._crews, event.component
     if crews is None or node not in crews.served:
         return next_event
     if event.status:
@@ -1496,20 +1502,20 @@ def _crew_started(rbd, started: Tuple[Any, float, Event]) -> None:
     tell its standby group of a unit's."""
     key, wait, ends = started
     if isinstance(key, _Unit):
-        rbd._groups[key.node].crew_started(key.unit, ends.time)
+        rbd._run_state._groups[key.node].crew_started(key.unit, ends.time)
         return
     ends = _started_late(rbd, key, wait, ends)
-    if ends.time < rbd.t_simulation:
-        rbd._event_queue.put(ends)
+    if ends.time < rbd._run_state.t_simulation:
+        rbd._run_state._event_queue.put(ends)
 
 
 def _started_late(rbd, node, wait: float, ends: Event) -> Event:
     """A job of ``node`` that a crew starts ``wait`` after it fell due,
     and so ends with ``ends``: a component off-line for a test does not
     age while it waits, so its hidden failure is ``wait`` later."""
-    pending = rbd._pending_failure.get(node)
+    pending = rbd._run_state._pending_failure.get(node)
     if pending is not None:
-        rbd._pending_failure[node] = pending + wait
+        rbd._run_state._pending_failure[node] = pending + wait
     return ends
 
 
@@ -1564,10 +1570,10 @@ def _renewal(
             # As new: at the process's starting level, its failure
             # drawn from there; each inspection decides (#271).
             level = float(rbd.components[node].reliability.y0)
-            rbd._levels[node] = (t, level)
-            rbd._in_service[node] = (failure, math.inf)
+            rbd._run_state._levels[node] = (t, level)
+            rbd._run_state._in_service[node] = (failure, math.inf)
             return _condition_next(rbd, node, t, schedule, source)
-        rbd._in_service[node] = (
+        rbd._run_state._in_service[node] = (
             failure,
             _replaced_at(
                 rbd, node, t if start is None else start, failure, schedule, t
@@ -1590,8 +1596,8 @@ def _renewal(
         event = Event(due, node, schedule.duration is None, True)
     if node in rbd._early_members:
         # Kept, should a stop of its group renew it early (see _stop).
-        rbd._renewed_at[node] = start
-        rbd._pending_event[node] = event
+        rbd._run_state._renewed_at[node] = start
+        rbd._run_state._pending_event[node] = event
     return event
 
 
@@ -1647,23 +1653,23 @@ def _stop(rbd, group, t: float, trigger=None) -> List[Event]:
         if (
             member == trigger
             or member not in rbd._early_members
-            or member not in rbd._renewed_at
-            or member in rbd._renewing
-            or not rbd.component_status[member]
+            or member not in rbd._run_state._renewed_at
+            or member in rbd._run_state._renewing
+            or not rbd._run_state.component_status[member]
         ):
             continue
         schedule = rbd._preventive[member]
-        if t - rbd._renewed_at[member] < schedule.opportunity:
+        if t - rbd._run_state._renewed_at[member] < schedule.opportunity:
             continue
-        pending = rbd._pending_event.get(member)
+        pending = rbd._run_state._pending_event.get(member)
         if pending is not None and pending.time <= t:
             continue  # due now, as part of this stop
-        rbd._pending_event.pop(member, None)
-        if pending is not None and pending.time < rbd.t_simulation:
-            rbd._cancelled[id(pending)] = pending
+        rbd._run_state._pending_event.pop(member, None)
+        if pending is not None and pending.time < rbd._run_state.t_simulation:
+            rbd._run_state._cancelled[id(pending)] = pending
         renewal = Event(t, member, schedule.duration is None, True)
-        rbd._early[id(renewal)] = renewal
-        rbd._renewing.add(member)
+        rbd._run_state._early[id(renewal)] = renewal
+        rbd._run_state._renewing.add(member)
         out.append(renewal)
     return out
 
@@ -1682,7 +1688,7 @@ def _replaced_at(
     ``after`` (by default ``renewed``), at which it is more likely than
     the threshold to fail before the next, given its age (the time
     since ``renewed``); ``inf`` if at none."""
-    end = min(failure, rbd.t_simulation)
+    end = min(failure, rbd._run_state.t_simulation)
     dues = []
     due = _due(rbd, node, schedule, renewed if after is None else after)
     while due < end:
@@ -1711,21 +1717,21 @@ def _condition_next(
     from the last level is past the inspection, and nothing else of it
     is kept), and replaces the unit at or past ``schedule.level``; kept,
     the unit's failure is drawn afresh from the level found."""
-    failure, replaced = rbd._in_service[node]
+    failure, replaced = rbd._run_state._in_service[node]
     due = _due(rbd, node, schedule, t)
     if failure <= due:
         return Event(failure, node, False)
     if schedule.level is not None:
         process = rbd.components[node].reliability
-        known, level = rbd._levels[node]
+        known, level = rbd._run_state._levels[node]
         level = level_after(
             process, level, due - known, _level_uniform(source)
         )
         if level >= schedule.level:
             return Event(due, node, schedule.duration is None, True)
-        rbd._levels[node] = (due, level)
+        rbd._run_state._levels[node] = (due, level)
         left = failure_from(process, level, _level_uniform(source))
-        rbd._in_service[node] = (due + left, math.inf)
+        rbd._run_state._in_service[node] = (due + left, math.inf)
         return Event(due, node, True, inspection=True)
     if due >= replaced:
         # Replaced, as under block replacement.
@@ -1745,9 +1751,13 @@ def _inspected_follow_up(
         # Failed, unseen: found by the first inspection at or after t,
         # unless that one can miss it and does (a shared common cause
         # has decided for all its failures, see _strike).
-        rbd._pending_failure[node] = None
+        rbd._run_state._pending_failure[node] = None
         found = _finds(rbd, node, inspection, t)
-        coin = rbd._ccf_coins.pop(node, None) if rbd._ccf_coins else None
+        coin = (
+            rbd._run_state._ccf_coins.pop(node, None)
+            if rbd._run_state._ccf_coins
+            else None
+        )
         if not inspection.is_full(found) and not (
             coin < inspection.coverage
             if coin is not None
@@ -1778,11 +1788,11 @@ def _inspected_follow_up(
             duration = source.maintenance_time()
         else:
             duration = inspection.duration.random(1).item()
-    failure = rbd._pending_failure[node]
+    failure = rbd._run_state._pending_failure[node]
     if failure is None:
         repair, status = source.next_event()
         return Event(t + duration + repair, node, status)
-    rbd._pending_failure[node] = failure + duration
+    rbd._run_state._pending_failure[node] = failure + duration
     return Event(t + duration, node, True, inspection=True)
 
 
@@ -1792,7 +1802,7 @@ def _inspected_renewal(
     """The first event of a unit with hidden failures put into service
     as new at ``t``."""
     life, _ = source.next_event()
-    rbd._pending_failure[node] = t + life
+    rbd._run_state._pending_failure[node] = t + life
     return _inspected_next(rbd, node, t, inspection)
 
 
@@ -1801,7 +1811,7 @@ def _inspected_next(rbd, node, t: float, inspection: _Inspection) -> Event:
     its failure, or the next inspection if that comes first (a failure
     at the same time comes first, and is found by it). A test that takes
     time takes the unit off-line; one in zero time leaves it up."""
-    failure = rbd._pending_failure[node]
+    failure = rbd._run_state._pending_failure[node]
     due = _due(rbd, node, inspection, t)
     if failure <= due:  # type: ignore[operator]
         return Event(failure, node, False)  # type: ignore[arg-type]
@@ -1810,52 +1820,61 @@ def _inspected_next(rbd, node, t: float, inspection: _Inspection) -> Event:
 
 def next_event(rbd, method, sources: Optional[dict]):
     """See ``RepairableRBD.next_event``."""
-    if not hasattr(rbd, "_event_queue"):
+    run = rbd.__dict__.get("_run_state")
+    if run is None or not hasattr(run, "_event_queue"):
         raise ValueError("Need to initialize the event queue")
     # The components' draws come from the same sources the queue was
     # initialised with (see initialize_event_queue).
     if sources is None:
-        sources = getattr(rbd, "_step_sources", rbd.components)
-    new_system_state = copy(rbd.system_state)
+        sources = rbd._run_state._step_sources
+        if sources is None:
+            sources = rbd.components
+    new_system_state = copy(rbd._run_state.system_state)
 
     # Use a while loop to find the next time/event at which the system
     # status changes.
-    while new_system_state == rbd.system_state:
-        if rbd._event_queue.qsize() == 0:
-            del rbd._event_queue
-            rbd.last_change_planned = False
-            return rbd.t_simulation, rbd.system_state
+    while new_system_state == rbd._run_state.system_state:
+        if rbd._run_state._event_queue.qsize() == 0:
+            del rbd._run_state._event_queue
+            rbd._run_state.last_change_planned = False
+            return rbd._run_state.t_simulation, rbd._run_state.system_state
 
-        event = rbd._event_queue.get()
-        if rbd._cancelled and rbd._cancelled.get(id(event)) is event:
-            del rbd._cancelled[id(event)]
+        event = rbd._run_state._event_queue.get()
+        if (
+            rbd._run_state._cancelled
+            and rbd._run_state._cancelled.get(id(event)) is event
+        ):
+            del rbd._run_state._cancelled[id(event)]
             continue  # superseded by an early renewal, or a strike
         if event.component.__class__ is _Cause:
             # A shared common cause strikes (#158, see _strike).
             for follow in _strike(rbd, event, sources[event.component]):
-                rbd._event_queue.put(follow)
+                rbd._run_state._event_queue.put(follow)
             continue
         renewing_early = False
-        if rbd._early and rbd._early.get(id(event)) is event:
-            del rbd._early[id(event)]
-            rbd._renewing.discard(event.component)
+        if (
+            rbd._run_state._early
+            and rbd._run_state._early.get(id(event)) is event
+        ):
+            del rbd._run_state._early[id(event)]
+            rbd._run_state._renewing.discard(event.component)
             renewing_early = True
-        group = rbd._groups.get(event.component)
+        group = rbd._run_state._groups.get(event.component)
         if group is not None:
             # A standby group's own event (see _StandbyGroup).
             if not group.holds(event):
                 continue  # superseded by an earlier one
             now, _ = group.advance(event.time)
-            if now == rbd.component_status[event.component]:
+            if now == rbd._run_state.component_status[event.component]:
                 continue
-            rbd.component_status[event.component] = now
-            if now != rbd.system_state:
+            rbd._run_state.component_status[event.component] = now
+            if now != rbd._run_state.system_state:
                 new_system_state = rbd.is_system_working(
-                    rbd.component_status, method
+                    rbd._run_state.component_status, method
                 )
             continue  # the group has queued its next event
-        was = rbd.component_status[event.component]
-        rbd.component_status[event.component] = event.status
+        was = rbd._run_state.component_status[event.component]
+        rbd._run_state.component_status[event.component] = event.status
         node = event.component
         if node in rbd._member_group and not renewing_early:
             # A failure, or a scheduled replacement starting (or done in
@@ -1866,39 +1885,42 @@ def next_event(rbd, method, sources: Optional[dict]):
                 for renewal in _stop(
                     rbd, rbd._member_group[node], event.time, node
                 ):
-                    rbd._event_queue.put(renewal)
+                    rbd._run_state._event_queue.put(renewal)
         # Only a change against the system's state can change it (the
         # structure is coherent; see _replicate).
-        if event.status != rbd.system_state:
+        if event.status != rbd._run_state.system_state:
             new_system_state = rbd.is_system_working(
-                rbd.component_status, method
+                rbd._run_state.component_status, method
             )
-            if rbd.system_state and not new_system_state:
+            if rbd._run_state.system_state and not new_system_state:
                 for name, spec in rbd._maintenance.items():
                     if spec.system_down:
                         for renewal in _stop(rbd, name, event.time):
-                            rbd._event_queue.put(renewal)
+                            rbd._run_state._event_queue.put(renewal)
 
         follow = _follow_up(rbd, event, sources[event.component])
         next_event: Optional[Event] = (
             follow
-            if rbd._crews is None
+            if rbd._run_state._crews is None
             else _crew_follow_up(rbd, event, follow)
         )
         # But only queue up the event if it occurs before the end
         # of the simulation
-        if next_event is not None and next_event.time < rbd.t_simulation:
-            rbd._event_queue.put(next_event)
-        if node in rbd._ccf_members:
-            rbd._ccf_pending[node] = next_event
+        if (
+            next_event is not None
+            and next_event.time < rbd._run_state.t_simulation
+        ):
+            rbd._run_state._event_queue.put(next_event)
+        if node in rbd._run_state._ccf_members:
+            rbd._run_state._ccf_pending[node] = next_event
 
-    rbd.system_state = new_system_state
+    rbd._run_state.system_state = new_system_state
     # A system taken down by maintenance or a test is a planned outage.
-    rbd.last_change_planned = (
+    rbd._run_state.last_change_planned = (
         event.preventive or event.inspection
     ) and not new_system_state
 
-    return event.time, rbd.system_state
+    return event.time, rbd._run_state.system_state
 
 
 def _run(rbd, *args, **kwargs) -> "_Tally":
@@ -2075,8 +2097,7 @@ def _forget_run(rbd) -> None:
     processes of a later parallel run."""
     from repyability.rbd.repairable_rbd import RepairableRBD
 
-    for name in rbd._RUN_STATE:
-        rbd.__dict__.pop(name, None)
+    rbd.__dict__.pop("_run_state", None)
     for component in rbd.components.values():
         if isinstance(component, RepairableRBD):
             _forget_run(component)
@@ -2105,11 +2126,11 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
         sources,
         ctx.states,
     )
-    status = rbd.component_status
+    status = rbd._run_state.component_status
     index, plain, works = ctx.position, ctx.plain, ctx.works
     inspected = rbd._inspection
-    crews = rbd._crews
-    groups = rbd._groups
+    crews = rbd._run_state._crews
+    groups = rbd._run_state._groups
     n = len(index)
     # Each component's failures, the system failures they caused, its
     # restorations and the system restorations they caused.
@@ -2122,12 +2143,12 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
     imperfect = rbd._imperfect
     # Opportunistic maintenance (#108): each member's early renewals.
     maintenance, member_group = rbd._maintenance, rbd._member_group
-    cancelled, early = rbd._cancelled, rbd._early
+    cancelled, early = rbd._run_state._cancelled, rbd._run_state._early
     opportunistic = [0] * n
     failures = restorations = planned = 0
     changes: list = []
     deltas: list = []
-    if ctx.initial_up and not rbd.system_state:
+    if ctx.initial_up and not rbd._run_state.system_state:
         # Down at the start, from the components' states: the curve of
         # the availability over time counts it as a change at 0.
         changes.append(0.0)
@@ -2160,14 +2181,14 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
     # The system's state, and its up and down time until ``since``, its
     # last change; each component's last change, and the system's up and
     # down time until then.
-    up = rbd.system_state
+    up = rbd._run_state.system_state
     started_up = up
     system_up = system_down = since = 0.0
     last, up_at, down_at = [0.0] * n, [0.0] * n, [0.0] * n
     node_up, both_up, both_down = [0.0] * n, [0.0] * n, [0.0] * n
 
     # The queue's heap, worked directly (see _EventQueue).
-    heap = rbd._event_queue._heap
+    heap = rbd._run_state._event_queue._heap
     push, pop = heapq.heappush, heapq.heappop
 
     # When each group last stopped: the work started at one instant is
@@ -2175,7 +2196,10 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
     stopped: Dict[Hashable, float] = {}
     # Common-cause groups' members, whose next events a shared cause can
     # supersede (see _strike).
-    ccf_members, ccf_pending = rbd._ccf_members, rbd._ccf_pending
+    ccf_members, ccf_pending = (
+        rbd._run_state._ccf_members,
+        rbd._run_state._ccf_pending,
+    )
 
     def corrective(node, c: int) -> float:
         """Charge a failure's corrective action, and count the spare a
@@ -2222,7 +2246,7 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
         renewing_early = False
         if early and early.get(id(event)) is event:
             del early[id(event)]
-            rbd._renewing.discard(node)
+            rbd._run_state._renewing.discard(node)
             opportunistic[index[node]] += 1
             renewing_early = True
         grouped = False
@@ -2367,7 +2391,7 @@ def _replicate(rbd, ctx: "_Context", replication: int) -> _Replication:
             push(heap, (next_event.time, next_event))
         if ccf_members and node in ccf_members:
             ccf_pending[node] = next_event
-    rbd.system_state = up
+    rbd._run_state.system_state = up
 
     # Close the system's time, and each component's, at the end of the
     # window.

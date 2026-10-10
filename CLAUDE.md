@@ -84,7 +84,7 @@
   function this size, and passing the run's tuples to a function per
   simulation cost several times the loop (measured in #206).
 - **Simulations take turns across threads (#216).** The event loop keeps
-  a run's state on the diagram (`_RUN_STATE`) and draws that cannot be
+  a run's state on the diagram (`_run_state`, an `_events._Run`) and draws that cannot be
   streamed come from numpy's global RNG, so a run holds
   `repyability.utils.wrappers.SIMULATIONS`, a process-wide `RLock`:
   `_event_loop._run` (but a sharded run's parent, whose shards take it

@@ -4850,26 +4850,37 @@ class RepairableRBD(RBD):
             )
         return [node for node in self.components if node in chosen]
 
-    #: The interim variables of a simulation (see _forget_run).
-    _RUN_STATE = (
-        "_event_queue",
-        "system_state",
-        "t_simulation",
-        "component_status",
-        "last_change_planned",
-        "_pending_failure",
-        "_in_service",
-        "_levels",
-        "_renewed_at",
-        "_pending_event",
-        "_cancelled",
-        "_early",
-        "_renewing",
-        "_crews",
-        "_groups",
-        "_step_sources",
-        "_phases",
-    )
+    # A simulation in progress (``initialize_event_queue``, ``next_event``)
+    # keeps its state in a ``_Run`` (see ``_events._Run``); these read it.
+
+    def _running(self, name: str):
+        run = self.__dict__.get("_run_state")
+        if run is None:
+            raise AttributeError(
+                f"{name} is a simulation's: call initialize_event_queue first"
+            )
+        return getattr(run, name)
+
+    @property
+    def system_state(self) -> bool:
+        """Whether the system works, in the simulation in progress."""
+        return self._running("system_state")
+
+    @property
+    def component_status(self) -> Dict[Hashable, bool]:
+        """Whether each component works, in the simulation in progress."""
+        return self._running("component_status")
+
+    @property
+    def t_simulation(self) -> float:
+        """The end of the window of the simulation in progress."""
+        return self._running("t_simulation")
+
+    @property
+    def last_change_planned(self) -> bool:
+        """Whether the last change of the system's state, in the
+        simulation in progress, was planned (see ``next_event``)."""
+        return self._running("last_change_planned")
 
     def cost(
         self,

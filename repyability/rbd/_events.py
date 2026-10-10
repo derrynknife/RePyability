@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from typing import (
     TYPE_CHECKING,
     Any,
+    Dict,
     Hashable,
     NamedTuple,
     Optional,
@@ -242,7 +243,7 @@ class _StandbyGroup:
         job for a crew."""
         self._version[unit] += 1
         ends = t + self._draws.repair(unit)
-        crews = self._rbd._crews
+        crews = self._rbd._run_state._crews
         if crews is None or crews.request(
             _Unit(self._node, unit), t, Event(ends, None, True)
         ):
@@ -265,7 +266,7 @@ class _StandbyGroup:
             self.entry = None
             return
         self.entry = Event(events[0][0], self._node, self.up)
-        self._rbd._event_queue.put(self.entry)
+        self._rbd._run_state._event_queue.put(self.entry)
 
     def holds(self, event: "Event") -> bool:
         """Whether ``event``, from the RBD's queue, is the group's current
@@ -284,7 +285,7 @@ class _StandbyGroup:
         _, _, kind, unit, _ = heapq.heappop(events)
         failures = 0
         if kind == _UNIT_REPAIRED:
-            crews = self._rbd._crews
+            crews = self._rbd._run_state._crews
             if crews is not None:
                 started = crews.release(_Unit(self._node, unit), t)
                 if started is not None:
@@ -394,6 +395,87 @@ class _Fixed:
 
     def draw(self) -> float:
         return self.amount
+
+
+class _Run:
+    """A simulation in progress on a diagram: what ``initialize_event_queue``
+    starts and ``next_event`` advances. The diagram holds it as
+    ``_run_state`` while it runs (its public ``system_state``,
+    ``component_status``, ``t_simulation`` and ``last_change_planned``
+    read it), a run starts a new one, and its end forgets it
+    (``_event_loop._forget_run``), so that nothing of a run is left on the
+    diagram to be shared, pickled or read by the next."""
+
+    __slots__ = (
+        "_event_queue",
+        "system_state",
+        "t_simulation",
+        "component_status",
+        "last_change_planned",
+        "_pending_failure",
+        "_in_service",
+        "_levels",
+        "_renewed_at",
+        "_pending_event",
+        "_cancelled",
+        "_early",
+        "_renewing",
+        "_crews",
+        "_groups",
+        "_step_sources",
+        "_phases",
+        "_ccf_members",
+        "_ccf_pending",
+        "_ccf_coins",
+    )
+
+    #: The events to come, in time order.
+    _event_queue: "_EventQueue"
+    #: Whether the system works, and each component.
+    system_state: bool
+    component_status: Dict[Hashable, bool]
+    #: The window's end.
+    t_simulation: float
+    #: Whether the last change of the system's state was planned.
+    last_change_planned: bool
+    #: When each working node with hidden failures is due to fail (None
+    #: once it has failed).
+    _pending_failure: Dict[Hashable, Optional[float]]
+    #: When each working node replaced on condition is due to fail, and to
+    #: be replaced (see ``_event_loop._replaced_at``).
+    _in_service: dict
+    #: Each working node replaced on condition by its measured level: when
+    #: its level was last known, and the level then.
+    _levels: dict
+    #: Opportunistic maintenance: when each member that can be renewed
+    #: early was put into service as new, and its pending event; the
+    #: pending events early renewals have cancelled, and the early
+    #: renewals queued, by identity, and their members (see
+    #: ``_event_loop._stop``).
+    _renewed_at: dict
+    _pending_event: dict
+    _cancelled: dict
+    _early: dict
+    _renewing: set
+    #: The repair crews, when there are fewer than the components that
+    #: may need one (None otherwise).
+    _crews: Optional["_Crews"]
+    #: Each standby group's units.
+    _groups: dict
+    #: What the components draw their events from, when the diagram
+    #: started the run itself (None when the caller passed them).
+    _step_sources: Optional[dict]
+    #: Each calendar a state's phase shifts: by node, the time since its
+    #: last scheduled replacement or test.
+    _phases: dict
+    #: Common-cause groups: their members, each member's next event,
+    #: and the uniform a strike has decided its tests by.
+    _ccf_members: frozenset
+    _ccf_pending: dict
+    _ccf_coins: dict
+
+    def __init__(self) -> None:
+        self._step_sources = None
 
 
 @dataclass(order=True, slots=True)
