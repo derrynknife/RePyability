@@ -332,3 +332,73 @@ def test_a_covariate_path_is_integrated_and_drawn(models):
     np.testing.assert_allclose(node.ff(node._draw(u)), u, rtol=1e-12)
     with pytest.raises(NotImplementedError, match="CovariatePath"):
         node.to_dict()
+
+
+# -- covariates as levers (#272) --------------------------------------------
+
+
+def test_the_covariates_are_levers():
+    # An exponential AFT model: life 100 at load 1 and 25 at load 2, so
+    # theta(z) = 100 * 4 ** -(z - 1), R = exp(-t / theta) and dR/dz =
+    # -R * t * ln(4) / theta.
+    x = np.array([50.0, 100.0, 150.0, 12.5, 25.0, 37.5])
+    load = np.array([[1.0], [1.0], [1.0], [2.0], [2.0], [2.0]])
+    model = surv.ExponentialAFT.fit(x, Z=load)
+    rbd = NonRepairableRBD(
+        [("s", "a"), ("a", "t")],
+        {"a": RegressionNode(model, covariates=[1.0])},
+    )
+    (lever,) = rbd.levers()
+    assert (lever.key, lever.name, lever.value) == ("a", "covariate.0", 1.0)
+    assert lever.bounds == (-np.inf, np.inf)
+    t = np.array([20.0, 50.0])
+    theta = float(model.mean(np.array([[1.0]])))
+    expected = -np.exp(-t / theta) * t * np.log(4.0) / theta
+    np.testing.assert_allclose(
+        rbd.parameter_sensitivity(t)["a"]["covariate.0"], expected, rtol=1e-5
+    )
+    moved = rbd.with_levers({("a", "covariate.0"): 2.0})
+    np.testing.assert_allclose(
+        moved.sf(t), model.sf(t, np.array([[2.0], [2.0]])), rtol=1e-12
+    )
+
+
+def test_covariates_are_named_by_the_models_features():
+    import pandas as pd
+
+    rng = np.random.default_rng(3)
+    frame = pd.DataFrame(
+        {
+            "x": rng.weibull(2.0, 200) * 100,
+            "load": rng.uniform(0.5, 1.5, 200),
+            "temp": rng.uniform(20.0, 60.0, 200),
+        }
+    )
+    model = surv.WeibullPH.fit_from_df(
+        frame, x_col="x", Z_cols=["load", "temp"]
+    )
+    rbd = NonRepairableRBD(
+        [("s", "a"), ("a", "t")],
+        {"a": RegressionNode(model, covariates=[1.0, 40.0])},
+    )
+    assert [lever.name for lever in rbd.levers()] == [
+        "covariate.load",
+        "covariate.temp",
+    ]
+    assert list(rbd.parameter_sensitivity(50.0)["a"]) == [
+        "covariate.load",
+        "covariate.temp",
+    ]
+
+
+def test_a_node_along_a_schedule_has_no_levers():
+    x = np.array([50.0, 100.0, 150.0, 12.5, 25.0, 37.5])
+    load = np.array([[1.0], [1.0], [1.0], [2.0], [2.0], [2.0]])
+    model = surv.ExponentialAFT.fit(x, Z=load)
+    schedule = StepSchedule.from_changepoints([0, 50], [[1.0], [2.0]])
+    rbd = NonRepairableRBD(
+        [("s", "a"), ("a", "t")],
+        {"a": RegressionNode(model, schedule=schedule)},
+    )
+    assert rbd.levers() == []
+    assert rbd.parameter_sensitivity(10.0) == {}

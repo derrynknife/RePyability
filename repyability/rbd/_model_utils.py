@@ -187,6 +187,48 @@ def parametric_spec(model) -> Optional[ParametricSpec]:
     return ParametricSpec(cls, params, names, extras, bounds)
 
 
+class CovariateSpec(NamedTuple):
+    """A ``RegressionNode``'s covariates as levers (#272), with the
+    interface of a ``ParametricSpec``: ``params`` the covariates, ``names``
+    ``"covariate.<name>"`` (the model's feature names, or their places),
+    ``bounds`` none, and ``build(values)`` the node at those covariates."""
+
+    node: Any
+    params: List[float]
+    names: List[str]
+    bounds: List[tuple]
+
+    def build(self, values) -> Any:
+        """The node at the covariates ``values``."""
+        from repyability.rbd.regression_node import RegressionNode
+
+        covariates = [float(v) for v in values]
+        return RegressionNode(self.node.model, covariates=covariates)
+
+
+def covariate_spec(model) -> Optional[CovariateSpec]:
+    """The covariates of a ``RegressionNode`` at fixed covariates, as
+    levers, or None for any other model (one along a schedule has no one
+    value to move)."""
+    from repyability.rbd.regression_node import RegressionNode
+
+    if not isinstance(model, RegressionNode) or model.covariates is None:
+        return None
+    params = [float(z) for z in model.covariates]
+    features = getattr(model.model, "feature_names", None)
+    if not features or len(list(features)) != len(params):
+        features = [str(i) for i in range(len(params))]
+    names = [f"covariate.{name}" for name in features]
+    return CovariateSpec(model, params, names, [(None, None)] * len(params))
+
+
+def lever_spec(model):
+    """What parameter sensitivity moves in a node's model: its
+    parameters (``parametric_spec``), or a regression node's covariates
+    (``covariate_spec``); None for a model with neither."""
+    return parametric_spec(model) or covariate_spec(model)
+
+
 def nonparametric(model) -> bool:
     """Whether a node's model is, or is built from, a surpyval
     non-parametric fit (a nested RBD refuses one when it is built)."""

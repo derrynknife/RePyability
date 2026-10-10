@@ -173,6 +173,23 @@ motor.remaining_life(0.9, {"m": NodeState(age=2000)})  # -> 266.7
 Because the covariates live on the node, `age` keeps its one meaning
 (operating time survived) for every node type.
 
+The covariates are what can be changed, so they are the node's levers
+(#272): `levers()` lists each as `"covariate.<name>"` (the model's feature
+name when it was fitted from a DataFrame, else its place, `"covariate.0"`),
+`parameter_sensitivity` gives the system's derivative in it, and
+`with_levers` builds the diagram with the component run elsewhere:
+
+```python
+motor.parameter_sensitivity(3000)["m"]   # {'covariate.0': array([-0.0146])} per °C
+cooler = motor.with_levers({("m", "covariate.0"): 60.0})
+cooler.sf(3000)                          # -> 0.5744   from 0.4363 at 70 °C
+```
+
+A covariate has no range of its own: running a component outside the
+conditions its model was fitted on is extrapolation (as an accelerated life
+test's use level is), which is the user's to judge. A node along a schedule
+has no one value to move, and has no levers.
+
 ### A load schedule
 
 When the conditions change over the component's life, pass a surpyval

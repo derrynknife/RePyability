@@ -1843,7 +1843,9 @@ class Lever(_ResultMapping):
         ``RepairableRBD`` ``"reliability.alpha"``,
         ``"inspection.interval"``, ``"standby.units"``, ``"ccf_beta"``,
         ``"repair_crews"``, ...; in a ``NonRepairableRBD`` the parameter's
-        own name (``"alpha"``) or the group's (``"ccf_beta"``).
+        own name (``"alpha"``) or the group's (``"ccf_beta"``), or a
+        regression node's covariate (``"covariate.load"``, its feature
+        name, or ``"covariate.0"``, its place).
     value : float
         Its value in the diagram.
     discrete : bool

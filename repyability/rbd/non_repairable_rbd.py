@@ -51,6 +51,7 @@ from ._mean_lifetime import mean_lifetime, model_kinks, model_knots
 from ._model_utils import (
     is_fixed_probability,
     is_mixture,
+    lever_spec,
     lfp_p,
     model_mean,
     parametric_spec,
@@ -900,7 +901,7 @@ class NonRepairableRBD(RBD):
 
         base = system()
         out: Dict[str, np.ndarray] = {}
-        spec = parametric_spec(self.reliabilities[group.members[0]])
+        spec = lever_spec(self.reliabilities[group.members[0]])
         if spec is not None:
             for j, name in enumerate(spec.names):
 
@@ -8089,10 +8090,11 @@ class NonRepairableRBD(RBD):
         are included, fixed-probability nodes among them (their parameter
         is the failure probability); ``levers()`` lists them, with their
         values and ranges, and ``with_levers`` builds the RBD with them
-        moved. Composite nodes (a nested RBD, a
-        standby, load-sharing or repeated node, a regression node) and the
-        input and output nodes have no parameters to perturb and are
-        omitted. A node forced via
+        moved. A regression node's levers are its covariates
+        (``"covariate.<name>"``, #272), at fixed covariates. Composite nodes
+        (a nested RBD, a standby, load-sharing or repeated node, a
+        regression node along a schedule) and the input and output nodes
+        have no parameters to perturb and are omitted. A node forced via
         ``working_nodes``/``broken_nodes`` is pinned independently of its
         parameters, so its sensitivities are reported as zero.
 
@@ -8207,7 +8209,7 @@ class NonRepairableRBD(RBD):
                         name: _out(value) for name, value in values.items()
                     }
                 continue
-            spec = parametric_spec(model)
+            spec = lever_spec(model)
             if spec is None:
                 # A composite node: no parameters to perturb.
                 continue
