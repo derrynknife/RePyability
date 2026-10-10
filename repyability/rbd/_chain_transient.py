@@ -451,10 +451,18 @@ class CrewCurve:
         """The system's expected failures before each time ``x``, and its
         planned outages: the chain's components have no scheduled
         maintenance, but its nested RBDs may."""
+        from . import _windows
+
         x = np.asarray(x, dtype=float)
         if self.nested:
-            counts = self.rbd._window_counts(
-                self.nested, x.ravel(), set(), set(), "p", crew=self.system
+            counts = _windows._window_counts(
+                self.rbd,
+                self.nested,
+                x.ravel(),
+                set(),
+                set(),
+                "p",
+                crew=self.system,
             )
             return _events(
                 counts["failures"].reshape(x.shape),
@@ -468,9 +476,13 @@ class CrewCurve:
         """The system's failures and planned outages at exact times before
         ``stop``: its nested RBDs', which the chain's do not share (it
         moves only at random times)."""
+        from . import _windows
+
         if not self.nested:
             return Atoms.none()
-        return self.rbd._system_atoms(self.nested, stop, crew=self.system)
+        return _windows._system_atoms(
+            self.rbd, self.nested, stop, crew=self.system
+        )
 
     def knots(self, start: float, stop: float) -> np.ndarray:
         parts = [self.chain.knots(start, stop)]

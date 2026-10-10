@@ -2099,9 +2099,11 @@ class SystemCurve:
         ``_rates``)."""
         from repyability.rbd._rates import derivative
 
+        from . import _windows
+
         values = {node: c.at(x) for node, c in self.curves.items()}
         importance = self.rbd._importances(
-            self.rbd._filled(values, len(x), set(), set())
+            _windows._filled(self.rbd, values, len(x), set(), set())
         )[0]
         out = np.zeros(len(x))
         for node, curve in self.curves.items():
@@ -2112,15 +2114,24 @@ class SystemCurve:
         """The nested RBD's expected failures and planned outages before
         each time ``x`` (see ``RepairableRBD._window_counts``): its own
         maintenance is not this RBD's to count."""
-        counts = self.rbd._window_counts(
-            self.curves, np.asarray(x, dtype=float), set(), set(), "p"
+        from . import _windows
+
+        counts = _windows._window_counts(
+            self.rbd,
+            self.curves,
+            np.asarray(x, dtype=float),
+            set(),
+            set(),
+            "p",
         )
         return _events(counts["failures"], counts["planned"])
 
     def atoms(self, stop: float) -> Atoms:
         """The nested RBD's failures and planned outages at exact times
         before ``stop`` (see ``RepairableRBD._atom_groups``)."""
-        return self.rbd._system_atoms(self.curves, stop)
+        from . import _windows
+
+        return _windows._system_atoms(self.rbd, self.curves, stop)
 
     def knots(self, start: float, stop: float) -> np.ndarray:
         parts = [curve.knots(start, stop) for curve in self.curves.values()]

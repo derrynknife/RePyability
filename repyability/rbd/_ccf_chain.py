@@ -959,9 +959,11 @@ class GroupsSystem:
         capacity over time, which takes the nodes' joint states: it
         refuses where the points would be too many (see
         ``check_split``)."""
+        from . import _windows
+
         size = len(x)
-        probabilities = self.rbd._filled(
-            values, size, self.working, self.broken
+        probabilities = _windows._filled(
+            self.rbd, values, size, self.working, self.broken
         )
         check_split(
             size,
@@ -1001,14 +1003,14 @@ class GroupsSystem:
         with the probability ``values[node]`` then, and each group's
         members in each of their combinations with its probability then
         (``chances[number]``, where given, in place of its chain's)."""
-        from . import _ccf_groups
+        from . import _ccf_groups, _windows
 
         size = len(x)
         p = {
             node: np.broadcast_to(np.asarray(v, dtype=float), (size,))
             for node, v in values.items()
         }
-        p = self.rbd._filled(p, size, self.working, self.broken)
+        p = _windows._filled(self.rbd, p, size, self.working, self.broken)
         tables = []
         for number, group in enumerate(self.groups):
             given = None if chances is None else chances[number]
@@ -1155,11 +1157,18 @@ class GroupsCurve:
     def events(self, x: np.ndarray):
         """The system's expected failures and planned outages before each
         time ``x`` (see ``RepairableRBD._window_counts``)."""
+        from . import _windows
         from ._point_availability import _events
 
         x = np.asarray(x, dtype=float)
-        counts = self.rbd._window_counts(
-            self.curves, x.ravel(), set(), set(), "p", crew=self.system
+        counts = _windows._window_counts(
+            self.rbd,
+            self.curves,
+            x.ravel(),
+            set(),
+            set(),
+            "p",
+            crew=self.system,
         )
         return _events(
             counts["failures"].reshape(x.shape),
@@ -1170,7 +1179,11 @@ class GroupsCurve:
         """The system's failures and planned outages at exact times before
         ``stop``: its nodes outside the groups' (the groups' members fail
         only at random times)."""
-        return self.rbd._system_atoms(self.curves, stop, crew=self.system)
+        from . import _windows
+
+        return _windows._system_atoms(
+            self.rbd, self.curves, stop, crew=self.system
+        )
 
     def knots(self, start: float, stop: float) -> np.ndarray:
         parts = [self.system.curve.knots(start, stop)]

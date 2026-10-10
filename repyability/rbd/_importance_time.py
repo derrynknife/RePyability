@@ -162,9 +162,11 @@ def _grouped(rbd, spec: Spec, groups: list, p: dict, q: dict, x, weights):
 def _independent(rbd, curves: dict, x, working, broken) -> Tuple[dict, dict]:
     """The nodes' probabilities of working and of failing at the times
     ``x``, from their ``curves`` (the forced nodes held at 1 or 0)."""
+    from . import _windows
+
     size = len(x)
     p = {node: np.asarray(c.at(x), dtype=float) for node, c in curves.items()}
-    p = rbd._filled(p, size, working, broken)
+    p = _windows._filled(rbd, p, size, working, broken)
     q = rbd._failures_with_overrides(
         {node: 1.0 - value for node, value in p.items()}, working, broken
     )
