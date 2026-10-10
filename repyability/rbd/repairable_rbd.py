@@ -10,7 +10,6 @@ in ``_streams``, and its compiled engine in ``_compiled`` and
 import dataclasses
 import hashlib
 import heapq
-import itertools
 import json
 import math
 import pickle
@@ -58,7 +57,6 @@ from repyability.rbd import (
     _streams,
     _timeline_runs,
 )
-from repyability.rbd import capacity as _capacity
 from repyability.rbd._block_replacement import (
     BlockHead,
     _check_life,
@@ -147,7 +145,13 @@ from repyability.rbd.standby_node import StandbyModel
 if TYPE_CHECKING:
     from repyability.rbd.chunks import SimulationChunk
 
-from repyability.rbd import _costs, _intervals, _repairable_allocation, _spec
+from repyability.rbd import (
+    _costs,
+    _intervals,
+    _repairable_allocation,
+    _repairable_capacity,
+    _spec,
+)
 from repyability.rbd._common import (
     _DISCOUNT_ROUNDS,
     _DISCOUNT_TOLERANCE,
@@ -1133,130 +1137,6 @@ def _settling(curves) -> Tuple[float, Optional[float]]:
         return settle, _common_period(periods)
     except NotImplementedError:  # no common period
         return np.inf, None
-
-
-#: The most patterns of nested RBDs' capacity levels the capacity over time
-#: with limited repair crews follows the crews' chain for (#162).
-_MAX_CREW_LEVELS = 4096
-
-
-class _CrewCapacity:
-    """The capacity over time of a system whose components wait for repair
-    crews, around nested RBDs (#162). The nested RBDs have crews of their
-    own, so they are independent of the chain and of each other: at a time
-    the system is at a level with probability ``sum_c w_c(t) p(t) v_c``,
-    over each combination ``c`` of the nested RBDs' levels (up or down, or
-    their own capacities), ``w_c(t)`` its probability from their own
-    curves, and ``v_c`` whether the system is at the level in each of the
-    chain's states with the nested RBDs at ``c``. The chain is followed
-    over time (see ``_chain_transient.Uniformized``) for each combination
-    as it first has a probability, and kept."""
-
-    def __init__(self, rbd, chain, start, nested: dict, working, broken):
-        self.rbd, self.chain, self.start = rbd, chain, start
-        self.nested = nested
-        size = len(chain.probabilities)
-        own = {
-            node: chain.up[:, k].astype(float)
-            for k, node in enumerate(chain.nodes)
-        }
-        # The nested RBDs' places, which each combination of their levels
-        # takes (see ``_chain_for``).
-        own.update({node: np.ones(size) for node in nested})
-        self.arrays, _ = rbd._node_arrays(
-            rbd._filled(own, size, working, broken)
-        )
-        self.size = size
-        self.followed: Dict[tuple, tuple] = {}
-        timing = rbd._uniformized(
-            "The repair crews'",
-            chain.generator,
-            start,
-            chain.probabilities,
-            np.ones((size, 1)),
-        )
-        #: For the pieces of the integrals: the chain's and the nested
-        #: RBDs' curves.
-        self.curves = [_chain_transient.ChainCurve(timing), *nested.values()]
-
-    def _chain_for(self, levels: tuple):
-        """The system's levels with the nested RBDs at ``levels``, and the
-        chain followed over time with whether it is at each, in each
-        state."""
-        if levels not in self.followed:
-            own = {
-                node: (np.array([level]), np.ones((1, self.size)))
-                for node, level in zip(self.nested, levels)
-            }
-            values, rows = self.rbd._capacity_arrays(
-                self.arrays, self.size, own
-            )
-            self.followed[levels] = (
-                values,
-                self.rbd._uniformized(
-                    "The repair crews'",
-                    self.chain.generator,
-                    self.start,
-                    self.chain.probabilities,
-                    rows.T,
-                ),
-            )
-        return self.followed[levels]
-
-    def _distributions(self, x: np.ndarray) -> list:
-        """Each nested RBD's capacity distribution at the times ``x``: its
-        own, if it has capacities, else up (at its capacity here) or down,
-        with its point availability."""
-        out = []
-        models = self.rbd._capacity_models()
-        for node, curve in self.nested.items():
-            if node in models:
-                out.append(self.rbd.components[node]._capacity_at(curve, x))
-            else:
-                up = np.clip(np.asarray(curve.at(x), dtype=float), 0.0, 1.0)
-                out.append(
-                    _capacity.node_distribution(
-                        self.rbd.capacity.get(node, np.inf), up, 1.0 - up
-                    )
-                )
-        return out
-
-    def rows(self, x) -> Tuple[np.ndarray, np.ndarray]:
-        """The system's capacity levels and their probabilities at the times
-        ``x`` (one row per level)."""
-        x = np.asarray(x, dtype=float).ravel()
-        distributions = self._distributions(x)
-        count = int(np.prod([len(levels) for levels, _ in distributions]))
-        if count > _MAX_CREW_LEVELS:
-            raise NotImplementedError(
-                f"With {self.rbd.repair_crews} repair crew(s), the capacity "
-                "over time is worked out for each combination of the nested "
-                f"RBDs' levels: {count} are more than the {_MAX_CREW_LEVELS} "
-                "it takes. Simulate it with availability(demand=...)."
-            )
-        totals: Dict[float, np.ndarray] = {}
-        for choice in itertools.product(
-            *[range(len(levels)) for levels, _ in distributions]
-        ):
-            weight = np.ones(len(x))
-            for (_, chances), i in zip(distributions, choice):
-                weight = weight * chances[i]
-            if not weight.any():
-                continue
-            key = tuple(
-                float(levels[i])
-                for (levels, _), i in zip(distributions, choice)
-            )
-            values, chain = self._chain_for(key)
-            at = np.clip(chain.values(x), 0.0, 1.0)
-            for level, column in zip(values, at.T):
-                level = float(level)
-                totals[level] = totals.get(level, 0.0) + weight * column
-        levels = np.array(sorted(totals), dtype=float)
-        rows = np.array([totals[level] for level in levels]).reshape(
-            len(levels), len(x)
-        )
-        return levels, rows
 
 
 class _Jumps(NamedTuple):
@@ -5466,7 +5346,9 @@ class RepairableRBD(RBD):
                 ),
             )
         capacity = (
-            None if long_run.route == r.REFUSED else self._capacity_refusal()
+            None
+            if long_run.route == r.REFUSED
+            else _repairable_capacity._capacity_refusal(self)
         )
         out["capacity_distribution"] = (
             r.refused(*capacity)
@@ -5526,7 +5408,7 @@ class RepairableRBD(RBD):
                 )
             ),
         )
-        over_time_capacity = self._capacity_refusal()
+        over_time_capacity = _repairable_capacity._capacity_refusal(self)
         give(
             ("point_capacity", "mission_capacity"),
             (
@@ -5952,27 +5834,6 @@ class RepairableRBD(RBD):
             )
         )
         return dict(sorted(out.items()))
-
-    def _capacity_refusal(self) -> Optional[Tuple[str, tuple]]:
-        """What ``capacity_distribution`` refuses beyond the long-run
-        values, in the order it checks: a degrading component on a
-        schedule, here or in a nested RBD, then no capacity at all. The
-        message and the nodes, or None."""
-        from repyability.rbd import routes as r
-
-        for node, model in self._capacity_models().items():
-            if isinstance(model, RepairableRBD):
-                inner = model._capacity_refusal()
-                if inner:
-                    return inner[0], (node,)
-                continue
-            message = r.refusal(
-                partial(self._require_unscheduled_stages, node)
-            )
-            if message:
-                return message, (node,)
-        message = r.refusal(self._require_capacity)
-        return (message, ()) if message else None
 
     def _node_long_run(self, node) -> Tuple[str, str]:
         """How a component's long-run values are found: the route, and a
@@ -8654,8 +8515,8 @@ class RepairableRBD(RBD):
             return SystemCurve(self, inner, *_settling(inner.values()))
         curve = self._crew_curve(horizon, states=start or {}, counts=counts)
         if stages and self._has_capacity():
-            curve.capacity = self._crew_capacity_over(
-                horizon, set(), set(), start or {}
+            curve.capacity = _repairable_capacity._crew_capacity_over(
+                self, horizon, set(), set(), start or {}
             )
         return curve
 
@@ -9007,75 +8868,6 @@ class RepairableRBD(RBD):
                     ends - totals[:, 2 + k], 0.0, ends
                 )
         return curves, counts
-
-    def _crew_capacity(
-        self, working_nodes, broken_nodes, states: dict
-    ) -> Tuple[np.ndarray, "_chain_transient.Uniformized"]:
-        """The capacity over time with limited repair crews and no nested
-        RBDs: its levels, and the crews' chain followed over time with, as
-        its vectors, whether the system is at each level in each state (as
-        ``capacity_distribution`` averages them in the long run)."""
-        working, broken = set(working_nodes), set(broken_nodes)
-        forced = working | broken
-        self._require_crew_over_time(frozenset(forced), "capacity")
-        chain = self._crew_chain(frozenset(forced))
-        size = len(chain.probabilities)
-        own = {
-            node: chain.up[:, k].astype(float)
-            for k, node in enumerate(chain.nodes)
-        }
-        arrays, _ = self._node_arrays(self._filled(own, size, working, broken))
-        levels, rows = self._capacity_arrays(arrays, size, {})
-        uniformized = self._uniformized(
-            "The repair crews'",
-            chain.generator,
-            self._crew_start(chain, states),
-            chain.probabilities,
-            rows.T,
-        )
-        return levels, uniformized
-
-    def _crew_capacity_over(
-        self, horizon: float, working_nodes, broken_nodes, states: dict
-    ) -> "_CrewCapacity":
-        """The capacity over time with limited repair crews around nested
-        RBDs (#162): see ``_CrewCapacity``."""
-        working, broken = set(working_nodes), set(broken_nodes)
-        forced = working | broken
-        nested = self._require_crew_over_time(frozenset(forced))
-        chain = self._crew_chain(frozenset(forced))
-        curves = {
-            node: self.components[node]._nested_curve(
-                horizon,
-                stages=node in self._capacity_models(),
-                start=states.get(node),
-            )
-            for node in nested
-        }
-        return _CrewCapacity(
-            self,
-            chain,
-            self._crew_start(chain, states),
-            curves,
-            working,
-            broken,
-        )
-
-    def _capacity_at(
-        self, curve, x: np.ndarray
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """This RBD's capacity distribution at the times ``x``, as a node of
-        another, from its curve over time (see ``_nested_curve``, with
-        ``stages``): from its nodes' curves, or with limited repair crews
-        from their chain (#162)."""
-        capacity = getattr(curve, "capacity", None)
-        if capacity is not None:
-            return capacity.rows(x)
-        if isinstance(curve, _ccf_chain.GroupsCurve):
-            return self._groups_capacity_rows(
-                curve.curves, curve.system, x, set(), set()
-            )
-        return self._capacity_rows(curve.curves, x, set(), set())
 
     def _unit_curve(
         self,
@@ -9456,140 +9248,9 @@ class RepairableRBD(RBD):
         >>> round(capacity.mean, 2)  # 150 * 10 / 11
         136.36
         """
-        probabilities, weights = self._long_run_probabilities(
-            working_nodes, broken_nodes, "The capacity distribution"
+        return _repairable_capacity.capacity_distribution(
+            self, working_nodes=working_nodes, broken_nodes=broken_nodes
         )
-        working_nodes = set(working_nodes or ())
-        broken_nodes = set(broken_nodes or ())
-        arrays, size = self._node_arrays(probabilities)
-        own = {}
-        for node in self._capacity_models():
-            levels, shares = self._long_run_capacity(node)
-            own[node] = self._forced(
-                (levels, np.repeat(shares[:, None], size, axis=1)),
-                node,
-                working_nodes,
-                broken_nodes,
-            )
-        levels, rows = self._capacity_arrays(arrays, size, own)
-        return CapacityDistribution(levels, rows @ weights)
-
-    def _require_capacity_models(self) -> None:
-        """Raise what ``_capacity_refusal`` reports, in the same order: a
-        degrading component on a schedule, here or in a nested RBD, then no
-        capacity at all."""
-        for node, model in self._capacity_models().items():
-            if isinstance(model, RepairableRBD):
-                model._require_capacity_models()
-            else:
-                self._require_unscheduled_stages(node)
-        self._require_capacity()
-
-    def _capacity_curves(
-        self, horizon: float, working_nodes, broken_nodes, state=None
-    ) -> dict:
-        """The nodes' curves for the capacity over time (see
-        ``point_capacity``): a degrading component's following its stages,
-        and a node that takes its capacity from its model kept even when
-        held working (its levels are then those it is up at)."""
-        held = set(working_nodes) - set(self._capacity_models())
-        return self._availability_curves(
-            horizon,
-            held | set(broken_nodes),
-            stages=True,
-            state=self._states(state, set(working_nodes) | set(broken_nodes)),
-        )
-
-    def _capacity_rows(
-        self, curves: dict, x: np.ndarray, working_nodes, broken_nodes
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """The distribution of the system's capacity at each of the times
-        ``x``, from its nodes' curves (see ``_capacity_curves``): its
-        levels, and one row of probabilities per level, one column per
-        time. A node with a capacity carries it with its point availability
-        there; a degrading component is in each stage with the probability
-        its curve gives, and a nested RBD with capacities brings its own
-        distribution."""
-        size = len(x)
-        values = {node: curve.at(x) for node, curve in curves.items()}
-        arrays, _ = self._node_arrays(
-            self._filled(values, size, working_nodes, broken_nodes)
-        )
-        own = {}
-        for node, model in self._capacity_models().items():
-            if node in broken_nodes:
-                own[node] = (np.zeros(1), np.ones((1, size)))
-                continue
-            curve = curves[node]
-            if isinstance(model, RepairableRBD):
-                distribution = model._capacity_at(curve, x)
-            else:
-                distribution = _capacity.merged(
-                    np.array((0.0,) + model.capacities),
-                    np.vstack([1.0 - values[node], curve.stages_at(x)]),
-                )
-            own[node] = self._forced(
-                distribution, node, working_nodes, broken_nodes
-            )
-        return self._capacity_arrays(arrays, size, own)
-
-    def _groups_capacity(
-        self, horizon: float, working_nodes, broken_nodes, state
-    ) -> tuple:
-        """With common-cause groups (#158): the curves of the nodes outside
-        them for the capacity over time (see ``_capacity_curves``), and the
-        groups' system (see ``_ccf_chain.GroupsSystem``)."""
-        working, broken = set(working_nodes), set(broken_nodes)
-        states = self._states(state, working | broken)
-        self._require_free_members(working, broken)
-        self._require_groups_over_time(states)
-        members = {m for group in self.ccf_groups for m in group.members}
-        held = working - set(self._capacity_models())
-        curves = self._availability_curves(
-            horizon,
-            held | broken | members,
-            stages=True,
-            state=states,
-            groups=True,
-        )
-        return curves, self._groups_system(working, broken, "p")
-
-    def _groups_capacity_rows(
-        self, curves: dict, system, x: np.ndarray, working_nodes, broken_nodes
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """``_capacity_rows`` with common-cause groups: worked out at the
-        points the groups' combinations split each time into (see
-        ``_ccf_chain.GroupsSystem``), and averaged back onto the times with
-        the combinations' probabilities."""
-        size = len(x)
-        values = {node: curve.at(x) for node, curve in curves.items()}
-        probabilities, weights, index, _ = system._split(values, x)
-        points = len(index)
-        arrays, _ = self._node_arrays(probabilities)
-        own = {}
-        for node, model in self._capacity_models().items():
-            if node in broken_nodes:
-                own[node] = (np.zeros(1), np.ones((1, points)))
-                continue
-            curve = curves[node]
-            if isinstance(model, RepairableRBD):
-                levels, rows = model._capacity_at(curve, x)
-            else:
-                levels, rows = _capacity.merged(
-                    np.array((0.0,) + model.capacities),
-                    np.vstack([1.0 - values[node], curve.stages_at(x)]),
-                )
-            own[node] = self._forced(
-                (levels, np.asarray(rows)[:, index]),
-                node,
-                working_nodes,
-                broken_nodes,
-            )
-        levels, rows = self._capacity_arrays(arrays, points, own)
-        out = np.array(
-            [np.bincount(index, weights * row, size) for row in rows]
-        ).reshape(len(levels), size)
-        return levels, np.clip(out, 0.0, 1.0)
 
     def point_capacity(
         self,
@@ -9683,45 +9344,12 @@ class RepairableRBD(RBD):
         >>> round(plant.capacity_distribution().meets(100), 4)  # long run
         0.9767
         """
-        times = nonnegative_times(x)
-        working_nodes = set() if working_nodes is None else set(working_nodes)
-        broken_nodes = set() if broken_nodes is None else set(broken_nodes)
-        self._validate_node_overrides(working_nodes, broken_nodes)
-        self._require_capacity_models()
-        ends = times.ravel()
-        horizon = float(ends.max()) if ends.size else 0.0
-        forced = working_nodes | broken_nodes
-        if self._crews_couple() and self._crew_nested(forced):
-            capacity = self._crew_capacity_over(
-                horizon,
-                working_nodes,
-                broken_nodes,
-                self._states(state, forced),
-            )
-            levels, rows = capacity.rows(ends)
-        elif self._crews_couple():
-            levels, chain = self._crew_capacity(
-                working_nodes,
-                broken_nodes,
-                self._states(state, working_nodes | broken_nodes),
-            )
-            rows = np.clip(chain.values(ends).T, 0.0, 1.0)
-        elif self.ccf_groups:
-            curves, system = self._groups_capacity(
-                horizon, working_nodes, broken_nodes, state
-            )
-            levels, rows = self._groups_capacity_rows(
-                curves, system, ends, working_nodes, broken_nodes
-            )
-        else:
-            curves = self._capacity_curves(
-                horizon, working_nodes, broken_nodes, state
-            )
-            levels, rows = self._capacity_rows(
-                curves, ends, working_nodes, broken_nodes
-            )
-        return CapacityDistribution(
-            levels, rows[:, 0] if np.ndim(x) == 0 else rows
+        return _repairable_capacity.point_capacity(
+            self,
+            x=x,
+            working_nodes=working_nodes,
+            broken_nodes=broken_nodes,
+            state=state,
         )
 
     def mission_capacity(
@@ -9799,159 +9427,13 @@ class RepairableRBD(RBD):
         >>> round(plant.capacity_distribution().delivered_fraction(100), 4)
         0.988
         """
-        windows = nonnegative_times(t)
-        working_nodes = set() if working_nodes is None else set(working_nodes)
-        broken_nodes = set() if broken_nodes is None else set(broken_nodes)
-        self._validate_node_overrides(working_nodes, broken_nodes)
-        self._require_capacity_models()
-        ends = windows.ravel()
-        horizon = float(ends.max()) if ends.size else 0.0
-        forced = working_nodes | broken_nodes
-        if self._crews_couple() and self._crew_nested(forced):
-            capacity = self._crew_capacity_over(
-                horizon,
-                working_nodes,
-                broken_nodes,
-                self._states(state, forced),
-            )
-            levels, rows = self._mission_rows(
-                capacity.curves, capacity.rows, ends, horizon
-            )
-            return CapacityDistribution(
-                levels, rows[:, 0] if np.ndim(t) == 0 else rows
-            )
-        if self._crews_couple():
-            levels, chain = self._crew_capacity(
-                working_nodes,
-                broken_nodes,
-                self._states(state, working_nodes | broken_nodes),
-            )
-            positive = ends > 0.0
-            rows = chain.values(ends).T
-            rows[:, positive] = (
-                chain.integrals(ends[positive]).T / ends[positive]
-            )
-            rows = np.clip(rows, 0.0, 1.0)
-            keep = np.any(rows != 0.0, axis=1)
-            levels, rows = levels[keep], rows[keep]
-            return CapacityDistribution(
-                levels, rows[:, 0] if np.ndim(t) == 0 else rows
-            )
-        if self.ccf_groups:
-            grouped, system = self._groups_capacity(
-                horizon, working_nodes, broken_nodes, state
-            )
-            levels, rows = self._mission_rows(
-                [*grouped.values(), system.curve],
-                lambda x: self._groups_capacity_rows(
-                    grouped, system, x, working_nodes, broken_nodes
-                ),
-                ends,
-                horizon,
-            )
-            return CapacityDistribution(
-                levels, rows[:, 0] if np.ndim(t) == 0 else rows
-            )
-        curves = self._capacity_curves(
-            horizon, working_nodes, broken_nodes, state
+        return _repairable_capacity.mission_capacity(
+            self,
+            t=t,
+            working_nodes=working_nodes,
+            broken_nodes=broken_nodes,
+            state=state,
         )
-        levels, rows = self._mission_rows(
-            list(curves.values()),
-            lambda x: self._capacity_rows(
-                curves, x, working_nodes, broken_nodes
-            ),
-            ends,
-            horizon,
-        )
-        return CapacityDistribution(
-            levels, rows[:, 0] if np.ndim(t) == 0 else rows
-        )
-
-    def _mission_rows(
-        self, followed: list, rows_at, ends: np.ndarray, horizon: float
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """The capacity distribution averaged over each window ``[0, end)``
-        (see ``mission_capacity``): ``rows_at(x)`` its levels and their
-        probabilities at the times ``x``, integrated on pieces cut where
-        the ``followed`` curves bend, and extended exactly past the time
-        they have settled. Returns the levels and one row per level."""
-        settle, period = _settling(followed)
-        reach = min(horizon, settle if period is None else settle + period)
-        beyond = ends > reach
-        fixed = [ends[~beyond]]
-        cycles = rest = np.empty(0)
-        if period is not None and beyond.any():
-            cycles = np.floor((ends[beyond] - settle) / period)
-            rest = np.clip(
-                ends[beyond] - settle - cycles * period, 0.0, period
-            )
-            fixed += [np.array([settle]), settle + rest]
-
-        def estimate(a: np.ndarray, b: np.ndarray) -> dict:
-            # The probability of each capacity level, integrated.
-            x, half = _quadrature.points(a, b)
-            levels, rows = rows_at(x)
-            return {
-                float(level): _quadrature.summed(row, half)
-                for level, row in zip(levels, rows)
-            }
-
-        try:
-            edges, finest = _quadrature.pieces(
-                followed, np.concatenate(fixed), reach, _MISSION_POINTS
-            )
-            edges, integrals = _quadrature.refined(
-                estimate, edges, finest, _MISSION_POINTS
-            )
-        except _quadrature.TooMany as error:
-            raise NotImplementedError(
-                f"Integrating the capacity over [0, {reach}] takes "
-                f"{error.count} pieces (the components' curves bend that "
-                "often), more than the limit: estimate it by simulation, "
-                "with availability(demand=...)."
-            ) from None
-        # The levels, as ``estimate`` keyed them.
-        running: Dict[float, np.ndarray] = {
-            float(level): _quadrature.running(values, len(edges) - 1)
-            for level, values in integrals.items()
-            if isinstance(level, float)
-        }
-        settled: Dict[float, float] = {}
-        if period is None and beyond.any():
-            levels, rows = rows_at(np.array([horizon]))
-            settled = {float(v): float(r) for v, r in zip(levels, rows[:, 0])}
-        inside = np.searchsorted(edges, ends[~beyond])
-        positive = ends > 0.0
-        at_zero: Dict[float, float] = {}
-        if not positive.all():
-            levels, rows = rows_at(np.zeros(1))
-            at_zero = {float(v): float(r) for v, r in zip(levels, rows[:, 0])}
-        averages = {}
-        for level in sorted(set(running) | set(settled) | set(at_zero)):
-            values = running.get(level, np.zeros(len(edges)))
-            totals = np.empty(len(ends))
-            totals[~beyond] = values[inside]
-            if beyond.any():
-                if period is None:
-                    totals[beyond] = values[-1] + (
-                        ends[beyond] - reach
-                    ) * settled.get(level, 0.0)
-                else:
-                    base = values[np.searchsorted(edges, settle)]
-                    partial = values[np.searchsorted(edges, settle + rest)]
-                    totals[beyond] = (
-                        base + cycles * (values[-1] - base) + (partial - base)
-                    )
-            average = np.empty(len(ends))
-            average[positive] = totals[positive] / ends[positive]
-            average[~positive] = at_zero.get(level, 0.0)
-            averages[level] = average
-        levels = np.array(sorted(averages), dtype=float)
-        rows = np.array([averages[level] for level in levels]).reshape(
-            len(levels), len(ends)
-        )
-        keep = np.any(rows != 0.0, axis=1)
-        return levels[keep], rows[keep]
 
     def _capacity_models(self) -> dict:
         """``{node: model}`` for the nodes with no capacity entry whose model
@@ -9968,25 +9450,6 @@ class RepairableRBD(RBD):
             elif isinstance(component.reliability, DegradingNode):
                 out[node] = component.reliability
         return out
-
-    def _long_run_capacity(self, node) -> Tuple[np.ndarray, np.ndarray]:
-        """The long-run distribution of the capacity of a node whose model
-        has one (see ``_capacity_models``): a nested RBD's own; for a
-        degrading component, down a fraction ``1 - A`` of the time and in
-        each stage the rest of it in proportion to the stage's share of its
-        working time."""
-        component = self.components[node]
-        if isinstance(component, RepairableRBD):
-            distribution = component.capacity_distribution()
-            return distribution.levels, distribution.probabilities
-        self._require_unscheduled_stages(node)
-        stages = component.reliability
-        up = self._node_availability(node)
-        shares = np.concatenate([[1.0 - up], up * stages.stage_fractions()])
-        levels, rows = _capacity.merged(
-            np.array((0.0,) + stages.capacities), shares[:, None]
-        )
-        return levels, rows[:, 0]
 
     def _follow_up(self, event: Event, source) -> Event:
         """The next event of ``event``'s component, drawn from ``source``.

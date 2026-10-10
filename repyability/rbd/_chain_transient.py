@@ -425,7 +425,7 @@ class CrewCurve:
         self.patterns = 2 ** len(nested)
         self.system = CrewSystem(chain, list(nested))
         #: As a node with capacities of another RBD, its capacity over time
-        #: (``repairable_rbd._CrewCapacity``, set by ``_nested_curve``).
+        #: (``_repairable_capacity._CrewCapacity``, set by ``_nested_curve``).
         self.capacity: Any = None
         self.settle, self.period = _settling(
             [ChainCurve(chain), *nested.values()]
