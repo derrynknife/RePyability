@@ -37,7 +37,10 @@ plugins:
             members_order: source
             show_root_heading: true
             show_root_full_path: false
-            show_source: true
+            # The source is on GitHub: inlined, it made the page 5.7 MB.
+            show_source: false
+            # Each class's page lists what it inherits (RBD's methods).
+            inherited_members: true
             separate_signature: true
             merge_init_into_class: true
             filters: ["!^_"]
@@ -112,4 +115,14 @@ nav:
       - Simulation precision and speed: guide/simulation.md
       - Saving, reproducibility and performance: guide/saving.md
   - Concepts: concepts.md
-  - API reference: api.md
+  - API reference:
+      - Overview: api/index.md
+      - RBD (the base class): api/rbd.md
+      - NonRepairableRBD: api/nonrepairable.md
+      - RepairableRBD: api/repairable.md
+      - Fault trees, missions, networks: api/other-systems.md
+      - Node models: api/nodes.md
+      - Components and maintenance: api/components.md
+      - Demonstration testing: api/demonstration.md
+      - Timelines: api/timelines.md
+      - Result types: api/results.md

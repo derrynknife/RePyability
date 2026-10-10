@@ -5,7 +5,7 @@ takes, what it returns, and its limits. Each page is self-contained and its
 examples run as written. To learn the ideas step by step, with worked
 examples and exercises, take the [Learn](../learn/index.md) course; for a
 compact summary of the theory, see [Concepts](../concepts.md); for every
-signature and docstring, see the [API reference](../api.md).
+signature and docstring, see the [API reference](../api/index.md).
 
 | Page | What it covers |
 |---|---|

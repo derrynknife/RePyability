@@ -137,4 +137,4 @@ result.criticalities.iou.up  # intersection-over-union importance (system up)
 - **[Concepts](concepts.md)**: the theory: path and cut sets, the exact engine,
   choosing an importance measure, conditioning, standby and load sharing,
   common cause, availability, cost, allocation and maintenance models.
-- **[API reference](api.md)**: every public class and method.
+- **[API reference](api/index.md)**: every public class and method.
