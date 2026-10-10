@@ -573,7 +573,7 @@ def _calendar_lever(rbd, lever: _Lever) -> bool:
     block replacement's or a test's interval) that others share: the
     long-run values jump as it leaves their common calendar, and are
     averaged over a common period that it would make too long to follow
-    (see ``repairable_rbd._common_period``)."""
+    (see ``_common._common_period``)."""
     if lever.name not in ("preventive.interval", "inspection.interval"):
         return False
     members = set(lever.key) if isinstance(lever.key, tuple) else {lever.key}
