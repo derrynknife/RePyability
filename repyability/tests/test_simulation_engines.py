@@ -28,6 +28,7 @@ from repyability import NodeState, PerfectReliability, RepairableRBD
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import _compiled, _streams, repairable_rbd
 from repyability.rbd.repairable_rbd import Event
+from repyability.tests import timeline_reference
 from repyability.tests.catalogue import systems_of_every_kind
 from repyability.tests.keyed_draws import KeyedDraws, reference_draw
 from repyability.tests.test_performance_equivalence import (
@@ -305,7 +306,7 @@ def reference(rbd, t_end, n, seed, working=(), broken=(), antithetic=False):
         system.append((t_end, 0))
         starts = [1 if node not in broken else 0 for node in nodes]
         overlaps = overlaps_one_at_a_time(starts, events, system, t_end)
-        uptime = repairable_rbd.time_at_status(system, 1)
+        uptime = timeline_reference.time_at_status(system, 1)
         for c, node in enumerate(nodes):
             rate = rbd.costs.get(node, {}).get("downtime_cost")
             if rate is not None:

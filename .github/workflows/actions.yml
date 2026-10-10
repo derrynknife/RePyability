@@ -13,6 +13,7 @@ jobs:
   lint:
     name: lint (black, isort, flake8, mypy)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v5
 
@@ -41,6 +42,7 @@ jobs:
   test:
     name: test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -62,7 +64,7 @@ jobs:
         # Every version runs the suite on all the runner's cores; coverage is
         # measured once, on the newest Python (next step).
         if: matrix.python-version != '3.14'
-        run: python -m pytest -n auto -q
+        run: python -m pytest -n auto -q --durations=30
 
       - name: pytest (under coverage)
         # Coverage is measured on Python 3.14 alone, through sys.monitoring,
@@ -72,7 +74,7 @@ jobs:
         if: matrix.python-version == '3.14'
         env:
           COVERAGE_CORE: sysmon
-        run: python -m pytest -n auto -q --cov --cov-report=
+        run: python -m pytest -n auto -q --durations=30 --cov --cov-report=
 
       - name: coverage report (enforces the fail_under gate)
         if: matrix.python-version == '3.14'
@@ -95,6 +97,7 @@ jobs:
     # the compiled engine runs and its results are checked against Python's.
     name: test (with numba, Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -114,13 +117,16 @@ jobs:
           python -c "import numba; print('numba', numba.__version__)"
 
       - name: pytest
-        run: python -m pytest -n auto -q
+        run: python -m pytest -n auto -q --durations=30
 
   test-minimum:
-    # CI otherwise installs the newest surpyval, so once surpyval releases,
-    # nothing would test the oldest one pyproject.toml still allows.
-    name: test (minimum surpyval)
+    # The other jobs install the newest of every dependency, so nothing
+    # else tests the oldest that pyproject.toml allows: this one installs
+    # each dependency at its floor (numpy, scipy, networkx, surpyval, tqdm),
+    # on the oldest Python, then the test tools.
+    name: test (minimum dependencies)
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v5
 
@@ -129,29 +135,20 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install the package, then the oldest surpyval it allows
+      - name: Install the package at its dependencies' floors
         run: |
-          python -m pip install --upgrade pip
-          pip install -e .[dev]
-          minimum=$(python - <<'EOF'
-          import re
-          import tomllib
-
-          with open("pyproject.toml", "rb") as f:
-              dependencies = tomllib.load(f)["project"]["dependencies"]
-          spec = next(d for d in dependencies if d.startswith("surpyval"))
-          print(re.search(r">=\s*([0-9][0-9.]*)", spec).group(1))
-          EOF
-          )
-          pip install "surpyval==$minimum"
-          python -c "import surpyval; print('surpyval', surpyval.__version__)"
+          python -m pip install --upgrade pip uv
+          uv pip install --system --resolution lowest-direct -e .
+          uv pip install --system "pytest>=7.0" "pytest-xdist>=3.5" "pytest-timeout>=2.3"
+          python -c "import numpy, scipy, networkx, surpyval, tqdm; print('numpy', numpy.__version__, 'scipy', scipy.__version__, 'networkx', networkx.__version__, 'surpyval', surpyval.__version__, 'tqdm', tqdm.__version__)"
 
       - name: pytest
-        run: python -m pytest -n auto -q
+        run: python -m pytest -n auto -q --durations=30
 
   docs:
     name: docs (strict build)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
 

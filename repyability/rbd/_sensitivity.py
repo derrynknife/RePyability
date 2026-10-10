@@ -51,7 +51,7 @@ import numpy as np
 from repyability.utils.checks import is_number, is_whole, number_or_nan
 
 from . import _importance_time
-from ._model_utils import lever_spec
+from ._model_utils import CovariateSpec, lever_spec
 
 #: What the sensitivities can be of.
 QUANTITIES = ("availability", "cost_rate")
@@ -70,8 +70,6 @@ _MOVES_BREAKS = {
 
 #: The range of a probability, a fraction or a share.
 _UNIT = (0.0, 1.0)
-#: The range of a positive number, such as an interval.
-_POSITIVE = (0.0, math.inf)
 
 
 class _Lever(NamedTuple):
@@ -144,7 +142,6 @@ def _proportional_scale(spec, name: str, value: float) -> Optional[float]:
     time it is the log of by that fraction; None for a regression node's
     covariate, whose zero is its unit's (0 degrees C is not 0 K), so that a
     proportional change of it means nothing."""
-    from ._model_utils import CovariateSpec
 
     if isinstance(spec, CovariateSpec):
         return None
@@ -666,6 +663,7 @@ class _Alone:
                 **{("b", n): v for n, v in importance.items()},
             }
 
+        assert asked.window is not None
         return _importance_time.window_points(
             list(curves.values()), asked.window, integrands, _MISSION_POINTS
         )
@@ -698,6 +696,7 @@ class _Alone:
             moved = -importance * curve
             if self.weights is None:
                 return moved.reshape(self.shape)
+            assert self.asked.window is not None
             return np.atleast_1d(
                 (self.weights @ moved) / float(self.asked.window)
             )

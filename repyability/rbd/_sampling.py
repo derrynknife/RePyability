@@ -30,7 +30,12 @@ import numpy as np
 from surpyval import Parametric
 
 from ._degradation import is_degradation
-from ._model_utils import is_mixture, lfp_p
+from ._model_utils import (
+    MODEL_ERRORS,
+    is_fixed_probability,
+    is_mixture,
+    lfp_p,
+)
 from .helper_classes import PerfectReliability, PerfectUnreliability
 
 Sampler = Callable[[np.ndarray], np.ndarray]
@@ -79,7 +84,6 @@ def lifetime_sampler(model) -> Optional[RowSampler]:
     :func:`row_sampler`), or None if they cannot be drawn in a block. A
     fixed probability, which surpyval draws as an event indicator, is a
     unit that fails at the start (a lifetime of 0) or never (``inf``)."""
-    from repyability.rbd._model_utils import is_fixed_probability
 
     if is_fixed_probability(model):
         failure = float(np.ravel(model.ff(1.0))[0])
@@ -151,7 +155,7 @@ def _components(model) -> Callable[[str, np.ndarray], np.ndarray]:
                     ("df", points),
                 )
             )
-    except Exception:
+    except MODEL_ERRORS:
         ok = False
     return together if ok else one_by_one
 
@@ -279,15 +283,3 @@ def stream_sampler(model) -> Optional[Sampler]:
         # level (#271), by its own quantile function.
         return lambda u: np.asarray(model.qf(u), dtype=float)
     return sampler
-
-
-def draw_rows(samplers: list[Sampler], size: int) -> list[np.ndarray]:
-    """``size`` rounds of one draw from each sampler, in order, as a list of
-    ``size``-long arrays (one per sampler).
-
-    The uniforms are taken row by row -- round 0's draws first -- which is
-    the order a loop over rounds making one ``random(1)`` call per model
-    would consume them in.
-    """
-    u = np.random.random_sample((size, len(samplers)))
-    return [column(u, j, sampler) for j, sampler in enumerate(samplers)]

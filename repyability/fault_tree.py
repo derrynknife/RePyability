@@ -40,7 +40,6 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
-    Union,
 )
 
 import numpy as np
@@ -54,7 +53,7 @@ from repyability.rbd.modular import (
     SERIES,
     Decomposition,
 )
-from repyability.utils.checks import no_distribution, real_array
+from repyability.utils.checks import no_distribution, one_of, real_array
 
 if TYPE_CHECKING:  # pragma: no cover
     from repyability.rbd.non_repairable_rbd import NonRepairableRBD
@@ -300,50 +299,38 @@ class FaultTree:
         """The common-cause groups, checked: each a ``CCFGroup`` of basic
         events, an event in one group at most, and the members of a group
         with one model (a symmetric group, as the models assume)."""
-        from repyability.rbd.ccf import CCFGroup, as_groups
+        from repyability.rbd.ccf import as_groups, checked_groups
         from repyability.rbd.serialisation import serialise_model
 
         groups = as_groups(groups)
         if not groups:
             return []
-        seen: set = set()
-        for group in groups:
-            if not isinstance(group, CCFGroup):
+
+        def check_member(member, group):
+            if member not in self.events:
                 raise ValueError(
-                    "ccf_groups must hold CCFGroup instances, got "
-                    f"{type(group).__name__}."
+                    f"CCF group member {member!r} is not a basic event "
+                    "of the tree."
                 )
-            for member in group.members:
-                if member not in self.events:
-                    raise ValueError(
-                        f"CCF group member {member!r} is not a basic event "
-                        "of the tree."
-                    )
-                if member in seen:
-                    raise ValueError(
-                        f"Event {member!r} appears in more than one CCF "
-                        "group."
-                    )
-                seen.add(member)
+
+        def saved(member):
             # Compared as saved, as the diagram compares its members (and,
             # as there, not at all for a model that cannot be saved).
-            try:
-                specs = [
-                    (
-                        self.events[m]
-                        if isinstance(self.events[m], float)
-                        else serialise_model(self.events[m])
-                    )
-                    for m in group.members
-                ]
-            except Exception:
-                continue
-            if any(spec != specs[0] for spec in specs[1:]):
-                raise ValueError(
-                    f"CCF group {list(group.members)} is not symmetric: its "
-                    "members must have the same model."
-                )
-        return list(groups)
+            event = self.events[member]
+            return (
+                event if isinstance(event, float) else serialise_model(event)
+            )
+
+        return checked_groups(
+            groups,
+            check_member,
+            saved,
+            lambda group: (
+                f"CCF group {list(group.members)} is not symmetric: its "
+                "members must have the same model."
+            ),
+            noun="Event",
+        )
 
     def _evaluation(self, p: dict, q: dict, size: int, expand: bool = True):
         """The tree's probabilities at the events' probabilities of not
@@ -1137,10 +1124,7 @@ class FaultTree:
         >>> {e: round(v, 4) for e, v in tree.fussell_vesely().items()}
         {'pump 1': 0.1681, 'pump 2': 0.1681, 'valve': 0.8403}
         """
-        if method not in ("exact", "rare_event"):
-            raise ValueError(
-                f"method must be 'exact' or 'rare_event', got {method!r}."
-            )
+        one_of("method", method, ("exact", "rare_event"))
         from repyability.rbd._ccf_modules import (
             expected_product,
             group_outcomes,
@@ -1816,7 +1800,3 @@ def _model_is_fixed(model) -> bool:
     from repyability.rbd.non_repairable_rbd import NonRepairableRBD
 
     return NonRepairableRBD._model_is_fixed(model)
-
-
-# A gate as given: ("or", inputs), ("and", inputs) or ("vote", k, inputs).
-GateSpec = Union[Tuple[str, Sequence[Hashable]], Tuple[str, int, Sequence]]

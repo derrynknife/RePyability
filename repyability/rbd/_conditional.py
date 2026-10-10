@@ -514,15 +514,6 @@ def module_totals(
     return uptime, n * float(end) - uptime
 
 
-def curve_se(curve: np.ndarray, square: np.ndarray, n: int) -> np.ndarray:
-    """The pointwise standard error of a conditional curve: of the mean
-    of the simulations' values, from their mean square."""
-    if n < 2:
-        return np.zeros_like(curve)
-    variance = np.maximum(square - curve * curve, 0.0) * n / (n - 1)
-    return np.sqrt(variance / n)
-
-
 def steps(curve_points: Optional[int], end: float) -> np.ndarray:
     """The curve's times: ``curve_points`` steps (by default ``CURVE``)."""
     points = CURVE if curve_points is None else int(curve_points)

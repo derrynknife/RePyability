@@ -834,3 +834,23 @@ def test_the_readme_says_what_is_simulated():
     assert phased_mission.MAX_STATES == 200_000
     assert network.MAX_PATHS == 100_000
     assert network.MAX_STATES == 5_000_000
+
+
+def test_a_fault_in_a_check_is_raised_not_reported_as_a_refusal():
+    # A refusal (NotImplementedError, or routes.Refused for a diagram with
+    # nothing the analysis works on) is reported with its message; any
+    # other error in a check is a fault, and is raised.
+    def refused():
+        raise routes.Refused("No node has a capacity.")
+
+    def cannot():
+        raise NotImplementedError("Not exactly.")
+
+    def faulty():
+        raise ValueError("operands could not be broadcast together")
+
+    assert routes.refusal(refused) == "No node has a capacity."
+    assert routes.refusal(cannot) == "Not exactly."
+    assert routes.refusal(lambda: None) is None
+    with pytest.raises(ValueError, match="broadcast"):
+        routes.refusal(faulty)

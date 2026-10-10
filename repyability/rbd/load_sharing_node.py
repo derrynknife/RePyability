@@ -82,6 +82,8 @@ def _identical_exponential_stage_rates(models, load, k, baselines, phi_table):
             lam = rate
         elif not np.isclose(rate, lam):
             return None
+    if lam is None:
+        return None
     # phi must be identical across units at every stage for the closed form.
     rates = []
     for s in range(n, k - 1, -1):
@@ -242,7 +244,7 @@ class LoadSharingModel:
         # The hypoexponential closed form needs distinct stage rates. If a
         # load effect collides two of them, surpyval rejects the rates; fall
         # back to the simulation path rather than fail.
-        self._sf_model: object = None
+        self._sf_model: Any = None
         if rates is not None and _all_distinct(rates):
             try:
                 self._sf_model = Hypoexponential.from_params(rates)
@@ -320,8 +322,9 @@ class LoadSharingModel:
         """``random(1)`` as a :class:`~._sampling.RowSampler` (one threshold
         draw per unit, in unit order), so an RBD with this node batches its
         draws; ``None`` unless every baseline's draws can be replayed."""
-        baselines = [inverse_sampler(base) for base in self._baselines]
-        if any(base is None for base in baselines):
+        found = [inverse_sampler(base) for base in self._baselines]
+        baselines = [base for base in found if base is not None]
+        if len(baselines) < len(found):
             return None
 
         def draw(u):

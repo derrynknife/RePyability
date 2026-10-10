@@ -5,7 +5,7 @@ from surpyval import Hypoexponential
 
 from repyability.utils.checks import simulation_options, whole_number
 from repyability.utils.deprecation import ignored, refuse_removed_names
-from repyability.utils.wrappers import numpy_seed
+from repyability.utils.wrappers import conditional_survival, numpy_seed
 
 from ._dependent_lifetimes import (
     ColdPairSurvival,
@@ -656,8 +656,9 @@ class StandbyModel:
         be replayed. Columns follow the order ``random(1)`` draws in: one per
         unit, and under imperfect k=1 switching a switch draw before each
         spare's."""
-        units = [inverse_sampler(m) for m in self.reliabilities]
-        if any(unit is None for unit in units):
+        found = [inverse_sampler(m) for m in self.reliabilities]
+        units = [unit for unit in found if unit is not None]
+        if len(units) < len(found):
             return None
 
         if self.dormancy_factor > 0.0:
@@ -906,6 +907,5 @@ class StandbyModel:
         >>> round(StandbyModel([unit, unit]).cs(50.0, 100.0), 4)
         0.7582
         """
-        from repyability.utils.wrappers import conditional_survival
 
         return conditional_survival(self, x, X)

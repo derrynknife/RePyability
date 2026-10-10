@@ -26,8 +26,9 @@
   RePyability's tests against its `develop` by hand (`pip install
   "surpyval @ git+https://github.com/derrynknife/SurPyval@develop"`), and
   when they fail, fix RePyability (working with both the released surpyval
-  and `develop`) and release that first. CI's `test (minimum surpyval)` job
-  tests the oldest surpyval `pyproject.toml` allows; raise that minimum,
+  and `develop`) and release that first. CI's `test (minimum dependencies)`
+  job tests the oldest surpyval `pyproject.toml` allows (and every other
+  dependency at its floor); raise that minimum,
   rather than keep code for older versions, once RePyability needs what a
   newer surpyval does.
 
@@ -213,7 +214,10 @@
   says, without running anything, whether each public analysis is exact,
   numerical, simulated or refused. Refusals go through checks the report
   calls too (`_require_*` helpers, `_inspected_rate`, ...), so its reasons
-  are the methods' own messages. When a method is added, or gains a refusal
+  are the methods' own messages. A refusal is a `NotImplementedError` (what
+  an analysis cannot work out) or a `routes.Refused` (a `ValueError`: the
+  diagram has nothing the analysis works on); `routes.refusal` raises any
+  other error, as a fault. When a method is added, or gains a refusal
   or changes how it computes, update `analysis_routes`:
   `test_analysis_routes.py` checks that it covers every public method, that
   each method does what it says on diagrams of every kind, and that the
@@ -305,9 +309,14 @@
   `checks.seed` where it is taken.
 - **Inputs are checked where they are given (#233)**: numbers through
   `checks.is_number`/`number_or_nan` (not `bool`, not text), times through
-  `checks.real_array`, and models through `checks.no_distribution`, which
-  refuses surpyval's distribution itself (`surv.Weibull`) for a model of
-  it. A new argument that takes a number, a time or a model uses them.
+  `checks.real_array`, a choice of option through `checks.one_of`, and
+  models through `checks.no_distribution`, which refuses surpyval's
+  distribution itself (`surv.Weibull`) for a model of it. A new argument
+  that takes a number, a time, an option or a model uses them.
+- **A model is probed with `_model_utils.MODEL_ERRORS`** (and saved with
+  `SAVE_ERRORS`): code that asks a model what it can do (a quantile, a
+  mean, a saved form) catches what a model that cannot do it raises, never
+  `Exception`, so a fault in a model or in RePyability is raised.
 - **Warnings point outside the package (#232)**: `warnings.warn(...,
   stacklevel=outside_level())` (`repyability/utils/wrappers.py`), never a
   counted level, which goes stale as calls are wrapped. A message never

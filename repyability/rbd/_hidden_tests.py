@@ -1565,6 +1565,7 @@ class TestedUnit:
             before = float(_interpolated(failures0, [0], [frame], h)[0])
 
             def head_up(x):
+                assert first_restart is not None
                 s = frame + np.asarray(x, dtype=float)
                 index = np.zeros(len(s), dtype=int)
                 up = first_restart.cdf(0, s)

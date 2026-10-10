@@ -104,6 +104,17 @@ other release, fixes included, the minor.
   mixture's new quantile function loses the long lives' precision and is
   slow (SurPyval#821), so the simulations keep drawing a mixture's lives
   with RePyability's own; seeded results are unchanged.
+- **A fault in a model is raised, not taken for something it cannot do.**
+  Where RePyability probes a node's model (its quantiles to split a grid
+  at, its mean, whether its rate is constant, whether a group's members
+  save alike), it caught any error as "the model cannot do this" and went
+  on without it. It now catches only what a model that cannot take the
+  values raises (an arithmetic, type, value, lookup, attribute,
+  not-implemented or runtime error; a save's type, value, attribute or
+  not-implemented error), so a fault in a user's model, a `NameError` or
+  an `AssertionError` say, is raised where it happens. `analysis_routes()`
+  likewise reports only refusals, and raises any other error a check
+  meets.
 
 ### Fixed
 
