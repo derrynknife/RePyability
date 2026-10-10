@@ -125,6 +125,14 @@ other release, fixes included, the minor.
 
 ### Fixed
 
+- **A component that never fails is a junction again.** A `RepairableRBD`
+  component whose life is a probability of failing of 0
+  (`FixedEventProbability` at 0, as a vote point is often drawn) was
+  refused by the exact methods since a probability per demand was (and
+  before that was read as a mean life of 0, an availability of 0). It is
+  now a junction, as a life of `PerfectReliability` is: it never fails,
+  every analysis leaves it out, and a cost or schedule given it is
+  refused.
 - **Conditional survival keeps its precision at old ages (#268).** The
   chance of surviving a further `x` given survival to an age `X` was the
   ratio `R(X + x) / R(X)`, which came out 0 once both were too small for a

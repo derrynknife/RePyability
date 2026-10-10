@@ -28,6 +28,8 @@ from repyability.tests.test_rbd_modular import random_diagram
 
 E = surv.Exponential.from_params
 W = surv.Weibull.from_params
+# A probability of failing of 0: a unit that never fails, so a junction.
+NEVER = surv.FixedEventProbability.from_params([0.0])
 TRAINS = ["a", "b", "c"]
 CAPACITY = {"a": 50.0, "b": 50.0, "c": 50.0, "v": 120.0, "p": 200.0}
 
@@ -208,8 +210,9 @@ def test_two_votes_in_series_are_nested_votes():
     [
         PerfectReliability,
         {"reliability": PerfectReliability, "repairability": E([0.1])},
+        {"reliability": NEVER, "repairability": E([0.1])},
     ],
-    ids=["itself", "as a life"],
+    ids=["itself", "as a life", "a probability of 0"],
 )
 def test_a_part_that_never_fails_changes_nothing(perfect):
     # #175: PerfectReliability as a repairable component's life.
@@ -250,6 +253,7 @@ def test_a_junction_passes_what_reaches_it_up_to_its_capacity():
     [
         PerfectReliability,
         {"reliability": PerfectReliability, "repairability": E([0.1])},
+        {"reliability": NEVER, "repairability": E([0.1])},
     ],
 )
 def test_a_junction_is_saved(junction):
@@ -463,3 +467,16 @@ def test_a_nonrepairable_junction_has_no_mttf():
     assert rbd.analysis_routes()["node_mttf"].route == "exact"
     mean = float(u.mean())
     assert rbd.node_mttf() == pytest.approx({"a": mean, "b": mean, "c": mean})
+
+
+def test_a_life_that_never_fails_makes_a_junction():
+    # A probability of failing of 0 is a junction, as PerfectReliability
+    # is: every method's value is the station's with PerfectReliability
+    # there; anything only a part that fails has is refused, naming it.
+    never = station({"reliability": NEVER, "repairability": E([0.1])})
+    perfect = station()
+    assert never._junctions() == {"h"}
+    assert never.mean_availability() == perfect.mean_availability()
+    assert never.analysis_routes()["mean_availability"].route == "exact"
+    with pytest.raises(ValueError, match="probability of failing of 0"):
+        station({"reliability": NEVER, "repair_cost": 1.0})

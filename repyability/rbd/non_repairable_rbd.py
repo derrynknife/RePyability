@@ -52,6 +52,7 @@ from ._degradation import check_life, is_degradation
 from ._mean_lifetime import mean_lifetime, model_kinks, model_knots
 from ._model_utils import (
     MODEL_ERRORS,
+    always_works,
     failure_time_scale,
     is_fixed_probability,
     is_mixture,
@@ -313,20 +314,6 @@ def _system_difference(at, theta, rel_step, base) -> np.ndarray:
     else:
         return np.full(np.shape(works), np.nan)
     return np.where(fails <= works, -d_fails, d_works)
-
-
-def _never_fails(model) -> bool:
-    """Whether ``model`` never fails, so that giving it for the input or
-    output node changes nothing (#217): ``PerfectReliability``, or a fixed
-    probability of failing of 0 (as a ``node_availability`` of 1 gives)."""
-    if model is PerfectReliability or isinstance(model, PerfectReliability):
-        return True
-    if is_fixed_probability(model):
-        try:
-            return float(np.ravel(model.ff(1.0))[0]) == 0.0
-        except MODEL_ERRORS:
-            return False
-    return False
 
 
 def _check_model(node, model) -> None:
@@ -653,7 +640,7 @@ class NonRepairableRBD(RBD):
         self._perfect_given = frozenset(
             name
             for name, model in reliabilities.items()
-            if _never_fails(model)
+            if always_works(model)
         )
         super().__init__(
             edges,

@@ -101,6 +101,7 @@ from repyability.rbd._hidden_tests import check as check_tested
 from repyability.rbd._model_utils import (
     MODEL_ERRORS,
     SAVE_ERRORS,
+    always_works,
     distribution_name,
     failure_time_scale,
     is_fixed_probability,
@@ -3432,15 +3433,21 @@ def _on_duty(components: dict) -> dict:
 def _is_junction(name, component) -> bool:
     """Whether ``component`` makes node ``name`` a junction, which never
     fails: ``PerfectReliability`` itself, or a spec whose life it is (#175,
-    #182). Such a spec may give a repair model, never used, but nothing
-    that only a part that fails or is maintained has."""
+    #182) or is a probability of failing of 0. Such a spec may give a
+    repair model, never used, but nothing that only a part that fails or
+    is maintained has."""
     if component is PerfectReliability:
         return True
     if not (
         isinstance(component, dict)
-        and component.get("reliability") is PerfectReliability
+        and always_works(component.get("reliability"))
     ):
         return False
+    life = (
+        "PerfectReliability"
+        if component["reliability"] is PerfectReliability
+        else "a probability of failing of 0"
+    )
     other = sorted(
         str(key)
         for key, value in component.items()
@@ -3448,9 +3455,9 @@ def _is_junction(name, component) -> bool:
     )
     if other:
         raise ValueError(
-            f"Component {name!r} never fails (its reliability is "
-            f"PerfectReliability), so it takes no {', '.join(other)}: give "
-            "it as PerfectReliability alone, a junction that always works."
+            f"Component {name!r} never fails (its reliability is {life}), "
+            f"so it takes no {', '.join(other)}: give it as "
+            "PerfectReliability alone, a junction that always works."
         )
     return True
 

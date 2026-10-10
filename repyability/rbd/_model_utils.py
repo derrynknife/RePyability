@@ -95,6 +95,22 @@ def never_fails(model) -> float:
     return max(0.0, 1.0 - float(p))
 
 
+def always_works(model) -> bool:
+    """Whether ``model`` never fails at all: ``PerfectReliability``, or a
+    fixed probability of failing of 0 (as a ``node_availability`` of 1
+    gives). A node with such a model is a junction."""
+    from .helper_classes import PerfectReliability
+
+    if model is PerfectReliability or isinstance(model, PerfectReliability):
+        return True
+    if is_fixed_probability(model):
+        try:
+            return float(np.ravel(model.ff(1.0))[0]) == 0.0
+        except MODEL_ERRORS:
+            return False
+    return False
+
+
 def is_exponential(model) -> bool:
     """True if ``model`` is a plain surpyval Exponential lifetime: no
     offset, every unit fails and none is dead on arrival. Only then is it
