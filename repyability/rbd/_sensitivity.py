@@ -48,6 +48,7 @@ from typing import (
 
 import numpy as np
 
+from repyability.rbd import _long_run
 from repyability.utils.checks import is_number, is_whole, number_or_nan
 
 from . import _importance_time
@@ -577,7 +578,7 @@ def _calendar_lever(rbd, lever: _Lever) -> bool:
     if lever.name not in ("preventive.interval", "inspection.interval"):
         return False
     members = set(lever.key) if isinstance(lever.key, tuple) else {lever.key}
-    calendar = set(rbd._block_nodes()) | set(rbd._inspection)
+    calendar = set(_long_run._block_nodes(rbd)) | set(rbd._inspection)
     return bool(members & calendar) and bool(calendar - members)
 
 

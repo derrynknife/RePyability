@@ -13,6 +13,7 @@ import surpyval as surv
 
 from repyability import RepairableRBD
 from repyability.rbd import _condition_replacement as condition
+from repyability.rbd import _long_run
 from repyability.rbd import routes as r
 
 W, E, LN = (
@@ -92,7 +93,7 @@ def test_a_threshold_no_inspection_reaches_runs_to_failure():
         assert getattr(never, name)() == pytest.approx(
             getattr(plain, name)(), rel=1e-6
         )
-    cycle = never._block_cycle("a")
+    cycle = _long_run._block_cycle(never, "a")
     assert cycle.replaced == 0.0
 
 
@@ -144,7 +145,7 @@ def test_the_simulation_agrees():
     assert cost.mean() == pytest.approx(rbd.expected_cost_rate(), rel=0.015)
     # Each inspection the unit is up at is charged.
     inspections = result.cost.by_category["inspection"]
-    cycle = rbd._block_cycle("a")
+    cycle = _long_run._block_cycle(rbd, "a")
     assert inspections / result.time_simulated_to == pytest.approx(
         2.0 * cycle.before / 30.0, rel=0.015
     )

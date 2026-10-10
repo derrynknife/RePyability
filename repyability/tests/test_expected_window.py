@@ -17,7 +17,7 @@ import surpyval as surv
 from scipy.integrate import quad
 
 from repyability import ExpectedCost, ExpectedEvents, RepairableRBD
-from repyability.rbd import _spares, routes
+from repyability.rbd import _long_run, _spares, routes
 
 E = surv.Exponential.from_params
 W = surv.Weibull.from_params
@@ -302,7 +302,7 @@ def test_the_counts_settle_at_the_long_run_rates(name):
     t = np.array([1e6, 2e6])
     cost = rbd.expected_cost(t)
     events = rbd.expected_events(t)
-    failures, planned = rbd._outage_frequencies()
+    failures, planned = _long_run._outage_frequencies(rbd)
 
     def slope(values):
         return np.diff(values)[0] / 1e6

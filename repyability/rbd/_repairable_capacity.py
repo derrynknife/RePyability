@@ -22,6 +22,7 @@ from repyability.rbd import (
     _ccf_chain,
     _ccf_groups,
     _chain_transient,
+    _long_run,
     _quadrature,
 )
 from repyability.rbd import capacity as _capacity
@@ -253,8 +254,8 @@ def capacity_distribution(
     broken_nodes: Optional[Collection[Hashable]],
 ) -> CapacityDistribution:
     """See ``RepairableRBD.capacity_distribution``."""
-    probabilities, weights = rbd._long_run_probabilities(
-        working_nodes, broken_nodes, "The capacity distribution"
+    probabilities, weights = _long_run._long_run_probabilities(
+        rbd, working_nodes, broken_nodes, "The capacity distribution"
     )
     working_nodes = set(working_nodes or ())
     broken_nodes = set(broken_nodes or ())
@@ -628,7 +629,7 @@ def _long_run_capacity(rbd, node) -> Tuple[np.ndarray, np.ndarray]:
         return distribution.levels, distribution.probabilities
     rbd._require_unscheduled_stages(node)
     stages = component.reliability
-    up = rbd._node_availability(node)
+    up = _long_run._node_availability(rbd, node)
     shares = np.concatenate([[1.0 - up], up * stages.stage_fractions()])
     levels, rows = _capacity.merged(
         np.array((0.0,) + stages.capacities), shares[:, None]

@@ -15,6 +15,7 @@ from typing import (
 
 import numpy as np
 
+from repyability.rbd import _long_run
 from repyability.rbd._common import (
     _discount_rate,
     _horizons,
@@ -109,7 +110,7 @@ def _node_cost_rate(
         if schedule is not None and schedule.policy == "condition":
             # Inspected at each multiple of the interval at which it is
             # up (one in a repair or replacement is not).
-            up = rbd._block_cycle(node).before
+            up = _long_run._block_cycle(rbd, node).before
             rate += _mean_cost(inspection) * up / schedule.interval
         else:
             # One test per interval, but those that fall in a repair,
@@ -139,8 +140,11 @@ def _node_actions(rbd, node, availability: float) -> Tuple[float, float]:
         return life * availability, 0.0
     if node in rbd._standby:
         # Each of its units' failures is a repair.
-        return rbd._standby_long_run(node).unit_failure_frequency, 0.0
-    failures, maintained, _ = rbd._node_frequencies(node)
+        return (
+            _long_run._standby_long_run(rbd, node).unit_failure_frequency,
+            0.0,
+        )
+    failures, maintained, _ = _long_run._node_frequencies(rbd, node)
     return failures, maintained
 
 

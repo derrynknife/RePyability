@@ -26,7 +26,7 @@ from repyability import (
     PerfectReliability,
     RepairableRBD,
 )
-from repyability.rbd import _ccf_chain, _ccf_groups, _ccf_modules
+from repyability.rbd import _ccf_chain, _ccf_groups, _ccf_modules, _long_run
 from repyability.rbd.rbd import RBD
 
 E = surv.Exponential.from_params
@@ -47,12 +47,12 @@ def revealed(rate, repair):
 def split(rbd, working=(), broken=()):
     """The long-run points split by every combination of every group's
     states, as before #218."""
-    times, weights = rbd._long_run_grid()
+    times, weights = _long_run._long_run_grid(rbd)
     p = rbd._probabilities_with_overrides(
-        rbd._availabilities_at(times), working, broken
+        _long_run._availabilities_at(rbd, times), working, broken
     )
     q = rbd._failures_with_overrides(
-        rbd._unavailabilities_at(times), working, broken
+        _long_run._unavailabilities_at(rbd, times), working, broken
     )
     p, q, weights, index = _ccf_groups._with_ccf_groups(
         rbd, times, p, q, weights

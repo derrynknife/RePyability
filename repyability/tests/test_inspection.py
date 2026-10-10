@@ -14,6 +14,7 @@ import surpyval as surv
 from scipy.integrate import quad
 
 from repyability import RBD, RepairableRBD
+from repyability.rbd import _long_run
 from repyability.rbd._events import Event
 
 X = surv.ExactEventTime.from_params
@@ -379,7 +380,7 @@ def test_tests_and_repairs_that_take_time_are_numerical():
         (1.0 - kept) / interval, rel=1e-8
     )
     # Each test takes the unit, working then, off line: planned outages.
-    assert timed._outage_frequencies()[1] == pytest.approx(
+    assert _long_run._outage_frequencies(timed)[1] == pytest.approx(
         kept / interval, rel=1e-8
     )
     timed.birnbaum_importance()
