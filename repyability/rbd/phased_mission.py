@@ -44,6 +44,7 @@ from repyability.rbd._ordered_bdd import FALSE, TRUE, OrderedBDD
 from repyability.rbd._sampling import lifetime_sampler
 from repyability.rbd.results import ConfidenceInterval
 from repyability.rbd.shannon import _shannon_value_and_gradient
+from repyability.utils.checks import one_of
 from repyability.utils.deprecation import refuse_removed_names
 from repyability.utils.wrappers import numpy_seed
 
@@ -794,10 +795,7 @@ class PhasedMission:
         )
 
     def _method(self, method: str, mc_samples) -> str:
-        if method not in ("exact", "simulate"):
-            raise ValueError(
-                f"method must be 'exact' or 'simulate', got {method!r}."
-            )
+        one_of("method", method, ("exact", "simulate"))
         if method == "exact" and mc_samples is not None:
             raise ValueError("mc_samples applies only to method='simulate'.")
         return method

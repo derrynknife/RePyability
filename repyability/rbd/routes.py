@@ -88,12 +88,20 @@ class AnalysisRoute:
         return text
 
 
+class Refused(ValueError):
+    """An analysis refused because the diagram has nothing it works on (no
+    capacities, no component under age replacement, nothing priced, ...).
+    A ``ValueError``, as these always were; refusals of what an analysis
+    cannot work out are ``NotImplementedError``."""
+
+
 def refusal(check: Callable[[], object]) -> Optional[str]:
-    """The message of the ``NotImplementedError`` or ``ValueError`` that
-    ``check`` raises, or None if it passes."""
+    """The message of the refusal (``NotImplementedError`` or ``Refused``)
+    that ``check`` raises, or None if it passes. Any other error is a
+    fault, and is raised."""
     try:
         check()
-    except (NotImplementedError, ValueError) as error:
+    except (NotImplementedError, Refused) as error:
         return str(error)
     return None
 

@@ -36,6 +36,7 @@ from scipy.optimize import brentq
 
 from repyability.utils.checks import (
     no_distribution,
+    one_of,
     real_array,
 )
 from repyability.utils.checks import seed as check_seed
@@ -50,6 +51,7 @@ from . import redundancy_allocation
 from ._degradation import check_life, is_degradation
 from ._mean_lifetime import mean_lifetime, model_kinks, model_knots
 from ._model_utils import (
+    MODEL_ERRORS,
     failure_time_scale,
     is_fixed_probability,
     is_mixture,
@@ -60,7 +62,7 @@ from ._model_utils import (
     refuse_nonparametric,
 )
 from ._sampling import RowSampler, column, inverse_sampler, row_sampler
-from .ccf import VALIDITY, BetaFactor, CCFGroup, as_groups
+from .ccf import VALIDITY, BetaFactor, CCFGroup, as_groups, checked_groups
 from .ccf import parameters as ccf_parameters
 from .ccf import shock_outcomes, validity_warning
 from .ccf import with_parameters as with_ccf_parameters
@@ -87,9 +89,19 @@ from .results import (
     UncertaintyImportance,
     UncertaintyResult,
 )
-from .routes import AnalysisRoute
+from .routes import EXACT, NUMERICAL, AnalysisRoute, Refused, model_route
 from .standby_node import StandbyModel
-from .uncertainty import draw_ccf_models, draw_models
+from .uncertainty import (
+    Counter,
+    SobolPoints,
+    check_sampling,
+    draw_ccf_models,
+    draw_models,
+    is_fit,
+    sobol_table,
+    varied_ccf_parameters,
+    varied_parameters,
+)
 
 # Event class for simulation
 #: Lifetimes per block of a parallel draw (see ``NonRepairableRBD.random``):
@@ -238,7 +250,7 @@ def _dsf_dparam(spec, j, x_arr, rel_step) -> np.ndarray:
         trial[j] = theta + delta
         try:
             return np.asarray(spec.build(trial).sf(x_arr), dtype=float)
-        except Exception:
+        except MODEL_ERRORS:
             return None
 
     up = perturbed(h)
@@ -312,7 +324,7 @@ def _never_fails(model) -> bool:
     if is_fixed_probability(model):
         try:
             return float(np.ravel(model.ff(1.0))[0]) == 0.0
-        except Exception:
+        except MODEL_ERRORS:
             return False
     return False
 
@@ -945,7 +957,7 @@ class NonRepairableRBD(RBD):
                         model = spec.build(trial)
                         works = np.asarray(model.sf(x), dtype=float)
                         fails = np.asarray(model.ff(x), dtype=float)
-                    except Exception:
+                    except MODEL_ERRORS:
                         return None
                     return system(members=(works, fails))
 
@@ -1020,19 +1032,13 @@ class NonRepairableRBD(RBD):
         and the measures follow from them as without groups. Fussell-Vesely
         sums each outcome's numerators (see ``_fv_numerators``), the nodes
         being independent given it."""
-        if kind not in ("failure", "success"):
-            raise ValueError(
-                f"kind must be 'failure' or 'success', got {kind!r}."
-            )
+        one_of("kind", kind, ("failure", "success"))
         if fv_type not in ("c", "p"):
             raise ValueError(
                 "fv_type must be either 'c' (cut-set) or 'p' (path-set), "
                 f"fv_type={fv_type!r} was given."
             )
-        if method not in ("exact", "rare_event"):
-            raise ValueError(
-                f"method must be 'exact' or 'rare_event', got {method!r}."
-            )
+        one_of("method", method, ("exact", "rare_event"))
         if measure == "fussell_vesely":
             working = set(working_nodes or ())
             broken = set(broken_nodes or ())
@@ -1078,54 +1084,33 @@ class NonRepairableRBD(RBD):
         output node), each node in at most one group, and each group symmetric
         (identical component models). Returns the validated list.
         """
-        seen: set = set()
-        for group in ccf_groups:
-            if not isinstance(group, CCFGroup):
-                raise ValueError(
-                    "ccf_groups must contain CCFGroup instances, got "
-                    f"{type(group).__name__}."
-                )
-            for member in group.members:
-                if member not in self.reliabilities:
-                    raise ValueError(
-                        f"CCF group member {member!r} is not a node in the "
-                        "RBD."
-                    )
-                if member in (self.input_node, self.output_node):
-                    raise ValueError(
-                        f"CCF group member {member!r} cannot be the input or "
-                        "output node."
-                    )
-                if member in self.repeated:
-                    raise ValueError(
-                        f"CCF group member {member!r} cannot be a repeated "
-                        "node."
-                    )
-                if member in seen:
-                    raise ValueError(
-                        f"Node {member!r} appears in more than one CCF group."
-                    )
-                seen.add(member)
-            self._check_symmetric_group(group)
-        return list(ccf_groups)
-
-    def _check_symmetric_group(self, group) -> None:
-        # Standard CCF theory is for symmetric groups, so the members must
-        # carry identical component models. Compare via the serialised form
-        # (exact); skip silently if a member is not serialisable.
         from repyability.rbd.serialisation import serialise_model
 
-        try:
-            specs = [
-                serialise_model(self.reliabilities[m]) for m in group.members
-            ]
-        except Exception:
-            return
-        if any(spec != specs[0] for spec in specs[1:]):
-            raise ValueError(
+        def check_member(member, group):
+            if member not in self.reliabilities:
+                raise ValueError(
+                    f"CCF group member {member!r} is not a node in the RBD."
+                )
+            if member in (self.input_node, self.output_node):
+                raise ValueError(
+                    f"CCF group member {member!r} cannot be the input or "
+                    "output node."
+                )
+            if member in self.repeated:
+                raise ValueError(
+                    f"CCF group member {member!r} cannot be a repeated "
+                    "node."
+                )
+
+        return checked_groups(
+            ccf_groups,
+            check_member,
+            lambda member: serialise_model(self.reliabilities[member]),
+            lambda group: (
                 f"CCF group {list(group.members)} is not symmetric: its "
                 "members must carry identical component models."
-            )
+            ),
+        )
 
     def _capacity_models(self) -> dict:
         """``{node: model}`` for the nodes with no capacity entry whose model
@@ -1443,7 +1428,7 @@ class NonRepairableRBD(RBD):
         """Raise if the system reliability does not vary with time, so the
         time to a reliability is undefined."""
         if self.is_fixed:
-            raise ValueError(
+            raise Refused(
                 "System reliability does not vary with time (all nodes are "
                 "fixed-probability); the time to a reliability is undefined."
             )
@@ -2373,17 +2358,13 @@ class NonRepairableRBD(RBD):
         >>> {n: round(share, 2) for n, share in parts.first_order.items()}
         {'pump': 0.86, 'valve': 0.14}
         """
-        from .uncertainty import varied_ccf_parameters, varied_parameters
 
         quantities = ("sf", "mean", "bx_life", "time_to_reliability")
         if of not in quantities:
             raise ValueError(
                 f"of must be one of {list(quantities)}, got {of!r}."
             )
-        if method not in ("delta", "sobol"):
-            raise ValueError(
-                f"method must be 'delta' or 'sobol', got {method!r}."
-            )
+        one_of("method", method, ("delta", "sobol"))
         value = self._uncertain_quantity(of, x)
         sources, ccf_specs = self._uncertainty_sources(uncertainty)
         keys = [key for key, _, _ in sources] + [
@@ -2514,7 +2495,6 @@ class NonRepairableRBD(RBD):
         nominal (``(-1, None)``), or input ``k``'s parameter ``j`` moved to
         a value (``(k, (j, value))``), as ``_quantity_samples`` takes
         them."""
-        from .ccf import with_parameters as with_ccf_parameters
 
         groups = sorted(ccf_specs)
         drawn: Dict[Hashable, list] = {}
@@ -2522,6 +2502,7 @@ class NonRepairableRBD(RBD):
             model = self.reliabilities[members[0]]
             positions = varied[k][0]
             spec = parametric_spec(model)
+            assert spec is not None
             models = []
             for which, move in configurations:
                 if which != k:
@@ -2636,12 +2617,6 @@ class NonRepairableRBD(RBD):
         ``sampling="sobol"`` (#200), the draws are the points of a
         scrambled Sobol sequence, a pair's two sets from dimensions of
         their own (see ``uncertainty``)."""
-        from .uncertainty import (
-            Counter,
-            SobolPoints,
-            check_sampling,
-            sobol_table,
-        )
 
         if isinstance(n_draws, bool) or not isinstance(
             n_draws, (int, np.integer)
@@ -2809,7 +2784,6 @@ class NonRepairableRBD(RBD):
         covariance, the nodes that share one model object, or one
         common-cause group, given together, so that they share their
         draws."""
-        from repyability.rbd.uncertainty import is_fit
 
         fitted = [
             node
@@ -3393,10 +3367,7 @@ class NonRepairableRBD(RBD):
         redundancy_front) and set up the problem the searches solve: the
         costed nodes, their kinds and designs, the limits and the exact
         system evaluation."""
-        if method not in ("exact", "greedy"):
-            raise ValueError(
-                f"method must be 'exact' or 'greedy', got {method!r}."
-            )
+        one_of("method", method, ("exact", "greedy"))
         if not isinstance(mixing, (bool, np.bool_)):
             raise ValueError(f"mixing must be True or False, got {mixing!r}.")
         mixing = bool(mixing)
@@ -4994,7 +4965,6 @@ class NonRepairableRBD(RBD):
     def _node_is_analytic(self, model) -> bool:
         """Whether a node's reliability is computed without simulation:
         exactly or numerically (see ``repyability.rbd.routes``)."""
-        from repyability.rbd.routes import EXACT, NUMERICAL, model_route
 
         return model_route(model)[0] in (EXACT, NUMERICAL)
 
@@ -6190,7 +6160,7 @@ class NonRepairableRBD(RBD):
         """Raise if every node is a fixed probability: the system then fails
         at the start or never, and has no lifetimes to average."""
         if self.is_fixed:
-            raise ValueError(
+            raise Refused(
                 "System reliability does not vary with time (all nodes are "
                 "fixed-probability): the system has no lifetimes to average."
             )

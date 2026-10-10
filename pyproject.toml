@@ -69,6 +69,8 @@ dev = [
     # The suite runs on every core (pytest -n auto), and its coverage is
     # collected from each worker.
     "pytest-xdist>=3.5",
+    # A test that hangs fails, named, rather than stopping its CI job.
+    "pytest-timeout>=2.3",
     "pytest-cov>=5.0",
     "coverage>=7.0",
     "pre-commit>=3.0",
@@ -94,6 +96,8 @@ Issues = "https://github.com/derrynknife/RePyability/issues"
 # cannot silently rot.
 testpaths = ["repyability"]
 addopts = "--doctest-modules"
+# Far past any test's time: a test that hangs fails, named.
+timeout = 1800
 # A surpyval deprecation that RePyability or its tests run into fails them
 # ("... will be removed in v0.23"), so that a run on surpyval's development
 # branch shows it before the name is removed.
@@ -128,6 +132,8 @@ line_length = 79
 # mypy
 [tool.mypy]
 exclude = ['repyability/tests/']
+# Check the bodies of functions without annotations too.
+check_untyped_defs = true
 
 [[tool.mypy.overrides]]
 module = [

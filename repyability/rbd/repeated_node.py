@@ -2,7 +2,7 @@ import numpy as np
 
 from repyability.utils.checks import simulation_options, whole_number
 from repyability.utils.deprecation import refuse_removed_names
-from repyability.utils.wrappers import numpy_seed
+from repyability.utils.wrappers import conditional_survival, numpy_seed
 
 from ._mean_lifetime import mean_lifetime, model_kinks, model_knots
 from ._sampling import RowSampler, inverse_sampler
@@ -249,6 +249,5 @@ class RepeatedNode:
             ``sf(X)`` is 0: a float if ``x`` and ``X`` are both scalars,
             otherwise an array.
         """
-        from repyability.utils.wrappers import conditional_survival
 
         return conditional_survival(self, x, X)

@@ -51,13 +51,14 @@ from repyability.rbd.modular import (
     fold,
 )
 from repyability.rbd.rbd_graph import RBDGraph
-from repyability.rbd.results import CapacityDistribution
+from repyability.rbd.results import CapacityDistribution, _json_key, plain
+from repyability.rbd.routes import Refused
 from repyability.rbd.shannon import (
     _evaluate_shannon_plan,
     _minimal_cut_sets,
     _shannon_plan,
 )
-from repyability.utils.checks import is_whole, structure_method
+from repyability.utils.checks import is_whole, one_of, structure_method
 from repyability.utils.deprecation import refuse_removed_names
 from repyability.utils.wrappers import (
     check_probability,
@@ -540,7 +541,6 @@ class Pairs(dict):
         value under its pair's first name, then its second,
         ``{"a": {"b": 0.1}}`` for the pair ``("a", "b")``, the names as
         JSON holds them (see ``RBD`` results' ``to_dict``)."""
-        from repyability.rbd.results import _json_key, plain
 
         out: dict = {}
         for (first, second), value in self.items():
@@ -1794,7 +1794,7 @@ class RBD:
         """Raise unless some node has a capacity, given or from its
         model."""
         if not self._has_capacity():
-            raise ValueError(
+            raise Refused(
                 "No node has a capacity: give each node's throughput with "
                 "capacity={node: capacity} when building the RBD."
             )
@@ -1892,7 +1892,7 @@ class RBD:
         a probability of working does not describe (``system_capacity``)."""
         own = self._capacity_models()
         if own:
-            raise ValueError(
+            raise Refused(
                 f"Node(s) {sorted(own, key=str)} take their capacity from "
                 "their models, which a probability of working does not "
                 "describe: use capacity_distribution()."
@@ -2498,7 +2498,7 @@ class RBD:
             alone = works(status)
             status[node] = True
             if alone:
-                raise ValueError(
+                raise Refused(
                     "the minimum-effort algorithm applies to a series system "
                     "(a single path through every intermediate node); use "
                     "cost_based_allocation for other structures."
@@ -3323,10 +3323,7 @@ class RBD:
         ValueError
             If ``kind`` is neither ``"failure"`` nor ``"success"``.
         """
-        if kind not in ("failure", "success"):
-            raise ValueError(
-                f"kind must be 'failure' or 'success', got {kind!r}."
-            )
+        one_of("kind", kind, ("failure", "success"))
         importance, works, fails, p, q = self._importances(
             node_probabilities, node_failures
         )
@@ -3402,10 +3399,7 @@ class RBD:
                 "fv_type must be either 'c' (cut-set) or 'p' (path-set), "
                 f"fv_type={fv_type!r} was given."
             )
-        if method not in ("exact", "rare_event"):
-            raise ValueError(
-                "method must be 'exact' or 'rare_event', " f"got {method!r}."
-            )
+        one_of("method", method, ("exact", "rare_event"))
         p, q, size = self._node_pairs(node_probabilities, node_failures)
 
         # The system unreliability, the denominator for every node.

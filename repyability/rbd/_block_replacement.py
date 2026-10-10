@@ -32,7 +32,7 @@ from typing import Callable, NamedTuple, Optional
 
 import numpy as np
 
-from ._model_utils import distribution_name, never_fails
+from ._model_utils import MODEL_ERRORS, distribution_name, never_fails
 
 _GAUSS = np.polynomial.legendre.leggauss(8)
 
@@ -125,7 +125,7 @@ class _Duration:
             return self.fixed
         try:
             return float(np.ravel(self.model.qf(np.array([1 - 1e-12])))[0])
-        except Exception:  # pragma: no cover - surpyval models have qf
+        except MODEL_ERRORS:  # pragma: no cover - surpyval models have qf
             return 50.0 * float(np.ravel(self.model.mean())[0])
 
     def cdf(self, x: np.ndarray) -> np.ndarray:

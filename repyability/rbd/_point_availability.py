@@ -84,6 +84,8 @@ from typing import Any, Callable, Dict, NamedTuple, Optional, Tuple
 
 import numpy as np
 
+from ._model_utils import MODEL_ERRORS
+
 _GL_X, _GL_W = np.polynomial.legendre.leggauss(4)
 
 #: Fine-grid steps per standard deviation of the time a preventive
@@ -118,7 +120,7 @@ def knots(model) -> np.ndarray:
     try:
         with np.errstate(all="ignore"):
             q = np.asarray(qf(_KNOT_PROBABILITIES), dtype=float).ravel()
-    except Exception:  # a model whose qf cannot take these
+    except MODEL_ERRORS:  # a model whose qf cannot take these
         return np.empty(0)
     return q[np.isfinite(q)]
 

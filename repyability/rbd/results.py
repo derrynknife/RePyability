@@ -27,7 +27,7 @@ import math
 import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Dict, Hashable, Optional, Tuple
+from typing import Any, Dict, Hashable, Optional, Tuple, cast
 
 import numpy as np
 from scipy.special import ndtri
@@ -126,7 +126,8 @@ class _ResultMapping(Mapping):
         return len(self._field_names())
 
     def _field_names(self):
-        return tuple(f.name for f in dataclasses.fields(self))
+        # Every result class is a dataclass (the base is not).
+        return tuple(f.name for f in dataclasses.fields(cast(Any, self)))
 
 
 @dataclass

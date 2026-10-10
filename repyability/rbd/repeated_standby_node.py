@@ -1,7 +1,7 @@
 import numpy as np
 
 from repyability.utils.checks import whole_number
-from repyability.utils.wrappers import numpy_seed
+from repyability.utils.wrappers import conditional_survival, numpy_seed
 
 from ._sampling import RowSampler, column, inverse_sampler
 from .numerical_convolution import (
@@ -153,7 +153,7 @@ class RepeatedStandbyNode:
 
         probs = switch_success_probs(self.switching_probability, self.repeats)
 
-        def draw(u):
+        def draw_switched(u):
             x = column(u, 0, unit)
             running = np.ones(len(u), dtype=bool)
             for i, p in enumerate(probs):
@@ -161,7 +161,7 @@ class RepeatedStandbyNode:
                 x = x + np.where(running, column(u, 2 + 2 * i, unit), 0.0)
             return x
 
-        return RowSampler(1 + 2 * len(probs), draw)
+        return RowSampler(1 + 2 * len(probs), draw_switched)
 
     def mean(self, *args, **kwargs):
         """Mean lifetime (MTTF) of the node, from the convolution.
@@ -247,6 +247,5 @@ class RepeatedStandbyNode:
             ``sf(X)`` is 0: a float if ``x`` and ``X`` are both scalars,
             otherwise an array.
         """
-        from repyability.utils.wrappers import conditional_survival
 
         return conditional_survival(self, x, X)

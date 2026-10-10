@@ -40,10 +40,14 @@ is a planned extension.
 """
 
 from itertools import combinations
+from itertools import combinations as subsets_of
+from itertools import product
 from math import comb
 from typing import Any, Collection, Dict, Hashable, List, Optional, Tuple
 
 import numpy as np
+
+from repyability.utils.checks import one_of
 
 # A group's failure decomposition: the per-component independent failure
 # probability, and a list of (members-failing-together, probability) shocks.
@@ -189,7 +193,6 @@ def _as_independent(
     keeps its precision. None where some ``A_S`` is negative (a set the
     shocks never fail, while two causes could; or a large probability of
     failing): no independent causes do the same."""
-    from itertools import combinations as subsets_of
 
     struck = {frozenset(subset): p for subset, p in shocks}
     none = 1.0 - sum(struck.values())
@@ -551,11 +554,7 @@ class MGL(_Model):
         self.basis = _check_basis(basis)
         if shocks is None:
             shocks = "independent" if self.basis == "rate" else "exclusive"
-        if shocks not in ("exclusive", "independent"):
-            raise ValueError(
-                "shocks must be 'exclusive' or 'independent', got "
-                f"{shocks!r}."
-            )
+        one_of("shocks", shocks, ("exclusive", "independent"))
         if self.basis == "rate" and shocks != "independent":
             raise ValueError(
                 "By rate, every cause strikes independently: shocks="
@@ -890,6 +889,40 @@ def as_groups(groups) -> list:
     return list(groups)
 
 
+def checked_groups(groups, check_member, saved, unlike, noun="Node") -> list:
+    """The common-cause ``groups``, checked as every diagram and tree
+    checks them: each a ``CCFGroup``, each member passing
+    ``check_member(member, group)`` (which raises for one that cannot be in
+    a group) and in one group at
+    most, and a group's members alike as ``saved`` saves them (the models
+    assume a symmetric group); a group whose members cannot be saved is
+    not compared. ``unlike(group)`` is the message for one that is not
+    symmetric."""
+    from ._model_utils import SAVE_ERRORS
+
+    seen: set = set()
+    for group in groups:
+        if not isinstance(group, CCFGroup):
+            raise ValueError(
+                "ccf_groups must contain CCFGroup instances, got "
+                f"{type(group).__name__}."
+            )
+        for member in group.members:
+            check_member(member, group)
+            if member in seen:
+                raise ValueError(
+                    f"{noun} {member!r} appears in more than one CCF group."
+                )
+            seen.add(member)
+        try:
+            forms = [saved(member) for member in group.members]
+        except SAVE_ERRORS:
+            continue
+        if any(form != forms[0] for form in forms[1:]):
+            raise ValueError(unlike(group))
+    return list(groups)
+
+
 def shock_outcomes(groups, base_probabilities, base_failures, check=None):
     """Every combination of the common-cause ``groups``' mutually exclusive
     shock outcomes: for each, its probability, the nodes' probabilities of
@@ -901,7 +934,6 @@ def shock_outcomes(groups, base_probabilities, base_failures, check=None):
     The exact values condition on the groups module by module instead (see
     ``_ccf_modules``), and must agree with the sum over these, which the
     capacity distribution and the redundancy allocations still take."""
-    from itertools import product
 
     # Each group's mutually-exclusive shock outcomes: (weight, {member:
     # reliability}, {member: unreliability}) for every subset that can

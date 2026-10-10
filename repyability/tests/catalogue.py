@@ -8,6 +8,9 @@ added here once, and ``test_catalogue.test_the_catalogue_has_every_kind``
 fails until it is.
 """
 
+import copy
+import functools
+
 import numpy as np
 import surpyval as surv
 
@@ -73,6 +76,20 @@ VOTE = [
 ]
 
 
+def _fitted_once(fit):
+    """``fit``, run once: each call gets its own copy of the fitted model,
+    as the diagrams are built many times a run and a test may change the
+    model it is given."""
+    once = functools.cache(fit)
+
+    @functools.wraps(fit)
+    def fitted():
+        return copy.deepcopy(once())
+
+    return fitted
+
+
+@_fitted_once
 def aft():
     """A pump's life at its load (surpyval's ExponentialAFT): 100 at load
     1, 25 at load 2."""
@@ -81,11 +98,13 @@ def aft():
     return surv.ExponentialAFT.fit(x, Z=load)
 
 
+@_fitted_once
 def fitted_life():
     """A Weibull fitted to 30 failures: a fit with a parameter covariance."""
     return surv.Weibull.fit(np.random.default_rng(7).weibull(2, 30) * 100)
 
 
+@_fitted_once
 def shares_life():
     """A Weibull fitted to 30 failures, 20 units that never failed and 5
     dead on arrival: a fit of the share that ever fails (``lfp_p``) and
@@ -118,6 +137,7 @@ def crow_amsaa():
     return surv.CrowAMSAA.fit(np.cumsum(gaps))
 
 
+@_fitted_once
 def mixture_life():
     """A two-mode population, infant mortality and wear-out (#227)."""
     g = np.random.default_rng(7)

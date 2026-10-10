@@ -13,6 +13,25 @@ from typing import Any, Dict, List, NamedTuple, Optional
 
 import numpy as np
 
+#: What a model raises when it cannot work out what it is asked (a quantile,
+#: a survival, a mean) at the values given: surpyval's models, and anything
+#: else given as one, fail in these ways. Code that probes what a model can
+#: do catches them, and lets anything else (a bug) through.
+MODEL_ERRORS = (
+    ArithmeticError,
+    AttributeError,
+    LookupError,
+    NotImplementedError,
+    RuntimeError,
+    TypeError,
+    ValueError,
+)
+
+#: What saving a model that cannot be saved raises (``serialise_model``,
+#: a model's ``to_dict`` and ``json.dumps``).
+SAVE_ERRORS = (AttributeError, NotImplementedError, TypeError, ValueError)
+
+
 # surpyval distribution names whose event probability does not vary with time,
 # i.e. ``sf(t)`` is constant. These behave as fixed per-demand probabilities
 # rather than lifetime distributions.

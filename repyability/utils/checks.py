@@ -63,6 +63,17 @@ def simulation_options(method: str, given: dict) -> None:
         )
 
 
+def one_of(name: str, value, choices: tuple) -> None:
+    """Refuse ``value`` for the option ``name`` unless it is one of
+    ``choices``: "name must be 'a' or 'b', got 'c'."."""
+    if value not in choices:
+        named = [repr(c) for c in choices]
+        listed = " or ".join(
+            [", ".join(named[:-1]), named[-1]] if len(named) > 1 else named
+        )
+        raise ValueError(f"{name} must be {listed}, got {value!r}.")
+
+
 def is_number(value) -> bool:
     """Whether ``value`` is a real number: an int or a float (numpy's
     too, or any ``numbers.Real``), but not a bool, nor text that reads as

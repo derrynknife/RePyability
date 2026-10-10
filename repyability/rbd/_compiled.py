@@ -326,18 +326,6 @@ def _continued(total, values: np.ndarray):
     return float(np.cumsum(np.concatenate(([total], values)))[-1])
 
 
-def _continued_rows(totals: list, values: np.ndarray) -> list:
-    """``_continued`` for each column of ``values`` (one row per
-    simulation) and its total in ``totals``."""
-    from repyability.rbd._exact import ExactSum, add_columns
-
-    if totals and isinstance(totals[0], ExactSum):
-        add_columns(totals, values)
-        return totals
-    stacked = np.vstack((np.asarray(totals, dtype=float)[None, :], values))
-    return np.cumsum(stacked, axis=0)[-1].tolist()
-
-
 class _System:
     """A run's system as arrays for the compiled loop: the components'
     streams and initial states, the charges, and the structure function."""
