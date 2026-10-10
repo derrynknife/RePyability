@@ -104,6 +104,13 @@ other release, fixes included, the minor.
   mixture's new quantile function loses the long lives' precision and is
   slow (SurPyval#821), so the simulations keep drawing a mixture's lives
   with RePyability's own; seeded results are unchanged.
+- **The documentation is easier to find one's way in.** The API reference
+  is a page per section (the largest 0.9 MB, where the one page was
+  5.7 MB with its source inlined), each class's page lists what it
+  inherits, and docstrings no longer show bare issue numbers. Maintaining
+  a system (preventive maintenance in a diagram, replacement on
+  condition, opportunistic maintenance, hidden failures and their
+  intervals) has its own guide page, out of Costs.
 - **A fault in a model is raised, not taken for something it cannot do.**
   Where RePyability probes a node's model (its quantiles to split a grid
   at, its mean, whether its rate is constant, whether a group's members
