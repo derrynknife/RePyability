@@ -93,7 +93,7 @@ WORN = {
 
 def test_age_replacement_counts_match_a_direct_simulation():
     np.random.seed(3)
-    model = single(WORN)._replacements("c", True)
+    model = _spares._replacements(single(WORN), "c", True)
     args = (W([100.0, 2.5]), L([1.0, 0.6]), E([1 / 1.5]), 80.0)
     rng = np.random.default_rng(1)
     # From new over 500 hours.

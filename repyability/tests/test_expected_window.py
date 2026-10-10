@@ -17,7 +17,7 @@ import surpyval as surv
 from scipy.integrate import quad
 
 from repyability import ExpectedCost, ExpectedEvents, RepairableRBD
-from repyability.rbd import routes
+from repyability.rbd import _spares, routes
 
 E = surv.Exponential.from_params
 W = surv.Weibull.from_params
@@ -207,7 +207,9 @@ def test_a_replacement_due_at_the_window_s_end_falls_after_it():
     jump = np.diff(events.node_preventive["c"])[0]
     survive = float(np.ravel(life.sf(500.0))[0])
     assert jump == pytest.approx(survive**2, rel=1e-6)
-    simulated = rbd._simulated_replacements(1000.0, ["c"], 2000, 3)["c"]
+    simulated = _spares._simulated_replacements(rbd, 1000.0, ["c"], 2000, 3)[
+        "c"
+    ]
     exact = events.node_failures["c"][0] + events.node_preventive["c"][0]
     assert simulated.mean() == pytest.approx(exact, abs=0.04)
     assert rbd.spares_demand(1000.0)["c"].mean == pytest.approx(
