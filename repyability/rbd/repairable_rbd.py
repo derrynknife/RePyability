@@ -159,16 +159,12 @@ from repyability.rbd import _spec
 from repyability.rbd._common import (
     _DISCOUNT_ROUNDS,
     _DISCOUNT_TOLERANCE,
-    _cdf,
     _common_period,
     _constant_rate,
     _curve_points,
     _discount_pieces,
     _discount_rate,
     _fixed_length,
-    _fleet,
-    _fractions,
-    _horizon,
     _horizons,
     _matched,
     _present_horizon,
@@ -178,9 +174,7 @@ from repyability.rbd._common import (
     _sf_values,
     _shaped,
     _squeeze_values,
-    _summed,
     _times_first,
-    _whole,
 )
 from repyability.rbd._events import (
     Event,
@@ -947,20 +941,6 @@ def _failures_between(model, ages: np.ndarray) -> np.ndarray:
         out[missing] = np.clip(np.nan_to_num(fails, nan=1.0), 0.0, 1.0)
     return out
 
-
-#: What the spares counts say when a component can wait for a repair crew.
-_SPARES_CREWS = (
-    "the spares counts assume",
-    "Count them by simulation: spares_demand(method='simulate').",
-)
-#: What the stock levels say then: they have no simulation of their own to
-#: point to (#232).
-_STOCK_CREWS = (
-    "the stock levels assume",
-    "spares_stock has no simulation to fall back on; the diagram without "
-    "the limit (repair_crews=None) gives the stock when a crew is always "
-    "free.",
-)
 
 #: The most nested RBDs the crews' chain is followed over time with: it
 #: is solved for each pattern of them up and down.
@@ -4136,281 +4116,6 @@ class RepairableRBD(RBD):
             if isinstance(component, NonRepairable)
         ]
 
-    def _spares_nodes(self, nodes, given: str = "nodes") -> list:
-        """The components whose spares are counted: ``nodes`` (given in
-        ``given``) checked, or every component that is not a nested RBD."""
-        if nodes is None:
-            return [
-                node
-                for node, component in self.components.items()
-                if not isinstance(component, RepairableRBD)
-            ]
-        chosen = list(dict.fromkeys(nodes))
-        for node in chosen:
-            self._require_component(node, given)
-            if isinstance(self.components[node], RepairableRBD):
-                raise ValueError(
-                    f"Node {node!r} is a nested RBD: its spares are its "
-                    "components', which its own spares_demand counts."
-                )
-        return chosen
-
-    def _spares_parts(self, parts) -> Dict[Hashable, Tuple[Hashable, ...]]:
-        """The parts whose spares are pooled (#183), ``{part: members}``,
-        checked: each a collection of components (no nested RBD), a node
-        in one part at most, a part's name no component's, and no two
-        members in one common-cause group, whose shared causes replace
-        them together."""
-        if parts is None:
-            return {}
-        if not isinstance(parts, Mapping) or not parts:
-            raise ValueError(
-                "parts must be a dict of part name: the components that use "
-                f"it, e.g. {{'seal': ['seal1', 'seal2']}}; got {parts!r}."
-            )
-        out: Dict[Hashable, Tuple[Hashable, ...]] = {}
-        owner: Dict[Hashable, Hashable] = {}
-        for part, members in parts.items():
-            if part in self.components:
-                raise ValueError(
-                    f"Part {part!r} has the name of a component: name the "
-                    "part apart, as both can be counted."
-                )
-            if isinstance(members, (str, bytes)) or not isinstance(
-                members, Iterable
-            ):
-                raise ValueError(
-                    f"Part {part!r}: give the components that use it as a "
-                    f"list, got {members!r}."
-                )
-            listed = list(members)
-            twice = sorted(
-                {repr(n) for n in listed if listed.count(n) > 1}, key=str
-            )
-            if twice:
-                raise ValueError(
-                    f"Part {part!r} lists {', '.join(twice)} more than once: "
-                    "name each component that uses it once."
-                )
-            chosen = self._spares_nodes(listed, f"part {part!r}")
-            if not chosen:
-                raise ValueError(f"Part {part!r} has no components.")
-            for node in chosen:
-                if node in owner:
-                    raise ValueError(
-                        f"Node {node!r} is in parts {owner[node]!r} and "
-                        f"{part!r}: its spares come from one shelf."
-                    )
-                owner[node] = part
-            for group in self.ccf_groups:
-                shared = [m for m in group.members if m in chosen]
-                if len(shared) > 1:
-                    raise NotImplementedError(
-                        f"Part {part!r}: {shared} are a common-cause group, "
-                        "whose shared causes replace them together, so "
-                        "their pooled demand is not the sum of independent "
-                        "ones: count them apart."
-                    )
-            out[part] = tuple(chosen)
-        return out
-
-    def _spares_counted(self, nodes, parts) -> Tuple[list, dict, list]:
-        """The components counted on their own (``nodes``, or every one
-        but a nested RBD; none when only ``parts`` are asked for), the
-        parts (see ``_spares_parts``), and every component either counts,
-        in order."""
-        pools = self._spares_parts(parts)
-        chosen = [] if (nodes is None and pools) else self._spares_nodes(nodes)
-        if nodes is not None:
-            for part, members in pools.items():
-                both = [node for node in chosen if node in members]
-                if both:
-                    raise ValueError(
-                        f"Node {both[0]!r} is in nodes and in part {part!r}: "
-                        "its spares come from one shelf, the part's or its "
-                        "own."
-                    )
-        counted = list(
-            dict.fromkeys(
-                [*chosen, *(m for members in pools.values() for m in members)]
-            )
-        )
-        return chosen, pools, counted
-
-    def _replacements(self, node, long_run: bool = False):
-        """What a component's replacements follow, for counting them
-        exactly (see ``_spares``): a renewal process, a block schedule's
-        (``_spares.Block``) or a test lattice's (``_spares.Tested``); raise
-        if they are not counted exactly. ``long_run``: for the counts in a
-        lead time, which need a demand that goes on."""
-        simulate = (
-            # The stock in a lead time has no simulation of its own to
-            # point to (#232).
-            "spares_stock has no simulation to count them by; "
-            "spares_demand(method='simulate') counts the spares used over a "
-            "window from new."
-            if long_run
-            else "count its spares by simulation: "
-            "spares_demand(method='simulate')."
-        )
-        self._require_reliabilities(node)
-        if node in self._standby:
-            raise NotImplementedError(
-                f"Component {node!r} is a standby group, whose units' "
-                f"failures depend on each other: {simulate}"
-            )
-        if node in self._inspection:
-            return self._tested_replacements(node, simulate)
-        schedule = self._preventive.get(node)
-        if schedule is not None and schedule.policy == "block":
-            blocker = self._block_lead_time_blocker(node) if long_run else None
-            if blocker is not None:
-                raise NotImplementedError(
-                    f"Component {node!r} is replaced on a block schedule, "
-                    f"and {blocker}: replacements can then come several at "
-                    "one instant (a new unit failing as it is put in), "
-                    "which its demand in a lead time does not take. "
-                    "spares_demand counts its spares over a horizon, and "
-                    "spares_demand(method='simulate') in the simulation."
-                )
-            component = self.components[node]
-            duration = schedule.duration
-            return _spares.Block(
-                _cdf(component.reliability),
-                _cdf(component.time_to_replace),
-                None if duration is None else _cdf(duration),
-                float(schedule.interval),
-            )
-        if schedule is not None and schedule.policy == "condition":
-            raise NotImplementedError(
-                f"Component {node!r} is replaced on condition, at "
-                f"inspections on a calendar that do not renew it: {simulate}"
-            )
-        if node in self._early_members:
-            raise NotImplementedError(
-                f"Component {node!r} is renewed early at the stops of its "
-                f"maintenance group, which depend on the other members: "
-                f"{simulate}"
-            )
-        if node in self._imperfect:
-            raise NotImplementedError(
-                f"Component {node!r} is repaired imperfectly "
-                f"({self._imperfect_phrase(node)}), so its replacements are "
-                f"not a renewal process of lives as new: {simulate}"
-            )
-        component = self.components[node]
-        life, repair = component.reliability, component.time_to_replace
-        age = math.inf if schedule is None else float(schedule.interval)
-        maintenance = None if schedule is None else schedule.duration
-        if math.isinf(age):
-            up = _safe_mean(life)
-            fails = 1.0
-        else:
-            up = float(component.avg_replacement_time(age))
-            fails = float(np.ravel(_cdf(life)(np.array([age])))[0])
-        down = fails * _safe_mean(repair) + (1.0 - fails) * (
-            0.0 if maintenance is None else _safe_mean(maintenance)
-        )
-        mean_cycle = up + down
-        if long_run and not (0.0 < mean_cycle < math.inf):
-            raise NotImplementedError(
-                f"The life of component {node!r} may never end, or has no "
-                "mean, "
-                "so its demand has no long run: it has no stock level."
-            )
-        return _spares.Replacements(
-            _cdf(life),
-            _cdf(repair),
-            None if maintenance is None else _cdf(maintenance),
-            age,
-            mean_cycle,
-        )
-
-    def _block_lead_time_blocker(self, node) -> Optional[str]:
-        """Why a block-replaced component's demand in a lead time is not
-        worked out (None if it is): a unit may be dead on arrival while its
-        repairs or block replacements may take no time, so that
-        replacements can come several at one instant (#160; see
-        ``_spares``)."""
-        component = self.components[node]
-
-        def at_zero(model) -> float:
-            return 1.0 - float(np.ravel(_sf_values(model.sf, np.zeros(1)))[0])
-
-        if at_zero(component.reliability) <= 0.0:
-            return None
-        duration = self._preventive[node].duration
-        if at_zero(component.time_to_replace) > 0.0:
-            return (
-                "its life may end at 0 (dead on arrival) while its repairs "
-                "may take no time"
-            )
-        if duration is None or at_zero(duration) > 0.0:
-            return (
-                "its life may end at 0 (dead on arrival) while its block "
-                "replacements may take no time"
-            )
-        return None
-
-    def _tested_replacements(self, node, simulate: str) -> "_spares.Tested":
-        """A component with hidden failures: its replacements fall on its
-        tests (see ``_spares.Tested``): exactly, tested and repaired in no
-        time by tests that find every failure, or from its cycle on a grid
-        when its tests or repairs take time or its tests can miss a failure
-        (#159); raise if they cannot be counted so."""
-        inspection = self._inspection[node]
-        component = self.components[node]
-        if inspection.partial or self._tested_kind(node) == "unit":
-            # The replacements still fall on the tests that find failures,
-            # whatever the tests and repairs take; with tests that can miss
-            # a failure, a cycle depends on the place in the full tests'
-            # period of the test that starts it (#159).
-            instead = simulate[0].upper() + simulate[1:]
-            check_tested(
-                component.reliability,
-                component.time_to_replace,
-                inspection.duration,
-                inspection.interval,
-                node,
-                instead,
-            )
-            unit = self._tested_unit(node, any_kind=True)
-            assert unit is not None
-            first = float(inspection.offset or inspection.interval)
-            # The full tests are at the offset and every full test's
-            # interval from it: the first test is one, or the first after
-            # 0, an interval on, is the one after it.
-            position = 0 if inspection.offset else 1 % unit.per
-            found_at, cycle = unit.renewals(first, position, instead)
-            return _spares.Tested(
-                first, float(inspection.interval), found_at, cycle, position
-            )
-        life = self._tested_life(node) or TestedLife(
-            component.reliability, inspection.interval
-        )
-        cycle = np.where(
-            life.down[:-1] <= 0.5,
-            np.diff(life.down),
-            life.up[:-1] - life.up[1:],
-        )
-        model = component.reliability
-        first = float(inspection.offset or inspection.interval)
-        interval = float(inspection.interval)
-
-        def found(tests: int) -> np.ndarray:
-            # The unit new at 0 fails before the first test, or between two.
-            times = first + interval * np.arange(tests)
-            failed = np.clip(_cdf(model)(times), 0.0, 1.0)
-            survive = np.clip(_sf_values(model.sf, times), 0.0, 1.0)
-            before = np.concatenate([[0.0], failed[:-1]])
-            alive = np.concatenate([[1.0], survive[:-1]])
-            return np.maximum(
-                np.where(before <= 0.5, failed - before, alive - survive),
-                0.0,
-            )
-
-        return _spares.Tested(first, interval, found, np.maximum(cycle, 0.0))
-
     def spares_demand(
         self,
         horizon: float,
@@ -4525,68 +4230,16 @@ class RepairableRBD(RBD):
         >>> demand.stock(0.95)
         62
         """
-        end = _horizon(horizon)
-        fleet = _whole("fleet", fleet)
-        one_of("method", method, ("exact", "simulate"))
-        chosen, pools, counted = self._spares_counted(nodes, parts)
-        if method == "simulate":
-            runs = self._simulated_replacements(
-                end,
-                counted,
-                10_000 if mc_samples is None else mc_samples,
-                seed,
-            )
-            counts = {node: _fractions(runs[node]) for node in chosen}
-            pooled = {
-                part: _fractions(np.sum([runs[m] for m in members], axis=0))
-                for part, members in pools.items()
-            }
-        else:
-            self._require_unlimited_crews(*_SPARES_CREWS)
-            models = {node: self._replacements(node) for node in counted}
-            each = {
-                node: _spares.count(model, end, "new")
-                for node, model in models.items()
-            }
-            counts = {node: each[node] for node in chosen}
-            pooled = {
-                part: _summed(each[m] for m in members)
-                for part, members in pools.items()
-            }
-        out = {
-            node: SparesDemand(_fleet(count, fleet), end, fleet, method)
-            for node, count in counts.items()
-        }
-        for part, count in pooled.items():
-            out[part] = SparesDemand(
-                _fleet(count, fleet), end, fleet, method, pools[part]
-            )
-        return out
-
-    def _simulated_replacements(
-        self, horizon: float, nodes: list, mc_samples: int, seed
-    ) -> Dict[Any, np.ndarray]:
-        """How many times each of ``nodes`` was replaced in each of
-        ``mc_samples`` simulations of ``[0, horizon)``."""
-        montecarlo.check_count(mc_samples, False, "mc_samples")
-        if horizon == 0.0:
-            # Nothing is replaced in no time (as the exact count says).
-            return {
-                node: np.zeros(mc_samples, dtype=np.int64) for node in nodes
-            }
-        tally = self._run(
-            horizon,
-            set(),
-            set(),
-            "p",
-            mc_samples,
-            False,
-            seed,
-            replacements=True,
+        return _spares.spares_demand(
+            self,
+            horizon=horizon,
+            nodes=nodes,
+            fleet=fleet,
+            method=method,
+            mc_samples=mc_samples,
+            seed=seed,
+            parts=parts,
         )
-        counts = np.array(tally.replacements, dtype=np.int64)
-        column = {node: c for c, node in enumerate(self.components)}
-        return {node: counts[:, column[node]] for node in nodes}
 
     def spares_stock(
         self,
@@ -4716,105 +4369,15 @@ class RepairableRBD(RBD):
         >>> round(stock.fill_rate, 4)
         0.9665
         """
-        tau = _horizon(lead_time)
-        fleet = _whole("fleet", fleet)
-        if fill_rate is None and stockout_probability is None:
-            raise ValueError(
-                "Give a fill_rate, a stockout_probability, or both."
-            )
-        for name, target in (
-            ("fill_rate", fill_rate),
-            ("stockout_probability", stockout_probability),
-        ):
-            if target is not None and not 0.0 < target < 1.0:
-                raise ValueError(f"{name} must be in (0, 1), got {target!r}.")
-        chosen, pools, counted = self._spares_counted(nodes, parts)
-        self._require_unlimited_crews(*_STOCK_CREWS)
-        models = {node: self._replacements(node, True) for node in counted}
-        for part, members in pools.items():
-            blocks = [
-                m for m in members if isinstance(models[m], _spares.Block)
-            ]
-            if len(blocks) > 1:
-                raise NotImplementedError(
-                    f"Part {part!r}: {blocks} are replaced on block "
-                    "schedules, which keep step with each other, so their "
-                    "demands in a lead time are not independent: count "
-                    "them apart."
-                )
-        random = {
-            node: _spares.count(model, tau, "random")
-            for node, model in models.items()
-        }
-        arrival = {
-            node: _spares.count(model, tau, "arrival")
-            for node, model in models.items()
-        }
-
-        def stocked(members: Tuple[Hashable, ...]) -> SparesStock:
-            if len(members) == 1:
-                node = members[0]
-                on_order = _fleet(random[node], fleet)
-                at_demand = (
-                    arrival[node]
-                    if fleet == 1
-                    else _fleet(
-                        np.convolve(
-                            arrival[node], _fleet(random[node], fleet - 1)
-                        ),
-                        1,
-                    )
-                )
-            else:
-                # A demand finds its own component's replacements as they
-                # come (``arrival``), and the others' as at a random time,
-                # each component's share of the demands its share of the
-                # long-run rates.
-                one = _summed(random[m] for m in members)
-                others = _fleet(one, fleet - 1)
-                rates = np.array([_spares.rate(models[m]) for m in members])
-                on_order = _fleet(one, fleet)
-                at_demand = np.zeros(1)
-                for i, member in enumerate(members):
-                    seen = _summed(
-                        [arrival[member], others]
-                        + [random[m] for j, m in enumerate(members) if j != i]
-                    )
-                    size = max(len(at_demand), len(seen))
-                    at_demand = np.pad(at_demand, (0, size - len(at_demand)))
-                    at_demand += (
-                        rates[i]
-                        / rates.sum()
-                        * np.pad(seen, (0, size - len(seen)))
-                    )
-                at_demand = at_demand / at_demand.sum()
-            result = SparesStock(0, 0.0, 1.0, tau, fleet, on_order, at_demand)
-            stock = 0
-            while not (
-                (
-                    fill_rate is None
-                    or result.fill_rate_for(stock) >= fill_rate - 1e-12
-                )
-                and (
-                    stockout_probability is None
-                    or result.stockout_probability_for(stock)
-                    <= stockout_probability + 1e-12
-                )
-            ):
-                stock += 1
-            return dataclasses.replace(
-                result,
-                stock=stock,
-                fill_rate=result.fill_rate_for(stock),
-                stockout_probability=result.stockout_probability_for(stock),
-            )
-
-        out: Dict[Hashable, SparesStock] = {
-            node: stocked((node,)) for node in chosen
-        }
-        for part, members in pools.items():
-            out[part] = dataclasses.replace(stocked(members), members=members)
-        return out
+        return _spares.spares_stock(
+            self,
+            lead_time=lead_time,
+            fill_rate=fill_rate,
+            stockout_probability=stockout_probability,
+            nodes=nodes,
+            fleet=fleet,
+            parts=parts,
+        )
 
     def allocate_redundancy(
         self,
@@ -7865,15 +7428,19 @@ class RepairableRBD(RBD):
             refusal = r.refusal(
                 partial(
                     self._require_unlimited_crews,
-                    *(_STOCK_CREWS if long_run_count else _SPARES_CREWS),
+                    *(
+                        _spares._STOCK_CREWS
+                        if long_run_count
+                        else _spares._SPARES_CREWS
+                    ),
                 )
             )
             which: Tuple[Hashable, ...] = ()
-            for node in self._spares_nodes(None):
+            for node in _spares._spares_nodes(self, None):
                 if refusal:
                     break
                 refusal = r.refusal(
-                    partial(self._replacements, node, long_run_count)
+                    partial(_spares._replacements, self, node, long_run_count)
                 )
                 which = (node,)
             out[name] = (

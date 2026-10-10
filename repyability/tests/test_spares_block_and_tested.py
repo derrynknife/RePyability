@@ -315,9 +315,15 @@ def test_a_lead_time_on_block_times_is_read_at_its_jump():
     # intervals on less its phase, so their distribution jumps at each
     # interval: read on its own, each rounding takes it exactly, where
     # their mean blurred it over a step (an error of the step's order).
-    model = single(
-        block(W([100.0, 2.5]), 60.0, repair=W([4.0, 1.5]), duration=E([0.5]))
-    )._replacements("c", True)
+    model = _spares._replacements(
+        single(
+            block(
+                W([100.0, 2.5]), 60.0, repair=W([4.0, 1.5]), duration=E([0.5])
+            )
+        ),
+        "c",
+        True,
+    )
     coarse, fine = (
         np.array(_spares._palm(model, 120.0, steps)[1]) for steps in (256, 512)
     )
@@ -335,7 +341,7 @@ def test_the_long_run_is_an_interval_settled_from_new():
         rbd.spares_demand(21 * 60.0)["c"].mean
         - rbd.spares_demand(20 * 60.0)["c"].mean
     )
-    model = rbd._replacements("c", True)
+    model = _spares._replacements(rbd, "c", True)
     assert _spares.rate(model) * 60.0 == pytest.approx(settled, rel=2e-6)
     # From a random time, the mean on order is the rate times the lead time.
     stock = rbd.spares_stock(45.0, fill_rate=0.9)["c"]
@@ -347,7 +353,9 @@ def test_the_long_run_is_an_interval_settled_from_new():
 def test_renewals_in_no_time_through_a_typical_replacement(kind):
     # The typical replacement's counts take renewals in no time too, where
     # each interval starts new: they are the averages over the phase.
-    model = single(block(W([100.0, 2.0]), 60.0))._replacements("c", True)
+    model = _spares._replacements(
+        single(block(W([100.0, 2.0]), 60.0)), "c", True
+    )
     assert not _spares.carries_over(model)
     tails = np.minimum.accumulate(
         np.clip(_spares._palm_tails(model, 45.0, kind), 0.0, 1.0)
@@ -371,7 +379,7 @@ def test_a_part_with_a_member_whose_work_takes_time():
     other = poisson.pmf(np.arange(40), 0.3)
     got, want = padded(stock.on_order, np.convolve(alone.on_order, other))
     np.testing.assert_allclose(got, want, atol=2e-6)
-    rate = _spares.rate(rbd._replacements("a", True))
+    rate = _spares.rate(_spares._replacements(rbd, "a", True))
     share = rate / (rate + 0.01)
     at_a, at_b = padded(
         np.convolve(alone.on_order_at_demand, other),
