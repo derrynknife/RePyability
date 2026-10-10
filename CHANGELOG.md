@@ -21,6 +21,14 @@ other release, fixes included, the minor.
   Kijima model and restoration factor. The spec is saved as that life and
   repair. surpyval's ARA, ARI and G1 renewal models are refused, their
   repairs not being Kijima's (SurPyval#833).
+- **A regression node's covariates are levers (#272).** A
+  `RegressionNode` at fixed covariates (a load, a temperature) lists each
+  covariate in `NonRepairableRBD.levers()` as `"covariate.<name>"` (the
+  model's feature name, or its place), `parameter_sensitivity` reports the
+  system's derivative in it, and `with_levers` builds the diagram with the
+  component run at another value. A covariate is unbounded: running
+  outside the fitted conditions is extrapolation, as an accelerated life
+  test's use level is, and is not refused.
 - **A simulation starts an imperfectly repaired unit from its virtual age
   (#269).** `NodeState(age=a, virtual_age=v)`: its virtual age `v` at its
   last repair and its operating time `a` since; its life left is drawn

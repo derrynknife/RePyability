@@ -51,7 +51,7 @@ import numpy as np
 from repyability.utils.checks import is_number, is_whole, number_or_nan
 
 from . import _importance_time
-from ._model_utils import parametric_spec
+from ._model_utils import lever_spec
 
 #: What the sensitivities can be of.
 QUANTITIES = ("availability", "cost_rate")
@@ -107,8 +107,9 @@ def _model_levers(prefix: str, model, rebuild) -> List[tuple]:
     """``(name, value, set, bounds)`` for each parameter of a parametric
     ``model``, named ``prefix.<parameter>`` (or the parameter's own name,
     without a prefix), ``set(v)`` giving ``rebuild`` of the model with it
-    at ``v``."""
-    spec = parametric_spec(model)
+    at ``v``: a parametric model's parameters, or a regression node's
+    covariates (#272)."""
+    spec = lever_spec(model)
     if spec is None:
         return []
     ranges = _model_bounds(spec.bounds)
