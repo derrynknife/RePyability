@@ -3642,9 +3642,9 @@ def _choose_intervals(
 
     else:
         objective = cost
-        assert min_availability is not None
 
         def slack(x):
+            assert min_availability is not None
             return (values(x)[1] - min_availability - 1e-12) / (
                 1.0 - min_availability
             )
