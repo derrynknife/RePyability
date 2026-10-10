@@ -12,6 +12,7 @@ import surpyval as surv
 from scipy.optimize import brentq
 
 from repyability import NodeState, RepairableRBD
+from repyability.rbd import _runs
 from repyability.rbd import routes as r
 
 W, E, LN = (
@@ -156,7 +157,7 @@ def test_against_the_simulation(state):
 
 def test_the_twin_keeps_it_and_a_run_to_a_tolerance_takes_exact_values():
     rbd = single(unit())
-    twin, changes = rbd._twin()
+    twin, changes = _runs._twin(rbd)
     assert twin._preventive["c"].policy == "condition" and not changes
     report = rbd.analysis_routes()
     for name in (

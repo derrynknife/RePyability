@@ -10,7 +10,7 @@ import pytest
 import surpyval as surv
 
 from repyability import ControlVariate, NodeState, RepairableRBD
-from repyability.rbd import _curves, _streams
+from repyability.rbd import _curves, _runs, _streams
 from repyability.tests.test_performance_equivalence import binomial_first
 from repyability.tests.test_simulation_chunks import identical
 
@@ -93,7 +93,7 @@ def test_the_controlled_estimate_is_unbiased_and_more_precise():
     )
     assert control.twin.shape == (2000,)
     assert control.exact == pytest.approx(
-        rbd._twin()[0].mission_availability(1000.0)
+        _runs._twin(rbd)[0].mission_availability(1000.0)
     )
     fractions = controlled.uptimes / 1000.0
     assert c.estimate == pytest.approx(control.controlled(fractions).mean())
@@ -186,7 +186,7 @@ def test_from_a_state_and_with_held_nodes():
         broken_nodes=["B"],
         control_variate=True,
     )
-    exact = rbd._twin()[0].mission_availability(500.0, broken_nodes=["B"])
+    exact = _runs._twin(rbd)[0].mission_availability(500.0, broken_nodes=["B"])
     assert held.control_variate.exact == pytest.approx(exact)
 
 
@@ -216,7 +216,7 @@ def test_the_twin_leaves_out_what_ties_components_together():
         repair_crews=2,
         maintenance_groups={"g": {}},
     )
-    twin, changes = rbd._twin()
+    twin, changes = _runs._twin(rbd)
     assert changes == [
         "the limit on repair crews",
         "the maintenance groups",
@@ -383,7 +383,7 @@ def test_the_twin_builds_each_curve_once(monkeypatch):
     rbd = RepairableRBD(
         EDGES, {n: unit(scale) for n, scale in zip("ABC", (90, 100, 110))}
     )
-    twin, _ = rbd._twin()
+    twin, _ = _runs._twin(rbd)
     apart = (twin.expected_cost(300.0).mean, twin.mission_availability(300.0))
     built = []
     plain = _curves._unit_curve
@@ -463,7 +463,7 @@ def test_a_run_takes_exact_values_by_default(monkeypatch):
     def refuse(*args, **kwargs):
         raise NotImplementedError("too many grid points")
 
-    monkeypatch.setattr(RepairableRBD, "_twin_exact", refuse)
+    monkeypatch.setattr(_runs, "_twin_exact", refuse)
     with pytest.warns(RuntimeWarning, match="did not converge"):
         fallen = rbd.availability(
             300.0, mc_samples=50, seed=3, tolerance=1e-6, max_samples=100
