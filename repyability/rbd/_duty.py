@@ -83,4 +83,5 @@ def on_calendar(node, model, d: float):
     if extras.get("gamma"):
         # An offset is a time too.
         extras["gamma"] = float(extras["gamma"]) / d
+    assert name is not None  # a distribution of time (see _SCALED)
     return getattr(surpyval, name).from_params(move(params, d), **extras)

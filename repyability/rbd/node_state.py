@@ -32,15 +32,16 @@ class NodeState:
     is immutable (a frozen dataclass).
 
     A [`RepairableRBD`][repyability.RepairableRBD] takes the same states,
-    with three more fields, to start its analyses from now (``state=`` of
+    with more fields, to start its analyses from now (``state=`` of
     ``point_availability``, ``availability`` and the others): a component
     up is ``age`` since it was last put into service as new; one down has
     been down for ``down_for``, in a repair, or (``maintenance=True``) in
     its preventive maintenance; one on a calendar (block replacement, or
     tests of hidden failures) is ``phase`` past its last scheduled
-    replacement or test; and ``stationary=True`` puts it in its long-run
-    state instead, for a component long in service whose state is not
-    known.
+    replacement or test; one repaired imperfectly has the ``virtual_age``
+    it had at its last repair; and ``stationary=True`` puts it in its
+    long-run state instead, for a component long in service whose state is
+    not known.
 
     Parameters
     ----------

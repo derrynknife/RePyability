@@ -26,7 +26,7 @@ You will need:
   the course uses.
 - **Python:** enough to run the examples and change the numbers. Every code
   block on these pages runs as written, in order, and the numbers quoted in
-  them are checked automatically when the documentation is built.
+  them are checked automatically by the test suite.
 
 ## The lessons
 

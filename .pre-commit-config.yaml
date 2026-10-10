@@ -8,16 +8,9 @@
 repos:
   # Organise imports
   - repo: https://github.com/PyCQA/isort
-    rev: "6.0.1"
+    rev: "9.0.1"
     hooks:
       - id: isort
-
-  # Update old python syntax
-  - repo: https://github.com/asottile/pyupgrade
-    rev: "v3.19.1"
-    hooks:
-      - id: pyupgrade
-        args: ["--py310-plus"]
 
   # Format with Black
   - repo: https://github.com/psf/black
@@ -27,18 +20,19 @@ repos:
 
   # Lint with flake8 (reads [tool.flake8] from pyproject via flake8-pyproject)
   - repo: https://github.com/PyCQA/flake8
-    rev: "7.3.0"
+    rev: "7.4.1"
     hooks:
       - id: flake8
         additional_dependencies: ["flake8-pyproject"]
 
   # Uses the locally installed mypy (the mirror uses opinionated args by
-  # default); tests are excluded to match the CI configuration.
+  # default), on the whole package as CI runs it: checking the staged files
+  # alone misses errors their changes cause elsewhere.
   - repo: local
     hooks:
       - id: mypy
         name: mypy
-        entry: mypy
+        entry: mypy repyability
         language: system
-        types: [python]
-        exclude: "^repyability/tests/"
+        pass_filenames: false
+        files: "^repyability/"

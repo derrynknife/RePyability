@@ -78,8 +78,9 @@ def test_fit_draws_keep_an_offset():
     # Before the offset nothing can fail, in every draw. surpyval's
     # covariance leaves the offset out (SurPyval#830), so it is held, and
     # the draws say so.
-    with np.errstate(invalid="ignore"), pytest.warns(
-        UserWarning, match="offset.*SurPyval#830"
+    with (
+        np.errstate(invalid="ignore"),
+        pytest.warns(UserWarning, match="offset.*SurPyval#830"),
     ):
         early = rbd.sf_uncertainty(
             0.5 * model.gamma, {"c": "fit"}, n_draws=200

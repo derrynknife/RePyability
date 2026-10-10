@@ -102,7 +102,8 @@
   `_System`, `_Store` and `_structure` and on `_streams`' blocks. Keep those
   compatible, or raise `engines.API` (with a CHANGELOG entry) when an engine
   would have to change with them.
-- **A conditional run (#189, `repyability/rbd/_conditional.py`) simulates
+- **A conditional run (#189, `repyability/rbd/_conditional.py`, and
+  `RepairableRBD`'s `_conditional_modules` and `_modules_rbd`) simulates
   the modules alone** (`_conditional_modules`: the nodes
   `_node_over_time` refuses, with their maintenance groups), as a diagram
   of their own (`_modules_rbd`) whose streams are named as in the system,

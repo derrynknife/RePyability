@@ -54,8 +54,7 @@ other release, fixes included, the minor.
   Wiener path killed there); surpyval does not give it yet (SurPyval#836).
   Simulated only, on the Python engine: the exact methods and a start
   state refuse such a component. Seeded runs without it are unchanged.
-
-- **A component that operates part of the time (`"duty"`).** A
+- **A component that operates part of the time (`"duty"`, #276).** A
   `RepairableRBD` spec's `"duty"`, the fraction of the time the component
   operates, puts a life fitted in operating time on the diagram's clock:
   `R(d t)`, the same surpyval distribution with its scale moved, which
