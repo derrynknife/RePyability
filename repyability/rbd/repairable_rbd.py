@@ -27,7 +27,6 @@ from typing import (
     Iterable,
     List,
     NamedTuple,
-    NoReturn,
     Optional,
     Sequence,
     Tuple,
@@ -42,15 +41,10 @@ from repyability.non_repairable import NonRepairable
 from repyability.rbd import (
     _ccf_modules,
     _conditional,
-    _crew_chain,
     _importance_time,
 )
 from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd import _sensitivity, _spares, _streams, _timeline_runs
-from repyability.rbd._block_replacement import (
-    _check_life,
-    _Duration,
-)
 from repyability.rbd._degradation import (
     failure_from,
     level_after,
@@ -58,28 +52,19 @@ from repyability.rbd._degradation import (
 from repyability.rbd._exact import (
     bin_totals,
 )
-from repyability.rbd._hidden_life import (
-    TestedLife,
-)
-from repyability.rbd._hidden_tests import TestedUnit
-from repyability.rbd._hidden_tests import check as check_tested
 from repyability.rbd._model_utils import (
     SAVE_ERRORS,
     always_works,
     distribution_name,
-    failure_time_scale,
-    is_fixed_probability,
     is_mixture,
     lfp_p,
-    model_mean,
     refuse_nonparametric,
 )
 from repyability.rbd._sampling import MixtureLife, stream_sampler
 from repyability.rbd.degrading_node import DegradingNode
 from repyability.rbd.helper_classes import PerfectReliability, perfect_class
-from repyability.rbd.load_sharing_node import LoadSharingModel
 from repyability.rbd.node_state import NodeState
-from repyability.rbd.rbd import RBD, _check_on_infeasible_rbd, _close_name
+from repyability.rbd.rbd import RBD, _check_on_infeasible_rbd
 from repyability.rbd.results import (
     AvailabilityAllocation,
     AvailabilityResult,
@@ -104,7 +89,6 @@ from repyability.rbd.results import (
     UncertaintyResult,
     UpDownImportance,
 )
-from repyability.rbd.standby_node import StandbyModel
 
 if TYPE_CHECKING:
     from repyability.rbd.chunks import SimulationChunk
@@ -112,23 +96,21 @@ if TYPE_CHECKING:
 from repyability.rbd import (
     _ccf_groups,
     _costs,
+    _crews,
     _curves,
     _intervals,
     _long_run,
     _repairable_allocation,
     _repairable_capacity,
     _repairable_importance,
+    _requirements,
     _spec,
     _windows,
 )
 from repyability.rbd._common import (
-    _common_period,
-    _constant_rate,
     _curve_points,
-    _repair_rate,
     _safe_mean,
     _safe_ratio,
-    _sf_values,
     _times_first,
 )
 from repyability.rbd._curves import (
@@ -169,7 +151,7 @@ from repyability.rbd._time_order import (
     _group_totals,
     _working_over_time,
 )
-from repyability.rbd.routes import AnalysisRoute, Refused
+from repyability.rbd.routes import AnalysisRoute
 from repyability.utils.checks import (
     no_distribution,
     one_of,
@@ -2589,15 +2571,6 @@ class RepairableRBD(RBD):
             discount_rate=discount_rate,
         )
 
-    def _mean_lives(self) -> List[float]:
-        """The components' mean lives (their failure-time scales), against
-        which an endless horizon's discount rate is judged (#231)."""
-        return [
-            failure_time_scale(component.reliability)
-            for component in self.components.values()
-            if isinstance(component, NonRepairable)
-        ]
-
     def spares_demand(
         self,
         horizon: float,
@@ -3767,30 +3740,6 @@ class RepairableRBD(RBD):
             self, intervals=intervals, offsets=offsets
         )
 
-    def _require_component(self, node, given: str) -> None:
-        """Raise if ``node``, given in ``given``, is not a component (see
-        ``_not_a_component``)."""
-        if node not in self.components:
-            raise self._not_a_component(node, given)
-
-    def _not_a_component(self, node, given: str) -> ValueError:
-        """The error for ``node``, given in ``given``, that is not a
-        component: a junction, which never fails, or an unknown name, with
-        the closest component's name if one is close (#232), and those
-        that are (#222)."""
-        if node in self._junction_nodes:
-            return ValueError(
-                f"Node {node!r} given in {given} is a junction "
-                "(PerfectReliability): it never fails, so it is no component "
-                "to fail, repair, maintain or stock spares for."
-            )
-        close = _close_name(node, self.components)
-        hint = "" if close is None else f" Did you mean {close!r}?"
-        return ValueError(
-            f"Unknown node {node!r} given in {given}; it is not a component "
-            f"of the RBD.{hint} Its components are: {list(self.components)}."
-        )
-
     def initialize_event_queue(
         self,
         t_simulation,
@@ -3999,8 +3948,8 @@ class RepairableRBD(RBD):
         # may need one (with enough, no job ever waits).
         crews = self.repair_crews
         self._crews = (
-            _Crews(crews, self._crew_served(), self._priority)
-            if crews is not None and self._crews_limited()
+            _Crews(crews, _crews._crew_served(self), self._priority)
+            if crews is not None and _crews._crews_limited(self)
             else None
         )
         if self._crews is not None:
@@ -4327,7 +4276,8 @@ class RepairableRBD(RBD):
         # theirs in.
         allocation = r.refusal(
             partial(
-                self._require_unlimited_crews,
+                _crews._require_unlimited_crews,
+                self,
                 *_repairable_allocation._ALLOCATION_CREWS,
             )
         ) or r.refusal(partial(_ccf_groups._require_ccf_long_run, self))
@@ -4412,7 +4362,9 @@ class RepairableRBD(RBD):
             ),
         )
         if self.has_costs:
-            setups = r.refusal(self._require_separate_setups)
+            setups = r.refusal(
+                partial(_requirements._require_separate_setups, self)
+            )
             give(
                 ("expected_cost_rate", "total_cost"),
                 (
@@ -4618,14 +4570,20 @@ class RepairableRBD(RBD):
                 (
                     message
                     for message in (
-                        r.refusal(partial(self._require_tested_exact, node))
+                        r.refusal(
+                            partial(
+                                _requirements._require_tested_exact,
+                                self,
+                                node,
+                            )
+                        )
                         for node in self._inspection
                     )
                     if message
                 ),
                 None,
             )
-            or r.refusal(self._require_one_inspected)
+            or r.refusal(partial(_requirements._require_one_inspected, self))
         )
         out["optimal_inspection_intervals"] = (
             r.refused(refusal)
@@ -4644,7 +4602,8 @@ class RepairableRBD(RBD):
         ):
             refusal = r.refusal(
                 partial(
-                    self._require_unlimited_crews,
+                    _crews._require_unlimited_crews,
+                    self,
                     *(
                         _spares._STOCK_CREWS
                         if long_run_count
@@ -4693,7 +4652,9 @@ class RepairableRBD(RBD):
         groups = r.refusal(
             partial(_ccf_groups._require_groups_simulated, self)
         )
-        given = r.refusal(self._require_capacities_given)
+        given = r.refusal(
+            partial(_requirements._require_capacities_given, self)
+        )
         engine, why = self._engine_choice(capacity=self._has_capacity())
         causes = (
             " Each common-cause group's shared causes strike as Poisson "
@@ -6157,227 +6118,19 @@ class RepairableRBD(RBD):
             self._pending_failure[node] = pending + wait
         return ends
 
-    def _crew_served(self) -> list:
-        """The jobs the repair crews work on, by key: this RBD's own
-        components, not a nested RBD's (which has crews of its own), and
-        each unit of a standby group (``_Unit(node, unit)``)."""
-        served: list = []
-        for node, component in self.components.items():
-            if isinstance(component, RepairableRBD):
-                continue
-            arrangement = self._standby.get(node)
-            if arrangement is None:
-                served.append(node)
-            else:
-                served.extend(
-                    _Unit(node, unit) for unit in range(arrangement.units)
-                )
-        return served
-
-    def _crews_limited(self) -> bool:
-        """Whether there are fewer repair crews than components that may
-        need one, so that a job may wait."""
-        return self.repair_crews is not None and self.repair_crews < len(
-            self._crew_served()
-        )
-
     def _crews_couple(self) -> bool:
         """Whether a job waiting for a repair crew can tie different nodes
         together: the crews are limited, and work on more than one node's
         jobs. With a single standby group's units the only jobs, the waiting
         stays inside the group, whose own Markov chain counts the crews (see
         ``_standby_long_run``), and the nodes stay independent."""
-        if not self._crews_limited():
+        if not _crews._crews_limited(self):
             return False
         owners = {
             key.node if isinstance(key, _Unit) else key
-            for key in self._crew_served()
+            for key in _crews._crew_served(self)
         }
         return len(owners) > 1
-
-    def _require_unlimited_crews(
-        self,
-        assumes: str = "these values assume",
-        advice: str = "Simulate the system with availability() or cost().",
-    ) -> None:
-        """Raise if a job may wait for a repair crew: components then no
-        longer fail and recover independently, which ``assumes`` (what
-        assumes it, and ``assume``): do ``advice`` instead."""
-        if self._crews_couple():
-            raise NotImplementedError(
-                f"With {self.repair_crews} repair crew(s) for "
-                f"{len(self._crew_served())} components, a component can "
-                "wait for a crew, so the components no longer fail and "
-                f"recover independently, which {assumes}. {advice}"
-            )
-
-    def _no_crew_chain(self, why: str) -> NoReturn:
-        """Raise that the repair crews' Markov chain does not cover this RBD,
-        because ``why``."""
-        raise NotImplementedError(
-            f"With {self.repair_crews} repair crew(s) for "
-            f"{len(self._crew_served())} components, a component can wait "
-            "for a crew, and the exact long-run values come from a Markov "
-            "chain of the components' states and the repair queue: "
-            f"{why}. Simulate the system with availability() or cost()."
-        )
-
-    def _crew_chain_rates(self) -> Dict[Any, Tuple[float, float]]:
-        """The failure and repair rates (``inf`` for an instant repair) of
-        the components the repair crews work on, for their Markov chain
-        (see ``_crew_chain.py``). Raise if the chain does not cover them:
-        scheduled maintenance or inspection, a life or repair time that is
-        not exponential, or more states than it is solved for."""
-        assert self.repair_crews is not None  # limited crews only
-        for node in self._standby:
-            self._no_crew_chain(
-                "it has no place for a standby group, which component "
-                f"{node!r} is"
-            )
-        rates: Dict[Any, Tuple[float, float]] = {}
-        for node in self._crew_served():
-            component = self.components[node]
-            if node in self._preventive:
-                self._no_crew_chain(
-                    "it has no place for scheduled maintenance, which "
-                    f"component {node!r} has"
-                )
-            if node in self._inspection:
-                self._no_crew_chain(
-                    "it has no place for inspections, which component "
-                    f"{node!r} has"
-                )
-            if node in self._imperfect:
-                self._no_crew_chain(
-                    "it has no place for imperfect repair, which component "
-                    f"{node!r} has"
-                )
-            life = _constant_rate(component.reliability)
-            if life is None:
-                self._no_crew_chain(
-                    "it needs exponential lives (a constant failure rate), "
-                    f"and the life of component {node!r} is not one"
-                )
-            repair = _repair_rate(component.time_to_replace)
-            if repair is None:
-                self._no_crew_chain(
-                    "it needs exponential repair times (or instant repair), "
-                    f"and the repair times of component {node!r} are not"
-                )
-            rates[node] = (life, repair)
-        count = _crew_chain.state_count(
-            [self._priority.get(node, 0.0) for node in rates],
-            [math.isinf(repair) for _, repair in rates.values()],
-            self.repair_crews,
-        )
-        if count > _crew_chain.MAX_STATES:
-            self._no_crew_chain(
-                f"here it has {count:,} states, more than the "
-                f"{_crew_chain.MAX_STATES:,} it is solved for"
-            )
-        return rates
-
-    def _require_crew_chain(self) -> None:
-        """Raise if the exact long-run values with limited repair crews
-        cannot be computed: the Markov chain does not take common-cause
-        groups in (#251, see ``_ccf_rates``), does not cover the components
-        (see ``_crew_chain_rates``), or nested RBDs' calendars fall together
-        (see ``_require_calendars``)."""
-        _ccf_groups._require_ccf_long_run(self)
-        self._crew_chain_rates()
-        self._require_calendars()
-
-    def _crew_chain(
-        self, forced: frozenset = frozenset()
-    ) -> "_crew_chain.CrewChain":
-        """The Markov chain of the components the repair crews work on, and
-        its long-run distribution (see ``_crew_chain.py``), leaving out the
-        nodes in ``forced``: held working a node never fails, and held
-        broken it is never repaired, so neither needs a crew. Solved once
-        for each set of rates and kept."""
-        self._require_crew_chain()
-        rates = self._crew_chain_rates()
-        assert self.repair_crews is not None  # limited crews only
-        nodes = [node for node in rates if node not in forced]
-        priorities = [self._priority.get(node, 0.0) for node in nodes]
-        key = (
-            self.repair_crews,
-            tuple(zip(nodes, (rates[node] for node in nodes), priorities)),
-        )
-        cache = self.__dict__.setdefault("_crew_chains", {})
-        if key not in cache:
-            cache[key] = _crew_chain.solve(
-                nodes,
-                [rates[node][0] for node in nodes],
-                [rates[node][1] for node in nodes],
-                priorities,
-                self.repair_crews,
-            )
-        return cache[key]
-
-    def _chain_probabilities(
-        self, working_nodes, broken_nodes
-    ) -> Tuple[dict, np.ndarray]:
-        """With limited repair crews, every node's availability in each
-        state of their Markov chain (1 or 0 for the components the crews
-        work on and those held working or broken, and a nested RBD's own
-        long-run availability, as it has crews of its own), and the states'
-        long-run probabilities: the long-run values are then averages over
-        the states, as over the times of ``_long_run_grid``."""
-        working_nodes = set(working_nodes or ())
-        broken_nodes = set(broken_nodes or ())
-        self._validate_node_overrides(working_nodes, broken_nodes)
-        chain = self._crew_chain(frozenset(working_nodes | broken_nodes))
-        size = len(chain.probabilities)
-        out: dict = {
-            node: chain.up[:, k].astype(float)
-            for k, node in enumerate(chain.nodes)
-        }
-        for node, component in self.components.items():
-            if node in working_nodes:
-                out[node] = np.ones(size)
-            elif node in broken_nodes:
-                out[node] = np.zeros(size)
-            elif node not in out:
-                out[node] = np.full(size, float(component.mean_availability()))
-        for node in self.in_or_out:
-            out[node] = np.ones(size)
-        return out, chain.probabilities
-
-    def _chain_outage_terms(
-        self, working_nodes, broken_nodes
-    ) -> Tuple[List[Tuple[Any, float]], float]:
-        """``_outage_terms`` with limited repair crews, over the
-        states of their Markov chain: in each, a component that is up fails
-        at its constant rate, and takes the system down if it is critical
-        there. A nested RBD enters through its own frequencies, as it has
-        crews of its own."""
-        availability, unavailability, weights = (
-            _long_run._long_run_unavailabilities(
-                self, working_nodes, broken_nodes
-            )
-        )
-        forced = set(working_nodes or ()) | set(broken_nodes or ())
-        rates = self._crew_chain_rates()
-        birnbaum = self._birnbaum_importance(
-            availability, node_failures=unavailability
-        )
-        terms: List[Tuple[Any, float]] = []
-        planned = 0.0
-        for node in self.components:
-            if node in forced:
-                continue
-            importance = np.asarray(birnbaum[node])
-            if node in rates:
-                life = rates[node][0]
-                node_failures, node_planned = life * availability[node], 0.0
-            else:
-                node_failures, _, node_planned = _long_run._node_frequencies(
-                    self, node
-                )
-            terms.append((node, float(weights @ (importance * node_failures))))
-            planned += float(weights @ (importance * node_planned))
-        return terms, planned
 
     def _maintained_follow_up(
         self, event: Event, source, schedule: _Preventive
@@ -8258,7 +8011,7 @@ class RepairableRBD(RBD):
 
         args = self._init_args
         changes = []
-        if self._crews_limited():
+        if _crews._crews_limited(self):
             changes.append("the limit on repair crews")
         if self._maintenance:
             changes.append("the maintenance groups")
@@ -8370,18 +8123,32 @@ class RepairableRBD(RBD):
             return spec, ""
         drop: Dict[str, str] = {}
         if node in self._imperfect and r.refusal(
-            partial(self._require_minimal_repair, node)
+            partial(
+                _requirements._require_minimal_repair,
+                self,
+                node,
+            )
         ):
             drop["repair"] = drop["replace_after"] = "imperfect repair"
         if node in self._inspection and r.refusal(
-            partial(self._require_tested_exact, node)
+            partial(
+                _requirements._require_tested_exact,
+                self,
+                node,
+            )
         ):
             drop["inspection"] = "inspections"
         schedule = self._preventive.get(node)
         if (
             schedule is not None
             and schedule.policy in ("block", "condition")
-            and r.refusal(partial(self._require_block_models, node))
+            and r.refusal(
+                partial(
+                    _requirements._require_block_models,
+                    self,
+                    node,
+                )
+            )
         ):
             drop["preventive"] = (
                 "block replacement"
@@ -8692,7 +8459,7 @@ class RepairableRBD(RBD):
             # (nested RBDs, with crews of their own) taken exactly.
             chosen |= {
                 key.node if isinstance(key, _Unit) else key
-                for key in self._crew_served()
+                for key in _crews._crew_served(self)
             } - held
         for name, spec in self._maintenance.items():
             members = set(spec.members)
@@ -8836,7 +8603,7 @@ class RepairableRBD(RBD):
         the crews serve is held (a conditional run's modules), they tie
         nothing together, and the rest is worked out as if they were
         unlimited (a nested RBD keeps its own)."""
-        if not self._crews_limited():
+        if not _crews._crews_limited(self):
             return self
         return RepairableRBD(**{**self._init_args, "repair_crews": None})
 
@@ -10270,447 +10037,6 @@ class RepairableRBD(RBD):
         {'a': 0.8333, 'b': 1.0, 's': 1.0, 't': 1.0}
         """
         return _long_run.node_availability(self)
-
-    def _require_one_inspected(self) -> None:
-        """Raise if more than one component has hidden failures, when no
-        intervals are given to choose from (``optimal_inspection_intervals``
-        with ``allowed=None``)."""
-        if len(self._inspection) > 1:
-            raise Refused(
-                "More than one component has hidden failures: give the "
-                "intervals to choose from in allowed (tests are made on "
-                "a calendar, and the long-run values depend on how the "
-                "schedules line up)."
-            )
-
-    def _require_capacities_given(self) -> None:
-        """Raise if a node takes its capacity from its model (a
-        ``DegradingNode``'s stages, or a nested RBD's capacities), which
-        the availability simulation does not follow."""
-        own = self._capacity_models()
-        if own:
-            raise NotImplementedError(
-                f"Node(s) {sorted(own, key=str)} take their capacity from "
-                "their models (a DegradingNode's stages, or a nested RBD's "
-                "capacities), which the simulation does not follow. Give "
-                "them a capacity, or use capacity_distribution() for the "
-                "long run."
-            )
-
-    def _require_reliabilities(self, node) -> None:
-        """Raise, as the model itself does, if a component's life or repair
-        model has no exact or numerical reliability: a ``StandbyModel`` or
-        ``LoadSharingModel`` that only simulations take (#149)."""
-        component = self.components[node]
-        for model in (
-            getattr(component, "reliability", None),
-            getattr(component, "time_to_replace", None),
-        ):
-            if (
-                isinstance(model, (StandbyModel, LoadSharingModel))
-                and model.is_simulated
-            ):
-                raise model._no_reliability()
-
-    def _require_time_models(self, node) -> None:
-        """Raise if a component's life or repair model is a probability,
-        not a distribution of times: its long-run and time-dependent values
-        then have no exact value (its mean is no mean time). (First, if
-        one has no reliability: see ``_require_reliabilities``.)"""
-        self._require_reliabilities(node)
-        self._require_times(node)
-
-    def _require_times(self, node) -> None:
-        """Raise if a component's life or repair model is a probability,
-        not a distribution of times: it has no mean time, nor a value over
-        time (see ``_require_time_models``)."""
-        component = self.components[node]
-        for what, model in [
-            ("reliability", getattr(component, "reliability", None)),
-            ("repairability", getattr(component, "time_to_replace", None)),
-        ]:
-            if is_fixed_probability(model):
-                raise NotImplementedError(
-                    f"Component {node!r}: its {what} model is a probability, "
-                    "not a distribution of times, so it has no mean time or "
-                    "availability over time: a unit fails at once with that "
-                    "probability, or never. Estimate the system by "
-                    "simulation, with availability()."
-                )
-
-    def _require_unscheduled_stages(self, node) -> None:
-        """Raise if a degrading component is maintained or inspected on a
-        schedule: its long-run time in each stage has no exact value."""
-        if node in self._preventive or node in self._inspection:
-            raise NotImplementedError(
-                f"Component {node!r} degrades through stages and is "
-                "maintained or inspected on a schedule: its long-run time in "
-                "each stage has no exact value here. Give it a capacity "
-                "instead."
-            )
-
-    def _imperfect_phrase(self, node) -> str:
-        """How a component is repaired imperfectly, in words."""
-        imperfect = self._imperfect[node]
-        kind = "I" if imperfect.kijima == "kijima1" else "II"
-        phrase = f"Kijima {kind}, q = {imperfect.q:g}"
-        if imperfect.replace_after is not None:
-            phrase += (
-                f", replaced at failure {imperfect.replace_after} since it "
-                "was renewed"
-            )
-        return phrase
-
-    def _require_perfect_repair(self, node) -> None:
-        """Raise if a component is repaired imperfectly (a spec's
-        ``"repair"``): a repair does not renew it, so its long-run values
-        are known only by simulation (its values over time, only by
-        simulation too, but for minimal repair in no time: see
-        ``_require_minimal_repair``)."""
-        if node in self._imperfect:
-            over_time = (
-                "its values over a window from new are exact, as it fails "
-                "as often as its life's cumulative hazard"
-                if self._minimal_repair_blocker(node) is None
-                else "nor its values over time"
-            )
-            raise NotImplementedError(
-                f"Component {node!r} is repaired imperfectly "
-                f"({self._imperfect_phrase(node)}), so a repair does not "
-                f"renew it: its long-run values have no exact value here "
-                f"({over_time}). Estimate them by simulation, with "
-                "availability() or cost()."
-            )
-
-    def _minimal_repair_blocker(self, node) -> Optional[str]:
-        """Why an imperfectly repaired component's values over time have no
-        exact value, or None if they have: when it is minimally repaired
-        (Kijima, ``q = 1``) in no time, with no ``replace_after``,
-        preventive maintenance or tests, and a life that works at 0. Its
-        failures are then a non-homogeneous Poisson process whose intensity
-        is its life's hazard at its age (its age is its operating time,
-        which is all the time), so that it is up throughout and fails
-        ``H(t)`` times by ``t`` on average, ``H`` the life's cumulative
-        hazard (see ``MinimalRepairCurve``)."""
-        imperfect = self._imperfect[node]
-        component = self.components[node]
-        if imperfect.q < 1.0:
-            return "its repairs take away some of its age (q below 1)"
-        if imperfect.replace_after is not None:
-            return (
-                f"it is replaced at its failure {imperfect.replace_after} "
-                "since it was renewed"
-            )
-        repair = component.time_to_replace
-        if float(np.ravel(_sf_values(repair.sf, np.zeros(1)))[0]) > 0.0:
-            return "its repairs take time"
-        if node in self._preventive:
-            return "it has preventive maintenance"
-        if node in self._inspection:
-            return "its failures are found only by its tests"
-        life = component.reliability
-        if float(np.ravel(_sf_values(life.sf, np.zeros(1)))[0]) < 1.0:
-            return "its life may end at 0 (dead on arrival)"
-        return None
-
-    def _require_minimal_repair(self, node) -> None:
-        """Raise unless an imperfectly repaired component's values over time
-        are exact: minimal repair in no time (see
-        ``_minimal_repair_blocker``)."""
-        blocker = self._minimal_repair_blocker(node)
-        if blocker is not None:
-            raise NotImplementedError(
-                f"Component {node!r} is repaired imperfectly "
-                f"({self._imperfect_phrase(node)}), and {blocker}: its "
-                "availability over time has no exact value here (it has "
-                "for minimal repair, q = 1, in no time, with no "
-                "replace_after, maintenance or tests). Estimate it by "
-                "simulation, with availability() or cost()."
-            )
-
-    def _require_no_opportunities(self, node) -> None:
-        """Raise if a component can be renewed early at the stops of its
-        maintenance group (an ``"opportunity"`` below its interval): when
-        depends on the other members, so its long-run values and its
-        availability over time are known only by simulation."""
-        if node in self._early_members:
-            raise NotImplementedError(
-                f"Component {node!r} is renewed early at the stops of its "
-                f"maintenance group {self._member_group[node]!r}, which "
-                "depend on the other members, so its long-run values and "
-                "its availability over time have no exact value here. "
-                "Estimate them by simulation, with availability() or cost()."
-            )
-
-    def _require_separate_setups(self) -> None:
-        """Raise if two members of a maintenance group with a set-up cost
-        can be replaced at the same instants, again and again: on block
-        schedules, or never failing before an age replacement in zero time.
-        Such replacements share one stop, and its set-up, which the exact
-        cost rate, charging a set-up for each member's failures and
-        replacements, does not count."""
-        for group, spec in self._maintenance.items():
-            if not spec.setup_cost:
-                continue
-            clocked = [node for node in spec.members if self._on_a_clock(node)]
-            if len(clocked) > 1:
-                raise NotImplementedError(
-                    f"Components {clocked} of maintenance group {group!r} "
-                    "are replaced on a clock (on block schedules, or never "
-                    "failing before an age replacement in zero time), so "
-                    "their replacements can fall at the same instants and "
-                    "share a set-up, which the exact cost rate does not "
-                    "count: estimate it by simulation, with cost()."
-                )
-
-    def _on_a_clock(self, node) -> bool:
-        """Whether a component's replacements fall on a fixed lattice of
-        times: under block replacement, or under age replacement in zero
-        time without a failure before it."""
-        schedule = self._preventive.get(node)
-        if schedule is None or not math.isfinite(schedule.interval):
-            return False
-        if schedule.policy == "block":
-            return True
-        if schedule.policy != "age" or schedule.duration is not None:
-            return False
-        survives = self.components[node].reliability_function(
-            schedule.interval
-        )
-        return bool(np.ravel(survives)[0] >= 1.0)
-
-    def _require_block_models(self, node) -> None:
-        """Raise unless the exact block-replacement values cover the
-        component's models (the checks ``block_cycle`` makes first)."""
-
-        self._refuse_level(node)
-        component = self.components[node]
-        _check_life(component.reliability, node)
-        _Duration(component.time_to_replace, "repair", node)
-        _Duration(self._preventive[node].duration, "replacement", node)
-
-    def _refuse_level(self, node) -> None:
-        """Raise for a component replaced on condition by its measured
-        degradation level (#271): its inspections follow the level, which
-        only the simulation draws."""
-        schedule = self._preventive.get(node)
-        if schedule is not None and schedule.level is not None:
-            raise NotImplementedError(
-                f"Component {node!r} is replaced on condition by its "
-                "measured degradation level, which only the simulation "
-                "follows: estimate it by simulation, with availability() or "
-                "cost()."
-            )
-
-    def _require_calendars(self) -> None:
-        """Raise if the exact long-run values cannot average over the
-        components' calendars (block replacement and inspection): a nested
-        RBD's calendar with another here, intervals with no common period,
-        or one repeating too often in it (before any computation)."""
-        nested = [
-            node
-            for node, c in self.components.items()
-            if isinstance(c, RepairableRBD) and _long_run._has_calendar(c)
-        ]
-        blocks = _long_run._block_nodes(self)
-        if nested and len(nested) + len(self._inspection) + len(blocks) > 1:
-            raise NotImplementedError(
-                f"Node(s) {sorted(nested, key=str)} are RBDs with hidden "
-                "failures or block replacement, and other nodes' inspections "
-                "or block replacements here fall at the same times: "
-                "estimate the long-run values by simulation, with "
-                "availability() or cost()."
-            )
-        intervals = {self._preventive[node].interval for node in blocks}
-        intervals |= {
-            self._inspection[node].interval for node in self._inspection
-        }
-        if not intervals:
-            return
-        period = _common_period(intervals)
-        if any(round(period / interval) > 100_000 for interval in intervals):
-            if blocks:
-                raise NotImplementedError(
-                    f"The block-replacement and inspection intervals "
-                    f"{sorted(intervals)} repeat together only after too many "
-                    "intervals to average over: estimate the long-run values "
-                    "by simulation, with availability() or cost()."
-                )
-            raise NotImplementedError(
-                f"The inspection intervals {sorted(intervals)} repeat "
-                "together only after too many inspections to average "
-                "over: estimate the long-run values by simulation, with "
-                "availability() or cost()."
-            )
-
-    def _instant_tests(self, node) -> bool:
-        """Whether a component with hidden failures is tested, and
-        repaired, in no time."""
-        return (
-            self._inspection[node].duration is None
-            and model_mean(self.components[node].time_to_replace) == 0.0
-        )
-
-    def _tested_kind(self, node) -> str:
-        """How a component with hidden failures' values are worked out:
-        ``"closed"``, closed forms, for a constant failure rate and tests
-        and repair in no time; ``"life"``, summed over the test intervals
-        (``TestedLife``, #144), for any other life with those and tests
-        that find every failure; and ``"unit"``, its renewal cycle followed
-        test by test on a grid (``TestedUnit``, #159), for tests or repairs
-        that take time, or tests that can miss a failure of a life that is
-        not exponential."""
-        instant = self._instant_tests(node)
-        if instant and _constant_rate(self.components[node].reliability):
-            return "closed"
-        if instant and not self._inspection[node].partial:
-            return "life"
-        return "unit"
-
-    def _require_tested_exact(self, node) -> None:
-        """Raise unless a component with hidden failures has exact or
-        numerical values (long-run, or over time): with tests and repair in
-        no time, any life (#144); with tests or repairs that take time, or
-        tests that can miss a failure, a surpyval parametric life with a
-        density and repair and test times that end, the tests within the
-        interval (#159)."""
-        if self._tested_kind(node) != "unit":
-            return
-        component = self.components[node]
-        inspection = self._inspection[node]
-        check_tested(
-            component.reliability,
-            component.time_to_replace,
-            inspection.duration,
-            inspection.interval,
-            node,
-        )
-
-    def _inspected_rate(self, node) -> Tuple[float, float]:
-        """The constant failure rate and the inspection interval of a
-        component with hidden failures, for the closed forms of an
-        exponential life tested and repaired in no time (see
-        ``_tested_life`` and ``_tested_unit`` for the others)."""
-        self._require_tested_exact(node)
-        if self._tested_kind(node) != "closed":
-            raise NotImplementedError(
-                f"Component {node!r} has hidden failures, and a life that is "
-                "not exponential or tests or repairs that take time, which "
-                "this does not take: estimate it by simulation, with "
-                "availability() or cost()."
-            )
-        rate = _constant_rate(self.components[node].reliability)
-        assert rate is not None
-        return rate, self._inspection[node].interval
-
-    def _tested_life(self, node) -> Optional[TestedLife]:
-        """For a component with hidden failures, a life other than
-        exponential, and tests and repair in no time that find every
-        failure, its long run under its tests (see ``_hidden_life``),
-        worked out once; None for any other (see ``_tested_kind``)."""
-        self._require_tested_exact(node)
-        if self._tested_kind(node) != "life":
-            return None
-        component = self.components[node]
-        interval = float(self._inspection[node].interval)
-        cache = self.__dict__.setdefault("_tested_lives", {})
-        key = (node, id(component.reliability), interval)
-        if key not in cache:
-            cache[key] = TestedLife(component.reliability, interval)
-        return cache[key]
-
-    def _tested_unit(
-        self, node, any_kind: bool = False
-    ) -> Optional[TestedUnit]:
-        """For a component with hidden failures whose tests or repairs
-        take time, or whose tests can miss a failure of a life that is not
-        exponential, its values under its tests (see ``_hidden_tests``),
-        worked out once; None for any other (see ``_tested_kind``), but
-        with ``any_kind``, for its spares (whose tests the caller has
-        checked)."""
-        if not any_kind:
-            self._require_tested_exact(node)
-            if self._tested_kind(node) != "unit":
-                return None
-        component = self.components[node]
-        inspection = self._inspection[node]
-        cache = self.__dict__.setdefault("_tested_units", {})
-        key = (
-            node,
-            id(component.reliability),
-            id(component.time_to_replace),
-            id(inspection.duration),
-            float(inspection.interval),
-            float(inspection.coverage),
-            inspection.per_full_test,
-        )
-        if key not in cache:
-            cache[key] = TestedUnit(
-                component.reliability,
-                component.time_to_replace,
-                inspection.duration,
-                inspection.interval,
-                inspection.coverage,
-                inspection.per_full_test,
-                node,
-                _constant_rate(component.reliability),
-            )
-        return cache[key]
-
-    def _unit_phase(self, node, times: np.ndarray) -> np.ndarray:
-        """The time since a tested component's last full test at each of
-        ``times`` on its calendar (its full tests at its offset and every
-        full test's interval from it): where its long run's profile is
-        read (see ``TestedLongRun``)."""
-        inspection = self._inspection[node]
-        position = times - inspection.offset if inspection.offset else times
-        period = inspection.period
-        return position - period * np.floor(position / period)
-
-    def _tested_rate(self, node) -> float:
-        """How fast a tested component's long-run availability falls
-        between tests: its failure rate, or for any other life the rate of
-        its profile's mean decay (see ``TestedLife.rate``), or its failures
-        per unit of up time (``TestedLongRun.rate``), for the long-run
-        grid's spacing."""
-        unit = self._tested_unit(node)
-        if unit is not None:
-            return unit.long_run.rate
-        life = self._tested_life(node)
-        return self._inspected_rate(node)[0] if life is None else life.rate
-
-    def _tested_scale(self, node) -> float:
-        """The rate that sets the scale of a tested component's interval:
-        its failure rate, or one over the mean of any other life."""
-        self._require_tested_exact(node)
-        life = self.components[node].reliability
-        rate = _constant_rate(life)
-        return float(rate) if rate else 1.0 / float(model_mean(life))
-
-    def _tested_phase(self, node, times: np.ndarray) -> np.ndarray:
-        """The time since a tested component's last test at each of
-        ``times`` on its calendar (its tests at its offset and every
-        interval from it)."""
-        inspection = self._inspection[node]
-        position = times - inspection.offset if inspection.offset else times
-        interval = inspection.interval
-        return position - interval * np.floor(position / interval)
-
-    def _tested_intensity(
-        self, node, times: np.ndarray, availability
-    ) -> np.ndarray:
-        """A tested component's long-run rate of failing at each of
-        ``times`` (``availability`` its availability there): its constant
-        rate while it is up, or for any other life the rate of its profile
-        (see ``TestedLife.intensity``)."""
-        unit = self._tested_unit(node)
-        if unit is not None:
-            return unit.long_run.intensity(self._unit_phase(node, times))
-        life = self._tested_life(node)
-        if life is None:
-            rate, _ = self._inspected_rate(node)
-            return rate * availability
-        return life.intensity(self._tested_phase(node, times))
 
     def system_failure_frequency(
         self,

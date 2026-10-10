@@ -11,6 +11,7 @@ import warnings
 from collections.abc import Mapping
 from copy import copy
 from dataclasses import dataclass
+from functools import partial
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -28,7 +29,13 @@ import numpy as np
 from scipy.optimize import OptimizeResult, brentq, minimize
 from scipy.special import expit, logit, logsumexp, softmax
 
-from repyability.rbd import _ccf_groups, _costs, _long_run
+from repyability.rbd import (
+    _ccf_groups,
+    _costs,
+    _crews,
+    _long_run,
+    _requirements,
+)
 from repyability.rbd._common import (
     _discount_rate,
     _horizons,
@@ -157,7 +164,11 @@ def allocate_redundancy(
         )
     horizon = float(_horizons(horizon, rate))
     # The running costs count over the horizon's present value.
-    present = float(_present_horizon(np.array(horizon), rate, rbd._mean_lives))
+    present = float(
+        _present_horizon(
+            np.array(horizon), rate, partial(_requirements._mean_lives, rbd)
+        )
+    )
     one_of("method", method, ("exact", "greedy"))
     if nodes is None and trains is not None:
         chosen: list = []
@@ -174,7 +185,7 @@ def allocate_redundancy(
         if not chosen:
             raise ValueError("nodes must name at least one component.")
         for node in chosen:
-            rbd._require_component(node, "nodes")
+            _requirements._require_component(rbd, node, "nodes")
             if isinstance(rbd.components[node], RepairableRBD):
                 raise ValueError(
                     f"Node {node!r} is a nested RepairableRBD, which "
@@ -200,7 +211,7 @@ def allocate_redundancy(
         max_unavailability = 1.0 - target
 
     # Adding copies adds jobs for the crews: the search assumes none waits.
-    rbd._require_unlimited_crews(*_ALLOCATION_CREWS)
+    _crews._require_unlimited_crews(rbd, *_ALLOCATION_CREWS)
     grouped = _require_groups_allocated(rbd, chosen, drawn)
     # Every node's availability (and unavailability) over the times the
     # long-run values average over, and each component's own cost.
@@ -456,7 +467,7 @@ def _allocation_trains(rbd, trains, chosen) -> List[_Train]:
         if not members:
             raise ValueError(f"Train {name!r} has no nodes.")
         for node in members:
-            rbd._require_component(node, f"train {name!r}")
+            _requirements._require_component(rbd, node, f"train {name!r}")
             if isinstance(rbd.components[node], RepairableRBD):
                 raise ValueError(
                     f"Node {node!r} of train {name!r} is a nested "
@@ -782,7 +793,7 @@ def _allocatable(
     preventive or inspection schedule, are not in a common-cause group,
     whose members' MTTF and MTTR are the group's, and are not in
     ``fixed``); and the set of the others, which keep theirs."""
-    rbd._require_unlimited_crews(*_ALLOCATION_CREWS)
+    _crews._require_unlimited_crews(rbd, *_ALLOCATION_CREWS)
     _ccf_groups._require_ccf_long_run(rbd)
     held = set()
     if fixed is not None:

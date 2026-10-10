@@ -26,6 +26,8 @@ import numpy as np
 from repyability.non_repairable import NonRepairable
 from repyability.rbd import (
     _ccf_groups,
+    _crews,
+    _requirements,
     _standby_chain,
 )
 from repyability.rbd._block_replacement import (
@@ -128,7 +130,10 @@ def _node_long_run(rbd, node) -> Tuple[str, str]:
             inner.route,
             f"a nested RBD's long-run values, {inner.route}",
         )
-    for check in (rbd._require_perfect_repair, rbd._require_times):
+    for check in (
+        partial(_requirements._require_perfect_repair, rbd),
+        partial(_requirements._require_times, rbd),
+    ):
         message = r.refusal(partial(check, node))
         if message:
             return r.REFUSED, message
@@ -140,10 +145,12 @@ def _node_long_run(rbd, node) -> Tuple[str, str]:
             return r.REFUSED, message
         return r.EXACT, "a standby group's Markov chain"
     if node in rbd._inspection:
-        message = r.refusal(partial(rbd._require_tested_exact, node))
+        message = r.refusal(
+            partial(_requirements._require_tested_exact, rbd, node)
+        )
         if message:
             return r.REFUSED, message
-        kind = rbd._tested_kind(node)
+        kind = _requirements._tested_kind(rbd, node)
         if kind == "unit":
             return r.NUMERICAL, _TESTED_CYCLE
         if kind == "life":
@@ -162,12 +169,16 @@ def _node_long_run(rbd, node) -> Tuple[str, str]:
         if life == r.EXACT:
             return r.EXACT, "its mean life and mean repair time"
         return life, f"its mean life, {how}"
-    message = r.refusal(partial(rbd._require_no_opportunities, node))
+    message = r.refusal(
+        partial(_requirements._require_no_opportunities, rbd, node)
+    )
     if message:
         return r.REFUSED, message
     life, how = r.model_route(component.reliability)
     if schedule.policy in ("block", "condition"):
-        message = r.refusal(partial(rbd._require_block_models, node))
+        message = r.refusal(
+            partial(_requirements._require_block_models, rbd, node)
+        )
         if message:
             return r.REFUSED, message
         if schedule.policy == "condition":
@@ -207,7 +218,7 @@ def _long_run_route(rbd, groups: bool = True) -> "AnalysisRoute":
         return r.refused(chains)
     if rbd._crews_couple():
         return _crew_chain_route(rbd)
-    calendars = r.refusal(rbd._require_calendars)
+    calendars = r.refusal(partial(_requirements._require_calendars, rbd))
     if calendars:
         return r.refused(calendars)
     nodes = _long_run_nodes(rbd)
@@ -237,7 +248,7 @@ def _crew_chain_route(rbd) -> "AnalysisRoute":
     from repyability.rbd import routes as r
     from repyability.rbd.repairable_rbd import RepairableRBD
 
-    chain = r.refusal(rbd._require_crew_chain)
+    chain = r.refusal(partial(_crews._require_crew_chain, rbd))
     if chain:
         return r.refused(chain)
     nested = {
@@ -309,23 +320,23 @@ def _node_availability(rbd, node) -> float:
     with limited repair crews, its long-run probability of being up in
     their Markov chain, or a nested RBD's own, as it has crews of its
     own."""
-    rbd._require_perfect_repair(node)
-    rbd._require_times(node)
+    _requirements._require_perfect_repair(rbd, node)
+    _requirements._require_times(rbd, node)
     if rbd._crews_couple():
-        chain = rbd._crew_chain()
+        chain = _crews._crew_chain(rbd)
         if node in chain.nodes:
             return chain.availability(node)
         return float(rbd.components[node].mean_availability())
     if node in rbd._standby:
         return _standby_long_run(rbd, node).availability
     if node in rbd._inspection:
-        unit = rbd._tested_unit(node)
+        unit = _requirements._tested_unit(rbd, node)
         if unit is not None:
             return unit.long_run.availability
-        life = rbd._tested_life(node)
+        life = _requirements._tested_life(rbd, node)
         if life is not None:
             return life.availability
-        rate, interval = rbd._inspected_rate(node)
+        rate, interval = _requirements._inspected_rate(rbd, node)
         inspection = rbd._inspection[node]
         if inspection.partial:
             # Up with probability rho ** k * exp(-rate * u) (see
@@ -352,8 +363,8 @@ def _node_unavailability(rbd, node) -> float:
     so that a small one keeps its precision. For a component whose
     value is constant over the long-run grid, and while the crews do
     not couple the components (see ``_long_run_unavailabilities``)."""
-    rbd._require_perfect_repair(node)
-    rbd._require_times(node)
+    _requirements._require_perfect_repair(rbd, node)
+    _requirements._require_times(rbd, node)
     if node in rbd._standby:
         return _standby_long_run(rbd, node).unavailability
     component = rbd.components[node]
@@ -389,7 +400,7 @@ def _block_cycle(rbd, node):
     """The renewal cycle of a component under block replacement (see
     ``_block_replacement``) or replaced on condition (see
     ``_condition_replacement``), computed once and kept."""
-    rbd._refuse_level(node)
+    _requirements._refuse_level(rbd, node)
     component = rbd.components[node]
     schedule = rbd._preventive[node]
     cache = rbd.__dict__.setdefault("_block_cycles", {})
@@ -443,7 +454,9 @@ def _unit_nodes(rbd) -> list:
     """The components with hidden failures whose values are worked out
     on a grid (see ``_tested_kind``)."""
     return [
-        node for node in rbd._inspection if rbd._tested_kind(node) == "unit"
+        node
+        for node in rbd._inspection
+        if _requirements._tested_kind(rbd, node) == "unit"
     ]
 
 
@@ -482,11 +495,13 @@ def _calendar_grid(
         phase = _block_cycle(rbd, node).phase
         size += int(round(period / phase[-1])) * len(phase)
     for node in units or ():
-        unit = rbd._tested_unit(node).long_run  # type: ignore
+        unit = _requirements._tested_unit(rbd, node).long_run  # type: ignore
         size += int(round(period / unit.period)) * len(unit.edges())
     for node in rbd._inspection:
         interval = rbd._inspection[node].interval
-        per_interval = np.ceil(256.0 * rbd._tested_rate(node) * interval)
+        per_interval = np.ceil(
+            256.0 * _requirements._tested_rate(rbd, node) * interval
+        )
         size += int(per_interval) * int(round(period / interval))
     if size > 4_000_000:
         too_long()
@@ -504,7 +519,8 @@ def _calendar_grid(
             ).ravel()
         )
     for node in units or ():
-        long_run = rbd._tested_unit(node).long_run  # type: ignore
+        tested = _requirements._tested_unit(rbd, node)
+        long_run = tested.long_run  # type: ignore
         repeats = int(round(period / long_run.period))
         edges = (
             rbd._inspection[node].offset
@@ -513,7 +529,7 @@ def _calendar_grid(
         ).ravel()
         pieces.append(edges - period * np.floor(edges / period))
     for node in rbd._inspection:
-        rate = rbd._tested_rate(node)
+        rate = _requirements._tested_rate(rbd, node)
         interval = rbd._inspection[node].interval
         per_interval = int(np.ceil(256.0 * rate * interval))
         pieces.append(
@@ -569,7 +585,7 @@ def _calendar_outages(rbd, working_nodes, broken_nodes) -> float:
     units = [
         node
         for node in _unit_nodes(rbd)
-        if rbd._tested_unit(node).setup.timed  # type: ignore
+        if _requirements._tested_unit(rbd, node).setup.timed  # type: ignore
     ]
     if not blocks and not units:
         return 0.0
@@ -591,7 +607,8 @@ def _calendar_outages(rbd, working_nodes, broken_nodes) -> float:
             due.setdefault(instant, []).append((node, values))
     for node in units:
         inspection = rbd._inspection[node]
-        long_run = rbd._tested_unit(node).long_run  # type: ignore
+        tested = _requirements._tested_unit(rbd, node)
+        long_run = tested.long_run  # type: ignore
         for k in range(int(round(period / inspection.interval))):
             time = inspection.offset + k * inspection.interval
             time -= period * math.floor(time / period)
@@ -647,8 +664,8 @@ def _long_run_grid(rbd) -> Tuple[np.ndarray, np.ndarray]:
     with tests or repairs that take time: see ``_calendar_grid``), the
     middles of the grids' cells.
     """
-    rbd._require_unlimited_crews()
-    rbd._require_calendars()
+    _crews._require_unlimited_crews(rbd)
+    _requirements._require_calendars(rbd)
     blocks = _block_nodes(rbd)
     units = _unit_nodes(rbd)
     if blocks or units:
@@ -656,7 +673,10 @@ def _long_run_grid(rbd) -> Tuple[np.ndarray, np.ndarray]:
     if not rbd._inspection:
         return np.zeros(1), np.ones(1)
     rates = {
-        node: (rbd._tested_rate(node), rbd._inspection[node].interval)
+        node: (
+            _requirements._tested_rate(rbd, node),
+            rbd._inspection[node].interval,
+        )
         for node in rbd._inspection
     }
     intervals = {interval for _, interval in rates.values()}
@@ -674,7 +694,7 @@ def _long_run_grid(rbd) -> Tuple[np.ndarray, np.ndarray]:
     # survival, say), so the pieces after it close in on it.
     graded: set = set()
     for node, schedule in rbd._inspection.items():
-        life = rbd._tested_life(node)
+        life = _requirements._tested_life(rbd, node)
         if life is None:
             continue
         count = int(round(period / schedule.interval))
@@ -722,13 +742,15 @@ def _tested_profile(
     life's profile is its ``TestedLife``'s (#144), and with tests or
     repairs that take time, or tests that can miss a failure of a life
     that is not exponential, its ``TestedLongRun``'s (#159)."""
-    unit = rbd._tested_unit(node)
+    unit = _requirements._tested_unit(rbd, node)
     if unit is not None:
-        return unit.long_run.profile(rbd._unit_phase(node, times))
-    life = rbd._tested_life(node)
+        return unit.long_run.profile(
+            _requirements._unit_phase(rbd, node, times)
+        )
+    life = _requirements._tested_life(rbd, node)
     if life is not None:
-        return life.profile(rbd._tested_phase(node, times))
-    rate, interval = rbd._inspected_rate(node)
+        return life.profile(_requirements._tested_phase(rbd, node, times))
+    rate, interval = _requirements._inspected_rate(rbd, node)
     inspection = rbd._inspection[node]
     position = times - inspection.offset if inspection.offset else times
     if not inspection.partial:
@@ -807,11 +829,11 @@ def _long_run_points(
     in ``_long_run_grid``, or None in the states of the repair crews'
     chain."""
     if rbd._crews_couple():
-        probabilities, weights = rbd._chain_probabilities(
-            working_nodes, broken_nodes
+        probabilities, weights = _crews._chain_probabilities(
+            rbd, working_nodes, broken_nodes
         )
         forced = set(working_nodes or ()) | set(broken_nodes or ())
-        chain = rbd._crew_chain(frozenset(forced))
+        chain = _crews._crew_chain(rbd, frozenset(forced))
         # In each state a node in the chain, or held working or broken,
         # is up or down for certain: one less it is exact.
         failures = {node: 1.0 - value for node, value in probabilities.items()}
@@ -850,7 +872,7 @@ def _long_run_probabilities(
         # The groups' chains refuse the crews (see _ccf_rates).
         _ccf_groups._require_ccf_long_run(rbd)
     if rbd._crews_couple():
-        return rbd._chain_probabilities(working_nodes, broken_nodes)
+        return _crews._chain_probabilities(rbd, working_nodes, broken_nodes)
     times, weights = _long_run_grid(rbd)
     probabilities = rbd._probabilities_with_overrides(
         _availabilities_at(rbd, times), working_nodes, broken_nodes
@@ -894,7 +916,7 @@ def _standby_long_run(rbd, node) -> "_standby_chain.StandbyLongRun":
         repair,
         arrangement.dormancy_factor,
         arrangement.switching_probability,
-        rbd.repair_crews if rbd._crews_limited() else None,
+        rbd.repair_crews if _crews._crews_limited(rbd) else None,
     )
 
 
@@ -906,8 +928,8 @@ def _node_frequencies(rbd, node) -> Tuple[float, float, float]:
     from its renewal cycle for one under age replacement."""
     from repyability.rbd.repairable_rbd import RepairableRBD
 
-    rbd._require_perfect_repair(node)
-    rbd._require_times(node)
+    _requirements._require_perfect_repair(rbd, node)
+    _requirements._require_times(rbd, node)
     component = rbd.components[node]
     if isinstance(component, RepairableRBD):
         failures, planned = _outage_frequencies(component)
@@ -917,16 +939,16 @@ def _node_frequencies(rbd, node) -> Tuple[float, float, float]:
     if node in rbd._inspection:
         # At most one failure per inspection interval: the unit, down
         # from its failure, is renewed at the inspection that finds it.
-        unit = rbd._tested_unit(node)
+        unit = _requirements._tested_unit(rbd, node)
         if unit is not None:
             # Its tests that take it off line, working, are planned
             # outages.
             long_run = unit.long_run
             return long_run.failures, 0.0, long_run.planned
-        life = rbd._tested_life(node)
+        life = _requirements._tested_life(rbd, node)
         if life is not None:
             return life.failures, 0.0, 0.0
-        rate, interval = rbd._inspected_rate(node)
+        rate, interval = _requirements._inspected_rate(rbd, node)
         if rbd._inspection[node].partial:
             # It fails at its constant rate while it is up.
             return rate * _node_availability(rbd, node), 0.0, 0.0
@@ -954,8 +976,8 @@ def _maintenance_cycle(
     ``_block_replacement``); replaced on condition, from one inspection
     that replaces the unit to the next (see ``_condition_replacement``).
     It is computed once and kept."""
-    rbd._require_no_opportunities(node)
-    rbd._require_perfect_repair(node)
+    _requirements._require_no_opportunities(rbd, node)
+    _requirements._require_perfect_repair(rbd, node)
     component = rbd.components[node]
     if schedule.policy == "block":
         block = _block_cycle(rbd, node)
@@ -1032,7 +1054,7 @@ def _outage_terms(
     if rbd.ccf_groups:
         return _ccf_groups._ccf_outage_terms(rbd, working_nodes, broken_nodes)
     if rbd._crews_couple():
-        return rbd._chain_outage_terms(working_nodes, broken_nodes)
+        return _crews._chain_outage_terms(rbd, working_nodes, broken_nodes)
     times, weights = _long_run_grid(rbd)
     availability = rbd._probabilities_with_overrides(
         _availabilities_at(rbd, times), working_nodes, broken_nodes
@@ -1061,8 +1083,8 @@ def _outage_terms(
         if node in rbd._inspection:
             # It fails at its constant rate whenever it is up (any other
             # life: at its profile's rate).
-            node_failures: Any = rbd._tested_intensity(
-                node, times, availability[node]
+            node_failures: Any = _requirements._tested_intensity(
+                rbd, node, times, availability[node]
             )
             node_planned: Any = 0.0
         elif node in blocks:

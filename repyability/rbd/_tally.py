@@ -29,6 +29,7 @@ import numpy as np
 from repyability.rbd import (
     _conditional,
     _curves,
+    _requirements,
     _timeline_runs,
     _windows,
 )
@@ -1435,7 +1436,7 @@ class _CapacityRecorder:
     worked out once per state and kept."""
 
     def __init__(self, rbd: "RepairableRBD", demand: Optional[float]):
-        rbd._require_capacities_given()
+        _requirements._require_capacities_given(rbd)
         self._rbd = rbd
         self._nodes = list(rbd.nodes)
         self._states: Dict[frozenset, _CapacityState] = {}

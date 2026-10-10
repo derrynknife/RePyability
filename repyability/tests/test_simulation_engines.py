@@ -26,7 +26,7 @@ import surpyval as surv
 
 from repyability import NodeState, PerfectReliability, RepairableRBD
 from repyability.non_repairable import NonRepairable
-from repyability.rbd import _compiled, _streams, _time_order
+from repyability.rbd import _compiled, _crews, _streams, _time_order
 from repyability.rbd._events import Event
 from repyability.tests import timeline_reference
 from repyability.tests.catalogue import systems_of_every_kind
@@ -902,7 +902,7 @@ def test_what_numbas_loop_runs_besides_plain_components():
     ]:
         plan, _ = rbd._stream_plan(100.0, 1, False)
         # Not given to an engine of the interface's version.
-        if rbd._crews_limited():
+        if _crews._crews_limited(rbd):
             reason = "repair crews"
         elif rbd._standby:
             reason = "standby groups"

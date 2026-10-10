@@ -126,12 +126,14 @@ def _unsupported_level(
     from repyability.non_repairable import NonRepairable
     from repyability.rbd.repairable_rbd import RepairableRBD
 
+    from . import _crews
+
     if rbd._too_meshed() is not None:
         # Its structure is the graph itself (modular.GraphStructure).
         return "a structure too meshed to work out"
     if rbd.ccf_groups:
         return "common-cause groups"
-    if rbd._crews_limited() and not numba:
+    if _crews._crews_limited(rbd) and not numba:
         return "repair crews"
     if rbd._standby and not numba:
         return "standby groups"
@@ -333,6 +335,8 @@ class _System:
     def __init__(self, rbd, plan, working, broken, method: str):
         from repyability.rbd._tally import _CATEGORIES
         from repyability.rbd.repairable_rbd import RepairableRBD
+
+        from . import _crews
 
         nodes = list(rbd.components)
         index = {node: c for c, node in enumerate(nodes)}
@@ -541,7 +545,7 @@ class _System:
         #: the lowest rank first).
         level_crews = np.array(
             [
-                here.repair_crews if here._crews_limited() else -1
+                here.repair_crews if _crews._crews_limited(here) else -1
                 for here in level_rbds
             ],
             np.int64,

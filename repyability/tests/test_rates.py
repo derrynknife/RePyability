@@ -20,7 +20,7 @@ from repyability import (
     NonRepairableRBD,
     RepairableRBD,
 )
-from repyability.rbd import _curves, _rates
+from repyability.rbd import _crews, _curves, _rates
 
 E, W = surv.Exponential.from_params, surv.Weibull.from_params
 
@@ -421,7 +421,7 @@ def test_with_one_crew_each_part_is_its_own_transitions():
     )
     x = np.array([0.0, 0.4, 2.0, 30.0])
     rate = rbd.availability_rate(x)
-    chain = rbd._crew_chain()
+    chain = _crews._crew_chain(rbd)
     generator = chain.generator.toarray()
     a, b = (chain.nodes.index(n) for n in "ab")
     state = {s: k for k, s in enumerate(chain.states)}

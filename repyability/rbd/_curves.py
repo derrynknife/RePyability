@@ -25,8 +25,10 @@ from repyability.non_repairable import NonRepairable
 from repyability.rbd import (
     _ccf_groups,
     _chain_transient,
+    _crews,
     _long_run,
     _repairable_capacity,
+    _requirements,
     _standby_chain,
     _windows,
 )
@@ -229,11 +231,15 @@ def _node_over_time(rbd, node, kind: str = "availability") -> Tuple[str, str]:
             r.NUMERICAL,
             "its units' Markov chain, followed over time by " "uniformization",
         )
-    message = r.refusal(partial(rbd._require_time_models, node))
+    message = r.refusal(partial(_requirements._require_time_models, rbd, node))
     if not message:
-        message = r.refusal(partial(rbd._require_no_opportunities, node))
+        message = r.refusal(
+            partial(_requirements._require_no_opportunities, rbd, node)
+        )
     if not message and node in rbd._imperfect:
-        message = r.refusal(partial(rbd._require_minimal_repair, node))
+        message = r.refusal(
+            partial(_requirements._require_minimal_repair, rbd, node)
+        )
         if message:
             return r.REFUSED, message
         return (
@@ -242,11 +248,15 @@ def _node_over_time(rbd, node, kind: str = "availability") -> Tuple[str, str]:
             "as its life's cumulative hazard",
         )
     if not message and node in rbd._inspection:
-        message = r.refusal(partial(rbd._require_tested_exact, node))
+        message = r.refusal(
+            partial(_requirements._require_tested_exact, rbd, node)
+        )
     schedule = rbd._preventive.get(node)
     calendar = schedule is not None and schedule.policy != "age"
     if not message and calendar:
-        message = r.refusal(partial(rbd._require_block_models, node))
+        message = r.refusal(
+            partial(_requirements._require_block_models, rbd, node)
+        )
     if message:
         return r.REFUSED, message
     if calendar and schedule.policy == "condition":  # type: ignore
@@ -255,7 +265,10 @@ def _node_over_time(rbd, node, kind: str = "availability") -> Tuple[str, str]:
             "replacement on condition: followed from one inspection to "
             "the next on a grid, the units kept by age",
         )
-    if node in rbd._inspection and rbd._tested_kind(node) == "unit":
+    if (
+        node in rbd._inspection
+        and _requirements._tested_kind(rbd, node) == "unit"
+    ):
         return r.NUMERICAL, _TESTED_CYCLE + " over time"
     return r.NUMERICAL, "its renewal equation, solved on a grid"
 
@@ -390,7 +403,7 @@ def _require_crew_over_time(
     ``_crew_nested``). Return the nested RBDs, less those in
     ``forced``."""
     _ccf_groups._require_ccf_long_run(rbd)
-    rbd._require_crew_chain()
+    _crews._require_crew_chain(rbd)
     return _crew_nested(rbd, forced)
 
 
@@ -522,13 +535,13 @@ def _node_curve(
         return _standby_curve(rbd, node, start)
     if node not in rbd._inspection:
         return _unit_curve(rbd, node, horizon, counts, degrading, start)
-    unit = rbd._tested_unit(node)
+    unit = _requirements._tested_unit(rbd, node)
     if unit is not None:
         return _tested_unit_curve(rbd, node, unit, horizon, start)
-    life = rbd._tested_life(node)
+    life = _requirements._tested_life(rbd, node)
     if life is not None:
         return _tested_life_curve(rbd, node, life, start)
-    rate, interval = rbd._inspected_rate(node)
+    rate, interval = _requirements._inspected_rate(rbd, node)
     inspection = rbd._inspection[node]
     if inspection.partial:
         # From new (its state is not taken: see _check_state).
@@ -656,7 +669,7 @@ def _states(rbd, state, forced=frozenset(), simulated=False) -> dict:
     out: dict = {}
     for node, value in state.items():
         if node not in rbd.components:
-            raise rbd._not_a_component(node, "state")
+            raise _requirements._not_a_component(rbd, node, "state")
         if node in forced:
             raise ValueError(
                 f"Node {node!r} is held working or broken: give it no "
@@ -840,7 +853,9 @@ def _check_simulated(rbd, states: dict) -> None:
     from repyability.rbd.repairable_rbd import RepairableRBD
 
     in_hand = 0
-    served = set(rbd._crew_served()) if rbd._crews_limited() else set()
+    served = (
+        set(_crews._crew_served(rbd)) if _crews._crews_limited(rbd) else set()
+    )
     for node, start in states.items():
         component = rbd.components[node]
         if isinstance(component, RepairableRBD):
@@ -998,7 +1013,7 @@ def _standby_curve(rbd, node, start: Optional[NodeState] = None):
         repair,
         arrangement.dormancy_factor,
         arrangement.switching_probability,
-        rbd.repair_crews if rbd._crews_limited() else None,
+        rbd.repair_crews if _crews._crews_limited(rbd) else None,
     )
     if start is not None and start.stationary:
         initial = group.probabilities
@@ -1088,7 +1103,7 @@ def _crew_failing(rbd, chain, importance: dict) -> np.ndarray:
     ``chain``: a component that is up fails at its rate, and takes the
     system down where it is critical (its Birnbaum ``importance``
     there, 1 or 0), as ``system_failure_frequency`` has it."""
-    rates = rbd._crew_chain_rates()
+    rates = _crews._crew_chain_rates(rbd)
     failing = np.zeros(len(chain.probabilities))
     for k, node in enumerate(chain.nodes):
         failing += importance[node] * chain.up[:, k] * rates[node][0]
@@ -1099,7 +1114,7 @@ def _crew_failing_each(rbd, chain, importance: dict) -> np.ndarray:
     """``_crew_failing`` by component: the rate of the system's failures
     by each of the chain's components (columns) in each of its states
     (#199)."""
-    rates = rbd._crew_chain_rates()
+    rates = _crews._crew_chain_rates(rbd)
     return np.column_stack(
         [
             importance[node] * chain.up[:, k] * rates[node][0]
@@ -1187,7 +1202,7 @@ def _crew_curve(
     working, broken = set(working_nodes), set(broken_nodes)
     forced = working | broken
     nested = _require_crew_over_time(rbd, frozenset(forced))
-    chain = rbd._crew_chain(frozenset(forced))
+    chain = _crews._crew_chain(rbd, frozenset(forced))
     vectors = _crew_patterns(rbd, chain, nested, working, broken, method)
     uniformized = _uniformized(
         "The repair crews'",
@@ -1251,7 +1266,7 @@ def _no_crew_window(
     )
     raise NotImplementedError(
         f"With {rbd.repair_crews} repair crew(s) for "
-        f"{len(rbd._crew_served())} components, {what} over time come "
+        f"{len(_crews._crew_served(rbd))} components, {what} over time come "
         f"from the crews' Markov chain, {where}. Simulate them with "
         "availability() or cost(); the availability over time and the "
         "long-run values are exact."
@@ -1325,8 +1340,8 @@ def _crew_window(
     working, broken = set(working_nodes), set(broken_nodes)
     forced = working | broken
     nested = _require_crew_over_time(rbd, frozenset(forced), "window")
-    chain = rbd._crew_chain(frozenset(forced))
-    rates = rbd._crew_chain_rates()
+    chain = _crews._crew_chain(rbd, frozenset(forced))
+    rates = _crews._crew_chain_rates(rbd)
     if nested:
         # The nested RBDs, independent of the chain, counted as nodes,
         # with the system worked out over the chain (#162).
@@ -1437,11 +1452,11 @@ def _unit_curve(
     new (see ``point_availability``). ``unscheduled`` leaves out its
     preventive maintenance, and follows it to the horizon: the head of a
     block-replacement curve, up to its first block time."""
-    rbd._require_time_models(node)
-    rbd._require_no_opportunities(node)
+    _requirements._require_time_models(rbd, node)
+    _requirements._require_no_opportunities(rbd, node)
     component = rbd.components[node]
     if node in rbd._imperfect:
-        rbd._require_minimal_repair(node)
+        _requirements._require_minimal_repair(rbd, node)
         scale = _up_scale(component.reliability, None)
         if not (np.isfinite(scale) and scale > 0.0):
             scale = horizon if horizon > 0.0 else 1.0
@@ -1480,7 +1495,7 @@ def _unit_curve(
         long_run, rates = None, None
     stage_model = None
     if stages:
-        rbd._require_unscheduled_stages(node)
+        _requirements._require_unscheduled_stages(rbd, node)
         stage_model = life
     if start is not None and start.stationary:
         # Long in service: in its long-run state throughout.
@@ -1610,7 +1625,7 @@ def _block_curve(rbd, node, horizon: float, start: Optional[NodeState] = None):
     its phase on; from another state, its own curve up to its first
     block time or inspection, and the schedule's from there (see
     ``StartedBlockCurve``)."""
-    rbd._refuse_level(node)
+    _requirements._refuse_level(rbd, node)
     component = rbd.components[node]
     schedule = rbd._preventive[node]
     duration = schedule.duration

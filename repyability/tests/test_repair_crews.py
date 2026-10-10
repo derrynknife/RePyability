@@ -9,7 +9,7 @@ import pytest
 import surpyval as surv
 
 from repyability import RBD, RepairableRBD
-from repyability.rbd import _compiled
+from repyability.rbd import _compiled, _crews
 from repyability.rbd import routes as r
 
 E, W, L = (
@@ -241,7 +241,7 @@ def test_a_nested_rbd_has_crews_of_its_own():
         {"p": inner, "q": dict(unit)},
         repair_crews=1,
     )
-    assert not outer._crews_limited()
+    assert not _crews._crews_limited(outer)
     with pytest.raises(NotImplementedError, match="repair crew"):
         outer.mean_availability()
     result = outer.availability(

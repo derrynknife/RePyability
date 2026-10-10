@@ -8,6 +8,7 @@ methods of ``RepairableRBD`` of those names call these.
 """
 
 import math
+from functools import partial
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -26,6 +27,7 @@ from repyability.rbd import (
     _curves,
     _quadrature,
     _rates,
+    _requirements,
 )
 from repyability.rbd._common import (
     _DISCOUNT_ROUNDS,
@@ -436,7 +438,7 @@ def expected_cost(
     rate = _discount_rate(discount_rate)
     if rate > 0.0 and rbd.has_costs:
         _present_horizon(
-            _horizons(t, 0.0), rate, rbd._mean_lives
+            _horizons(t, 0.0), rate, partial(_requirements._mean_lives, rbd)
         )  # warns of a rate that discounts the costs away
         return _discounted_cost(
             rbd, t, rate, working_nodes, broken_nodes, method, state

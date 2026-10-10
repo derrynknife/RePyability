@@ -22,6 +22,7 @@ from repyability.rbd import (
     _ccf_modules,
     _curves,
     _long_run,
+    _requirements,
 )
 from repyability.rbd._common import (
     _common_period,
@@ -98,7 +99,7 @@ def _ccf_rates(rbd, group) -> Tuple[float, Optional[float]]:
         # one (#220).
         _ccf_timings(rbd, group)
         for member in group.members:
-            rbd._require_tested_exact(member)
+            _requirements._require_tested_exact(rbd, member)
         if len({rbd._inspection[m].coverage for m in group.members}) > 1:
             raise NotImplementedError(
                 f"{where}: its members' tests have different coverages; "
@@ -728,8 +729,8 @@ def _ccf_outage_terms(
         up_0, down_0 = evaluation.system(hold={node: False})
         importance = np.where(Q_t <= R_t, down_0 - down_1, up_1 - up_0)
         if node in rbd._inspection:
-            node_failures: Any = rbd._tested_intensity(
-                node, times, availability[node]
+            node_failures: Any = _requirements._tested_intensity(
+                rbd, node, times, availability[node]
             )
             node_planned: Any = 0.0
         elif node in blocks:
