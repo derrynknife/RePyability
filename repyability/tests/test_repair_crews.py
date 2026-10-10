@@ -9,7 +9,7 @@ import pytest
 import surpyval as surv
 
 from repyability import RBD, RepairableRBD
-from repyability.rbd import _compiled, _crews
+from repyability.rbd import _compiled, _crews, _event_loop
 from repyability.rbd import routes as r
 
 E, W, L = (
@@ -218,7 +218,7 @@ def test_the_report_and_the_engines_follow_the_crews(monkeypatch):
     assert report["availability"].route == r.SIMULATED
     # numba's own loop simulates the crews (#155); an engine of the
     # interface's version is not given them.
-    plan = system(1)._stream_plan(1.0, 0, False)[0]
+    plan = _event_loop._stream_plan(system(1), 1.0, 0, False)[0]
     assert _compiled.unsupported(system(1), plan, None) == "repair crews"
     assert _compiled.unsupported(system(1), plan, None, numba=True) is None
     monkeypatch.setattr(_compiled, "available", lambda: True)

@@ -2053,11 +2053,14 @@ def _simulated_replacements(
 ) -> Dict[Any, np.ndarray]:
     """How many times each of ``nodes`` was replaced in each of
     ``mc_samples`` simulations of ``[0, horizon)``."""
+    from . import _event_loop
+
     montecarlo.check_count(mc_samples, False, "mc_samples")
     if horizon == 0.0:
         # Nothing is replaced in no time (as the exact count says).
         return {node: np.zeros(mc_samples, dtype=np.int64) for node in nodes}
-    tally = rbd._run(
+    tally = _event_loop._run(
+        rbd,
         horizon,
         set(),
         set(),

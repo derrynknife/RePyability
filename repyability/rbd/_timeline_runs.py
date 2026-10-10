@@ -201,6 +201,8 @@ def simulate(
     from repyability.rbd._runs import _UNSTREAMED
     from repyability.rbd.results import TimelineSimulation
 
+    from . import _event_loop
+
     _ccf_groups._require_groups_simulated(rbd)
     if (
         isinstance(t_simulation, bool)
@@ -248,13 +250,14 @@ def simulate(
         entropy = _streams.entropy_of(seed)
         if seed is None:
             after = np.random.get_state()
-        plan, complete = rbd._stream_plan(
-            t_simulation, entropy, antithetic, states=states
+        plan, complete = _event_loop._stream_plan(
+            rbd, t_simulation, entropy, antithetic, states=states
         )
         if antithetic and not complete:
             raise NotImplementedError(_UNSTREAMED)
         chosen = _engine(rbd, plan, engine, N, states)
-        tally = rbd._run(
+        tally = _event_loop._run(
+            rbd,
             t_simulation,
             working,
             broken,
@@ -270,6 +273,7 @@ def simulate(
             states=states,
             histories=True,
         )
+        assert tally.histories is not None
         parts, recorded = tally.histories.data(t_simulation)
         data = dict(zip(rbd.components, parts))
         system = _named(rbd, recorded)
@@ -312,6 +316,8 @@ def with_costs(
     system's run."""
     from repyability.rbd._runs import _UNSTREAMED
 
+    from . import _event_loop
+
     if engine not in ("auto", "python", "numba"):
         raise ValueError(
             f"engine must be 'auto', 'python' or 'numba' (the engines that "
@@ -321,12 +327,13 @@ def with_costs(
     if entropy is None:
         entropy = _streams.entropy_of(seed)
     states = states or {}
-    plan, complete = rbd._stream_plan(
-        t_simulation, entropy, antithetic, states
+    plan, complete = _event_loop._stream_plan(
+        rbd, t_simulation, entropy, antithetic, states
     )
     if antithetic and not complete:
         raise NotImplementedError(_UNSTREAMED)
-    tally = rbd._run(
+    tally = _event_loop._run(
+        rbd,
         t_simulation,
         set(),
         set(),
@@ -343,6 +350,7 @@ def with_costs(
         states=states,
         histories=True,
     )
+    assert tally.histories is not None
     parts, _ = tally.histories.data(t_simulation)
     return dict(zip(rbd.components, parts)), tally
 

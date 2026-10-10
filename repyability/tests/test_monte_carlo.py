@@ -19,6 +19,7 @@ from scipy.integrate import quad
 from scipy.stats import norm
 
 from repyability import NonRepairableRBD, RepairableRBD, StandbyModel
+from repyability.rbd import _event_loop
 from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd import _streams, non_repairable_rbd
 from repyability.rbd.non_repairable_rbd import _check_lifetimes
@@ -436,16 +437,8 @@ def test_compare_costs_against_the_exact_difference():
 
 
 def keyed_uptimes(rbd, n, key):
-    tally = rbd._run(
-        T,
-        set(),
-        set(),
-        "p",
-        n,
-        False,
-        None,
-        entropy=key,
-        common=True,
+    tally = _event_loop._run(
+        rbd, T, set(), set(), "p", n, False, None, entropy=key, common=True
     )
     return np.asarray(tally.uptimes)
 

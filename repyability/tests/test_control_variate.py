@@ -10,7 +10,7 @@ import pytest
 import surpyval as surv
 
 from repyability import ControlVariate, NodeState, RepairableRBD
-from repyability.rbd import _curves, _runs, _streams
+from repyability.rbd import _curves, _event_loop, _runs, _streams
 from repyability.tests.test_performance_equivalence import binomial_first
 from repyability.tests.test_simulation_chunks import identical
 
@@ -230,8 +230,8 @@ def test_the_twin_leaves_out_what_ties_components_together():
     # The standby group's twin is its units, as a nested RBD whose streams
     # are the units'.
     assert isinstance(twin.components["G"], RepairableRBD)
-    mine, _ = rbd._stream_specs(500.0)
-    theirs, _ = twin._stream_specs(500.0)
+    mine, _ = _event_loop._stream_specs(rbd, 500.0)
+    theirs, _ = _event_loop._stream_specs(twin, 500.0)
     for unit_index in range(3):
         for kind in (_streams.FAILURE, _streams.REPAIR):
             assert (("G", unit_index), kind) in mine
@@ -328,13 +328,13 @@ def test_a_system_that_is_its_own_twin_is_simulated_once(monkeypatch):
     # Its twin's run, drawn from the same streams, is its own to the last
     # bit (#186): one run a round, where a twin that differs runs beside it.
     runs = []
-    plain = RepairableRBD._run
+    plain = _event_loop._run
 
-    def counted(self, *args, **kwargs):
-        runs.append(self)
-        return plain(self, *args, **kwargs)
+    def counted(rbd, *args, **kwargs):
+        runs.append(rbd)
+        return plain(rbd, *args, **kwargs)
 
-    monkeypatch.setattr(RepairableRBD, "_run", counted)
+    monkeypatch.setattr(_event_loop, "_run", counted)
     own = RepairableRBD(EDGES, {n: unit() for n in "ABC"})
     result = own.availability(
         300.0, mc_samples=100, seed=3, control_variate=True

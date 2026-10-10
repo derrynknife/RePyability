@@ -18,13 +18,13 @@ import pytest
 import surpyval as surv
 
 from repyability import NonRepairable, NonRepairableRBD, RepairableRBD
+from repyability.rbd._event_loop import _aged_life
 from repyability.rbd._sampling import (
     MixtureLife,
     inverse_sampler,
     mixture_quantile,
     stream_sampler,
 )
-from repyability.rbd.repairable_rbd import _aged_life
 from repyability.tests.catalogue import mixture_life
 
 REPAIR = surv.Exponential.from_params([1.0])

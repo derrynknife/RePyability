@@ -12,7 +12,7 @@ from surpyval.recurrent.renewal.renewal_model import conditional_gaps
 
 from repyability import RepairableRBD
 from repyability.rbd import routes as r
-from repyability.rbd.repairable_rbd import _aged_life
+from repyability.rbd._event_loop import _aged_life
 
 E, W, L = (
     surv.Exponential.from_params,
