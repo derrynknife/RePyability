@@ -16,6 +16,7 @@ import surpyval as surv
 
 import repyability.rbd._block_replacement as block_replacement
 from repyability import RepairableRBD
+from repyability.rbd import _long_run
 from repyability.rbd._block_replacement import block_cycle
 
 E = surv.Exponential.from_params
@@ -107,7 +108,7 @@ def test_a_replacement_that_takes_time():
     assert rbd.system_failure_frequency() == pytest.approx(
         lam * (T - d) / T, rel=1e-6
     )
-    failures, planned = rbd._outage_frequencies()
+    failures, planned = _long_run._outage_frequencies(rbd)
     assert planned == pytest.approx(1.0 / T, rel=1e-9)
 
 
@@ -192,7 +193,7 @@ def test_replacements_at_the_same_time_take_the_units_down_together(parallel):
     spec = component(E([0.01]), "instant", T, FIXED([d]))
     rbd = pair(spec, dict(spec), parallel)
     assert rbd.mean_availability() == pytest.approx((T - d) / T, abs=1e-6)
-    failures, planned = rbd._outage_frequencies()
+    failures, planned = _long_run._outage_frequencies(rbd)
     assert planned == pytest.approx(1.0 / T, rel=1e-6)
     if parallel:
         # One unit failing while the other is up takes nothing down.
@@ -210,7 +211,7 @@ def test_replacements_every_other_interval():
     assert rbd.mean_availability() == pytest.approx(
         1.0 - d / (2 * T), abs=1e-6
     )
-    _, planned = rbd._outage_frequencies()
+    _, planned = _long_run._outage_frequencies(rbd)
     assert planned == pytest.approx(1.0 / (2 * T), rel=1e-6)
 
 
@@ -227,7 +228,7 @@ def test_a_synchronised_pair_matches_the_simulation():
     window = result.mean_availability_interval()
     assert abs(exact - window.estimate) < 4 * window.standard_error
     t = result.n_simulations * result.time_simulated_to
-    _, planned = rbd._outage_frequencies()
+    _, planned = _long_run._outage_frequencies(rbd)
     assert result.system_planned_outages / t == pytest.approx(
         planned, rel=0.02
     )

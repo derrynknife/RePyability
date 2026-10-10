@@ -9,6 +9,7 @@ import pytest
 import surpyval as surv
 
 from repyability import RepairableRBD
+from repyability.rbd import _long_run
 from repyability.rbd import routes as r
 
 E, W = surv.Exponential.from_params, surv.Weibull.from_params
@@ -353,7 +354,7 @@ def test_the_exact_cost_rate_charges_a_set_up_per_stop():
     # stop, charged one set-up.
     priced = pair(setup=500.0)
     plain = pair(group=None)
-    frequencies = [priced._node_frequencies(node) for node in "ab"]
+    frequencies = [_long_run._node_frequencies(priced, node) for node in "ab"]
     actions = sum(
         failure + maintained for failure, maintained, _ in frequencies
     )

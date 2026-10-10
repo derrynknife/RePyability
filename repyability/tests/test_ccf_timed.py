@@ -16,7 +16,7 @@ import pytest
 from surpyval import ExactEventTime, Exponential, Weibull
 
 from repyability import BetaFactor, CCFGroup, RepairableRBD
-from repyability.rbd import _ccf_groups
+from repyability.rbd import _ccf_groups, _long_run
 from repyability.rbd import routes as r
 
 E, X, W = (
@@ -177,7 +177,7 @@ def test_what_the_chain_does_not_take_says_what_to_do():
 def test_copies_of_members_whose_repairs_take_time_are_refused():
     rbd = pair(0.1, TIMINGS["fixed repair"])
     group = rbd.ccf_groups[0]
-    times, _ = rbd._long_run_grid()
+    times, _ = _long_run._long_run_grid(rbd)
     with pytest.raises(NotImplementedError, match="copies of them"):
         _ccf_groups._group_states(rbd, group, times, counts=[2, 1])
 

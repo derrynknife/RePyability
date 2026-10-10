@@ -28,7 +28,7 @@ import numpy as np
 from scipy.optimize import OptimizeResult, brentq, minimize
 from scipy.special import expit, logit, logsumexp, softmax
 
-from repyability.rbd import _ccf_groups, _costs
+from repyability.rbd import _ccf_groups, _costs, _long_run
 from repyability.rbd._common import (
     _discount_rate,
     _horizons,
@@ -204,18 +204,20 @@ def allocate_redundancy(
     grouped = _require_groups_allocated(rbd, chosen, drawn)
     # Every node's availability (and unavailability) over the times the
     # long-run values average over, and each component's own cost.
-    times, weights = rbd._long_run_grid()
+    times, weights = _long_run._long_run_grid(rbd)
     up = {
         node: np.atleast_1d(np.asarray(a, dtype=float))
-        for node, a in rbd._availabilities_at(times).items()
+        for node, a in _long_run._availabilities_at(rbd, times).items()
     }
     down = {
         node: np.atleast_1d(np.asarray(u, dtype=float))
-        for node, u in rbd._unavailabilities_at(times).items()
+        for node, u in _long_run._unavailabilities_at(rbd, times).items()
     }
     copy_cost = {}
     for node in rbd.components:
-        rate = _costs._node_cost_rate(rbd, node, rbd._node_availability(node))
+        rate = _costs._node_cost_rate(
+            rbd, node, _long_run._node_availability(rbd, node)
+        )
         copy_cost[node] = (
             rbd.acquisition_costs.get(node, 0.0),
             rate,
@@ -365,7 +367,7 @@ def allocate_redundancy(
         )
 
     series = None
-    varying = set(rbd._inspection) | set(rbd._block_nodes())
+    varying = set(rbd._inspection) | set(_long_run._block_nodes(rbd))
     if not drawn and all(
         node not in varying and node not in grouped and in_series(node)
         for node in chosen
@@ -791,7 +793,10 @@ def _allocatable(
                 f"fixed names {sorted(unknown, key=str)}, which are not "
                 "components of this RBD."
             )
-    current = {node: rbd._node_availability(node) for node in rbd.components}
+    current = {
+        node: _long_run._node_availability(rbd, node)
+        for node in rbd.components
+    }
     free = _allocated_levers(rbd, held)
     for node, (mttf, mttr) in free.items():
         current[node] = mttf / (mttf + mttr)
@@ -864,10 +869,10 @@ def _allocation_view(rbd, held: set) -> "RepairableRBD":
     ``_allocation_probability`` and ``_log_odds`` do so. With
     common-cause groups, whose members are held, its points are split
     by the groups' joint states (see ``_with_ccf_groups``)."""
-    times, weights = rbd._long_run_grid()
+    times, weights = _long_run._long_run_grid(rbd)
     if len(times) == 1 and not rbd.ccf_groups:
         return rbd
-    profiles = rbd._availabilities_at(times)
+    profiles = _long_run._availabilities_at(rbd, times)
     if rbd.ccf_groups:
         profiles, _, weights, _ = _ccf_groups._with_ccf_groups(
             rbd,

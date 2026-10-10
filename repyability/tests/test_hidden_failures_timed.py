@@ -20,7 +20,7 @@ from repyability import (
 )
 from repyability.rbd import _hidden_life
 from repyability.rbd import _hidden_tests as ht
-from repyability.rbd import routes
+from repyability.rbd import _long_run, routes
 from repyability.rbd._point_availability import (
     InspectionCurve,
     PartialTestCurve,
@@ -362,9 +362,9 @@ def test_tests_at_once_take_the_function_off_line():
     assert both.mean_unavailability() == pytest.approx(4.28047e-4, rel=1e-5)
     assert apart.mean_unavailability() == pytest.approx(7.11935e-5, rel=1e-5)
     # Each test of both takes the function down, unless one is failed.
-    planned = both._outage_frequencies()[1] * 8760.0
+    planned = _long_run._outage_frequencies(both)[1] * 8760.0
     assert planned == pytest.approx(0.9997, abs=1e-4)
-    assert apart._outage_frequencies()[1] * 8760.0 < 0.02
+    assert _long_run._outage_frequencies(apart)[1] * 8760.0 < 0.02
 
 
 def test_a_system_s_long_run_is_its_settled_values():
@@ -384,7 +384,7 @@ def test_a_system_s_long_run_is_its_settled_values():
     assert availability + rbd.mean_unavailability() == pytest.approx(
         1.0, abs=1e-12
     )
-    failures, planned = rbd._outage_frequencies()
+    failures, planned = _long_run._outage_frequencies(rbd)
     ends = np.array([60.0, 80.0])
     mission = np.ravel(rbd.mission_availability(ends))
     late = (mission[1] * ends[1] - mission[0] * ends[0]) / 20.0

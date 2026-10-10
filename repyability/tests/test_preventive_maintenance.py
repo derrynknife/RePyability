@@ -15,6 +15,7 @@ from scipy.special import gamma as gamma_function
 from scipy.special import gammainc
 
 from repyability import NonRepairable, RepairableRBD
+from repyability.rbd import _long_run
 from repyability.rbd._events import Event
 
 X = surv.ExactEventTime.from_params
@@ -259,7 +260,7 @@ def test_age_replacement_rate_is_the_non_repairable_rate():
     # Maintained in zero time: never down, so no planned outages; the
     # instant repairs are zero-length failures.
     assert rbd.mean_availability() == 1.0
-    assert rbd._outage_frequencies()[1] == 0.0
+    assert _long_run._outage_frequencies(rbd)[1] == 0.0
     assert rbd.mean_up_time() == pytest.approx(
         1 / rbd.system_failure_frequency()
     )
@@ -364,7 +365,7 @@ def test_the_exact_long_run_values_match_a_long_simulation():
     assert result.system_uptime / window == pytest.approx(
         rbd.mean_availability(), abs=0.002
     )
-    failures, planned = rbd._outage_frequencies()
+    failures, planned = _long_run._outage_frequencies(rbd)
     assert failures == rbd.system_failure_frequency()
     assert result.system_failures / window == pytest.approx(failures, rel=0.1)
     assert result.system_planned_outages / window == pytest.approx(

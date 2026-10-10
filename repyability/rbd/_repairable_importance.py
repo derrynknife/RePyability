@@ -26,6 +26,7 @@ from repyability.rbd import (
     _ccf_groups,
     _chain_transient,
     _importance_time,
+    _long_run,
     _rates,
     _sensitivity,
 )
@@ -52,7 +53,7 @@ def _importance_probabilities(
     repair crews the states of the crews' Markov chain, in each of
     which every node the crews work on is up or down for certain
     (#146). (With common-cause groups, see ``_ccf_long_run_measure``.)"""
-    return rbd._long_run_points(working_nodes, broken_nodes)
+    return _long_run._long_run_points(rbd, working_nodes, broken_nodes)
 
 
 def _importance_over_time(
@@ -798,7 +799,7 @@ def barlow_proschan_importance(
                 "shares over a window: give its length (window). The "
                 "long-run shares do not depend on it."
             )
-        terms, _ = rbd._outage_terms(working_nodes, broken_nodes)
+        terms, _ = _long_run._outage_terms(rbd, working_nodes, broken_nodes)
         parts: Dict[Any, Any] = {node: 0.0 for node in rbd.components}
         for cause, term in terms:
             parts[cause] = parts.get(cause, 0.0) + term

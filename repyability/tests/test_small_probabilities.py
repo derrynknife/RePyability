@@ -21,6 +21,7 @@ from repyability import (
     RepairableRBD,
     RepeatedNode,
 )
+from repyability.rbd import _long_run
 
 #: Relative error allowed against an exact value: a few roundings.
 RTOL = 1e-14
@@ -548,6 +549,6 @@ def test_planned_outages_at_block_times(mttf):
         [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")], {"a": a, "b": b}
     )
     U = 1 / (Fraction(1 / (1 / mttf)) + 1)
-    up_before = Fraction(rbd._block_cycle("a").before)
-    planned = rbd._outage_frequencies()[1]
+    up_before = Fraction(_long_run._block_cycle(rbd, "a").before)
+    planned = _long_run._outage_frequencies(rbd)[1]
     assert planned == approx(float(up_before * U / 100), 1e-12)

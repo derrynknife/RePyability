@@ -20,6 +20,7 @@ import numpy as np
 from repyability.rbd import (
     _ccf_chain,
     _ccf_modules,
+    _long_run,
 )
 from repyability.rbd._common import (
     _common_period,
@@ -276,7 +277,9 @@ def _require_ccf_long_run(rbd) -> None:
 def _calendar_period(rbd) -> float:
     """The period of the schedules the long-run values average over
     (see ``_long_run_grid``): of the tests and block replacements."""
-    intervals = {rbd._preventive[node].interval for node in rbd._block_nodes()}
+    intervals = {
+        rbd._preventive[node].interval for node in _long_run._block_nodes(rbd)
+    }
     for schedule in rbd._inspection.values():
         intervals |= {schedule.interval, schedule.period}
     return _common_period(intervals) if intervals else 1.0
@@ -573,12 +576,12 @@ def _ccf_long_run(rbd, working_nodes, broken_nodes) -> tuple:
     # The groups' chains first, as the routes report them.
     _require_ccf_long_run(rbd)
     _require_free_members(rbd, working_nodes, broken_nodes)
-    times, weights = rbd._long_run_grid()
+    times, weights = _long_run._long_run_grid(rbd)
     p = rbd._probabilities_with_overrides(
-        rbd._availabilities_at(times), working_nodes, broken_nodes
+        _long_run._availabilities_at(rbd, times), working_nodes, broken_nodes
     )
     q = rbd._failures_with_overrides(
-        rbd._unavailabilities_at(times), working_nodes, broken_nodes
+        _long_run._unavailabilities_at(rbd, times), working_nodes, broken_nodes
     )
     # The groups' chains, kept for the other long-run values (#229):
     # a choice of intervals asks for the cost rate and the
@@ -673,7 +676,7 @@ def _require_ccf_frequencies(rbd) -> None:
     _require_ccf_long_run(rbd)
     timed = [
         node
-        for node in rbd._block_nodes()
+        for node in _long_run._block_nodes(rbd)
         if rbd._preventive[node].duration is not None
     ]
     if timed:
@@ -715,7 +718,7 @@ def _ccf_outage_terms(
     members = {m for group in rbd.ccf_groups for m in group.members}
     terms: List[Tuple[Any, float]] = []
     planned = 0.0
-    blocks = set(rbd._block_nodes())
+    blocks = set(_long_run._block_nodes(rbd))
     for node in rbd.components:
         if node in forced or node in members:
             continue
@@ -728,10 +731,14 @@ def _ccf_outage_terms(
             )
             node_planned: Any = 0.0
         elif node in blocks:
-            node_failures = rbd._block_profile(node, times, rates=True)
+            node_failures = _long_run._block_profile(
+                rbd, node, times, rates=True
+            )
             node_planned = 0.0
         else:
-            node_failures, _, node_planned = rbd._node_frequencies(node)
+            node_failures, _, node_planned = _long_run._node_frequencies(
+                rbd, node
+            )
         terms.append((node, float(weights @ (importance * node_failures))))
         planned += float(weights @ (importance * node_planned))
     for group in rbd.ccf_groups:

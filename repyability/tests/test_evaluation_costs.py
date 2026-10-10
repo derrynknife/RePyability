@@ -33,6 +33,7 @@ from repyability.rbd import (
     _ccf_groups,
     _hidden_tests,
     _intervals,
+    _long_run,
     _ordered_bdd,
 )
 from repyability.rbd._mean_lifetime import (
@@ -250,7 +251,7 @@ def two_out_of_three():
 def test_a_chain_s_kept_steps_give_what_its_series_gives():
     rbd = two_out_of_three()
     group = rbd.ccf_groups[0]
-    times, _ = rbd._long_run_grid()
+    times, _ = _long_run._long_run_grid(rbd)
     kept = _ccf_groups._group_states(rbd, group, times).probabilities
     # The same chain with each step's series summed for the vector alone.
     original = _ccf_chain._Hidden.evolve
