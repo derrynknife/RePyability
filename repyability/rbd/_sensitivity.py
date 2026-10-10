@@ -38,6 +38,7 @@ from collections.abc import Mapping
 from typing import (
     Any,
     Callable,
+    Collection,
     Dict,
     Hashable,
     List,
@@ -941,3 +942,29 @@ def with_levers(rbd, values) -> Any:
 #: ``Lever`` and ``with_levers``.
 Lever = _Lever
 levers = _levers
+
+
+def parameter_sensitivity(
+    rbd,
+    working_nodes: Optional[Collection[Hashable]],
+    broken_nodes: Optional[Collection[Hashable]],
+    *,
+    x,
+    window,
+    state,
+    rel_step: Optional[float],
+    of,
+    unit_costs: Optional[dict],
+) -> dict:
+    """See ``RepairableRBD.parameter_sensitivity``."""
+    return sensitivity(
+        rbd,
+        x=x,
+        window=window,
+        state=state,
+        working_nodes=working_nodes,
+        broken_nodes=broken_nodes,
+        rel_step=rel_step,
+        of=of,
+        unit_costs=unit_costs,
+    )

@@ -30,10 +30,25 @@ the Sobol indices from draws (Jansen's estimators), as
 import difflib
 import warnings
 from collections.abc import Mapping
-from typing import Any, Dict, Hashable, List, NamedTuple, Optional, Tuple
+from typing import (
+    Any,
+    Dict,
+    Hashable,
+    List,
+    NamedTuple,
+    Optional,
+    Tuple,
+)
 
 import numpy as np
 
+from repyability.rbd.results import (
+    UncertaintyImportance,
+    UncertaintyResult,
+)
+from repyability.utils.checks import (
+    one_of,
+)
 from repyability.utils.checks import seed as check_seed
 from repyability.utils.wrappers import outside_level
 
@@ -650,3 +665,171 @@ def sobol(
                 )
             )
     return first, total, variance
+
+
+def _uncertainty(
+    rbd, of: str, x, uncertainty, n_draws, seed, sampling, state
+) -> UncertaintyResult:
+    """The quantity ``of`` over draws of the uncertain models (see
+    ``_repairable_uncertainty``), as an ``UncertaintyResult``."""
+    from repyability.rbd import _repairable_uncertainty as drawn
+
+    drawn.check(rbd, of, x, state)
+    # The diagram's own value first: what it refuses, every draw would.
+    nominal = drawn.value(rbd, of, x, state)
+    inputs, groups = drawn.sources(rbd, uncertainty)
+    models, group_models = drawn.draws(
+        rbd, inputs, groups, n_draws, seed, sampling
+    )
+    samples = drawn.samples(
+        rbd, of, x, state, inputs, models, group_models, n_draws
+    )
+    if x is None or np.ndim(x) == 0:
+        return UncertaintyResult(
+            samples=samples[:, 0],
+            nominal=float(nominal[0]),
+            n_draws=n_draws,
+        )
+    return UncertaintyResult(samples=samples, nominal=nominal, n_draws=n_draws)
+
+
+def mean_availability_uncertainty(
+    rbd,
+    uncertainty: Optional[Dict[Hashable, Any]],
+    *,
+    n_draws: int,
+    seed,
+    sampling: str,
+) -> UncertaintyResult:
+    """See ``RepairableRBD.mean_availability_uncertainty``."""
+    return _uncertainty(
+        rbd,
+        "mean_availability",
+        None,
+        uncertainty,
+        n_draws,
+        seed,
+        sampling,
+        None,
+    )
+
+
+def point_availability_uncertainty(
+    rbd,
+    x,
+    uncertainty: Optional[Dict[Hashable, Any]],
+    *,
+    n_draws: int,
+    seed,
+    sampling: str,
+    state,
+) -> UncertaintyResult:
+    """See ``RepairableRBD.point_availability_uncertainty``."""
+    return _uncertainty(
+        rbd,
+        "point_availability",
+        x,
+        uncertainty,
+        n_draws,
+        seed,
+        sampling,
+        state,
+    )
+
+
+def mission_availability_uncertainty(
+    rbd,
+    t,
+    uncertainty: Optional[Dict[Hashable, Any]],
+    *,
+    n_draws: int,
+    seed,
+    sampling: str,
+    state,
+) -> UncertaintyResult:
+    """See ``RepairableRBD.mission_availability_uncertainty``."""
+    return _uncertainty(
+        rbd,
+        "mission_availability",
+        t,
+        uncertainty,
+        n_draws,
+        seed,
+        sampling,
+        state,
+    )
+
+
+def expected_cost_rate_uncertainty(
+    rbd,
+    uncertainty: Optional[Dict[Hashable, Any]],
+    *,
+    n_draws: int,
+    seed,
+    sampling: str,
+) -> UncertaintyResult:
+    """See ``RepairableRBD.expected_cost_rate_uncertainty``."""
+    return _uncertainty(
+        rbd,
+        "expected_cost_rate",
+        None,
+        uncertainty,
+        n_draws,
+        seed,
+        sampling,
+        None,
+    )
+
+
+def uncertainty_importance(
+    rbd,
+    x,
+    uncertainty: Optional[Dict[Hashable, Any]],
+    *,
+    of: str,
+    method: str,
+    n_draws: int,
+    seed,
+    sampling: str,
+    rel_step: Optional[float],
+    state,
+) -> UncertaintyImportance:
+    """See ``RepairableRBD.uncertainty_importance``."""
+    from repyability.rbd import _repairable_uncertainty as drawn
+
+    # parameter_sensitivity's name for the cost rate is taken too (#232).
+    of = drawn.QUANTITY_NAMES.get(of, of) if isinstance(of, str) else of
+    drawn.check(rbd, of, x, state)
+    one_of("method", method, ("delta", "sobol"))
+    inputs, groups = drawn.sources(rbd, uncertainty)
+    keys = [item.key for item in inputs] + [
+        groups[i][0] for i in sorted(groups)
+    ]
+    if method == "delta":
+        parts = drawn.delta(rbd, of, x, state, inputs, groups, rel_step)
+        variance = np.sum(parts, axis=0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            shares = [
+                np.where(variance > 0.0, part / variance, np.nan)
+                for part in parts
+            ]
+        first = total = dict(zip(keys, shares))
+    else:
+        firsts, totals, variance = drawn.sobol(
+            rbd, of, x, state, inputs, groups, n_draws, seed, sampling
+        )
+        first, total = dict(zip(keys, firsts)), dict(zip(keys, totals))
+    scalar = x is None or np.ndim(x) == 0
+
+    def shaped(values):
+        values = np.asarray(values, dtype=float).reshape(-1)
+        if scalar:
+            return float(values[0])
+        return values.reshape(np.shape(x))
+
+    return UncertaintyImportance(
+        method=method,
+        variance=shaped(variance),
+        first_order={key: shaped(v) for key, v in first.items()},
+        total={key: shaped(v) for key, v in total.items()},
+    )
