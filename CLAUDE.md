@@ -420,6 +420,15 @@ limited-failure proportion `lfp_p` (#608) and takes `success_run`'s
   `qf` with the mixture's `Hf` (`_aged_life`). Take the mixture's own
   `qf`, and drop `MixtureLife`, once the minimum surpyval's is as precise
   and fast.
+- **A degradation process's level given survival** (surpyval #836).
+  Replacement on condition by level (#271) needs the level at the next
+  inspection of a unit that has not failed by then, which surpyval's
+  `WienerProcessModel` and `GammaProcessModel` do not give.
+  `_degradation.level_after` works it out from the fitted parameters (the
+  method of images for a Wiener path; a gamma increment truncated at the
+  threshold), and `_condition_next` draws it from the `LEVEL` stream (a
+  change to it changes seeded results). Take surpyval's once the minimum
+  surpyval has it.
 
 List each new workaround here with its surpyval issue and where it lives,
 so it can go once the minimum surpyval in `pyproject.toml` includes the

@@ -3,6 +3,7 @@ from scipy.optimize import minimize, minimize_scalar
 from surpyval import ExactEventTime, NonParametric, Parametric
 
 from repyability.maintenance import MaintenancePolicy
+from repyability.rbd._degradation import check_life, is_degradation
 from repyability.rbd._model_utils import (
     distribution_name,
     is_exponential,
@@ -201,6 +202,12 @@ class NonRepairable:
             self.reliability_function, self._knots = _piecewise_linear_sf(
                 reliability
             )
+        elif is_degradation(reliability):
+            # A fitted Wiener or gamma degradation process (#271): its life
+            # is the time its level first reaches its threshold.
+            check_life(reliability, "A NonRepairable's life")
+            self.model_parameterization = "degradation"
+            self.reliability_function = reliability.sf
         elif isinstance(reliability, StandbyModel):
             # Whatever the arrangement's survival function is (a closed
             # form or a numerical method), its sf gives it; one with neither
@@ -218,7 +225,8 @@ class NonRepairable:
             raise ValueError(
                 "A NonRepairable's life must be a surpyval parametric "
                 "distribution or MixtureModel (fitted, or built with "
-                "from_params), a surpyval non-parametric estimate or a "
+                "from_params), a surpyval Wiener or gamma degradation "
+                "process, a surpyval non-parametric estimate or a "
                 f"StandbyModel; got a {type(reliability).__name__}."
             )
 

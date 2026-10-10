@@ -38,6 +38,22 @@ other release, fixes included, the minor.
   as do the simulations for a component also replaced after some
   failures, maintained or tested, which would need its history since it
   was renewed. Seeded runs from other states are unchanged.
+- **Fitted degradation processes as lives (#271).** A surpyval
+  `WienerProcess` or `GammaProcess` fit (with its failure `threshold`) is
+  a node's life in `NonRepairableRBD` and a component's in
+  `RepairableRBD`: the first-passage time from its starting level, which
+  every exact method and both simulation engines take, and saving keeps.
+  One fitted with stress covariates is refused: fit it at the stress the
+  component runs at.
+- **Replacement on condition by the measured level (#271).**
+  `"preventive": {"policy": "condition", "level": x, ...}`, in place of
+  `"threshold"`, for a component whose life is a degradation process:
+  each inspection measures its level and replaces it at or past `x`. The
+  level an inspection finds is drawn given that the unit has not failed
+  since the last (a gamma increment truncated at the threshold, or a
+  Wiener path killed there); surpyval does not give it yet (SurPyval#836).
+  Simulated only, on the Python engine: the exact methods and a start
+  state refuse such a component. Seeded runs without it are unchanged.
 
 ### Changed
 

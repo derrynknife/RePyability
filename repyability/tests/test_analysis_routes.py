@@ -781,6 +781,15 @@ def test_the_readme_says_what_is_simulated():
             (minimal, "expected_cost", "numerical"),
             (minimal, "mean_availability", "refused"),
         ],
+        "Replacement on condition by a measured degradation level": [
+            (repairable["replaced on condition by level"], name, route)
+            for name, route in (
+                ("mean_availability", "refused"),
+                ("point_availability", "refused"),
+                ("expected_cost", "refused"),
+                ("availability", "simulated"),
+            )
+        ],
         "Spares with repair crews, standby groups, opportunistic "
         "maintenance or imperfect repair": [
             (crew, "spares_stock", "refused"),

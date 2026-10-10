@@ -47,6 +47,7 @@ from . import _montecarlo as montecarlo
 from . import _sensitivity
 from . import capacity as _capacity
 from . import redundancy_allocation
+from ._degradation import check_life, is_degradation
 from ._mean_lifetime import mean_lifetime, model_kinks, model_knots
 from ._model_utils import (
     is_fixed_probability,
@@ -296,6 +297,8 @@ def _check_model(node, model) -> None:
     saying what to give instead; a number most likely means a
     probability."""
     no_distribution(model, f"The model of node {node!r}")
+    if is_degradation(model):
+        check_life(model, f"The model of node {node!r}")
     if callable(getattr(model, "sf", None)):
         return
     if isinstance(model, (int, float)) and not isinstance(model, bool):

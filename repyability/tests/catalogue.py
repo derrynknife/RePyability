@@ -99,6 +99,18 @@ def shares_life():
     return surv.Weibull.fit(x, c=c, lfp=True, zi=True)
 
 
+def wear():
+    """A gamma degradation process fitted to the wear of 12 units, each
+    measured 10 times; it fails at a wear of 8 (#271)."""
+    g = np.random.default_rng(7)
+    hours = np.tile(np.arange(1.0, 11.0) * 30.0, 12)
+    units = np.repeat(np.arange(12), 10)
+    worn = np.concatenate(
+        [np.cumsum(g.gamma(2.0, 0.25, 10)) for _ in range(12)]
+    )
+    return surv.GammaProcess.fit(hours, worn, units, threshold=8.0)
+
+
 def crow_amsaa():
     """A Crow-AMSAA process fitted to 60 failures of a repairable unit
     (#269): minimal repair of a Weibull life."""
@@ -208,9 +220,8 @@ def nonrepairable_kinds():
             EDGES, {"a": RegressionNode(aft(), covariates=[1.0]), **rest}
         ),
         "fitted": NonRepairableRBD(EDGES, {"a": fitted_life(), **rest}),
-        "fitted shares": NonRepairableRBD(
-            EDGES, {"a": shares_life(), **rest}
-        ),
+        "fitted shares": NonRepairableRBD(EDGES, {"a": shares_life(), **rest}),
+        "degradation process": NonRepairableRBD(EDGES, {"a": wear(), **rest}),
         "mixture": NonRepairableRBD(EDGES, {"a": mixture_life(), **rest}),
         "degrading": NonRepairableRBD(
             EDGES,
@@ -306,6 +317,18 @@ def repairable_kinds():
                         "interval": 100.0,
                         "policy": "condition",
                         "threshold": 0.1,
+                        "inspection_cost": 1.0,
+                    },
+                    replace_cost=10.0,
+                )
+            ),
+            "replaced on condition by level": system(
+                unit(
+                    reliability=wear(),
+                    preventive={
+                        "interval": 60.0,
+                        "policy": "condition",
+                        "level": 6.0,
                         "inspection_cost": 1.0,
                     },
                     replace_cost=10.0,
@@ -418,6 +441,7 @@ def repairable_kinds():
             "fitted Crow-AMSAA process": system(
                 unit(reliability=crow_amsaa(), repair_cost=1.0)
             ),
+            "degradation process life": system(unit(reliability=wear())),
             "mixture life, maintained": system(
                 unit(
                     reliability=mixture_life(),

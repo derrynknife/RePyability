@@ -29,6 +29,7 @@ from typing import Callable, Optional
 import numpy as np
 from surpyval import Parametric
 
+from ._degradation import is_degradation
 from ._model_utils import is_mixture, lfp_p
 from .helper_classes import PerfectReliability, PerfectUnreliability
 
@@ -273,6 +274,10 @@ def stream_sampler(model) -> Optional[Sampler]:
     sampler = inverse_sampler(model)
     if sampler is None and is_mixture(model):
         return mixture_quantile(model)
+    if sampler is None and is_degradation(model):
+        # A degradation process's first-passage time from its starting
+        # level (#271), by its own quantile function.
+        return lambda u: np.asarray(model.qf(u), dtype=float)
     return sampler
 
 
