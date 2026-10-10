@@ -224,3 +224,49 @@ def test_the_ends_of_tests_and_repairs_are_jumps_over_time():
     jumps = rate.jumps[rate.jump_times < end].sum()
     change = rbd.point_availability(end) - rbd.point_availability(0.0)
     assert integral + jumps == pytest.approx(change, abs=1e-7)
+
+
+MEASURES = (
+    "birnbaum_importance",
+    "improvement_potential",
+    "risk_achievement_worth",
+    "risk_reduction_worth",
+    "criticality_importance",
+    "differential_importance",
+)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "fixed test and repair",
+        "fixed test, instant repair",
+        "fixed test, exponential repair",
+    ],
+)
+def test_measures_with_tests_that_take_time_tend_to_the_independent(name):
+    # #294: while a member's test keeps it off line, it cannot be up, and
+    # the system given it up was 0/0. It is the system with it held up
+    # then, as for a node outside the groups: so with no shared cause the
+    # measures are the independent members' own (to the members' own
+    # model's grid, as above), where leaving those times out would move
+    # them by the tests' share of the time (0.4% here).
+    timing = TIMINGS[name]
+    free, tiny = pair(None, timing), pair(0.0, timing)
+    grouped = pair(0.1, timing)
+    for measure in MEASURES:
+        values = getattr(grouped, measure)()
+        assert all(np.isfinite(v) or v == np.inf for v in values.values())
+        own, near = getattr(free, measure)(), getattr(tiny, measure)()
+        for node in "ab":
+            assert near[node] == pytest.approx(own[node], rel=3e-5), measure
+
+
+def test_a_member_in_its_test_is_held_up_and_down():
+    # Member b is off line for its test over [170, 172): the pair is down
+    # just when a is, so b's Birnbaum measure then (b held up, then held
+    # down) is the system's unavailability.
+    rbd = pair(0.1, TIMINGS["fixed test, exponential repair"])
+    x = np.array([171.0])
+    birnbaum = rbd.birnbaum_importance(x=x)["b"]
+    assert birnbaum == pytest.approx(rbd.point_unavailability(x), rel=1e-9)

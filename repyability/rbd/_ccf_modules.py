@@ -662,6 +662,27 @@ class Evaluation:
             out["down_bad"] = out["down_bad"] + weight * off * down_0
         return out, True
 
+    def held(self, node) -> Tuple[Any, Any, Any, Any]:
+        """The system's probabilities of working and of failing with
+        ``node`` held working, then held failed, the rest as they are (its
+        group's other members included): what the system given the node's
+        state comes to where that state has no chance (see
+        ``RepairableRBD._ccf_measure``), as for a node outside the groups."""
+        g = self.group_of.get(node)
+        if g is None or g in self.causes:
+            return (
+                *self.system(hold={node: True}),
+                *self.system(hold={node: False}),
+            )
+        out: List[Any] = [0.0, 0.0, 0.0, 0.0]
+        for weight, given, failing in self.outcomes[g]:  # type: ignore
+            fixed = {m: (given[m], failing[m]) for m in given}
+            for k, state in enumerate((True, False)):
+                up, down = self.system(fixed, {node: state})
+                out[2 * k] = out[2 * k] + weight * up
+                out[2 * k + 1] = out[2 * k + 1] + weight * down
+        return out[0], out[1], out[2], out[3]
+
     def _written_out(self, node, g: int) -> Dict[str, Any]:
         """``joints`` for a member of a group written out as shocks: it
         works when neither its own causes nor any shock striking it has
@@ -1052,11 +1073,10 @@ class Tabled(Evaluation):
             self._joints[g] = self._group_joints(g)
         return self._joints[g][node], True
 
-    def _group_joints(self, g: int) -> Dict[Hashable, Dict[str, Any]]:
-        """``joints`` for each member of group ``g``: the system worked out
-        once with the group's members in each of their combinations (a last
-        axis, see ``_frames``), and summed over them for each member up
-        and down."""
+    def _combinations(self, g: int):
+        """Group ``g``'s members in each of their combinations (a last
+        axis, see ``_frames``): what ``system`` takes of them, its frame,
+        and the sum over the combinations of a value at each."""
         table = self.tables[g]
         count = len(table.works)
         frame = (self.shape, count)
@@ -1067,11 +1087,32 @@ class Tabled(Evaluation):
             )
             for k, member in enumerate(table.members)
         }
-        up, down = self.system(given, {}, frame)
         weights = table.probabilities
 
         def total(value) -> np.ndarray:
             return np.broadcast_to((weights * value).sum(axis=-1), self.shape)
+
+        return given, frame, total
+
+    def held(self, node) -> Tuple[Any, Any, Any, Any]:
+        """As ``Evaluation.held``: a member held, its group's other members
+        in each of their combinations."""
+        g = self.group_of.get(node)
+        if g is None:
+            return super().held(node)
+        given, frame, total = self._combinations(g)
+        up_1, down_1 = self.system(given, {node: True}, frame)
+        up_0, down_0 = self.system(given, {node: False}, frame)
+        return total(up_1), total(down_1), total(up_0), total(down_0)
+
+    def _group_joints(self, g: int) -> Dict[Hashable, Dict[str, Any]]:
+        """``joints`` for each member of group ``g``: the system worked out
+        once with the group's members in each of their combinations (a last
+        axis, see ``_frames``), and summed over them for each member up
+        and down."""
+        given, frame, total = self._combinations(g)
+        table = self.tables[g]
+        up, down = self.system(given, {}, frame)
 
         out: Dict[Hashable, Dict[str, Any]] = {}
         for k, member in enumerate(table.members):

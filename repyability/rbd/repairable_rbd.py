@@ -939,10 +939,21 @@ class RepairableRBD(RBD):
                 values, joint = evaluation.joints(node)
                 works, fails = values["works"], values["fails"]
                 if joint:
-                    r1, q1 = values["up_ok"] / works, values["down_ok"] / works
-                    r0, q0 = (
-                        values["up_bad"] / fails,
-                        values["down_bad"] / fails,
+                    # Given its state; where that state has no chance (a
+                    # member off line for its test), the system with it
+                    # held so, as for a node outside the groups.
+                    held = (
+                        evaluation.held(node)
+                        if np.any(works <= 0) or np.any(fails <= 0)
+                        else (np.nan,) * 4
+                    )
+                    r1 = np.where(works > 0, values["up_ok"] / works, held[0])
+                    q1 = np.where(
+                        works > 0, values["down_ok"] / works, held[1]
+                    )
+                    r0 = np.where(fails > 0, values["up_bad"] / fails, held[2])
+                    q0 = np.where(
+                        fails > 0, values["down_bad"] / fails, held[3]
                     )
                 else:
                     r1, q1 = values["up_ok"], values["down_ok"]
