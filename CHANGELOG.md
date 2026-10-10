@@ -159,6 +159,19 @@ other release, fixes included, the minor.
 
 ### Fixed
 
+- **A mixture life with imperfect repair simulates in a few seconds
+  (#295).** A component whose life is a `MixtureModel` and whose
+  repairs are imperfect (Kijima) drew each life left given its virtual
+  age through surpyval's `conditional_gaps`: the mixture's quantile
+  below a cumulative hazard of 20, and a root search of the mixture's
+  `H` above it, which a Kijima unit's growing virtual age reaches ever
+  more often (a 15,000 h run of the issue's diagram took about 53 s,
+  and 20,000 h did not finish). It is now drawn by Newton's steps on the
+  mixture's cumulative hazard, worked out from its components, in about
+  4 evaluations a draw (that run: about 2.6 s). The draws are the same
+  roots to the last bits of the virtual age plus the life left, so
+  seeded results with such a component change in about the twelfth
+  significant figure.
 - **Importance measures with common-cause groups whose tests take time
   (#294).** While a member's test kept it off line it could not be up,
   and the system given it up was 0/0, so Birnbaum's measure, the

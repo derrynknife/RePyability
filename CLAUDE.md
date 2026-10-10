@@ -455,10 +455,16 @@ limited-failure proportion `lfp_p` (#608) and takes `success_run`'s
   RePyability's. `_sampling.mixture_quantile` inverts the distribution
   (with its components' `sf` summed above the median), which
   `stream_sampler` gives a `RepairableRBD`'s streams (a change to it
-  changes seeded results), and `MixtureLife` hands `conditional_gaps` that
-  `qf` with the mixture's `Hf` (`_aged_life`). Take the mixture's own
-  `qf`, and drop `MixtureLife`, once the minimum surpyval's is as precise
-  and fast.
+  changes seeded results). Take the mixture's own `qf` once the minimum
+  surpyval's is as precise and fast.
+- **A mixture's life left at a virtual age** (#295; surpyval issue to
+  raise, drafted with #295: `conditional_gaps` inverts `H` past its
+  quantile's limit in 12–15 evaluations where Newton's steps take 3–4,
+  and `MixtureModel.Hf` costs about 100 µs a call). `MixtureLife.aged`
+  draws it for `_aged_life` by Newton's steps on the mixture's `H`,
+  worked out from its components, from a table of `H` (a change to it
+  changes seeded results in the last bits). Take `conditional_gaps`
+  again, and drop `MixtureLife`, once the minimum surpyval has both.
 - **A degradation process's level given survival** (surpyval #836).
   Replacement on condition by level (#271) needs the level at the next
   inspection of a unit that has not failed by then, which surpyval's
