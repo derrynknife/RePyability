@@ -83,6 +83,20 @@ def _inverse_hazard(hazard, target: np.ndarray) -> np.ndarray:
     return out
 
 
+def _fitted_width(model) -> Optional[int]:
+    """How many covariates (stresses) a surpyval regression model was
+    fitted with, or None if it does not say. Its ``_n_covariates()``
+    counts them for every kind; ``phi_param_map`` names a proportional-
+    hazards or accelerated-failure-time model's coefficients, one each, but
+    an accelerated-life model's life-stress parameters (an Arrhenius
+    model's ``a`` and ``b`` for one stress)."""
+    count = getattr(model, "_n_covariates", None)
+    if callable(count):
+        return int(count())
+    fitted = getattr(model, "phi_param_map", None)
+    return len(fitted) if isinstance(fitted, dict) else None
+
+
 class RegressionNode:
     """An RBD node backed by a fitted surpyval regression model.
 
@@ -181,11 +195,11 @@ class RegressionNode:
         self.schedule = schedule
         # A covariate vector of another width than the model was fitted
         # with: say so directly.
-        fitted = getattr(model, "phi_param_map", None)
-        if self.covariates is not None and isinstance(fitted, dict):
-            if len(self.covariates) != len(fitted):
+        fitted = _fitted_width(model)
+        if self.covariates is not None and fitted is not None:
+            if len(self.covariates) != fitted:
                 raise ValueError(
-                    f"The model was fitted with {len(fitted)} covariate(s); "
+                    f"The model was fitted with {fitted} covariate(s); "
                     f"covariates has {len(self.covariates)}."
                 )
         # Probe the survival interface so a misuse fails clearly at
@@ -276,7 +290,9 @@ class RegressionNode:
         the observed range, with no tail, so its mean and draws are
         undefined there, a clear error rather than a wrong number."""
         if _is_semiparametric(self.model) or (
-            float(self._sf_at(np.array([1e-9]))[0]) <= 0.99
+            # Just after 0, in any unit of time.
+            float(self._sf_at(np.array([np.finfo(float).tiny]))[0])
+            <= 0.99
         ):
             raise ValueError(
                 "mean()/random() need a proper parametric survival curve "
@@ -352,7 +368,7 @@ class RegressionNode:
         ValueError
             If the model is semiparametric (a Cox model: its baseline is
             defined on the observed range only), or if the survival curve
-            is improper (``R(1e-9) <= 0.99``).
+            is improper (``R(0+) <= 0.99``).
         """
         from ._mean_lifetime import mean_lifetime
 

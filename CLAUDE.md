@@ -354,6 +354,14 @@
   `standby_node.drawn_mean`), all of which
   `test_what_0_13_deprecates_goes_in_0_14` holds to: it fails once the
   version reaches `NEXT_REMOVAL`.
+- **No result depends on the unit of time (or of a covariate).** A step,
+  grid or probe is sized from the models (a typical life,
+  `failure_time_scale`), never in absolute time, and a proportional
+  change of a lever is of its scale (`_sensitivity._proportional_scale`:
+  1 for a log-scale parameter, none for a covariate). `test_units.py`
+  checks results scale with the unit, from 1e-6 to 1e6. A model's unit
+  is surpyval's to carry (SurPyval#845); until it does, every node is
+  taken to be in one unit, unchecked.
 - **Exact by default, simulation on request.** Where an analysis can be
   computed exactly or numerically, that is the default, and the Monte-Carlo
   estimate is a `method="simulate"` away (as for `NonRepairableRBD.mean`).
@@ -420,6 +428,21 @@ limited-failure proportion `lfp_p` (#608) and takes `success_run`'s
   `qf` with the mixture's `Hf` (`_aged_life`). Take the mixture's own
   `qf`, and drop `MixtureLife`, once the minimum surpyval's is as precise
   and fast.
+- **A degradation process's level given survival** (surpyval #836).
+  Replacement on condition by level (#271) needs the level at the next
+  inspection of a unit that has not failed by then, which surpyval's
+  `WienerProcessModel` and `GammaProcessModel` do not give.
+  `_degradation.level_after` works it out from the fitted parameters (the
+  method of images for a Wiener path; a gamma increment truncated at the
+  threshold), and `_condition_next` draws it from the `LEVEL` stream (a
+  change to it changes seeded results). Take surpyval's once the minimum
+  surpyval has it.
+
+- **Rescaling a model's time for a duty cycle** (surpyval #845).
+  A spec's `"duty"` puts a life in operating time on the calendar,
+  `R(d t)`, by `_duty._SCALED`, one rule per surpyval distribution (a new
+  one needs its rule there, which `test_units` checks against `R(d t)`).
+  Take surpyval's rescaling once the minimum surpyval has it.
 
 List each new workaround here with its surpyval issue and where it lives,
 so it can go once the minimum surpyval in `pyproject.toml` includes the

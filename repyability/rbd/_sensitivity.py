@@ -78,8 +78,9 @@ class _Lever(NamedTuple):
     """One lever: whose (a node, a common-cause group's members, or None
     for the system), its name, its value, whether it is discrete (one
     more), the constructor's arguments with it at a value (``build``),
-    the node whose curve alone it moves (None if it moves more), and the
-    range of its values (see ``Lever``)."""
+    the node whose curve alone it moves (None if it moves more), the
+    range of its values (see ``Lever``), and what a proportional change
+    moves it by, per unit of the change (see ``_proportional_scale``)."""
 
     key: Hashable
     name: str
@@ -88,6 +89,7 @@ class _Lever(NamedTuple):
     build: Callable[[float], dict]
     node: Optional[Hashable]
     bounds: Tuple[float, float]
+    scale: Optional[float]
 
 
 def _model_bounds(given) -> List[Tuple[float, float]]:
@@ -104,11 +106,11 @@ def _model_bounds(given) -> List[Tuple[float, float]]:
 
 
 def _model_levers(prefix: str, model, rebuild) -> List[tuple]:
-    """``(name, value, set, bounds)`` for each parameter of a parametric
-    ``model``, named ``prefix.<parameter>`` (or the parameter's own name,
-    without a prefix), ``set(v)`` giving ``rebuild`` of the model with it
-    at ``v``: a parametric model's parameters, or a regression node's
-    covariates (#272)."""
+    """``(name, value, set, bounds, scale)`` for each parameter of a
+    parametric ``model``, named ``prefix.<parameter>`` (or the parameter's
+    own name, without a prefix), ``set(v)`` giving ``rebuild`` of the model
+    with it at ``v``: a parametric model's parameters, or a regression
+    node's covariates (#272); ``scale`` as ``_proportional_scale``."""
     spec = lever_spec(model)
     if spec is None:
         return []
@@ -122,8 +124,33 @@ def _model_levers(prefix: str, model, rebuild) -> List[tuple]:
             return rebuild(spec.build(trial))
 
         named = f"{prefix}.{name}" if prefix else name
-        out.append((named, spec.params[j], moved, ranges[j]))
+        scale = _proportional_scale(spec, name, spec.params[j])
+        out.append((named, spec.params[j], moved, ranges[j], scale))
     return out
+
+
+#: Parameters on a log scale, by distribution: the log of a time (a
+#: LogNormal's ``mu``, Galton its other name) or of a rate (a Cox-Lewis
+#: process's ``alpha``). Changing the unit of time adds to them, so they
+#: have no zero to be a fraction of.
+_LOG_SCALE = {"LogNormal": {"mu"}, "Galton": {"mu"}, "Cox-Lewis": {"alpha"}}
+
+
+def _proportional_scale(spec, name: str, value: float) -> Optional[float]:
+    """What a proportional change of a model's parameter moves it by, per
+    unit of the change, so that it does not depend on the units of time
+    or of a covariate: its value (a scale, a rate, a shape, a time); 1 for
+    a parameter on a log scale (``_LOG_SCALE``), whose change moves the
+    time it is the log of by that fraction; None for a regression node's
+    covariate, whose zero is its unit's (0 degrees C is not 0 K), so that a
+    proportional change of it means nothing."""
+    from ._model_utils import CovariateSpec
+
+    if isinstance(spec, CovariateSpec):
+        return None
+    if name in _LOG_SCALE.get(getattr(spec.cls, "name", ""), ()):
+        return 1.0
+    return float(value)
 
 
 def _option_bounds(key: str, option: str, options: dict) -> tuple:
@@ -148,10 +175,10 @@ def _spec_levers(spec: dict) -> List[tuple]:
         model = spec.get(key)
         if model is None or isinstance(model, str):
             continue
-        for name, value, moved, bounds in _model_levers(
+        for name, value, moved, bounds, scale in _model_levers(
             key, model, lambda m, key=key: {**spec, key: m}
         ):
-            out.append((name, value, moved, False, bounds))
+            out.append((name, value, moved, False, bounds, scale))
     for key, numeric in (
         ("preventive", _PREVENTIVE),
         ("inspection", _INSPECTION),
@@ -181,11 +208,12 @@ def _spec_levers(spec: dict) -> List[tuple]:
                     moved,
                     False,
                     _option_bounds(key, option, options),
+                    float(value),
                 )
             )
         duration = options.get("duration")
         if duration is not None and not isinstance(duration, str):
-            for name, value, moved, bounds in _model_levers(
+            for name, value, moved, bounds, scale in _model_levers(
                 f"{key}.duration",
                 duration,
                 lambda m, key=key, options=options: {
@@ -193,7 +221,7 @@ def _spec_levers(spec: dict) -> List[tuple]:
                     key: {**options, "duration": m},
                 },
             ):
-                out.append((name, value, moved, False, bounds))
+                out.append((name, value, moved, False, bounds, scale))
     standby = spec.get("standby")
     if isinstance(standby, dict):
         for option in ("dormancy_factor", "switching_probability"):
@@ -209,6 +237,7 @@ def _spec_levers(spec: dict) -> List[tuple]:
                         moved,
                         False,
                         _UNIT,
+                        float(standby[option]),
                     )
                 )
 
@@ -224,6 +253,7 @@ def _spec_levers(spec: dict) -> List[tuple]:
                 more,
                 True,
                 spare,
+                float(standby.get("units", 2)),
             )
         )
     repair = spec.get("repair")
@@ -232,7 +262,8 @@ def _spec_levers(spec: dict) -> List[tuple]:
         def moved_q(v):
             return {**spec, "repair": {**repair, "q": v}}
 
-        out.append(("repair.q", float(repair["q"]), moved_q, False, _UNIT))
+        q = float(repair["q"])
+        out.append(("repair.q", q, moved_q, False, _UNIT, q))
     return out
 
 
@@ -267,19 +298,21 @@ def _levers(rbd) -> List[_Lever]:
         spec = _as_spec(component)
         if spec is None:
             continue
-        for name, value, moved, discrete, bounds in _spec_levers(spec):
+        for name, value, moved, discrete, bounds, scale in _spec_levers(spec):
 
             def build(v, node=node, moved=moved):
                 return {**args, "components": {**components, node: moved(v)}}
 
             out.append(
-                _Lever(node, name, value, discrete, build, node, bounds)
+                _Lever(node, name, value, discrete, build, node, bounds, scale)
             )
     for g, group in enumerate(groups):
         names = tuple(group.members)
         spec = _as_spec(components[names[0]])
         if spec is not None:
-            for name, value, moved, discrete, bounds in _spec_levers(spec):
+            for name, value, moved, discrete, bounds, scale in _spec_levers(
+                spec
+            ):
 
                 def build_group(v, moved=moved, names=names):
                     changed = dict(components)
@@ -289,7 +322,14 @@ def _levers(rbd) -> List[_Lever]:
 
                 out.append(
                     _Lever(
-                        names, name, value, discrete, build_group, None, bounds
+                        names,
+                        name,
+                        value,
+                        discrete,
+                        build_group,
+                        None,
+                        bounds,
+                        scale,
                     )
                 )
         for letter, value in ccf_parameters(group.model).items():
@@ -309,6 +349,7 @@ def _levers(rbd) -> List[_Lever]:
                     build_ccf,
                     None,
                     _UNIT,
+                    value,
                 )
             )
     crews = args.get("repair_crews")
@@ -326,6 +367,7 @@ def _levers(rbd) -> List[_Lever]:
                 more_crews,
                 None,
                 (1.0, math.inf),
+                float(crews),
             )
         )
     return out
@@ -352,7 +394,7 @@ def _nonrepairable_levers(rbd) -> List[_Lever]:
             continue
         members = (node,) if g is None else tuple(groups[g].members)
         key = node if g is None else members
-        for name, value, moved, bounds in _model_levers(
+        for name, value, moved, bounds, scale in _model_levers(
             "", model, lambda m: m
         ):
 
@@ -375,6 +417,7 @@ def _nonrepairable_levers(rbd) -> List[_Lever]:
                     build,
                     node if g is None else None,
                     bounds,
+                    scale,
                 )
             )
         if g is None:
@@ -397,6 +440,7 @@ def _nonrepairable_levers(rbd) -> List[_Lever]:
                     build_ccf,
                     None,
                     _UNIT,
+                    float(value),
                 )
             )
     return out

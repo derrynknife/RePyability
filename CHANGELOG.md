@@ -38,6 +38,30 @@ other release, fixes included, the minor.
   as do the simulations for a component also replaced after some
   failures, maintained or tested, which would need its history since it
   was renewed. Seeded runs from other states are unchanged.
+- **Fitted degradation processes as lives (#271).** A surpyval
+  `WienerProcess` or `GammaProcess` fit (with its failure `threshold`) is
+  a node's life in `NonRepairableRBD` and a component's in
+  `RepairableRBD`: the first-passage time from its starting level, which
+  every exact method and both simulation engines take, and saving keeps.
+  One fitted with stress covariates is refused: fit it at the stress the
+  component runs at.
+- **Replacement on condition by the measured level (#271).**
+  `"preventive": {"policy": "condition", "level": x, ...}`, in place of
+  `"threshold"`, for a component whose life is a degradation process:
+  each inspection measures its level and replaces it at or past `x`. The
+  level an inspection finds is drawn given that the unit has not failed
+  since the last (a gamma increment truncated at the threshold, or a
+  Wiener path killed there); surpyval does not give it yet (SurPyval#836).
+  Simulated only, on the Python engine: the exact methods and a start
+  state refuse such a component. Seeded runs without it are unchanged.
+
+- **A component that operates part of the time (`"duty"`).** A
+  `RepairableRBD` spec's `"duty"`, the fraction of the time the component
+  operates, puts a life fitted in operating time on the diagram's clock:
+  `R(d t)`, the same surpyval distribution with its scale moved, which
+  every method takes. Repairs, maintenance and tests stay on the clock;
+  levers, draws and saving keep the life as given. The rescaling rule of
+  each distribution is RePyability's until surpyval has one (SurPyval#845).
 
 ### Changed
 
@@ -94,6 +118,33 @@ other release, fixes included, the minor.
   `NonRepairableRBD.cs` and a node's age in `sf_given_state`. A diagram's
   own `cs` is still 0 once its reliability at `X` is below the smallest
   float, as its `Hf` is then infinite.
+- **A probability per demand has no long run in a `RepairableRBD`.** A
+  `FixedEventProbability` life (a unit that fails at once with that
+  probability, or never) was read as a mean life by the long-run methods:
+  `p = 0.1` gave an availability of 0.09 where the simulations give 0.999.
+  The long-run values, frequencies, cost rate and importance now refuse
+  it, as the values over time did, and the routes say so.
+- **`RegressionNode` takes surpyval's accelerated-life models.** An
+  Arrhenius, Eyring or power-law life was refused, its covariate count
+  taken from its life model's parameters (two, for one stress); it is now
+  the number of stresses the model was fitted with.
+- **Results no longer depend on the unit of time.** A cold-standby
+  group's grid started at time 1 whatever its lives' scale, and the
+  density and hazard (and the reliability rate's parts) took steps of
+  `1e-6` of time below time 1: in a diagram whose lives were about 1e-5
+  of the unit long, a cold standby's probability of failing was off by
+  up to 27% (and its density by 5%). Both
+  are relative now: the grid starts at the typical life, a step is `1e-6`
+  of the time (of the shortest typical life at time 0). A regression
+  node's check for a proper survival curve looks just after 0, not at
+  `1e-9`.
+- **Proportional differential importance over parameters does not depend
+  on the unit.** A LogNormal's `mu` (the log of a time) was moved by a
+  share of itself, which changes with the unit (in hours its share of one
+  diagram was 0.89, in years 19); a proportional change of it is now a
+  proportional change of the time (`d mu = epsilon`), as for a Cox-Lewis
+  process's `alpha`. A regression node's covariate, whose zero is its
+  unit's, is refused (`change="uniform"` takes it).
 
 ## [0.13] - 2026-10-09
 

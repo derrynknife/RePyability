@@ -80,6 +80,11 @@ from repyability.rbd._condition_replacement import (
     condition_availability,
     condition_cycle,
 )
+from repyability.rbd._degradation import (
+    failure_from,
+    is_degradation,
+    level_after,
+)
 from repyability.rbd._exact import (
     ExactSum,
     add_columns,
@@ -256,6 +261,7 @@ class _StreamedComponent:
         "_model",
         "_start",
         "_test",
+        "_level",
     )
 
     def __init__(
@@ -266,6 +272,7 @@ class _StreamedComponent:
         model=None,
         start=None,
         test=None,
+        level=None,
     ):
         self._failure = failure
         self._repair = repair
@@ -274,6 +281,7 @@ class _StreamedComponent:
         self._model = model
         self._start = start
         self._test = test
+        self._level = level
 
     def reset(self):
         self._fails_next = True
@@ -282,6 +290,14 @@ class _StreamedComponent:
         if self._duration is not None:
             return self._duration.draw()
         return self._model.random(1).item()
+
+    def level_uniform(self) -> float:
+        """A uniform a unit replaced on condition by its measured level
+        (#271) draws its level at an inspection, or its failure from it,
+        from: from its ``LEVEL`` stream, or numpy's global RNG."""
+        if self._level is not None:
+            return self._level.draw()
+        return float(np.random.random())
 
     def start_uniform(self) -> float:
         """The uniform a start from a state draws what is left of the
@@ -349,6 +365,15 @@ class _ExponentialDraws:
         if self._rate <= 0.0:
             return math.inf
         return float(np.random.exponential(1.0 / self._rate))
+
+
+def _level_uniform(source) -> float:
+    """A uniform for a unit replaced on condition by its measured level
+    (#271): from its stand-in's ``LEVEL`` stream, or numpy's global RNG
+    for a component that draws its own way."""
+    if isinstance(source, _StreamedComponent):
+        return source.level_uniform()
+    return float(np.random.random())
 
 
 def _aged_life(model, age: float, u: float) -> float:
@@ -527,6 +552,7 @@ def _stand_in(
         duration,
         run.stream(path, _streams.START),
         run.stream(path, _streams.TEST),
+        run.stream(path, _streams.LEVEL),
     )
 
 
@@ -2994,8 +3020,9 @@ class _Preventive(NamedTuple):
     ``interval`` under the ``"age"`` or ``"block"`` policy, or under
     ``"condition"`` an inspection at every multiple of ``interval`` that
     replaces the unit if it is more likely than ``threshold`` to fail
-    before the next; a replacement takes a time drawn from ``duration``
-    (None: no time)."""
+    before the next (or, with a ``level``, if its measured degradation
+    level is at or past it); a replacement takes a time drawn from
+    ``duration`` (None: no time)."""
 
     interval: float
     policy: str
@@ -3004,6 +3031,10 @@ class _Preventive(NamedTuple):
     #: Under ``"age"``, the age from which the unit is renewed early at a
     #: stop of its maintenance group (#108); ``inf`` for never.
     opportunity: float = math.inf
+    #: Under ``"condition"`` with a degradation process for a life (#271):
+    #: the measured level at or past which an inspection replaces the
+    #: unit, in place of the age-based ``threshold``; None for none.
+    level: Optional[float] = None
 
     def due(self, renewed: float) -> float:
         """When the next preventive action (under ``"condition"``, the next
@@ -3374,6 +3405,26 @@ def _curve_points(value) -> Optional[int]:
     if value < 1:
         raise ValueError(f"curve_points must be at least 1, got {value!r}.")
     return int(value)
+
+
+def _on_duty(components: dict) -> dict:
+    """The components, each spec with a ``"duty"`` given its life on the
+    calendar (see ``_duty.on_calendar``): one object for each model and
+    duty, so that components sharing a model still share it."""
+    from repyability.rbd._duty import duty_fraction, on_calendar
+
+    moved: dict = {}
+    out = {}
+    for name, component in components.items():
+        if isinstance(component, dict) and component.get("duty") is not None:
+            d = duty_fraction(name, component["duty"])
+            life = component["reliability"]
+            key = (id(life), d)
+            if key not in moved:
+                moved[key] = on_calendar(name, life, d)
+            component = {**component, "reliability": moved[key]}
+        out[name] = component
+    return out
 
 
 def _is_junction(name, component) -> bool:
@@ -4719,6 +4770,13 @@ class RepairableRBD(RBD):
           and fails ``H(t)`` times by ``t`` on average (``H`` its life's
           cumulative hazard), which the values over a window from new
           (``expected_failures`` and the others) take in exactly.
+          ``"duty"``, a fraction ``d`` in (0, 1], is the share of the time
+          the component operates, for a ``"reliability"`` fitted in
+          operating time: it ages only while it operates, so its life on
+          the diagram's clock is its operating life over ``d``
+          (``R(d t)``), which every method then takes; its repairs,
+          maintenance and tests stay on the clock. The life must be a
+          surpyval parametric distribution of a time.
           ``"standby"`` makes the node a standby group of identical units,
           each failing and repaired as ``"reliability"`` and
           ``"repairability"`` say: a dict of ``"units"`` (by default 2),
@@ -4852,6 +4910,7 @@ class RepairableRBD(RBD):
         group's chain followed from every member up. The simulations draw
         each cause as a Poisson process, failing the members it names that
         are up; they need exponential lives alone (#158).
+
 
     Attributes
     ----------
@@ -5041,6 +5100,7 @@ class RepairableRBD(RBD):
             "group",
             "repair",
             "replace_after",
+            "duty",
         )
     )
     #: The models of imperfect repair a spec's ``"repair"`` can name.
@@ -5057,6 +5117,7 @@ class RepairableRBD(RBD):
         "threshold",
         "inspection_cost",
         "opportunity",
+        "level",
     )
     #: The policies a ``"preventive"`` spec can name: replacement at an
     #: age, on a calendar (block), or on the condition an inspection finds.
@@ -5135,6 +5196,10 @@ class RepairableRBD(RBD):
             ),
             "ccf_groups": list(ccf_groups) if ccf_groups else None,
         }
+        # A component that operates part of the time takes its life on
+        # the calendar from here on; the spec as given keeps its life in
+        # operating time, for its levers, draws and saving.
+        components = _on_duty(components)
         self.repair_crews = _validate_crews(repair_crews)
         # Each component's place in the queue for a crew (higher first).
         self._priority: dict[Any, float] = {}
@@ -5199,7 +5264,7 @@ class RepairableRBD(RBD):
                         node_costs[key] = cost
                 if component.get("preventive") is not None:
                     schedule, cost, inspecting = self._validate_preventive(
-                        name, component["preventive"]
+                        name, component["preventive"], component["reliability"]
                     )
                     if cost is not None:
                         node_costs["preventive_cost"] = cost
@@ -6480,10 +6545,13 @@ class RepairableRBD(RBD):
                 )
 
     @classmethod
-    def _validate_preventive(cls, node, spec) -> Tuple[_Preventive, Any, Any]:
+    def _validate_preventive(
+        cls, node, spec, life=None
+    ) -> Tuple[_Preventive, Any, Any]:
         """A component's ``"preventive"`` spec, validated: its schedule,
         and the cost of each replacement and of each inspection (None if
-        it prices nothing)."""
+        it prices nothing); ``life`` is the component's life model, which a
+        ``"level"`` needs to be a degradation process (#271)."""
         if not isinstance(spec, dict):
             raise ValueError(
                 f"Component {node!r}: preventive must be a dict with "
@@ -6514,12 +6582,14 @@ class RepairableRBD(RBD):
                 f"'block' or 'condition', got {policy!r}."
             )
         threshold = 0.0
-        if policy == "condition":
+        level = cls._validate_level(node, spec, policy, life)
+        if policy == "condition" and level is None:
             if spec.get("threshold") is None:
                 raise ValueError(
                     f"Component {node!r}: the 'condition' policy needs a "
                     "threshold: the probability of failing before the next "
-                    "inspection above which the unit is replaced."
+                    "inspection above which the unit is replaced (or, for "
+                    "a degradation process, a level)."
                 )
             threshold = spec["threshold"]
             if (
@@ -6532,7 +6602,7 @@ class RepairableRBD(RBD):
                     f"probability, in [0, 1], got {threshold!r}."
                 )
             threshold = float(threshold)
-        else:
+        elif policy != "condition":
             for key in ("threshold", "inspection_cost"):
                 if spec.get(key) is not None:
                     raise ValueError(
@@ -6580,9 +6650,47 @@ class RepairableRBD(RBD):
                     cost = None
             costs.append(cost)
         schedule = _Preventive(
-            interval, policy, duration, threshold, opportunity
+            interval, policy, duration, threshold, opportunity, level
         )
         return schedule, costs[0], costs[1]
+
+    @staticmethod
+    def _validate_level(
+        node, spec: dict, policy: str, life
+    ) -> Optional[float]:
+        """A ``"preventive"`` spec's ``"level"`` (#271), checked: a
+        number below the failure threshold of the degradation process the
+        component's life is, under the ``"condition"`` policy and in
+        place of its ``"threshold"``; None if not given."""
+        level = spec.get("level")
+        if level is None:
+            return None
+        if policy != "condition":
+            raise ValueError(
+                f"Component {node!r}: level applies only to the "
+                "'condition' policy, whose inspections measure it."
+            )
+        if not is_degradation(life):
+            raise ValueError(
+                f"Component {node!r}: a level is the measured degradation "
+                "level at which an inspection replaces the unit, so its "
+                "life must be a surpyval Wiener or gamma degradation "
+                "process; replace on its age with a threshold instead."
+            )
+        if spec.get("threshold") is not None:
+            raise ValueError(
+                f"Component {node!r}: give the condition policy a level "
+                "(of the measured degradation) or a threshold (a "
+                "probability of failing by the next inspection), not both."
+            )
+        level = number_or_nan(level)
+        if not level < float(life.threshold):
+            raise ValueError(
+                f"Component {node!r}: the level must be a number below the "
+                "degradation process's failure threshold, "
+                f"{float(life.threshold):g}, got {spec['level']!r}."
+            )
+        return level
 
     @classmethod
     def _validate_standby(cls, node, spec: dict) -> _Standby:
@@ -6887,6 +6995,10 @@ class RepairableRBD(RBD):
             if name in self._imperfect:
                 # A life after each repair, given the unit's virtual age.
                 add(path, _streams.AGED, _uniforms, expected["repair"])
+            schedule = self._preventive.get(name)
+            if schedule is not None and schedule.level is not None:
+                # A level and a failure from it at each inspection (#271).
+                add(path, _streams.LEVEL, _uniforms, 2.0 * expected["action"])
             inspection = self._inspection.get(name)
             if inspection is not None and inspection.partial:
                 # Whether a test finds each failure: one for each failure
@@ -10541,6 +10653,9 @@ class RepairableRBD(RBD):
         # When each working node replaced on condition is due to fail, and
         # to be replaced (see _replaced_at).
         self._in_service: dict[Any, Tuple[float, float]] = {}
+        # Each working node replaced on condition by its measured level
+        # (#271): when its level was last known, and the level then.
+        self._levels: dict[Any, Tuple[float, float]] = {}
         # Opportunistic maintenance (#108): when each member that can be
         # renewed early was put into service as new, and its pending event;
         # the pending events early renewals have cancelled, and the early
@@ -11563,9 +11678,10 @@ class RepairableRBD(RBD):
                 inner.route,
                 f"a nested RBD's long-run values, {inner.route}",
             )
-        message = r.refusal(partial(self._require_perfect_repair, node))
-        if message:
-            return r.REFUSED, message
+        for check in (self._require_perfect_repair, self._require_times):
+            message = r.refusal(partial(check, node))
+            if message:
+                return r.REFUSED, message
         if node in self._standby:
             message = r.refusal(partial(self._standby_rates, node))
             if message:
@@ -13899,6 +14015,16 @@ class RepairableRBD(RBD):
                 "'repair'), so it has no virtual age: give its age alone."
             )
         if (
+            schedule is not None
+            and schedule.level is not None
+            and not (state.new and state.phase is None)
+        ):
+            raise NotImplementedError(
+                f"Component {node!r} is replaced on condition by its "
+                "measured degradation level, which a state does not give: "
+                "leave it out (new)."
+            )
+        if (
             inspection is not None
             and inspection.partial
             and (state.phase is not None or not state.new)
@@ -14843,6 +14969,7 @@ class RepairableRBD(RBD):
         its phase on; from another state, its own curve up to its first
         block time or inspection, and the schedule's from there (see
         ``StartedBlockCurve``)."""
+        self._refuse_level(node)
         component = self.components[node]
         schedule = self._preventive[node]
         duration = schedule.duration
@@ -15861,7 +15988,7 @@ class RepairableRBD(RBD):
         if event.inspection:
             # Inspected, and kept (replacement on condition): its failure is
             # still ahead of it.
-            return self._condition_next(node, t, schedule)
+            return self._condition_next(node, t, schedule, source)
         if event.preventive:
             # Replaced: the new unit has its own life ahead of it (the
             # failure drawn for the old one never happens).
@@ -15899,13 +16026,20 @@ class RepairableRBD(RBD):
             life, _ = source.next_event()
         if schedule.policy == "condition":
             failure = t + life
+            if schedule.level is not None:
+                # As new: at the process's starting level, its failure
+                # drawn from there; each inspection decides (#271).
+                level = float(self.components[node].reliability.y0)
+                self._levels[node] = (t, level)
+                self._in_service[node] = (failure, math.inf)
+                return self._condition_next(node, t, schedule, source)
             self._in_service[node] = (
                 failure,
                 self._replaced_at(
                     node, t if start is None else start, failure, schedule, t
                 ),
             )
-            return self._condition_next(node, t, schedule)
+            return self._condition_next(node, t, schedule, source)
         if start is None:
             # Back from an imperfect repair, the unit is as old as its
             # operating time since it was renewed, which age replacement
@@ -16029,15 +16163,36 @@ class RepairableRBD(RBD):
         above = np.flatnonzero(likely > schedule.threshold)
         return dues[above[0]] if above.size else math.inf
 
-    def _condition_next(self, node, t: float, schedule: _Preventive) -> Event:
+    def _condition_next(
+        self, node, t: float, schedule: _Preventive, source
+    ) -> Event:
         """The next event, from ``t``, of a working unit replaced on
         condition: its failure, or the next inspection, which replaces the
         unit (see ``_replaced_at``) or only checks it. A failure at an
-        inspection's time comes first."""
+        inspection's time comes first.
+
+        Replaced by its measured level (#271), the inspection measures it,
+        drawn from the unit's ``LEVEL`` stream given that it has not failed
+        by then (``level_after``, the Markov property: the failure drawn
+        from the last level is past the inspection, and nothing else of it
+        is kept), and replaces the unit at or past ``schedule.level``; kept,
+        the unit's failure is drawn afresh from the level found."""
         failure, replaced = self._in_service[node]
         due = self._due(node, schedule, t)
         if failure <= due:
             return Event(failure, node, False)
+        if schedule.level is not None:
+            process = self.components[node].reliability
+            known, level = self._levels[node]
+            level = level_after(
+                process, level, due - known, _level_uniform(source)
+            )
+            if level >= schedule.level:
+                return Event(due, node, schedule.duration is None, True)
+            self._levels[node] = (due, level)
+            left = failure_from(process, level, _level_uniform(source))
+            self._in_service[node] = (due + left, math.inf)
+            return Event(due, node, True, inspection=True)
         if due >= replaced:
             # Replaced, as under block replacement.
             return Event(due, node, schedule.duration is None, True)
@@ -18827,6 +18982,7 @@ class RepairableRBD(RBD):
         "last_change_planned",
         "_pending_failure",
         "_in_service",
+        "_levels",
         "_renewed_at",
         "_pending_event",
         "_cancelled",
@@ -19726,6 +19882,7 @@ class RepairableRBD(RBD):
         their Markov chain, or a nested RBD's own, as it has crews of its
         own."""
         self._require_perfect_repair(node)
+        self._require_times(node)
         if self._crews_couple():
             chain = self._crew_chain()
             if node in chain.nodes:
@@ -19767,6 +19924,7 @@ class RepairableRBD(RBD):
         value is constant over the long-run grid, and while the crews do
         not couple the components (see ``_long_run_unavailabilities``)."""
         self._require_perfect_repair(node)
+        self._require_times(node)
         if node in self._standby:
             return self._standby_long_run(node).unavailability
         component = self.components[node]
@@ -19830,21 +19988,28 @@ class RepairableRBD(RBD):
 
     def _require_time_models(self, node) -> None:
         """Raise if a component's life or repair model is a probability,
-        not a distribution of times: its availability over time then has
-        no exact value. (First, if one has no reliability: see
+        not a distribution of times: its long-run and time-dependent values
+        then have no exact value (its mean is no mean time). (First, if one has no reliability: see
         ``_require_reliabilities``.)"""
         self._require_reliabilities(node)
+        self._require_times(node)
+
+    def _require_times(self, node) -> None:
+        """Raise if a component's life or repair model is a probability,
+        not a distribution of times: it has no mean time, nor a value over
+        time (see ``_require_time_models``)."""
         component = self.components[node]
         for what, model in [
-            ("reliability", component.reliability),
-            ("repairability", component.time_to_replace),
+            ("reliability", getattr(component, "reliability", None)),
+            ("repairability", getattr(component, "time_to_replace", None)),
         ]:
             if is_fixed_probability(model):
                 raise NotImplementedError(
                     f"Component {node!r}: its {what} model is a probability, "
-                    "not a distribution of times, so its availability over "
-                    "time has no exact value. Estimate it by simulation, "
-                    "with availability()."
+                    "not a distribution of times, so it has no mean time or "
+                    "availability over time: a unit fails at once with that "
+                    "probability, or never. Estimate the system by "
+                    "simulation, with availability()."
                 )
 
     def _require_unscheduled_stages(self, node) -> None:
@@ -19993,10 +20158,24 @@ class RepairableRBD(RBD):
         component's models (the checks ``block_cycle`` makes first)."""
         from repyability.rbd._block_replacement import _check_life, _Duration
 
+        self._refuse_level(node)
         component = self.components[node]
         _check_life(component.reliability, node)
         _Duration(component.time_to_replace, "repair", node)
         _Duration(self._preventive[node].duration, "replacement", node)
+
+    def _refuse_level(self, node) -> None:
+        """Raise for a component replaced on condition by its measured
+        degradation level (#271): its inspections follow the level, which
+        only the simulation draws."""
+        schedule = self._preventive.get(node)
+        if schedule is not None and schedule.level is not None:
+            raise NotImplementedError(
+                f"Component {node!r} is replaced on condition by its "
+                "measured degradation level, which only the simulation "
+                "follows: estimate it by simulation, with availability() or "
+                "cost()."
+            )
 
     def _require_calendars(self) -> None:
         """Raise if the exact long-run values cannot average over the
@@ -20222,6 +20401,7 @@ class RepairableRBD(RBD):
         """The renewal cycle of a component under block replacement (see
         ``_block_replacement``) or replaced on condition (see
         ``_condition_replacement``), computed once and kept."""
+        self._refuse_level(node)
         component = self.components[node]
         schedule = self._preventive[node]
         cache = self.__dict__.setdefault("_block_cycles", {})
@@ -20826,6 +21006,7 @@ class RepairableRBD(RBD):
         to count), ``1 / (MTTF + MTTR)`` failures for a NonRepairable, and
         from its renewal cycle for one under age replacement."""
         self._require_perfect_repair(node)
+        self._require_times(node)
         component = self.components[node]
         if isinstance(component, RepairableRBD):
             failures, planned = component._outage_frequencies()
@@ -22820,7 +23001,12 @@ class RepairableRBD(RBD):
         >>> round(shares["b"], 4)
         0.7143
         """
-        from ._differential import check, flattened, shares
+        from ._differential import (
+            check,
+            flattened,
+            proportional_scales,
+            shares,
+        )
 
         check(over, change, kind)
         held = set(working_nodes or ()) | set(broken_nodes or ())
@@ -22853,18 +23039,21 @@ class RepairableRBD(RBD):
                     rel_step=rel_step,
                 )
             )
-            continuous = {
-                (lever.key, lever.name): lever.value
+            levers = [
+                lever
                 for lever in _sensitivity._levers(self)
                 if not lever.discrete
-            }
+            ]
+            continuous = {(lever.key, lever.name) for lever in levers}
+            kept = [key for key in derivatives if key in continuous]
+            scale = (
+                proportional_scales(levers, kept)
+                if change == "proportional"
+                else dict.fromkeys(kept, 1.0)
+            )
             contributions = {
-                key: (
-                    np.asarray(d, dtype=float)
-                    * (continuous[key] if change == "proportional" else 1.0)
-                )
-                for key, d in derivatives.items()
-                if key in continuous
+                key: np.asarray(derivatives[key], dtype=float) * scale[key]
+                for key in kept
             }
         scalar = x is None or np.ndim(x) == 0
         return shares(contributions, groups, scalar, improving)

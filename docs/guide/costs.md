@@ -496,6 +496,57 @@ worn = {"p": NodeState(age=600.0, phase=100.0)}
 inspected.expected_cost(720.0, state=worn).total   # -> 10265   against 8517 new
 ```
 
+#### Replacing on the measured level
+
+A unit whose life is a degradation process fitted in surpyval
+(`surpyval.WienerProcess.fit` or `surpyval.GammaProcess.fit`, with its
+failure `threshold`) can be replaced on what an inspection measures rather
+than on its age (#271): `"level"` in place of `"threshold"`. Each
+inspection reads the unit's level, and replaces the unit if the level is at
+or past `"level"`; a unit kept goes on from the level found.
+
+| Key | Meaning |
+|---|---|
+| `level` | With `"condition"`, in place of `threshold`: the degradation level at or past which an inspection replaces the unit, below the process's failure `threshold`. The life must be a surpyval Wiener or gamma process. |
+
+```python
+g = np.random.default_rng(7)
+hours = np.tile(np.arange(1.0, 11.0) * 30.0, 12)       # 12 units, 10 readings
+units = np.repeat(np.arange(12), 10)
+worn = np.concatenate([np.cumsum(g.gamma(2.0, 0.25, 10)) for _ in range(12)])
+wear = surv.GammaProcess.fit(hours, worn, units, threshold=8.0)
+
+def liner(level):
+    preventive = {"interval": 60.0, "policy": "condition", "level": level,
+                  "cost": 5.0, "inspection_cost": 0.5}
+    spec = {"reliability": wear, "repair_cost": 50.0, "preventive": preventive,
+            "repairability": surv.Exponential.from_params([1 / 20])}
+    return RepairableRBD([("s", "a"), ("a", "t")], {"a": spec})
+
+liner(6.0).cost(5000.0, mc_samples=400, seed=1).mean   # -> 95.06
+```
+
+Run to failure, the liner costs about 402 over the 5000 hours. Replaced at
+a level of 7.5, 7, 6 or 5 it costs about 250, 133, 95 and 103: a lower
+level means fewer failures but more replacements.
+
+- **By simulation only.** The level a unit is found at depends on the
+  levels before it, which only the simulation follows: the exact and
+  numerical methods (the long run, over time, the importance measures)
+  refuse such a component, and `availability()` and `cost()` simulate it,
+  on the Python engine. A start state cannot give the level either, so a
+  run from one refuses it.
+- **How a level is drawn.** Between inspections a unit's failure is drawn
+  from the level last measured (surpyval's first-passage quantile from it).
+  If that failure falls before the next inspection, the unit fails then.
+  Otherwise the inspection's level is drawn given that the unit has not
+  failed by then: for a gamma process, a gamma increment truncated at the
+  threshold; for a Wiener process, the path's level killed at the threshold
+  (the method of images). surpyval does not give this level yet
+  (SurPyval#836), so RePyability works it out from the fitted parameters.
+- **Without a level**, a degradation process is a life like any other, its
+  first-passage time to the threshold, and every exact method takes it.
+
 ### Opportunistic maintenance
 
 Plants group their work: once a unit is down, for a failure or its planned

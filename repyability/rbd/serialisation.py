@@ -31,6 +31,7 @@ from typing import Any
 
 from repyability._version import __version__
 from repyability.non_repairable import NonRepairable
+from repyability.rbd._degradation import is_degradation
 from repyability.rbd._model_utils import distribution_name, is_mixture
 from repyability.rbd.degrading_node import DegradingNode
 from repyability.rbd.helper_classes import (
@@ -164,7 +165,11 @@ def _serialise_model(model: Any) -> dict:
             "load": model.load,
             "k": model.k,
         }
-    if distribution_name(model) is not None or is_mixture(model):
+    if (
+        distribution_name(model) is not None
+        or is_mixture(model)
+        or is_degradation(model)
+    ):
         # surpyval's own format: everything surpyval keeps (an offset, p,
         # f0, a fit's covariance, a mixture's components) round-trips,
         # whatever it adds later.
@@ -307,6 +312,8 @@ def _serialise_component(value) -> dict:
             }
         if value.get("replace_after") is not None:
             out["replace_after"] = int(value["replace_after"])
+        if value.get("duty") is not None:
+            out["duty"] = float(value["duty"])
         for key in ("preventive", "inspection"):
             if value.get(key) is not None:
                 out[key] = _serialise_schedule(value[key])
@@ -322,14 +329,16 @@ def _serialise_component(value) -> dict:
 
 def _serialise_schedule(spec: dict) -> dict:
     # A component's preventive-maintenance or inspection schedule: the
-    # interval (and policy, and a condition policy's threshold) as they are,
-    # the duration ("instant" or a model) and the costs (each a number or a
-    # distribution).
+    # interval (and policy, and a condition policy's threshold or level) as
+    # they are, the duration ("instant" or a model) and the costs (each a
+    # number or a distribution).
     out: dict[str, Any] = {"interval": float(spec["interval"])}
     if "policy" in spec:
         out["policy"] = spec["policy"]
     if spec.get("threshold") is not None:
         out["threshold"] = float(spec["threshold"])
+    if spec.get("level") is not None:
+        out["level"] = float(spec["level"])
     if spec.get("opportunity") is not None:
         out["opportunity"] = float(spec["opportunity"])
     # An inspection's offset, coverage and full tests, when given (so a
@@ -387,6 +396,8 @@ def _deserialise_component(d: dict) -> Any:
             out["repair"] = dict(d["repair"])
         if "replace_after" in d:
             out["replace_after"] = d["replace_after"]
+        if "duty" in d:
+            out["duty"] = d["duty"]
         for key in ("preventive", "inspection"):
             if key in d:
                 out[key] = _deserialise_schedule(d[key])

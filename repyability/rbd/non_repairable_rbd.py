@@ -47,8 +47,10 @@ from . import _montecarlo as montecarlo
 from . import _sensitivity
 from . import capacity as _capacity
 from . import redundancy_allocation
+from ._degradation import check_life, is_degradation
 from ._mean_lifetime import mean_lifetime, model_kinks, model_knots
 from ._model_utils import (
+    failure_time_scale,
     is_fixed_probability,
     is_mixture,
     lever_spec,
@@ -253,6 +255,31 @@ def _dsf_dparam(spec, j, x_arr, rel_step) -> np.ndarray:
     return np.full(x_arr.shape, np.nan)
 
 
+def _model_scale(model) -> float:
+    """A typical failure time of a node's model (see
+    ``failure_time_scale``), or NaN where it has none: a fixed probability,
+    or a model whose mean cannot be worked out."""
+    if is_fixed_probability(model):
+        return float("nan")
+    try:
+        return float(failure_time_scale(model))
+    except (AttributeError, TypeError, ValueError, NotImplementedError):
+        return float("nan")
+
+
+def _difference_steps(x: np.ndarray, dx: float, scale) -> np.ndarray:
+    """The steps of a finite difference at the times ``x``: ``dx`` of each
+    time, and at 0, where there is none to be relative to, ``dx`` of
+    ``scale()``, a typical failure time (1 if there is none), so that the
+    step does not depend on the unit of time."""
+    step = dx * np.abs(x)
+    if np.any(step == 0.0):
+        typical = scale()
+        typical = typical if np.isfinite(typical) and typical > 0 else 1.0
+        step = np.where(step == 0.0, dx * typical, step)
+    return step
+
+
 def _system_difference(at, theta, rel_step, base) -> np.ndarray:
     """The derivative of the system reliability in a parameter at
     ``theta``, by a central difference: ``at(value)`` gives the system's
@@ -296,6 +323,8 @@ def _check_model(node, model) -> None:
     saying what to give instead; a number most likely means a
     probability."""
     no_distribution(model, f"The model of node {node!r}")
+    if is_degradation(model):
+        check_life(model, f"The model of node {node!r}")
     if callable(getattr(model, "sf", None)):
         return
     if isinstance(model, (int, float)) and not isinstance(model, bool):
@@ -439,6 +468,7 @@ class NonRepairableRBD(RBD):
         ``NonRepairableRBD`` with capacities, whose distribution it then
         has. A repeated node has the capacity of the node it repeats,
         wherever it is drawn: give that node's.
+
 
     Attributes
     ----------
@@ -4703,8 +4733,9 @@ class NonRepairableRBD(RBD):
 
         Computed by a central finite difference of the system reliability
         from [`sf`][repyability.NonRepairableRBD.sf] (so it honours
-        common-cause groups), with step ``h = dx * max(|x|, 1)``: relative
-        to ``x`` for ``|x| >= 1``, absolute below. While the system is more
+        common-cause groups), with step ``h = dx * |x|``, relative to
+        ``x`` (at 0, ``dx`` of the shortest of the nodes' typical failure
+        times), so that it does not depend on the unit of time. While the system is more
         likely to work than not, the difference is taken of its
         unreliability from [`ff`][repyability.NonRepairableRBD.ff]
         instead, which keeps its precision where the reliability's change
@@ -4755,7 +4786,7 @@ class NonRepairableRBD(RBD):
         0.006065
         """
         x = np.atleast_1d(np.asarray(x, dtype=float))
-        h = dx * np.maximum(np.abs(x), 1.0)
+        h = _difference_steps(x, dx, self._time_scale)
         x_hi = x + h
         x_lo = np.maximum(x - h, 0.0)
         sf_lo, ff_lo = self._sf_and_ff(
@@ -8427,7 +8458,12 @@ class NonRepairableRBD(RBD):
         >>> round(shares["b"], 4)
         0.6923
         """
-        from ._differential import check, flattened, shares
+        from ._differential import (
+            check,
+            flattened,
+            proportional_scales,
+            shares,
+        )
 
         check(over, change, kind)
         held = set(working_nodes or ()) | set(broken_nodes or ())
@@ -8453,10 +8489,9 @@ class NonRepairableRBD(RBD):
             if change == "uniform":
                 contributions = derivatives
             else:
-                scale: Dict[Any, float] = {
-                    (lever.key, lever.name): lever.value
-                    for lever in self.levers()
-                }
+                scale = proportional_scales(
+                    _sensitivity._nonrepairable_levers(self), derivatives
+                )
                 contributions = {
                     key: np.asarray(d, dtype=float) * scale[key]
                     for key, d in derivatives.items()
@@ -8538,6 +8573,14 @@ class NonRepairableRBD(RBD):
             broken_nodes,
         )
 
+    def _time_scale(self) -> float:
+        """The diagram's shortest typical failure time over its nodes (see
+        ``_model_scale``), to size a step at time 0 by; NaN if none has
+        one."""
+        scales = [_model_scale(m) for m in self.reliabilities.values()]
+        scales = [x for x in scales if np.isfinite(x) and x > 0.0]
+        return min(scales) if scales else float("nan")
+
     def _node_density(self, node, x: np.ndarray) -> np.ndarray:
         """A node's failure density at the times ``x``: its model's own
         (``df``) where it has one, else by central differences of its
@@ -8549,7 +8592,7 @@ class NonRepairableRBD(RBD):
                 return np.asarray(model.df(x), dtype=float).reshape(x.shape)
         except (AttributeError, TypeError, ValueError, NotImplementedError):
             pass
-        step = 1e-6 * np.maximum(np.abs(x), 1.0)
+        step = _difference_steps(x, 1e-6, lambda: _model_scale(model))
         hi, lo = x + step, np.maximum(x - step, 0.0)
         if hasattr(model, "ff"):
             change = np.asarray(model.ff(hi), dtype=float) - np.asarray(
@@ -8586,7 +8629,7 @@ class NonRepairableRBD(RBD):
         if self.ccf_groups:
             # A group's part: the system's change with its members' lives
             # moved on and the rest held, by central differences.
-            step = 1e-6 * np.maximum(np.abs(x), 1.0)
+            step = _difference_steps(x, 1e-6, self._time_scale)
             hi, lo = x + step, np.maximum(x - step, 0.0)
             p, q = self._importance_inputs(x, working_nodes, broken_nodes)
             ends = [

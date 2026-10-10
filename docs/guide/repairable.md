@@ -49,8 +49,10 @@ A component can be given as:
   failures are hidden until a proof test finds them, periodic inspection
   (`"inspection"`; see [Costs](costs.md#hidden-failures-and-inspection)),
   its place in the queue for a repair crew (`"priority"`; see
-  [below](#repair-crews)), and imperfect repair (`"repair"` and
-  `"replace_after"`; see [below](#imperfect-repair)). Any other key raises
+  [below](#repair-crews)), imperfect repair (`"repair"` and
+  `"replace_after"`; see [below](#imperfect-repair)), and the share of the
+  time it operates (`"duty"`; see [below](#operating-part-of-the-time)).
+  Any other key raises
   `ValueError`, so a mistyped cost key is never silently priced at zero;
 - `"repairability": "instant"` for a component repaired in zero time (see
   [below](#instantly-repaired-components));
@@ -68,12 +70,41 @@ A component can be given as:
 The constructor also takes `k`, `input_node`, `output_node` and
 `on_infeasible_rbd` exactly as for a
 [`NonRepairableRBD`](building.md), `downtime_cost_rate` (see
-[Costs](costs.md)) and `repair_crews` (see [below](#repair-crews)).
+[Costs](costs.md)) and `repair_crews` (see [below](#repair-crews)). Every
+time is in the models' unit (see [Units](building.md#units)).
 
 Every repair restores a component to as good as new (unless it is repaired
 imperfectly), components fail and are repaired independently of each other
 (unless they wait for a repair crew), and a component keeps its own
 failure/repair cycle whether or not the system is up.
+
+### Operating part of the time
+
+A life fitted to operating hours is the wrong clock for a component that
+runs only part of the time (a duty pump, a standby generator's monthly
+runs): the diagram runs on the calendar, and the component ages only while
+it operates. `"duty"`, the fraction `d` of the time it operates (in
+`(0, 1]`), puts its life on the calendar: its life there is its operating
+life over `d`, `R(d t)`, the same kind of distribution with its scale
+moved, which every exact method and simulation then takes. Its repairs,
+maintenance and tests stay on the calendar, and its levers and saved spec
+keep the life as given, in operating time.
+
+```python
+pump = {"reliability": surv.Weibull.from_params([1000, 2]),       # operating hours
+        "repairability": surv.Exponential.from_params([1 / 8])}
+always = RepairableRBD([("s", "p"), ("p", "t")], {"p": pump})
+part = RepairableRBD([("s", "p"), ("p", "t")], {"p": {**pump, "duty": 0.4}})
+always.mean_availability()                   # -> 0.99105
+part.mean_availability()                     # -> 0.9964
+part.system_failure_frequency() * 8760       # -> 3.94   failures a year, against 9.796
+```
+
+The life must be a surpyval parametric distribution of a time; a
+probability per demand, a mixture, a degradation process or a nested
+diagram is refused (give its life on the calendar instead). The duty is a
+fixed share of the time: a component that runs only while the system runs,
+or ages while idle too, needs that modelled in its life.
 
 ### Junctions
 

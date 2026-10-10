@@ -52,6 +52,10 @@ TEST = 10
 #: uniforms that decide whether the tests that can miss its failures find
 #: them (one per strike: they are found, or missed, alike).
 CAUSE, CAUSE_TEST = 11, 12
+#: The uniforms a unit replaced on condition by its measured degradation
+#: level (#271) draws its level at each inspection from, and its failure
+#: from that level: two an inspection.
+LEVEL = 13
 #: The kind of each cost that can be a distribution, by its cost key.
 COST_KINDS = {
     "repair_cost": 3,

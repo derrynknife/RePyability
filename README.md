@@ -130,7 +130,8 @@ only when
 *k*-out-of-*n*, bridges and other meshed diagrams, components in several
 places, nested diagrams):
 
-- **components:** surpyval lifetime distributions and fixed
+- **components:** surpyval lifetime distributions, degradation processes
+  (Wiener and gamma, as the time to their threshold) and fixed
   probabilities (a diagram refuses a non-parametric fit, such as
   Kaplan–Meier: fit a parametric distribution in surpyval); repeated
   nodes; cold standby with one or
@@ -181,6 +182,7 @@ places, nested diagrams):
 | Standby groups (a duty unit and its spares, repaired) | For exponential units, the long run and importance exact, and the values over time numerical (the units' Markov chain, followed by uniformization); other units simulated | Other units: yes, in general. |
 | Opportunistic maintenance (renewals at a group's stops) | Simulated | Yes: each member's renewals depend on the others' ages. |
 | Imperfect repair (Kijima), with or without replacement at the *N*-th failure | Simulated; but minimal repair (`q = 1`) in no time is numerical over a window from new (it fails `H(t)` times by `t`), its long run refused | Yes, in general: a repair does not renew the unit. |
+| Replacement on condition by a measured degradation level | Simulated (in Python), from new; the exact and numerical analyses refused | No: between inspections the level is a Markov process, so the long run and the values over time could follow its distribution on a grid of levels, as replacement on condition by age follows ages. |
 | Spares with repair crews, standby groups, opportunistic maintenance or imperfect repair | Refused, pointing to `spares_demand(method="simulate")`. Otherwise numerical, demand and stock: block-replaced components' whether their repairs and block replacements take time or not (from a typical replacement in the long run), but for one dead on arrival while they may take none, and tested components', whatever their tests and repairs take and whether their tests miss failures | Yes, in general: a crew's queue, a group's switching or stops and an imperfect repair make the replacements depend on more than each unit's own lives. A unit dead on arrival whose renewals may take no time: no, the replacements at one instant could be counted. |
 
 Where a system's expected values over a window are exact,
