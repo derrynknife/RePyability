@@ -44,10 +44,29 @@
   into both. If code needs a "keep in sync with X" note, simplify it
   instead.
 
+- **`RepairableRBD`'s code lives in modules by analysis.** The class
+  (`repairable_rbd.py`) keeps its constructor, its public methods (their
+  signatures, decorators and docstrings, each calling a function of the
+  same name), the hooks `RBD` calls, and the methods a test overrides on
+  one diagram (`_crews_couple`, `_conditional_modules`). The work is done
+  by functions taking the diagram, in `repyability/rbd/`: `_event_loop`
+  (the Python loop and its streams), `_runs` (availability and cost runs,
+  the twin, conditional runs, chunks and shards), `_curves` (each node's
+  curve, the start states, `_settling`), `_windows` (values over time),
+  `_long_run`, `_costs`, `_repairable_capacity`, `_repairable_importance`,
+  `_ccf_groups`, `_crews`, `_intervals`, `_repairable_allocation`,
+  `_spares`, `_repairable_uncertainty`, `_sensitivity`,
+  `_repairable_routes`, `_requirements` (the `_require_*` checks) and
+  `_common` (small helpers they share). A new analysis goes into the
+  module of its kind, and its public method onto the class. Modules low in
+  the imports (`_compiled`, `_tally`, `_timeline_runs`, ...) import these
+  inside the functions that use them, as they import the modules above
+  them.
+
 ## Simulation engines and seeded results
 
 - **A `RepairableRBD` simulation has two engines that must agree to the last
-  bit**: the Python event loop (`RepairableRBD._replicate`) and the compiled
+  bit**: the Python event loop (`_event_loop._replicate`) and the compiled
   one (`repyability/rbd/_kernel.py`, numba, the optional `fast` extra). A
   change to the loop's events, arithmetic or order goes into both;
   `test_simulation_engines.py` checks them against each other (run by CI's
@@ -68,7 +87,7 @@
   a run's state on the diagram (`_RUN_STATE`) and draws that cannot be
   streamed come from numpy's global RNG, so a run holds
   `repyability.utils.wrappers.SIMULATIONS`, a process-wide `RLock`:
-  `RepairableRBD._run` (but a sharded run's parent, whose shards take it
+  `_event_loop._run` (but a sharded run's parent, whose shards take it
   where they run, so a `shard_map` on threads cannot wait on it)
   and `numpy_seed`. New code that runs the loop or seeds the global RNG
   goes through one of these; threads that work for a run (numba's) must
@@ -83,7 +102,7 @@
   too, `importlib.util.find_spec("numba")` returning None and `import
   numba` raising `ModuleNotFoundError` (which `importorskip` needs).
 - **`simulate_timelines`' histories are the event loop's, on every
-  engine.** Both loops record them as they run (`_replicate` with
+  engine.** Both loops record them as they run (`_event_loop._replicate` with
   `_Context.history`; `_kernel._simulate` when given room to record, the
   system's own level only): each top-level
   component's changes, and each of the system's with the component that
@@ -104,15 +123,15 @@
   compatible, or raise `engines.API` (with a CHANGELOG entry) when an engine
   would have to change with them.
 - **A conditional run (#189, `repyability/rbd/_conditional.py`, and
-  `RepairableRBD`'s `_conditional_modules` and `_modules_rbd`) simulates
+  `RepairableRBD._conditional_modules` and `_runs._modules_rbd`) simulates
   the modules alone** (`_conditional_modules`: the nodes
-  `_node_over_time` refuses, with their maintenance groups), as a diagram
-  of their own (`_modules_rbd`) whose streams are named as in the system,
+  `_curves._node_over_time` refuses, with their maintenance groups), as a diagram
+  of their own (`_runs._modules_rbd`) whose streams are named as in the system,
   so its simulations are a plain run's; its tally keeps each simulation's
   cost beside its histories, on both engines. Given each joint state of
-  the modules, the rest comes from `_window` and `point_availability`
+  the modules, the rest comes from `_windows._window` and `point_availability`
   with the modules held. A change to what makes a node need simulating
-  goes into `_node_over_time`, and anything that ties a module to the
+  goes into `_curves._node_over_time`, and anything that ties a module to the
   other nodes (crews, a group's `system_down`) must refuse in
   `_conditional_modules`. Changes at one instant are ordered as the loop
   orders them (`_conditional.paths`: failures, the stops they open, then
@@ -122,12 +141,12 @@
   history, and the estimates against plain runs.
 - **A run's means are exact or conditional by default (#187, #189).**
   `availability()` and `cost()` take the exact methods' expected values
-  where they work them out (`_exact_means`, as the controls of the system
+  where they work them out (`_runs._exact_means`, as the controls of the system
   itself), and otherwise, where a conditional run applies, each
   simulation's expected values given its modules' histories
-  (`_conditioned_run`, the modules simulated again from the run's
+  (`_runs._conditioned_run`, the modules simulated again from the run's
   entropy); `availability_from_chunks` gives merged chunks the same
-  (`_default_means`). The simulations are a plain run's either way. A test
+  (`_runs._default_means`). The simulations are a plain run's either way. A test
   that checks the simulation against the exact methods must run plainly
   (`control_variate=False`), or it compares the exact values with
   themselves.
@@ -165,7 +184,7 @@
   `_events._StandbyGroup`'s rules (switching, spares, repairs), checked by
   `test_repairable_standby.py`.
 - **A common-cause group's chains (`repyability/rbd/_ccf_chain.py`) copy
-  the simulation's causes** (`_events._Cause`, `_strike`, #158): each cause, a
+  the simulation's causes** (`_events._Cause`, `_event_loop._strike`, #158): each cause, a
   member's own or a shared one, strikes at its share of the failure rate
   and fails the members it names that are up, at once; with tests that can
   miss, one coin for all the failures it makes. A change to one goes into
@@ -176,15 +195,15 @@
   against the chain of every copy.
 - **A common-cause group's chain with tests and repairs that take time
   (`_ccf_chain._Timed`, #220) copies the simulation's inspections** too
-  (`_inspected_follow_up`, `_inspected_next`, `_strike`): a working member
+  (`_event_loop._inspected_follow_up`, `_event_loop._inspected_next`, `_event_loop._strike`): a working member
   is off line for its test, unaged and not struck; a failure found is
   repaired once the test is over; a test in a member's own test or repair
   is not done. A change to one goes into the other: `test_ccf_timed.py`
   checks the chain against the simulation, and against the members' own
   model (`_hidden_tests`) where no cause is shared.
 - **A tested unit's numerical model (`repyability/rbd/_hidden_tests.py`,
-  #159) copies the simulation's inspections** (`_inspected_follow_up`,
-  `_inspected_next`): a test takes a working unit off line without ageing
+  #159) copies the simulation's inspections** (`_event_loop._inspected_follow_up`,
+  `_event_loop._inspected_next`): a test takes a working unit off line without ageing
   it, a failure is repaired once its test is over, the tests in a repair
   are not done, and a failure a test misses waits for the next full test.
   A change to one goes into the other; `test_hidden_failures_timed.py`
@@ -204,18 +223,18 @@
   `_capacity_arrays` passes them as working. `test_junctions.py` checks
   every public method against the same system drawn without a junction.
 
-- **Identical components share one curve** (`_availability_curves`,
-  `_curve_twin`): a plain unit's curve follows from its life and repair
+- **Identical components share one curve** (`_curves._availability_curves`,
+  `_curves._curve_twin`): a plain unit's curve follows from its life and repair
   models and its state at 0 alone. Anything new that makes a unit's curve
   depend on more (a schedule, a group, a coupling) must leave it out in
-  `_plain_unit`, or two units would be given one curve that is only one's:
+  `_curves._plain_unit`, or two units would be given one curve that is only one's:
   `test_identical_components_share_one_curve` checks the shared curves
   against a curve each.
 
 - **`analysis_routes()` (both RBD classes) must agree with the methods.** It
   says, without running anything, whether each public analysis is exact,
   numerical, simulated or refused. Refusals go through checks the report
-  calls too (`_require_*` helpers, `_inspected_rate`, ...), so its reasons
+  calls too (`_requirements._require_*` helpers, `_requirements._inspected_rate`, ...), so its reasons
   are the methods' own messages. A refusal is a `NotImplementedError` (what
   an analysis cannot work out) or a `routes.Refused` (a `ValueError`: the
   diagram has nothing the analysis works on); `routes.refusal` raises any
@@ -264,7 +283,7 @@
   members up or down, an owner's laid out as a last axis of the arrays;
   `test_ccf_repairable_modules.py` checks every long-run value, measure
   and the groups' system over time against the times split by every
-  combination (`_with_ccf_groups`, which the capacity distribution and the
+  combination (`_ccf_groups._with_ccf_groups`, which the capacity distribution and the
   allocations still take, behind `_ccf_chain.check_split`).
 - **The integrals over a window are summed on coarse pieces**
   (`repyability/rbd/_quadrature.py`, #164): the curves' breaks, cut to a
@@ -278,10 +297,10 @@
   knot.
 - **Unavailability over time is worked out as itself (#237)**, not as
   one less the availability, which rounds to 0 below about 1e-16:
-  `RepairableRBD._system_at(..., down=True)` takes each component's
+  `_windows._system_at(..., down=True)` takes each component's
   probability of being down from its closed form where it has one
-  (`_closed_form_down`: an exponential life and repair, nothing else
-  about it), from its curve otherwise (`_curves_down_at`), and from the
+  (`_curves._closed_form_down`: an exponential life and repair, nothing else
+  about it), from its curve otherwise (`_curves._curves_down_at`), and from the
   crews' and common-cause groups' chains (`GroupsCurve.down_at`); the
   mission's integral is refined to its own size (`_integrated(...,
   relative=)`). A change to how `point_availability` works out a kind of
