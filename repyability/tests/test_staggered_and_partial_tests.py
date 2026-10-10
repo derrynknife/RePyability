@@ -12,6 +12,7 @@ from scipy import integrate
 from surpyval import Exponential
 
 from repyability import NodeState, RepairableRBD
+from repyability.rbd import _intervals
 
 E = Exponential.from_params
 PAIR = [("s", "a"), ("s", "b"), ("a", "t"), ("b", "t")]
@@ -306,7 +307,9 @@ def test_choosing_intervals_keeps_an_offsets_share():
             "b": hidden(rate, 1000.0, offset=500.0, cost=10.0),
         },
     )
-    plan = rbd._with_intervals(inspection={"a": 2000.0, "b": 2000.0})
+    plan = _intervals._with_intervals(
+        rbd, inspection={"a": 2000.0, "b": 2000.0}
+    )
     assert plan._inspection["b"].offset == 1000.0
     chosen = rbd.optimal_inspection_intervals(
         allowed={"a": [500.0, 1000.0, 2000.0], "b": [500.0, 1000.0, 2000.0]},
