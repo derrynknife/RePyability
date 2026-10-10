@@ -23,6 +23,7 @@ import numpy as np
 
 from repyability.rbd import (
     _ccf_groups,
+    _curves,
     _quadrature,
     _rates,
 )
@@ -107,7 +108,7 @@ def _point(rbd, x, working_nodes, broken_nodes, method, state, down=False):
     broken_nodes = set() if broken_nodes is None else set(broken_nodes)
     rbd._validate_node_overrides(working_nodes, broken_nodes)
     horizon = float(times.max()) if times.size else 0.0
-    states = rbd._states(state, working_nodes | broken_nodes)
+    states = _curves._states(rbd, state, working_nodes | broken_nodes)
     system_at, _, _ = _system_at(
         rbd, horizon, working_nodes, broken_nodes, method, states, down
     )
@@ -125,8 +126,8 @@ def _system_at(
     bends its integral's pieces follow; and the crews' curve, where a
     component can wait for a crew (else None)."""
     if rbd._crews_couple():
-        crew = rbd._crew_curve(
-            horizon, working_nodes, broken_nodes, method, states
+        crew = _curves._crew_curve(
+            rbd, horizon, working_nodes, broken_nodes, method, states
         )
         if not down:
             return crew.at, [crew], crew
@@ -141,14 +142,16 @@ def _system_at(
         )
         return (grouped.down_at if down else grouped.at), [grouped], None
     forced = working_nodes | broken_nodes
-    curves = rbd._availability_curves(horizon, forced, state=states)
+    curves = _curves._availability_curves(rbd, horizon, forced, state=states)
 
     def system_at(x):
         if down:
-            return rbd._curves_down_at(
-                curves, x, working_nodes, broken_nodes, states
+            return _curves._curves_down_at(
+                rbd, curves, x, working_nodes, broken_nodes, states
             )
-        return rbd._curves_at(curves, x, working_nodes, broken_nodes, method)
+        return _curves._curves_at(
+            rbd, curves, x, working_nodes, broken_nodes, method
+        )
 
     return system_at, list(curves.values()), None
 
@@ -188,7 +191,7 @@ def _mission(rbd, t, working_nodes, broken_nodes, method, state, down=False):
     rbd._validate_node_overrides(working_nodes, broken_nodes)
     ends = windows.ravel()
     horizon = float(ends.max()) if ends.size else 0.0
-    states = rbd._states(state, working_nodes | broken_nodes)
+    states = _curves._states(rbd, state, working_nodes | broken_nodes)
     system_at, pieces, crew = _system_at(
         rbd, horizon, working_nodes, broken_nodes, method, states, down
     )
@@ -208,7 +211,9 @@ def _mission(rbd, t, working_nodes, broken_nodes, method, state, down=False):
                     [horizon or 1.0]
                     + [
                         1.0 / rate
-                        for rate in rbd._closed_form_rates(states).values()
+                        for rate in _curves._closed_form_rates(
+                            rbd, states
+                        ).values()
                         if 0.0 < rate < math.inf
                     ]
                 )
@@ -241,7 +246,7 @@ def _integrated(
     itself, pieces being halved down to that scale where the grids are
     coarser: for an unavailability, small, and changing in closed form
     faster than the grids (#237)."""
-    from repyability.rbd.repairable_rbd import _MISSION_POINTS, _settling
+    from repyability.rbd._curves import _MISSION_POINTS, _settling
 
     # After ``settle`` the system's availability is constant, or repeats
     # with ``period``: it is integrated up to ``reach``, and extended.
@@ -322,7 +327,7 @@ def _window(
     forced = working | broken
     ends = windows.ravel()
     horizon = float(ends.max()) if ends.size else 0.0
-    states = rbd._states(state, forced)
+    states = _curves._states(rbd, state, forced)
     groups = None
     if setups:
         groups = {
@@ -331,17 +336,17 @@ def _window(
             if spec.setup_cost
         }
     if rbd._crews_couple():
-        curves, counts = rbd._crew_window(
-            ends, working, broken, method, states, nodes, groups, causes
+        curves, counts = _curves._crew_window(
+            rbd, ends, working, broken, method, states, nodes, groups, causes
         )
         return windows, ends, curves, counts, working, broken
     if rbd.ccf_groups:
-        curves, counts = rbd._groups_window(
-            ends, working, broken, method, states, nodes, groups, causes
+        curves, counts = _curves._groups_window(
+            rbd, ends, working, broken, method, states, nodes, groups, causes
         )
         return windows, ends, curves, counts, working, broken
-    curves = rbd._availability_curves(
-        horizon, forced, counts=True, state=states
+    curves = _curves._availability_curves(
+        rbd, horizon, forced, counts=True, state=states
     )
     counts = _window_counts(
         rbd,
@@ -776,7 +781,7 @@ def _window_counts(
     nodes have all settled, every count is extended exactly: at its
     long-run rate, or a period at a time.
     """
-    from repyability.rbd.repairable_rbd import _MISSION_POINTS, _settling
+    from repyability.rbd._curves import _MISSION_POINTS, _settling
 
     ends = np.asarray(ends, dtype=float).ravel()
     horizon = float(ends.max()) if ends.size else 0.0

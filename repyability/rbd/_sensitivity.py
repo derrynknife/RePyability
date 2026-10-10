@@ -48,7 +48,7 @@ from typing import (
 
 import numpy as np
 
-from repyability.rbd import _long_run
+from repyability.rbd import _curves, _long_run
 from repyability.utils.checks import is_number, is_whole, number_or_nan
 
 from . import _importance_time
@@ -647,12 +647,15 @@ class _Alone:
         )
 
     def _window_points(self):
-        from .repairable_rbd import _MISSION_POINTS
+        from ._curves import _MISSION_POINTS
 
         rbd, asked = self.rbd, self.asked
+        assert asked.window is not None
         forced = asked.working | asked.broken
-        states = rbd._states(asked.state, forced)
-        curves = rbd._availability_curves(asked.window, forced, state=states)
+        states = _curves._states(rbd, asked.state, forced)
+        curves = _curves._availability_curves(
+            rbd, asked.window, forced, state=states
+        )
 
         def integrands(x):
             p, q = _importance_time._independent(
@@ -664,7 +667,6 @@ class _Alone:
                 **{("b", n): v for n, v in importance.items()},
             }
 
-        assert asked.window is not None
         return _importance_time.window_points(
             list(curves.values()), asked.window, integrands, _MISSION_POINTS
         )

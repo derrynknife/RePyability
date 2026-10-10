@@ -67,6 +67,8 @@ def measure(
     else arrays in its shape."""
     from repyability.utils.checks import nonnegative_times
 
+    from . import _curves
+
     if x is not None and window is not None:
         raise ValueError(
             "Give the times x or a window's length, not both: x evaluates "
@@ -75,7 +77,7 @@ def measure(
     working = set(working_nodes or ())
     broken = set(broken_nodes or ())
     rbd._validate_node_overrides(working, broken)
-    states = rbd._states(state, working | broken)
+    states = _curves._states(rbd, state, working | broken)
     if x is not None:
         times = nonnegative_times(x)
         values = _at(rbd, spec, times.ravel(), working, broken, states, state)
@@ -178,7 +180,7 @@ def _independent(rbd, curves: dict, x, working, broken) -> Tuple[dict, dict]:
 
 def _at(rbd, spec, times, working, broken, states, state) -> dict:
     """The measure of every node at each of ``times``, as arrays."""
-    from . import _ccf_groups
+    from . import _ccf_groups, _curves
 
     if rbd._crews_couple():
         if spec.name in _HELD:
@@ -196,7 +198,7 @@ def _at(rbd, spec, times, working, broken, states, state) -> dict:
             node: np.asarray(value, dtype=float)
             for node, value in values.items()
         }
-    curves = rbd._availability_curves(horizon, forced, state=states)
+    curves = _curves._availability_curves(rbd, horizon, forced, state=states)
     p, q = _independent(rbd, curves, times, working, broken)
     return {
         node: np.asarray(value, dtype=float)
@@ -222,7 +224,7 @@ def window_points(
     constant or a period they are not followed: the constant takes the
     rest of the window at one point, a period's points its number of
     repeats."""
-    from .repairable_rbd import _settling
+    from ._curves import _settling
 
     settle, period = _settling(curves)
     reach = min(end, settle if period is None else settle + period)
@@ -274,8 +276,8 @@ def window_points(
 
 def _over(rbd, spec, end, working, broken, states, state) -> dict:
     """The measure of every node over the window ``[0, end)``."""
-    from . import _ccf_groups
-    from .repairable_rbd import _MISSION_POINTS
+    from . import _ccf_groups, _curves
+    from ._curves import _MISSION_POINTS
 
     if rbd._crews_couple():
         if spec.name in _HELD:
@@ -295,7 +297,7 @@ def _over(rbd, spec, end, working, broken, states, state) -> dict:
         return _grouped(
             rbd, spec, grouped.system.groups, p, q, x, weights / end
         )
-    curves = rbd._availability_curves(end, forced, state=states)
+    curves = _curves._availability_curves(rbd, end, forced, state=states)
 
     def integrands(x):
         # The system's availability and each node's Birnbaum importance:
@@ -358,8 +360,10 @@ def _chain_measure(rbd, spec, working, broken, states, times=None, end=None):
     numerator and denominator are averages over the crews' chain's states
     (as in the long run), so each is ``p(t) v`` for a vector ``v`` over
     the states, followed over time from the components' ``states``."""
+    from . import _curves
+
     forced = frozenset(working | broken)
-    nested = rbd._require_crew_over_time(forced)
+    nested = _curves._require_crew_over_time(rbd, forced)
     if nested:
         raise NotImplementedError(
             f"With {rbd.repair_crews} repair crew(s), the criticality and "
@@ -384,10 +388,10 @@ def _chain_measure(rbd, spec, working, broken, states, times=None, end=None):
     nodes: List = list(rbd.nodes)
     columns = np.column_stack([system] + [numerators[n] for n in nodes])
     chain = rbd._crew_chain(forced)
-    followed = rbd._uniformized(
+    followed = _curves._uniformized(
         "The repair crews'",
         chain.generator,
-        rbd._crew_start(chain, states),
+        _curves._crew_start(rbd, chain, states),
         chain.probabilities,
         columns,
     )

@@ -10,7 +10,7 @@ import pytest
 import surpyval as surv
 
 from repyability import ControlVariate, NodeState, RepairableRBD
-from repyability.rbd import _streams
+from repyability.rbd import _curves, _streams
 from repyability.tests.test_performance_equivalence import binomial_first
 from repyability.tests.test_simulation_chunks import identical
 
@@ -236,7 +236,7 @@ def test_the_twin_leaves_out_what_ties_components_together():
         for kind in (_streams.FAILURE, _streams.REPAIR):
             assert (("G", unit_index), kind) in mine
             assert (("G", unit_index), kind) in theirs
-    assert twin._over_time().route == "numerical"
+    assert _curves._over_time(twin).route == "numerical"
     route = rbd.analysis_routes()["availability"]
     assert route.twin.startswith("the system without the limit on repair")
     assert "Exact twin: the system without" in str(route)
@@ -386,13 +386,13 @@ def test_the_twin_builds_each_curve_once(monkeypatch):
     twin, _ = rbd._twin()
     apart = (twin.expected_cost(300.0).mean, twin.mission_availability(300.0))
     built = []
-    plain = RepairableRBD._unit_curve
+    plain = _curves._unit_curve
 
-    def counted(self, node, *args, **kwargs):
+    def counted(rbd, node, *args, **kwargs):
         built.append(node)
-        return plain(self, node, *args, **kwargs)
+        return plain(rbd, node, *args, **kwargs)
 
-    monkeypatch.setattr(RepairableRBD, "_unit_curve", counted)
+    monkeypatch.setattr(_curves, "_unit_curve", counted)
     with twin._sharing_curves():
         together = (
             twin.expected_cost(300.0).mean,

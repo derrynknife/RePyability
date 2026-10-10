@@ -22,6 +22,7 @@ from repyability.rbd import (
     _ccf_chain,
     _ccf_groups,
     _chain_transient,
+    _curves,
     _long_run,
     _quadrature,
     _windows,
@@ -67,7 +68,7 @@ class _CrewCapacity:
         )
         self.size = size
         self.followed: Dict[tuple, tuple] = {}
-        timing = rbd._uniformized(
+        timing = _curves._uniformized(
             "The repair crews'",
             chain.generator,
             start,
@@ -92,7 +93,7 @@ class _CrewCapacity:
             )
             self.followed[levels] = (
                 values,
-                self.rbd._uniformized(
+                _curves._uniformized(
                     "The repair crews'",
                     self.chain.generator,
                     self.start,
@@ -188,7 +189,7 @@ def _crew_capacity(
     ``capacity_distribution`` averages them in the long run)."""
     working, broken = set(working_nodes), set(broken_nodes)
     forced = working | broken
-    rbd._require_crew_over_time(frozenset(forced), "capacity")
+    _curves._require_crew_over_time(rbd, frozenset(forced), "capacity")
     chain = rbd._crew_chain(frozenset(forced))
     size = len(chain.probabilities)
     own = {
@@ -199,10 +200,10 @@ def _crew_capacity(
         _windows._filled(rbd, own, size, working, broken)
     )
     levels, rows = rbd._capacity_arrays(arrays, size, {})
-    uniformized = rbd._uniformized(
+    uniformized = _curves._uniformized(
         "The repair crews'",
         chain.generator,
-        rbd._crew_start(chain, states),
+        _curves._crew_start(rbd, chain, states),
         chain.probabilities,
         rows.T,
     )
@@ -216,10 +217,11 @@ def _crew_capacity_over(
     RBDs (#162): see ``_CrewCapacity``."""
     working, broken = set(working_nodes), set(broken_nodes)
     forced = working | broken
-    nested = rbd._require_crew_over_time(frozenset(forced))
+    nested = _curves._require_crew_over_time(rbd, frozenset(forced))
     chain = rbd._crew_chain(frozenset(forced))
     curves = {
-        node: rbd.components[node]._nested_curve(
+        node: _curves._nested_curve(
+            rbd.components[node],
             horizon,
             stages=node in rbd._capacity_models(),
             start=states.get(node),
@@ -229,7 +231,7 @@ def _crew_capacity_over(
     return _CrewCapacity(
         rbd,
         chain,
-        rbd._crew_start(chain, states),
+        _curves._crew_start(rbd, chain, states),
         curves,
         working,
         broken,
@@ -298,11 +300,14 @@ def _capacity_curves(
     and a node that takes its capacity from its model kept even when
     held working (its levels are then those it is up at)."""
     held = set(working_nodes) - set(rbd._capacity_models())
-    return rbd._availability_curves(
+    return _curves._availability_curves(
+        rbd,
         horizon,
         held | set(broken_nodes),
         stages=True,
-        state=rbd._states(state, set(working_nodes) | set(broken_nodes)),
+        state=_curves._states(
+            rbd, state, set(working_nodes) | set(broken_nodes)
+        ),
     )
 
 
@@ -349,12 +354,13 @@ def _groups_capacity(
     them for the capacity over time (see ``_capacity_curves``), and the
     groups' system (see ``_ccf_chain.GroupsSystem``)."""
     working, broken = set(working_nodes), set(broken_nodes)
-    states = rbd._states(state, working | broken)
+    states = _curves._states(rbd, state, working | broken)
     _ccf_groups._require_free_members(rbd, working, broken)
     _ccf_groups._require_groups_over_time(rbd, states)
     members = {m for group in rbd.ccf_groups for m in group.members}
     held = working - set(rbd._capacity_models())
-    curves = rbd._availability_curves(
+    curves = _curves._availability_curves(
+        rbd,
         horizon,
         held | broken | members,
         stages=True,
@@ -420,13 +426,13 @@ def point_capacity(
     ends = times.ravel()
     horizon = float(ends.max()) if ends.size else 0.0
     forced = working_nodes | broken_nodes
-    if rbd._crews_couple() and rbd._crew_nested(forced):
+    if rbd._crews_couple() and _curves._crew_nested(rbd, forced):
         capacity = _crew_capacity_over(
             rbd,
             horizon,
             working_nodes,
             broken_nodes,
-            rbd._states(state, forced),
+            _curves._states(rbd, state, forced),
         )
         levels, rows = capacity.rows(ends)
     elif rbd._crews_couple():
@@ -434,7 +440,7 @@ def point_capacity(
             rbd,
             working_nodes,
             broken_nodes,
-            rbd._states(state, working_nodes | broken_nodes),
+            _curves._states(rbd, state, working_nodes | broken_nodes),
         )
         rows = np.clip(chain.values(ends).T, 0.0, 1.0)
     elif rbd.ccf_groups:
@@ -472,13 +478,13 @@ def mission_capacity(
     ends = windows.ravel()
     horizon = float(ends.max()) if ends.size else 0.0
     forced = working_nodes | broken_nodes
-    if rbd._crews_couple() and rbd._crew_nested(forced):
+    if rbd._crews_couple() and _curves._crew_nested(rbd, forced):
         capacity = _crew_capacity_over(
             rbd,
             horizon,
             working_nodes,
             broken_nodes,
-            rbd._states(state, forced),
+            _curves._states(rbd, state, forced),
         )
         levels, rows = _mission_rows(
             rbd, capacity.curves, capacity.rows, ends, horizon
@@ -491,7 +497,7 @@ def mission_capacity(
             rbd,
             working_nodes,
             broken_nodes,
-            rbd._states(state, working_nodes | broken_nodes),
+            _curves._states(rbd, state, working_nodes | broken_nodes),
         )
         positive = ends > 0.0
         rows = chain.values(ends).T
@@ -539,7 +545,7 @@ def _mission_rows(
     probabilities at the times ``x``, integrated on pieces cut where
     the ``followed`` curves bend, and extended exactly past the time
     they have settled. Returns the levels and one row per level."""
-    from repyability.rbd.repairable_rbd import _MISSION_POINTS, _settling
+    from repyability.rbd._curves import _MISSION_POINTS, _settling
 
     settle, period = _settling(followed)
     reach = min(horizon, settle if period is None else settle + period)

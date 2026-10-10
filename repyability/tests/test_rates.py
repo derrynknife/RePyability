@@ -13,7 +13,6 @@ import pytest
 import surpyval as surv
 
 import repyability.rbd._block_replacement as block_replacement
-import repyability.rbd.repairable_rbd as repairable_rbd
 from repyability import (
     BetaFactor,
     CCFGroup,
@@ -21,7 +20,7 @@ from repyability import (
     NonRepairableRBD,
     RepairableRBD,
 )
-from repyability.rbd import _rates
+from repyability.rbd import _curves, _rates
 
 E, W = surv.Exponential.from_params, surv.Weibull.from_params
 
@@ -319,10 +318,10 @@ def test_a_maintenance_shorter_than_a_step_is_differentiated_exactly(
     rbd = maintained_briefly(policy)
     x = np.array([80.3, 81.0, 82.0, 160.6])
     rate = rbd.availability_rate(x).rate
-    curve = rbd._availability_curves(200.0, set())["v"]
+    curve = _curves._availability_curves(rbd, 200.0, set())["v"]
     smoothed = _rates.differences(curve, x, 200.0)
     assert np.max(np.abs(smoothed / rate - 1.0)) > 0.005
-    monkeypatch.setattr(repairable_rbd, "_POINT_STEPS", 16_000)
+    monkeypatch.setattr(_curves, "_POINT_STEPS", 16_000)
     monkeypatch.setattr(block_replacement, "_MIN_STEPS", 32_000)
     monkeypatch.setattr(block_replacement, "_MAX_STEPS", 64_000)
     finer = rbd.availability_rate(x).rate
@@ -338,8 +337,8 @@ def test_a_nested_rbd_s_rate_is_its_nodes_by_their_importance():
         {"a": inner, "b": unit(E([0.1])), "c": unit(W([30, 1.5]))},
     )
     x = np.array([80.3, 81.0, 160.6])
-    nested = outer._availability_curves(200.0, set())["a"]
-    own = inner._availability_curves(200.0, set())["v"]
+    nested = _curves._availability_curves(outer, 200.0, set())["a"]
+    own = _curves._availability_curves(inner, 200.0, set())["v"]
     exact = _rates.derivative(own, x, 200.0)
     np.testing.assert_allclose(
         _rates.derivative(nested, x, 200.0), exact, rtol=1e-12

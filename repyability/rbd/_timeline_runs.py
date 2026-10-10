@@ -17,7 +17,7 @@ from typing import List, NamedTuple, Optional, Tuple
 
 import numpy as np
 
-from repyability.rbd import _ccf_groups
+from repyability.rbd import _ccf_groups, _curves
 from repyability.rbd import _montecarlo as montecarlo
 from repyability.rbd import _streams
 from repyability.timelines import Timelines, _Data
@@ -241,7 +241,7 @@ def simulate(
     broken = set() if broken_nodes is None else set(broken_nodes)
     rbd._validate_node_overrides(working, broken)
     # The components' states at 0, as availability takes them (#163).
-    states = rbd._simulation_states(state, working | broken)
+    states = _curves._simulation_states(rbd, state, working | broken)
     rng = np.random.get_state()
     after = rng
     try:
