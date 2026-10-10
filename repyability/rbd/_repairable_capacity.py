@@ -20,6 +20,7 @@ import numpy as np
 
 from repyability.rbd import (
     _ccf_chain,
+    _ccf_groups,
     _chain_transient,
     _quadrature,
 )
@@ -345,8 +346,8 @@ def _groups_capacity(
     groups' system (see ``_ccf_chain.GroupsSystem``)."""
     working, broken = set(working_nodes), set(broken_nodes)
     states = rbd._states(state, working | broken)
-    rbd._require_free_members(working, broken)
-    rbd._require_groups_over_time(states)
+    _ccf_groups._require_free_members(rbd, working, broken)
+    _ccf_groups._require_groups_over_time(rbd, states)
     members = {m for group in rbd.ccf_groups for m in group.members}
     held = working - set(rbd._capacity_models())
     curves = rbd._availability_curves(
@@ -356,7 +357,7 @@ def _groups_capacity(
         state=states,
         groups=True,
     )
-    return curves, rbd._groups_system(working, broken, "p")
+    return curves, _ccf_groups._groups_system(rbd, working, broken, "p")
 
 
 def _groups_capacity_rows(

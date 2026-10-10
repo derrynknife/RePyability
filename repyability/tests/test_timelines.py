@@ -26,7 +26,13 @@ from repyability import (
     TimelineSimulation,
 )
 from repyability import timelines as tl
-from repyability.rbd import _compiled, _streams, _timeline_runs, modular
+from repyability.rbd import (
+    _ccf_groups,
+    _compiled,
+    _streams,
+    _timeline_runs,
+    modular,
+)
 from repyability.timelines import k_out_of_n, parallel, series
 
 W = surv.Weibull.from_params
@@ -774,7 +780,7 @@ def every_architecture():
     return {
         name: rbd
         for name, rbd in repairable_kinds().items()
-        if not rbd._has_ccf()
+        if not _ccf_groups._has_ccf(rbd)
     }
 
 

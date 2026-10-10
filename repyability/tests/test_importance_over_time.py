@@ -21,6 +21,7 @@ import scipy.linalg
 import surpyval as surv
 
 from repyability import BetaFactor, CCFGroup, NodeState, RepairableRBD
+from repyability.rbd import _ccf_groups
 from repyability.rbd.rbd import RBD
 
 E, W = surv.Exponential.from_params, surv.Weibull.from_params
@@ -313,10 +314,10 @@ def test_with_common_causes_a_member_is_conditioned_on_its_state():
     )
     # A member's: the system given it up less given it down, over the
     # group's joint states at each time (a with b, through the cause).
-    groups = rbd._groups_over_time()
+    groups = _ccf_groups._groups_over_time(rbd)
     (group,) = groups
     chances = group.probabilities(times)
-    c_up = rbd._groups_curve(200.0).curves["c"].at(times)
+    c_up = _ccf_groups._groups_curve(rbd, 200.0).curves["c"].at(times)
     position = list(group.members).index("a")
     a_up = ~group.down[:, position]
     b_up = ~group.down[:, 1 - position]

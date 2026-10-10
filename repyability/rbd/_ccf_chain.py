@@ -1001,6 +1001,8 @@ class GroupsSystem:
         with the probability ``values[node]`` then, and each group's
         members in each of their combinations with its probability then
         (``chances[number]``, where given, in place of its chain's)."""
+        from . import _ccf_groups
+
         size = len(x)
         p = {
             node: np.broadcast_to(np.asarray(v, dtype=float), (size,))
@@ -1018,7 +1020,7 @@ class GroupsSystem:
             for k, member in enumerate(group.members):
                 p[member] = table @ np.where(group.down[:, k], 0.0, 1.0)
         q = {node: 1.0 - value for node, value in p.items()}
-        return self.rbd._ccf_tabled(p, q, tables)
+        return _ccf_groups._ccf_tabled(self.rbd, p, q, tables)
 
     def probabilities(self, values: dict, x: np.ndarray):
         """The system's availability and unavailability at the times

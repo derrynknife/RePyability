@@ -26,7 +26,7 @@ from repyability import (
     PerfectReliability,
     RepairableRBD,
 )
-from repyability.rbd import _ccf_chain, _ccf_modules
+from repyability.rbd import _ccf_chain, _ccf_groups, _ccf_modules
 from repyability.rbd.rbd import RBD
 
 E = surv.Exponential.from_params
@@ -54,7 +54,9 @@ def split(rbd, working=(), broken=()):
     q = rbd._failures_with_overrides(
         rbd._unavailabilities_at(times), working, broken
     )
-    p, q, weights, index = rbd._with_ccf_groups(times, p, q, weights)
+    p, q, weights, index = _ccf_groups._with_ccf_groups(
+        rbd, times, p, q, weights
+    )
     return p, q, weights, index
 
 
@@ -368,7 +370,7 @@ def test_over_time_agrees_with_every_combination():
     # The groups' system over time, against the times split by every
     # combination (as GroupsSystem evaluated it before #218).
     for rbd in (nested(), trains(2, 3), bridge()):
-        curve = rbd._groups_curve(2000.0)
+        curve = _ccf_groups._groups_curve(rbd, 2000.0)
         x = np.array([1.0, 30.0, 400.0, 1500.0])
         values = {n: c.at(x) for n, c in curve.curves.items()}
         system = curve.system
