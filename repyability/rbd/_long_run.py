@@ -574,9 +574,29 @@ def _calendar_outages(rbd, working_nodes, broken_nodes) -> float:
     take time, and tests that take time, each taking a unit working
     then off line. At each such time, the probability that the system
     is up just before and down just after, which (as they only take
-    units down) is the fall in the system availability. Units due at
-    the same time go down together; an instant inspection due then
-    comes first."""
+    units down) is the fall in the system availability: the rise in its
+    unavailability, a difference of small values in a reliable system,
+    not of values near 1. With common-cause groups, see
+    ``_ccf_groups._ccf_calendar_outages``."""
+    changes = _calendar_changes(rbd, working_nodes, broken_nodes)
+    if changes is None:
+        return 0.0
+    period, _, before, after = changes
+    rise = rbd._system_unreliability(*after) - rbd._system_unreliability(
+        *before
+    )
+    return float(np.sum(rise)) / period
+
+
+def _calendar_changes(rbd, working_nodes, broken_nodes):
+    """Where the system's planned outages at exact times on the calendar
+    start (see ``_calendar_outages``): None if none do, else the common
+    period, the instants in it, and the nodes' availabilities and
+    unavailabilities just before and just after each (the forced nodes
+    held at 1 or 0). The nodes due at an instant take their values then
+    from their own models; the others are at the instant, before its
+    outages start. Units due at the same time go down together; an
+    instant inspection due then comes first."""
     blocks = [
         node
         for node in _block_nodes(rbd)
@@ -588,7 +608,7 @@ def _calendar_outages(rbd, working_nodes, broken_nodes) -> float:
         if _requirements._tested_unit(rbd, node).setup.timed  # type: ignore
     ]
     if not blocks and not units:
-        return 0.0
+        return None
     intervals = {rbd._preventive[node].interval for node in blocks}
     intervals |= {rbd._inspection[node].period for node in rbd._inspection}
     period = _common_period(intervals)
@@ -633,17 +653,26 @@ def _calendar_outages(rbd, working_nodes, broken_nodes) -> float:
                 fails[node] = np.array(fails[node], dtype=float)
                 works[node][column] = value
                 fails[node][column] = failed
-    # The fall in the system availability, as the rise in its
-    # unavailability: a difference of small values in a reliable
-    # system, not of values near 1.
-    rise = rbd._system_unreliability(
-        rbd._probabilities_with_overrides(after, working_nodes, broken_nodes),
-        rbd._failures_with_overrides(after_down, working_nodes, broken_nodes),
-    ) - rbd._system_unreliability(
-        rbd._probabilities_with_overrides(before, working_nodes, broken_nodes),
-        rbd._failures_with_overrides(before_down, working_nodes, broken_nodes),
+    return (
+        period,
+        instants,
+        (
+            rbd._probabilities_with_overrides(
+                before, working_nodes, broken_nodes
+            ),
+            rbd._failures_with_overrides(
+                before_down, working_nodes, broken_nodes
+            ),
+        ),
+        (
+            rbd._probabilities_with_overrides(
+                after, working_nodes, broken_nodes
+            ),
+            rbd._failures_with_overrides(
+                after_down, working_nodes, broken_nodes
+            ),
+        ),
     )
-    return float(np.sum(rise)) / period
 
 
 def _long_run_grid(rbd) -> Tuple[np.ndarray, np.ndarray]:

@@ -719,7 +719,7 @@ def test_the_readme_says_what_is_simulated():
             (timed_group, "mean_availability", "numerical"),
             (timed_group, "birnbaum_importance", "numerical"),
             (timed_group, "point_availability", "numerical"),
-            (timed_group, "system_failure_frequency", "refused"),
+            (timed_group, "system_failure_frequency", "numerical"),
             (timed_group, "availability", "simulated"),
             (tested_group, "mean_availability", "exact"),
             (tested_group, "system_failure_frequency", "exact"),

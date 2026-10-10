@@ -672,33 +672,31 @@ def _ccf_fv_shares(
 
 def _require_ccf_frequencies(rbd) -> None:
     """Raise if the failure frequency with common-cause groups is not
-    worked out: with block replacements that take time (planned
-    outages at block times, which the groups' states would change)."""
-    if not rbd.ccf_groups:
-        return
-    _require_ccf_long_run(rbd)
-    timed = [
-        node
-        for node in _long_run._block_nodes(rbd)
-        if rbd._preventive[node].duration is not None
-    ]
-    if timed:
-        raise NotImplementedError(
-            "The system's planned outages at block replacements that "
-            f"take time (of {sorted(timed, key=str)}) are not worked "
-            "out with common-cause groups, as yet."
-        )
-    tested = [
-        node
-        for node in rbd._inspection
-        if rbd._inspection[node].duration is not None
-    ]
-    if tested:
-        raise NotImplementedError(
-            "The system's planned outages at tests that take time (of "
-            f"{sorted(tested, key=str)}) are not worked out with "
-            "common-cause groups, as yet."
-        )
+    worked out: where their long-run values are not."""
+    if rbd.ccf_groups:
+        _require_ccf_long_run(rbd)
+
+
+def _ccf_calendar_outages(rbd, working_nodes, broken_nodes) -> float:
+    """``_long_run._calendar_outages`` with common-cause groups (#293):
+    the groups' members' joint states just before and just after each
+    instant from their chains (a member's test that takes time, starting
+    then, is one of their jumps), the other nodes' as without groups."""
+    changes = _long_run._calendar_changes(rbd, working_nodes, broken_nodes)
+    if changes is None:
+        return 0.0
+    period, instants, before, after = changes
+    # Just after each instant, and just before it (one before 0 is at the
+    # period's end).
+    shift = 1e-9 * period
+    down = []
+    for (p, q), times in (
+        (after, instants + shift),
+        (before, (instants - shift) % period),
+    ):
+        tables = [_group_states(rbd, group, times) for group in rbd.ccf_groups]
+        down.append(_ccf_tabled(rbd, p, q, tables).system()[1])
+    return float(np.sum(down[0] - down[1])) / period
 
 
 def _ccf_outage_terms(
@@ -757,4 +755,5 @@ def _ccf_outage_terms(
                 else tuple(group.members)
             )
             terms.append((cause, rate * float(weights @ rise)))
+    planned += _ccf_calendar_outages(rbd, working_nodes, broken_nodes)
     return terms, planned
