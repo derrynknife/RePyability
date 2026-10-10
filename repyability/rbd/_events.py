@@ -432,7 +432,7 @@ class Event:
 
     Examples
     --------
-    >>> from repyability.rbd.repairable_rbd import Event
+    >>> from repyability.rbd._events import Event
     >>> Event(12.0, "pump", True) > Event(10.0, "valve", False)
     True
     """
