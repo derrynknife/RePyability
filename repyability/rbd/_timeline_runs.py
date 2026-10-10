@@ -198,7 +198,7 @@ def simulate(
 ):
     """``simulate_timelines``: validated, run, and returned as a
     ``TimelineSimulation``."""
-    from repyability.rbd.repairable_rbd import _UNSTREAMED
+    from repyability.rbd._runs import _UNSTREAMED
     from repyability.rbd.results import TimelineSimulation
 
     _ccf_groups._require_groups_simulated(rbd)
@@ -310,7 +310,7 @@ def with_costs(
     see ``RepairableRBD._conditional_run``). With ``common``, every draw
     must come from a stream, for common random numbers with another
     system's run."""
-    from repyability.rbd.repairable_rbd import _UNSTREAMED
+    from repyability.rbd._runs import _UNSTREAMED
 
     if engine not in ("auto", "python", "numba"):
         raise ValueError(
@@ -354,10 +354,14 @@ def _engine(rbd, plan: _streams.Plan, engine: str, N: int, states=None) -> str:
     histories)."""
     from repyability.rbd import _compiled
 
+    from . import _runs
+
     if engine == "python":
         return engine
     if engine == "numba":
-        return rbd._simulation_engine("numba", plan, None, N, states=states)
+        return _runs._simulation_engine(
+            rbd, "numba", plan, None, N, states=states
+        )
     if (
         _compiled.available()
         and _compiled.unsupported(rbd, plan, None, numba=True, states=states)

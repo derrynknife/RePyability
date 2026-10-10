@@ -180,6 +180,8 @@ class _ModuleRun:
         control_variate: bool = False,
         modules: Optional[list] = None,
     ) -> None:
+        from . import _runs
+
         T = simulation_window(t_simulation)
         self.rbd = rbd
         self.T = T
@@ -194,7 +196,7 @@ class _ModuleRun:
         }
         self.entropy = entropy
         self.engine = engine
-        self.sub = rbd._modules_rbd(modules) if modules else None
+        self.sub = _runs._modules_rbd(rbd, modules) if modules else None
         self.recorder = _CapacityRecorder(rbd, demand) if capacities else None
         self.capacity_given: Dict[int, _conditional.CapacityGiven] = {}
         self.capacity_parts: List[_conditional.CapacityValues] = []
@@ -204,7 +206,8 @@ class _ModuleRun:
                 T, entropy, antithetic, self.module_states
             )
             template = {
-                **self.sub._shard_template(
+                **_runs._shard_template(
+                    self.sub,
                     T,
                     entropy,
                     set(),
@@ -221,7 +224,7 @@ class _ModuleRun:
             self.shards = (
                 shard_map,
                 template,
-                self.sub._shard_size(plan, shard_size),
+                _runs._shard_size(plan, shard_size),
             )
         # The exact twin's stand-ins for the modules, with common random
         # numbers, and its exact expected values.
@@ -234,11 +237,11 @@ class _ModuleRun:
                     "A run with control_variate simulates the system's twin "
                     "alongside it, here: leave out shard_map."
                 )
-            twin, _ = rbd._twin()
-            self.exacts = rbd._twin_exact(
-                twin, T, working, broken, method, state
+            twin, _ = _runs._twin(rbd)
+            self.exacts = _runs._twin_exact(
+                rbd, twin, T, working, broken, method, state
             )
-            self.twin_sub = twin._modules_rbd(modules)
+            self.twin_sub = _runs._modules_rbd(twin, modules)
             twin_states = _curves._simulation_states(
                 twin, state, working | broken
             )
@@ -269,7 +272,7 @@ class _ModuleRun:
             }
         )
         # The rest given the modules, every node the crews serve among them.
-        self.exact = rbd._crew_free()
+        self.exact = _runs._crew_free(rbd)
         self._memo: dict = {}
         self.n = 0
 
@@ -331,6 +334,8 @@ class _ModuleRun:
     def _given(self, paths: "_conditional.Paths") -> None:
         """The system given each joint state ``paths`` meet, not worked
         out yet."""
+        from . import _runs
+
         new = [
             state for state in paths.states.tolist() if state not in self.given
         ]
@@ -338,7 +343,8 @@ class _ModuleRun:
             return
         with self._curves():
             for state in new:
-                self.given[state] = self.exact._conditional_given(
+                self.given[state] = _runs._conditional_given(
+                    self.exact,
                     self.modules,
                     state,
                     self.working,
@@ -348,7 +354,8 @@ class _ModuleRun:
                     self.other_states,
                 )
                 if self.recorder is not None:
-                    self.capacity_given[state] = self.exact._capacity_given(
+                    self.capacity_given[state] = _runs._capacity_given(
+                        self.exact,
                         self.modules,
                         state,
                         self.working,
