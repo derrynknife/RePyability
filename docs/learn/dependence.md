@@ -302,11 +302,12 @@ How `StandbyModel` gets its answer depends on the case:
 | Cold, `k=2` or more identical units working together | Numerical: renewal counts of the working positions |
 | Cold, `k=2`, any units | Numerical: a recursion over the switch-ins |
 | Warm, one unit working at a time: any lifetimes | Numerical: a recursion over the switch-ins |
-| Anything else: warm with `k=2` or more, or `k=3` or more different units working together, cold | Simulation: pass `seed=0` for repeatable results; `sf` then returns a one-element array |
+| Anything else: warm with `k=2` or more, or `k=3` or more different units working together, cold | None: `is_simulated` is `True`, its `sf`, `ff`, `cs` and `mean()` raise `NotImplementedError`, and the system's simulations draw its lifetimes |
 
 An imperfect switch is supported for cold standby. The
 [guide](../guide/redundancy-models.md#standby-cold-warm-and-hot) has every
-option.
+option, and [Concepts](../concepts.md#standby-and-repeated-nodes) says how
+each case is computed.
 
 !!! note "Wearing-out units gain even more"
     The running example's pumps wear out (Weibull, with scale 100 h and
@@ -359,8 +360,10 @@ group.is_simulated    # False: exact for identical exponential units
 A [`LoadSharingModel`][repyability.LoadSharingModel] takes one fitted AFT
 model per unit, the total `load` $L$, and `k`, the number of units the group
 needs; while $s$ units survive, each carries $L/s$. For identical
-exponential units the result is exact; otherwise it is simulated (pass
-`seed`).
+exponential units the result is exact, and for other identical units
+numerical. Different units have no exact or numerical reliability
+(`is_simulated` is `True`): the system's simulations draw their lifetimes
+(see [Concepts](../concepts.md#dependent-failures-load-sharing)).
 
 **By hand**, the stage picture applies again. A `RegressionNode` holds a
 fitted regression model at a fixed load, so it gives one unit's mean life at
@@ -478,7 +481,10 @@ groups as `ccf_groups`. The library conditions on whether each shared cause
 strikes, as the formula does, and evaluates each case exactly, so it returns
 the exact $Q_{\text{sys}}$ above. `BetaFactor(0)` gives back the independent
 answer and `BetaFactor(1)` a pair no better than one pump. A group's members
-must carry identical models.
+must carry identical models. Splitting a probability suits a mission or a
+test interval, where each $q$ is small; over a whole life,
+`basis="rate"` splits the rate instead (see
+[Concepts](../concepts.md#common-cause-failures)).
 
 ### A third unit barely helps
 
@@ -676,5 +682,5 @@ Every option is in the guide:
 [Redundancy models](../guide/redundancy-models.md) (standby with several
 working units, repeated nodes, load sharing) and
 [Common-cause failures](../guide/common-cause.md) (the MGL model, and which
-methods honour a group). The theory is summarised in
+methods honour a group). How RePyability computes each is in
 [Concepts](../concepts.md#standby-and-repeated-nodes).

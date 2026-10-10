@@ -503,7 +503,9 @@ gearbox as old as it was ("minimal repair"). Then failures come faster and
 faster, and the maintenance question becomes *when to overhaul or replace the
 whole unit*. The [`Repairable`](../guide/maintenance.md#overhaul-under-minimal-repair-repairable)
 class answers it for one unit, with the same trade-off between planned and
-unplanned costs.
+unplanned costs; [Concepts](../concepts.md#maintenance-models) gives its
+models (minimal repair, the Barlow–Hunter overhaul and Kijima's imperfect
+repair).
 
 ## Pitfalls
 

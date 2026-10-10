@@ -751,3 +751,6 @@ from the lesson, and then make both uncertain at once.
   [MTTF intervals](../guide/reliability.md#lifetimes-and-mean-time-to-failure),
   time to a reliability) and [Redundancy models](../guide/redundancy-models.md)
   (standby, repeated and load-sharing units).
+- [Concepts](../concepts.md#lifetimes-by-simulation) says how RePyability
+  simulates lifetimes, makes the simulation error smaller and propagates
+  [parameter uncertainty](../concepts.md#parameter-uncertainty).
