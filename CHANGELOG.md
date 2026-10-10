@@ -170,8 +170,8 @@ other release, fixes included, the minor.
   mixture's cumulative hazard, worked out from its components, in about
   4 evaluations a draw (that run: about 2.6 s). The draws are the same
   roots to the last bits of the virtual age plus the life left, so
-  seeded results with such a component change in about the twelfth
-  significant figure.
+  seeded results with such a component change only in their last bits
+  (about 1e-15 on the catalogue's diagram).
 - **Importance measures with common-cause groups whose tests take time
   (#294).** While a member's test kept it off line it could not be up,
   and the system given it up was 0/0, so Birnbaum's measure, the
