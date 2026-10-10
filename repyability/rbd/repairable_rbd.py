@@ -876,7 +876,7 @@ class RepairableRBD(RBD):
         """Each common-cause group's owner in ``structure`` (the
         decomposition, or its dual), the smallest module holding its
         members (see ``_ccf_modules.Plan``): once for each structure."""
-        cache = self.__dict__.setdefault("_ccf_plans", {})
+        cache = self._cache.kept("ccf_plans")
         entry = cache.get(id(structure))
         if entry is None or entry[0] is not structure:
             entry = cache[id(structure)] = (

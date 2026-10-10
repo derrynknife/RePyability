@@ -10,6 +10,7 @@ that at least one set of elements fully works, minimal cut sets from minimal
 path sets, and the probability scaling used by reliability allocation.
 """
 
+import copy
 import difflib
 import functools
 import inspect
@@ -562,6 +563,48 @@ def _take_node_names(cls) -> None:
             setattr(cls, name, wrapped)
 
 
+class _Cache:
+    """What a diagram has worked out and keeps between analyses, each made
+    when it is first wanted (``kept``): its common-cause plans
+    (``ccf_plans``), the renewal cycles of age and block replacement by
+    interval (``age_cycles``, ``block_cycles``), its tested units' lives
+    and cycles (``tested_lives``, ``tested_units``), its repair crews'
+    chains (``crew_chains``) and its common-cause groups' long-run tables
+    (``ccf_tables``). A shallow copy of the diagram shares what is made
+    when it is taken, but for what it works out again for itself
+    (``RBD._shallow_copy``)."""
+
+    __slots__ = (
+        "ccf_plans",
+        "age_cycles",
+        "block_cycles",
+        "tested_lives",
+        "tested_units",
+        "crew_chains",
+        "ccf_tables",
+    )
+
+    def __init__(self) -> None:
+        for name in self.__slots__:
+            setattr(self, name, None)
+
+    def kept(self, name: str) -> dict:
+        """The dictionary ``name`` keeps, made empty if it is not yet."""
+        kept = getattr(self, name)
+        if kept is None:
+            kept = {}
+            setattr(self, name, kept)
+        return kept
+
+    def without(self, *redone: str) -> "_Cache":
+        """A cache sharing this one's, but for ``redone``."""
+        out = _Cache()
+        for name in self.__slots__:
+            if name not in redone:
+                setattr(out, name, getattr(self, name))
+        return out
+
+
 class RBD:
     """Reliability block diagram structure: the base of the RBD classes.
 
@@ -725,6 +768,22 @@ class RBD:
     >>> {k: round(v, 4) for k, v in sorted(si.items())}
     {'p1': 0.25, 'p2': 0.25, 'v': 0.75}
     """
+
+    @property
+    def _cache(self) -> _Cache:
+        """What this diagram has worked out and keeps (see ``_Cache``)."""
+        cache = self.__dict__.get("_kept")
+        if cache is None:
+            cache = self.__dict__["_kept"] = _Cache()
+        return cache
+
+    def _shallow_copy(self, *redone: str):
+        """A shallow copy of this diagram, sharing what it has worked out
+        but ``redone`` (names of ``_Cache``), which the copy works out
+        again for itself."""
+        out = copy.copy(self)
+        out.__dict__["_kept"] = self._cache.without(*redone)
+        return out
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)

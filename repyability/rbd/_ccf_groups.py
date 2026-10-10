@@ -589,9 +589,9 @@ def _ccf_long_run(rbd, working_nodes, broken_nodes) -> tuple:
     # The groups' chains, kept for the other long-run values (#229):
     # a choice of intervals asks for the cost rate and the
     # availability of each plan.
-    tables = rbd.__dict__.get("_ccf_tables")
+    tables = rbd._cache.ccf_tables
     if tables is None:
-        tables = rbd.__dict__["_ccf_tables"] = [
+        tables = rbd._cache.ccf_tables = [
             _group_states(rbd, group, times) for group in rbd.ccf_groups
         ]
     return times, weights, (p, q, tables)

@@ -439,7 +439,7 @@ def _tested_life(rbd, node) -> Optional[TestedLife]:
         return None
     component = rbd.components[node]
     interval = float(rbd._inspection[node].interval)
-    cache = rbd.__dict__.setdefault("_tested_lives", {})
+    cache = rbd._cache.kept("tested_lives")
     key = (node, id(component.reliability), interval)
     if key not in cache:
         cache[key] = TestedLife(component.reliability, interval)
@@ -459,7 +459,7 @@ def _tested_unit(rbd, node, any_kind: bool = False) -> Optional[TestedUnit]:
             return None
     component = rbd.components[node]
     inspection = rbd._inspection[node]
-    cache = rbd.__dict__.setdefault("_tested_units", {})
+    cache = rbd._cache.kept("tested_units")
     key = (
         node,
         id(component.reliability),

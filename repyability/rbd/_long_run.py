@@ -403,7 +403,7 @@ def _block_cycle(rbd, node):
     _requirements._refuse_level(rbd, node)
     component = rbd.components[node]
     schedule = rbd._preventive[node]
-    cache = rbd.__dict__.setdefault("_block_cycles", {})
+    cache = rbd._cache.kept("block_cycles")
     key = (
         node,
         id(component.reliability),
@@ -986,7 +986,7 @@ def _maintenance_cycle(
         kept = _block_cycle(rbd, node)
         return kept.up, kept.length, kept.failures, kept.replaced
     # Kept by interval, as a search over intervals revisits them.
-    cache = rbd.__dict__.setdefault("_age_cycles", {})
+    cache = rbd._cache.kept("age_cycles")
     key = (
         node,
         id(component.reliability),

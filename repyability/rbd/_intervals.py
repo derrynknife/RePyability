@@ -9,7 +9,6 @@ names call these.
 
 import itertools
 import math
-from copy import copy
 from typing import (
     TYPE_CHECKING,
     Callable,
@@ -341,12 +340,11 @@ def _with_intervals(
     shallow copy, sharing everything else, including the renewal cycles
     already worked out (kept by interval). ``offsets`` gives some
     inspected components' first tests as shares of their intervals."""
-    rbd.__dict__.setdefault("_age_cycles", {})
-    rbd.__dict__.setdefault("_block_cycles", {})
-    rbd.__dict__.setdefault("_tested_units", {})
-    plan = copy(rbd)
-    # What its own schedules decide is worked out again.
-    plan.__dict__.pop("_ccf_tables", None)
+    # The renewal cycles, kept by interval, are shared with the plan;
+    # what its own schedules decide is worked out again.
+    for name in ("age_cycles", "block_cycles", "tested_units"):
+        rbd._cache.kept(name)
+    plan = rbd._shallow_copy("ccf_tables")
     if preventive:
         plan._preventive = dict(rbd._preventive)
         for node, interval in preventive.items():
