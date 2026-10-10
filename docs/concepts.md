@@ -1,36 +1,26 @@
 # Concepts
 
-The reference behind the numbers: what an RBD means, how each quantity is
-computed, what each model assumes, and how to choose among the importance
-measures. The [tutorial](tutorial.md) shows these in action and the
-[user guide](guide/index.md) shows how to call them; this page explains them.
+The reference behind the numbers: how RePyability computes each quantity,
+what each model assumes, and which method to choose. The
+[tutorial](tutorial.md) shows these in action and the
+[user guide](guide/index.md) shows how to call them; this page explains how
+they are worked out.
 
 !!! tip "New to the theory?"
-    This page is a compact summary. The [Learn](learn/index.md) course
-    teaches the same ideas step by step: each one worked out by hand with
-    small numbers, then with RePyability, with exercises.
+    This page is the reference for how RePyability computes each analysis.
+    The [Learn](learn/index.md) course teaches the ideas themselves, step by
+    step: each one worked out by hand with small numbers, then with
+    RePyability, with exercises.
 
 ## Reliability block diagrams
 
-A **reliability block diagram** models a system as a directed graph from a
-single input (source) to a single output (sink). Each intermediate node is a
-component with a reliability model. The system **works** at time `t` if there
-is a path of working components from input to output.
-
-Two structures underlie everything:
-
-- A **minimal path set** is a minimal set of components whose simultaneous
-  working guarantees the system works. The system is up iff *at least one*
-  path set is fully up.
-- A **minimal cut set** is a minimal set of components whose simultaneous
-  failure guarantees the system fails. The system is down iff *at least one*
-  cut set is fully down.
-
-Series, parallel, and *k*-out-of-*n* are special cases: a series system is one
-path set of every component (and each component its own cut set); a parallel
-system is the reverse. A *k*-out-of-*n* node is up when at least `k` of its
-incoming branches are. A component that appears in no minimal path set is
-**irrelevant**: its state never decides whether the system works.
+A diagram's system works at `t` when working components connect its input
+to its output, and its minimal path and cut sets describe that structure
+(see [Systems](learn/systems.md#reliability-block-diagrams) and
+[Paths and cuts](learn/structure.md#paths-and-cuts)). A *k*-out-of-*n* node
+is up when at least `k` of its incoming branches are. A component in no
+minimal path set is **irrelevant**: its state never decides whether the
+system works.
 
 The theory assumes a **coherent** system (repairing a component never makes
 it worse) with **independent** components, unless a dependency is modelled
@@ -76,12 +66,9 @@ itself (a node works when it has not failed and enough of its inputs work),
 and the exact analyses refuse, saying why, as `analysis_routes()` reports.
 Raise the limit to try harder.
 
-The identity that drives the decomposition, and the importance measures, is
-**pivotal decomposition** around any node *A*:
-
-```
-R_sys = R_A · R_sys(A working) + (1 − R_A) · R_sys(A failed)
-```
+Both stages rest on
+[pivotal decomposition](learn/structure.md#pivotal-decomposition-divide-and-conquer),
+which also gives the importance measures.
 
 The engine is exact *given the node reliabilities*. A node with no exact or
 numerical reliability (a standby or load-sharing arrangement only a
@@ -106,26 +93,26 @@ T_sys = max over minimal path sets P of ( min over i in P of T_i )
 `random()` draws each component's lifetime and applies this rule, through the
 modules (a series module fails at its first failure, a parallel one at its
 last, a *k*-out-of-*n* one when fewer than `k` are left) so that the path sets
-are only needed for the core; `mean_time_to_failure()` is the average of many
-such lifetimes. By the central
-limit theorem the average is approximately normal with standard error
-`s / √n` (the sample standard deviation over the square root of the number of
-samples), which gives `mean_time_to_failure_interval()`. The mean is estimated
-rather than integrated because the system lifetime distribution of a general
-diagram, especially with composite nodes, has no convenient closed form.
+are only needed for the core. `mean_time_to_failure()` integrates the exact
+reliability by default. With `method="simulate"` it averages such
+lifetimes, with standard error `s / √n`
+([why](learn/systems.md#mean-time-to-failure-of-a-system)), which
+`mean_time_to_failure_interval()` reports.
 
 ### Simulation error, and making it smaller
 
-A simulated mean of `N` independent results has standard error `s / √N`, so
-its error halves when `N` is quadrupled. Given a `tolerance`, a simulation
-adds `N` results at a time until the confidence interval's half-width,
-`z · s / √N`, is at most the tolerance. (The stopping point depends on the
-estimated `s`, which makes a sequential rule's coverage slightly below the
-nominal level when `N` is small; checking only after each batch of `N`
-keeps the effect small.)
+The error of a simulated mean shrinks like `1/√N`
+([Lesson 6](learn/availability.md#precise-enough-sooner)). Given a
+`tolerance`, a run adds `N` results at a time until the confidence
+interval's half-width, `z · s / √N`, is at most the tolerance. (The
+stopping point depends on the estimated `s`, which makes a sequential
+rule's coverage slightly below the nominal level when `N` is small;
+checking only after each batch of `N` keeps the effect small.)
 
 Two classical variance-reduction techniques make the error smaller for the
-same `N`, without biasing the estimate:
+same `N`, without biasing the estimate (the
+[lesson](learn/availability.md#precise-enough-sooner) gives the intuition;
+here is why they work):
 
 - **Antithetic variates.** A result is a function `f(U)` of uniform random
   numbers. `f(U)` and `f(1 − U)` have the same distribution, and when `f` is
@@ -159,13 +146,10 @@ processes.
 
 ### Fault trees
 
-A fault tree describes the same structure from the side of failure: the top
-event occurs through OR gates (any input), AND gates (every input) and VOTE
-gates (at least `k` of `n` inputs) over the basic events. Its logic is the
-dual of a diagram's: an OR gate is a series block, an AND gate a parallel
-block, and a VOTE gate on `k` of `n` failures a block needing `n − k + 1` of
-`n` working; the tree's minimal cut sets are the diagram's. A tree is
-evaluated by the same engine: each gate below which no event or gate is
+A fault tree is the diagram's dual, with OR, AND and VOTE gates for series,
+parallel and *k*-of-*n* blocks
+([Lesson 3](learn/structure.md#the-same-logic-upside-down-fault-trees)). A
+tree is evaluated by the same engine: each gate below which no event or gate is
 shared with the rest of the tree is a module with a closed form, and what the
 repeated events tie together is a core, solved exactly by the pivotal
 decomposition, on a binary decision diagram built from its gates (its cut
@@ -174,9 +158,9 @@ diagram's, with the top event as the system failing.
 
 ### Parameter uncertainty
 
-The node models are estimates, so the system reliability computed from them
-is uncertain too: *epistemic* uncertainty, about the models, as opposed to
-the *aleatory* variability they describe. `sf_uncertainty` propagates it by
+The node models are estimates, so the system's values carry *epistemic*
+uncertainty ([Lesson 2](learn/systems.md#how-sure-are-you-of-the-inputs)).
+`sf_uncertainty` propagates it by
 Monte Carlo over the parameters: each draw gives every uncertain node a
 plausible model and the system reliability is computed exactly, all draws
 at once (the node probabilities are arrays over draws and times), and the
@@ -184,13 +168,13 @@ percentiles of the draws form an uncertainty interval. A maximum-likelihood
 fit's own estimate of its parameters' uncertainty (the inverse Hessian of
 the log-likelihood, from surpyval) gives the draws on a transformed scale
 (log for a positive parameter, logit for one in (0, 1)), which is the delta
-method's normal approximation. Nodes of one population share their
-parameters and so their draws: drawing them independently averages part of
-the uncertainty away. The same draws give the MTTF's, a B*X* life's and the
-time to a reliability's uncertainty (`mean_uncertainty`,
-`bx_life_uncertainty`, `time_to_reliability_uncertainty`): each draw's value
-is the exact one for its models, the area under its reliability or the root
-of its reliability less the target. A repairable system's availability and
+method's normal approximation. Nodes of one population share one draw (a
+tuple of nodes), as they share their parameters. The same draws give the
+MTTF's, a B*X* life's and the time to a reliability's uncertainty
+(`mean_uncertainty`, `bx_life_uncertainty`,
+`time_to_reliability_uncertainty`): each draw's value is the exact one for
+its models, the area under its reliability or the root of its reliability
+less the target. A repairable system's availability and
 cost rate are uncertain in the same way, through its components' lives,
 repairs and maintenance times: each draw rebuilds the diagram with its
 models and works its value out as the diagram's own
@@ -202,12 +186,14 @@ settle the summaries with fewer of them.
 ## Reliability vs availability
 
 - **Reliability** `R(t)`: the probability the system has *never* failed by
-  `t`. The right question for a mission or a non-repairable item. Lives on
+  `t` ([Lesson 1](learn/lifetimes.md#the-time-to-failure-is-a-random-variable)).
+  The right question for a mission or a non-repairable item. Lives on
   [`NonRepairableRBD`][repyability.NonRepairableRBD].
 - **Availability** `A(t)`: the probability the system is *up at* `t`,
-  allowing for repair. The right question for a serviced, long-running
-  system. Lives on [`RepairableRBD`][repyability.RepairableRBD], which needs
-  a repairability distribution per component.
+  allowing for repair ([Lesson 6](learn/availability.md#a-new-component-starts-up)).
+  The right question for a serviced, long-running system. Lives on
+  [`RepairableRBD`][repyability.RepairableRBD], which needs a repairability
+  distribution per component.
 
 ## Importance measures — which one, and why
 
@@ -231,9 +217,8 @@ Two more answer *design-time* and *data-targeting* questions rather than
 ranking at an operating point:
 
 - **Structural importance** `structural_importance`: Birnbaum with every node
-  reliability set to ½, i.e. the fraction of the other nodes' states in which
-  the node is pivotal. It is **model-free**: it depends only on the diagram,
-  so you can rank redundancy needs *before any data exists*.
+  at ½, which depends only on the diagram
+  ([Lesson 4](learn/importance.md#structural-importance-before-you-have-any-data)).
 - **Parameter sensitivity** `parameter_sensitivity`: the derivative of system
   reliability with respect to each node's *distribution parameters*,
   `∂R/∂θ = I_B · ∂R_i/∂θ`, computed numerically. Where Birnbaum says *which
@@ -270,9 +255,9 @@ A rule of thumb: **Birnbaum** for "where does an improvement help most",
 **structural importance** at the whiteboard, and **parameter sensitivity**
 when deciding where to spend a testing budget.
 
-On a repairable system the same measures are evaluated with long-run
-availabilities in place of reliabilities, or with the point availabilities
-from new (or from the components' current states) over time.
+On a repairable system they take long-run availabilities
+([Lesson 4](learn/importance.md#on-a-repairable-system)), or point
+availabilities over time, from new or from the components' current states.
 
 Read together, the sensitivity measures are the system's *Greeks*, named
 after an option's: delta (Birnbaum), the levers' deltas (parameter
@@ -284,16 +269,12 @@ runs one pumping station through all of them.
 ## Condition-based evaluation
 
 The measures above assume every component is new. The condition-based methods
-instead take each component's *current life* `Xᵢ` and condition on it (a
-repairable system's analyses over time take its components' states too:
-see [From the present](#availability)):
-
-```
-Rᵢ(x | Xᵢ) = Rᵢ(Xᵢ + x) / Rᵢ(Xᵢ)
-```
-
-This is the survival of a further `x` given the component has already reached
-`Xᵢ`. Feeding the conditioned per-node reliabilities through the same exact
+instead take each component's *current life* `Xᵢ` (a repairable system's
+analyses over time take its components' states too: see
+[From the present](#availability)). Each component's reliability is
+conditioned on its age, `Rᵢ(Xᵢ + x) / Rᵢ(Xᵢ)`
+([Lesson 1](learn/lifetimes.md#the-exponential-failures-that-ignore-age)).
+Feeding the conditioned per-node reliabilities through the same exact
 system computation gives `sf_given_state`; inverting it gives
 `remaining_life` (remaining useful life); and evaluating the importance
 measures at the conditioned reliabilities gives `importances_given_state`.
@@ -359,9 +340,9 @@ branches): that is a single component, which fails once for every place it
 appears, and treating its appearances as independent copies over-states
 reliability.
 
-**Cold standby.** With one unit operating and spares that do not age while
-waiting, the arrangement's lifetime is the *sum* of the units' lifetimes, so
-its survival function is the convolution of theirs. RePyability computes it by
+**Cold standby.** With one unit operating, cold spares add their lifetimes
+([Lesson 5](learn/dependence.md#cold-standby)), so the arrangement's
+survival function is the convolution of theirs. RePyability computes it by
 numerical convolution (deterministic, no sampling). For identical Exponential
 units the sum is Erlang, in closed form, for any `k` operating units.
 
@@ -370,18 +351,16 @@ the lifetime is the sum of the first `j` units' lifetimes with probability
 that exactly `j − 1` switches succeeded before one failed (or all succeeded):
 a mixture of partial sums, again computed by convolution.
 
-**Warm and hot standby.** A dormant spare that ages at a fraction `κ` of the
-operating rate (the `dormancy_factor`) accumulates *virtual age* at rate `κ`
-while waiting and `1` once operating, and fails when its virtual age reaches
-its baseline failure age. It can therefore fail *latent*, before it is ever
-switched in. For identical Exponential units the memoryless property makes
-each stage (from `j` to `j − 1` surviving units) exponential with rate
-`λ (k + (j − k) κ)`, so the lifetime is **hypoexponential**; `κ = 0` gives
-the cold Erlang and `κ = 1` the parallel order statistic. Hot standby
-(`κ = 1`) is exactly *k*-out-of-*n* active parallel, and is worked out so
-for any units. With one unit operating and any units, a spare switched in at
-`τ` has aged `κτ` and runs until its failure age, so the lifetime follows a
-recursion over the switch-ins, which is computed on a time grid; with two
+**Warm and hot standby.** A warm spare ages at `κ` (the `dormancy_factor`)
+of the operating rate
+([Lesson 5](learn/dependence.md#warm-and-hot-standby)). It fails when its
+virtual age reaches its baseline failure age, so it can fail before it is
+switched in. Identical Exponential units give a hypoexponential lifetime,
+exactly, each stage (from `j` to `j − 1` surviving units) exponential with
+rate `λ (k + (j − k) κ)`. Hot standby (`κ = 1`) is *k*-out-of-*n* active
+parallel, and is worked out so for any units. With one unit operating and
+any units, a spare switched in at `τ` has aged `κτ` and runs until its
+failure age, so the lifetime follows a recursion over the switch-ins, which is computed on a time grid; with two
 units, `R(t) = S₁(t) + ∫₀ᵗ f₁(u) S₂(t − (1 − κ)u) du`.
 
 With `k ≥ 2` operating units, cold, each operating position runs a renewal
@@ -396,10 +375,9 @@ new), a recursion on a grid of the two; with three or more, and warm with
 
 ## Dependent failures: load sharing
 
-Redundant units that *share a load* do not fail independently. While all are
-up each carries its share; when one fails the survivors pick up the slack,
-run harder, and age faster, so the failures are positively correlated, and
-treating them as `n` independent parallel nodes over-counts the redundancy.
+Units that share a load fail sooner as their siblings fail, so independent
+parallel nodes over-count the redundancy
+([Lesson 5](learn/dependence.md#a-shared-load)).
 
 A [`LoadSharingModel`][repyability.LoadSharingModel] captures the coupling as
 a single node. Each unit is a fitted AFT model with **load as its covariate**,
@@ -435,23 +413,17 @@ dormant rate instead of a load-dependent one.
 
 ## Common-cause failures
 
-Redundancy only buys reliability if the redundant units fail for
-*independent* reasons. In practice they often share a root cause (a common
-manufacturing batch, a shared power supply, one miscalibration applied to
-every unit) and a single event takes them all down together. Because the
-exact engine assumes independence, it **over-estimates** a redundant group; a
-common-cause model injects the shared coupling. (This is the mirror image of
-load sharing: there the coupling is mechanical load transfer, here it is a
-shared shock.)
+A shared cause can fail redundant units together, which the independent
+engine over-rates ([Lesson 5](learn/dependence.md#one-cause-every-unit)); a
+common-cause model adds that coupling. (This is the mirror image of load
+sharing: there the coupling is load transfer, here it is a shared shock.)
 
 A [`CCFGroup`][repyability.CCFGroup] declares the coupled (symmetric) members
 and the model, passed via `ccf_groups`. Two models:
 
-- [`BetaFactor(beta)`][repyability.BetaFactor]: a fraction `β` of each
-  unit's failure probability `Q` comes from a cause shared across the
-  **whole** group (which fails every member at once); the remaining
-  `(1 − β) Q` is independent. The workhorse of probabilistic-risk
-  assessment.
+- [`BetaFactor(beta)`][repyability.BetaFactor]: a share `β` of each
+  member's `Q` fails the whole group at once, and the remaining `(1 − β) Q`
+  is independent ([Lesson 5](learn/dependence.md#the-beta-factor-model)).
 - [`MGL(beta, gamma, ...)`][repyability.MGL]: the **Multiple Greek Letter**
   model, which also resolves *partial* common causes (a cause failing some
   but not all of the group) through a cascade of conditional probabilities:
@@ -535,48 +507,23 @@ states, exactly (see [Common-cause failures](guide/common-cause.md#repairable-sy
 
 ## Availability
 
-A repairable component alternates between up periods (drawn from its
-reliability model) and down periods (drawn from its repairability model). Each
-repair restores it **as good as new**, so its history is an *alternating
-renewal process*, and components do this independently of each other and of
-the system's state.
+Each component alternates up and down, as good as new after each repair,
+independently of the others and of the system's state
+([Lesson 6](learn/availability.md#up-down-up-again)).
 
-**Long-run availability.** By the renewal-reward theorem a component is up a
-fraction
+**Long-run availability and frequencies.** The long-run availability is the
+exact system probability at `A_i = MTTF_i / (MTTF_i + MTTR_i)`, and the
+failure frequency is `ω = Σ_i I_B^i ω_i`, with `ω_i = 1 / (MTTF_i + MTTR_i)`
+and `MTBF = 1 / ω`, `MUT = A / ω` and `MDT = (1 − A) / ω` from it, all exact
+([derivations](learn/availability.md#a-failure-of-a-critical-component)). No
+simulation is needed. An instantly repaired component (`MTTR = 0`) has
+`A_i = 1`; a nested repairable RBD contributes its own system frequency.
 
-```
-A_i = MTTF_i / (MTTF_i + MTTR_i)
-```
-
-of the time in the long run, and, the components being independent, the
-system's long-run availability is the exact system probability evaluated at
-the `A_i`. No simulation is needed. An instantly repaired component
-(`MTTR = 0`) has `A_i = 1`.
-
-**Failure frequency and MUT/MDT.** In steady state a component fails
-`ω_i = 1 / (MTTF_i + MTTR_i)` times per unit time. A component failure fails
-the system when the component is *critical*, which happens with probability
-equal to its Birnbaum importance `I_B^i` (at the availabilities), so the
-system fails
-
-```
-ω = Σ_i I_B^i · ω_i
-```
-
-times per unit time (the Birnbaum/Vesely frequency formula, exact for
-independent components). From it: the mean time between failures
-`MTBF = 1 / ω`, the mean up time `MUT = A / ω`, and the mean down time
-`MDT = (1 − A) / ω`, with `MTBF = MUT + MDT`. A nested repairable RBD
-contributes its own system frequency.
-
-**Availability over time.** Before the long run, availability depends on
-time: a new system starts up (`A(0) = 1`) and settles towards the long-run
-value, possibly overshooting. A component alternates up periods `U` and down
-periods `D`, as good as new after each: an alternating renewal process, whose
-point availability `A_i(t)` solves the renewal equation. There is a closed
-form only for exponential times; `point_availability` solves the equation
-numerically, on a grid of 1,000 steps over the component's typical up time
-(an error of about `4e-7`). Components that fail and are repaired
+**Availability over time.** From new, `point_availability` solves each
+component's renewal equation
+([Lesson 6](learn/availability.md#a-new-component-starts-up)) numerically,
+on a grid of 1,000 steps over the component's typical up time (an error of
+about `4e-7`). Components that fail and are repaired
 independently are up or down independently at every time, so the system's
 `A(t)` is its system probability at the `A_i(t)`, and
 `mission_availability` is its mean over `[0, T]`. For a long mission that
@@ -624,11 +571,11 @@ component's alternating failures and repairs, merged in time order, with the
 system's state re-evaluated at every event) and reports the fraction of
 histories up at each time. The histories also give what the exact methods
 do not: how much the counts, downtimes and costs over the window vary, and
-the criticality measures below. Each point is a proportion, so its standard error is
-`√(A(1 − A)/N)`; the confidence band uses the Wilson score interval, which
-stays sensible at `A = 1`. For exponential components the simulation is held
-to the exact Markov solution in the test suite, and on the benchmark
-diagrams to `point_availability`.
+the criticality measures below. Each point's confidence band is the Wilson
+score interval ([why](learn/availability.md#how-much-to-trust-a-simulation)).
+For exponential components the simulation is held to the exact Markov
+solution in the test suite, and on the benchmark diagrams to
+`point_availability`.
 
 A nested repairable RBD runs its own history on the same clock, and the outer
 system sees a state change when the nested system's state changes.
@@ -716,41 +663,28 @@ unit put into service at `s` is at age `t − s`, summed over its renewals.
 
 ## Costs
 
-The long-run cost rate follows from the **renewal-reward theorem**: in the
-long run, the cost per unit time is the expected cost per cycle over the
-expected cycle length, and rates add over independent contributors. Each
-component's corrective costs are charged at its failure frequency `ω_i`;
-downtime costs are charged at the rate of time spent down:
-
-```
-cost rate = downtime_cost_rate · (1 − A_sys)
-          + Σ ω_i · (repair_cost_i + replace_cost_i)
-          + Σ (1 − A_i) · downtime_cost_i
-```
-
-A cost distribution enters through its mean, by linearity of expectation. By
-the same linearity the expected cost of a finite window from new is exact:
-`expected_cost` sums each category's expected events over the window (see
+`expected_cost_rate` is the renewal-reward rate, each price times its rate
+(`ω_i`, `1 − A_i`, `1 − A_sys`), with a cost distribution entering through
+its mean ([Lesson 7](learn/costs.md#the-whole-plant-rates-times-prices)). By
+linearity of expectation the expected cost of a finite window from new is
+exact: `expected_cost` sums each category's expected events over the window (see
 availability above) times its mean cost. The cost of a window is random,
-though, and its distribution has no closed form, so `cost()` simulates it: each history accumulates the charges at its failures
-and the downtime it incurs. Its **spread** (standard deviation, percentiles)
-is a property of the system; the **uncertainty of its mean** shrinks like
-`1/√N`. As the window grows, the simulated cost per unit time converges to the
-exact rate.
+though, and its distribution has no closed form, so `cost()` simulates it:
+each history accumulates the charges at its failures and the downtime it
+incurs. Its spread belongs to the system, while its mean's error shrinks
+like `1/√N` ([Lesson 7](learn/costs.md#two-different-uncertainties)).
 
-The **total cost of ownership** over a horizon `H` adds the one-off cost of
-buying the components, `Σ a_i`, to `H` times the long-run cost rate
-(undiscounted; with a continuous `discount_rate` `r`, the present value,
-`H` counting as `(1 − e^{−rH}) / r`). Redundancy that minimises it trades
-copies against downtime:
+The **total cost of ownership** is `Σ a_i + H ×` the cost rate
+([Lesson 7](learn/costs.md#buying-redundancy)); with a continuous
+`discount_rate` `r`, the present value, `H` counts as `(1 − e^{−rH}) / r`.
+Redundancy that minimises it trades copies against downtime:
 `n_i` independently repaired active copies of component *i* each cost
 `a_i + H · r_i` (`r_i` its own running cost rate) and are all down
 `(1 − A_i)^{n_i}` of the time, so a design costs
-`Σ n_i (a_i + H r_i) + H · downtime_cost_rate · (1 − A_sys)`. The total is not
-monotone in the copies, but the `k+1`-th copy of a component of
-unavailability `U` saves at most `H · downtime_cost_rate · U^k (1 − U)`, which
-bounds the copies worth trying; the search then works as for redundancy
-allocation below.
+`Σ n_i (a_i + H r_i) + H · downtime_cost_rate · (1 − A_sys)`. The bound
+`H · downtime_cost_rate · U^k (1 − U)` on the saving of the `k+1`-th copy of
+a component of unavailability `U` limits the copies tried; the search then
+works as for redundancy allocation below.
 
 ## Allocation
 
@@ -803,11 +737,13 @@ does not beat the best design found, which keeps the exact search short.
 **Reliability allocation** apportions a system target among components.
 There are many allocations that meet a target; each rule picks one.
 
-- *Equal apportionment* gives every component the same reliability.
+- *Equal apportionment* gives every component the same reliability
+  ([Lesson 9](learn/design.md#equal-apportionment)).
 - *Proportional improvement* (ARINC-style) scales every adjustable
   component's failure probability by a common factor (`q_i → q_i · e^{−x w_i}`
   with optional weights `w_i`) and solves for `x`. The ARINC method scales
-  failure rates instead, which is the same for small failure probabilities.
+  failure rates instead, which is the same for small failure probabilities
+  ([Lesson 9](learn/design.md#proportional-improvement-arinc)).
 - *Minimization of effort* (Albert, 1958) is for a series system. If raising a
   component's reliability from `x` to `y` takes effort `G(x, y)`, the same
   function for every component, growing with `y` and adding up over
@@ -854,16 +790,10 @@ most often get the largest cuts.
 
 ## Maintenance models
 
-**Age replacement.** Replace at age `t` or at failure, whichever is first,
-with a planned cost `c_p` and an unplanned cost `c_u > c_p`. Each replacement
-renews the unit, so by the renewal-reward theorem the long-run cost rate is
-
-```
-C(t) = (c_p R(t) + c_u F(t)) / ∫₀ᵗ R(u) du
-```
-
-A finite optimum exists only if the unit wears out (an increasing hazard);
-otherwise replacing early never pays, and the rate is `c_u / MTTF`.
+**Age replacement** (`NonRepairable`) uses the renewal-reward rate
+`C(t) = (c_p R(t) + c_u F(t)) / ∫₀ᵗ R(u) du`, which has a finite optimum
+only for a unit that wears out; otherwise the rate is `c_u / MTTF`
+([Lesson 8](learn/maintenance.md#age-replacement-the-cost-per-hour-from-first-principles)).
 
 **Minimal repair and overhaul.** A minimal repair returns the unit to the
 state just before it failed ("as bad as old"), so failures follow a

@@ -798,7 +798,9 @@ mean availability over its first 5 hours to within ±0.0005?
 lost production, over the long run and over a finite window. The user guide's
 [Repairable systems](../guide/repairable.md) page has every option of
 `RepairableRBD`, including conditioning on components held working or
-broken, and [Concepts](../concepts.md#availability) summarises the theory.
+broken, and [Concepts](../concepts.md#availability) says how RePyability
+computes each value: the curve's grid, a mission's mean, and the plant as
+it is now.
 To go the other way, from an availability target for this plant to the
 MTTF or MTTR each pump and the valve needs, see
 [Availability allocation](../guide/design.md#availability-allocation).

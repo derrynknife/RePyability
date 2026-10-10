@@ -753,6 +753,6 @@ parallel worth buying (a) as priced, at 1000 per hour of lost production;
 - [Costs](../guide/costs.md) in the user guide: every pricing option, costs
   drawn from distributions, instant repair, preventive maintenance and the
   total cost of ownership.
-- [Concepts: Costs](../concepts.md#costs) for the theory in brief, and
+- [Concepts: Costs](../concepts.md#costs) for how RePyability computes them, and
   [Repairable systems](../guide/repairable.md) for the simulation that
   `cost()` runs.
