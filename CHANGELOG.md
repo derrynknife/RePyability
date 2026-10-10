@@ -11,6 +11,17 @@ other release, fixes included, the minor.
 
 ### Added
 
+- **The failure frequency, MUT and MDT with common-cause groups whose
+  tests, or another block's replacements, take time (#293).** They were
+  refused there (#220): a test or a block replacement that takes time is
+  a planned outage, at its time on the calendar, which takes the system
+  down if it was up just before and is not just after. With groups,
+  their members' joint states just before and just after each such time
+  now come from their chains (a member's test starting is one of their
+  jumps), the other nodes' as without groups. The common SIL case, a
+  1oo2 with a beta factor and a proof test that takes the channel off
+  line, has its exact MUT, MDT and MTBF, and Barlow-Proschan importance
+  its shares; with no shared cause they are the independent members'.
 - **Fitted repairable-unit models as components (#269).** A spec's
   `"reliability"` may be what surpyval fits to a repairable unit's failure
   history. A Poisson process (`CrowAMSAA`, `Duane`, `HPP`) is minimal

@@ -148,10 +148,79 @@ def test_the_failure_frequency_with_repairs_that_take_time():
         failures, abs=4.0 * np.sqrt(failures / n)
     )
     assert rbd.mean_time_between_failures() > 0.0
-    # Tests that take time are planned outages, not worked out with groups.
-    timed = pair(0.2, TIMINGS["fixed test and repair"])
-    with pytest.raises(NotImplementedError, match="tests that take time"):
-        timed.mean_time_between_failures()
+
+
+def test_planned_outages_at_tests_that_take_time():
+    # #293: a test that takes time takes a working member off line, and
+    # the system down if the other is down then: a planned outage, at the
+    # tests' times on the calendar, from the groups' states just before
+    # and just after each (the test starting is one of the chain's jumps).
+    rbd = pair(
+        0.2, TIMINGS["fixed test and repair"], rate=2e-3, interval=100.0
+    )
+    terms, planned = _long_run._outage_terms(rbd)
+    failures = sum(term for _, term in terms)
+    assert failures == pytest.approx(rbd.system_failure_frequency())
+    T, n = 20000.0, 400
+    result = rbd.availability(
+        T, mc_samples=n, seed=5, control_variate=False, conditional=False
+    )
+    for exact, counts in (
+        (failures, result.system_failures),
+        (planned, result.system_planned_outages),
+    ):
+        total = float(np.sum(counts))
+        assert total / (n * T) == pytest.approx(
+            exact, abs=4.0 * np.sqrt(total) / (n * T)
+        )
+    # Mean up and down times take the planned outages with the failures.
+    up = rbd.mean_availability()
+    assert rbd.mean_up_time() == pytest.approx(up / (failures + planned))
+    assert rbd.mean_down_time() == pytest.approx(
+        (1.0 - up) / (failures + planned)
+    )
+    routes = rbd.analysis_routes()
+    for name in ("system_failure_frequency", "mean_up_time", "mean_down_time"):
+        assert routes[name].route != r.REFUSED, name
+
+
+@pytest.mark.parametrize("block", [False, True])
+def test_planned_outages_with_no_shared_cause_are_the_independent(block):
+    # With no shared cause, the planned outages at the tests (and at a
+    # block replacement that takes time, of a node outside the group) are
+    # those of the independent members, which their own models give.
+    def build(beta):
+        timing = TIMINGS["fixed test, exponential repair"]
+        a = inspected(3e-4, 500.0, **timing)
+        b = inspected(3e-4, 500.0, offset=170.0, **timing)
+        edges, components = PAIR, {"a": a, "b": b}
+        if block:
+            edges = [
+                ("s", "a"),
+                ("s", "b"),
+                ("a", "c"),
+                ("b", "c"),
+                ("c", "t"),
+            ]
+            components["c"] = {
+                "reliability": W([5000.0, 2.0]),
+                "repairability": E([0.125]),
+                "preventive": {
+                    "interval": 250.0,
+                    "policy": "block",
+                    "duration": E([0.2]),
+                },
+            }
+        groups = (
+            [] if beta is None else [CCFGroup(["a", "b"], BetaFactor(beta))]
+        )
+        return RepairableRBD(edges, components, ccf_groups=groups)
+
+    free, grouped = build(None), build(0.0)
+    for name in ("system_failure_frequency", "mean_up_time", "mean_down_time"):
+        assert getattr(grouped, name)() == pytest.approx(
+            getattr(free, name)(), rel=3e-5
+        ), name
 
 
 def refusal(**timing):
