@@ -1,6 +1,5 @@
 """Units of measure: results do not depend on the unit a diagram is in,
-the nodes' units are checked to agree, and a duty cycle puts a life in
-operating time on the calendar."""
+and a duty cycle puts a life in operating time on the calendar."""
 
 import math
 
@@ -11,7 +10,6 @@ from surpyval import AcceleratedLife, life_models
 
 from repyability import (
     NonRepairableRBD,
-    PhasedMission,
     RegressionNode,
     RepairableRBD,
     StandbyModel,
@@ -149,86 +147,6 @@ def test_a_probability_is_no_life_in_the_long_run():
         with pytest.raises(NotImplementedError, match="no mean time"):
             call()
     assert routes["availability"].route == "simulated"
-
-
-# Each node's unit ----------------------------------------------------------
-
-
-def test_nodes_in_one_unit():
-    rbd = NonRepairableRBD(
-        SERIES, {"a": W([100, 2]), "b": W([80, 2])}, units="hours"
-    )
-    assert rbd.units == "hours"
-    assert rbd.node_units == {"a": "hours", "b": "hours"}
-    # Case and spaces aside, the same unit.
-    mixed = NonRepairableRBD(
-        SERIES,
-        {"a": W([100, 2]), "b": W([80, 2])},
-        units={"a": "hours", "b": " Hours"},
-    )
-    assert mixed.units == "hours"
-    assert NonRepairableRBD(ONE, {"a": W([100, 2])}).units is None
-
-
-def test_nodes_in_different_units_are_refused():
-    with pytest.raises(ValueError, match="different units"):
-        NonRepairableRBD(
-            SERIES,
-            {"a": W([100, 2]), "b": W([80, 2])},
-            units={"a": "hours", "b": "cycles"},
-        )
-    with pytest.raises(ValueError, match="different units"):
-        RepairableRBD(
-            SERIES,
-            {
-                node: {"reliability": W([100, 2]), "repairability": E([1.0])}
-                for node in "ab"
-            },
-            units={"a": "hours", "b": "days"},
-        )
-    with pytest.raises(ValueError, match="does not have"):
-        NonRepairableRBD(ONE, {"a": W([100, 2])}, units={"z": "hours"})
-    with pytest.raises(ValueError, match="name of a unit"):
-        NonRepairableRBD(ONE, {"a": W([100, 2])}, units={"a": 3})
-
-
-def test_a_nested_diagram_brings_its_unit():
-    inner = NonRepairableRBD(ONE, {"a": W([100, 2])}, units="cycles")
-    outer = NonRepairableRBD(SERIES, {"a": W([90, 2]), "b": inner})
-    assert outer.units == "cycles"
-    with pytest.raises(ValueError, match="different units"):
-        NonRepairableRBD(
-            SERIES, {"a": W([90, 2]), "b": inner}, units={"a": "hours"}
-        )
-    with pytest.raises(ValueError, match="works in 'cycles'"):
-        NonRepairableRBD(
-            SERIES, {"a": W([90, 2]), "b": inner}, units={"b": "hours"}
-        )
-
-
-def test_a_missions_phases_share_a_unit():
-    engine = E([0.01])
-
-    def phase(unit):
-        return NonRepairableRBD(ONE, {"a": engine}, units=unit)
-
-    PhasedMission([("up", 1.0, phase("hours")), ("on", 5.0, phase(None))])
-    with pytest.raises(ValueError, match="different units"):
-        PhasedMission(
-            [("up", 1.0, phase("hours")), ("on", 5.0, phase("cycles"))]
-        )
-
-
-def test_units_are_saved():
-    for units in ("hours", {"a": "hours"}):
-        rbd = NonRepairableRBD(ONE, {"a": W([100, 2])}, units=units)
-        assert rbd_from_json(rbd_to_json(rbd)).units == "hours"
-    repairable = RepairableRBD(
-        ONE,
-        {"a": {"reliability": W([100, 2]), "repairability": E([1.0])}},
-        units="cycles",
-    )
-    assert rbd_from_json(rbd_to_json(repairable)).units == "cycles"
 
 
 # Duty cycles ---------------------------------------------------------------

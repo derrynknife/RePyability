@@ -180,8 +180,6 @@ def nonrepairable_kinds(rbd, models, options) -> set:
         found.add("a k-out-of-n vote")
     if options.get("capacity"):
         found.add("capacities")
-    if options.get("units"):
-        found.add("units")
     if rbd.structure_check["is_too_meshed"]:
         found.add("a structure too meshed to work out")
     return found | common_causes(options)
@@ -212,8 +210,6 @@ def repairable_kinds(rbd, components, options) -> set:
         found.add("capacities")
     if options.get("downtime_cost_rate"):
         found.add("downtime_cost_rate")
-    if options.get("units"):
-        found.add("units")
     if options.get("repair_crews") is not None:
         found.add("repair crews")
         if any(isinstance(c, RepairableRBD) for c in components.values()):
@@ -242,7 +238,7 @@ def required_repairable() -> set:
         | {f"repair model {model!r}" for model in cls.REPAIR_MODELS}
         | {f"maintenance group key {key!r}" for key in cls.GROUP_KEYS}
         | {"repairability 'instant'"}
-        | {"a k-out-of-n vote", "capacities", "downtime_cost_rate", "units"}
+        | {"a k-out-of-n vote", "capacities", "downtime_cost_rate"}
         | {"repair crews", "repair crews around a nested RepairableRBD"}
         | {
             "BetaFactor common cause, probability basis",
@@ -262,7 +258,7 @@ def required_nonrepairable() -> set:
         | SURPYVAL_KINDS
         | {"surpyval MixtureModel", "surpyval regression model"}
         | {"surpyval degradation process"}
-        | {"a k-out-of-n vote", "capacities", "units"}
+        | {"a k-out-of-n vote", "capacities"}
         | {
             "BetaFactor common cause, probability basis",
             "BetaFactor common cause, rate basis",

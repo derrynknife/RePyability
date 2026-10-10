@@ -757,9 +757,6 @@ class RBD:
     # the RBD can be re-created (see ``serialisation``); declared here so the
     # attribute is visible on the base type.
     _init_args: dict
-    # Each node's unit, as ``units`` gave it (see ``_units.checked``): set
-    # by a subclass that takes ``units``.
-    node_units: dict = {}
     # The names a subclass has models for, set before the base constructor
     # runs (None for a structure alone): one in no edge is reported as
     # such, and a node in the edges with none as having no model.
@@ -774,16 +771,6 @@ class RBD:
     _FOLDS_JUNCTIONS = False
     # What simulates a diagram too meshed to work out exactly.
     _SIMULATE_INSTEAD = "Simulate it instead."
-
-    @property
-    def units(self) -> Optional[str]:
-        """The unit the diagram's nodes are in (any text, such as
-        ``"hours"`` or ``"cycles"``), as its ``units`` gave it; None if no
-        node was given one. Every time, interval, rate and cost per time
-        of the diagram is in this unit."""
-        from repyability.rbd._units import common
-
-        return common(self.node_units)
 
     def __init__(
         self,

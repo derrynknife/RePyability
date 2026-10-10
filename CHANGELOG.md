@@ -55,20 +55,13 @@ other release, fixes included, the minor.
   Simulated only, on the Python engine: the exact methods and a start
   state refuse such a component. Seeded runs without it are unchanged.
 
-- **Each node's unit, checked to agree.** Both diagram classes take
-  `units`: the unit each node's model is in, as any text (`"hours"`,
-  `"cycles"`), one for every node or a dict of some nodes'. A fitted model
-  does not say what unit its data was in, so a node in another unit
-  silently gave wrong answers; the diagram now refuses nodes whose units
-  differ (ignoring case), a nested diagram's unit taking part as its
-  node's, and a phased mission refuses phases in different units. The
-  diagram's `units` gives the unit, and saving keeps it.
 - **A component that operates part of the time (`"duty"`).** A
   `RepairableRBD` spec's `"duty"`, the fraction of the time the component
   operates, puts a life fitted in operating time on the diagram's clock:
   `R(d t)`, the same surpyval distribution with its scale moved, which
   every method takes. Repairs, maintenance and tests stay on the clock;
-  levers, draws and saving keep the life as given.
+  levers, draws and saving keep the life as given. The rescaling rule of
+  each distribution is RePyability's until surpyval has one (SurPyval#845).
 
 ### Changed
 

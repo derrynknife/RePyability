@@ -521,15 +521,6 @@ def rbd_to_dict(rbd: RBD) -> dict:
         "output_node": args["output_node"],
         "on_infeasible_rbd": args["on_infeasible_rbd"],
     }
-    units = args.get("units")
-    if units is not None:
-        # One unit for every node, or each node's (a name may not be a
-        # JSON key).
-        out["units"] = (
-            units
-            if isinstance(units, str)
-            else [{"node": n, "unit": u} for n, u in units.items()]
-        )
     if out["type"] == "RepairableRBD":
         out["components"] = [
             {"node": n, "component": _serialise_component(v)}
@@ -559,13 +550,6 @@ def rbd_to_dict(rbd: RBD) -> dict:
     return out
 
 
-def _units_from(saved):
-    """``units`` as :func:`rbd_to_dict` saved it."""
-    if saved is None or isinstance(saved, str):
-        return saved
-    return {_node_name(e["node"]): e["unit"] for e in saved}
-
-
 def rbd_from_dict(d: dict) -> RBD:
     """Reconstruct an RBD from :func:`rbd_to_dict`'s output."""
     # Lazy imports to avoid an import cycle (these modules import this one).
@@ -580,7 +564,6 @@ def rbd_from_dict(d: dict) -> RBD:
         input_node=_node_name(d.get("input_node")),
         output_node=_node_name(d.get("output_node")),
         on_infeasible_rbd=d.get("on_infeasible_rbd", "raise"),
-        units=_units_from(d.get("units")),
     )
     if rbd_type == "RepairableRBD":
         components = {

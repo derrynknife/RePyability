@@ -160,29 +160,11 @@ A diagram works in one unit throughout: its nodes' lives, the times you
 ask about, intervals, repair times, rates and costs per unit of time are
 all in the unit the models were fitted in, whatever it is (hours, cycles,
 kilometres, demands). Which unit makes no difference to the answers;
-mixing two does, and nothing in a fitted model says which it is in: a
+mixing two does, and nothing in a fitted model says which it is in yet: a
 Weibull fitted to lives in cycles and one fitted to lives in hours are the
-same kind of object. So say each node's unit, as any text, with `units`
-(one for every node, or a dict of some nodes'), and the diagram refuses
-nodes whose units differ:
-
-```python
-edges = [("s", "pump"), ("pump", "valve"), ("valve", "t")]
-lives = {"pump": surv.Weibull.from_params([100, 2]),
-         "valve": surv.Weibull.from_params([300, 1.5])}
-rbd = NonRepairableRBD(edges, lives, units="hours")
-rbd.units          # -> 'hours'
-
-NonRepairableRBD(edges, lives, units={"pump": "hours", "valve": "cycles"})
-# ValueError: The diagram's nodes are in different units, so their times
-# would be mixed: 'hours': ['pump']; 'cycles': ['valve']. ...
-```
-
-Case and spaces aside, two units are the same text. A nested diagram's
-unit takes part as its node's, a phased mission's phases must agree, and
-the units are saved with the diagram. A node given no unit is not checked.
-
-Some inputs need their unit thought about however the diagram is built:
+same kind of object (a unit carried by the model is asked of surpyval,
+SurPyval#845). So give every node's model in one unit, and every number
+you type in it too:
 
 - **Intervals, repair times and costs per time** are in the models' unit:
   a proof-test interval of 1 means one hour if the lives are in hours, not

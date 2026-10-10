@@ -60,7 +60,6 @@ from ._model_utils import (
     refuse_nonparametric,
 )
 from ._sampling import RowSampler, column, inverse_sampler, row_sampler
-from ._units import checked as checked_units
 from .ccf import VALIDITY, BetaFactor, CCFGroup, as_groups
 from .ccf import parameters as ccf_parameters
 from .ccf import shock_outcomes, validity_warning
@@ -469,14 +468,7 @@ class NonRepairableRBD(RBD):
         ``NonRepairableRBD`` with capacities, whose distribution it then
         has. A repeated node has the capacity of the node it repeats,
         wherever it is drawn: give that node's.
-    units : str or dict[Hashable, str], optional
-        The unit each node's model is in (any text, such as ``"hours"``,
-        ``"cycles"`` or ``"km"``), by default None: one for every node, or a
-        dict of some nodes'. A fitted model does not say what unit its data
-        was in, so nothing else can tell; nodes given different units
-        (ignoring case) are refused, and a nested diagram's unit takes part
-        as its node's. The diagram's ``units`` is then that unit, and every
-        time, interval, rate and cost per time of it is in it.
+
 
     Attributes
     ----------
@@ -578,7 +570,6 @@ class NonRepairableRBD(RBD):
         on_infeasible_rbd: str = "raise",
         ccf_groups: Optional[Iterable[CCFGroup]] = None,
         capacity: Optional[dict[Any, float]] = None,
-        units: Optional[Union[str, dict[Any, str]]] = None,
     ):
         _check_on_infeasible_rbd(on_infeasible_rbd)
         # Capture the constructor inputs verbatim (before any mutation) so the
@@ -598,7 +589,6 @@ class NonRepairableRBD(RBD):
             "on_infeasible_rbd": on_infeasible_rbd,
             "ccf_groups": ccf_groups,
             "capacity": dict(capacity) if capacity else None,
-            "units": dict(units) if isinstance(units, dict) else units,
         }
         reliabilities = copy(reliabilities)
         for key, value in reliabilities.items():
@@ -684,11 +674,6 @@ class NonRepairableRBD(RBD):
 
         self.reliabilities = reliabilities
         refuse_nonparametric(reliabilities)
-        self.node_units = checked_units(
-            units,
-            self._models_given,
-            {n: m for n, m in reliabilities.items() if isinstance(m, RBD)},
-        )
         self.repeated = repeated
         self.ccf_groups = self._validate_ccf_groups(ccf_groups)
         # The groups warned of splitting a probability beyond VALIDITY.

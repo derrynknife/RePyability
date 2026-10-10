@@ -67,11 +67,11 @@ A component can be given as:
   `"reliability"` is `PerfectReliability` is one too: a what-if of a part
   that never fails.
 
-The constructor also takes `k`, `input_node`, `output_node`,
-`on_infeasible_rbd` and `units` exactly as for a
-[`NonRepairableRBD`](building.md) (see [Units](building.md#units)),
-`downtime_cost_rate` (see [Costs](costs.md)) and `repair_crews` (see
-[below](#repair-crews)).
+The constructor also takes `k`, `input_node`, `output_node` and
+`on_infeasible_rbd` exactly as for a
+[`NonRepairableRBD`](building.md), `downtime_cost_rate` (see
+[Costs](costs.md)) and `repair_crews` (see [below](#repair-crews)). Every
+time is in the models' unit (see [Units](building.md#units)).
 
 Every repair restores a component to as good as new (unless it is repaired
 imperfectly), components fail and are repaired independently of each other
@@ -93,9 +93,8 @@ keep the life as given, in operating time.
 ```python
 pump = {"reliability": surv.Weibull.from_params([1000, 2]),       # operating hours
         "repairability": surv.Exponential.from_params([1 / 8])}
-always = RepairableRBD([("s", "p"), ("p", "t")], {"p": pump}, units="hours")
-part = RepairableRBD([("s", "p"), ("p", "t")], {"p": {**pump, "duty": 0.4}},
-                     units="hours")
+always = RepairableRBD([("s", "p"), ("p", "t")], {"p": pump})
+part = RepairableRBD([("s", "p"), ("p", "t")], {"p": {**pump, "duty": 0.4}})
 always.mean_availability()                   # -> 0.99105
 part.mean_availability()                     # -> 0.9964
 part.system_failure_frequency() * 8760       # -> 3.94   failures a year, against 9.796

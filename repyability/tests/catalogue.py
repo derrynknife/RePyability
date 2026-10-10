@@ -222,9 +222,6 @@ def nonrepairable_kinds():
         "fitted": NonRepairableRBD(EDGES, {"a": fitted_life(), **rest}),
         "fitted shares": NonRepairableRBD(EDGES, {"a": shares_life(), **rest}),
         "degradation process": NonRepairableRBD(EDGES, {"a": wear(), **rest}),
-        "in units": NonRepairableRBD(
-            EDGES, {"a": unit, **rest}, units={"a": "hours", "b": "Hours"}
-        ),
         "mixture": NonRepairableRBD(EDGES, {"a": mixture_life(), **rest}),
         "degrading": NonRepairableRBD(
             EDGES,
@@ -446,8 +443,7 @@ def repairable_kinds():
             ),
             "degradation process life": system(unit(reliability=wear())),
             "operated part of the time": system(
-                unit(duty=0.25, preventive={"interval": 300.0}),
-                units="hours",
+                unit(duty=0.25, preventive={"interval": 300.0})
             ),
             "mixture life, maintained": system(
                 unit(

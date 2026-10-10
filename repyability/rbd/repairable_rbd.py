@@ -124,7 +124,6 @@ from repyability.rbd._point_availability import (
 from repyability.rbd._point_availability import knots as point_knots
 from repyability.rbd._point_availability import unit_curve
 from repyability.rbd._sampling import MixtureLife, stream_sampler
-from repyability.rbd._units import checked as checked_units
 from repyability.rbd.degrading_node import DegradingNode
 from repyability.rbd.helper_classes import PerfectReliability, perfect_class
 from repyability.rbd.load_sharing_node import LoadSharingModel
@@ -4911,14 +4910,7 @@ class RepairableRBD(RBD):
         group's chain followed from every member up. The simulations draw
         each cause as a Poisson process, failing the members it names that
         are up; they need exponential lives alone (#158).
-    units : str or dict[Hashable, str], optional
-        The unit each node's model is in (any text, such as ``"hours"``,
-        ``"cycles"`` or ``"km"``), by default None: one for every node, or a
-        dict of some nodes'. A fitted model does not say what unit its data
-        was in, so nothing else can tell; nodes given different units
-        (ignoring case) are refused, and a nested diagram's unit takes part
-        as its node's. The diagram's ``units`` is then that unit, and every
-        time, interval, rate and cost per time of it is in it.
+
 
     Attributes
     ----------
@@ -5163,7 +5155,6 @@ class RepairableRBD(RBD):
         repair_crews: Optional[int] = None,
         maintenance_groups: Optional[dict[Any, dict]] = None,
         ccf_groups: Optional[Sequence[Any]] = None,
-        units: Optional[Union[str, dict[Any, str]]] = None,
     ):
         _check_on_infeasible_rbd(on_infeasible_rbd)
         # Capture the constructor inputs verbatim (before any mutation) so the
@@ -5204,7 +5195,6 @@ class RepairableRBD(RBD):
                 dict(maintenance_groups) if maintenance_groups else None
             ),
             "ccf_groups": list(ccf_groups) if ccf_groups else None,
-            "units": dict(units) if isinstance(units, dict) else units,
         }
         # A component that operates part of the time takes its life on
         # the calendar from here on; the spec as given keeps its life in
@@ -5378,15 +5368,6 @@ class RepairableRBD(RBD):
             output_node,
             on_infeasible_rbd,
             capacity=capacity,
-        )
-        self.node_units = checked_units(
-            units,
-            self._models_given,
-            {
-                name: component
-                for name, component in components.items()
-                if isinstance(component, RBD)
-            },
         )
 
         # Every intermediate graph node needs a component definition (the
@@ -11697,7 +11678,7 @@ class RepairableRBD(RBD):
                 inner.route,
                 f"a nested RBD's long-run values, {inner.route}",
             )
-        for check in (self._require_perfect_repair, self._require_time_models):
+        for check in (self._require_perfect_repair, self._require_times):
             message = r.refusal(partial(check, node))
             if message:
                 return r.REFUSED, message
@@ -19901,7 +19882,7 @@ class RepairableRBD(RBD):
         their Markov chain, or a nested RBD's own, as it has crews of its
         own."""
         self._require_perfect_repair(node)
-        self._require_time_models(node)
+        self._require_times(node)
         if self._crews_couple():
             chain = self._crew_chain()
             if node in chain.nodes:
@@ -19943,7 +19924,7 @@ class RepairableRBD(RBD):
         value is constant over the long-run grid, and while the crews do
         not couple the components (see ``_long_run_unavailabilities``)."""
         self._require_perfect_repair(node)
-        self._require_time_models(node)
+        self._require_times(node)
         if node in self._standby:
             return self._standby_long_run(node).unavailability
         component = self.components[node]
@@ -20011,6 +19992,12 @@ class RepairableRBD(RBD):
         then have no exact value (its mean is no mean time). (First, if one has no reliability: see
         ``_require_reliabilities``.)"""
         self._require_reliabilities(node)
+        self._require_times(node)
+
+    def _require_times(self, node) -> None:
+        """Raise if a component's life or repair model is a probability,
+        not a distribution of times: it has no mean time, nor a value over
+        time (see ``_require_time_models``)."""
         component = self.components[node]
         for what, model in [
             ("reliability", getattr(component, "reliability", None)),
@@ -21019,7 +21006,7 @@ class RepairableRBD(RBD):
         to count), ``1 / (MTTF + MTTR)`` failures for a NonRepairable, and
         from its renewal cycle for one under age replacement."""
         self._require_perfect_repair(node)
-        self._require_time_models(node)
+        self._require_times(node)
         component = self.components[node]
         if isinstance(component, RepairableRBD):
             failures, planned = component._outage_frequencies()
