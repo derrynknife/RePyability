@@ -471,7 +471,7 @@ def test_mttf_mttr_allocation_errors(kwargs, message):
 
 
 def test_a_design_cut_short_still_meets_the_target(monkeypatch):
-    import repyability.rbd.repairable_rbd as module
+    import repyability.rbd._repairable_allocation as module
 
     real = module.minimize
 

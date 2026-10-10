@@ -853,7 +853,7 @@ def test_nodes_in_series_with_inspected_nodes_elsewhere():
 
 
 def test_the_series_program_is_used_exactly_when_it_applies(monkeypatch):
-    from repyability.rbd import repairable_rbd
+    from repyability.rbd import _repairable_allocation
 
     calls = []
 
@@ -861,7 +861,7 @@ def test_the_series_program_is_used_exactly_when_it_applies(monkeypatch):
         calls.append(args[7])
         return lowest_total_cost(*args)
 
-    monkeypatch.setattr(repairable_rbd, "lowest_total_cost", recording)
+    monkeypatch.setattr(_repairable_allocation, "lowest_total_cost", recording)
     inspected = {
         "reliability": E([0.01]),
         "repairability": "instant",
