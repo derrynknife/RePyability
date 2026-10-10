@@ -312,6 +312,8 @@ def _serialise_component(value) -> dict:
             }
         if value.get("replace_after") is not None:
             out["replace_after"] = int(value["replace_after"])
+        if value.get("duty") is not None:
+            out["duty"] = float(value["duty"])
         for key in ("preventive", "inspection"):
             if value.get(key) is not None:
                 out[key] = _serialise_schedule(value[key])
@@ -394,6 +396,8 @@ def _deserialise_component(d: dict) -> Any:
             out["repair"] = dict(d["repair"])
         if "replace_after" in d:
             out["replace_after"] = d["replace_after"]
+        if "duty" in d:
+            out["duty"] = d["duty"]
         for key in ("preventive", "inspection"):
             if key in d:
                 out[key] = _deserialise_schedule(d[key])
@@ -517,6 +521,15 @@ def rbd_to_dict(rbd: RBD) -> dict:
         "output_node": args["output_node"],
         "on_infeasible_rbd": args["on_infeasible_rbd"],
     }
+    units = args.get("units")
+    if units is not None:
+        # One unit for every node, or each node's (a name may not be a
+        # JSON key).
+        out["units"] = (
+            units
+            if isinstance(units, str)
+            else [{"node": n, "unit": u} for n, u in units.items()]
+        )
     if out["type"] == "RepairableRBD":
         out["components"] = [
             {"node": n, "component": _serialise_component(v)}
@@ -546,6 +559,13 @@ def rbd_to_dict(rbd: RBD) -> dict:
     return out
 
 
+def _units_from(saved):
+    """``units`` as :func:`rbd_to_dict` saved it."""
+    if saved is None or isinstance(saved, str):
+        return saved
+    return {_node_name(e["node"]): e["unit"] for e in saved}
+
+
 def rbd_from_dict(d: dict) -> RBD:
     """Reconstruct an RBD from :func:`rbd_to_dict`'s output."""
     # Lazy imports to avoid an import cycle (these modules import this one).
@@ -560,6 +580,7 @@ def rbd_from_dict(d: dict) -> RBD:
         input_node=_node_name(d.get("input_node")),
         output_node=_node_name(d.get("output_node")),
         on_infeasible_rbd=d.get("on_infeasible_rbd", "raise"),
+        units=_units_from(d.get("units")),
     )
     if rbd_type == "RepairableRBD":
         components = {

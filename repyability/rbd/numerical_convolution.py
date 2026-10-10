@@ -33,7 +33,7 @@ def _upper_time(model, eps: float = 1e-10) -> float:
     """
     floor = never_fails(model)
     scale = failure_time_scale(model)
-    t = max(scale, 1.0) if np.isfinite(scale) else 1.0
+    t = scale if np.isfinite(scale) and scale > 0.0 else 1.0
     for _ in range(200):
         if _scalar(model.sf(t)) - floor <= eps:
             break

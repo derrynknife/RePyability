@@ -124,6 +124,7 @@ from repyability.rbd._point_availability import (
 from repyability.rbd._point_availability import knots as point_knots
 from repyability.rbd._point_availability import unit_curve
 from repyability.rbd._sampling import MixtureLife, stream_sampler
+from repyability.rbd._units import checked as checked_units
 from repyability.rbd.degrading_node import DegradingNode
 from repyability.rbd.helper_classes import PerfectReliability, perfect_class
 from repyability.rbd.load_sharing_node import LoadSharingModel
@@ -3407,6 +3408,26 @@ def _curve_points(value) -> Optional[int]:
     return int(value)
 
 
+def _on_duty(components: dict) -> dict:
+    """The components, each spec with a ``"duty"`` given its life on the
+    calendar (see ``_duty.on_calendar``): one object for each model and
+    duty, so that components sharing a model still share it."""
+    from repyability.rbd._duty import duty_fraction, on_calendar
+
+    moved: dict = {}
+    out = {}
+    for name, component in components.items():
+        if isinstance(component, dict) and component.get("duty") is not None:
+            d = duty_fraction(name, component["duty"])
+            life = component["reliability"]
+            key = (id(life), d)
+            if key not in moved:
+                moved[key] = on_calendar(name, life, d)
+            component = {**component, "reliability": moved[key]}
+        out[name] = component
+    return out
+
+
 def _is_junction(name, component) -> bool:
     """Whether ``component`` makes node ``name`` a junction, which never
     fails: ``PerfectReliability`` itself, or a spec whose life it is (#175,
@@ -4750,6 +4771,13 @@ class RepairableRBD(RBD):
           and fails ``H(t)`` times by ``t`` on average (``H`` its life's
           cumulative hazard), which the values over a window from new
           (``expected_failures`` and the others) take in exactly.
+          ``"duty"``, a fraction ``d`` in (0, 1], is the share of the time
+          the component operates, for a ``"reliability"`` fitted in
+          operating time: it ages only while it operates, so its life on
+          the diagram's clock is its operating life over ``d``
+          (``R(d t)``), which every method then takes; its repairs,
+          maintenance and tests stay on the clock. The life must be a
+          surpyval parametric distribution of a time.
           ``"standby"`` makes the node a standby group of identical units,
           each failing and repaired as ``"reliability"`` and
           ``"repairability"`` say: a dict of ``"units"`` (by default 2),
@@ -4883,6 +4911,14 @@ class RepairableRBD(RBD):
         group's chain followed from every member up. The simulations draw
         each cause as a Poisson process, failing the members it names that
         are up; they need exponential lives alone (#158).
+    units : str or dict[Hashable, str], optional
+        The unit each node's model is in (any text, such as ``"hours"``,
+        ``"cycles"`` or ``"km"``), by default None: one for every node, or a
+        dict of some nodes'. A fitted model does not say what unit its data
+        was in, so nothing else can tell; nodes given different units
+        (ignoring case) are refused, and a nested diagram's unit takes part
+        as its node's. The diagram's ``units`` is then that unit, and every
+        time, interval, rate and cost per time of it is in it.
 
     Attributes
     ----------
@@ -5072,6 +5108,7 @@ class RepairableRBD(RBD):
             "group",
             "repair",
             "replace_after",
+            "duty",
         )
     )
     #: The models of imperfect repair a spec's ``"repair"`` can name.
@@ -5126,6 +5163,7 @@ class RepairableRBD(RBD):
         repair_crews: Optional[int] = None,
         maintenance_groups: Optional[dict[Any, dict]] = None,
         ccf_groups: Optional[Sequence[Any]] = None,
+        units: Optional[Union[str, dict[Any, str]]] = None,
     ):
         _check_on_infeasible_rbd(on_infeasible_rbd)
         # Capture the constructor inputs verbatim (before any mutation) so the
@@ -5166,7 +5204,12 @@ class RepairableRBD(RBD):
                 dict(maintenance_groups) if maintenance_groups else None
             ),
             "ccf_groups": list(ccf_groups) if ccf_groups else None,
+            "units": dict(units) if isinstance(units, dict) else units,
         }
+        # A component that operates part of the time takes its life on
+        # the calendar from here on; the spec as given keeps its life in
+        # operating time, for its levers, draws and saving.
+        components = _on_duty(components)
         self.repair_crews = _validate_crews(repair_crews)
         # Each component's place in the queue for a crew (higher first).
         self._priority: dict[Any, float] = {}
@@ -5335,6 +5378,15 @@ class RepairableRBD(RBD):
             output_node,
             on_infeasible_rbd,
             capacity=capacity,
+        )
+        self.node_units = checked_units(
+            units,
+            self._models_given,
+            {
+                name: component
+                for name, component in components.items()
+                if isinstance(component, RBD)
+            },
         )
 
         # Every intermediate graph node needs a component definition (the
@@ -11645,9 +11697,10 @@ class RepairableRBD(RBD):
                 inner.route,
                 f"a nested RBD's long-run values, {inner.route}",
             )
-        message = r.refusal(partial(self._require_perfect_repair, node))
-        if message:
-            return r.REFUSED, message
+        for check in (self._require_perfect_repair, self._require_time_models):
+            message = r.refusal(partial(check, node))
+            if message:
+                return r.REFUSED, message
         if node in self._standby:
             message = r.refusal(partial(self._standby_rates, node))
             if message:
@@ -19848,6 +19901,7 @@ class RepairableRBD(RBD):
         their Markov chain, or a nested RBD's own, as it has crews of its
         own."""
         self._require_perfect_repair(node)
+        self._require_time_models(node)
         if self._crews_couple():
             chain = self._crew_chain()
             if node in chain.nodes:
@@ -19889,6 +19943,7 @@ class RepairableRBD(RBD):
         value is constant over the long-run grid, and while the crews do
         not couple the components (see ``_long_run_unavailabilities``)."""
         self._require_perfect_repair(node)
+        self._require_time_models(node)
         if node in self._standby:
             return self._standby_long_run(node).unavailability
         component = self.components[node]
@@ -19952,21 +20007,22 @@ class RepairableRBD(RBD):
 
     def _require_time_models(self, node) -> None:
         """Raise if a component's life or repair model is a probability,
-        not a distribution of times: its availability over time then has
-        no exact value. (First, if one has no reliability: see
+        not a distribution of times: its long-run and time-dependent values
+        then have no exact value (its mean is no mean time). (First, if one has no reliability: see
         ``_require_reliabilities``.)"""
         self._require_reliabilities(node)
         component = self.components[node]
         for what, model in [
-            ("reliability", component.reliability),
-            ("repairability", component.time_to_replace),
+            ("reliability", getattr(component, "reliability", None)),
+            ("repairability", getattr(component, "time_to_replace", None)),
         ]:
             if is_fixed_probability(model):
                 raise NotImplementedError(
                     f"Component {node!r}: its {what} model is a probability, "
-                    "not a distribution of times, so its availability over "
-                    "time has no exact value. Estimate it by simulation, "
-                    "with availability()."
+                    "not a distribution of times, so it has no mean time or "
+                    "availability over time: a unit fails at once with that "
+                    "probability, or never. Estimate the system by "
+                    "simulation, with availability()."
                 )
 
     def _require_unscheduled_stages(self, node) -> None:
@@ -20963,6 +21019,7 @@ class RepairableRBD(RBD):
         to count), ``1 / (MTTF + MTTR)`` failures for a NonRepairable, and
         from its renewal cycle for one under age replacement."""
         self._require_perfect_repair(node)
+        self._require_time_models(node)
         component = self.components[node]
         if isinstance(component, RepairableRBD):
             failures, planned = component._outage_frequencies()
@@ -22957,7 +23014,12 @@ class RepairableRBD(RBD):
         >>> round(shares["b"], 4)
         0.7143
         """
-        from ._differential import check, flattened, shares
+        from ._differential import (
+            check,
+            flattened,
+            proportional_scales,
+            shares,
+        )
 
         check(over, change, kind)
         held = set(working_nodes or ()) | set(broken_nodes or ())
@@ -22990,18 +23052,21 @@ class RepairableRBD(RBD):
                     rel_step=rel_step,
                 )
             )
-            continuous = {
-                (lever.key, lever.name): lever.value
+            levers = [
+                lever
                 for lever in _sensitivity._levers(self)
                 if not lever.discrete
-            }
+            ]
+            continuous = {(lever.key, lever.name) for lever in levers}
+            kept = [key for key in derivatives if key in continuous]
+            scale = (
+                proportional_scales(levers, kept)
+                if change == "proportional"
+                else dict.fromkeys(kept, 1.0)
+            )
             contributions = {
-                key: (
-                    np.asarray(d, dtype=float)
-                    * (continuous[key] if change == "proportional" else 1.0)
-                )
-                for key, d in derivatives.items()
-                if key in continuous
+                key: np.asarray(derivatives[key], dtype=float) * scale[key]
+                for key in kept
             }
         scalar = x is None or np.ndim(x) == 0
         return shares(contributions, groups, scalar, improving)

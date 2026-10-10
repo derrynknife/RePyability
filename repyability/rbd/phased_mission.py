@@ -249,8 +249,9 @@ class PhasedMission:
     ValueError
         If ``phases`` is empty, a phase is not a ``(name, duration, rbd)``
         with a distinct name, a duration that is finite and not negative
-        and a ``NonRepairableRBD``, a phase has common-cause groups, or a
-        node name has different models in different phases.
+        and a ``NonRepairableRBD``, a phase has common-cause groups, a
+        node name has different models in different phases, or the phases'
+        diagrams are in different ``units``.
 
     Examples
     --------
@@ -328,6 +329,18 @@ class PhasedMission:
             end += float(duration)
             self.phases.append(_Phase(name, float(duration), rbd, end, used))
         self.duration = end
+        # The phases run on one clock, so their diagrams' units agree.
+        units: Dict[str, List[Hashable]] = {}
+        for phase in self.phases:
+            if phase.rbd.units is not None:
+                text = phase.rbd.units
+                units.setdefault(text.casefold(), []).append(phase.name)
+        if len(units) > 1:
+            raise ValueError(
+                "The phases' diagrams are in different units, so their "
+                f"durations and lives would be mixed: {list(units.values())} "
+                "by unit. Give every phase's models in one unit."
+            )
         # The decomposition of the first so many phases, once worked out.
         self._plans: Dict[int, tuple] = {}
 

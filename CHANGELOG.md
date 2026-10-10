@@ -55,6 +55,21 @@ other release, fixes included, the minor.
   Simulated only, on the Python engine: the exact methods and a start
   state refuse such a component. Seeded runs without it are unchanged.
 
+- **Each node's unit, checked to agree.** Both diagram classes take
+  `units`: the unit each node's model is in, as any text (`"hours"`,
+  `"cycles"`), one for every node or a dict of some nodes'. A fitted model
+  does not say what unit its data was in, so a node in another unit
+  silently gave wrong answers; the diagram now refuses nodes whose units
+  differ (ignoring case), a nested diagram's unit taking part as its
+  node's, and a phased mission refuses phases in different units. The
+  diagram's `units` gives the unit, and saving keeps it.
+- **A component that operates part of the time (`"duty"`).** A
+  `RepairableRBD` spec's `"duty"`, the fraction of the time the component
+  operates, puts a life fitted in operating time on the diagram's clock:
+  `R(d t)`, the same surpyval distribution with its scale moved, which
+  every method takes. Repairs, maintenance and tests stay on the clock;
+  levers, draws and saving keep the life as given.
+
 ### Changed
 
 - **Parameter uncertainty draws a fit's shares too (#267).** `"fit"` drew
@@ -110,6 +125,33 @@ other release, fixes included, the minor.
   `NonRepairableRBD.cs` and a node's age in `sf_given_state`. A diagram's
   own `cs` is still 0 once its reliability at `X` is below the smallest
   float, as its `Hf` is then infinite.
+- **A probability per demand has no long run in a `RepairableRBD`.** A
+  `FixedEventProbability` life (a unit that fails at once with that
+  probability, or never) was read as a mean life by the long-run methods:
+  `p = 0.1` gave an availability of 0.09 where the simulations give 0.999.
+  The long-run values, frequencies, cost rate and importance now refuse
+  it, as the values over time did, and the routes say so.
+- **`RegressionNode` takes surpyval's accelerated-life models.** An
+  Arrhenius, Eyring or power-law life was refused, its covariate count
+  taken from its life model's parameters (two, for one stress); it is now
+  the number of stresses the model was fitted with.
+- **Results no longer depend on the unit of time.** A cold-standby
+  group's grid started at time 1 whatever its lives' scale, and the
+  density and hazard (and the reliability rate's parts) took steps of
+  `1e-6` of time below time 1: in a diagram whose lives were about 1e-5
+  of the unit long, a cold standby's probability of failing was off by
+  up to 27% (and its density by 5%). Both
+  are relative now: the grid starts at the typical life, a step is `1e-6`
+  of the time (of the shortest typical life at time 0). A regression
+  node's check for a proper survival curve looks just after 0, not at
+  `1e-9`.
+- **Proportional differential importance over parameters does not depend
+  on the unit.** A LogNormal's `mu` (the log of a time) was moved by a
+  share of itself, which changes with the unit (in hours its share of one
+  diagram was 0.89, in years 19); a proportional change of it is now a
+  proportional change of the time (`d mu = epsilon`), as for a Cox-Lewis
+  process's `alpha`. A regression node's covariate, whose zero is its
+  unit's, is refused (`change="uniform"` takes it).
 
 ## [0.13] - 2026-10-09
 

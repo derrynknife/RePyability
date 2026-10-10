@@ -154,6 +154,54 @@ plant.node_names()    # ['pumps', 'valve']
 A `RepairableRBD` can likewise contain `RepairableRBD` components (see
 [Repairable systems](repairable.md#nested-repairable-rbds)).
 
+## Units
+
+A diagram works in one unit throughout: its nodes' lives, the times you
+ask about, intervals, repair times, rates and costs per unit of time are
+all in the unit the models were fitted in, whatever it is (hours, cycles,
+kilometres, demands). Which unit makes no difference to the answers;
+mixing two does, and nothing in a fitted model says which it is in: a
+Weibull fitted to lives in cycles and one fitted to lives in hours are the
+same kind of object. So say each node's unit, as any text, with `units`
+(one for every node, or a dict of some nodes'), and the diagram refuses
+nodes whose units differ:
+
+```python
+edges = [("s", "pump"), ("pump", "valve"), ("valve", "t")]
+lives = {"pump": surv.Weibull.from_params([100, 2]),
+         "valve": surv.Weibull.from_params([300, 1.5])}
+rbd = NonRepairableRBD(edges, lives, units="hours")
+rbd.units          # -> 'hours'
+
+NonRepairableRBD(edges, lives, units={"pump": "hours", "valve": "cycles"})
+# ValueError: The diagram's nodes are in different units, so their times
+# would be mixed: 'hours': ['pump']; 'cycles': ['valve']. ...
+```
+
+Case and spaces aside, two units are the same text. A nested diagram's
+unit takes part as its node's, a phased mission's phases must agree, and
+the units are saved with the diagram. A node given no unit is not checked.
+
+Some inputs need their unit thought about however the diagram is built:
+
+- **Intervals, repair times and costs per time** are in the models' unit:
+  a proof-test interval of 1 means one hour if the lives are in hours, not
+  one year. A discount rate is per that unit too (see
+  [Costs](costs.md)).
+- **A probability per demand** (`FixedEventProbability`) is no life: a
+  `RepairableRBD` simulates a unit that fails at once with that
+  probability or never, and refuses its long-run and time-dependent values,
+  which have no mean time to work from.
+- **A covariate** of a [`RegressionNode`][repyability.RegressionNode] is in
+  the unit its model was fitted with: a temperature fitted in kelvin is
+  wrong given in degrees Celsius, and a load-sharing group's `load` is the
+  group's total. A covariate's zero is its unit's, so
+  `differential_importance(change="proportional")` refuses one (a uniform
+  change is unaffected).
+- **Lives in operating time** on a diagram that runs on the calendar: a
+  `RepairableRBD` component that operates a fraction of the time takes a
+  `"duty"` (see [Repairable systems](repairable.md#operating-part-of-the-time)).
+
 ## Validation and the structure check
 
 The constructor checks the diagram and, by default, raises `ValueError` if it
