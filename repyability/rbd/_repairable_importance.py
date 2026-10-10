@@ -29,6 +29,7 @@ from repyability.rbd import (
     _long_run,
     _rates,
     _sensitivity,
+    _windows,
 )
 from repyability.rbd._common import (
     _squeeze_values,
@@ -436,7 +437,9 @@ def _independent_rates(
 
     def importances(values: dict) -> dict:
         size = len(next(iter(values.values()))) if values else len(flat)
-        return rbd._importances(rbd._filled(values, size, working, broken))[0]
+        return rbd._importances(
+            _windows._filled(rbd, values, size, working, broken)
+        )[0]
 
     importance = importances(
         {node: curve.at(flat) for node, curve in curves.items()}
@@ -811,7 +814,8 @@ def barlow_proschan_importance(
                 "A window must be a positive length of time, got "
                 f"{window!r}."
             )
-        windows, flat, _, counts, _, _ = rbd._window(
+        windows, flat, _, counts, _, _ = _windows._window(
+            rbd,
             window,
             working_nodes,
             broken_nodes,

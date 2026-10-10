@@ -24,6 +24,7 @@ from repyability.rbd import (
     _chain_transient,
     _long_run,
     _quadrature,
+    _windows,
 )
 from repyability.rbd import capacity as _capacity
 from repyability.rbd.results import (
@@ -62,7 +63,7 @@ class _CrewCapacity:
         # takes (see ``_chain_for``).
         own.update({node: np.ones(size) for node in nested})
         self.arrays, _ = rbd._node_arrays(
-            rbd._filled(own, size, working, broken)
+            _windows._filled(rbd, own, size, working, broken)
         )
         self.size = size
         self.followed: Dict[tuple, tuple] = {}
@@ -194,7 +195,9 @@ def _crew_capacity(
         node: chain.up[:, k].astype(float)
         for k, node in enumerate(chain.nodes)
     }
-    arrays, _ = rbd._node_arrays(rbd._filled(own, size, working, broken))
+    arrays, _ = rbd._node_arrays(
+        _windows._filled(rbd, own, size, working, broken)
+    )
     levels, rows = rbd._capacity_arrays(arrays, size, {})
     uniformized = rbd._uniformized(
         "The repair crews'",
@@ -318,7 +321,7 @@ def _capacity_rows(
     size = len(x)
     values = {node: curve.at(x) for node, curve in curves.items()}
     arrays, _ = rbd._node_arrays(
-        rbd._filled(values, size, working_nodes, broken_nodes)
+        _windows._filled(rbd, values, size, working_nodes, broken_nodes)
     )
     own = {}
     for node, model in rbd._capacity_models().items():

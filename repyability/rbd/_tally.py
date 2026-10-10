@@ -29,6 +29,7 @@ import numpy as np
 from repyability.rbd import (
     _conditional,
     _timeline_runs,
+    _windows,
 )
 from repyability.rbd._exact import (
     ExactSum,
@@ -48,6 +49,7 @@ from repyability.rbd.results import (
 
 if TYPE_CHECKING:
     from repyability.rbd.repairable_rbd import RepairableRBD
+
 from repyability.rbd._time_order import (
     _add_at,
     _by_time,
@@ -289,7 +291,8 @@ class _ModuleRun:
         system given each joint state is worked out on."""
         exact, T = self.exact, self.T
         with self._curves():
-            _, _, curves, self.totals, _, _ = exact._window(
+            _, _, curves, self.totals, _, _ = _windows._window(
+                exact,
                 np.array([T]),
                 self.working | self.fixed,
                 self.broken,
