@@ -103,6 +103,7 @@ from repyability.rbd import (
     _repairable_allocation,
     _repairable_capacity,
     _repairable_importance,
+    _repairable_uncertainty,
     _requirements,
     _spec,
     _windows,
@@ -11070,13 +11071,13 @@ class RepairableRBD(RBD):
         >>> round(sensitivity["repairability.failure_rate"], 4)
         0.8264
         """
-        return _sensitivity.sensitivity(
+        return _sensitivity.parameter_sensitivity(
             self,
+            working_nodes=working_nodes,
+            broken_nodes=broken_nodes,
             x=x,
             window=window,
             state=state,
-            working_nodes=working_nodes,
-            broken_nodes=broken_nodes,
             rel_step=rel_step,
             of=of,
             unit_costs=unit_costs,
@@ -11170,33 +11171,6 @@ class RepairableRBD(RBD):
         8.0
         """
         return _sensitivity.with_levers(self, values)
-
-    def _uncertainty(
-        self, of: str, x, uncertainty, n_draws, seed, sampling, state
-    ) -> UncertaintyResult:
-        """The quantity ``of`` over draws of the uncertain models (see
-        ``_repairable_uncertainty``), as an ``UncertaintyResult``."""
-        from repyability.rbd import _repairable_uncertainty as drawn
-
-        drawn.check(self, of, x, state)
-        # The diagram's own value first: what it refuses, every draw would.
-        nominal = drawn.value(self, of, x, state)
-        inputs, groups = drawn.sources(self, uncertainty)
-        models, group_models = drawn.draws(
-            self, inputs, groups, n_draws, seed, sampling
-        )
-        samples = drawn.samples(
-            self, of, x, state, inputs, models, group_models, n_draws
-        )
-        if x is None or np.ndim(x) == 0:
-            return UncertaintyResult(
-                samples=samples[:, 0],
-                nominal=float(nominal[0]),
-                n_draws=n_draws,
-            )
-        return UncertaintyResult(
-            samples=samples, nominal=nominal, n_draws=n_draws
-        )
 
     def mean_availability_uncertainty(
         self,
@@ -11311,14 +11285,12 @@ class RepairableRBD(RBD):
         >>> round(lower, 4), round(upper, 4)
         (0.9392, 0.9577)
         """
-        return self._uncertainty(
-            "mean_availability",
-            None,
-            uncertainty,
-            n_draws,
-            seed,
-            sampling,
-            None,
+        return _repairable_uncertainty.mean_availability_uncertainty(
+            self,
+            uncertainty=uncertainty,
+            n_draws=n_draws,
+            seed=seed,
+            sampling=sampling,
         )
 
     def point_availability_uncertainty(
@@ -11366,14 +11338,14 @@ class RepairableRBD(RBD):
             As for ``mean_availability_uncertainty`` and
             ``point_availability``.
         """
-        return self._uncertainty(
-            "point_availability",
-            x,
-            uncertainty,
-            n_draws,
-            seed,
-            sampling,
-            state,
+        return _repairable_uncertainty.point_availability_uncertainty(
+            self,
+            x=x,
+            uncertainty=uncertainty,
+            n_draws=n_draws,
+            seed=seed,
+            sampling=sampling,
+            state=state,
         )
 
     def mission_availability_uncertainty(
@@ -11419,14 +11391,14 @@ class RepairableRBD(RBD):
             As for ``mean_availability_uncertainty`` and
             ``mission_availability``.
         """
-        return self._uncertainty(
-            "mission_availability",
-            t,
-            uncertainty,
-            n_draws,
-            seed,
-            sampling,
-            state,
+        return _repairable_uncertainty.mission_availability_uncertainty(
+            self,
+            t=t,
+            uncertainty=uncertainty,
+            n_draws=n_draws,
+            seed=seed,
+            sampling=sampling,
+            state=state,
         )
 
     def expected_cost_rate_uncertainty(
@@ -11465,14 +11437,12 @@ class RepairableRBD(RBD):
             As for ``mean_availability_uncertainty`` and
             ``expected_cost_rate``.
         """
-        return self._uncertainty(
-            "expected_cost_rate",
-            None,
-            uncertainty,
-            n_draws,
-            seed,
-            sampling,
-            None,
+        return _repairable_uncertainty.expected_cost_rate_uncertainty(
+            self,
+            uncertainty=uncertainty,
+            n_draws=n_draws,
+            seed=seed,
+            sampling=sampling,
         )
 
     def uncertainty_importance(
@@ -11589,43 +11559,17 @@ class RepairableRBD(RBD):
         >>> {n: round(s, 2) for n, s in parts.first_order.items()}
         {'pump': 0.74, 'valve': 0.26}
         """
-        from repyability.rbd import _repairable_uncertainty as drawn
-
-        # parameter_sensitivity's name for the cost rate is taken too (#232).
-        of = drawn.QUANTITY_NAMES.get(of, of) if isinstance(of, str) else of
-        drawn.check(self, of, x, state)
-        one_of("method", method, ("delta", "sobol"))
-        inputs, groups = drawn.sources(self, uncertainty)
-        keys = [item.key for item in inputs] + [
-            groups[i][0] for i in sorted(groups)
-        ]
-        if method == "delta":
-            parts = drawn.delta(self, of, x, state, inputs, groups, rel_step)
-            variance = np.sum(parts, axis=0)
-            with np.errstate(divide="ignore", invalid="ignore"):
-                shares = [
-                    np.where(variance > 0.0, part / variance, np.nan)
-                    for part in parts
-                ]
-            first = total = dict(zip(keys, shares))
-        else:
-            firsts, totals, variance = drawn.sobol(
-                self, of, x, state, inputs, groups, n_draws, seed, sampling
-            )
-            first, total = dict(zip(keys, firsts)), dict(zip(keys, totals))
-        scalar = x is None or np.ndim(x) == 0
-
-        def shaped(values):
-            values = np.asarray(values, dtype=float).reshape(-1)
-            if scalar:
-                return float(values[0])
-            return values.reshape(np.shape(x))
-
-        return UncertaintyImportance(
+        return _repairable_uncertainty.uncertainty_importance(
+            self,
+            x=x,
+            uncertainty=uncertainty,
+            of=of,
             method=method,
-            variance=shaped(variance),
-            first_order={key: shaped(v) for key, v in first.items()},
-            total={key: shaped(v) for key, v in total.items()},
+            n_draws=n_draws,
+            seed=seed,
+            sampling=sampling,
+            rel_step=rel_step,
+            state=state,
         )
 
     @_times_first()
