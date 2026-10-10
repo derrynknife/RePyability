@@ -110,7 +110,30 @@ other release, fixes included, the minor.
   inherits, and docstrings no longer show bare issue numbers. Maintaining
   a system (preventive maintenance in a diagram, replacement on
   condition, opportunistic maintenance, hidden failures and their
-  intervals) has its own guide page, out of Costs.
+  intervals) has its own guide page, out of Costs. Concepts is the
+  reference for how RePyability computes each value, and links the Learn
+  lesson that teaches an idea where it restated it. Three statements were
+  wrong: Concepts had `mean_time_to_failure()` average simulated
+  lifetimes (it integrates exactly by default), and the Learn lesson on
+  dependence had load sharing of identical non-exponential units
+  simulated (it is numerical) and the standby arrangements without a
+  reliability simulated with `seed=0` (since 0.12 they refuse, and the
+  system's simulations draw them).
+- **`RepairableRBD`'s code is in modules by analysis.**
+  `repyability/rbd/repairable_rbd.py` (some 20,500 lines) holds the class
+  alone (some 7,100): its constructor, its public methods, each calling a
+  function of the same name in a module of its kind (`_runs`,
+  `_event_loop`, `_curves`, `_windows`, `_long_run`, ...), and the hooks
+  `RBD` calls. Results are unchanged. Code that imported private names
+  from `repyability.rbd.repairable_rbd` (`_PythonRunner`, `_aged_life`,
+  the worker functions, ...) finds them in those modules; the criticality
+  indices of a run's counts are still importable from there. A
+  simulation's state is one object (`_events._Run`), which a run's end
+  forgets whole (it had left the common-cause groups' state behind), and
+  `system_state`, `component_status`, `t_simulation` and
+  `last_change_planned`, which `initialize_event_queue` and `next_event`
+  document as kept on the diagram, are read-only properties of the run in
+  progress.
 - **A fault in a model is raised, not taken for something it cannot do.**
   Where RePyability probes a node's model (its quantiles to split a grid
   at, its mean, whether its rate is constant, whether a group's members
