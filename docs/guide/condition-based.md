@@ -180,7 +180,7 @@ name when it was fitted from a DataFrame, else its place, `"covariate.0"`),
 `with_levers` builds the diagram with the component run elsewhere:
 
 ```python
-motor.parameter_sensitivity(3000)["m"]   # {'covariate.0': array([-0.0146])} per °C
+motor.parameter_sensitivity(3000)["m"]   # {'covariate.0': -0.0146} per °C
 cooler = motor.with_levers({("m", "covariate.0"): 60.0})
 cooler.sf(3000)                          # -> 0.5744   from 0.4363 at 70 °C
 ```

@@ -69,9 +69,7 @@ def test_a_node_state_far_past_its_life():
     )
     state = {"a": NodeState(age=1000.0)}
     expected = weibull_cs(10.0, 1000.0, 100, 3) * np.exp(-0.01)
-    assert rbd.sf_given_state(10.0, state) == pytest.approx(
-        expected, rel=1e-9
-    )
+    assert rbd.sf_given_state(10.0, state) == pytest.approx(expected, rel=1e-9)
 
 
 def test_a_diagrams_own_conditional_survival():

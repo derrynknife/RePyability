@@ -365,8 +365,9 @@ class NonRepairableRBD(RBD):
     common-cause groups given in ``ccf_groups``.
 
     The system reliability [`sf`][repyability.NonRepairableRBD.sf] is
-    computed exactly from the node reliabilities, using the minimal path
-    sets (or cut sets); the other analytic methods build on it. The mean
+    computed exactly from the node reliabilities, by a decomposition of
+    the structure into modules (see the guide's concepts); the other
+    analytic methods build on it. The mean
     time to failure [`mean`][repyability.NonRepairableRBD.mean] integrates
     it (``method="simulate"`` estimates it from simulated lifetimes
     instead), and [`random`][repyability.NonRepairableRBD.random] draws
@@ -376,8 +377,10 @@ class NonRepairableRBD(RBD):
     A node model can be:
 
     - a surpyval distribution: parametric (e.g.
-      ``surpyval.Weibull.from_params([100, 2])`` or a fitted model) or a
-      fixed per-demand probability (``surpyval.FixedEventProbability``);
+      ``surpyval.Weibull.from_params([100, 2])`` or a fitted model), a
+      ``MixtureModel``, a fitted Wiener or gamma degradation process (its
+      time to the threshold), or a fixed per-demand probability
+      (``surpyval.FixedEventProbability``);
       not a non-parametric fit (e.g. a ``surpyval.KaplanMeier`` fit),
       which is refused: fit a parametric distribution in surpyval;
     - a composite node: a [`StandbyModel`][repyability.StandbyModel],
@@ -756,8 +759,8 @@ class NonRepairableRBD(RBD):
 
         The probability that the system is still working at ``x``,
         computed exactly from each node's reliability ``sf(x)`` by a
-        Shannon decomposition over the minimal path sets (``method="p"``)
-        or cut sets (``method="c"``). Nodes are independent apart from any
+        Shannon decomposition of the structure's modules. Nodes are
+        independent apart from any
         common-cause groups: with ``ccf_groups`` each group is conditioned
         on within the smallest module holding its members, or its shared
         causes written out as events of their own where a module's groups
@@ -782,10 +785,10 @@ class NonRepairableRBD(RBD):
         broken_nodes : Collection[Hashable], optional
             Nodes to treat as failed (reliability 0), by default none.
         method : str, optional
-            ``"p"`` or ``"paths"`` (the default) uses the minimal path
-            sets, which avoids deriving the cut sets; ``"c"`` or ``"cuts"``
-            uses the minimal cut sets. Both are exact and give the same
-            result.
+            ``"p"`` or ``"paths"`` (the default) works out the probability
+            that the system works; ``"c"`` or ``"cuts"`` the probability
+            that it fails, and returns its complement. Both use the same
+            decomposition, are exact and give the same result.
 
         Returns
         -------
@@ -4735,8 +4738,8 @@ class NonRepairableRBD(RBD):
         from [`sf`][repyability.NonRepairableRBD.sf] (so it honours
         common-cause groups), with step ``h = dx * |x|``, relative to
         ``x`` (at 0, ``dx`` of the shortest of the nodes' typical failure
-        times), so that it does not depend on the unit of time. While the system is more
-        likely to work than not, the difference is taken of its
+        times), so that it does not depend on the unit of time. While the
+        system is more likely to work than not, the difference is taken of its
         unreliability from [`ff`][repyability.NonRepairableRBD.ff]
         instead, which keeps its precision where the reliability's change
         would be lost to rounding. The lower point is clipped at 0, so the
@@ -7130,9 +7133,9 @@ class NonRepairableRBD(RBD):
             ``{node: NodeState}``, the current state of some or all of the
             component nodes. By default empty, which reproduces ``sf(x)``.
         method : str, optional
-            ``"p"`` or ``"paths"`` (the default) uses the minimal path sets
-            and ``"c"`` or ``"cuts"`` the minimal cut sets; both are
-            exact.
+            ``"p"`` or ``"paths"`` (the default) works out the probability
+            that the system works, ``"c"`` or ``"cuts"`` that it fails (and
+            returns its complement); both are exact.
 
         Returns
         -------

@@ -234,9 +234,7 @@ def test_level_replacement_is_simulated_only():
     ],
 )
 def test_a_level_is_checked(preventive, life, match):
-    model = (
-        life() if life is not None else surv.Weibull.from_params([500, 2])
-    )
+    model = life() if life is not None else surv.Weibull.from_params([500, 2])
     spec = {
         "reliability": model,
         "repairability": REPAIR,

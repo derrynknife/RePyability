@@ -585,7 +585,9 @@ def delta(rbd, of: str, x, state, inputs, groups, rel_step) -> list:
                 spec,
                 f"The {role} of {label[0].lower()}{label[1:]}",
             )
-            names = parametric_spec(models[role])[2]
+            spec_of = parametric_spec(models[role])
+            assert spec_of is not None  # a varied model is parametric
+            names = spec_of.names
             g = gradient(keys, [f"{role}.{names[p]}" for p in positions])
             part = part + np.einsum("it,ij,jt->t", g, covariance, g)
         parts.append(part)

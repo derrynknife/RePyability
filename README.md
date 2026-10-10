@@ -3,9 +3,8 @@
 [![actions](https://github.com/derrynknife/RePyability/actions/workflows/actions.yml/badge.svg)](https://github.com/derrynknife/RePyability/actions/workflows/actions.yml)
 [![docs](https://github.com/derrynknife/RePyability/actions/workflows/docs.yml/badge.svg)](https://derrynknife.github.io/RePyability/)
 
-Reliability Engineering Tools
-
-This is a series of tools created to make an open source set of methods to be used by reliability engineers to make it more accessible for students right through to practicing professionals.
+Reliability engineering tools, open source, for students through to
+practising professionals.
 
 RePyability builds and analyses systems as reliability block diagrams (RBDs),
 taking already-fitted lifetime models (from
@@ -112,6 +111,23 @@ that teaches system reliability from a single part's lifetime to designing
 and maintaining whole systems, working every idea out by hand and then with
 RePyability, with exercises and worked answers.
 
+## Install
+
+RePyability needs Python 3.11 or later. Install it from
+[PyPI](https://pypi.org/project/repyability/):
+
+```bash
+pip install repyability
+```
+
+Repairable systems simulate about ten times as fast with the optional
+compiled engine, which needs [numba](https://numba.pydata.org) (available for
+64-bit Linux, macOS on Apple silicon and Windows):
+
+```bash
+pip install "repyability[fast]"
+```
+
 ## When is a simulation needed?
 
 RePyability computes exactly by default: by closed forms, or by
@@ -201,21 +217,6 @@ anything; a refusal's message names the simulation to run instead. The
 [guide](https://derrynknife.github.io/RePyability/guide/saving/#what-is-exact-and-what-is-simulated)
 lists every method's route.
 
-## Install
-RePyability can be installed via pip using the PyPI [repository](https://pypi.org/project/repyability/)
-
-```bash
-pip install repyability
-```
-
-Repairable systems simulate about ten times as fast with the optional
-compiled engine, which needs [numba](https://numba.pydata.org) (available for
-64-bit Linux, macOS on Apple silicon and Windows):
-
-```bash
-pip install "repyability[fast]"
-```
-
 ## Documentation
 The full documentation — tutorial, user guide, concepts and API reference — is
 hosted at
@@ -232,28 +233,8 @@ mkdocs serve            # then open http://127.0.0.1:8000
 
 The source lives in `docs/` and `mkdocs.yml`; start with `docs/index.md`.
 
-## Testing
-Run the testing suite by simply executing:
-```bash
-pytest
-```
-or use coverage to get a coverage report:
-```bash
-coverage run -m pytest  # Run pytest under coverage's watch
-coverage report         # Print coverage report
-coverage html           # Make a html coverage report (really useful), open htmlcov/index.html
-```
+## Contributing
 
-## Pre-commit
-### TL;DR
-- Pip install `pre-commit` (it's in `requirements_dev.txt` anyways)
-- Run `pre-commit install` which sets up the git hook scripts
-- If you'd like, run `pre-commit run --all-files` to run the hooks on all files
-- When you go to commit, it will only proceed after all the hooks succeed
-
-### Why?
-To ensure the good code quality and consistency it is recommended that when contributing to this
-repository to use the provided `.pre-commit-config.yaml` configuration for the Python package
-`pre-commit` (https://pre-commit.com). Upon making a commit, it checks that imports
-and requirements are sorted, syntax is up-to-date, code is formatted, linted, and statically type-checked,
-all with the same tools and configurations as one another.
+See [CONTRIBUTING.md](CONTRIBUTING.md): setting up, the checks a change
+needs (`scripts/check.sh`), and the parts of the package that must agree
+with each other.

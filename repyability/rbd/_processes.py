@@ -46,7 +46,7 @@ def _translated(model) -> Optional[Tuple[Any, Optional[dict], str]]:
     kind = str(getattr(model, "kind", ""))
     if not (hasattr(model, "restoration") and kind.endswith("Renewal")):
         return None
-    kijima = _KIJIMA.get(getattr(model, "kijima_type", None))
+    kijima = _KIJIMA.get(str(getattr(model, "kijima_type", "")))
     if kind != "Generalized Renewal" or not kijima:
         raise ValueError(
             f"its reliability is a surpyval {model.kind} model, whose "

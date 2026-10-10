@@ -309,7 +309,7 @@ structure = RBD(
      ("pipe", "out")],
     capacity={"p1": 60, "p2": 40, "pipe": 80},
 )
-structure.system_capacity({"p1": 0.9, "p2": 0.8, "pipe": 1.0}).mean()  # -> 71.6
+structure.system_capacity({"p1": 0.9, "p2": 0.8, "pipe": 1.0}).mean  # -> 71.6
 ```
 
 ## k-out-of-n nodes and demand

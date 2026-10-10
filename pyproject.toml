@@ -58,8 +58,9 @@ dependencies = [
 fast = ["numba>=0.60"]
 dev = [
     "black==26.3.1",
-    "isort>=5.12",
-    "flake8>=6.0",
+    # Pinned with black and mypy, and in step with .pre-commit-config.yaml.
+    "isort==9.0.1",
+    "flake8==7.4.1",
     "flake8-pyproject>=1.2",
     # Pinned (like black) so a new mypy release can't fail CI on code that
     # type-checks locally; bump deliberately.

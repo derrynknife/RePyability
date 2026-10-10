@@ -4679,9 +4679,11 @@ class RepairableRBD(RBD):
         input node, is most likely missing). Each is one of:
 
         - A spec dict with ``"reliability"`` (a time-to-failure model, such
-          as a fitted surpyval distribution, or a model surpyval fits to a
-          repairable unit's failures, ``CrowAMSAA``, ``Duane``, ``HPP`` or
-          ``GeneralizedRenewal``, which is the life and ``"repair"`` it is:
+          as a fitted surpyval distribution or ``MixtureModel``, a fitted
+          Wiener or gamma degradation process (its time to the threshold),
+          or a model surpyval fits to a repairable unit's failures,
+          ``CrowAMSAA``, ``Duane``, ``HPP`` or ``GeneralizedRenewal``,
+          which is the life and ``"repair"`` it is:
           see the guide's imperfect repair) and ``"repairability"`` (a
           time-to-repair model, or ``"instant"`` for repair in zero time:
           the component still fails, and any repair or replace cost is
@@ -4701,9 +4703,13 @@ class RepairableRBD(RBD):
           multiple of ``interval``, whatever its age, unless it is down
           then. Under ``"condition"`` it is inspected at every multiple of
           ``interval`` while it is up, in no time, and replaced if it is
-          then more likely than ``"threshold"`` (a probability, required)
-          to fail before the next inspection, given its age ``a``:
-          ``1 - R(a + interval) / R(a)``. Each inspection is charged
+          then more likely than ``"threshold"`` (a probability) to fail
+          before the next inspection, given its age ``a``:
+          ``1 - R(a + interval) / R(a)``; or, for a life that is a
+          degradation process, with ``"level"`` in place of
+          ``"threshold"``, if its measured level is then at or past
+          ``"level"`` (simulated only; see the guide's replacement on
+          condition). Each inspection is charged
           ``"inspection_cost"``, a number or a distribution drawn afresh
           each time. The replacement takes a time drawn from ``"duration"``, a
           time-to-maintain model, during which the unit is down (a planned
@@ -19989,8 +19995,8 @@ class RepairableRBD(RBD):
     def _require_time_models(self, node) -> None:
         """Raise if a component's life or repair model is a probability,
         not a distribution of times: its long-run and time-dependent values
-        then have no exact value (its mean is no mean time). (First, if one has no reliability: see
-        ``_require_reliabilities``.)"""
+        then have no exact value (its mean is no mean time). (First, if
+        one has no reliability: see ``_require_reliabilities``.)"""
         self._require_reliabilities(node)
         self._require_times(node)
 
