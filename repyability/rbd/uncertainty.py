@@ -455,7 +455,7 @@ def _quantiles_at(prior, u: np.ndarray, label: str, name) -> np.ndarray:
 
 
 def varied_parameters(model, spec: Any, label: str):
-    """For the delta method (#196): the parameters a node's uncertainty
+    """For the delta method: the parameters a node's uncertainty
     varies, as their positions among the model's parameters, their values,
     their covariance (a fit's ``covariance()``, or the variances of the
     distributions given) and their bounds. A list of models has no

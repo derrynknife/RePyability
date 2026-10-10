@@ -113,7 +113,7 @@ failure.
 To price an age- or block-replacement policy for a component in its system
 (where a planned stop may or may not halt production), give the component a
 `"preventive"` schedule in a `RepairableRBD`: see
-[Costs](costs.md#preventive-maintenance).
+[Costs](system-maintenance.md#preventive-maintenance).
 
 ## Overhaul under minimal repair (`Repairable`)
 

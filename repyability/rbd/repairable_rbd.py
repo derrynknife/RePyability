@@ -4521,8 +4521,8 @@ class RepairableRBD(RBD):
           the interval: tests of redundant components staggered). An offset
           of 0, the default, is no offset, with no test at 0: a positive one
           puts a test there, near the start, so an offset just above 0 adds
-          one test (one within a billionth of the interval is taken as 0,
-          #237). A test finds a failure with
+          one test (one within a billionth of the interval is taken as
+          0). A test finds a failure with
           probability ``"coverage"`` (by default 1); a failure it misses
           stays hidden until a full test, every ``"full_test"`` (required
           with a coverage below 1, a whole multiple of the interval, from
@@ -4605,7 +4605,7 @@ class RepairableRBD(RBD):
         - [`PerfectReliability`][repyability.PerfectReliability] itself
           (or a spec whose ``"reliability"`` it is, with no costs or
           maintenance), for a junction: a node that never fails, such as a
-          k-out-of-n vote point (#182). It is no component: the analyses
+          k-out-of-n vote point. It is no component: the analyses
           leave it out, the simulations draw nothing for it, and it passes
           whatever reaches it, up to a ``capacity`` if it is given one.
     k : dict[Hashable, int], optional
@@ -4704,7 +4704,7 @@ class RepairableRBD(RBD):
         members' availability) and the values over time from new, each
         group's chain followed from every member up. The simulations draw
         each cause as a Poisson process, failing the members it names that
-        are up; they need exponential lives alone (#158).
+        are up; they need exponential lives alone.
 
 
     Attributes
@@ -6691,7 +6691,7 @@ class RepairableRBD(RBD):
         methods short-circuit rather than doing the work:
         ``expected_cost_rate`` returns 0.0, and ``cost`` and the ``cost`` of
         ``availability``'s result have no running cost, exactly, with the
-        acquisition cost beside it (#234), or are None if that is not
+        acquisition cost beside it, or are None if that is not
         given either.
 
         Returns
@@ -7315,7 +7315,7 @@ class RepairableRBD(RBD):
 
         with ``acquisition_cost`` the sum of the components'
         ``"acquisition_cost"``. With a ``discount_rate`` ``r`` it is the
-        present value (#184): the components are bought at the start, and
+        present value: the components are bought at the start, and
         the running costs, spent at a steady rate, are discounted
         continuously, so the horizon counts as ``(1 - exp(-r * horizon)) /
         r``. The running cost is the long-run rate,
@@ -7330,7 +7330,7 @@ class RepairableRBD(RBD):
         horizon : float or array-like
             How long the system is owned, in the time unit of the component
             models: non-negative, and finite unless the costs are discounted
-            (``inf``, owned for ever, #231). An array of horizons gives a
+            (``inf``, owned for ever). An array of horizons gives a
             total for each.
         working_nodes : Collection[Hashable], optional
             As for ``expected_cost_rate``, by default None.
@@ -7341,7 +7341,7 @@ class RepairableRBD(RBD):
             models, by default 0 (undiscounted): for an annual rate of 7%
             with models in hours, ``math.log(1.07) / 8760``. A rate that
             discounts the costs away (one per year with models in hours,
-            say) is warned of (#231).
+            say) is warned of.
 
         Returns
         -------
@@ -7726,7 +7726,7 @@ class RepairableRBD(RBD):
 
         Identical parts often share one shelf: the seals of a station's
         three pumps come from one bin. ``parts={part: [nodes]}`` pools the
-        spares of each part's components (#183): their counts are
+        spares of each part's components: their counts are
         independent, so the part's is their sum (by simulation, the sum in
         each simulation). Its components may differ, one under age
         replacement and the others not.
@@ -7895,7 +7895,7 @@ class RepairableRBD(RBD):
         tests that can miss a failure, over where each cycle starts between
         the full tests, see ``_spares``).
 
-        Under block replacement every ``T`` (#160), with repairs and block
+        Under block replacement every ``T``, with repairs and block
         replacements in no time, each block interval starts with a new
         unit, so the demand repeats every interval, and a lead time's
         depends on where in the interval it starts: it is averaged over
@@ -7915,13 +7915,13 @@ class RepairableRBD(RBD):
         systems are taken as on block schedules of their own, out of step
         with each other.
 
-        A part's components draw on one shelf (#183), which needs fewer
+        A part's components draw on one shelf, which needs fewer
         spares than a shelf each: its spares on order are the sum of its
         components' independent ones, and a demand comes from component
         ``i`` with the share ``rate_i / sum(rates)`` of their long-run
         replacement rates, finding ``i``'s as its own demands do and the
         others' as at a random time (see the spares
-        [guide](guide/spares.md#one-shelf-for-interchangeable-parts)).
+        [guide](../guide/spares.md#one-shelf-for-interchangeable-parts)).
 
         Parameters
         ----------
@@ -7960,7 +7960,7 @@ class RepairableRBD(RBD):
             For a part with two members in one common-cause group, or two
             under block replacement, a component under block replacement
             whose repairs or block replacements take time or whose life
-            may end at 0 (#160), with hidden failures whose tests can last
+            may end at 0, with hidden failures whose tests can last
             as long as their interval, a standby group or a life that may
             never end, or while a component can wait for a repair crew, or
             if more than 2,000 replacements are likely in a lead time.
@@ -8155,7 +8155,7 @@ class RepairableRBD(RBD):
             their costs are counted once. Nested ``RepairableRBD`` nodes
             cannot be given copies. Given ``trains``, by default none.
         trains : dict, optional
-            Trains of components that may be given copies (#184), ``{name:
+            Trains of components that may be given copies, ``{name:
             [nodes]}``: each a chain in series, its first node fed by any
             nodes, each of the others by the one before it alone, and its
             last feeding one node alone (a pump train of seal, bearing and
@@ -9484,7 +9484,7 @@ class RepairableRBD(RBD):
         found cost almost the same.
 
         Replacements are often made on a calendar (quarterly, yearly): the
-        intervals are then chosen from ``allowed`` (#230), as
+        intervals are then chosen from ``allowed``, as
         ``optimal_inspection_intervals`` chooses tests', every combination
         tried when there are at most 2000 of them, which gives the
         optimum, and a local search (one interval changed at a time, from
@@ -9495,11 +9495,11 @@ class RepairableRBD(RBD):
         where they take the system down together (redundant units whose
         replacements take time) its first years cost more than the plan's
         cost rate says: ``expected_cost`` gives the cost from new, and from
-        units of other ages (``state``) a staggered start (#234).
+        units of other ages (``state``) a staggered start.
 
         With limited ``repair_crews`` a component can wait for a crew, and
         the exact long-run values do not hold: the choice is refused unless
-        ``assume_unlimited_crews`` (#184), which chooses the intervals as if
+        ``assume_unlimited_crews``, which chooses the intervals as if
         every repair started at once. Simulate that plan with the crews,
         ``with_intervals(plan).cost()``, to see what the waiting costs.
 
@@ -9708,13 +9708,13 @@ class RepairableRBD(RBD):
         at once are down together for as long as a failure of both stays
         hidden, where tests half an interval apart find a common-cause
         failure twice as soon. ``offset_shares`` chooses the times of the
-        first tests with the intervals (#184).
+        first tests with the intervals.
 
         A component whose tests can miss a failure (a ``coverage`` below
         1) keeps its full tests' interval (``full_test``), a whole number
         of its test intervals: its interval is chosen among those that
         divide it, from ``allowed`` (which must) or, left out, from every
-        one in range (#221).
+        one in range.
 
         Parameters
         ----------
@@ -9734,7 +9734,7 @@ class RepairableRBD(RBD):
         offsets : sequence of float, dict or str, optional
             Deprecated: ``offset_shares``, which it is renamed, as its
             values are shares of the interval where ``with_intervals``'
-            and the plan's ``offsets`` are times (#222). Refused in 0.14.
+            and the plan's ``offsets`` are times. Refused in 0.14.
         assume_unlimited_crews : bool, optional
             With limited ``repair_crews``, choose as if every repair started
             at once, as ``optimal_replacement_intervals`` does, by default
@@ -9978,7 +9978,7 @@ class RepairableRBD(RBD):
 
     def with_intervals(self, intervals, offsets=None) -> "RepairableRBD":
         """A copy of this RBD with some maintenance or test intervals
-        changed (#184).
+        changed.
 
         To simulate a plan that ``optimal_replacement_intervals`` or
         ``optimal_inspection_intervals`` chose, with the repair crews it was
@@ -12039,8 +12039,8 @@ class RepairableRBD(RBD):
     ):
         """The probability that the system is down at each time ``x``, with
         every component new at 0: one less ``point_availability``, worked
-        out in its own right so that a small one keeps its precision
-        (#237), as ``mean_unavailability`` is in the long run.
+        out in its own right so that a small one keeps its precision,
+        as ``mean_unavailability`` is in the long run.
 
         Each component's probability of being down enters the structure
         function's sum of products for the system's failing, so that a
@@ -12261,8 +12261,8 @@ class RepairableRBD(RBD):
     ):
         """The expected fraction of ``[0, t]`` the system is down, with
         every component new at 0: one less ``mission_availability``, worked
-        out in its own right so that a small one keeps its precision
-        (#237): the mean of
+        out in its own right so that a small one keeps its precision:
+        the mean of
         [`point_unavailability`][repyability.RepairableRBD.point_unavailability]
         over the window, integrated as ``mission_availability`` integrates
         the availability.
@@ -12536,7 +12536,7 @@ class RepairableRBD(RBD):
         Markov chain in each of its states (a component up failing at its
         rate where it is critical), integrated over the chain's states over
         time by uniformization, to about 1e-13 (see ``point_availability``).
-        The crews' chain takes no nested RBD's events in, as yet (#162).
+        The crews' chain takes no nested RBD's events in, as yet.
 
         Parameters
         ----------
@@ -12759,8 +12759,8 @@ class RepairableRBD(RBD):
         a nested ``RepairableRBD``. With nothing priced (see
         ``has_costs``), every category is 0, without any checks.
 
-        With a ``discount_rate`` ``r`` each value is its present value
-        (#231), the costs discounted continuously from when they fall:
+        With a ``discount_rate`` ``r`` each value is its present value,
+        the costs discounted continuously from when they fall:
         ``integral from 0 to t of exp(-r s) dC(s)``, ``C`` the expected
         cost from new, worked out by parts, ``exp(-r t) C(t) + r *
         integral from 0 to t of exp(-r s) C(s) ds``, the integral by
@@ -15083,7 +15083,7 @@ class RepairableRBD(RBD):
         independent: the probability of each capacity is then that of the
         states of the crews' Markov chain at it, followed over time by
         uniformization (see ``point_availability``). The chain takes no
-        nested RBD's capacities in, as yet (#162).
+        nested RBD's capacities in, as yet.
 
         Parameters
         ----------
@@ -16357,7 +16357,7 @@ class RepairableRBD(RBD):
             bit; what the compiled engine does not simulate runs in Python,
             and another package can add an engine of its own (see
             ``repyability.rbd.engines``). See
-            [The compiled engine](guide/simulation.md#the-compiled-engine).
+            [The compiled engine](../guide/simulation.md#the-compiled-engine).
         demand : float, optional
             The demand the delivered fraction is measured against, in the
             capacities' units, when nodes have capacities. By default the
@@ -16394,7 +16394,7 @@ class RepairableRBD(RBD):
             order, as ``map`` does. The built-in ``map`` runs them here;
             ``concurrent.futures.ProcessPoolExecutor(...).map`` in other
             processes; Ray's, Dask's or a batch system's on other machines
-            (see [Shards](guide/simulation.md#shards)). The result is the
+            (see [Shards](../guide/simulation.md#shards)). The result is the
             same to the last bit; a run to a ``tolerance`` maps a round of
             shards at a time. Each shard is simulated by ``engine`` where it
             runs, and carries the system as JSON, so the system must save
@@ -16412,17 +16412,17 @@ class RepairableRBD(RBD):
             system's expected values over the window, the result's means
             (``mean_availability``, the cost's ``mean`` and breakdowns) and
             their intervals are those values, with no error, the twin
-            being the system itself (#187, #223); otherwise they may be
+            being the system itself; otherwise they may be
             taken given the modules (see ``conditional``). False forces a
             plain simulation, whose means are the simulations' own. True
             controls the run by the twin, whose values the result's
             ``control_variate`` holds (see
             [`ControlVariate`][repyability.ControlVariate]); every draw must
             then come from a stream (surpyval parametric models). See
-            [An exact twin](guide/simulation.md#an-exact-twin).
+            [An exact twin](../guide/simulation.md#an-exact-twin).
         conditional : bool, optional
             Take the expected values given the histories of the dependent
-            modules (#189): the nodes whose values over time the exact
+            modules: the nodes whose values over time the exact
             methods do not work out (``analysis_routes`` names them), every
             other node independent of them. Each simulation's expected
             values given its modules' histories are exact, and their mean
@@ -16436,7 +16436,7 @@ class RepairableRBD(RBD):
             fraction of the work, but each simulation's values are then
             expected values: the cost's ``percentile`` and ``std`` refuse,
             and ``criticalities`` is None. See
-            [Conditional runs](guide/simulation.md#conditional-runs).
+            [Conditional runs](../guide/simulation.md#conditional-runs).
         Returns
         -------
         AvailabilityResult
@@ -16709,7 +16709,7 @@ class RepairableRBD(RBD):
 
         Each simulation draws from streams of its own, seeded from ``seed``
         and its position in the run (see
-        [Random streams](guide/simulation.md#random-streams)), so it
+        [Random streams](../guide/simulation.md#random-streams)), so it
         comes out the same wherever and whenever it runs, by either engine,
         in any company. A run can so be split across processes, machines or
         preemptible workers: each runs its chunk, saves it
@@ -16719,8 +16719,7 @@ class RepairableRBD(RBD):
         simulations ``0`` to ``N - 1`` give the result of
         ``availability(..., mc_samples=N)``, to the last bit: the same
         simulations, so the same per-simulation values and timeline, and
-        the same totals, which are kept exactly however the run is cut
-        (#151).
+        the same totals, which are kept exactly however the run is cut.
 
         Parameters
         ----------
@@ -16760,7 +16759,7 @@ class RepairableRBD(RBD):
             of a run share it): the chunk then holds the grid's counts
             rather than every change. By default None: every change.
         control_variate : bool, optional
-            None (the default) or False, as for ``availability`` (#236):
+            None (the default) or False, as for ``availability``:
             the means the merged result takes, kept with the chunk (the
             chunks of a run share it). The simulations are the same either
             way; False gives the merged result the simulations' own means.
@@ -16972,7 +16971,7 @@ class RepairableRBD(RBD):
         size : int, optional
             Simulations to a shard, rounded up to a whole number of the
             run's widest block of draws (see
-            [Random streams](guide/simulation.md#random-streams)), so that
+            [Random streams](../guide/simulation.md#random-streams)), so that
             no two shards draw the same block; by default as many as make
             1024 or more. A shard should run for some seconds, to repay a
             worker's start.
@@ -17160,10 +17159,10 @@ class RepairableRBD(RBD):
         same per-simulation values (``uptimes``, the costs' ``samples``) and
         timeline, and the same totals, to the last bit: every total is kept
         exactly and rounded once, so it does not depend on how the run was
-        cut (#151).
+        cut.
         The chunks must hold simulations ``0`` to ``N - 1`` with none
         missing, so a lost chunk (a shard that never came back) is not
-        taken for a smaller run (#176); with ``allow_gaps=True`` they give
+        taken for a smaller run; with ``allow_gaps=True`` they give
         the result of whichever simulations they hold. With costs, the
         result's ``cost`` is the simulated cost distribution, as ``cost``
         gives it.
@@ -17184,9 +17183,9 @@ class RepairableRBD(RBD):
             for the result of those they hold. By default False.
         control_variate : bool, optional
             None (the default): the means ``availability`` takes by
-            default, exact where the exact methods work them out (#187).
+            default, exact where the exact methods work them out.
             False: the simulations' own, as ``availability(...,
-            control_variate=False)`` gives them (#236). Chunks made with
+            control_variate=False)`` gives them. Chunks made with
             False keep it.
         conditional : bool, optional
             None (the default) or False, as for ``availability``: False
@@ -17386,8 +17385,8 @@ class RepairableRBD(RBD):
         where the exact methods work out both systems' expected values, and
         otherwise by simulation with common random numbers.
 
-        By default, as ``availability`` and ``cost`` take their means (#187,
-        #236), where the exact methods work out both systems' expected
+        By default, as ``availability`` and ``cost`` take their means,
+        where the exact methods work out both systems' expected
         values over the window (``mission_availability``, and
         ``expected_cost`` their costs), the difference is theirs, exact,
         with no error (``method="exact"``), and nothing is simulated.
@@ -17421,8 +17420,8 @@ class RepairableRBD(RBD):
         quantity : str, optional
             ``"availability"`` (the default): the fraction of the window the
             system is up. ``"cost"``: what owning it for the window from new
-            costs, its running cost and its components' ``acquisition_cost``
-            (#234), as ``total_cost`` counts them (both systems must be
+            costs, its running cost and its components' ``acquisition_cost``,
+            as ``total_cost`` counts them (both systems must be
             priced; a cost given as a distribution draws the same numbers in
             both too, from a stream of its own).
         confidence : float, optional
@@ -19398,7 +19397,7 @@ class RepairableRBD(RBD):
 
         When nothing is priced but the components' ``acquisition_cost``
         (see ``has_costs``), the result has no running cost, exactly, and
-        the acquisition beside it, without a simulation (#234); when
+        the acquisition beside it, without a simulation; when
         nothing at all is priced, it is None: there is no cost model to
         evaluate. (The same result is available as ``availability(...).cost``
         if you also want the availability outputs from the same
@@ -19470,12 +19469,12 @@ class RepairableRBD(RBD):
             twin's exact ``expected_cost``, and a ``tolerance`` is judged
             on it. By default None: where the exact methods work out the
             system's expected cost over the window, ``mean`` is that cost,
-            with no error, and the breakdowns its split (#187, #223), as
+            with no error, and the breakdowns its split, as
             for ``availability``. False forces a plain simulation, whose
             ``mean`` is ``sample_mean``.
         conditional : bool, optional
             Take the expected cost given the histories of the dependent
-            modules, as for ``availability`` (#189): each simulation's
+            modules, as for ``availability``: each simulation's
             expected cost given them is the modules' own costs as
             simulated, the other nodes' exact expected costs and the
             system downtime's expected cost. By default None: where a
@@ -21246,7 +21245,7 @@ class RepairableRBD(RBD):
         evaluated at the nodes' long-run availabilities.
 
         In the guide's Greeks it is *delta*: how far the system moves with each
-        component (see [Sensitivities: the Greeks](guide/greeks.md)).
+        component (see [Sensitivities: the Greeks](../guide/greeks.md)).
 
         Exact, with no simulation: ``I_B(i) = A_sys(A_i = 1) -
         A_sys(A_i = 0)``, the system's long-run availability with node i
@@ -21279,7 +21278,7 @@ class RepairableRBD(RBD):
         improvement potential, RAW and RRW are built on the same values;
         the criticality and Fussell-Vesely measures are probabilities over
         the chain's states. With a crew for each component they are the
-        independent ones (#146).
+        independent ones.
 
         Parameters
         ----------
@@ -21294,7 +21293,7 @@ class RepairableRBD(RBD):
             the long run, by default None: at each, the nodes are up with
             their point availabilities then (see ``point_availability``),
             and with limited repair crews the crews' chain is followed to
-            it (#191).
+            it.
         window : float or array-like, optional
             The length of a window ``[0, window)`` to evaluate it over
             instead, by default None: a ratio measure is then the ratio of
@@ -21386,7 +21385,7 @@ class RepairableRBD(RBD):
             the long run, by default None: at each, the nodes are up with
             their point availabilities then (see ``point_availability``),
             and with limited repair crews the crews' chain is followed to
-            it (#191).
+            it.
         window : float or array-like, optional
             The length of a window ``[0, window)`` to evaluate it over
             instead, by default None: a ratio measure is then the ratio of
@@ -21477,7 +21476,7 @@ class RepairableRBD(RBD):
             the long run, by default None: at each, the nodes are up with
             their point availabilities then (see ``point_availability``),
             and with limited repair crews the crews' chain is followed to
-            it (#191).
+            it.
         window : float or array-like, optional
             The length of a window ``[0, window)`` to evaluate it over
             instead, by default None: a ratio measure is then the ratio of
@@ -21572,7 +21571,7 @@ class RepairableRBD(RBD):
             the long run, by default None: at each, the nodes are up with
             their point availabilities then (see ``point_availability``),
             and with limited repair crews the crews' chain is followed to
-            it (#191).
+            it.
         window : float or array-like, optional
             The length of a window ``[0, window)`` to evaluate it over
             instead, by default None: a ratio measure is then the ratio of
@@ -21677,7 +21676,7 @@ class RepairableRBD(RBD):
             the long run, by default None: at each, the nodes are up with
             their point availabilities then (see ``point_availability``),
             and with limited repair crews the crews' chain is followed to
-            it (#191).
+            it.
         window : float or array-like, optional
             The length of a window ``[0, window)`` to evaluate it over
             instead, by default None: a ratio measure is then the ratio of
@@ -21821,7 +21820,7 @@ class RepairableRBD(RBD):
             the long run, by default None: at each, the nodes are up with
             their point availabilities then (see ``point_availability``),
             and with limited repair crews the crews' chain is followed to
-            it (#191).
+            it.
         window : float or array-like, optional
             The length of a window ``[0, window)`` to evaluate it over
             instead, by default None: a ratio measure is then the ratio of
@@ -21919,10 +21918,10 @@ class RepairableRBD(RBD):
     ) -> dict:
         """How the system's availability (or its cost rate) moves with each
         lever: the derivative in each of its components' parameters, and
-        the change one more standby unit or repair crew makes (#192).
+        the change one more standby unit or repair crew makes.
 
         In the guide's Greeks it is the levers' *deltas* (see [Sensitivities:
-        the Greeks](guide/greeks.md)).
+        the Greeks](../guide/greeks.md)).
 
         The levers are each component's life and repair models'
         parameters (``"reliability.alpha"``, ``"repairability.beta"``,
@@ -22061,7 +22060,7 @@ class RepairableRBD(RBD):
 
     def levers(self) -> List[Lever]:
         """The levers that ``parameter_sensitivity`` moves, in the order it
-        reports them (#244): each component's life and repair models'
+        reports them: each component's life and repair models'
         parameters, its maintenance's and tests' options, its standby
         group's and its imperfect repair's, each common-cause group's, and
         the repair crews.
@@ -22096,7 +22095,7 @@ class RepairableRBD(RBD):
         return _sensitivity.public_levers(self)
 
     def with_levers(self, values) -> "RepairableRBD":
-        """A copy of this RBD with levers at new values (#244), each moved
+        """A copy of this RBD with levers at new values, each moved
         as ``parameter_sensitivity`` moves it, so that a what-if agrees
         with the sensitivities: a test interval takes the full tests with it
         (every so many tests, as before), and a common-cause group's
@@ -22184,7 +22183,7 @@ class RepairableRBD(RBD):
         sampling: str = "random",
     ) -> UncertaintyResult:
         """The long-run availability over plausible models of the components
-        (parameter uncertainty, #200).
+        (parameter uncertainty).
 
         A component's models are estimated from data, so their parameters
         are uncertain: *epistemic* uncertainty, about what the models are,
@@ -22208,7 +22207,7 @@ class RepairableRBD(RBD):
         inputs, a role of it under one: a fleet's life fit, shared by two
         pumps whose repairs were recorded apart, is ``{("a", "b"):
         {"reliability": "fit"}, "a": {"repairability": "fit"}, "b":
-        {"repairability": "fit"}}``, the life drawn once a draw (#214). An
+        {"repairability": "fit"}}``, the life drawn once a draw. An
         input drawn without other nodes that hold the same model object,
         which then keep it as fitted, is warned about. A node's uncertainty
         is
@@ -22309,7 +22308,7 @@ class RepairableRBD(RBD):
         state=None,
     ) -> UncertaintyResult:
         """The point availability at times ``x`` (from new, or from
-        ``state``) over plausible models of the components (#200), each draw
+        ``state``) over plausible models of the components, each draw
         worked out as ``point_availability`` works it out: the inputs and
         their uncertainty as for ``mean_availability_uncertainty``.
 
@@ -22364,7 +22363,7 @@ class RepairableRBD(RBD):
         state=None,
     ) -> UncertaintyResult:
         """The mission availability over ``[0, t]`` (from new, or from
-        ``state``) over plausible models of the components (#200), each draw
+        ``state``) over plausible models of the components, each draw
         worked out as ``mission_availability`` works it out: the inputs and
         their uncertainty as for ``mean_availability_uncertainty``.
 
@@ -22414,8 +22413,8 @@ class RepairableRBD(RBD):
         seed=None,
         sampling: str = "random",
     ) -> UncertaintyResult:
-        """The long-run cost rate over plausible models of the components
-        (#200), each draw worked out as ``expected_cost_rate`` works it
+        """The long-run cost rate over plausible models of the components,
+        each draw worked out as ``expected_cost_rate`` works it
         out: the inputs and their uncertainty as for
         ``mean_availability_uncertainty``.
 
@@ -22467,11 +22466,11 @@ class RepairableRBD(RBD):
     ) -> UncertaintyImportance:
         """Which input's parameter uncertainty makes the availability (or
         the cost rate) uncertain: each uncertain input's share of its
-        variance (vega, #200), the inputs as for
+        variance (vega), the inputs as for
         ``mean_availability_uncertainty``.
 
         In the guide's Greeks it is *vega*: whose uncertainty widens the answer
-        (see [Sensitivities: the Greeks](guide/greeks.md)).
+        (see [Sensitivities: the Greeks](../guide/greeks.md)).
 
         ``of`` is the quantity: ``"mean_availability"`` (the default, the
         long run), ``"point_availability"`` at the times ``x``,
@@ -22623,11 +22622,11 @@ class RepairableRBD(RBD):
     ) -> dict:
         """Each node's (or lever's) share of the change in the system's
         availability when they all change together: the differential
-        importance measure (DIM, Borgonovo & Apostolakis, 2001; #193), in
+        importance measure (DIM, Borgonovo & Apostolakis, 2001), in
         the long run, at times ``x`` or over a window.
 
         In the guide's Greeks it is *DIM*, the shares of a change (see
-        [Sensitivities: the Greeks](guide/greeks.md)).
+        [Sensitivities: the Greeks](../guide/greeks.md)).
 
         ``DIM_i = dA/dtheta_i dtheta_i / sum_j dA/dtheta_j dtheta_j``, so
         the shares add up to 1, and a group's share is the sum of its
@@ -23106,10 +23105,10 @@ class RepairableRBD(RBD):
     ) -> RateBreakdown:
         """How fast the system's availability is changing at each time
         ``x`` from new (or from the components' ``state``), and which
-        components are moving it (#195).
+        components are moving it.
 
         In the guide's Greeks it is *theta*: what is moving the system now (see
-        [Sensitivities: the Greeks](guide/greeks.md)).
+        [Sensitivities: the Greeks](../guide/greeks.md)).
 
         The components failing and recovering independently, the system's
         point availability is multilinear in theirs, so
@@ -23126,7 +23125,7 @@ class RepairableRBD(RBD):
         numerical: to about ``1e-5`` of their size, less at 0 where a
         life's density is not smooth there. The down times kept off the
         grid (a repair or maintenance that starts at a known time) are
-        differentiated on their own scale, however short (#240), so the
+        differentiated on their own scale, however short, so the
         rates just after a scheduled event are as close.
 
         At a scheduled event a component's availability can jump: a block
@@ -23139,7 +23138,7 @@ class RepairableRBD(RBD):
 
         With limited repair crews or common-cause groups the components no
         longer fail and recover independently, and the parts come from
-        the crews' or the groups' Markov chains (#199). The system's rate
+        the crews' or the groups' Markov chains. The system's rate
         is ``p(t) Q u``, ``p(t)`` the chain's states' probabilities,
         ``Q`` its generator and ``u`` the system up in each state; each
         transition is one component's failure or repair (a crew finishing
@@ -23277,11 +23276,11 @@ class RepairableRBD(RBD):
     ) -> dict:
         """Each component's share of the system's failures: the probability
         that a system failure is caused by the component's (Barlow &
-        Proschan, 1975; #195), in the long run or over a window from new
+        Proschan, 1975), in the long run or over a window from new
         (or from the components' ``state``).
 
         In the guide's Greeks it is *theta*, integrated: who caused the
-        failures (see [Sensitivities: the Greeks](guide/greeks.md)).
+        failures (see [Sensitivities: the Greeks](../guide/greeks.md)).
 
         A component's failure fails the system when the component is
         critical then, which it is with probability ``I_B^i(t)``, so the
@@ -23301,7 +23300,7 @@ class RepairableRBD(RBD):
         one that strikes a member alone for that member; with limited
         repair crews, the shares come from the crews' chain, its
         components' failures at their rates in each state, over a window
-        from its transient probabilities (#199).
+        from its transient probabilities.
 
         Parameters
         ----------
@@ -23419,10 +23418,10 @@ class RepairableRBD(RBD):
     ) -> dict:
         """The joint (second-order) importance of each pair of components:
         whether improving the two together is worth more than improving
-        each (#194), in the long run, at times ``x`` or over a window.
+        each, in the long run, at times ``x`` or over a window.
 
         In the guide's Greeks it is *gamma*: complements or substitutes (see
-        [Sensitivities: the Greeks](guide/greeks.md)).
+        [Sensitivities: the Greeks](../guide/greeks.md)).
 
         ``JRI(i, j) = d2A / dA_i dA_j = A(1_i, 1_j) - A(1_i, 0_j) -
         A(0_i, 1_j) + A(0_i, 0_j)``, the system's availability with

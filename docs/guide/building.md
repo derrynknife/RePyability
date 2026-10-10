@@ -46,7 +46,7 @@ A node model is anything that exposes `sf(t)` and `ff(t)`:
 |---|---|
 | A surpyval parametric distribution (`Weibull`, `Exponential`, `LogNormal`, …) | An ordinary component with a fitted lifetime. |
 | A surpyval `MixtureModel` | A population of failure modes (infant mortality and wear-out). |
-| A surpyval `WienerProcess` or `GammaProcess` fit | A component that fails when its degradation reaches a threshold: its life is the time to the threshold (see [Costs](costs.md#replacing-on-the-measured-level) for replacing it on the measured level). |
+| A surpyval `WienerProcess` or `GammaProcess` fit | A component that fails when its degradation reaches a threshold: its life is the time to the threshold (see [Costs](system-maintenance.md#replacing-on-the-measured-level) for replacing it on the measured level). |
 | A surpyval non-parametric fit (`KaplanMeier`, `NelsonAalen`, …) | Refused (`ValueError`): its curve ends at the data, and says nothing beyond it. Fit a parametric distribution in surpyval instead. |
 | `surpyval.FixedEventProbability` | A component with a fixed probability of failure (a demand, a mission). |
 | [`PerfectReliability`][repyability.PerfectReliability] / [`PerfectUnreliability`][repyability.PerfectUnreliability] | A node that never fails / has always failed (a junction, a placeholder). |

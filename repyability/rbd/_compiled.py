@@ -86,7 +86,7 @@ def unsupported(
     components; with numba, numba's own loop also simulates age and
     block replacement, inspections of hidden failures, repair crews,
     standby groups, nested RBDs and the
-    capacity of a system of up to MAX_TRACED components (#155), from new
+    capacity of a system of up to MAX_TRACED components, from new
     for maintenance, inspections and nested RBDs (a run from the
     components' states shifts their calendars)."""
     if capacity is not None:

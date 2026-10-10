@@ -556,7 +556,7 @@ def demonstration_plan(
     A plan's consumer's risk is the chance that a design of the target
     ``reliability`` passes it, at most ``1 - confidence``; its producer's
     risk is the chance that a design of ``good_reliability``, which should
-    pass, fails it, at most ``producer_risk`` (#184). A test allowing no
+    pass, fails it, at most ``producer_risk``. A test allowing no
     failures keeps the first with the fewest units, but often fails a good
     design: allowing failures, with more units, keeps both. For each number
     of failures allowed, from none, the fewest units that keep the
@@ -720,7 +720,7 @@ def mtbf_demonstration_plan(
     The total test time and the failures it allows, for a time-terminated
     test, such that a design of the target ``mtbf`` passes with a chance of
     at most ``1 - confidence`` (the consumer's risk) and one of
-    ``good_mtbf`` fails with a chance of at most ``producer_risk`` (#184):
+    ``good_mtbf`` fails with a chance of at most ``producer_risk``:
     the fixed-length test plans of MIL-HDBK-781, for a discrimination ratio
     ``good_mtbf / mtbf``. For each number of failures allowed, from none,
     the shortest test that keeps the consumer's risk (``mtbf_test_time``)

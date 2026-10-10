@@ -776,7 +776,7 @@ class NonRepairableRBD(RBD):
         common-cause groups: with ``ccf_groups`` each group is conditioned
         on within the smallest module holding its members, or its shared
         causes written out as events of their own where a module's groups
-        would multiply their outcomes (#219, see the common-cause guide),
+        would multiply their outcomes (see the common-cause guide),
         so the cost grows with the number of groups rather than doubling.
 
         ``working_nodes`` and ``broken_nodes`` condition on the state of
@@ -1728,7 +1728,7 @@ class NonRepairableRBD(RBD):
         them independently would understate the uncertainty, which is
         about the one population's parameters; so would drawing one and
         leaving the others as fitted, which is warned about when they hold
-        the same model object (#214).
+        the same model object.
 
         With common-cause groups, each draw is worked out as ``sf`` works
         it out, with the groups. A group's members carry one model, so
@@ -1767,7 +1767,7 @@ class NonRepairableRBD(RBD):
             ``"random"`` (the default) draws with pseudo-random numbers;
             ``"sobol"`` from the points of a scrambled Sobol sequence,
             which cover the parameters more evenly and shrink the error of
-            the summaries for the same number of draws (#200).
+            the summaries for the same number of draws.
 
         Returns
         -------
@@ -2008,7 +2008,7 @@ class NonRepairableRBD(RBD):
             ``"random"`` (the default) draws with pseudo-random numbers;
             ``"sobol"`` from the points of a scrambled Sobol sequence,
             which cover the parameters more evenly and shrink the error of
-            the summaries for the same number of draws (#200).
+            the summaries for the same number of draws.
 
         Returns
         -------
@@ -2082,7 +2082,7 @@ class NonRepairableRBD(RBD):
         Parameters
         ----------
         target : float or array_like
-            The reliability level, in (0, 1), or levels (#226): each a row
+            The reliability level, in (0, 1), or levels: each a row
             of draws, from the same parameter draws.
         uncertainty : dict, optional
             ``{node or tuple of nodes: uncertainty}`` for the uncertain
@@ -2096,7 +2096,7 @@ class NonRepairableRBD(RBD):
             ``"random"`` (the default) draws with pseudo-random numbers;
             ``"sobol"`` from the points of a scrambled Sobol sequence,
             which cover the parameters more evenly and shrink the error of
-            the summaries for the same number of draws (#200).
+            the summaries for the same number of draws.
         upper_bound : float, optional
             An upper bound for each draw's search, at which its reliability
             is below ``target``; found by doubling if None.
@@ -2181,7 +2181,7 @@ class NonRepairableRBD(RBD):
         Parameters
         ----------
         x : float or array_like
-            The percentage failed, in (0, 100), or percentages (#226): each
+            The percentage failed, in (0, 100), or percentages: each
             a row of draws, from the same parameter draws.
         uncertainty : dict, optional
             ``{node or tuple of nodes: uncertainty}`` for the uncertain
@@ -2195,7 +2195,7 @@ class NonRepairableRBD(RBD):
             ``"random"`` (the default) draws with pseudo-random numbers;
             ``"sobol"`` from the points of a scrambled Sobol sequence,
             which cover the parameters more evenly and shrink the error of
-            the summaries for the same number of draws (#200).
+            the summaries for the same number of draws.
         upper_bound : float, optional
             An upper bound for each draw's search, found by doubling if
             None.
@@ -2261,11 +2261,11 @@ class NonRepairableRBD(RBD):
         upper_bound: Optional[float] = None,
     ) -> UncertaintyImportance:
         """Which input's parameter uncertainty makes a system quantity
-        uncertain: each uncertain input's share of the quantity's variance
-        (#196), the inputs as for ``sf_uncertainty``.
+        uncertain: each uncertain input's share of the quantity's variance,
+        the inputs as for ``sf_uncertainty``.
 
         In the guide's Greeks it is *vega*: whose uncertainty widens the answer
-        (see [Sensitivities: the Greeks](guide/greeks.md)).
+        (see [Sensitivities: the Greeks](../guide/greeks.md)).
 
         ``of`` is the quantity: ``"sf"``, the reliability at the time/s
         ``x`` (as ``sf_uncertainty``); ``"mean"``, the MTTF (as
@@ -6657,8 +6657,8 @@ class NonRepairableRBD(RBD):
 
         By default, where ``mean`` works out both systems' MTTFs (exactly
         or numerically), the difference is theirs, with no error
-        (``method="exact"`` in the result), and nothing is simulated
-        (#236), as ``mean`` is exact by default. ``method="simulate"``
+        (``method="exact"`` in the result), and nothing is simulated,
+        as ``mean`` is exact by default. ``method="simulate"``
         simulates it whatever.
 
         Simulated, both systems' lifetimes are drawn ``mc_samples`` times,
@@ -7248,7 +7248,7 @@ class NonRepairableRBD(RBD):
         self, state: Optional[Dict[Hashable, NodeState]] = None
     ) -> float:
         """The mean remaining life: the expected time from now until the
-        system fails, given its components' current states (#179).
+        system fails, given its components' current states.
 
         ``remaining_life`` gives the time until the reliability given the
         state falls to a target, a percentile of the remaining life; this
@@ -7512,7 +7512,7 @@ class NonRepairableRBD(RBD):
         """Birnbaum importance of each node at time/s ``x``.
 
         In the guide's Greeks it is *delta*: how far the system moves with each
-        node (see [Sensitivities: the Greeks](guide/greeks.md)).
+        node (see [Sensitivities: the Greeks](../guide/greeks.md)).
 
         ``B_i = R_sys(i working) - R_sys(i failed)``: the rate at which the
         system reliability changes with node ``i``'s reliability, which is
@@ -8068,7 +8068,7 @@ class NonRepairableRBD(RBD):
         """Sensitivity of system reliability to each node's parameters.
 
         In the guide's Greeks it is the levers' *deltas* (see [Sensitivities:
-        the Greeks](guide/greeks.md)).
+        the Greeks](../guide/greeks.md)).
 
         For node ``i`` with parameter ``theta``, the sensitivity at time/s
         ``x`` is
@@ -8095,7 +8095,7 @@ class NonRepairableRBD(RBD):
         is the failure probability); ``levers()`` lists them, with their
         values and ranges, and ``with_levers`` builds the RBD with them
         moved. A regression node's levers are its covariates
-        (``"covariate.<name>"``, #272), at fixed covariates. Composite nodes
+        (``"covariate.<name>"``), at fixed covariates. Composite nodes
         (a nested RBD, a standby, load-sharing or repeated node, a
         regression node along a schedule) and the input and output nodes
         have no parameters to perturb and are omitted. A node forced via
@@ -8234,7 +8234,7 @@ class NonRepairableRBD(RBD):
 
     def levers(self) -> List[Lever]:
         """The parameters that ``parameter_sensitivity`` moves, in the order
-        it reports them (#244): each node's model's, by surpyval's names,
+        it reports them: each node's model's, by surpyval's names,
         and each common-cause group's under the tuple of its members (the
         parameters of the one model its members carry, then its own,
         ``"ccf_beta"``, ...).
@@ -8266,7 +8266,7 @@ class NonRepairableRBD(RBD):
         return _sensitivity.public_levers(self)
 
     def with_levers(self, values) -> "NonRepairableRBD":
-        """A copy of this RBD with parameters at new values (#244), each
+        """A copy of this RBD with parameters at new values, each
         moved as ``parameter_sensitivity`` moves it: a node's model rebuilt
         with the parameter changed, a common-cause group's members' one
         model for every member, a group's own (``"ccf_beta"``, ...) in its
@@ -8328,10 +8328,10 @@ class NonRepairableRBD(RBD):
     ) -> Dict[Any, Union[float, np.ndarray]]:
         """Each node's (or parameter's) share of the change in the system
         reliability when they all change together: the differential
-        importance measure (DIM, Borgonovo & Apostolakis, 2001; #193).
+        importance measure (DIM, Borgonovo & Apostolakis, 2001).
 
         In the guide's Greeks it is *DIM*, the shares of a change (see
-        [Sensitivities: the Greeks](guide/greeks.md)).
+        [Sensitivities: the Greeks](../guide/greeks.md)).
 
         ``DIM_i = dR/dtheta_i dtheta_i / sum_j dR/dtheta_j dtheta_j``, so
         the shares add up to 1, and a group's share is the sum of its
@@ -8480,10 +8480,10 @@ class NonRepairableRBD(RBD):
     ) -> Dict[Tuple[Hashable, Hashable], Union[float, np.ndarray]]:
         """The joint (second-order) importance of each pair of nodes:
         whether improving the two together is worth more than improving
-        each (Hong & Lie, 1993; Armstrong, 1995; #194).
+        each (Hong & Lie, 1993; Armstrong, 1995).
 
         In the guide's Greeks it is *gamma*: complements or substitutes (see
-        [Sensitivities: the Greeks](guide/greeks.md)).
+        [Sensitivities: the Greeks](../guide/greeks.md)).
 
         ``JRI(i, j) = d2R / dR_i dR_j = R(1_i, 1_j) - R(1_i, 0_j) -
         R(0_i, 1_j) + R(0_i, 0_j)``, with ``R(1_i, 0_j)`` the system
@@ -8636,10 +8636,10 @@ class NonRepairableRBD(RBD):
         broken_nodes: Optional[Collection[Hashable]] = None,
     ) -> RateBreakdown:
         """How fast the system reliability is falling at each time ``x``,
-        and which nodes are bringing it down (#195).
+        and which nodes are bringing it down.
 
         In the guide's Greeks it is *theta*: what is moving the system now (see
-        [Sensitivities: the Greeks](guide/greeks.md)).
+        [Sensitivities: the Greeks](../guide/greeks.md)).
 
         The nodes failing independently, the system reliability is
         multilinear in theirs, so
@@ -8727,11 +8727,11 @@ class NonRepairableRBD(RBD):
         broken_nodes: Optional[Collection[Hashable]] = None,
     ) -> Dict[Any, Union[float, np.ndarray]]:
         """Each node's Barlow-Proschan importance: the probability that the
-        system's failure is caused by the node's (Barlow & Proschan, 1975;
-        #195), given that the system fails by ``x``, or over its whole life.
+        system's failure is caused by the node's (Barlow & Proschan,
+        1975), given that the system fails by ``x``, or over its whole life.
 
         In the guide's Greeks it is *theta*, integrated: who caused the
-        failures (see [Sensitivities: the Greeks](guide/greeks.md)).
+        failures (see [Sensitivities: the Greeks](../guide/greeks.md)).
 
         A node's failure fails the system when the node is critical then,
         so the probability that the system has failed by ``x``, through

@@ -393,7 +393,7 @@ class LoadSharingModel:
         integral of the survival function). A group of different units has
         neither (see ``is_simulated``), and refuses, unless asked for an
         estimate: the mean of ``mc_samples`` new draws of ``random``.
-        ``method="simulate"`` estimates it so whatever the group (#233).
+        ``method="simulate"`` estimates it so whatever the group.
 
         Parameters
         ----------

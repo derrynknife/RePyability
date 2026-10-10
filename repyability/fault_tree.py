@@ -171,7 +171,7 @@ class FaultTree:
         gate's input.
     ccf_groups : list of CCFGroup, optional
         Common-cause groups over basic events (keyword only), as a
-        ``NonRepairableRBD`` takes them (#184): each group's members,
+        ``NonRepairableRBD`` takes them: each group's members,
         events with the same model, occur together through its shared
         causes as well as on their own, split by its ``BetaFactor`` or
         ``MGL`` model at every ``t``. The top event probability and the
@@ -937,7 +937,7 @@ class FaultTree:
         """Birnbaum importance of each basic event.
 
         In the guide's Greeks it is *delta*: how far the system moves with each
-        basic event (see [Sensitivities: the Greeks](guide/greeks.md)).
+        basic event (see [Sensitivities: the Greeks](../guide/greeks.md)).
 
         ``P(top | e occurred) - P(top | e did not)``: how much the top event
         probability depends on the event, the rate at which it rises with
@@ -1167,7 +1167,7 @@ class FaultTree:
         importance measure (DIM, Borgonovo & Apostolakis, 2001).
 
         In the guide's Greeks it is *DIM*, the shares of a change (see
-        [Sensitivities: the Greeks](guide/greeks.md)).
+        [Sensitivities: the Greeks](../guide/greeks.md)).
 
         ``DIM_e = dP/dq_e dq_e / sum_f dP/dq_f dq_f``, with ``q_e`` the
         events' probabilities, so the shares add up to 1, and a group's
@@ -1234,12 +1234,12 @@ class FaultTree:
         return shares(values, groups, scalar=t is None or np.ndim(t) == 0)
 
     def joint_importance(self, t: Optional[ArrayLike] = None) -> dict:
-        """The joint (second-order) importance of each pair of basic events
-        (#194): whether preventing the two together is worth more than
+        """The joint (second-order) importance of each pair of basic events:
+        whether preventing the two together is worth more than
         preventing each.
 
         In the guide's Greeks it is *gamma*: complements or substitutes (see
-        [Sensitivities: the Greeks](guide/greeks.md)).
+        [Sensitivities: the Greeks](../guide/greeks.md)).
 
         ``JRI(e, f) = -d2P / dq_e dq_f``, ``P`` the top event probability
         and ``q`` the events' probabilities: how much event ``f``'s
@@ -1459,7 +1459,7 @@ class FaultTree:
         group with one that can: the tree keeps it, for the group's causes
         to strike it with the others, as an event its logic makes
         irrelevant (the top event ``OR(G, AND(G, member))``, which is
-        ``G``, #237).
+        ``G``).
 
         Parameters
         ----------

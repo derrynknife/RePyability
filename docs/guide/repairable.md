@@ -45,9 +45,9 @@ A component can be given as:
   (`"repair_cost"`, `"replace_cost"`, `"downtime_cost"`, and the one-off
   `"acquisition_cost"`; see [Costs](costs.md)),
   scheduled preventive replacement (`"preventive"`; see
-  [Costs](costs.md#preventive-maintenance)), for a component whose
+  [Costs](system-maintenance.md#preventive-maintenance)), for a component whose
   failures are hidden until a proof test finds them, periodic inspection
-  (`"inspection"`; see [Costs](costs.md#hidden-failures-and-inspection)),
+  (`"inspection"`; see [Costs](system-maintenance.md#hidden-failures-and-inspection)),
   its place in the queue for a repair crew (`"priority"`; see
   [below](#repair-crews)), imperfect repair (`"repair"` and
   `"replace_after"`; see [below](#imperfect-repair)), and the share of the
@@ -197,9 +197,9 @@ Both take `working_nodes`, `broken_nodes` and `method` as
 `mean_availability` does, and cover what it covers: age and block
 replacement, nested RBDs, and hidden failures, for any life, tested and
 repaired in no time or not, with tests that find every failure or miss
-some (see [a life that wears out](costs.md#a-life-that-wears-out) and
+some (see [a life that wears out](system-maintenance.md#a-life-that-wears-out) and
 [tests and repairs that take
-time](costs.md#tests-and-repairs-that-take-time)). A test that can last as
+time](system-maintenance.md#tests-and-repairs-that-take-time)). A test that can last as
 long as its interval raises `NotImplementedError`; simulate it. Each component's curve is
 computed on a grid of 1,000 steps over its typical up time: within one step
 of a time at which its units start or stop on a schedule (at 0, and at its

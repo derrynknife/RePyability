@@ -585,7 +585,7 @@ takes components down on purpose. That downtime counts against availability
 and ends up periods, but it is not a failure: `system_failure_frequency()`
 leaves it out, and the simulation counts it separately, in
 `system_planned_outages`. The guide shows how to schedule it in [Preventive
-maintenance](../guide/costs.md#preventive-maintenance).
+maintenance](../guide/system-maintenance.md#preventive-maintenance).
 
 ## Pitfalls
 

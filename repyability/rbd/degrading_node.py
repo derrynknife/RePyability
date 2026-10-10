@@ -215,7 +215,7 @@ class DegradingNode(StandbyModel):
     def mean(self, mc_samples=None, seed=None, *, method=None):
         """Mean lifetime (MTTF): the sum of the stages' mean times, exactly;
         infinite if a stage may never end. ``method="simulate"`` estimates
-        it from ``mc_samples`` draws of ``random`` instead (#233).
+        it from ``mc_samples`` draws of ``random`` instead.
 
         Parameters
         ----------

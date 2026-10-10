@@ -544,7 +544,7 @@ def partial_bytes(
     nodes: List[Any],
     priced: bool,
 ) -> bytes:
-    """A module shard's partial (#189): the modules' histories in its
+    """A module shard's partial: the modules' histories in its
     simulations ``start`` to ``stop - 1``, each simulation's own cost (if
     ``priced``), and the costs by category and by module (in the order of
     ``nodes``), as the bytes of a NumPy ``.npz`` file, read without

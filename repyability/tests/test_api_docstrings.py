@@ -15,6 +15,7 @@ import re
 import pytest
 
 import repyability
+from repyability.tests.repository import source
 
 
 def _heading(title: str) -> str:
@@ -105,3 +106,19 @@ def test_documented(qualname, obj, kind):
 def test_the_walk_finds_the_api():
     # Guard against the walk silently finding nothing.
     assert len(MEMBERS) > 150
+
+
+def test_the_api_pages_document_every_public_name():
+    # docs/api/ is split into pages; each public name is on one of them,
+    # and nothing is documented that is not public.
+    pages = source("docs/api").glob("*.md")
+    documented = {
+        name
+        for page in pages
+        for name in re.findall(
+            r"^::: repyability\.(\w+)", page.read_text(), re.M
+        )
+    }
+    public = set(repyability.__all__) - {"__version__"}
+    assert public - documented == set()
+    assert documented - public <= {"timelines"}  # the merge functions

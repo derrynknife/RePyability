@@ -207,7 +207,7 @@ def parametric_spec(model) -> Optional[ParametricSpec]:
 
 
 class CovariateSpec(NamedTuple):
-    """A ``RegressionNode``'s covariates as levers (#272), with the
+    """A ``RegressionNode``'s covariates as levers, with the
     interface of a ``ParametricSpec``: ``params`` the covariates, ``names``
     ``"covariate.<name>"`` (the model's feature names, or their places),
     ``bounds`` none, and ``build(values)`` the node at those covariates."""
@@ -286,7 +286,7 @@ def nonparametric_nodes(models: Dict[Any, Any]) -> List[Any]:
 
 def refuse_nonparametric(models) -> None:
     """Refuse the nodes whose models (or component specs) hold a surpyval
-    non-parametric fit (#149)."""
+    non-parametric fit."""
     nodes = nonparametric_nodes(models)
     if nodes:
         raise ValueError(

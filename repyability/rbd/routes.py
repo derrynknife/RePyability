@@ -63,7 +63,7 @@ class AnalysisRoute:
     twin: str = ""
 
     def to_dict(self) -> dict:
-        """The route as plain data, ready for ``json.dumps`` (#235): its
+        """The route as plain data, ready for ``json.dumps``: its
         fields by name, the nodes as a list.
 
         Returns

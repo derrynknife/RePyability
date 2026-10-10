@@ -879,7 +879,7 @@ class _Table:
 
 class Tabled(Evaluation):
     """``Evaluation`` with each common-cause group's members' joint states
-    given as tables (a repairable system's, from its groups' chains, #218),
+    given as tables (a repairable system's, from its groups' chains),
     not from its model's outcomes: each combination of the members up or
     down, and its probability at each point (``tables``, each group's
     ``_ccf_chain.GroupStates``). Given its combination the members are up

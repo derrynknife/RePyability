@@ -396,4 +396,4 @@ transient input you supply at evaluation time.
 - **[Concepts](concepts.md)**: the theory behind these numbers: path and cut
   sets, the importance-measure family and when to use each, conditioning,
   availability and cost, and the dependent-failure models from step 9.
-- **[API reference](api.md)**: the generated signatures and docstrings.
+- **[API reference](api/index.md)**: the generated signatures and docstrings.

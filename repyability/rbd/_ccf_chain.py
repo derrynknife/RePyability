@@ -306,7 +306,7 @@ def gth(flow: np.ndarray) -> np.ndarray:
 class ProofTest(NamedTuple):
     """A member's test: when, which member, and whether it is a full test
     (one that finds a failure it would otherwise miss). With ``kind``, the
-    end of one of its tests or repairs of a fixed length instead (#220)."""
+    end of one of its tests or repairs of a fixed length instead."""
 
     time: float
     member: int
@@ -315,7 +315,7 @@ class ProofTest(NamedTuple):
 
 
 class Duration(NamedTuple):
-    """How long a member's tests, or its repairs, take (#220): a fixed
+    """How long a member's tests, or its repairs, take: a fixed
     time (``fixed``, 0 for none), or an exponential one (at ``rate``)."""
 
     fixed: float = 0.0
@@ -614,7 +614,7 @@ class _Timed(_Hidden):
 
 def timed_events(tests, timings, period: float) -> List[ProofTest]:
     """``tests`` (each member's, in ``(0, period]``) with the ends of the
-    tests and repairs of a fixed length after each (#220), each in
+    tests and repairs of a fixed length after each, each in
     ``(0, period]`` as the schedule repeats: an end past the period is the
     previous period's test's, at the start of this one (where, from all up
     at 0, it ends nothing)."""
@@ -658,7 +658,7 @@ def hidden(
     ``period``), with ``coverage`` the chance that a test finds a cause's
     failures (a full test finds all), and ``counts`` copies of each member
     (see ``_Counted``), tested together; or, with ``timings`` that take
-    time (#220), one copy of each, its tests and repairs taking them (see
+    time, one copy of each, its tests and repairs taking them (see
     ``_Timed``)."""
     if _timed(timings):
         timed = _Timed(model, members, rate, coverage, timings)
@@ -745,7 +745,7 @@ class OverTime:
         timings: Optional[Sequence[Timing]] = None,
     ) -> "OverTime":
         """A group whose failures are hidden (see ``hidden``): with
-        ``timings`` that take time (#220), its tests' and repairs' ends
+        ``timings`` that take time, its tests' and repairs' ends
         among its tests, and settling after two periods."""
         chain: _Hidden
         if _timed(timings):
@@ -909,7 +909,7 @@ class _GroupsCurve:
 
 
 class GroupsSystem:
-    """A system with common-cause groups over time (#158), as the analyses
+    """A system with common-cause groups over time, as the analyses
     over a window evaluate it at given times (the hook
     ``RepairableRBD._window_counts`` takes as ``crew``, as for repair
     crews' ``_chain_transient.CrewSystem``). Its nodes outside the groups
@@ -1065,7 +1065,7 @@ class GroupsSystem:
         """The system's unavailability at the times ``x`` (rows) with the
         group ``number``'s members in each of their combinations (columns),
         the other groups' as at the times, and each node outside the groups
-        up with the probability ``values[node]`` (#199)."""
+        up with the probability ``values[node]``."""
         x = np.asarray(x, dtype=float).ravel()
         evaluation = self._evaluation(values, x)
         return evaluation.combinations(number, self.groups[number].down)[1]
@@ -1090,7 +1090,7 @@ class GroupsSystem:
         """The rate of the system's failures by each cause at the times
         ``x`` (see ``evaluate``): a member's own causes under its name, and
         each group's causes that strike more than one member under the
-        tuple of its members (#199)."""
+        tuple of its members."""
         x = np.asarray(x, dtype=float).ravel()
         evaluation = self._evaluation(values, x)
         down = evaluation.system()[1]
@@ -1120,7 +1120,7 @@ class GroupsSystem:
 
 
 class GroupsCurve:
-    """A system with common-cause groups over time (#158), from its nodes
+    """A system with common-cause groups over time, from its nodes
     outside the groups (``curves``, as another RBD's) and its groups'
     states (``system``, a ``GroupsSystem``): its point availability, and
     its events counted as another RBD counts its nodes', the groups'
@@ -1144,7 +1144,7 @@ class GroupsCurve:
 
     def down_at(self, x: np.ndarray) -> np.ndarray:
         """The system's point unavailability at the times ``x``, worked
-        out in its own right (#237)."""
+        out in its own right."""
         x = np.asarray(x, dtype=float)
         flat = x.ravel()
         values = {node: curve.at(flat) for node, curve in self.curves.items()}

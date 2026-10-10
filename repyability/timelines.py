@@ -819,7 +819,7 @@ class Timeline:
         failed again at that instant, so they count as two failures. Real
         logs often hold one outage as several records, overlapping or
         touching (two work orders on one outage): ``merge=True`` makes each
-        run of them one outage (#179).
+        run of them one outage.
 
         Parameters
         ----------
@@ -1110,7 +1110,7 @@ class Timeline:
         return _same(self, other)
 
     def to_dict(self) -> dict:
-        """The history as plain data, ready for ``json.dumps`` (#235).
+        """The history as plain data, ready for ``json.dumps``.
 
         Returns
         -------
@@ -1376,7 +1376,7 @@ class Timelines:
         return _same(self, other)
 
     def to_dict(self) -> dict:
-        """The histories as plain data, ready for ``json.dumps`` (#235).
+        """The histories as plain data, ready for ``json.dumps``.
 
         Returns
         -------
