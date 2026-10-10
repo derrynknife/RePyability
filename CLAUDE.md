@@ -193,7 +193,9 @@
 ## How each analysis is computed
 
 - **A `RepairableRBD`'s junctions are folded out of its structure.** A node
-  given `PerfectReliability` is no component: `RBD._decomposition()` folds
+  given `PerfectReliability`, or a spec whose life never fails
+  (`_model_utils.always_works`: that, or a probability of failing of 0), is
+  no component: `RBD._decomposition()` folds
   it in as always working (`modular.fold`), so whatever evaluates the
   structure (the curves, the long-run values, both simulation engines, the
   timelines, the path and cut sets) never sees it. Evaluate the structure

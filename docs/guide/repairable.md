@@ -64,8 +64,9 @@ A component can be given as:
 - [`PerfectReliability`][repyability.PerfectReliability] itself, for a
   *junction*: a node that never fails, such as the point where two of three
   trains must deliver (see [below](#junctions)). A spec whose
-  `"reliability"` is `PerfectReliability` is one too: a what-if of a part
-  that never fails.
+  `"reliability"` is `PerfectReliability`, or a probability of failing of 0
+  (`FixedEventProbability` at 0), is one too: a what-if of a part that
+  never fails.
 
 The constructor also takes `k`, `input_node`, `output_node` and
 `on_infeasible_rbd` exactly as for a
