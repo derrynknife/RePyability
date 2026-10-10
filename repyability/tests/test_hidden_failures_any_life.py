@@ -13,7 +13,7 @@ from scipy import integrate
 from surpyval import Exponential, Gamma, LogNormal, Weibull
 
 from repyability import NodeState, RepairableRBD
-from repyability.rbd import _hidden_life, routes
+from repyability.rbd import _hidden_life, _intervals, routes
 from repyability.rbd._point_availability import InspectionCurve
 
 E = Exponential.from_params
@@ -330,8 +330,8 @@ def test_the_best_test_interval_for_a_wearing_life():
     assert plan.intervals["a"] == pytest.approx(best, rel=2e-3)
     assert plan.cost_rate == pytest.approx(cost_rate(best), rel=1e-6)
     assert plan.cost_rate == pytest.approx(
-        rbd._with_intervals(
-            inspection={"a": plan.intervals["a"]}
+        _intervals._with_intervals(
+            rbd, inspection={"a": plan.intervals["a"]}
         ).expected_cost_rate(),
         rel=1e-12,
     )
