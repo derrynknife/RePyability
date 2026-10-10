@@ -5,6 +5,7 @@ discounted or not (``total_cost``). The methods of ``RepairableRBD`` of
 those names call these.
 """
 
+from functools import partial
 from typing import (
     Collection,
     Hashable,
@@ -15,7 +16,7 @@ from typing import (
 
 import numpy as np
 
-from repyability.rbd import _long_run
+from repyability.rbd import _crews, _long_run, _requirements
 from repyability.rbd._common import (
     _discount_rate,
     _horizons,
@@ -40,7 +41,7 @@ def expected_cost_rate(
     forced = working_nodes | broken_nodes
     setups = [group for group in rbd._maintenance.values() if group.setup_cost]
     if setups:
-        rbd._require_separate_setups()
+        _requirements._require_separate_setups(rbd)
 
     rate = 0.0
 
@@ -55,8 +56,8 @@ def expected_cost_rate(
     if rbd._crews_couple():
         # Held working or broken, a node needs no crew, and the others
         # have more of them: from the chain without it.
-        probabilities, weights = rbd._chain_probabilities(
-            working_nodes, broken_nodes
+        probabilities, weights = _crews._chain_probabilities(
+            rbd, working_nodes, broken_nodes
         )
         node_availability = {
             node: float(weights @ probabilities[node]) for node in rbd.nodes
@@ -115,7 +116,7 @@ def _node_cost_rate(
         else:
             # One test per interval, but those that fall in a repair,
             # which are not done.
-            unit = rbd._tested_unit(node)
+            unit = _requirements._tested_unit(rbd, node)
             tests = (
                 1.0 / rbd._inspection[node].interval
                 if unit is None
@@ -136,7 +137,7 @@ def _node_actions(rbd, node, availability: float) -> Tuple[float, float]:
     if rbd._crews_couple():
         # Waiting for a crew, as while repaired, it cannot fail: it
         # fails at its constant rate while it is up.
-        life = rbd._crew_chain_rates()[node][0]
+        life = _crews._crew_chain_rates(rbd)[node][0]
         return life * availability, 0.0
     if node in rbd._standby:
         # Each of its units' failures is a repair.
@@ -163,7 +164,9 @@ def total_cost(
 ) -> Union[float, np.ndarray]:
     """See ``RepairableRBD.total_cost``."""
     rate = _discount_rate(discount_rate)
-    present = _present_horizon(_horizons(horizon, rate), rate, rbd._mean_lives)
+    present = _present_horizon(
+        _horizons(horizon, rate), rate, partial(_requirements._mean_lives, rbd)
+    )
     total = rbd.acquisition_cost + present * rbd.expected_cost_rate(
         working_nodes, broken_nodes
     )

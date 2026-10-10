@@ -22,9 +22,11 @@ from repyability.rbd import (
     _ccf_chain,
     _ccf_groups,
     _chain_transient,
+    _crews,
     _curves,
     _long_run,
     _quadrature,
+    _requirements,
     _windows,
 )
 from repyability.rbd import capacity as _capacity
@@ -173,7 +175,9 @@ def _capacity_refusal(rbd) -> Optional[Tuple[str, tuple]]:
             if inner:
                 return inner[0], (node,)
             continue
-        message = r.refusal(partial(rbd._require_unscheduled_stages, node))
+        message = r.refusal(
+            partial(_requirements._require_unscheduled_stages, rbd, node)
+        )
         if message:
             return message, (node,)
     message = r.refusal(rbd._require_capacity)
@@ -190,7 +194,7 @@ def _crew_capacity(
     working, broken = set(working_nodes), set(broken_nodes)
     forced = working | broken
     _curves._require_crew_over_time(rbd, frozenset(forced), "capacity")
-    chain = rbd._crew_chain(frozenset(forced))
+    chain = _crews._crew_chain(rbd, frozenset(forced))
     size = len(chain.probabilities)
     own = {
         node: chain.up[:, k].astype(float)
@@ -218,7 +222,7 @@ def _crew_capacity_over(
     working, broken = set(working_nodes), set(broken_nodes)
     forced = working | broken
     nested = _curves._require_crew_over_time(rbd, frozenset(forced))
-    chain = rbd._crew_chain(frozenset(forced))
+    chain = _crews._crew_chain(rbd, frozenset(forced))
     curves = {
         node: _curves._nested_curve(
             rbd.components[node],
@@ -288,7 +292,7 @@ def _require_capacity_models(rbd) -> None:
         if isinstance(model, RepairableRBD):
             _require_capacity_models(model)
         else:
-            rbd._require_unscheduled_stages(node)
+            _requirements._require_unscheduled_stages(rbd, node)
     rbd._require_capacity()
 
 
@@ -636,7 +640,7 @@ def _long_run_capacity(rbd, node) -> Tuple[np.ndarray, np.ndarray]:
     if isinstance(component, RepairableRBD):
         distribution = component.capacity_distribution()
         return distribution.levels, distribution.probabilities
-    rbd._require_unscheduled_stages(node)
+    _requirements._require_unscheduled_stages(rbd, node)
     stages = component.reliability
     up = _long_run._node_availability(rbd, node)
     shares = np.concatenate([[1.0 - up], up * stages.stage_fractions()])

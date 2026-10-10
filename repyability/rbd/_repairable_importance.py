@@ -25,6 +25,7 @@ from repyability.rbd import (
     _ccf_chain,
     _ccf_groups,
     _chain_transient,
+    _crews,
     _curves,
     _importance_time,
     _long_run,
@@ -471,7 +472,7 @@ def _crew_rates(
     one's Birnbaum importance over the chain times its own rate, as for
     independent components, and their jumps are split likewise."""
     nested = _curves._require_crew_over_time(rbd, frozenset(working | broken))
-    chain = rbd._crew_chain(frozenset(working | broken))
+    chain = _crews._crew_chain(rbd, frozenset(working | broken))
     size, count = len(chain.probabilities), len(chain.nodes)
     patterns = 2 ** len(nested)
     ups = [

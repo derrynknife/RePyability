@@ -22,6 +22,7 @@ from typing import (
 import numpy as np
 from scipy.optimize import minimize
 
+from repyability.rbd import _crews, _requirements
 from repyability.rbd._model_utils import (
     failure_time_scale,
 )
@@ -535,7 +536,7 @@ def optimal_inspection_intervals(
             max_cost_rate=max_cost_rate,
             offset_shares=offset_shares,
         )
-    rates = {node: rbd._tested_scale(node) for node in chosen}
+    rates = {node: _requirements._tested_scale(rbd, node) for node in chosen}
 
     def evaluate(intervals: dict) -> Tuple[float, float]:
         plan = _with_intervals(rbd, inspection=intervals)
@@ -557,7 +558,7 @@ def optimal_inspection_intervals(
             max_cost_rate,
         )
     if allowed is None and rbd._inspection[chosen[0]].partial:
-        rbd._require_one_inspected()
+        _requirements._require_one_inspected(rbd)
         (node,) = chosen
         rate = rates[node]
         best = _choose_divisor(
@@ -570,7 +571,7 @@ def optimal_inspection_intervals(
             max_cost_rate,
         )
     elif allowed is None:
-        rbd._require_one_inspected()
+        _requirements._require_one_inspected(rbd)
         (node,) = chosen
         rate = rates[node]
         low = np.array([math.log(1e-4 / rate)])
@@ -641,7 +642,7 @@ def _dividing(rbd, options: dict) -> dict:
 def _require_interval_crews(rbd) -> None:
     """Raise if a component can wait for a repair crew, for the interval
     choices (see ``_INTERVAL_CREWS``)."""
-    rbd._require_unlimited_crews(*_INTERVAL_CREWS)
+    _crews._require_unlimited_crews(rbd, *_INTERVAL_CREWS)
 
 
 def _unlimited_crews(rbd) -> "RepairableRBD":
@@ -662,7 +663,7 @@ def with_intervals(rbd, intervals, offsets) -> "RepairableRBD":
     offsets = dict(offsets or {})
     components = dict(rbd._init_args["components"])
     for node in list(dict(intervals)) + list(offsets):
-        rbd._require_component(node, "with_intervals")
+        _requirements._require_component(rbd, node, "with_intervals")
     for node, interval in dict(intervals).items():
         spec = components.get(node)
         # A component has one schedule at most (see the constructor).
@@ -826,7 +827,7 @@ def _inspected(rbd, nodes) -> list:
         if not chosen:
             raise ValueError("nodes is empty.")
         for node in chosen:
-            rbd._require_component(node, "nodes")
+            _requirements._require_component(rbd, node, "nodes")
             if node not in rbd._inspection:
                 raise ValueError(
                     f"Node {node!r} has no hidden failures: give it an "

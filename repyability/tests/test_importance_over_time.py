@@ -21,7 +21,7 @@ import scipy.linalg
 import surpyval as surv
 
 from repyability import BetaFactor, CCFGroup, NodeState, RepairableRBD
-from repyability.rbd import _ccf_groups, _curves
+from repyability.rbd import _ccf_groups, _crews, _curves
 from repyability.rbd.rbd import RBD
 
 E, W = surv.Exponential.from_params, surv.Weibull.from_params
@@ -265,9 +265,9 @@ def test_held_nodes_over_time():
 def test_with_crews_the_chain_against_its_matrix_exponential():
     rbd = pair_then_c(repair_crews=1)
     times = np.array([0.5, 4.0, 40.0])
-    chain = rbd._crew_chain(frozenset())
+    chain = _crews._crew_chain(rbd, frozenset())
     start = _curves._crew_start(rbd, chain, {})
-    p, _ = rbd._chain_probabilities(set(), set())
+    p, _ = _crews._chain_probabilities(rbd, set(), set())
     q = {n: 1.0 - v for n, v in p.items()}
     generator = np.asarray(
         chain.generator.toarray()

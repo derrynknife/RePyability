@@ -360,7 +360,7 @@ def _chain_measure(rbd, spec, working, broken, states, times=None, end=None):
     numerator and denominator are averages over the crews' chain's states
     (as in the long run), so each is ``p(t) v`` for a vector ``v`` over
     the states, followed over time from the components' ``states``."""
-    from . import _curves
+    from . import _crews, _curves
 
     forced = frozenset(working | broken)
     nested = _curves._require_crew_over_time(rbd, forced)
@@ -373,7 +373,7 @@ def _chain_measure(rbd, spec, working, broken, states, times=None, end=None):
             "are worked out, and the Birnbaum importance, improvement "
             "potential and risk worths over time."
         )
-    p, _ = rbd._chain_probabilities(working, broken)
+    p, _ = _crews._chain_probabilities(rbd, working, broken)
     q = {node: 1.0 - value for node, value in p.items()}
     importance, works, fails, p, q = rbd._importances(p, q)
     size = len(works)
@@ -387,7 +387,7 @@ def _chain_measure(rbd, spec, working, broken, states, times=None, end=None):
         system = fails
     nodes: List = list(rbd.nodes)
     columns = np.column_stack([system] + [numerators[n] for n in nodes])
-    chain = rbd._crew_chain(forced)
+    chain = _crews._crew_chain(rbd, forced)
     followed = _curves._uniformized(
         "The repair crews'",
         chain.generator,

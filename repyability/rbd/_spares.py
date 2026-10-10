@@ -145,7 +145,9 @@ from typing import (
 
 import numpy as np
 
+from repyability.rbd import _crews
 from repyability.rbd import _montecarlo as montecarlo
+from repyability.rbd import _requirements
 from repyability.rbd._common import (
     _cdf,
     _fleet,
@@ -1724,7 +1726,7 @@ def _spares_nodes(rbd, nodes, given: str = "nodes") -> list:
         ]
     chosen = list(dict.fromkeys(nodes))
     for node in chosen:
-        rbd._require_component(node, given)
+        _requirements._require_component(rbd, node, given)
         if isinstance(rbd.components[node], RepairableRBD):
             raise ValueError(
                 f"Node {node!r} is a nested RBD: its spares are its "
@@ -1833,7 +1835,7 @@ def _replacements(rbd, node, long_run: bool = False):
         else "count its spares by simulation: "
         "spares_demand(method='simulate')."
     )
-    rbd._require_reliabilities(node)
+    _requirements._require_reliabilities(rbd, node)
     if node in rbd._standby:
         raise NotImplementedError(
             f"Component {node!r} is a standby group, whose units' "
@@ -1875,7 +1877,8 @@ def _replacements(rbd, node, long_run: bool = False):
     if node in rbd._imperfect:
         raise NotImplementedError(
             f"Component {node!r} is repaired imperfectly "
-            f"({rbd._imperfect_phrase(node)}), so its replacements are "
+            f"({_requirements._imperfect_phrase(rbd, node)}), so its "
+            "replacements are "
             f"not a renewal process of lives as new: {simulate}"
         )
     component = rbd.components[node]
@@ -1942,7 +1945,7 @@ def _tested_replacements(rbd, node, simulate: str) -> "Tested":
     (#159); raise if they cannot be counted so."""
     inspection = rbd._inspection[node]
     component = rbd.components[node]
-    if inspection.partial or rbd._tested_kind(node) == "unit":
+    if inspection.partial or _requirements._tested_kind(rbd, node) == "unit":
         # The replacements still fall on the tests that find failures,
         # whatever the tests and repairs take; with tests that can miss
         # a failure, a cycle depends on the place in the full tests'
@@ -1956,7 +1959,7 @@ def _tested_replacements(rbd, node, simulate: str) -> "Tested":
             node,
             instead,
         )
-        unit = rbd._tested_unit(node, any_kind=True)
+        unit = _requirements._tested_unit(rbd, node, any_kind=True)
         assert unit is not None
         first = float(inspection.offset or inspection.interval)
         # The full tests are at the offset and every full test's
@@ -1967,7 +1970,7 @@ def _tested_replacements(rbd, node, simulate: str) -> "Tested":
         return Tested(
             first, float(inspection.interval), found_at, cycle, position
         )
-    life = rbd._tested_life(node) or TestedLife(
+    life = _requirements._tested_life(rbd, node) or TestedLife(
         component.reliability, inspection.interval
     )
     cycle = np.where(
@@ -2024,7 +2027,7 @@ def spares_demand(
             for part, members in pools.items()
         }
     else:
-        rbd._require_unlimited_crews(*_SPARES_CREWS)
+        _crews._require_unlimited_crews(rbd, *_SPARES_CREWS)
         models = {node: _replacements(rbd, node) for node in counted}
         each = {
             node: count(model, end, "new") for node, model in models.items()
@@ -2091,7 +2094,7 @@ def spares_stock(
         if target is not None and not 0.0 < target < 1.0:
             raise ValueError(f"{name} must be in (0, 1), got {target!r}.")
     chosen, pools, counted = _spares_counted(rbd, nodes, parts)
-    rbd._require_unlimited_crews(*_STOCK_CREWS)
+    _crews._require_unlimited_crews(rbd, *_STOCK_CREWS)
     models = {node: _replacements(rbd, node, True) for node in counted}
     for part, members in pools.items():
         blocks = [m for m in members if isinstance(models[m], Block)]

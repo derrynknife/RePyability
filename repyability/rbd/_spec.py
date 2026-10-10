@@ -17,6 +17,7 @@ from typing import (
 
 import numpy as np
 
+from repyability.rbd import _requirements
 from repyability.rbd._degradation import (
     is_degradation,
 )
@@ -133,8 +134,8 @@ def _validate_ccf_groups(rbd, ccf_groups) -> list:
 
     def check_member(member, group):
         if member not in rbd.components:
-            raise rbd._not_a_component(
-                member, f"common-cause group {list(group.members)}"
+            raise _requirements._not_a_component(
+                rbd, member, f"common-cause group {list(group.members)}"
             )
         if (
             isinstance(rbd.components[member], RepairableRBD)
