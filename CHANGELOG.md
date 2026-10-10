@@ -148,6 +148,15 @@ other release, fixes included, the minor.
 
 ### Fixed
 
+- **Importance measures with common-cause groups whose tests take time
+  (#294).** While a member's test kept it off line it could not be up,
+  and the system given it up was 0/0, so Birnbaum's measure, the
+  improvement potential, the risk reduction worth, the criticality and
+  the differential importance were NaN for every node, with no warning.
+  Where a member's state has no chance, the system given it is now the
+  system with the member held in that state, as for a node outside the
+  groups: with no shared cause the measures are the independent members'
+  own.
 - **A component that never fails is a junction again.** A `RepairableRBD`
   component whose life is a probability of failing of 0
   (`FixedEventProbability` at 0, as a vote point is often drawn) was
