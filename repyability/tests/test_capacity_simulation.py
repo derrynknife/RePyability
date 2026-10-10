@@ -14,7 +14,7 @@ import pytest
 import surpyval as surv
 
 from repyability import DegradingNode, RepairableRBD
-from repyability.rbd.repairable_rbd import _CapacityRecorder
+from repyability.rbd._tally import _CapacityRecorder
 
 E = surv.Exponential.from_params
 X = surv.ExactEventTime.from_params

@@ -26,8 +26,8 @@ import surpyval as surv
 
 from repyability import NodeState, PerfectReliability, RepairableRBD
 from repyability.non_repairable import NonRepairable
-from repyability.rbd import _compiled, _streams, repairable_rbd
-from repyability.rbd.repairable_rbd import Event
+from repyability.rbd import _compiled, _streams, _time_order
+from repyability.rbd._events import Event
 from repyability.tests import timeline_reference
 from repyability.tests.catalogue import systems_of_every_kind
 from repyability.tests.keyed_draws import KeyedDraws, reference_draw
@@ -1900,10 +1900,8 @@ def test_the_curve_is_the_same_from_changes_in_order(changes):
     deltas = rng.choice([-1, 1], times.size).astype(np.int64)
     order = np.argsort(times, kind="stable")
     for start in (0, 40):
-        shuffled = repairable_rbd._working_over_time(
-            times, deltas, 100.0, start
-        )
-        ordered = repairable_rbd._working_over_time(
+        shuffled = _time_order._working_over_time(times, deltas, 100.0, start)
+        ordered = _time_order._working_over_time(
             times[order], deltas[order], 100.0, start
         )
         for a, b in zip(shuffled, ordered):

@@ -1,5 +1,5 @@
 """A run's changes put in time order (#201, #208): each simulation's changes
-come as a sorted run, one run after another, and ``repairable_rbd`` nets
+come as a sorted run, one run after another, and ``_time_order`` nets
 the +1 and -1 changes of state by time, groups the capacity's changes by
 time and merges its totals. Each is checked here against its definition,
 written out plainly: a dict of the changes at each time, their exact sums
@@ -11,7 +11,7 @@ from collections import defaultdict
 import numpy as np
 import pytest
 
-from repyability.rbd import repairable_rbd
+from repyability.rbd import _time_order
 from repyability.rbd._exact import ExactSum
 
 
@@ -73,9 +73,7 @@ def test_the_working_count_after_each_time(seed, start):
     times, _, deltas = runs(rng)
     expected = by_time(np.r_[times, 0.0, 100.0], np.r_[deltas, 0, 0])
     count = start + np.cumsum([sum(d) for d in expected.values()])
-    time, working = repairable_rbd._working_over_time(
-        times, deltas, 100.0, start
-    )
+    time, working = _time_order._working_over_time(times, deltas, 100.0, start)
     same(time, np.array(list(expected), dtype=float))
     same(working, count.astype(float))
 
@@ -85,7 +83,7 @@ def test_the_working_count_at_the_edges(case):
     times = CASES[case]
     deltas = np.resize(np.array([-1, 1], dtype=np.int64), times.size)
     expected = by_time(np.r_[times, 0.0, 100.0], np.r_[deltas, 0, 0])
-    time, working = repairable_rbd._working_over_time(times, deltas, 100.0, 7)
+    time, working = _time_order._working_over_time(times, deltas, 100.0, 7)
     same(time, np.array(list(expected), dtype=float))
     same(working, 7.0 + np.cumsum([sum(d) for d in expected.values()]))
 
@@ -101,12 +99,12 @@ def test_the_capacity_changes_grouped_by_time(seed):
     rng = np.random.default_rng(seed)
     times, steps, _ = runs(rng)
     expected = by_time(times, steps)
-    at, values, starts = repairable_rbd._by_time(times, steps)
+    at, values, starts = _time_order._by_time(times, steps)
     same(at, np.array(list(expected), dtype=float))
     stops = np.append(starts[1:], values.size)
     for a, b, want in zip(starts, stops, expected.values()):
         assert sorted(values[a:b].tolist()) == sorted(want)
-    totals = repairable_rbd._group_totals(values, starts)
+    totals = _time_order._group_totals(values, starts)
     same(totals, np.array([exact_total(v) for v in expected.values()]))
     assert all(
         math.isclose(t, math.fsum(v), abs_tol=0.0)
@@ -119,7 +117,7 @@ def test_the_net_changes_by_time(seed):
     rng = np.random.default_rng(seed)
     times, _, deltas = runs(rng)
     expected = by_time(times, deltas)
-    at, net = repairable_rbd._net_by_time(times, deltas)
+    at, net = _time_order._net_by_time(times, deltas)
     same(at, np.array(list(expected), dtype=float))
     same(net, np.array([sum(d) for d in expected.values()], dtype=np.int64))
 
@@ -170,7 +168,7 @@ def test_the_capacity_totals_merged(case):
     step.update(zip(at.tolist(), change.tolist()))
     freed = dict.fromkeys(every, 0)
     freed.update(zip(free_at.tolist(), counts.tolist()))
-    times, totals, unlimited = repairable_rbd._capacity_totals(
+    times, totals, unlimited = _time_order._capacity_totals(
         at, change, free_at, counts, 10.0
     )
     same(times, np.array(every, dtype=float))

@@ -14,7 +14,7 @@ import surpyval as surv
 from scipy.integrate import quad
 
 from repyability import RBD, RepairableRBD
-from repyability.rbd.repairable_rbd import Event
+from repyability.rbd._events import Event
 
 X = surv.ExactEventTime.from_params
 E = surv.Exponential.from_params

@@ -463,7 +463,7 @@ def _intervals(data: _Data, up: bool) -> np.ndarray:
 def _curve(data: _Data) -> Tuple[np.ndarray, np.ndarray]:
     """The fraction of histories up after each time at which one changed
     (and at 0 and the end): the times, in order, and the fractions."""
-    from repyability.rbd.repairable_rbd import _working_over_time
+    from repyability.rbd._time_order import _working_over_time
 
     history, j = data.positions
     delta = 2 * _after(data, history, j) - 1

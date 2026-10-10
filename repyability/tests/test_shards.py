@@ -21,11 +21,11 @@ import surpyval as surv
 
 from repyability import NodeState, RepairableRBD, SimulationChunk, run_shard
 from repyability.rbd import _streams
+from repyability.rbd._tally import _Tally
 from repyability.rbd.repairable_rbd import (
     _WORKER,
     _simulate_block,
     _start_worker,
-    _Tally,
 )
 from repyability.rbd.shards import main
 from repyability.tests.catalogue import systems_of_every_kind

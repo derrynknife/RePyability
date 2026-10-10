@@ -717,7 +717,7 @@ def sensitivity(
     unit_costs: Optional[dict],
 ) -> dict:
     """``RepairableRBD.parameter_sensitivity``: see there."""
-    from .repairable_rbd import _check_times
+    from repyability.utils.checks import nonnegative_times
 
     quantities = (of,) if isinstance(of, str) else tuple(of)
     if not quantities or any(q not in QUANTITIES for q in quantities):
@@ -757,7 +757,7 @@ def sensitivity(
             f"rel_step must be a number in (0, 0.5), got {rel_step!r}."
         )
     if x is not None:
-        _check_times(x)
+        nonnegative_times(x)
     if window is not None:
         if (
             isinstance(window, bool)
