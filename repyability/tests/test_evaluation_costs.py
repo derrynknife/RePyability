@@ -267,10 +267,10 @@ def test_a_plan_keeps_its_groups_tables_and_its_copies_do_not():
     rbd = two_out_of_three()
     plan = _intervals._with_intervals(rbd, inspection={"a": 4380.0})
     cost = plan.expected_cost_rate()
-    assert "_ccf_tables" in plan.__dict__
+    assert plan._cache.ccf_tables is not None
     availability = plan.mean_availability()
     other = _intervals._with_intervals(plan, inspection={"b": 26280.0})
-    assert "_ccf_tables" not in other.__dict__
+    assert other._cache.ccf_tables is None
     fresh = RepairableRBD(**{**rbd._init_args}).with_intervals({"a": 4380.0})
     assert cost == pytest.approx(fresh.expected_cost_rate(), rel=1e-12)
     assert availability == pytest.approx(fresh.mean_availability(), rel=1e-12)

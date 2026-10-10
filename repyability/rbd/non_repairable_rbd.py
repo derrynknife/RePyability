@@ -1184,7 +1184,7 @@ class NonRepairableRBD(RBD):
         expand = structure is None
         structure = self._decomposition() if structure is None else structure
         key = (id(structure), _ccf_modules.Plan.key(groups), expand)
-        cache = self.__dict__.setdefault("_ccf_plans", {})
+        cache = self._cache.kept("ccf_plans")
         entry = cache.get(key)
         if entry is None or entry[0] is not structure:
             plan = _ccf_modules.Plan(

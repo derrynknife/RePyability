@@ -178,7 +178,7 @@ def _crew_chain(
         rbd.repair_crews,
         tuple(zip(nodes, (rates[node] for node in nodes), priorities)),
     )
-    cache = rbd.__dict__.setdefault("_crew_chains", {})
+    cache = rbd._cache.kept("crew_chains")
     if key not in cache:
         cache[key] = crew_chain.solve(
             nodes,

@@ -9,7 +9,6 @@ call these.
 import math
 import warnings
 from collections.abc import Mapping
-from copy import copy
 from dataclasses import dataclass
 from functools import partial
 from typing import (
@@ -893,8 +892,7 @@ def _allocation_view(rbd, held: set) -> "RepairableRBD":
             weights,
             what="The availability allocation",
         )
-    view = copy(rbd)
-    view.__dict__.pop("_ccf_tables", None)
+    view = rbd._shallow_copy("ccf_tables")
     view.__dict__["_allocation_calendar"] = (
         weights,
         {node: profiles[node] for node in held},
