@@ -2265,7 +2265,7 @@ class NonRepairableRBD(RBD):
         the inputs as for ``sf_uncertainty``.
 
         In the guide's Greeks it is *vega*: whose uncertainty widens the answer
-        (see [Sensitivities: the Greeks](guide/greeks.md)).
+        (see [Sensitivities: the Greeks](../guide/greeks.md)).
 
         ``of`` is the quantity: ``"sf"``, the reliability at the time/s
         ``x`` (as ``sf_uncertainty``); ``"mean"``, the MTTF (as
@@ -7512,7 +7512,7 @@ class NonRepairableRBD(RBD):
         """Birnbaum importance of each node at time/s ``x``.
 
         In the guide's Greeks it is *delta*: how far the system moves with each
-        node (see [Sensitivities: the Greeks](guide/greeks.md)).
+        node (see [Sensitivities: the Greeks](../guide/greeks.md)).
 
         ``B_i = R_sys(i working) - R_sys(i failed)``: the rate at which the
         system reliability changes with node ``i``'s reliability, which is
@@ -8068,7 +8068,7 @@ class NonRepairableRBD(RBD):
         """Sensitivity of system reliability to each node's parameters.
 
         In the guide's Greeks it is the levers' *deltas* (see [Sensitivities:
-        the Greeks](guide/greeks.md)).
+        the Greeks](../guide/greeks.md)).
 
         For node ``i`` with parameter ``theta``, the sensitivity at time/s
         ``x`` is
@@ -8331,7 +8331,7 @@ class NonRepairableRBD(RBD):
         importance measure (DIM, Borgonovo & Apostolakis, 2001).
 
         In the guide's Greeks it is *DIM*, the shares of a change (see
-        [Sensitivities: the Greeks](guide/greeks.md)).
+        [Sensitivities: the Greeks](../guide/greeks.md)).
 
         ``DIM_i = dR/dtheta_i dtheta_i / sum_j dR/dtheta_j dtheta_j``, so
         the shares add up to 1, and a group's share is the sum of its
@@ -8483,7 +8483,7 @@ class NonRepairableRBD(RBD):
         each (Hong & Lie, 1993; Armstrong, 1995).
 
         In the guide's Greeks it is *gamma*: complements or substitutes (see
-        [Sensitivities: the Greeks](guide/greeks.md)).
+        [Sensitivities: the Greeks](../guide/greeks.md)).
 
         ``JRI(i, j) = d2R / dR_i dR_j = R(1_i, 1_j) - R(1_i, 0_j) -
         R(0_i, 1_j) + R(0_i, 0_j)``, with ``R(1_i, 0_j)`` the system
@@ -8639,7 +8639,7 @@ class NonRepairableRBD(RBD):
         and which nodes are bringing it down.
 
         In the guide's Greeks it is *theta*: what is moving the system now (see
-        [Sensitivities: the Greeks](guide/greeks.md)).
+        [Sensitivities: the Greeks](../guide/greeks.md)).
 
         The nodes failing independently, the system reliability is
         multilinear in theirs, so
@@ -8731,7 +8731,7 @@ class NonRepairableRBD(RBD):
         1975), given that the system fails by ``x``, or over its whole life.
 
         In the guide's Greeks it is *theta*, integrated: who caused the
-        failures (see [Sensitivities: the Greeks](guide/greeks.md)).
+        failures (see [Sensitivities: the Greeks](../guide/greeks.md)).
 
         A node's failure fails the system when the node is critical then,
         so the probability that the system has failed by ``x``, through

@@ -409,7 +409,7 @@ shutdown for several parts, or with staggered block times.
     computed numerically, to about one part in a million: a repair can run
     over a block time, and components replaced at the same times go down
     together. The simulation (`availability` or `cost`) gives the spread over
-    a finite window. See [Costs](../guide/costs.md#preventive-maintenance) in
+    a finite window. See [Costs](../guide/system-maintenance.md#preventive-maintenance) in
     the user guide for every detail of the schedule.
 
 ## Failures nobody sees
@@ -468,7 +468,7 @@ pair.mean_unavailability()    # -> 1.01e-4    about (λτ)²/3 = 1.02e-4
 Redundancy did far more than halve the PFDavg here: it cut it by a factor
 of 86, and halving the test interval would quarter it again. Tests with a
 duration, and repairs that take time, are simulated (see
-[Costs](../guide/costs.md#hidden-failures-and-inspection)).
+[Costs](../guide/system-maintenance.md#hidden-failures-and-inspection)).
 
 A real safety function needs three more terms, each of which the diagram
 takes. The two valves share a design and a service, so some failures strike
@@ -480,7 +480,7 @@ found by whichever test comes first. And a test that finds only a share `c`
 of the failures (a `"coverage"`) leaves the rest hidden until a full test
 (`"full_test"`), adding about $(1 - c)\lambda T/2$ for full tests every $T$.
 All three are exact: see
-[Costs](../guide/costs.md#common-cause-staggered-tests-and-test-coverage).
+[Costs](../guide/system-maintenance.md#common-cause-staggered-tests-and-test-coverage).
 
 **Choosing the test interval.** Each test costs $c_i$, and each hour the part
 lies failed costs $c_d$. The cost rate is then about
@@ -660,5 +660,5 @@ should it be tested, and what does that cost per hour?
   system to designing one.
 - In the user guide, [Maintenance policies](../guide/maintenance.md) covers
   `NonRepairable` and `Repairable` in full, and
-  [Costs](../guide/costs.md#preventive-maintenance) the preventive schedule
+  [Costs](../guide/system-maintenance.md#preventive-maintenance) the preventive schedule
   of a `RepairableRBD`.

@@ -7921,7 +7921,7 @@ class RepairableRBD(RBD):
         ``i`` with the share ``rate_i / sum(rates)`` of their long-run
         replacement rates, finding ``i``'s as its own demands do and the
         others' as at a random time (see the spares
-        [guide](guide/spares.md#one-shelf-for-interchangeable-parts)).
+        [guide](../guide/spares.md#one-shelf-for-interchangeable-parts)).
 
         Parameters
         ----------
@@ -16357,7 +16357,7 @@ class RepairableRBD(RBD):
             bit; what the compiled engine does not simulate runs in Python,
             and another package can add an engine of its own (see
             ``repyability.rbd.engines``). See
-            [The compiled engine](guide/simulation.md#the-compiled-engine).
+            [The compiled engine](../guide/simulation.md#the-compiled-engine).
         demand : float, optional
             The demand the delivered fraction is measured against, in the
             capacities' units, when nodes have capacities. By default the
@@ -16394,7 +16394,7 @@ class RepairableRBD(RBD):
             order, as ``map`` does. The built-in ``map`` runs them here;
             ``concurrent.futures.ProcessPoolExecutor(...).map`` in other
             processes; Ray's, Dask's or a batch system's on other machines
-            (see [Shards](guide/simulation.md#shards)). The result is the
+            (see [Shards](../guide/simulation.md#shards)). The result is the
             same to the last bit; a run to a ``tolerance`` maps a round of
             shards at a time. Each shard is simulated by ``engine`` where it
             runs, and carries the system as JSON, so the system must save
@@ -16419,7 +16419,7 @@ class RepairableRBD(RBD):
             ``control_variate`` holds (see
             [`ControlVariate`][repyability.ControlVariate]); every draw must
             then come from a stream (surpyval parametric models). See
-            [An exact twin](guide/simulation.md#an-exact-twin).
+            [An exact twin](../guide/simulation.md#an-exact-twin).
         conditional : bool, optional
             Take the expected values given the histories of the dependent
             modules: the nodes whose values over time the exact
@@ -16436,7 +16436,7 @@ class RepairableRBD(RBD):
             fraction of the work, but each simulation's values are then
             expected values: the cost's ``percentile`` and ``std`` refuse,
             and ``criticalities`` is None. See
-            [Conditional runs](guide/simulation.md#conditional-runs).
+            [Conditional runs](../guide/simulation.md#conditional-runs).
         Returns
         -------
         AvailabilityResult
@@ -16709,7 +16709,7 @@ class RepairableRBD(RBD):
 
         Each simulation draws from streams of its own, seeded from ``seed``
         and its position in the run (see
-        [Random streams](guide/simulation.md#random-streams)), so it
+        [Random streams](../guide/simulation.md#random-streams)), so it
         comes out the same wherever and whenever it runs, by either engine,
         in any company. A run can so be split across processes, machines or
         preemptible workers: each runs its chunk, saves it
@@ -16971,7 +16971,7 @@ class RepairableRBD(RBD):
         size : int, optional
             Simulations to a shard, rounded up to a whole number of the
             run's widest block of draws (see
-            [Random streams](guide/simulation.md#random-streams)), so that
+            [Random streams](../guide/simulation.md#random-streams)), so that
             no two shards draw the same block; by default as many as make
             1024 or more. A shard should run for some seconds, to repay a
             worker's start.
@@ -21245,7 +21245,7 @@ class RepairableRBD(RBD):
         evaluated at the nodes' long-run availabilities.
 
         In the guide's Greeks it is *delta*: how far the system moves with each
-        component (see [Sensitivities: the Greeks](guide/greeks.md)).
+        component (see [Sensitivities: the Greeks](../guide/greeks.md)).
 
         Exact, with no simulation: ``I_B(i) = A_sys(A_i = 1) -
         A_sys(A_i = 0)``, the system's long-run availability with node i
@@ -21921,7 +21921,7 @@ class RepairableRBD(RBD):
         the change one more standby unit or repair crew makes.
 
         In the guide's Greeks it is the levers' *deltas* (see [Sensitivities:
-        the Greeks](guide/greeks.md)).
+        the Greeks](../guide/greeks.md)).
 
         The levers are each component's life and repair models'
         parameters (``"reliability.alpha"``, ``"repairability.beta"``,
@@ -22470,7 +22470,7 @@ class RepairableRBD(RBD):
         ``mean_availability_uncertainty``.
 
         In the guide's Greeks it is *vega*: whose uncertainty widens the answer
-        (see [Sensitivities: the Greeks](guide/greeks.md)).
+        (see [Sensitivities: the Greeks](../guide/greeks.md)).
 
         ``of`` is the quantity: ``"mean_availability"`` (the default, the
         long run), ``"point_availability"`` at the times ``x``,
@@ -22626,7 +22626,7 @@ class RepairableRBD(RBD):
         the long run, at times ``x`` or over a window.
 
         In the guide's Greeks it is *DIM*, the shares of a change (see
-        [Sensitivities: the Greeks](guide/greeks.md)).
+        [Sensitivities: the Greeks](../guide/greeks.md)).
 
         ``DIM_i = dA/dtheta_i dtheta_i / sum_j dA/dtheta_j dtheta_j``, so
         the shares add up to 1, and a group's share is the sum of its
@@ -23108,7 +23108,7 @@ class RepairableRBD(RBD):
         components are moving it.
 
         In the guide's Greeks it is *theta*: what is moving the system now (see
-        [Sensitivities: the Greeks](guide/greeks.md)).
+        [Sensitivities: the Greeks](../guide/greeks.md)).
 
         The components failing and recovering independently, the system's
         point availability is multilinear in theirs, so
@@ -23280,7 +23280,7 @@ class RepairableRBD(RBD):
         (or from the components' ``state``).
 
         In the guide's Greeks it is *theta*, integrated: who caused the
-        failures (see [Sensitivities: the Greeks](guide/greeks.md)).
+        failures (see [Sensitivities: the Greeks](../guide/greeks.md)).
 
         A component's failure fails the system when the component is
         critical then, which it is with probability ``I_B^i(t)``, so the
@@ -23421,7 +23421,7 @@ class RepairableRBD(RBD):
         each, in the long run, at times ``x`` or over a window.
 
         In the guide's Greeks it is *gamma*: complements or substitutes (see
-        [Sensitivities: the Greeks](guide/greeks.md)).
+        [Sensitivities: the Greeks](../guide/greeks.md)).
 
         ``JRI(i, j) = d2A / dA_i dA_j = A(1_i, 1_j) - A(1_i, 0_j) -
         A(0_i, 1_j) + A(0_i, 0_j)``, the system's availability with

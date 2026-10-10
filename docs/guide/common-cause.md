@@ -433,7 +433,7 @@ exponential lives, and either revealed failures with exponential repairs, as
 here, or hidden failures found by tests (with one coverage for the group),
 at offsets of their own if they are staggered, whose tests and repairs take
 no time, a fixed time or an exponential one (#220); see [the PFDavg of a
-safety function](costs.md#common-cause-staggered-tests-and-test-coverage).
+safety function](system-maintenance.md#common-cause-staggered-tests-and-test-coverage).
 `mean_availability`, `mean_unavailability`, `system_failure_frequency`,
 MTBF, MUT and MDT, the cost rate, `capacity_distribution`, and the interval
 choices built on them take the groups in. So do the importance measures:

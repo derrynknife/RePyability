@@ -107,6 +107,7 @@ nav:
       - Repairable systems: guide/repairable.md
       - System capacity: guide/capacity.md
       - Costs: guide/costs.md
+      - Maintaining a system: guide/system-maintenance.md
       - Spares: guide/spares.md
       - Design and allocation: guide/design.md
       - Maintenance policies: guide/maintenance.md

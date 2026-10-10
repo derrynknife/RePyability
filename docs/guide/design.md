@@ -715,7 +715,7 @@ in the same ratio do as well.
   availability. The others keep theirs: components with a preventive or
   inspection schedule (their intervals are chosen by
   `optimal_replacement_intervals` and `optimal_inspection_intervals`: see
-  [Costs](costs.md#choosing-the-intervals)), instantly repaired ones, nested
+  [Costs](system-maintenance.md#choosing-the-intervals)), instantly repaired ones, nested
   RBDs, components with units that never fail or repairs that may never end,
   and those listed in `fixed`.
 - Components tested or block-replaced on the same calendar are down together

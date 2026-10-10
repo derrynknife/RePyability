@@ -50,7 +50,7 @@ replacement. The pumps' is not:
 
 Preventive replacement uses spares too. Replacing each pump at 1,000 hours
 of age nearly doubles the pumps used (see
-[Costs](costs.md#preventive-maintenance) for whether it pays):
+[Costs](system-maintenance.md#preventive-maintenance) for whether it pays):
 
 ```python
 renewed = dict(pump, preventive={"interval": 1000.0,
@@ -272,7 +272,7 @@ it is exact, with no grid: a unit renewed at a test is renewed again `k`
 tests later with probability `R((k − 1)τ) − R(kτ)`. With tests or repairs
 that take time, the chances of each cycle's length in tests come from the
 cycle followed test by test on a grid (see [tests and repairs that take
-time](costs.md#tests-and-repairs-that-take-time)). From a random time, the
+time](system-maintenance.md#tests-and-repairs-that-take-time)). From a random time, the
 next replacement is `j` tests on with probability `P(C ≥ j) / S`, `C` being
 a cycle's length in tests and `S` its mean.
 
